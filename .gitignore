@@ -2,7 +2,23 @@ node_modules/
 dist/
 build/
 .expo/
+.expo-shared/
 coverage/
 *.log
+
+# secrets — never committed (Workflow doc §10)
 .env*
+!.env.example
+*.keystore
+*.jks
+google-services.json
+GoogleService-Info.plist
+
+# native build output
+android/app/build/
+android/.gradle/
+ios/Pods/
+ios/build/
+*.hprof
+
 .DS_Store
