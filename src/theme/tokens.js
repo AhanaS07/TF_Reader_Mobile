@@ -1,9 +1,8 @@
 // Design tokens — the only source of colour, type, spacing, radius and elevation.
-// Values come from the Week 1 Foundation Specification. Frozen: a stray write throws in dev
-// instead of silently re-theming every screen.
 
 /** @typedef {{ fontWeight: string, fontSize: number, lineHeight: number }} TextStyle */
 
+// Brand, text, surface, border, request states and access tiers.
 export const colors = Object.freeze({
   primary: '#00A19D',
   navy: '#1A3A5C',
@@ -11,24 +10,21 @@ export const colors = Object.freeze({
   textSecondary: '#6B7280',
   surface: '#F8F9FA',
   border: '#E5E7EB',
-  // request states — never used for a tier
   success: '#10B981',
   error: '#EF4444',
   wait: '#F59E0B',
-  // access tiers — never used for a state
   subscription: '#2563EB',
   elite: '#7C3AED',
 });
 
-// Read by the font loader only. Components never set fontFamily themselves.
+// Font family for the loader to register. Components never set fontFamily.
 export const fontFamily = Object.freeze({
   family: 'Inter',
   fallback: 'System',
 });
 
 /**
- * Weights are strings, which is what React Native's StyleSheet expects.
- * Spread whole (`...typography.body`) — a size paired with your own lineHeight is a raw value.
+ * The six text styles. Spread whole.
  * @type {Readonly<Record<string, TextStyle>>}
  */
 export const typography = Object.freeze({
@@ -40,7 +36,7 @@ export const typography = Object.freeze({
   smallLabel: Object.freeze({ fontWeight: '500', fontSize: 12, lineHeight: 16 }),
 });
 
-// Every gap, pad and inset is one of these five steps.
+// Spacing scale for every gap, padding and inset.
 export const spacing = Object.freeze({
   xs: 4,
   sm: 8,
@@ -49,17 +45,17 @@ export const spacing = Object.freeze({
   xl: 32,
 });
 
-// Named by what they belong to, so a spec change lands in one place.
+// Corner radii.
 export const radius = Object.freeze({
   card: 8,
   sheet: 16,
-  pill: 999, // clamps to half the height of whatever it wraps
+  pill: 999,
 });
 
-// iOS reads shadow*, Android reads elevation. Spread whole or the card lifts on one platform only.
+// Card shadow, covering both iOS and Android. Spread whole.
 export const elevation = Object.freeze({
   card: Object.freeze({
-    shadowColor: colors.textPrimary, // keeps the shadow in the palette
+    shadowColor: colors.textPrimary,
     shadowOffset: Object.freeze({ width: 0, height: 2 }),
     shadowOpacity: 0.08,
     shadowRadius: 8,
@@ -67,7 +63,7 @@ export const elevation = Object.freeze({
   }),
 });
 
-// Same objects as the named exports, grouped for callers that prefer one import.
+// All groups under one namespace.
 export const tokens = Object.freeze({
   colors,
   fontFamily,
