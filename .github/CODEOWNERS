@@ -1,0 +1,6 @@
+# Each team sets owners after forking. Examples:
+# /.github/                @lead-handle
+# /src/shared/             @lead-handle          (mobile)
+# /src/main/.../common/    @lead-handle          (backend)
+# /src/features/<cap>/     @owner-handle         (mobile)
+# /src/main/.../modules/<cap>/  @owner-handle     (backend)

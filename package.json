@@ -1,0 +1,10 @@
+{
+  "name": "cohort-mobile",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "lint": "echo \"[skeleton] add eslint once src exists\" && exit 0",
+    "typecheck": "echo \"[skeleton] add tsc once src exists\" && exit 0",
+    "test": "echo \"[skeleton] no tests yet\" && exit 0"
+  }
+}
