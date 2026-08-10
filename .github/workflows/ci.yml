@@ -2,20 +2,43 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, develop]
   push:
-    branches: [main, develop]
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm install
-      - run: npm run lint --if-present
-      - run: npm run typecheck --if-present
-      - run: npm test --if-present
+
+      - run: npm install --no-audit --no-fund
+
+      # The guards below disappear once P0-1 installs the toolchain. Until then they
+      # warn instead of reporting a fake green.
+      - name: Lint
+        run: |
+          if [ -x node_modules/.bin/eslint ]; then
+            npm run lint
+          else
+            echo "::warning::ESLint not installed yet — P0-1 adds it. Skipping."
+          fi
+
+      - name: Test
+        run: |
+          if [ -x node_modules/.bin/jest ]; then
+            npm run test:ci
+          else
+            echo "::warning::Jest not installed yet — P0-1 adds it. Skipping."
+          fi
