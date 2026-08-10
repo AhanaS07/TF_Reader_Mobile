@@ -123,3 +123,22 @@ say a five-way split. Section 05 is the outlier and is stale.
 | **Q-D** | Will wokay supply `accessTier`? OPDS 2.0 has no equivalent. Longest lead time of anything we're asking for. | read it from our own fixture field meanwhile |
 
 Also open: who is team1's lead, and whether team1 owns any backend module at all.
+
+---
+
+## Structure
+
+- `src/shared/` — cross-feature contracts & types shared by every capability (`contracts/` for interfaces, `types/` for type definitions).
+- `src/features/` — one folder per CAP-7 capability: `reader`, `download`, `encryption`, `sync`, `personalization`, `search`, `accessibility`.
+- `samples/` — encrypted test assets used by local runs and tests.
+
+## Owner map
+
+| Feature | Owner |
+|---|---|
+| Reader | Ahana |
+| Download + Encryption | Abhinav |
+| Sync | Karthik |
+| Personalization + Search | Vaishnavi |
+| Accessibility | Hruthik |
+| shared / samples | Ahana (lead) |

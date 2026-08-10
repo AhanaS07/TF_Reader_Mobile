@@ -18,10 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `cache: npm` — it requires a committed lock file, and there isn't one
+      # yet (package.json declares no dependencies). Add it back alongside
+      # package-lock.json once P0-1 installs the toolchain.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - run: npm install --no-audit --no-fund
 
