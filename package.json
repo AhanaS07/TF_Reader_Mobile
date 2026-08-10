@@ -1,10 +1,19 @@
 {
-  "name": "cohort-mobile",
+  "name": "tf-reader-mobile-team1",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "lint": "echo \"[skeleton] add eslint once src exists\" && exit 0",
-    "typecheck": "echo \"[skeleton] add tsc once src exists\" && exit 0",
-    "test": "echo \"[skeleton] no tests yet\" && exit 0"
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "lint": "eslint . --ext .js,.jsx",
+    "format": "prettier --write \"**/*.{js,jsx,json,md}\"",
+    "checkjs": "echo \"checkJs is editor-level via jsconfig.json — see docs/CONVENTIONS.md\" && exit 0",
+    "test": "jest --passWithNoTests",
+    "test:ci": "jest --ci --passWithNoTests"
+  },
+  "jest": {
+    "preset": "jest-expo"
   }
 }
