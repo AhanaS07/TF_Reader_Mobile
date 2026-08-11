@@ -1,0 +1,271 @@
+// src/model/opds/normalize.ts
+// OPDS 2.0 → domain model. PURE: no fetch, no fs, no clock, no config.
+//
+// This file is the ONLY place in the app that understands the OPDS wire format.
+// MockAdapter and ApiAdapter both funnel through it, which is what makes them
+// interchangeable by construction rather than by convention — there is no second
+// parser that could drift.
+//
+// Input is typed `unknown` on purpose. It is untrusted JSON off the wire (or off
+// disk), so every field is checked on the way in and anything unexpected becomes
+// a loud MALFORMED_FEED rather than an `undefined` that surfaces three screens
+// later as a blank row.
+import type {
+  Acquisition,
+  Catalogue,
+  CatalogueEncryption,
+  NavLink,
+  Publication,
+  Shelf,
+} from '@model/types';
+import { CatalogueError, CatalogueFailure } from '@model/errors';
+import { idFromHref, toActionId, toAlgorithm, toContentFormat } from '@model/opds/rels';
+
+type Json = Record<string, unknown>;
+
+const ACQUISITION_REL_PREFIX = 'http://opds-spec.org/acquisition';
+
+function malformed(what: string): CatalogueFailure {
+  return new CatalogueFailure(CatalogueError.MALFORMED_FEED, what);
+}
+
+function asRecord(value: unknown, what: string): Json {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw malformed(`${what} is not an object`);
+  }
+  return value as Json;
+}
+
+function asArray(value: unknown, what: string): unknown[] {
+  if (!Array.isArray(value)) throw malformed(`${what} is not an array`);
+  return value;
+}
+
+function optString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function reqString(value: unknown, what: string): string {
+  const str = optString(value);
+  if (str === undefined) throw malformed(`missing ${what}`);
+  return str;
+}
+
+function optNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function reqBoolean(value: unknown, what: string): boolean {
+  // Not defaulted to false: `canPersist` silently defaulting would make a
+  // downloadable book quietly undownloadable, with nothing to point at.
+  if (typeof value !== 'boolean') throw malformed(`missing ${what}`);
+  return value;
+}
+
+// OPDS spells repeated people/subjects as [{ name }]; the UI wants ['name'].
+// A bare string is accepted too — the spec permits it and real feeds use it.
+function toNames(value: unknown): string[] {
+  if (value === undefined) return [];
+  const entries = Array.isArray(value) ? value : [value];
+  return entries
+    .map((entry) => (typeof entry === 'string' ? entry : optString(asRecord(entry, 'name').name)))
+    .filter((name): name is string => name !== undefined);
+}
+
+function findLink(links: unknown[], predicate: (rel: string) => boolean): Json | undefined {
+  for (const raw of links) {
+    const link = asRecord(raw, 'link');
+    const rel = optString(link.rel);
+    if (rel !== undefined && predicate(rel)) return link;
+  }
+  return undefined;
+}
+
+// `page` index out of a paginated href. Strict rather than assuming "current + 1":
+// if the server paginates by cursor instead, we want to hear about it now.
+function pageFromHref(href: string): number {
+  const match = /[?&]page=(\d+)/.exec(href);
+  if (!match) throw malformed(`next link has no page parameter: ${href}`);
+  return Number(match[1]);
+}
+
+// ISBNs arrive as 'urn:isbn:9780367211745', but plenty of titles are identified by
+// a catalogue urn instead ('urn:tf:catalogue:item_ab6'). Only unwrap a real ISBN —
+// keeping the tail of any other urn would be a plausible-looking lie.
+function toIsbn(identifier: unknown): string | undefined {
+  const urn = optString(identifier);
+  if (urn === undefined) return undefined;
+  const prefix = 'urn:isbn:';
+  return urn.startsWith(prefix) ? urn.slice(prefix.length) : undefined;
+}
+
+function toEncryption(properties: Json): CatalogueEncryption | null {
+  // Absent `encrypted` is a STATE, not missing data: open access and all audio
+  // ship plaintext, and the frozen content-provider contract already defines
+  // null as exactly that. Never `undefined`.
+  if (properties.encrypted === undefined) return null;
+  const encrypted = asRecord(properties.encrypted, 'encrypted');
+  const originalLength = optNumber(encrypted.originalLength);
+  if (originalLength === undefined) throw malformed('encrypted block has no originalLength');
+  return {
+    algorithm: toAlgorithm(reqString(encrypted.algorithm, 'encryption algorithm')),
+    originalLength,
+  };
+}
+
+function toAcquisition(link: Json): Acquisition {
+  const properties = link.properties === undefined ? {} : asRecord(link.properties, 'properties');
+  const licenceModelRaw = optString(properties.licenceModel);
+  if (licenceModelRaw !== undefined && licenceModelRaw !== 'CONCURRENT' && licenceModelRaw !== 'UNLIMITED') {
+    throw malformed(`unknown licenceModel: ${licenceModelRaw}`);
+  }
+  const copies = properties.copies === undefined ? undefined : asRecord(properties.copies, 'copies');
+
+  return {
+    actionId: toActionId(reqString(link.rel, 'acquisition rel')),
+    href: reqString(link.href, 'acquisition href'),
+    // Left off the object entirely when absent, rather than set to undefined, so
+    // deep-equality assertions and JSON round-trips stay honest.
+    ...(licenceModelRaw !== undefined ? { licenceModel: licenceModelRaw } : {}),
+    ...(copies !== undefined && optNumber(copies.total) !== undefined
+      ? { copiesTotal: optNumber(copies.total) as number }
+      : {}),
+    encryption: toEncryption(properties),
+    hasSearchIndex: reqBoolean(properties.hasSearchIndex, 'hasSearchIndex'),
+    canPersist: reqBoolean(properties.canPersist, 'canPersist'),
+    ...(optString(properties.accessTier) !== undefined
+      ? { accessTier: optString(properties.accessTier) as string }
+      : {}),
+  };
+}
+
+// Widest image is the cover; the narrowest is the thumbnail, but only when the
+// feed actually supplies more than one. With a single image, claiming a thumbnail
+// would hand the UI a full-size asset to render in a list row.
+function toImages(value: unknown): { coverUrl?: string; thumbnailUrl?: string } {
+  if (value === undefined) return {};
+  const images = asArray(value, 'images')
+    .map((raw) => asRecord(raw, 'image'))
+    .map((image) => ({ href: optString(image.href), width: optNumber(image.width) ?? 0 }))
+    .filter((image): image is { href: string; width: number } => image.href !== undefined)
+    .sort((a, b) => b.width - a.width);
+
+  if (images.length === 0) return {};
+  return {
+    coverUrl: images[0].href,
+    ...(images.length > 1 ? { thumbnailUrl: images[images.length - 1].href } : {}),
+  };
+}
+
+export function normalizePublication(doc: unknown): Publication {
+  const publication = asRecord(doc, 'publication');
+  const metadata = asRecord(publication.metadata, 'publication metadata');
+  const links = asArray(publication.links, 'publication links');
+
+  const self = findLink(links, (rel) => rel === 'self');
+  if (self === undefined) throw malformed('publication has no self link');
+
+  const acquisitionLink = findLink(links, (rel) => rel.startsWith(ACQUISITION_REL_PREFIX));
+  // No acquisition link means nothing can be done with the title. Rendering it
+  // would produce a row with no working action, so reject it at the boundary.
+  if (acquisitionLink === undefined) throw malformed('publication has no acquisition link');
+
+  const publisher = publication.metadata && metadata.publisher !== undefined
+    ? optString(asRecord(metadata.publisher, 'publisher').name)
+    : undefined;
+
+  return {
+    id: idFromHref(reqString(self.href, 'publication self href')),
+    ...(toIsbn(metadata.identifier) !== undefined
+      ? { isbn: toIsbn(metadata.identifier) as string }
+      : {}),
+    title: reqString(metadata.title, 'publication title'),
+    ...(optString(metadata.subtitle) !== undefined
+      ? { subtitle: optString(metadata.subtitle) as string }
+      : {}),
+    authors: toNames(metadata.author),
+    ...(publisher !== undefined ? { publisher } : {}),
+    ...(optString(metadata.language) !== undefined
+      ? { language: optString(metadata.language) as string }
+      : {}),
+    ...(optString(metadata.published) !== undefined
+      ? { published: optString(metadata.published) as string }
+      : {}),
+    subjects: toNames(metadata.subject),
+    ...(optString(metadata.description) !== undefined
+      ? { description: optString(metadata.description) as string }
+      : {}),
+    ...(optNumber(metadata.numberOfPages) !== undefined
+      ? { numberOfPages: optNumber(metadata.numberOfPages) as number }
+      : {}),
+    format: toContentFormat(reqString(acquisitionLink.type, 'acquisition mime type')),
+    ...toImages(publication.images),
+    acquisition: toAcquisition(acquisitionLink),
+  };
+}
+
+// Handles both a standalone shelf feed (02) and a `groups[]` entry inside the
+// home catalogue (01) — they are the same shape, the group just omits pagination.
+export function normalizeShelf(doc: unknown): Shelf {
+  const shelf = asRecord(doc, 'shelf');
+  const metadata = asRecord(shelf.metadata, 'shelf metadata');
+  const links = asArray(shelf.links, 'shelf links');
+
+  const self = findLink(links, (rel) => rel === 'self');
+  if (self === undefined) throw malformed('shelf has no self link');
+  const next = findLink(links, (rel) => rel === 'next');
+
+  const totalItems = optNumber(metadata.numberOfItems);
+  const itemsPerPage = optNumber(metadata.itemsPerPage);
+
+  return {
+    id: idFromHref(reqString(self.href, 'shelf self href')),
+    title: reqString(metadata.title, 'shelf title'),
+    publications: asArray(shelf.publications, 'shelf publications').map(normalizePublication),
+    ...(totalItems !== undefined ? { totalItems } : {}),
+    ...(itemsPerPage !== undefined ? { itemsPerPage } : {}),
+    ...(next !== undefined
+      ? { nextPage: pageFromHref(reqString(next.href, 'next href')) }
+      : {}),
+  };
+}
+
+function toNavLink(doc: unknown): NavLink {
+  const entry = asRecord(doc, 'navigation entry');
+  const href = reqString(entry.href, 'navigation href');
+  return {
+    title: reqString(entry.title, 'navigation title'),
+    href,
+    // Precomputed so a nav tap goes straight to getShelf() without any screen
+    // needing to parse a URL.
+    shelfId: idFromHref(href),
+  };
+}
+
+export function normalizeCatalogue(doc: unknown): Catalogue {
+  const catalogue = asRecord(doc, 'catalogue');
+  const metadata = asRecord(catalogue.metadata, 'catalogue metadata');
+  const links = asArray(catalogue.links, 'catalogue links');
+  const search = findLink(links, (rel) => rel === 'search');
+
+  return {
+    title: reqString(metadata.title, 'catalogue title'),
+    ...(optString(metadata.modified) !== undefined
+      ? { modified: optString(metadata.modified) as string }
+      : {}),
+    // Navigation and groups are both optional: a brand-new institution may have
+    // neither, which is an empty catalogue rather than a broken feed.
+    navigation:
+      catalogue.navigation === undefined
+        ? []
+        : asArray(catalogue.navigation, 'navigation').map(toNavLink),
+    shelves:
+      catalogue.groups === undefined
+        ? []
+        : asArray(catalogue.groups, 'groups').map(normalizeShelf),
+    // Kept templated ('...{?query}') for the search feature to expand itself.
+    ...(search !== undefined
+      ? { searchHref: reqString(search.href, 'search href') }
+      : {}),
+  };
+}

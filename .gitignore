@@ -34,3 +34,8 @@ GoogleService-Info.plist
 *.hprof
 
 .DS_Store
+
+# Personal Claude Code files — not shared with the team.
+CLAUDE.md
+.claude/
+docs/superpowers/
