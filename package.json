@@ -5,8 +5,8 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
@@ -42,6 +42,7 @@
     "expo": "^57.0.12",
     "expo-dev-client": "~57.0.11",
     "expo-font": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
     "react": "19.2.3",
     "react-native": "0.86.2",
     "react-native-safe-area-context": "~5.7.0",

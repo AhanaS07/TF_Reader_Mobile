@@ -6,15 +6,13 @@
     "orientation": "portrait",
     "scheme": "tfreader",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "assetBundlePatterns": ["assets/**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
     },
     "android": {
-      "package": "com.taylorandfrancis.tfreader.dev",
-      "edgeToEdgeEnabled": true
+      "package": "com.taylorandfrancis.tfreader.dev"
     },
     "plugins": ["expo-dev-client", "expo-font"]
   }
