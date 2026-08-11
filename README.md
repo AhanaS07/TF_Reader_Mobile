@@ -86,10 +86,19 @@ Build the dev build **before** you start feature work:
 
 ```bash
 npx expo prebuild            # generates android/ + ios/ from app.json
-npx expo run:android         # or: npx expo run:ios   (needs Xcode)
+npm run android              # or: npm run ios   (needs Xcode)
 ```
 
-After that, `npm start` connects to your dev build instead of Expo Go. You only re-run
+`npm run android` / `npm run ios` map to `expo run:*`, which **builds and installs the dev
+build**. They deliberately do not map to `expo start --android`, which would launch Expo Go and
+fail as described above.
+
+Building locally needs the platform toolchain — Android Studio + SDK for Android, Xcode for iOS.
+If you don't have them (or need an iOS build without a Mac), use EAS cloud builds instead:
+`npx eas-cli build --profile development --platform android`. That needs an `eas.json`, which
+this repo does not have yet — see "Not yet set up" below.
+
+After the dev build is installed, `npm start` connects to it instead of Expo Go. You only re-run
 `prebuild`/`run:` when a native dependency or config plugin changes — not for JS changes.
 
 **`android/` and `ios/` are gitignored on purpose.** We use CNG (Continuous Native Generation):
@@ -101,6 +110,20 @@ edit. Going "bare" and committing them is a team decision, not a per-person one.
 Native modules added later install the same way and need a config-plugin entry in `app.json`
 plus a fresh `prebuild`. Which ones are coming, and who owns them, is a per-team matter — see the
 team docs below.
+
+### Not yet set up
+
+Everything the dev client needs is installed and verified — `npx expo-doctor` passes 20/20 and
+`npx expo prebuild` generates a clean Android project with `expo-dev-client`, `expo-dev-launcher`
+and `expo-dev-menu` all autolinked. Two things remain, and both need a decision rather than a
+command:
+
+- **No `eas.json`.** Without it there are no cloud builds, so every dev build must be compiled
+  locally with the full platform toolchain installed. Worth adding if anyone on the team lacks
+  Android Studio, or needs an iOS build without a Mac. `npx eas-cli init` creates it, but it
+  binds the repo to an Expo account/project — a team decision, not a per-person one.
+- **No app icon or splash.** `assets/` holds only a `.gitkeep`, so builds use Expo defaults.
+  Cosmetic, but it will look broken on a device before it looks intentional.
 
 ### Versions
 
