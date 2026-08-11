@@ -10,33 +10,14 @@
 // composed into this record, the same way SyncRecordBase is; it is NOT a
 // separate synced record.
 //
-<<<<<<< HEAD
-// Carries id + userId like every other synced record. Prefs are a per-user
-// SINGLETON — one record per user, applied across ALL books (NOT scoped per
-// book). Conflict resolution = LWW on `updatedAt`, client-edit-time: the client
-// stamps updatedAt when the user changes a setting (offline-capable), and that
-// timestamp settles two devices editing the same user's prefs.
-//
-// RECONCILED (sync-base freeze): id / userId / updatedAt / isDeleted / synced
-// come from SyncRecordBase — they are NOT redeclared here. updatedAt / synced
-// stay non-null. The only genuinely new field is `isDeleted`; prefs is a
-// per-user singleton with no real delete op, so it stays false except on
-// optional account-cleanup ("reset to defaults" is a rewrite + updatedAt bump,
-// NOT a tombstone).
-//
-// MERGE NOTE (T4_Ahana -> dev_T4): `bookId` was REMOVED here, keeping the
-// dev_T4 decision that prefs apply universally per user. The SyncRecordBase
-// extraction from T4_Ahana is kept, so the two changes are combined rather than
-// one overwriting the other.
-
-=======
 // Identity/sync fields (id, userId, updatedAt, isDeleted, synced) come from
 // SyncRecordBase and are not redeclared; updatedAt / synced stay non-null.
+// There is no `bookId` — prefs apply universally per user.
+//
 // Conflict resolution is LWW on `updatedAt`, stamped by the client at edit time
 // so it works offline. There is no real delete op for a singleton, so
 // `isDeleted` stays false except on account cleanup — "reset to defaults" is a
 // rewrite plus an updatedAt bump, not a tombstone.
->>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
 import type { SyncRecordBase } from './sync-record';
 import type { AccessibilityPrefs } from './accessibility';
 import { DEFAULT_ACCESSIBILITY_PREFS } from './accessibility';
@@ -48,16 +29,11 @@ export type Theme =
   | 'system'
   /**
    * @deprecated Use `accessibility.display.highContrast` instead.
-<<<<<<< HEAD
-   * High contrast remains in the union so existing persisted records still parse.
-   * Migrate on read.
-=======
    * High contrast was representable twice — as a theme variant and as an
    * accessibility flag — with no defined precedence for
    * `theme: 'dark' + highContrast: true`. The flag is now the single source of
    * truth, so contrast stays independent of colour scheme. Kept in the union
    * only so existing persisted records still parse; migrate on read.
->>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
    */
   | 'highContrast';
 
@@ -82,151 +58,6 @@ export interface ZoomPrefs {
   level: number; // 1.0 = 100%; PDF/image zoom
 }
 
-<<<<<<< HEAD
-// ============================================================================
-// ACCESSIBILITY
-// ============================================================================
-
-// Applied universally per user, like the rest of this record.
-
-// [SETTLED — Accessibility] All 18 Day-1 fields live here, plus dev_T4's
-// `screenReaderHints` (19 total).
-
-// The dev_T4 version held 4 booleans. The Day-1 freeze identified 18 fields —
-// all of them user preferences, none of them runtime state. Keeping only 4 here
-// would have left the other 14 on a second store, which is exactly what folding
-// a11y into prefs was meant to eliminate.
-
-// Grouped into tts / text / display / announce rather than left flat. Two
-// reasons: it matches this file's existing nesting (font, typography, layout,
-// zoom), and it maps 1:1 onto the persisted `a11y.*` namespace agreed on Day 1 —
-// `accessibility.tts.rate` ⇄ `a11y.tts.rate`. Flat would have meant 19 sibling
-// keys and a hand-maintained name mapping. The nesting is presentation only; it
-// can be flattened without touching the field set if anyone objects.
-
-/**
- * reduceMotion is a TRI-STATE, not a boolean. [SETTLED — Accessibility]
- *
- * dev_T4 had `reduceMotion: boolean` defaulting to false. A boolean cannot
- * express "follow the OS": once written, `false` is ambiguous between "the user
- * turned it off" and "the user never chose, and the OS says off". The
- * distinction is not recoverable later, so the lossy shape cannot be fixed
- * after it ships.
- *
- * The SHAPE is settled. The knock-on is not: the default moves from `false` to
- * `'system'`, so out of the box we now honour the OS reduced-motion setting
- * instead of ignoring it. That still needs Ahana, since Reader is what
- * suppresses the page-turn animation.
- *
- * Reader must resolve this against live OS state (see `resolveReduceMotion`)
- * rather than reading the stored value directly.
- */
-export type ReduceMotion = 'system' | 'on' | 'off';
-
-/**
- * TTS highlight granularity.
- * UNCONFIRMED union — the Day-1 schema states only the `sentence` default, not
- * the domain. Word- and sentence-level sync are deferred past Week 1, so
- * nothing reads this yet; confirm before it is wired up.
- */
-export type TtsHighlightMode = 'none' | 'word' | 'sentence';
-
-/** Text rendering and scaling. */
-export interface A11yTextPrefs {
-  /** OpenDyslexic. Was `AccessibilityPrefs.dyslexiaFont` in dev_T4. */
-  dyslexiaFont: boolean;
-
-  /**
-   * Honour the OS font-scale setting.
-   * [OVERLAP] Interacts with `typography.size`, which Ahana flagged as
-   * "agree units (pt vs scale factor)". Three knobs now scale text:
-   * typography.size, this, and fontScaleMultiplier. Settle the composition
-   * order with Ahana — see OPEN DECISIONS.
-   */
-  respectOsFontScale: boolean;
-
-  /** Additional user multiplier applied on top of OS scaling. */
-  fontScaleMultiplier: number;
-
-  /** Looser line/word spacing preset for readability. */
-  readableSpacing: boolean;
-}
-
-/** Visual presentation. */
-export interface A11yDisplayPrefs {
-  /** Heavier font weight throughout. */
-  boldText: boolean;
-
-  /** Single source of truth for contrast — see the `Theme` deprecation. */
-  highContrast: boolean;
-
-  /** Tri-state; resolve against OS before applying. */
-  reduceMotion: ReduceMotion;
-
-  /** Enlarged hit targets for reader controls. */
-  largeTouchTargets: boolean;
-
-  /** Enlarged TTS / audio transport controls. */
-  largeAudioControls: boolean;
-}
-
-/**
- * Text-to-speech. Library: react-native-tts (Day-1 selection; requires an Expo
- * Development Build, not standard Expo Go).
- */
-export interface A11yTtsPrefs {
-  /** Master switch. */
-  enabled: boolean;
-
-  /** Platform voice identifier; null = platform default. */
-  voiceId: string | null;
-
-  /** Speech rate. Valid range TTS_RATE_MIN..TTS_RATE_MAX. */
-  rate: number;
-
-  /** Speech pitch. */
-  pitch: number;
-
-  /** Deferred past Week 1 — persisted now so the shape does not move later. */
-  highlightMode: TtsHighlightMode;
-
-  /** Continue reading into the next chapter without user input. */
-  autoContinueChapter: boolean;
-
-  /** Keep speaking when the app backgrounds. Unverified on both platforms. */
-  backgroundPlayback: boolean;
-}
-
-/**
- * Screen-reader announcements on navigation.
- * Announcements must be deliberate — a page turn should not re-announce the
- * whole page, every control, or unrelated content.
- */
-export interface A11yAnnouncePrefs {
-  pageChanges: boolean;
-  chapterChanges: boolean;
-}
-
-export interface AccessibilityPrefs {
-  text: A11yTextPrefs;
-  display: A11yDisplayPrefs;
-  tts: A11yTtsPrefs;
-  announce: A11yAnnouncePrefs;
-
-  /**
-   * Extra a11y labels for TalkBack / VoiceOver.
-   * From dev_T4; not in the Day-1 model, kept as-is.
-   *
-   * NOTE: this only reaches native React Native controls. It does NOT affect
-   * EPUB content inside the WebView — that accessibility tree is produced by
-   * the DOM and is unreachable from React Native props. Day-1 finding; do not
-   * let the flag name imply otherwise.
-   */
-  screenReaderHints: boolean;
-}
-
-=======
->>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
 export interface SharedPrefs extends SyncRecordBase {
   // Identity/sync fields (id, userId, updatedAt, isDeleted, synced) come from
   // SyncRecordBase. No bookId — prefs are a per-user singleton.
@@ -258,65 +89,23 @@ export const DEFAULT_PREFS: Omit<
   zoom: { level: 1.0 },
   accessibility: DEFAULT_ACCESSIBILITY_PREFS,
 };
-<<<<<<< HEAD
 
 // ============================================================================
-// CONSTRAINTS
+// DECISION LOG
 // ============================================================================
 
-/** Inclusive bounds for `accessibility.tts.rate`. Day-1 freeze. */
-export const TTS_RATE_MIN = 0.5;
-export const TTS_RATE_MAX = 3.0;
-
-export const REDUCE_MOTION_VALUES = ['system', 'on', 'off'] as const;
-
-// ============================================================================
-// RESOLVERS
-// ============================================================================
-
-// Two functions in an otherwise type-only contract file. They are
-// here because both encode a rule that is part of the contract itself — how a
-// stored value becomes an applied value. Move them to a sibling module if the
-// team would rather keep contracts declaration-only.
-
-/**
- * Collapses the tri-state against live OS state. Reader should call this rather
- * than reading `accessibility.display.reduceMotion` directly.
- */
-export function resolveReduceMotion(
-  preference: ReduceMotion,
-  osReduceMotionEnabled: boolean,
-): boolean {
-  if (preference === 'system') return osReduceMotionEnabled;
-  return preference === 'on';
-}
-
-/**
- * Read-time migration for records written before the tri-state change.
- *
- * `false` maps to `'system'`, not `'off'`: the old default was false, so a
- * stored false is overwhelmingly "never touched" rather than "explicitly
- * disabled". This does silently upgrade the rare user who really did turn it
- * off to following the OS — acceptable, since the alternative pins every
- * untouched user to "ignore the OS", which is the worse failure for an
- * accessibility setting.
- */
-export function migrateReduceMotion(
-  stored: boolean | ReduceMotion,
-): ReduceMotion {
-  if (typeof stored === 'boolean') return stored ? 'on' : 'system';
-  return stored;
-}
-
-// ============================================================================
-// DECISION LOG — status before this replaces prefs.ts
-// ============================================================================
+// The a11y types, constants, validators and resolvers (AccessibilityPrefs and
+// its A11y* blocks, ReduceMotion, TtsHighlightMode, TTS_RATE_MIN/MAX,
+// REDUCE_MOTION_VALUES, resolveReduceMotion, migrateReduceMotion) are NOT
+// declared here — accessibility.ts owns them, and contracts/index.ts
+// re-exports both files. Re-declaring them here makes the star exports
+// ambiguous (TS2308) and collides with the import above (TS2440).
 
 // SETTLED — Accessibility (Hruthik):
 //   * reduceMotion is a tri-state ('system' | 'on' | 'off'), not a boolean.
 //   * All 18 Day-1 accessibility fields fold into this record (+ dev_T4's
 //     screenReaderHints). No second accessibility store, no second endpoint.
-//   Both are implemented above. The knock-on effects below are NOT settled.
+//   Both live in accessibility.ts. The knock-on effects below are NOT settled.
 
 // STILL OPEN:
 //
@@ -343,5 +132,3 @@ export function migrateReduceMotion(
 // 5. [Accessibility] TtsHighlightMode's union beyond 'sentence' is inferred,
 //    not specified. Nothing reads it until word/sentence sync leaves the
 //    deferred list, but confirm before it does.
-=======
->>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
