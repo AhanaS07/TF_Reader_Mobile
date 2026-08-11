@@ -5,10 +5,16 @@
 //   import { ContentProvider, SharedPrefs, Bookmark } from '@/shared/contracts';
 //
 // RUNTIME vs TYPE — read before importing:
-// This layer is type-only EXCEPT two real runtime members that emit JS:
-//   • ContentError   (enum, errors.ts)
-//   • ContentFailure (class, errors.ts)
-//   • DEFAULT_PREFS  (const, prefs.ts)
+// This layer is type-only EXCEPT these real runtime members that emit JS:
+//   • ContentError          (enum, errors.ts)
+//   • ContentFailure        (class, errors.ts)
+//   • DEFAULT_PREFS         (const, prefs.ts)
+// …and everything in accessibility.ts except its types:
+//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX,
+//     REDUCE_MOTION_VALUES, TTS_HIGHLIGHT_MODE_VALUES   (consts)
+//   • createDefaultAccessibilityPrefs, isValidTtsRate,
+//     isValidReduceMotion, isValidTtsHighlightMode,
+//     resolveReduceMotion, migrateReduceMotion, resolveFontScale   (fns)
 // Import those as VALUES:      import { ContentError, ContentFailure } from '@/shared/contracts';
 // A `import type { ContentError }` compiles but gives you NOTHING at runtime —
 // you can't `throw new ContentFailure(...)` or switch on the enum. Everything
@@ -30,6 +36,7 @@ export * from './sync-record';
 
 // Existing teammate contracts.
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"
+export * from './accessibility'; // composed into SharedPrefs.accessibility
 export * from './annotations';
 export * from './progress';
 export * from './search';

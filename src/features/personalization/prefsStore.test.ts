@@ -43,9 +43,12 @@ describe('InMemoryPrefsStore (Day-2 stub)', () => {
     expect(prefs.font.family).toBe('system');
     expect(prefs.layout.flow).toBe('paginated');
     expect(prefs.zoom.level).toBe(1.0);
-    // accessibility — same object, no second call
-    expect(prefs.accessibility.dyslexiaFont).toBe(false);
-    expect(prefs.accessibility.reduceMotion).toBe(false);
+    // accessibility — same object, no second call.
+    // Nested under text / display since the a11y contract moved off flat fields,
+    // and reduceMotion is now the tri-state 'system' | 'on' | 'off', not a
+    // boolean — 'system' means "follow the OS" (resolve via resolveReduceMotion).
+    expect(prefs.accessibility.text.dyslexiaFont).toBe(false);
+    expect(prefs.accessibility.display.reduceMotion).toBe('system');
   });
 
   it('resetPrefs restores defaults as a write (not a tombstone)', () => {

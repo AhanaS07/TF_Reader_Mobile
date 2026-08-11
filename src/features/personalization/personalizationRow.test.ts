@@ -15,6 +15,7 @@ import {
   PersonalizationPrefs,
 } from '@/features/personalization/personalizationRow';
 import type { SharedPrefs } from '@/shared/contracts';
+import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 
 // Deliberately NON-default values so a forgotten/misplaced field is visible.
 const original: SharedPrefs = {
@@ -28,12 +29,10 @@ const original: SharedPrefs = {
   updatedAt: Date.UTC(2026, 7, 11, 12, 0, 0), // fixed ms — no wall-clock
   isDeleted: false,
   synced: false,
-  accessibility: {
-    dyslexiaFont: true,
-    highContrast: false,
-    reduceMotion: true,
-    screenReaderHints: false,
-  },
+  // Referenced, not restated: the a11y block has 19 required fields across four
+  // nested groups (text / display / tts / announce). Inlining them here would
+  // duplicate the contract in a test that deliberately drops accessibility.
+  accessibility: DEFAULT_ACCESSIBILITY_PREFS,
 };
 
 // The personalization slice = original minus accessibility (what the adapter owns).
