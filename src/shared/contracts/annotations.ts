@@ -1,42 +1,42 @@
-// /shared/annotations.ts
+// src/shared/contracts/annotations.ts
 // Bookmarks & Highlights — CAP-7 Reader & Offline (Team t4targaryen)
-//CFI (Canonical Fragment Identifier)
+// CFI (Canonical Fragment Identifier)
 // Owner: Personalization (Vaishnavi). Coordinate table shape with Sync (Karthik).
 // Each annotation is its OWN synced record in SQLite (a growing collection),
 // unlike SharedPrefs which is a singleton — see prefs.ts.
 //
 // Conflict resolution:
-//   Bookmarks  → LWW on updatedAt.
+//   Bookmarks  → LWW on updatedAt (client-edit-time).
 //   Highlights → MERGE / UNION across devices (NOT LWW).
-
-// Shared sync base — matches Karthik's { id, updatedAt, isDeleted, synced },
-// plus userId. Sent with every change: delete → isDeleted=true; update → whole record.
-export interface SyncBase {
-  id: string; // client-generated UUID — unique id per record / change
-  userId: string; // owner; sent with every change
-  updatedAt: number | null; // null on create; sync layer (Karthik) sets it
-  isDeleted: boolean; // true = tombstoned (soft delete)
-  synced: boolean | null; // null on create; set once synced
-}
+//
+// RECONCILED (sync-base freeze): the inline `SyncBase` that used to live here has
+// moved to sync-record.ts as `SyncRecordBase` — now carries userId, and
+// updatedAt / synced are NON-null (the client stamps updatedAt at edit time;
+// synced defaults false). Bookmark/Highlight extend it. If any teammate code
+// still imports `SyncBase` from here, switch it to `SyncRecordBase` from
+// './sync-record'.
+import type { SyncRecordBase } from './sync-record';
 
 // Position addressing differs by content type (Reader emits this):
 //   EPUB → CFI string (epub.js text-selection anchor)
 //   PDF  → page number (+ optional offset)
+// RECONCILED (format casing): discriminants are UPPERCASE to match ContentFormat
+// (PDF | EPUB | AUDIO) in primitives.ts — no more 'epub' / 'EPUB' split.
 export type Locator =
-  | { type: 'epub'; cfi: string }
-  | { type: 'pdf'; page: number; offset?: number };
+  | { type: 'EPUB'; cfi: string }
+  | { type: 'PDF'; page: number; offset?: number };
 
-export interface Bookmark extends SyncBase {
+export interface Bookmark extends SyncRecordBase {
   bookId: string;
   chapterId?: string;
   locator: Locator;
   name?: string; // optional user-given name (DB column: `name`)
-  createdAt: number;
+  createdAt: number; // on create, updatedAt is stamped to the same client ms
 }
 
 export type HighlightColor = 'yellow' | 'green' | 'blue' | 'pink' | string;
 
-export interface Highlight extends SyncBase {
+export interface Highlight extends SyncRecordBase {
   bookId: string;
   // A highlight spans a range. Stored FLAT (two locators) to match the DB
   // freeze — NOT nested under a `range` object:
