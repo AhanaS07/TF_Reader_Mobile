@@ -58,12 +58,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # Still guarded — jest is NOT installed yet, so this one genuinely can
-      # skip. Remove the guard when the test toolchain lands (P0-1).
+      # Unguarded since P0-1: jest + jest-expo are real dependencies, so a
+      # missing binary is a genuine failure, not a skip. Still --passWithNoTests
+      # (see the npm script) because most feature folders are empty; drop that
+      # flag once every CAP has at least one spec.
       - name: Test
-        run: |
-          if [ -x node_modules/.bin/jest ]; then
-            npm run test:ci
-          else
-            echo "::warning::Jest not installed yet — P0-1 adds it. Skipping."
-          fi
+        run: npm run test:ci
