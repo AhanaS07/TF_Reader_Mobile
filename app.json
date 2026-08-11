@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "TF Reader",
+    "slug": "tf-reader-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "tfreader",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": ["assets/**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
+    },
+    "android": {
+      "package": "com.taylorandfrancis.tfreader.dev"
+    },
+    "plugins": ["expo-dev-client", "expo-font"]
+  }
+}
