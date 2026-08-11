@@ -1,0 +1,44 @@
+{
+  "@context": "https://readium.org/webpub-manifest/context.jsonld",
+  "metadata": {
+    "@type": "http://schema.org/Book",
+    "identifier": "urn:isbn:9780367211745",
+    "title": "Rights for Robots",
+    "subtitle": "Artificial Intelligence, Animal and Environmental Law",
+    "author": [{ "name": "Joshua C. Gellers", "sortAs": "Gellers, Joshua C." }],
+    "publisher": { "name": "Routledge" },
+    "language": "en",
+    "published": "2020-09-30",
+    "modified": "2026-08-02T11:00:00Z",
+    "subject": [{ "name": "Law" }, { "name": "Technology" }],
+    "description": "Bringing a unique perspective to the burgeoning ethical and legal issues surrounding the presence of artificial intelligence in our daily lives, the book uses theory and practice on animal rights and the rights of nature to assess the status of robots.",
+    "numberOfPages": 212
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_42",
+      "type": "application/opds-publication+json"
+    },
+    {
+      "rel": "http://opds-spec.org/acquisition/borrow",
+      "href": "https://api.tf/api/v1/loans?itemId=item_42",
+      "type": "application/pdf",
+      "title": "Borrow",
+      "properties": {
+        "licenceModel": "CONCURRENT",
+        "copies": { "total": 2 },
+        "encrypted": {
+          "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+          "originalLength": 6373752
+        },
+        "hasSearchIndex": true,
+        "canPersist": false
+      }
+    }
+  ],
+  "images": [
+    { "href": "https://cdn.tf/covers/item_42.jpg", "type": "image/jpeg", "width": 400, "height": 600 },
+    { "href": "https://cdn.tf/covers/item_42-thumb.jpg", "type": "image/jpeg", "width": 100, "height": 150 }
+  ]
+}

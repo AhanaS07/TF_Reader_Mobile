@@ -1,0 +1,215 @@
+{
+  "metadata": {
+    "title": "Imperial College London Library",
+    "modified": "2026-08-10T09:00:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/catalogue",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "navigation": [
+    {
+      "title": "eBooks",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    },
+    {
+      "title": "Audiobooks",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/audiobooks",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    },
+    {
+      "title": "Open access",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/open-access",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    }
+  ],
+  "groups": [
+    {
+      "metadata": {
+        "title": "New this term",
+        "numberOfItems": 3
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/new-this-term",
+          "type": "application/opds+json",
+          "title": "Open this shelf"
+        }
+      ],
+      "publications": [
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:isbn:9780367211745",
+            "title": "Rights for Robots",
+            "author": [{ "name": "Joshua C. Gellers" }],
+            "publisher": { "name": "Routledge" },
+            "language": "en",
+            "published": "2020-09-30",
+            "subject": [{ "name": "Law" }, { "name": "Technology" }],
+            "numberOfPages": 212
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_42",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/borrow",
+              "href": "https://api.tf/api/v1/loans?itemId=item_42",
+              "type": "application/pdf",
+              "properties": {
+                "licenceModel": "CONCURRENT",
+                "copies": { "total": 2 },
+                "encrypted": {
+                  "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+                  "originalLength": 6373752
+                },
+                "hasSearchIndex": true,
+                "canPersist": false
+              }
+            }
+          ],
+          "images": [
+            { "href": "https://cdn.tf/covers/item_42.jpg", "type": "image/jpeg", "width": 400, "height": 600 }
+          ]
+        },
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:tf:catalogue:item_env",
+            "title": "Environmental Policy and Air Pollution in China",
+            "author": [{ "name": "Yuan Xu" }],
+            "publisher": { "name": "Routledge" },
+            "language": "en",
+            "published": "2021-03-15",
+            "subject": [{ "name": "Environment" }, { "name": "Public Policy" }],
+            "numberOfPages": 184
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_env",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition",
+              "href": "https://api.tf/api/v1/loans?itemId=item_env",
+              "type": "application/pdf",
+              "properties": {
+                "licenceModel": "UNLIMITED",
+                "encrypted": {
+                  "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+                  "originalLength": 3596255
+                },
+                "hasSearchIndex": true,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            { "href": "https://cdn.tf/covers/item_env.jpg", "type": "image/jpeg", "width": 400, "height": 600 }
+          ]
+        },
+        {
+          "metadata": {
+            "@type": "http://schema.org/Audiobook",
+            "identifier": "urn:tf:catalogue:item_stat",
+            "title": "An Introduction to Statistics",
+            "author": [{ "name": "Priya Raman" }],
+            "narrator": [{ "name": "Alan Fitzgerald" }],
+            "publisher": { "name": "CRC Press" },
+            "language": "en",
+            "published": "2022-06-01",
+            "subject": [{ "name": "Statistics" }],
+            "duration": 2305
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_stat",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition",
+              "href": "https://api.tf/api/v1/loans?itemId=item_stat",
+              "type": "audio/mpeg",
+              "properties": {
+                "licenceModel": "UNLIMITED",
+                "hasSearchIndex": false,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            { "href": "https://cdn.tf/covers/item_stat.jpg", "type": "image/jpeg", "width": 400, "height": 400 }
+          ]
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "title": "Free to read",
+        "numberOfItems": 1
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/open-access",
+          "type": "application/opds+json",
+          "title": "Open this shelf"
+        }
+      ],
+      "publications": [
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:tf:catalogue:item_ab6",
+            "title": "Ethnographies of Waiting",
+            "editor": [{ "name": "Manpreet K. Janeja" }, { "name": "Andreas Bandak" }],
+            "publisher": { "name": "CRC Press" },
+            "language": "en",
+            "published": "2018-11-01",
+            "subject": [{ "name": "Anthropology" }],
+            "numberOfPages": 264
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_ab6",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/open-access",
+              "href": "https://api.tf/api/v1/reading-sessions?itemId=item_ab6",
+              "type": "application/epub+zip",
+              "properties": {
+                "hasSearchIndex": true,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            { "href": "https://cdn.tf/covers/item_ab6.jpg", "type": "image/jpeg", "width": 400, "height": 600 }
+          ]
+        }
+      ]
+    }
+  ]
+}

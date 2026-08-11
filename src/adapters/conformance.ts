@@ -1,0 +1,187 @@
+// src/adapters/conformance.ts
+// The shared conformance suite every CatalogueSource must pass.
+//
+// WHY ONE SUITE INSTEAD OF TWO TEST FILES: "Mock and Api are interchangeable" is
+// only true if something checks it. Two hand-written suites drift — the mock's
+// tests get written against what the mock happens to do, and the day api.tf goes
+// live the app breaks in ways the mocked tests were structurally incapable of
+// catching. One suite run twice makes "interchangeable" a claim the build
+// enforces rather than a comment.
+//
+// NOT a .test.ts file on purpose: jest must not collect it directly, because it
+// has no implementation to run against on its own. MockAdapter.test.ts and
+// ApiAdapter.test.ts each import it and supply a factory.
+//
+// Tests here assert on the CONTRACT ONLY — shapes, ids, invariants, failure
+// codes. Anything specific to one implementation (injected latency, fetch call
+// counts) belongs in that adapter's own test file, not here.
+import type { CatalogueSource } from '@adapters/CatalogueSource';
+import { CatalogueError, isCatalogueFailure } from '@model/errors';
+import { assertPublication } from '@model/validate';
+
+// Both implementations are backed by the same three frozen fixtures, so these ids
+// are part of the shared contract the suite tests against.
+export const KNOWN_INSTITUTION = 'inst_7f3';
+export const KNOWN_SHELF = 'ebooks';
+export const KNOWN_PUBLICATION = 'item_42';
+
+async function expectNotFound(operation: Promise<unknown>, what: string): Promise<void> {
+  let caught: unknown;
+  try {
+    await operation;
+  } catch (err) {
+    caught = err;
+  }
+  if (caught === undefined) {
+    throw new Error(`expected ${what} to reject with NOT_FOUND, but it resolved`);
+  }
+  expect(isCatalogueFailure(caught)).toBe(true);
+  expect((caught as { code: CatalogueError }).code).toBe(CatalogueError.NOT_FOUND);
+}
+
+/**
+ * Runs the CatalogueSource contract against one implementation.
+ *
+ * @param name  Label for the describe block, e.g. 'MockAdapter'.
+ * @param createSource  Fresh instance per test — no shared state between cases.
+ */
+export function describeCatalogueSourceConformance(
+  name: string,
+  createSource: () => CatalogueSource,
+): void {
+  describe(`${name} conforms to CatalogueSource`, () => {
+    describe('getHomeCatalogue', () => {
+      it('returns a titled catalogue with navigation and shelves', async () => {
+        const catalogue = await createSource().getHomeCatalogue(KNOWN_INSTITUTION);
+
+        expect(catalogue.title.length).toBeGreaterThan(0);
+        expect(catalogue.navigation.length).toBeGreaterThan(0);
+        expect(catalogue.shelves.length).toBeGreaterThan(0);
+      });
+
+      it('gives every navigation entry a shelfId usable with getShelf', async () => {
+        const catalogue = await createSource().getHomeCatalogue(KNOWN_INSTITUTION);
+
+        for (const entry of catalogue.navigation) {
+          expect(entry.shelfId.length).toBeGreaterThan(0);
+          expect(entry.shelfId).not.toContain('/');
+        }
+      });
+
+      it('returns publications that satisfy the model invariants', async () => {
+        const catalogue = await createSource().getHomeCatalogue(KNOWN_INSTITUTION);
+        const publications = catalogue.shelves.flatMap((shelf) => shelf.publications);
+
+        expect(publications.length).toBeGreaterThan(0);
+        for (const publication of publications) {
+          // Throws CatalogueFailure on any cross-field contradiction.
+          expect(() => assertPublication(publication)).not.toThrow();
+        }
+      });
+
+      it('never exposes OPDS wire fields to callers', async () => {
+        const catalogue = await createSource().getHomeCatalogue(KNOWN_INSTITUTION);
+        const [publication] = catalogue.shelves[0].publications;
+
+        // If any of these survive, the adapter leaked the wire format and every
+        // screen becomes coupled to wokay's OPDS layout.
+        expect(publication).not.toHaveProperty('links');
+        expect(publication).not.toHaveProperty('metadata');
+        expect(publication).not.toHaveProperty('properties');
+      });
+
+      it('rejects an unknown institution with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getHomeCatalogue('inst_does_not_exist'),
+          'getHomeCatalogue',
+        );
+      });
+    });
+
+    describe('getShelf', () => {
+      it('returns the shelf that was asked for', async () => {
+        const shelf = await createSource().getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+        expect(shelf.id).toBe(KNOWN_SHELF);
+        expect(shelf.title.length).toBeGreaterThan(0);
+        expect(shelf.publications.length).toBeGreaterThan(0);
+      });
+
+      it('reports a next page index rather than a URL when more pages exist', async () => {
+        const shelf = await createSource().getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+        if (shelf.nextPage !== undefined) {
+          expect(typeof shelf.nextPage).toBe('number');
+          expect(shelf.nextPage).toBeGreaterThan(0);
+        }
+      });
+
+      it('returns publications that satisfy the model invariants', async () => {
+        const shelf = await createSource().getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+        for (const publication of shelf.publications) {
+          expect(() => assertPublication(publication)).not.toThrow();
+        }
+      });
+
+      it('rejects an unknown shelf with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getShelf(KNOWN_INSTITUTION, 'no-such-shelf'),
+          'getShelf',
+        );
+      });
+
+      it('rejects an unknown institution with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getShelf('inst_does_not_exist', KNOWN_SHELF),
+          'getShelf',
+        );
+      });
+    });
+
+    describe('getPublication', () => {
+      it('returns the publication that was asked for', async () => {
+        const publication = await createSource().getPublication(
+          KNOWN_INSTITUTION,
+          KNOWN_PUBLICATION,
+        );
+
+        expect(publication.id).toBe(KNOWN_PUBLICATION);
+        expect(publication.title.length).toBeGreaterThan(0);
+        expect(publication.acquisition.href.length).toBeGreaterThan(0);
+      });
+
+      it('satisfies the model invariants', async () => {
+        const publication = await createSource().getPublication(
+          KNOWN_INSTITUTION,
+          KNOWN_PUBLICATION,
+        );
+
+        expect(() => assertPublication(publication)).not.toThrow();
+      });
+
+      it('carries a format from the ContentFormat union', async () => {
+        const publication = await createSource().getPublication(
+          KNOWN_INSTITUTION,
+          KNOWN_PUBLICATION,
+        );
+
+        expect(['PDF', 'EPUB', 'AUDIO']).toContain(publication.format);
+      });
+
+      it('rejects an unknown publication with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getPublication(KNOWN_INSTITUTION, 'item_nope'),
+          'getPublication',
+        );
+      });
+
+      it('rejects an unknown institution with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getPublication('inst_does_not_exist', KNOWN_PUBLICATION),
+          'getPublication',
+        );
+      });
+    });
+  });
+}
