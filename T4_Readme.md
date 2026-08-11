@@ -1,0 +1,99 @@
+# T4_Readme — t4targaryen · CAP-7 Reader & Offline
+
+Scope note: this file covers **T4's work** — capabilities, structure, ownership, and the
+constraints specific to reader/offline. The root `README.md` covers **repo-wide** concerns that
+apply to anyone working in this tree: toolchain, setup, branch model, PR process. Read the root
+one first; nothing here restates it.
+
+## Capabilities
+
+CAP-7 splits into seven feature folders under `src/features/`, one per capability:
+
+`reader` · `download` · `encryption` · `sync` · `personalization` · `search` · `accessibility`
+
+## Structure
+
+- `src/shared/` — cross-feature contracts & types shared by every capability. `contracts/` holds
+  interfaces, `types/` holds type definitions.
+- `src/features/` — one folder per capability, listed above.
+- `samples/` — encrypted test assets used by local runs and tests.
+
+Folders are tracked with an empty `.gitkeep` until the work lands.
+
+## Owner map
+
+| Feature                  | Owner        |
+| ------------------------ | ------------ |
+| Reader                   | Ahana        |
+| Download + Encryption    | Abhinav      |
+| Sync                     | Karthik      |
+| Personalization + Search | Vaishnavi    |
+| Accessibility            | Hruthik      |
+| shared / samples         | Ahana (lead) |
+
+## Contracts and the freeze
+
+`src/shared/` holds the Week-1 frozen contracts. They are the interface between seven capabilities
+owned by five people, so a change to one is a change to everyone's assumptions.
+
+`src/shared/contracts/__typecheck__.ts` is the canary. `satisfies` pins each frozen shape;
+`@ts-expect-error` pins each shape we deliberately removed — if someone re-adds one, the directive
+becomes unused and `tsc` fails. **If the canary goes red, a freeze broke. Find out why; don't
+"fix" the canary.**
+
+Two consequences worth knowing before you touch that file:
+
+- **It is in `.prettierignore`, deliberately.** `@ts-expect-error` only suppresses the _next_
+  line, so line position is semantic. A formatter reflowing a single-line object literal into a
+  multi-line one pushes the offending property out from under the directive — the directive then
+  reports as unused _and_ the error it was hiding escapes. Format it by hand or not at all.
+- **`ContentError`, `ContentFailure` and `DEFAULT_PREFS` are real runtime values**, not types.
+  Import them as values. `import type { ContentError }` compiles and gives you nothing at
+  runtime — you can't `throw` it or `switch` on it. Everything else in the barrel erases.
+
+## Why the dev build is not optional here
+
+The root README explains how to build a development build. This is _why_ it matters for T4
+specifically, and it is the constraint most likely to cost someone a day:
+
+The reader stack depends on native modules that are **not compiled into the Expo Go binary** —
+`react-native-keychain`, `react-native-aes-gcm-crypto`, and Android's `FLAG_SECURE`. Expo Go
+appears to work right up until the first crypto or secure-storage import, then fails with a
+module-not-found that reads like a bundler bug and isn't.
+
+So `expo-dev-client` is a dependency from day one and is listed as a plugin in `app.json`. Build
+the dev build **before** starting feature work, not when you hit the wall.
+
+The crypto modules land with **Abhinav's** encryption work. Both need config-plugin entries in
+`app.json` plus a fresh `npx expo prebuild`:
+
+```bash
+npx expo install react-native-keychain react-native-aes-gcm-crypto
+```
+
+If either module turns out to ship no Expo config plugin, the answer is a small local plugin —
+**not** a hand edit under `android/` or `ios/`, which CNG discards on the next prebuild.
+
+## Type-level rules this team relies on
+
+- **Plaintext never touches disk.** Decrypted content is `Bytes` (`Uint8Array`), never a path or
+  a stream. The type is the enforcement — keep it that way. `epub.js` wants an `ArrayBuffer` for
+  `book.open(...)`; get it from `bytes.buffer`.
+- **`ContentFormat` is `'PDF' | 'EPUB' | 'AUDIO'`, taken verbatim from wokay.** `AUDIO` is never
+  encrypted and never has a search index — `BookSearchIndex['format']` excludes it, and the
+  canary pins that.
+- **`Timestamp` is epoch milliseconds (client wall-time).** Wire/JSON timestamps from the grant
+  and licence are ISO-8601 UTC _strings_ and stay `string`. Don't conflate them.
+
+## Testing notes for CAP-7 work
+
+Beyond the repo-wide notes in the root README:
+
+- Encrypted fixtures live in `samples/`. Never commit real content — encrypted or not.
+- `AUDIO` paths need no decryption and no index; assert that rather than assuming it.
+
+## Deferred
+
+`offline-lock.ts` is finalised jointly by **Sync** (Karthik) and **Encryption** (Abhinav). Its
+export is commented out of `src/shared/contracts/index.ts`; restore that line when the file lands.
+The `content.lock` / `content.unlock` signals live there.

@@ -23,8 +23,7 @@ import type { SyncRecordBase } from './sync-record';
 // RECONCILED (format casing): discriminants are UPPERCASE to match ContentFormat
 // (PDF | EPUB | AUDIO) in primitives.ts — no more 'epub' / 'EPUB' split.
 export type Locator =
-  | { type: 'EPUB'; cfi: string }
-  | { type: 'PDF'; page: number; offset?: number };
+  { type: 'EPUB'; cfi: string } | { type: 'PDF'; page: number; offset?: number };
 
 export interface Bookmark extends SyncRecordBase {
   bookId: string;
