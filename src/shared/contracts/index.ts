@@ -5,10 +5,14 @@
 //   import { ContentProvider, SharedPrefs, Bookmark } from '@/shared/contracts';
 //
 // RUNTIME vs TYPE — read before importing:
-// This layer is type-only EXCEPT two real runtime members that emit JS:
-//   • ContentError   (enum, errors.ts)
-//   • ContentFailure (class, errors.ts)
-//   • DEFAULT_PREFS  (const, prefs.ts)
+// This layer is type-only EXCEPT these real runtime members that emit JS:
+//   • ContentError          (enum, errors.ts)
+//   • ContentFailure        (class, errors.ts)
+//   • DEFAULT_PREFS         (const, prefs.ts)
+//   • TTS_RATE_MIN / _MAX   (const, prefs.ts)
+//   • REDUCE_MOTION_VALUES  (const, prefs.ts)
+//   • resolveReduceMotion   (fn, prefs.ts)
+//   • migrateReduceMotion   (fn, prefs.ts)
 // Import those as VALUES:      import { ContentError, ContentFailure } from '@/shared/contracts';
 // A `import type { ContentError }` compiles but gives you NOTHING at runtime —
 // you can't `throw new ContentFailure(...)` or switch on the enum. Everything
