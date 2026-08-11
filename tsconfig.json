@@ -8,29 +8,70 @@
     "moduleResolution": "bundler",
     "module": "ESNext",
     "target": "ESNext",
-    "lib": ["ESNext", "DOM"],
-
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "allowJs": true,
     "checkJs": true,
-
+    "types": [
+      "jest"
+    ],
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@theme/*": ["src/theme/*"],
-      "@model/*": ["src/model/*"],
-      "@adapters/*": ["src/adapters/*"],
-      "@access/*": ["src/access/*"],
-      "@components/*": ["src/components/*"],
-      "@screens/*": ["src/screens/*"],
-      "@search/*": ["src/search/*"],
-      "@store/*": ["src/store/*"],
-      "@storage/*": ["src/storage/*"],
-      "@hooks/*": ["src/hooks/*"],
-      "@navigation/*": ["src/navigation/*"],
-      "@config/*": ["src/config/*"],
-      "@utils/*": ["src/utils/*"]
+      "@/*": [
+        "src/*"
+      ],
+      "@theme/*": [
+        "src/theme/*"
+      ],
+      "@model/*": [
+        "src/model/*"
+      ],
+      "@adapters/*": [
+        "src/adapters/*"
+      ],
+      "@access/*": [
+        "src/access/*"
+      ],
+      "@components/*": [
+        "src/components/*"
+      ],
+      "@screens/*": [
+        "src/screens/*"
+      ],
+      "@search/*": [
+        "src/search/*"
+      ],
+      "@store/*": [
+        "src/store/*"
+      ],
+      "@storage/*": [
+        "src/storage/*"
+      ],
+      "@hooks/*": [
+        "src/hooks/*"
+      ],
+      "@navigation/*": [
+        "src/navigation/*"
+      ],
+      "@config/*": [
+        "src/config/*"
+      ],
+      "@utils/*": [
+        "src/utils/*"
+      ]
     }
   },
-  "include": ["app", "src", "App.js"],
-  "exclude": ["node_modules"]
+  "include": [
+    "app",
+    "src",
+    "*.ts",
+    "*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
+  "extends": "expo/tsconfig.base"
 }
