@@ -1,40 +1,16 @@
 // src/shared/contracts/prefs.ts
-// ============================================================================
-// Shared Preferences object — CAP-7 Reader & Offline (Team t4targaryen)
-// Owner: Personalization (Vaishnavi).
-// Co-owned freeze with Reader (Ahana) — Reader APPLIES this object to the
-// epub.js rendition API / pdf.js. Personalization only WRITEs it.
-// Accessibility block co-owned by Accessibility (Hruthik).
+// Shared Preferences object — CAP-7 Reader & Offline.
 //
-// WHAT THIS FILE IS
-// -----------------
-// A reconciliation of two contracts that were written independently:
-//
-//   (a) dev_T4 `src/shared/contracts/prefs.ts`  — 4 accessibility booleans,
-//       folded into prefs, marked "PROVISIONAL — NEEDS HRUTHIK'S SIGN-OFF"
-//   (b) the Day-1 Accessibility freeze           — 18 accessibility fields,
-//       7 of them frozen as the shared-preferences contribution
-//
-// Everything outside `accessibility` is carried over from dev_T4 UNCHANGED,
-// including its comments. All edits are inside the accessibility block, plus
-// one deprecation on `Theme`.
-//
-// SIGN-OFF STATUS: the dev_T4 file asked Accessibility to confirm the shape and
-// the ownership before treating the fold-in as frozen. This file is that
-// response.
-//
-//   SETTLED by Accessibility (Hruthik):
-//     * reduceMotion is a TRI-STATE, not a boolean.
-//     * All 18 Day-1 accessibility fields fold into this record (+ dev_T4's
-//       screenReaderHints = 19). No second a11y store.
-//
-//   STILL OPEN — these need other owners, not Accessibility. See the list at
-//   the bottom of this file.
-//
-// CFI (Canonical Fragment Identifier)
+// Prefs are a per-user SINGLETON: one record per user, applied across ALL books
+// (not scoped per book). Reader APPLIES this object to the epub.js rendition
+// API / pdf.js; Personalization WRITEs it.
 //
 // Annotations (bookmarks/highlights) are NOT here — see annotations.ts.
+// Accessibility field shapes are NOT here — see accessibility.ts. That block is
+// composed into this record, the same way SyncRecordBase is; it is NOT a
+// separate synced record.
 //
+<<<<<<< HEAD
 // Carries id + userId like every other synced record. Prefs are a per-user
 // SINGLETON — one record per user, applied across ALL books (NOT scoped per
 // book). Conflict resolution = LWW on `updatedAt`, client-edit-time: the client
@@ -53,7 +29,17 @@
 // extraction from T4_Ahana is kept, so the two changes are combined rather than
 // one overwriting the other.
 
+=======
+// Identity/sync fields (id, userId, updatedAt, isDeleted, synced) come from
+// SyncRecordBase and are not redeclared; updatedAt / synced stay non-null.
+// Conflict resolution is LWW on `updatedAt`, stamped by the client at edit time
+// so it works offline. There is no real delete op for a singleton, so
+// `isDeleted` stays false except on account cleanup — "reset to defaults" is a
+// rewrite plus an updatedAt bump, not a tombstone.
+>>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
 import type { SyncRecordBase } from './sync-record';
+import type { AccessibilityPrefs } from './accessibility';
+import { DEFAULT_ACCESSIBILITY_PREFS } from './accessibility';
 
 export type Theme =
   | 'light'
@@ -62,8 +48,16 @@ export type Theme =
   | 'system'
   /**
    * @deprecated Use `accessibility.display.highContrast` instead.
+<<<<<<< HEAD
    * High contrast remains in the union so existing persisted records still parse.
    * Migrate on read.
+=======
+   * High contrast was representable twice — as a theme variant and as an
+   * accessibility flag — with no defined precedence for
+   * `theme: 'dark' + highContrast: true`. The flag is now the single source of
+   * truth, so contrast stays independent of colour scheme. Kept in the union
+   * only so existing persisted records still parse; migrate on read.
+>>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
    */
   | 'highContrast';
 
@@ -73,7 +67,7 @@ export interface FontPrefs {
 }
 
 export interface TypographyPrefs {
-  size: number; // agree units with Ahana (pt vs scale factor)
+  size: number; // units not yet agreed (pt vs scale factor)
   lineHeight: number; // multiplier, e.g. 1.5
   spacing: number; // letter/word spacing → themes.override
   margins: number; // page margin
@@ -88,6 +82,7 @@ export interface ZoomPrefs {
   level: number; // 1.0 = 100%; PDF/image zoom
 }
 
+<<<<<<< HEAD
 // ============================================================================
 // ACCESSIBILITY
 // ============================================================================
@@ -230,6 +225,8 @@ export interface AccessibilityPrefs {
   screenReaderHints: boolean;
 }
 
+=======
+>>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
 export interface SharedPrefs extends SyncRecordBase {
   // Identity/sync fields (id, userId, updatedAt, isDeleted, synced) come from
   // SyncRecordBase. No bookId — prefs are a per-user singleton.
@@ -238,7 +235,7 @@ export interface SharedPrefs extends SyncRecordBase {
   typography: TypographyPrefs;
   layout: LayoutPrefs;
   zoom: ZoomPrefs;
-  accessibility: AccessibilityPrefs;
+  accessibility: AccessibilityPrefs; // shape owned by accessibility.ts
 }
 
 // Defaults + reset (Feature Breakdown §5: "defaults + reset; live preview").
@@ -246,9 +243,10 @@ export interface SharedPrefs extends SyncRecordBase {
 // `isDeleted` MUST be in this list: it comes from SyncRecordBase, so leaving it
 // out makes DEFAULT_PREFS fail to satisfy the Omit.
 //
-// Accessibility defaults are the Day-1 schema defaults. Two are not `false`:
-// `respectOsFontScale` is true (we follow the OS unless told otherwise) and the
-// two `announce` flags are true.
+// The accessibility defaults are owned by accessibility.ts and referenced, not
+// restated — otherwise the two drift. NOTE: this is a shared reference, so
+// "reset to defaults" must deep-copy rather than shallow-spread (see
+// createDefaultAccessibilityPrefs()).
 export const DEFAULT_PREFS: Omit<
   SharedPrefs,
   'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'
@@ -258,36 +256,9 @@ export const DEFAULT_PREFS: Omit<
   typography: { size: 16, lineHeight: 1.5, spacing: 0, margins: 16 },
   layout: { flow: 'paginated', spread: 'single' },
   zoom: { level: 1.0 },
-  accessibility: {
-    text: {
-      dyslexiaFont: false,
-      respectOsFontScale: true,
-      fontScaleMultiplier: 1.0,
-      readableSpacing: false,
-    },
-    display: {
-      boldText: false,
-      highContrast: false,
-      reduceMotion: 'system',
-      largeTouchTargets: false,
-      largeAudioControls: false,
-    },
-    tts: {
-      enabled: false,
-      voiceId: null,
-      rate: 1.0,
-      pitch: 1.0,
-      highlightMode: 'sentence',
-      autoContinueChapter: true,
-      backgroundPlayback: false,
-    },
-    announce: {
-      pageChanges: true,
-      chapterChanges: true,
-    },
-    screenReaderHints: false,
-  },
+  accessibility: DEFAULT_ACCESSIBILITY_PREFS,
 };
+<<<<<<< HEAD
 
 // ============================================================================
 // CONSTRAINTS
@@ -372,3 +343,5 @@ export function migrateReduceMotion(
 // 5. [Accessibility] TtsHighlightMode's union beyond 'sentence' is inferred,
 //    not specified. Nothing reads it until word/sentence sync leaves the
 //    deferred list, but confirm before it does.
+=======
+>>>>>>> 257d579 ( added accesibility.ts and changed prefs.ts approach)
