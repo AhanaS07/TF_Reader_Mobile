@@ -18,7 +18,19 @@
     // "Cannot find name" (TS2593) even though @types/jest is installed.
     // Only affects GLOBAL types — @types/react still resolves through the
     // normal `import ... from 'react'` path and does not belong in this list.
-    "types": ["jest"],
+    //
+    // "node" is here for src/features/encryption/, which is a deliberate
+    // Node-based spike: aesGcm.ts uses Node's `crypto`, keyStorage.ts uses
+    // `Buffer`, and scripts/ uses `fs`/`path`/`__dirname`. Both files document
+    // this and flag the swap to react-native-aes-gcm-crypto now that P0-1 has
+    // landed. Dropping "node" breaks that whole module with TS2591.
+    //
+    // CAVEAT: this makes Buffer/process/fs typecheck ANYWHERE, including in
+    // React Native code where they do not exist at runtime. tsc will not catch
+    // that mistake for you — the encryption module is the only place Node
+    // globals are legitimate, and that is a review-time rule, not a compiler
+    // one. Revisit if/when the encryption spike is swapped to the native module.
+    "types": ["jest", "node"],
 
     // NO baseUrl. TypeScript 6 deprecates it (TS5101) and it stops working in
     // 7. Since TS 4.x, `paths` alone is resolved relative to this file's
