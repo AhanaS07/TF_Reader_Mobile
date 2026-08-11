@@ -6,7 +6,7 @@
 // That is deliberate — a silent default here becomes a wrong button, a wrong
 // reader, or an unhonourable cipher much further downstream, with nothing left
 // in the stack to explain why. Failing at the boundary keeps the blame local.
-import type { ActionId } from '@model/types';
+import type { AcquisitionRel } from '@model/types';
 import type { ContentFormat } from '@/shared/types/primitives';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 
@@ -16,13 +16,13 @@ function malformed(what: string, value: string): CatalogueFailure {
 
 // OPDS acquisition rel → what the user can do. Exhaustive by design: L-3 says the
 // action vocabulary is still moving, so an unrecognised rel is news, not noise.
-const ACTION_BY_REL: Record<string, ActionId> = {
+const ACTION_BY_REL: Record<string, AcquisitionRel> = {
   'http://opds-spec.org/acquisition/borrow': 'borrow',
   'http://opds-spec.org/acquisition': 'acquire',
   'http://opds-spec.org/acquisition/open-access': 'openAccess',
 };
 
-export function toActionId(rel: string): ActionId {
+export function toActionId(rel: string): AcquisitionRel {
   const action = ACTION_BY_REL[rel];
   if (!action) throw malformed('unknown acquisition rel', rel);
   return action;

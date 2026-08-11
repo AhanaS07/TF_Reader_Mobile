@@ -18,6 +18,7 @@
       "jest",
       "node"
     ],
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@/*": [
         "./src/*"
@@ -66,8 +67,8 @@
   "include": [
     "app",
     "src",
-    "App.tsx",
-    "App.test.tsx"
+    "*.ts",
+    "*.tsx"
   ],
   "exclude": [
     "node_modules"

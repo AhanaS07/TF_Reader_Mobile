@@ -13,16 +13,30 @@
 // identity and format by construction.
 import type { BookId, ContentFormat } from '@/shared/types/primitives';
 
-// What the user can DO with a publication, normalized from the OPDS acquisition
-// rel. A union, not a string, because the action vocabulary is explicitly still
-// moving (CLAUDE.md L-3: `Buy` removed, `borrow` redefined, `subscribe` B2C-only)
-// — component variants come off this union, so a vocabulary change edits this one
-// line and the compiler then finds every affected call site.
+// The OPDS acquisition rel, normalized to a closed union. A union, not a
+// string, because the action vocabulary is explicitly still moving (CLAUDE.md
+// L-3: `Buy` removed, `borrow` redefined, `subscribe` B2C-only) — component
+// variants come off this union, so a vocabulary change edits this one line and
+// the compiler then finds every affected call site.
 //
 //   http://opds-spec.org/acquisition/borrow       → 'borrow'
 //   http://opds-spec.org/acquisition              → 'acquire'
 //   http://opds-spec.org/acquisition/open-access  → 'openAccess'
-export type ActionId = 'borrow' | 'acquire' | 'openAccess';
+export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess';
+
+// The RESOLVED button vocabulary — what `AccessResult.actions` will hold once
+// `src/access/resolveAccess` exists. Distinct from `AcquisitionRel` above: a
+// rel says which acquisition mechanism a publication uses, this says which
+// buttons to draw once session/loan state is folded in (e.g. an 'acquire' rel
+// while signed out resolves to 'signin', not 'acquire'). Declared as a const
+// array first, with the union derived from it, so validate.ts, the state
+// gallery and filter chips/badges all enumerate the same runtime values the
+// type is derived from — one definition, not several kept in sync by hand.
+//
+// `subscribe` STAYS — decided 11 Aug. Individual (B2C) subscribers are not cut
+// from scope; wokay will supply the details later.
+export const ACTION_IDS = ['read', 'download', 'borrow', 'signin', 'waitlist', 'subscribe'] as const;
+export type ActionId = (typeof ACTION_IDS)[number];
 
 // How many simultaneous readers the institution's licence allows. Absent for
 // open access, which is unlicensed by definition.
@@ -55,7 +69,7 @@ export interface CatalogueEncryption {
 // component that reads them to decide what to render has moved access logic into
 // the view.
 export interface Acquisition {
-  actionId: ActionId;
+  actionId: AcquisitionRel;
   // Where the action is performed (loan creation, direct download). Absolute, as
   // supplied by the feed — the adapter does not rewrite hosts.
   href: string;
@@ -153,4 +167,140 @@ export interface Catalogue {
   // Templated search endpoint ('...{?query}'), kept raw for the search feature
   // to expand. Absent ⇒ this catalogue is not searchable.
   searchHref?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// From Akriti's dcd04fe types.ts — net-new scope only. Everything below is
+// additive: it does not touch OPDS normalization (rels.ts/normalize.ts) or
+// re-shape Publication/Acquisition/Shelf/Catalogue above. Her ContentItem,
+// AcquisitionLink/Properties, Group, CatalogueRoot, Feed, DataAdapter and the
+// OPDS_REL_BY_URI/MIME_TO_CONTENT_FORMAT/SCHEMA_TYPE_TO_WORK_TYPE tables are
+// deliberately NOT here — those compete with code already built and tested in
+// this branch and need a real conversation with her before merging.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// OURS, as badge labels. Uppercase, unchanged.
+// DERIVED, NOT SENT — no access-tier field exists on any surface we consume.
+export const ACCESS_TIERS = ['OPEN_ACCESS', 'SUBSCRIPTION', 'ELITE'] as const;
+export type AccessTier = (typeof ACCESS_TIERS)[number];
+
+// OURS. The *work* type, which decides whether we render article detail
+// (screen 04) or book detail (screen 05). `@type` is OFFICIAL — confirmed
+// 11 Aug. 'book' and 'audiobook' are confirmed values; journal and article are
+// still to come (Q-1b).
+export const WORK_TYPES = ['book', 'journal', 'article', 'audiobook'] as const;
+export type WorkType = (typeof WORK_TYPES)[number];
+
+// OURS. A UI state, not a wokay field. `no_seats` is ELITE ONLY — Subscription
+// is UNLIMITED, so there is nothing to run out of and no queue can form.
+export const ACCESS_STATES = [
+  'available',
+  'requires_loan',
+  'requires_signin',
+  'not_entitled',
+  'no_seats',
+] as const;
+export type AccessState = (typeof ACCESS_STATES)[number];
+
+// wokay's enumerated failure reasons. ErrorState copy is keyed on these.
+export const ERROR_CODES = [
+  'UNAUTHENTICATED',
+  'TOKEN_EXPIRED',
+  'FORBIDDEN_INSTITUTION_MISMATCH',
+  'NO_ENTITLEMENT',
+  'ENTITLEMENT_EXPIRED',
+  'ENTITLEMENT_SUSPENDED',
+  'CONTENT_NOT_READY',
+  'DOWNLOAD_NOT_PERMITTED',
+  'INVALID_DEVICE_PUBLIC_KEY',
+  'NOT_FOUND',
+] as const;
+export type ErrorCode = (typeof ERROR_CODES)[number];
+
+// From `GET /api/v1/institutions` (list) and `/{id}` (detail). Both
+// UNAUTHENTICATED, which is what the pre-sign-in flow needs. Only ACTIVE
+// institutions appear; an inactive one is 404, not 403, so its existence is
+// not disclosed.
+//
+// ⚠ No sample for this shape yet — hand-written from wokay's field names and
+// the one part of this file still unverified against a fixture.
+export interface Institution {
+  id: string;
+  code: string;
+  name: string;
+  // e.g. 'UNIVERSITY'
+  type: string;
+  country: string;
+  city?: string;
+  // Was `crestUrl`. May be absent — InstitutionRow initials fallback.
+  logoUrl?: string;
+  // `primaryColor` is per-institution and our token palette is fixed. DECIDED:
+  // we do NOT theme per institution in the prototype — carried and
+  // deliberately unused, so adopting it later is additive.
+  branding?: { logoUrl?: string; primaryColor?: string };
+  // Detail only. `method` is always SAML; stays in the payload so the client
+  // needs no special case. `idpHint` is what we hand to flambeau.
+  signIn?: { method: 'SAML'; idpHint: string };
+  // Detail only. Handed to us so we never build wokay's URLs.
+  catalogueUrl?: string;
+}
+
+// Issued by flambeau, `aud: 'tf-app'`. There is no service audience.
+export interface Session {
+  userId: string;
+  institutionId?: string;
+  roles: string[];
+  collections: string[];
+  exp: number;
+  // RETAINED — decided 11 Aug. Individual (B2C) subscribers are not cut;
+  // `subscribe` stays in `ActionId`, and the session payload is not settled to
+  // `{ userId, institutionId, roles, exp }` because of it.
+  type?: 'b2b' | 'b2c';
+}
+
+// Per-user, per-item, mutable. Never a property of the feed. Written for
+// SUBSCRIPTION and ELITE. Never for OPEN_ACCESS.
+export interface Loan {
+  itemId: string;
+  state: 'none' | 'active' | 'expired';
+  expiresAt?: number;
+}
+
+// Elite only, detail screen only. `GET /api/v1/availability?itemId=` on
+// flambeau — the app asks, wokay never do.
+export interface Availability {
+  itemId: string;
+  total: number;
+  available: number;
+  queuePosition?: number;
+}
+
+// REST pagination, used ONLY by the institutions endpoint — a different model
+// from the OPDS `nextPage` pagination on `Shelf` above.
+export interface PagedList<T> {
+  items: T[];
+  page: number;
+  size: number;
+  total: number;
+}
+
+// The resolved badge + buttons for one publication.
+export interface AccessResult {
+  // A badge label. Not an input to `actions`.
+  tier: AccessTier;
+  state: AccessState;
+  actions: ActionId[];
+}
+
+// wokay's error envelope, on every non-2xx. `code` is what ErrorState renders
+// copy from.
+//
+// ⚠ No sample for this shape yet.
+export interface ApiError {
+  timestamp: string;
+  status: number;
+  code: ErrorCode;
+  message: string;
+  path: string;
+  traceId: string;
 }
