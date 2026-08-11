@@ -1,11 +1,21 @@
 {
   "compilerOptions": {
-    "checkJs": true,
-    "target": "esnext",
-    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
     "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+
+    "allowJs": true,
+    "checkJs": true,
+
     "baseUrl": ".",
     "paths": {
+      "@/*": ["src/*"],
       "@theme/*": ["src/theme/*"],
       "@model/*": ["src/model/*"],
       "@adapters/*": ["src/adapters/*"],
@@ -21,6 +31,6 @@
       "@utils/*": ["src/utils/*"]
     }
   },
-  "include": ["src/**/*", "App.js"],
+  "include": ["app", "src", "App.js"],
   "exclude": ["node_modules"]
 }
