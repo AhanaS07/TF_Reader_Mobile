@@ -1,9 +1,15 @@
 {
   "compilerOptions": {
-    "checkJs": true,
     "target": "esnext",
+    "lib": ["esnext"],
+    "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
       "@theme/*": ["src/theme/*"],
@@ -21,6 +27,6 @@
       "@utils/*": ["src/utils/*"]
     }
   },
-  "include": ["src/**/*", "App.js"],
+  "include": ["src/**/*", "App.tsx", "App.js"],
   "exclude": ["node_modules"]
 }
