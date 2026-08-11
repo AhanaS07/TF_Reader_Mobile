@@ -27,9 +27,10 @@ const OUTPUT_DIR = path.join(__dirname, '..', '..', '..', '..', 'samples');
 const BOOK_TEXT = Buffer.from(
   Array.from(
     { length: 25 },
-    (_, i) => `Proof-of-store-and-decrypt line ${i + 1}: whole-file AES-256-GCM, one nonce/tag, no manifest.\n`
+    (_, i) =>
+      `Proof-of-store-and-decrypt line ${i + 1}: whole-file AES-256-GCM, one nonce/tag, no manifest.\n`,
   ).join(''),
-  'utf8'
+  'utf8',
 );
 
 /**
@@ -62,7 +63,9 @@ class InMemoryKeyStoreSubstitute implements KeyStore {
   }
 }
 
-async function attemptRealKeychainStore(key: Uint8Array): Promise<'succeeded' | { failedWith: string }> {
+async function attemptRealKeychainStore(
+  key: Uint8Array,
+): Promise<'succeeded' | { failedWith: string }> {
   try {
     // Dynamic import so a load-time failure (confirmed below) doesn't crash the whole script
     // before we get to report it cleanly.
@@ -92,14 +95,16 @@ async function main() {
   } else {
     console.log(
       'REAL react-native-keychain store failed, as expected outside a linked RN app:\n ',
-      realAttempt.failedWith
+      realAttempt.failedWith,
     );
   }
 
   // --- Step 2: complete the proof with the Node-safe substitute (documented above) ---
   const store: KeyStore = new InMemoryKeyStoreSubstitute();
   await store.store(BOOK_ID, bek);
-  console.log(`Stored BEK for "${BOOK_ID}" via the in-memory substitute (keyStorage.ts's real shape).`);
+  console.log(
+    `Stored BEK for "${BOOK_ID}" via the in-memory substitute (keyStorage.ts's real shape).`,
+  );
 
   const retrievedKey = await store.get(BOOK_ID);
 
@@ -113,7 +118,9 @@ async function main() {
   if (Buffer.compare(Buffer.from(decrypted), BOOK_TEXT) !== 0) {
     throw new Error('PROOF FAILED: decrypted book does not match the original plaintext');
   }
-  console.log('PROOF PASSED: store -> retrieve -> decryptBook reproduces the entire book, byte-for-byte.');
+  console.log(
+    'PROOF PASSED: store -> retrieve -> decryptBook reproduces the entire book, byte-for-byte.',
+  );
 
   // --- Step 4: tamper check on the SAME primitive being handed off ---
   const tampered = new Uint8Array(ciphertextWithTag);
@@ -125,7 +132,9 @@ async function main() {
     threw = true;
   }
   if (!threw) throw new Error('PROOF FAILED: tampered ciphertext did not throw on decryptBook');
-  console.log('PROOF PASSED: tampering the stored ciphertext correctly fails GCM tag verification.');
+  console.log(
+    'PROOF PASSED: tampering the stored ciphertext correctly fails GCM tag verification.',
+  );
 }
 
 main();

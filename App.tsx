@@ -10,28 +10,48 @@
 //
 // The inline colours below are the ONE exception to the no-raw-values rule and
 // exist only until src/theme/ lands (P0). Replace them with tokens then.
+//
+// ─── TEMP: REMOVE WHEN RootNavigator LANDS ──────────────────────────────────
+// The reader baseline (CAP-7, Ahana) needs to be reachable on a device to be
+// testable at all, and src/navigation/ is still a .gitkeep — there is no
+// navigator to register a screen with. So ReaderScreen is mounted directly here.
+//
+// This is scaffolding, not the shape this file should keep. When RootNavigator
+// lands, delete the reader import, the <ReaderScreen /> and the header/styles
+// below, and restore this file to the two-line body its header describes.
+//
+// The "TF Reader" header is KEPT DELIBERATELY: App.test.tsx asserts
+// getByText('TF Reader'), and temporary wiring must not force an edit to a test
+// that is doing its job. The reader mounts underneath it.
+// ────────────────────────────────────────────────────────────────────────────
 import { StyleSheet, Text, View } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+
+import { ReaderScreen } from '@/features/reader/ReaderScreen';
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <View style={styles.container}>
-        <Text style={styles.title}>TF Reader</Text>
-        <Text style={styles.subtitle}>Toolchain up. Screens land with the CAP work.</Text>
-      </View>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.header}>
+          <Text style={styles.title}>TF Reader</Text>
+        </View>
+        <ReaderScreen />
+      </SafeAreaView>
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#ffffff',
-    padding: 24,
+  // flex:1, NOT centred. The old centring layout gave children an intrinsic
+  // height; ReaderScreen -> WebView needs a measured, non-zero height all the way
+  // down or epub.js renders a blank page. Also TEMP — goes with the block above.
+  container: { flex: 1, backgroundColor: '#ffffff' },
+  header: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e2e2',
   },
-  title: { fontSize: 24, fontWeight: '600', color: '#111111' },
-  subtitle: { marginTop: 8, fontSize: 14, color: '#555555', textAlign: 'center' },
+  title: { fontSize: 20, fontWeight: '600', color: '#111111' },
 });
