@@ -19,9 +19,9 @@
 import type { Timestamp } from '../types/primitives';
 
 export interface SyncRecordBase {
-  id: string;           // client-generated UUID, unique per record
-  userId: string;       // owner; sent with every change
+  id: string; // client-generated UUID, unique per record
+  userId: string; // owner; sent with every change
   updatedAt: Timestamp; // client wall-time ms, stamped at edit time. LWW key.
-  isDeleted: boolean;   // true = tombstoned (soft delete)
-  synced: boolean;      // false on create; set true once synced
+  isDeleted: boolean; // true = tombstoned (soft delete)
+  synced: boolean; // false on create; set true once synced
 }

@@ -26,12 +26,7 @@
 // one overwriting the other.
 import type { SyncRecordBase } from './sync-record';
 
-export type Theme =
-  | 'light'
-  | 'dark'
-  | 'sepia'
-  | 'system'
-  | 'highContrast'; // high-contrast is a theme variant
+export type Theme = 'light' | 'dark' | 'sepia' | 'system' | 'highContrast'; // high-contrast is a theme variant
 
 export interface FontPrefs {
   family: string; // e.g. 'Georgia', 'system'
