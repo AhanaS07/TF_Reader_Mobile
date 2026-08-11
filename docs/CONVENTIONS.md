@@ -2,9 +2,11 @@
 
 Rules for every shared component in `src/components/`. A PR is checked against these.
 
-Not wired up yet: TypeScript is not installed and there is no Expo app, so nothing typechecks
-and `@theme/*` resolves in the editor but not in the bundler. Use a relative import for now:
-`import { color } from '../../theme/tokens'`.
+- TypeScript is the project's source language.
+- Components use `.tsx`.
+- `@theme/*` aliases resolve in both the editor and the bundler.
+- Import design tokens from `@theme/tokens`.
+- `npm run typecheck` runs `tsc --noEmit`.
 
 ## 1. Folder structure
 
