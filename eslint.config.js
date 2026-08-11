@@ -31,15 +31,36 @@ module.exports = [
 
   {
     settings: {
-      // Pinned rather than 'detect': react isn't installed yet, and 'detect'
-      // prints a warning on every run. Switch to 'detect' when react lands.
-      react: { version: '19.0' },
+      // React is a real dependency now (P0-1 landed), so 'detect' reads the
+      // installed version instead of the fabricated pin this used to carry.
+      react: { version: 'detect' },
 
       // Required for the `@/*` alias (tsconfig paths) to resolve. Without this
       // AND a top-level eslint-import-resolver-typescript, eslint-plugin-import
       // falls back to loading the `typescript` compiler as a resolver and
       // reports "invalid interface loaded as resolver".
       'import/resolver': { typescript: { project: './tsconfig.json' } },
+    },
+  },
+
+  // Jest globals. The Expo base config targets app code, so `describe`, `it`,
+  // `expect` and `jest` are undeclared there and trip no-undef. Scoped to test
+  // files and the setup file rather than declared globally, so a stray
+  // `describe` in src/ is still caught as the mistake it is.
+  {
+    files: ['**/*.test.{js,jsx,ts,tsx}', '**/__tests__/**', 'jest.setup.js'],
+    languageOptions: {
+      globals: {
+        afterAll: 'readonly',
+        afterEach: 'readonly',
+        beforeAll: 'readonly',
+        beforeEach: 'readonly',
+        describe: 'readonly',
+        expect: 'readonly',
+        it: 'readonly',
+        jest: 'readonly',
+        test: 'readonly',
+      },
     },
   },
 ];
