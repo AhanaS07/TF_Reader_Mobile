@@ -19,6 +19,16 @@
       "<rootDir>/jest.setup.js"
     ]
   },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-aes-gcm-crypto"
+        ],
+        "listUnknownPackages": false
+      }
+    }
+  },
   "devDependencies": {
     "@testing-library/react-native": "^14.0.1",
     "@types/jest": "^29.5.14",

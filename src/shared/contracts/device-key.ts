@@ -1,4 +1,4 @@
-// /shared/deviceKey.ts
+// src/shared/contracts/device-key.ts
 // Device key registration — CAP-7 Reader & Offline (Team t4targaryen)
 //
 // Owner: Encryption (Abhinav). BuildPlan.md Phase 0.2/4.2: the device generates a keypair,
