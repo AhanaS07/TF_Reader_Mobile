@@ -15,52 +15,52 @@
     "allowJs": true,
     "checkJs": true,
     "types": [
-      "jest"
+      "jest",
+      "node"
     ],
     "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
     "paths": {
       "@/*": [
-        "src/*"
+        "./src/*"
       ],
       "@theme/*": [
-        "src/theme/*"
+        "./src/theme/*"
       ],
       "@model/*": [
-        "src/model/*"
+        "./src/model/*"
       ],
       "@adapters/*": [
-        "src/adapters/*"
+        "./src/adapters/*"
       ],
       "@access/*": [
-        "src/access/*"
+        "./src/access/*"
       ],
       "@components/*": [
-        "src/components/*"
+        "./src/components/*"
       ],
       "@screens/*": [
-        "src/screens/*"
+        "./src/screens/*"
       ],
       "@search/*": [
-        "src/search/*"
+        "./src/search/*"
       ],
       "@store/*": [
-        "src/store/*"
+        "./src/store/*"
       ],
       "@storage/*": [
-        "src/storage/*"
+        "./src/storage/*"
       ],
       "@hooks/*": [
-        "src/hooks/*"
+        "./src/hooks/*"
       ],
       "@navigation/*": [
-        "src/navigation/*"
+        "./src/navigation/*"
       ],
       "@config/*": [
-        "src/config/*"
+        "./src/config/*"
       ],
       "@utils/*": [
-        "src/utils/*"
+        "./src/utils/*"
       ]
     }
   },
