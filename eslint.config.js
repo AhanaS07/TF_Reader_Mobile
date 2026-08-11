@@ -25,16 +25,7 @@
 const expoFlat = require('eslint-config-expo/flat');
 
 module.exports = [
-  {
-    ignores: [
-      'node_modules/**',
-      'eslint.config.js',
-      // Node-only, gitignored projects — not part of the Expo/RN app tree, so
-      // Buffer/__dirname/etc. are real globals there, not no-undef violations.
-      'mock-backend/**',
-      '__mocks__/**',
-    ],
-  },
+  { ignores: ['node_modules/**', 'eslint.config.js'] },
 
   ...expoFlat,
 
@@ -69,6 +60,30 @@ module.exports = [
         it: 'readonly',
         jest: 'readonly',
         test: 'readonly',
+      },
+    },
+  },
+
+  // mock-backend/ is a separate, throwaway Node/Express project (gitignored, never
+  // pushed — see .gitignore and BuildPlan.md), not React Native/Expo app code.
+  // __mocks__/ (Jest manual mocks for node_modules packages, e.g.
+  // react-native-aes-gcm-crypto) also runs under Jest's Node test environment, not
+  // the RN runtime — same category. Same pattern as the Jest-globals block above:
+  // scoped Node CommonJS globals for these directories, rather than the Expo base
+  // config's browser/RN globals, and rather than ignoring them outright — plain-JS
+  // bugs (typos, unused vars) are still worth catching, just not under RN's global set.
+  {
+    files: ['mock-backend/**/*.js', '__mocks__/**/*.js'],
+    languageOptions: {
+      globals: {
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        Buffer: 'readonly',
+        console: 'readonly',
+        exports: 'writable',
+        module: 'readonly',
+        process: 'readonly',
+        require: 'readonly',
       },
     },
   },
