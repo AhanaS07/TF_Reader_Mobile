@@ -8,9 +8,13 @@
 // Confirmed against Ahana's canonical content-provider.ts and the earlier "whole-file decrypt"
 // amendment: ONE nonce/tag for the entire book, no per-chapter chunking, no manifest needed.
 //
-// Run: npx tsx src/features/encryption/scripts/generateSampleBook.ts
-// (tsx, not ts-node — this repo's toolchain doesn't have ts-node; tsx is used the same way it
-// was for the aesGcm/cipherLayout verification scripts earlier this session.)
+// STATUS (2026-08-11): ../aesGcm now calls the REAL react-native-aes-gcm-crypto native module,
+// not Node's crypto — so this script can very likely no longer run standalone via `npx tsx`
+// (that native module's JS entry imports 'react-native', which esbuild/tsx can't parse — the
+// same failure keyStorage.ts already hit). Kept for its original intent and because a plain
+// Node `crypto`-backed regression of this exact scenario now lives in aesGcm.test.ts (run via
+// real Jest, using the manual mock at __mocks__/react-native-aes-gcm-crypto.js) — that test
+// suite is the current way to verify this logic; this script is not.
 //
 // Never use a fixed key like the one below outside mock/dev tooling — same rule as
 // mock-backend/fixtures/genFixtures.js's testBEK, just tracked in git instead of gitignored,
@@ -39,10 +43,10 @@ const SAMPLE_BOOK_TEXT = Buffer.from(
   'utf8'
 );
 
-function main() {
+async function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-  const payload = encrypt(new Uint8Array(SAMPLE_BOOK_TEXT), TEST_KEY);
+  const payload = await encrypt(new Uint8Array(SAMPLE_BOOK_TEXT), TEST_KEY);
   assertCipherLayout(payload); // structural self-check before writing anything
 
   const outPath = path.join(OUTPUT_DIR, 'sample-book.epub.enc');
@@ -62,7 +66,7 @@ function main() {
   // Self-test: decrypt what we just wrote, from disk, independently of the in-memory payload
   // object above — this exercises the actual on-disk artifact, not just the JS object.
   const rereadContent = new Uint8Array(fs.readFileSync(outPath));
-  const decrypted = decrypt(
+  const decrypted = await decrypt(
     { content: rereadContent, cipherLength: meta.cipherLength, originalLength: meta.originalLength },
     TEST_KEY
   );
@@ -79,7 +83,10 @@ function main() {
   corrupted[20] ^= 0xff;
   let decryptOfCorruptedThrew = false;
   try {
-    decrypt({ content: corrupted, cipherLength: meta.cipherLength, originalLength: meta.originalLength }, TEST_KEY);
+    await decrypt(
+      { content: corrupted, cipherLength: meta.cipherLength, originalLength: meta.originalLength },
+      TEST_KEY
+    );
   } catch {
     decryptOfCorruptedThrew = true;
   }

@@ -34,3 +34,11 @@ GoogleService-Info.plist
 *.hprof
 
 .DS_Store
+
+# local-only planning/dev tooling — never pushed
+BuildPlan.md
+mock-backend/
+
+*.test.ts
+docs
+samples

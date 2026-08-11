@@ -19,17 +19,17 @@
     // Only affects GLOBAL types — @types/react still resolves through the
     // normal `import ... from 'react'` path and does not belong in this list.
     //
-    // "node" is here for src/features/encryption/, which is a deliberate
-    // Node-based spike: aesGcm.ts uses Node's `crypto`, keyStorage.ts uses
-    // `Buffer`, and scripts/ uses `fs`/`path`/`__dirname`. Both files document
-    // this and flag the swap to react-native-aes-gcm-crypto now that P0-1 has
-    // landed. Dropping "node" breaks that whole module with TS2591.
+    // "node" is here for src/features/encryption/: keyStorage.ts and scripts/
+    // still legitimately use `Buffer`/`fs`/`path`/`__dirname`. aesGcm.ts itself
+    // has already been swapped to the real react-native-aes-gcm-crypto native
+    // module (no more Node `crypto`), per that file's own header — this entry
+    // stays for the files that haven't made that swap yet.
     //
     // CAVEAT: this makes Buffer/process/fs typecheck ANYWHERE, including in
     // React Native code where they do not exist at runtime. tsc will not catch
     // that mistake for you — the encryption module is the only place Node
     // globals are legitimate, and that is a review-time rule, not a compiler
-    // one. Revisit if/when the encryption spike is swapped to the native module.
+    // one.
     "types": ["jest", "node"],
 
     // NO baseUrl. TypeScript 6 deprecates it (TS5101) and it stops working in

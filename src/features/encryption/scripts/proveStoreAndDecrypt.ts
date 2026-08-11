@@ -6,7 +6,14 @@
 // what's real (keyStorage.ts, calling the actual react-native-keychain API) and what's a
 // documented substitute (this sandbox cannot run react-native's native bridge at all).
 //
-// Run: npx tsx src/features/encryption/scripts/proveStoreAndDecrypt.ts
+// STATUS (2026-08-11): ../aesGcm now calls the REAL react-native-aes-gcm-crypto native module —
+// so `encrypt`/`decryptBook` here will very likely fail to even load under `npx tsx` (same
+// 'react-native' Flow-syntax parse failure keyStorage.ts already hits), not just fail at the
+// native call. The equivalent scenario (encrypt -> store -> retrieve -> decrypt a whole book,
+// tamper check) now lives in aesGcm.test.ts + a manual store/retrieve check, run via real Jest
+// against the manual mock at __mocks__/react-native-aes-gcm-crypto.js. This script is kept for
+// its intent (and because keyStorage.ts's real-vs-substitute split below is still accurate) but
+// is no longer the way to verify this on this machine.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -72,7 +79,7 @@ async function main() {
 
   // --- Encrypt the whole book (real, production encrypt()) ---
   const bek = crypto.randomBytes(32);
-  const payload = encrypt(new Uint8Array(BOOK_TEXT), bek);
+  const payload = await encrypt(new Uint8Array(BOOK_TEXT), bek);
 
   const outPath = path.join(OUTPUT_DIR, 'proof-book.epub.enc');
   fs.writeFileSync(outPath, Buffer.from(payload.content));
@@ -101,7 +108,7 @@ async function main() {
   const nonce = onDiskContent.subarray(0, NONCE_BYTES);
   const ciphertextWithTag = onDiskContent.subarray(NONCE_BYTES);
 
-  const decrypted = decryptBook(ciphertextWithTag, nonce, retrievedKey);
+  const decrypted = await decryptBook(ciphertextWithTag, nonce, retrievedKey);
 
   if (Buffer.compare(Buffer.from(decrypted), BOOK_TEXT) !== 0) {
     throw new Error('PROOF FAILED: decrypted book does not match the original plaintext');
@@ -113,7 +120,7 @@ async function main() {
   tampered[tampered.length - 1] ^= 0xff;
   let threw = false;
   try {
-    decryptBook(tampered, nonce, retrievedKey);
+    await decryptBook(tampered, nonce, retrievedKey);
   } catch {
     threw = true;
   }

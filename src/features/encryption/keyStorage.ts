@@ -6,17 +6,17 @@
 // type definitions, not assumed). One keychain "service" entry per book, namespaced so multiple
 // books' BEKs don't collide.
 //
-// UNLIKE aesGcm.ts, this is meant to be the real production implementation, not a Node stand-in
-// — react-native-keychain's JS API is the same on-device as it is here. What's NOT verified is
-// whether it actually WORKS on a real device/simulator: there is neither available in this
-// environment, so these calls have never actually executed against a real Keychain/Keystore.
+// UNLIKE aesGcm.ts's original Node-crypto version, this was always meant to be the real
+// production implementation, not a Node stand-in.
 //
-// KNOWN GAP: uses Node's `Buffer` for base64 encode/decode of the raw key bytes. `Buffer` is not
-// guaranteed to exist in the React Native JS runtime without a polyfill (unlike Node, where it's
-// a global). Flagging rather than silently assuming — swap for a portable base64 helper (or add
-// a `buffer` polyfill via Metro config) before this runs on-device.
+// FIXED 2026-08-11 (was a real, confirmed bug, not a theoretical one): this originally used
+// Node's `Buffer` for base64 encode/decode. Running on an actual iOS Simulator, `storeBek`
+// failed immediately with "Property 'Buffer' doesn't exist" — `Buffer` is not a React Native
+// global. Swapped to the portable codec in ./base64.ts (already used by aesGcm.ts, cross-checked
+// against Node's own Buffer for correctness before either file trusted it).
 
 import * as Keychain from 'react-native-keychain';
+import { bytesToBase64, base64ToBytes } from './base64';
 
 const SERVICE_PREFIX = 'tf-reader-bek:';
 
@@ -33,7 +33,7 @@ function serviceFor(bookId: string): string {
  * @throws if the keychain rejects the write
  */
 export async function storeBek(bookId: string, key: Uint8Array): Promise<void> {
-  const result = await Keychain.setGenericPassword(bookId, Buffer.from(key).toString('base64'), {
+  const result = await Keychain.setGenericPassword(bookId, bytesToBase64(key), {
     service: serviceFor(bookId),
   });
   if (result === false) {
@@ -52,7 +52,7 @@ export async function getBek(bookId: string): Promise<Uint8Array> {
   if (credentials === false) {
     throw new Error(`getBek: no BEK stored for book "${bookId}"`);
   }
-  return new Uint8Array(Buffer.from(credentials.password, 'base64'));
+  return base64ToBytes(credentials.password);
 }
 
 /**

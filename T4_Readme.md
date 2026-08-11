@@ -80,11 +80,10 @@ module-not-found that reads like a bundler bug and isn't.
 So `expo-dev-client` is a dependency from day one and is listed as a plugin in `app.json`. Build
 the dev build **before** starting feature work, not when you hit the wall.
 
-`react-native-keychain` and `react-native-aes-gcm-crypto` are already dependencies (Abhinav's
-encryption work). Neither is imported by any code yet. When they are wired in, both need
-config-plugin entries in `app.json` plus a fresh `npx expo prebuild`. If either ships no Expo
-config plugin, the answer is a small local plugin — **not** a hand edit under `android/` or
-`ios/`, which CNG discards on the next prebuild.
+`react-native-keychain` and `react-native-aes-gcm-crypto` are dependencies (Abhinav's encryption
+work). Both need config-plugin entries in `app.json` plus a fresh `npx expo prebuild`. If either
+ships no Expo config plugin, the answer is a small local plugin — **not** a hand edit under
+`android/` or `ios/`, which CNG discards on the next prebuild.
 
 ### OPEN RISK: `react-native-aes-gcm-crypto` and the New Architecture
 
@@ -100,14 +99,18 @@ stabilised, and it has had no release since. SDK 57 no longer accepts `newArchEn
 `app.json` at all, which indicates New Arch is not opt-out any more. So this is an unmaintained
 native module that has never been validated against the only architecture we can ship on.
 
-Why it is not urgent today: nothing imports it. `aesGcm.ts` currently uses Node's `crypto`
-directly — a deliberate, documented spike — and the only consumers are Abhinav's own Node proof
-scripts. The dependency is installed but inert, so the risk is entirely future-tense.
+**UPDATE (2026-08-11): validated, not just theoretical anymore.** `aesGcm.ts`'s `encrypt`/`decrypt`
+were swapped from Node's `crypto` to the real `react-native-aes-gcm-crypto` native calls, then
+actually built and run on an iOS Simulator (`expo run:ios`, iPhone 17 Pro): native build
+succeeded (0 errors), and a live runtime test logged `RUNTIME_TEST: aesGcm roundTripOk= true` —
+a real encrypt→decrypt round trip through the compiled native module, not a mock. Same test also
+confirmed `react-native-keychain` (`keychain roundTripOk= true`), catching and fixing a real bug
+along the way (`keyStorage.ts`'s `Buffer` usage doesn't exist in the RN runtime — see `base64.ts`).
 
-**It becomes a blocker the moment on-device decryption is wired up.** Note that `aesGcm.ts`'s own
-TODO says to swap `encrypt`/`decrypt` to `react-native-aes-gcm-crypto` once P0-1 lands — P0-1 has
-now landed, so following that note as written would adopt exactly the flagged library. Re-evaluate
-before doing it. Two alternatives were checked:
+**Still not fully closed**: only tested on iOS Simulator, not a physical device or Android, and
+only with a tiny (12-byte) payload — the bridge/memory cost question for a whole-book-sized
+payload (noted below) is untested. Re-evaluating the two alternatives below is no longer
+required to unblock work, but may still be worth doing for the large-payload/Android questions:
 
 - **`@noble/ciphers`** — audited, pure JS, actively maintained. No native module, so the New Arch
   question does not arise. Verified during P0-1: it decrypts bytes produced by the current Node
@@ -118,7 +121,9 @@ before doing it. Two alternatives were checked:
   implements the Node `crypto` API, so `aesGcm.ts` would barely change. Still a native module, so
   it needs a config plugin and a prebuild.
 
-Owner: **Abhinav** (Download + Encryption). Decide before wiring on-device decrypt, not after.
+Owner: **Abhinav** (Download + Encryption). Decision made: staying on `react-native-aes-gcm-crypto`
+given the confirmed on-device result above; the alternatives remain documented here as the
+fallback if the untested Android/large-payload/physical-device cases turn up a real problem.
 
 ## Type-level rules this team relies on
 
