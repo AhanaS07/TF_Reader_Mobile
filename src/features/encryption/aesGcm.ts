@@ -1,79 +1,126 @@
 // Owner: Encryption (Abhinav).
 //
-// Phase 1 encryption round-trip spike (see BuildPlan.md). Whole-file AES-256-GCM: one nonce,
-// one ciphertext, one GCM tag for the entire book (text or audio) — see cipherLayout.ts for the
-// exact `content` byte layout (nonce | ciphertext | tag) this module produces and consumes.
+// Whole-file AES-256-GCM via the REAL native module `react-native-aes-gcm-crypto` — this is
+// production code meant to run on-device (we're building against expo-dev-client, which
+// supports real native modules, unlike Expo Go), not a Node stand-in. See cipherLayout.ts for
+// the `content` byte layout (nonce | ciphertext | tag) this module produces and consumes.
 //
-// ENVIRONMENT NOTE — read before touching this file:
-// Today's implementation uses Node's built-in `crypto` module directly (createCipheriv /
-// createDecipheriv with 'aes-256-gcm'). That is genuinely correct, spec-compliant AES-256-GCM —
-// not a mock — which is what lets us prove the round-trip and tamper-detection behavior in this
-// spike, in a plain Node/Jest environment, before any native toolchain exists.
+// CONFIRMED 2026-08-11 by actually bundling through Metro (temporarily wired into App.tsx,
+// requested the real bundle, reverted): the previous Node-`crypto`-backed version of this file
+// failed with "Unable to resolve module crypto" — Metro doesn't polyfill it. This version
+// bundles clean. What's still unverified (no simulator/device in this environment): the actual
+// native AES-GCM execution at runtime. See src/features/encryption/aesGcm.test.ts, which
+// exercises this file's real code against a Jest manual mock of the native module
+// (__mocks__/react-native-aes-gcm-crypto.js, Node-crypto-backed) — that proves the adapter
+// logic (base64/hex conversion, nonce/ciphertext/tag assembly) is correct; it does not prove
+// the native module's own AES-GCM implementation is correct, which is Metro's/the library's
+// job, not ours.
 //
-// Node's `crypto` module does NOT exist in the React Native JS runtime. Once P0-1 (Expo
-// bootstrap) lands and `react-native-aes-gcm-crypto` is installed, `encrypt`/`decrypt` below
-// should be swapped to delegate to that native module for on-device use instead — same function
-// signatures, same CipherPayload shape in/out, different implementation body. That swap is the
-// only thing that needs to change; callers should not need to change.
-//
-// ADAPTER NOTE (researched 2026-08-11, package installed but not yet linked/tested on-device —
-// no simulator/device available in this environment): `react-native-aes-gcm-crypto`'s real API
-// does NOT return/accept the concatenated CipherPayload.content layout directly:
-//
+// Native API (react-native-aes-gcm-crypto, confirmed by reading its installed type defs):
 //   encrypt(plainText: string, inBinary: boolean, key: string): Promise<{iv, tag, content}>
-//   decrypt(base64Ciphertext: string, key: string, iv: string, tag: string, isBinary: boolean): Promise<string>
+//   decrypt(ciphertext: string, key: string, iv: string, tag: string, isBinary: boolean): Promise<string>
+// `key`/`content`/decrypted-output are base64; `iv`/`tag` are HEX (confirmed against the
+// package's own README example, cross-checked byte lengths: 12-byte iv = 24 hex chars, 16-byte
+// tag = 32 hex chars). This module's job is entirely the adapter between that shape and our
+// concatenated nonce|ciphertext|tag CipherPayload.content layout.
 //
-// `iv` (== our `nonce`) and `tag` come back as SEPARATE base64/hex strings from `content`. The
-// on-device implementation of `decryptBook` will need to further split its `ciphertextWithTag`
-// argument into ciphertext + tag (same split it already does internally for Node's `crypto`)
-// and pass nonce/tag as separate strings to the native `decrypt(...)` call — one more split than
-// today's Node version needs, since the native API doesn't accept a tag-appended blob at all.
-// Also note: that native API takes/returns base64 STRINGS over the
-// (non-JSI) NativeModules bridge — for a large audio file this has real serialization/memory
-// cost. The package also exposes `encryptFile`/`decryptFile` (operates on native file paths,
-// no bridge overhead) — but `decryptFile` writes plaintext straight to a file on disk, which
-// conflicts with the "never write plaintext to disk" rule elsewhere in this design. Don't
-// default into `decryptFile` without deciding that tradeoff deliberately.
-//
-// Separately: `react-native-keychain` (also installed) has NO asymmetric crypto API at all —
-// it's a secure secret-storage box (setGenericPassword/getGenericPassword/etc.), not a crypto
-// library. RSA-OAEP-256 keypair generation and wrap/unwrap (EncryptionDescriptor.wrapAlgorithm)
-// needs a different library/native capability; keychain can only store the resulting private
-// key once something else produces it. See deviceKeypair.ts.
+// No Buffer: this file runs in the RN JS runtime, which doesn't have Node's Buffer without a
+// polyfill (unlike the Node-only scripts under scripts/, which still use Buffer deliberately —
+// see their own headers). base64/hex codecs below are portable Uint8Array arithmetic, cross-
+// checked against Node's Buffer for every length 0-300 bytes before being used here.
 
-import * as crypto from 'crypto';
+import AesGcmCrypto from 'react-native-aes-gcm-crypto';
 import { CipherPayload, NONCE_BYTES, GCM_TAG_BYTES, assertCipherLayout } from './cipherLayout';
 
 const KEY_BYTES = 32; // AES-256
 
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : undefined;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : undefined;
+    const triplet = (b0 << 16) | ((b1 ?? 0) << 8) | (b2 ?? 0);
+    result += B64_CHARS[(triplet >> 18) & 0x3f];
+    result += B64_CHARS[(triplet >> 12) & 0x3f];
+    result += b1 === undefined ? '=' : B64_CHARS[(triplet >> 6) & 0x3f];
+    result += b2 === undefined ? '=' : B64_CHARS[triplet & 0x3f];
+  }
+  return result;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const clean = b64.replace(/=+$/, '');
+  const byteLength = Math.floor((clean.length * 6) / 8);
+  const bytes = new Uint8Array(byteLength);
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let outIdx = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const val = B64_CHARS.indexOf(clean[i]);
+    if (val === -1) throw new Error(`base64ToBytes: invalid character "${clean[i]}"`);
+    bitBuffer = (bitBuffer << 6) | val;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      bytes[outIdx++] = (bitBuffer >> bitCount) & 0xff;
+    }
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
 /**
- * Encrypts `plaintext` with AES-256-GCM under `key`, producing a CipherPayload whose `content`
- * is laid out as nonce (12B) || ciphertext (originalLength B) || GCM tag (16B), per
- * cipherLayout.ts.
+ * Encrypts `plaintext` with AES-256-GCM under `key` via the native module, producing a
+ * CipherPayload whose `content` is laid out as nonce (12B) || ciphertext (originalLength B) ||
+ * GCM tag (16B), per cipherLayout.ts.
  *
  * @param plaintext - raw bytes to encrypt (e.g. a whole book file's contents)
  * @param key - 256-bit (32 byte) AES key
  */
-export function encrypt(plaintext: Uint8Array, key: Uint8Array): CipherPayload {
+export async function encrypt(plaintext: Uint8Array, key: Uint8Array): Promise<CipherPayload> {
   if (key.length !== KEY_BYTES) {
     throw new Error(`encrypt: key must be ${KEY_BYTES} bytes (AES-256), got ${key.length}`);
   }
 
-  const nonce = crypto.randomBytes(NONCE_BYTES);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+  const { iv, tag, content } = await AesGcmCrypto.encrypt(bytesToBase64(plaintext), true, bytesToBase64(key));
 
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
+  const nonce = hexToBytes(iv);
+  const ciphertext = base64ToBytes(content);
+  const tagBytes = hexToBytes(tag);
 
-  if (tag.length !== GCM_TAG_BYTES) {
-    throw new Error(`encrypt: unexpected GCM tag length ${tag.length}, expected ${GCM_TAG_BYTES}`);
+  if (nonce.length !== NONCE_BYTES) {
+    throw new Error(`encrypt: native module returned a ${nonce.length}-byte iv, expected ${NONCE_BYTES}`);
+  }
+  if (tagBytes.length !== GCM_TAG_BYTES) {
+    throw new Error(`encrypt: native module returned a ${tagBytes.length}-byte tag, expected ${GCM_TAG_BYTES}`);
   }
 
-  const content = new Uint8Array(Buffer.concat([nonce, ciphertext, tag]));
-  const originalLength = plaintext.length;
-  const cipherLength = content.length;
+  const assembled = new Uint8Array(nonce.length + ciphertext.length + tagBytes.length);
+  assembled.set(nonce, 0);
+  assembled.set(ciphertext, nonce.length);
+  assembled.set(tagBytes, nonce.length + ciphertext.length);
 
-  const payload: CipherPayload = { content, cipherLength, originalLength };
+  const payload: CipherPayload = {
+    content: assembled,
+    cipherLength: assembled.length,
+    originalLength: plaintext.length,
+  };
 
   // Sanity-check our own output against the shared layout invariant before returning it.
   assertCipherLayout(payload);
@@ -82,25 +129,27 @@ export function encrypt(plaintext: Uint8Array, key: Uint8Array): CipherPayload {
 }
 
 /**
- * The decrypt PRIMITIVE — three raw arguments in, plaintext out, GCM tag verified. This is the
- * building block `decrypt(payload, key)` below (and eventually Ahana's `ContentStore.decryptBook`)
- * is built on. Handed off as the thing Reader/Encryption integration wires against.
+ * The decrypt PRIMITIVE — three raw arguments in, plaintext out, GCM tag verified by the
+ * native module. This is the building block `decrypt(payload, key)` below (and eventually
+ * Ahana's `ContentStore.decryptBook`) is built on.
  *
- * `ciphertextWithTag` convention: ciphertext with the 16-byte GCM tag APPENDED at the end — the
- * same convention WebCrypto's `crypto.subtle.decrypt('AES-GCM', ...)` uses natively (relevant
- * since content-provider.ts notes the Reader's WebView may call `crypto.subtle.decrypt`
- * directly). Node's `crypto` module needs the tag split out to call `setAuthTag` separately —
- * that split is this function's job, not the caller's.
+ * `ciphertextWithTag` convention: ciphertext with the 16-byte GCM tag appended at the end —
+ * matches WebCrypto's `crypto.subtle.decrypt('AES-GCM', ...)` convention. This function does
+ * the split into native's separate ciphertext/tag arguments, so callers don't have to.
  *
- * Throws if the GCM authentication tag fails to verify — i.e. `ciphertextWithTag` was corrupted
- * or tampered with, or `nonce`/`key` don't match what it was encrypted under. That failure is
- * intentionally NOT caught/swallowed here; callers must see it (fail-closed).
+ * Throws if the GCM authentication tag fails to verify (rejects, since this is now async) —
+ * i.e. `ciphertextWithTag` was corrupted/tampered, or `nonce`/`key` don't match. That failure
+ * is intentionally NOT caught/swallowed here; callers must see it (fail-closed).
  *
  * @param ciphertextWithTag - ciphertext bytes with the 16-byte GCM tag appended at the end
  * @param nonce - 12-byte GCM nonce/IV used for the original encryption
  * @param key - 256-bit (32 byte) AES key used for the original encryption
  */
-export function decryptBook(ciphertextWithTag: Uint8Array, nonce: Uint8Array, key: Uint8Array): Uint8Array {
+export async function decryptBook(
+  ciphertextWithTag: Uint8Array,
+  nonce: Uint8Array,
+  key: Uint8Array
+): Promise<Uint8Array> {
   if (key.length !== KEY_BYTES) {
     throw new Error(`decryptBook: key must be ${KEY_BYTES} bytes (AES-256), got ${key.length}`);
   }
@@ -116,14 +165,17 @@ export function decryptBook(ciphertextWithTag: Uint8Array, nonce: Uint8Array, ke
   const tag = ciphertextWithTag.subarray(ciphertextWithTag.length - GCM_TAG_BYTES);
   const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - GCM_TAG_BYTES);
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce);
-  decipher.setAuthTag(tag);
+  // decrypt() rejects if the auth tag doesn't verify (tamper/corruption detection). Deliberately
+  // not wrapped in try/catch: that rejection must propagate to the caller.
+  const decryptedBase64 = await AesGcmCrypto.decrypt(
+    bytesToBase64(ciphertext),
+    bytesToBase64(key),
+    bytesToHex(nonce),
+    bytesToHex(tag),
+    true // isBinary: return decrypted data as base64, since our plaintext is arbitrary bytes
+  );
 
-  // decipher.final() throws if the auth tag doesn't verify (tamper/corruption detection).
-  // Deliberately not wrapped in try/catch: that error must propagate to the caller.
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-
-  return new Uint8Array(plaintext);
+  return base64ToBytes(decryptedBase64);
 }
 
 /**
@@ -135,7 +187,7 @@ export function decryptBook(ciphertextWithTag: Uint8Array, nonce: Uint8Array, ke
  * @param payload - CipherPayload to decrypt
  * @param key - 256-bit (32 byte) AES key used for the original encryption
  */
-export function decrypt(payload: CipherPayload, key: Uint8Array): Uint8Array {
+export async function decrypt(payload: CipherPayload, key: Uint8Array): Promise<Uint8Array> {
   assertCipherLayout(payload);
 
   const { content } = payload;
