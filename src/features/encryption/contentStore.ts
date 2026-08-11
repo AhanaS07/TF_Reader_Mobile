@@ -12,14 +12,18 @@
 // explicitly ("No chunking, no partial decryption... do not re-litigate"). This file implements
 // the actual frozen method, `decryptBook(bookId)`, rather than reintroducing chapter addressing.
 //
-// KNOWN GAP, stated loudly rather than faked: RSA-OAEP-256 unwrap (deviceKeypair.ts's
-// `unwrapBek`) is still a stub that throws by design (blocked on an RSA library choice — see
-// that file's header). decryptBook() below calls the REAL unwrapBek, so the wiring is correct
-// end-to-end the moment that lands; until then, a book whose raw BEK isn't already cached (via
-// keyStorage.ts, itself confirmed on-device) rejects with ContentFailure(KEYSTORE_UNAVAILABLE) —
-// not a fake success. Also NOT implemented here: licence SIGNATURE verification (RS256) — expiry
-// is checked for real below, signature is not (no RS256-verify library wired in yet). Don't
-// mistake "expiry checked" for "licence verified."
+// UPDATE 2026-08-11: RSA-OAEP-256 unwrap (deviceKeypair.ts's `unwrapBek`) is REAL now
+// (react-native-quick-crypto) — decryptBook() below calls it directly, no stub in the path
+// anymore. A book whose raw BEK isn't already cached (via keyStorage.ts) now genuinely unwraps
+// via RSA-OAEP-256 instead of always rejecting; see contentStore.test.ts's
+// "end-to-end via the real device keypair" block for the proof (generateDeviceKeypair -> wrapBek
+// -> store -> decryptBook, no shortcuts). ContentFailure(KEYSTORE_UNAVAILABLE) still fires for
+// the genuinely-unavailable cases: no device keypair generated yet, or a wrappedBek that doesn't
+// decrypt under this device's key (wrong device, corrupted value).
+//
+// STILL NOT implemented here: licence SIGNATURE verification (RS256) — expiry is checked for
+// real below, signature is not (no RS256-verify library wired in yet). Don't mistake "expiry
+// checked" for "licence verified."
 //
 // RAM budget: MAX_DECRYPTED_BYTES is a hard, enforced cap (checked before AND after decrypt), per
 // this task's "<25MB" directive. BuildPlan.md Phase 9.3 already flags 25MB as possibly

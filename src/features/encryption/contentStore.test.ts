@@ -4,19 +4,27 @@
 // backed by Node's real `fs` under a temp dir) — not fakes standing in for the logic under test,
 // only for the two native modules Jest can't load directly.
 //
-// The RSA-OAEP unwrap path (deviceKeypair.ts) is genuinely NOT implemented yet (see that file's
-// header) — tests that need a raw BEK pre-seed it via keyStorage.storeBek directly, the same
-// "cached from a previous unwrap" path decryptBook() already falls back to. One test below
-// (KEYSTORE_UNAVAILABLE) exercises the real, current, blocked-on-RSA behavior instead of routing
-// around it.
+// deviceKeypair.ts's RSA-OAEP-256 unwrap is REAL now (see that file's header for the library
+// choice) — most tests below still pre-seed a raw BEK via keyStorage.storeBek directly (the
+// "cached from a previous unwrap" fast path decryptBook() already prefers), since that's the
+// common-case behavior once a book has been opened once. The dedicated
+// 'end-to-end via the real device keypair' describe block below instead exercises the FULL real
+// path — generateDeviceKeypair -> wrapBek -> store -> decryptBook — with no pre-seeded key at
+// all, proving the real integration works, not just the fast-path cache.
 
 import * as crypto from 'crypto';
+import * as Keychain from 'react-native-keychain';
 import { encrypt } from './aesGcm';
 import { NONCE_BYTES } from './cipherLayout';
 import { getBek, storeBek } from './keyStorage';
+import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
 import { contentStore, MAX_DECRYPTED_BYTES } from './contentStore';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+
+// Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
+// cleanup in the end-to-end describe block below (deviceKeypair.ts exposes no reset of its own).
+const DEVICE_PRIVATE_KEY_SERVICE = 'tf-reader-device-private-key';
 
 function randomKey(): Uint8Array {
   return new Uint8Array(crypto.randomBytes(32));
@@ -181,11 +189,14 @@ describe('contentStore — Subscription (persisted, real AES-256-GCM)', () => {
     }
   });
 
-  it('rejects with ContentFailure(KEYSTORE_UNAVAILABLE) when no raw key is cached (RSA unwrap still a stub)', async () => {
+  it('rejects with ContentFailure(KEYSTORE_UNAVAILABLE) when no raw key is cached and wrappedBek is not a real wrap', async () => {
     const bookId = 'sub-book-no-key';
     const key = randomKey();
     const pkg = await buildEncryptedPackage(bookId, plaintextOf(256, 'no key cached'), key);
-    // Deliberately do NOT call storeBek — forces the real (currently-stubbed) unwrapBek path.
+    // Deliberately do NOT call storeBek — forces the real unwrapBek path, which then fails for
+    // one of two real reasons depending on suite state: no device keypair registered yet, or (if
+    // another test in this file already generated one) a real RSA-OAEP decrypt failure against
+    // this fixture's placeholder wrappedBek string. Either way it's a genuine failure, not a stub.
 
     await contentStore.store(pkg);
     await contentStore.openSession(bookId);
@@ -237,6 +248,61 @@ describe('contentStore — Subscription (persisted, real AES-256-GCM)', () => {
 
     await expect(contentStore.store(mismatched)).rejects.toMatchObject({
       code: ContentError.LICENCE_INVALID,
+    });
+  });
+});
+
+describe('contentStore — end-to-end via the real device keypair (no pre-seeded key)', () => {
+  // Scoped cleanup so this block's device keypair doesn't leak into other describe blocks in
+  // this file regardless of execution order — deviceKeypair.ts's keychain entry is a single
+  // global service, not scoped per bookId like the BEK cache is.
+  afterEach(async () => {
+    await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
+  });
+
+  it('generateDeviceKeypair -> wrapBek -> store -> openSession -> decryptBook, with NO keyStorage.storeBek shortcut', async () => {
+    const bookId = 'sub-book-real-e2e';
+    const bek = randomKey();
+    const plaintext = plaintextOf(4096, 'wrapped for real, decrypted for real');
+
+    const { publicKey } = await generateDeviceKeypair();
+    const realWrappedBek = await wrapBek(bek, publicKey);
+
+    const pkg = await buildEncryptedPackage(bookId, plaintext, bek);
+    pkg.encryption = { ...pkg.encryption!, wrappedBek: realWrappedBek };
+    // Deliberately no storeBek(bookId, bek) call — this proves the actual unwrapBek path, not
+    // the "already cached from a previous session" fast path every other test above uses.
+
+    await contentStore.store(pkg);
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+
+    expect(Buffer.from(decrypted).equals(Buffer.from(plaintext))).toBe(true);
+
+    // And the successful unwrap should have cached the raw BEK in the keychain for next time
+    // (resolveRawKey's documented behavior for non-Elite tiers).
+    const cached = await getBek(bookId);
+    expect(Buffer.from(cached).equals(Buffer.from(bek))).toBe(true);
+  });
+
+  it('rejects with ContentFailure(INTEGRITY_FAILED) if the ciphertext is tampered, even via the real unwrap path', async () => {
+    const bookId = 'sub-book-real-e2e-tampered';
+    const bek = randomKey();
+
+    const { publicKey } = await generateDeviceKeypair();
+    const realWrappedBek = await wrapBek(bek, publicKey);
+
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(1024, 'tamper after real wrap'), bek);
+    pkg.encryption = { ...pkg.encryption!, wrappedBek: realWrappedBek };
+
+    const tampered = new Uint8Array(pkg.content);
+    tampered[NONCE_BYTES + 5] ^= 0xff;
+
+    await contentStore.store({ ...pkg, content: tampered });
+    await contentStore.openSession(bookId);
+
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
+      code: ContentError.INTEGRITY_FAILED,
     });
   });
 });
