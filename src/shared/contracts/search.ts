@@ -1,4 +1,4 @@
-// /shared/search.ts
+// src/shared/contracts/search.ts
 // In-book Search — CAP-7 Reader & Offline (Team t4targaryen)
 //
 // Owner: Search (Vaishnavi). DAY-1 = DRAFT SHAPE ONLY.
@@ -19,13 +19,12 @@
 //   — prototype books are small). The decrypted index lives in RAM only (never
 //   written to disk in plaintext). Index lifecycle follows the BEK; destroyed
 //   with it.
-
 import type { Locator } from './annotations';
 
 // One occurrence of a word in the book — the value stored per hit in the index.
 // Position uses the SAME `Locator` union as bookmarks/highlights so the Reader
 // (Ahana) has ONE navigation path for annotations AND search hits:
-//   EPUB -> { type:'epub'; cfi }   PDF -> { type:'pdf'; page; offset? }
+//   EPUB -> { type:'EPUB'; cfi }   PDF -> { type:'PDF'; page; offset? }
 export interface Posting {
   chapterId: string;
   locator: Locator; // where the hit is — Reader seeks to this
@@ -47,9 +46,10 @@ export type SearchIndex = Record<string, Posting[]>;
 
 // The full per-book artifact that gets encrypted (AES-GCM under the BEK) and
 // bundled with the book at ingestion.
+// RECONCILED (format casing): UPPERCASE to match ContentFormat in primitives.ts.
 export interface BookSearchIndex {
   bookId: string;
-  format: 'epub' | 'pdf';
+  format: 'EPUB' | 'PDF'; // subset of ContentFormat (no AUDIO — no text to index)
   version: number; // index-format version, for future rebuilds/migrations
   index: SearchIndex; // word -> postings
 }

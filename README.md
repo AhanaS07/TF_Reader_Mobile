@@ -15,7 +15,7 @@ Since there is no compiler, three things replace it — all three are required, 
 
 | What a compiler gave us | Replacement |
 |---|---|
-| One shared shape across the team | JSDoc `@typedef` in `src/model/types.js` + `jsconfig.json` with `checkJs` (editor-level, zero build cost) |
+| One shared shape across the team | JSDoc `@typedef` in `src/model/types.js` + `tsconfig.json` with `checkJs` (editor-level, zero build cost) |
 | Catching a malformed fixture | `src/model/validate.js` — asserts fixtures on load, throws loudly in dev |
 | Mock and real adapters staying interchangeable | An adapter conformance suite both must pass |
 
@@ -142,3 +142,15 @@ Also open: who is team1's lead, and whether team1 owns any backend module at all
 | Personalization + Search | Vaishnavi |
 | Accessibility | Hruthik |
 | shared / samples | Ahana (lead) |
+
+## Lint toolchain notes
+
+**Exact pins mean no automatic patches.** `eslint: 9.39.5` won't pick up 9.39.6.
+The pinning is deliberate — but `^9.39.5` would be just as safe against the
+ESLint 10 crash, since a caret never crosses a major. Easy loosening if the
+rigidity annoys you.
+
+**`react.version` is pinned to a fabricated `'19.0'`** in `eslint.config.js`,
+purely to silence a startup warning while React isn't installed. Switch it to
+`'detect'` the moment React becomes a real dependency, or the linter will reason
+about the wrong version.
