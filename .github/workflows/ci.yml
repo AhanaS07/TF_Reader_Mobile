@@ -1,7 +1,13 @@
 name: CI
 
+# NOTE ON LAYOUT: the mobile app IS this repo's root — there is no `mobile-app/`
+# subfolder — so there is no `defaults.working-directory` block and
+# cache-dependency-path is unprefixed. If the app is ever moved into a subfolder,
+# both need to come back.
+
 on:
   pull_request:
+    branches: [main, dev_T4]
   push:
     branches: [main]
 
@@ -13,6 +19,25 @@ permissions:
   contents: read
 
 jobs:
+  # Its own job so a broken contract freeze shows up as a separate, clearly named
+  # ✗ ("typecheck") rather than being buried in a combined step.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      # Typechecks every contract AND src/shared/contracts/__typecheck__.ts, the
+      # canary that goes red when a frozen shape changes.
+      - run: npm run typecheck
+
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -22,23 +47,20 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: package-lock.json
 
-      - run: npm install --no-audit --no-fund
+      - run: npm ci
 
-      # The guards below disappear once P0-1 installs the toolchain. Until then they
-      # warn instead of reporting a fake green.
+      # ESLint is a real dependency now, so this runs unguarded: a missing
+      # binary, a missing config, or any lint failure fails the job. It must
+      # never report a green it hasn't earned. --max-warnings=0 (in the npm
+      # script) means warnings fail too, not just errors.
       - name: Lint
-        run: |
-          if [ -x node_modules/.bin/eslint ]; then
-            npm run lint
-          else
-            echo "::warning::ESLint not installed yet — P0-1 adds it. Skipping."
-          fi
+        run: npm run lint
 
+      # Unguarded since P0-1: jest + jest-expo are real dependencies, so a
+      # missing binary is a genuine failure, not a skip. Still --passWithNoTests
+      # (see the npm script) because most feature folders are empty; drop that
+      # flag once every CAP has at least one spec.
       - name: Test
-        run: |
-          if [ -x node_modules/.bin/jest ]; then
-            npm run test:ci
-          else
-            echo "::warning::Jest not installed yet — P0-1 adds it. Skipping."
-          fi
+        run: npm run test:ci

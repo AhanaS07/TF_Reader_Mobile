@@ -8,18 +8,24 @@ upstream repo, which we never touch. There is no `develop` branch.
 
 ## Stack
 
-JavaScript (not TypeScript — a team decision), Expo managed, React Navigation
-(`bottom-tabs` + `native-stack`), Zustand, AsyncStorage, Jest + React Native Testing Library.
+**TypeScript** (team decision — this reverses the earlier JavaScript call), Expo SDK 57 with a
+**development build**, React Navigation (`bottom-tabs` + `native-stack`), Zustand, AsyncStorage,
+Jest + React Native Testing Library.
 
-Since there is no compiler, three things replace it — all three are required, not optional:
+`strict: true` is on and `npm run typecheck` is its own CI job. The compiler is now the contract
+enforcement mechanism, which retires the three things that were standing in for it:
 
-| What a compiler gave us | Replacement |
-|---|---|
-| One shared shape across the team | JSDoc `@typedef` in `src/model/types.js` + `jsconfig.json` with `checkJs` (editor-level, zero build cost) |
-| Catching a malformed fixture | `src/model/validate.js` — asserts fixtures on load, throws loudly in dev |
-| Mock and real adapters staying interchangeable | An adapter conformance suite both must pass |
+| Was                                                                                  | Now                                                                                                                       |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| JSDoc `@typedef` in `src/model/types.js`                                             | Real types in `src/shared/` — `tsc --noEmit` enforces them                                                                |
+| `prop-types` on every component                                                      | **Deleted.** Its only job was runtime prop warnings without a compiler. It is not a dependency and should not become one. |
+| An adapter conformance suite as the only thing keeping mock and real interchangeable | Still valuable, but now backed by a shared `interface` both must implement                                                |
 
-Plus `prop-types` on every component for runtime warnings in development.
+`allowJs`/`checkJs` stay on only to keep the door open during the changeover. There is no
+JavaScript in `src/` today; once that is still true at the end of Week 2, turn them off.
+
+Frozen contracts are enforced by a typecheck canary that runs as its own CI job. It is
+team-scoped, so it is documented with the team that owns it — see the team docs below.
 
 ## Structure
 
@@ -49,29 +55,87 @@ Subfolders get created as the work lands. Folders are tracked by an empty `.gitk
 **Three rules that hold the tree together:**
 
 1. **Props in, callbacks out.** A component receives data and emits events. It does not
-   fetch, read a store, navigate, or compute access. (Design Spec §5.1: *the UI must never
-   calculate access rights*.)
+   fetch, read a store, navigate, or compute access. (Design Spec §5.1: _the UI must never
+   calculate access rights_.)
 2. **No raw values.** Every colour, size, spacing and radius comes from `src/theme`. A raw
    hex in `src/components/` fails review.
 3. **A feature may not introduce a component.** If a feature needs something the library
-   lacks, it is added *to the library*, reviewed by that component's original author — never
-   inside a feature folder. The rule being protected is *one implementation, one location*.
+   lacks, it is added _to the library_, reviewed by that component's original author — never
+   inside a feature folder. The rule being protected is _one implementation, one location_.
 
 ## Setup
 
-The Expo runtime is not installed yet — that is P0-1, Day 1. Versions come from Expo's
-resolver rather than being pinned by hand:
+**P0-1 has landed — the toolchain is installed.** To get running:
 
 ```bash
-npx create-expo-app@latest . --template blank   # if not already scaffolded
-npx expo install react-native-screens react-native-safe-area-context \
-  @react-navigation/native @react-navigation/bottom-tabs @react-navigation/native-stack \
-  zustand @react-native-async-storage/async-storage prop-types \
-  expo-font @expo-google-fonts/inter @react-native-community/netinfo
-npm i -D eslint prettier eslint-config-expo jest jest-expo @testing-library/react-native
+npm ci
+npm run typecheck && npm run lint && npm test   # all three should be green
 ```
 
-Then `npm start`. CI's lint/test guards drop away automatically once the toolchain is in.
+### Use a development build, not Expo Go
+
+This is the single most important setup fact in this file, and getting it wrong costs you a day.
+
+**Expo Go cannot run this app.** It depends on native modules that are not compiled into the
+Expo Go binary — secure storage, AES-GCM crypto, and Android's `FLAG_SECURE`. Expo Go appears to
+work right up until the first import that needs one of them, then fails with a module-not-found
+that reads like a bundler bug and isn't.
+
+`expo-dev-client` is therefore a dependency from day one, and `app.json` lists it as a plugin.
+Build the dev build **before** you start feature work:
+
+```bash
+npx expo prebuild            # generates android/ + ios/ from app.json
+npm run android              # or: npm run ios   (needs Xcode)
+```
+
+`npm run android` / `npm run ios` map to `expo run:*`, which **builds and installs the dev
+build**. They deliberately do not map to `expo start --android`, which would launch Expo Go and
+fail as described above.
+
+Building locally needs the platform toolchain — Android Studio + SDK for Android, Xcode for iOS.
+If you don't have them (or need an iOS build without a Mac), use EAS cloud builds instead:
+`npx eas-cli build --profile development --platform android`. That needs an `eas.json`, which
+this repo does not have yet — see "Not yet set up" below.
+
+After the dev build is installed, `npm start` connects to it instead of Expo Go. You only re-run
+`prebuild`/`run:` when a native dependency or config plugin changes — not for JS changes.
+
+**`android/` and `ios/` are gitignored on purpose.** We use CNG (Continuous Native Generation):
+those directories are generated from `app.json`, so they are build output, not source. Two rules
+follow — never hand-edit anything inside them (the next `prebuild` discards it), and a dependency
+without an Expo config plugin needs a small local plugin written for it rather than a native
+edit. Going "bare" and committing them is a team decision, not a per-person one.
+
+Native modules added later install the same way and need a config-plugin entry in `app.json`
+plus a fresh `prebuild`. Which ones are coming, and who owns them, is a per-team matter — see the
+team docs below.
+
+### Not yet set up
+
+Everything the dev client needs is installed and verified — `npx expo-doctor` passes 20/20 and
+`npx expo prebuild` generates a clean Android project with `expo-dev-client`, `expo-dev-launcher`
+and `expo-dev-menu` all autolinked. Two things remain, and both need a decision rather than a
+command:
+
+- **No `eas.json`.** Without it there are no cloud builds, so every dev build must be compiled
+  locally with the full platform toolchain installed. Worth adding if anyone on the team lacks
+  Android Studio, or needs an iOS build without a Mac. `npx eas-cli init` creates it, but it
+  binds the repo to an Expo account/project — a team decision, not a per-person one.
+- **No app icon or splash.** `assets/` holds only a `.gitkeep`, so builds use Expo defaults.
+  Cosmetic, but it will look broken on a device before it looks intentional.
+
+### Versions
+
+Everything is resolved by Expo's own resolver, not pinned by hand. `npx expo install --check`
+reports drift and is worth running after any dependency change. Two consequences of SDK 57 worth
+knowing:
+
+- **TypeScript is 6.0.x**, not 5.x — SDK 57 expects it. TS 6 deprecates `baseUrl`, so
+  `tsconfig.json` uses tsconfig-relative `paths` instead (see the comment there), and it no
+  longer auto-includes `@types`, hence the explicit `"types": ["jest"]`.
+- **`render` from `@testing-library/react-native` v14 is async.** `await` it. Destructuring the
+  Promise gives you `getByText is not a function`, which reads like a broken install.
 
 ## Branch model
 
@@ -115,11 +179,45 @@ say a five-way split. Section 05 is the outlier and is stale.
 
 ## Unratified — do not build as if these are settled
 
-| Item | Question | Build so that… |
-|---|---|---|
-| **L-2** | Is the post-sign-in catalogue scoped by entitlement? Contradicts Design Spec §4.1, a signed document. | scope is config, not branching logic |
-| **L-3** | Final action vocabulary — `Buy` removed, `borrow` redefined, `subscribe` B2C-only | variants come off the `ActionId` union |
-| **L-5** | Three feed tabs, or one merged list? | tabs are **data, not code** |
+| Item    | Question                                                                                                    | Build so that…                               |
+| ------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| **L-2** | Is the post-sign-in catalogue scoped by entitlement? Contradicts Design Spec §4.1, a signed document.       | scope is config, not branching logic         |
+| **L-3** | Final action vocabulary — `Buy` removed, `borrow` redefined, `subscribe` B2C-only                           | variants come off the `ActionId` union       |
+| **L-5** | Three feed tabs, or one merged list?                                                                        | tabs are **data, not code**                  |
 | **Q-D** | Will wokay supply `accessTier`? OPDS 2.0 has no equivalent. Longest lead time of anything we're asking for. | read it from our own fixture field meanwhile |
 
 Also open: who is team1's lead, and whether team1 owns any backend module at all.
+
+---
+
+## Per-team docs
+
+This file covers what is repo-wide: toolchain, setup, branch model, PR process. Anything scoped
+to a single team's capabilities — its feature folders, owner map and capability-specific
+constraints — lives in that team's own file rather than here.
+
+- **[`T4_Readme.md`](T4_Readme.md)** — t4targaryen, CAP-7 Reader & Offline. Covers
+  `src/shared/`, `src/features/`, `samples/`, the contract freeze and canary, and why the
+  development build is mandatory for the reader stack.
+
+## Lint toolchain notes
+
+**Exact pins mean no automatic patches.** `eslint: 9.39.5` won't pick up 9.39.6.
+The pinning is deliberate — but `^9.39.5` would be just as safe against the
+ESLint 10 crash, since a caret never crosses a major. Easy loosening if the
+rigidity annoys you.
+
+**`react.version` is now `'detect'`** in `eslint.config.js`. It used to be a
+fabricated `'19.0'` to silence a startup warning while React wasn't installed;
+React 19.2 is a real dependency since P0-1, so the linter reads the installed
+version rather than being told a made-up one.
+
+**Jest globals are scoped, not global.** `describe`/`it`/`expect`/`jest` are
+declared only for `*.test.*`, `__tests__/`, and `jest.setup.js`. A stray
+`describe` in `src/` is still a `no-undef` error, which is the point.
+
+**`jest.setup.js` mocks `react-native-safe-area-context` globally.** The real
+provider measures layout before rendering children, and there is no layout under
+Jest — so without the mock every screen test renders an empty tree and every
+query fails against a tree containing only `<RNCSafeAreaProvider />`. The mock
+ships with the library; we just register it.
