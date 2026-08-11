@@ -25,7 +25,16 @@
 const expoFlat = require('eslint-config-expo/flat');
 
 module.exports = [
-  { ignores: ['node_modules/**', 'eslint.config.js'] },
+  {
+    ignores: [
+      'node_modules/**',
+      'eslint.config.js',
+      // Node-only, gitignored projects — not part of the Expo/RN app tree, so
+      // Buffer/__dirname/etc. are real globals there, not no-undef violations.
+      'mock-backend/**',
+      '__mocks__/**',
+    ],
+  },
 
   ...expoFlat,
 

@@ -8,48 +8,69 @@
     "moduleResolution": "bundler",
     "module": "ESNext",
     "target": "ESNext",
-    "lib": ["ESNext", "DOM"],
-
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "allowJs": true,
     "checkJs": true,
-
-    // Explicit because TS 6 no longer auto-pulls every node_modules/@types
-    // package into global scope. Without this, describe/it/expect are
-    // "Cannot find name" (TS2593) even though @types/jest is installed.
-    // Only affects GLOBAL types — @types/react still resolves through the
-    // normal `import ... from 'react'` path and does not belong in this list.
-    //
-    // "node" added: src/features/encryption/ (Buffer, Node's built-in fs/path/
-    // crypto modules, __dirname) legitimately needs Node's ambient/global
-    // types — that code runs today under plain Node (via `npx tsx`) as a
-    // pre-native-toolchain proof, not yet inside the RN JS runtime.
-    "types": ["jest", "node"],
-
-    // NO baseUrl. TypeScript 6 deprecates it (TS5101) and it stops working in
-    // 7. Since TS 4.x, `paths` alone is resolved relative to this file's
-    // directory, which is what the "./src/*" prefixes below rely on — so this
-    // is the migration, not a workaround. Do not "fix" a future TS7 warning by
-    // adding baseUrl back; and do not silence TS5101 with ignoreDeprecations.
+    "types": [
+      "jest",
+      "node"
+    ],
     "paths": {
-      "@/*": ["./src/*"],
-      "@theme/*": ["./src/theme/*"],
-      "@model/*": ["./src/model/*"],
-      "@adapters/*": ["./src/adapters/*"],
-      "@access/*": ["./src/access/*"],
-      "@components/*": ["./src/components/*"],
-      "@screens/*": ["./src/screens/*"],
-      "@search/*": ["./src/search/*"],
-      "@store/*": ["./src/store/*"],
-      "@storage/*": ["./src/storage/*"],
-      "@hooks/*": ["./src/hooks/*"],
-      "@navigation/*": ["./src/navigation/*"],
-      "@config/*": ["./src/config/*"],
-      "@utils/*": ["./src/utils/*"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@theme/*": [
+        "./src/theme/*"
+      ],
+      "@model/*": [
+        "./src/model/*"
+      ],
+      "@adapters/*": [
+        "./src/adapters/*"
+      ],
+      "@access/*": [
+        "./src/access/*"
+      ],
+      "@components/*": [
+        "./src/components/*"
+      ],
+      "@screens/*": [
+        "./src/screens/*"
+      ],
+      "@search/*": [
+        "./src/search/*"
+      ],
+      "@store/*": [
+        "./src/store/*"
+      ],
+      "@storage/*": [
+        "./src/storage/*"
+      ],
+      "@hooks/*": [
+        "./src/hooks/*"
+      ],
+      "@navigation/*": [
+        "./src/navigation/*"
+      ],
+      "@config/*": [
+        "./src/config/*"
+      ],
+      "@utils/*": [
+        "./src/utils/*"
+      ]
     }
   },
-  // Root-level globs, not a bare "App.tsx": test files live beside the code
-  // they cover, so App.test.tsx must be typechecked too. Naming only App.tsx
-  // here would let a test file drift out of tsc's view and go red only in CI.
-  "include": ["app", "src", "*.ts", "*.tsx"],
-  "exclude": ["node_modules"]
+  "include": [
+    "app",
+    "src",
+    "*.ts",
+    "*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
+  "extends": "expo/tsconfig.base"
 }
