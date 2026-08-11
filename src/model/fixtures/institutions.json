@@ -1,0 +1,58 @@
+{
+  "institutions": [
+    {
+      "id": "inst_7f3",
+      "name": "Imperial College London",
+      "country": "United Kingdom",
+      "crestUrl": "https://cdn.tf/crests/inst_7f3.png",
+      "authType": "saml"
+    },
+    {
+      "id": "inst_a21",
+      "name": "University of Manchester",
+      "country": "United Kingdom",
+      "crestUrl": "https://cdn.tf/crests/inst_a21.png",
+      "authType": "oidc"
+    },
+    {
+      "id": "inst_b04",
+      "name": "Trinity College Dublin",
+      "country": "Ireland",
+      "crestUrl": "https://cdn.tf/crests/inst_b04.png",
+      "authType": "saml"
+    },
+    {
+      "id": "inst_c88",
+      "name": "Kwame Nkrumah University of Science and Technology",
+      "country": "Ghana",
+      "authType": "oidc"
+    },
+    {
+      "id": "inst_d15",
+      "name": "Universidade de São Paulo",
+      "country": "Brazil",
+      "crestUrl": "https://cdn.tf/crests/inst_d15.png",
+      "authType": "email"
+    },
+    {
+      "id": "inst_e62",
+      "name": "Indian Institute of Technology Bombay",
+      "country": "India",
+      "crestUrl": "https://cdn.tf/crests/inst_e62.png",
+      "authType": "unknown"
+    },
+    {
+      "id": "inst_f39",
+      "name": "Nanyang Technological University",
+      "country": "Singapore",
+      "crestUrl": "https://cdn.tf/crests/inst_f39.png",
+      "authType": "oidc"
+    },
+    {
+      "id": "inst_09c",
+      "name": "The Royal Netherlands Institute for Southeast Asian and Caribbean Studies",
+      "country": "Netherlands",
+      "authType": "email"
+    }
+  ]
+}
