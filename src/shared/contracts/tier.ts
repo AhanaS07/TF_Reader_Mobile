@@ -1,4 +1,4 @@
-// /shared/tier.ts
+// src/shared/contracts/tier.ts
 // Access tier — CAP-7 Reader & Offline (Team t4targaryen)
 //
 // Owner: Download + Encryption (Abhinav). Referenced by Reader, Sync, and the

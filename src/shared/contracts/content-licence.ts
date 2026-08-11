@@ -1,4 +1,4 @@
-// /shared/contentLicence.ts
+// src/shared/contracts/content-licence.ts
 // Content-licence HTTP response — CAP-7 Reader & Offline (Team t4targaryen)
 //
 // Owner: Download + Encryption (Abhinav). Response shape for `GET /books/:id/content-licence`
