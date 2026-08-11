@@ -8,43 +8,69 @@
     "moduleResolution": "bundler",
     "module": "ESNext",
     "target": "ESNext",
-    "lib": ["ESNext", "DOM"],
-
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "allowJs": true,
     "checkJs": true,
-
-    // Declared explicitly rather than relying on automatic @types discovery,
-    // which does not pick these up under this config — without it, every
-    // `describe`/`it`/`expect` in a src/ test is an unresolved name and the
-    // typecheck job goes red on green tests.
-    //   jest → test globals (tests under src/ ARE typechecked; App.test.tsx is
-    //          not, because it sits outside `include` below)
-    //   node → `process.env`, for reading EXPO_PUBLIC_* config
-    // Caveat: "node" also types Node-only globals (fs, Buffer) that do not exist
-    // in the React Native runtime. Do not take a green typecheck as proof that a
-    // Node API is available on device.
-    "types": ["jest", "node"],
-
-    // No `baseUrl`: TypeScript 6 errors on it (TS5101) and drops it in 7.0.
-    // Without baseUrl, `paths` targets resolve relative to THIS file, which is
-    // why every entry below is written as "./src/...". Keep it that way.
+    "types": [
+      "jest",
+      "node"
+    ],
     "paths": {
-      "@/*": ["./src/*"],
-      "@theme/*": ["./src/theme/*"],
-      "@model/*": ["./src/model/*"],
-      "@adapters/*": ["./src/adapters/*"],
-      "@access/*": ["./src/access/*"],
-      "@components/*": ["./src/components/*"],
-      "@screens/*": ["./src/screens/*"],
-      "@search/*": ["./src/search/*"],
-      "@store/*": ["./src/store/*"],
-      "@storage/*": ["./src/storage/*"],
-      "@hooks/*": ["./src/hooks/*"],
-      "@navigation/*": ["./src/navigation/*"],
-      "@config/*": ["./src/config/*"],
-      "@utils/*": ["./src/utils/*"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@theme/*": [
+        "./src/theme/*"
+      ],
+      "@model/*": [
+        "./src/model/*"
+      ],
+      "@adapters/*": [
+        "./src/adapters/*"
+      ],
+      "@access/*": [
+        "./src/access/*"
+      ],
+      "@components/*": [
+        "./src/components/*"
+      ],
+      "@screens/*": [
+        "./src/screens/*"
+      ],
+      "@search/*": [
+        "./src/search/*"
+      ],
+      "@store/*": [
+        "./src/store/*"
+      ],
+      "@storage/*": [
+        "./src/storage/*"
+      ],
+      "@hooks/*": [
+        "./src/hooks/*"
+      ],
+      "@navigation/*": [
+        "./src/navigation/*"
+      ],
+      "@config/*": [
+        "./src/config/*"
+      ],
+      "@utils/*": [
+        "./src/utils/*"
+      ]
     }
   },
-  "include": ["app", "src", "App.js"],
-  "exclude": ["node_modules"]
+  "include": [
+    "app",
+    "src",
+    "App.tsx",
+    "App.test.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
+  "extends": "expo/tsconfig.base"
 }
