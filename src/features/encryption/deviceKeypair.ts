@@ -43,8 +43,9 @@ export async function getStoredPrivateKeyRef(): Promise<string> {
  * Wrap algorithm: RSA-OAEP-256, per `EncryptionDescriptor.wrapAlgorithm` in
  * src/shared/contracts/content-provider.ts (Ahana, sourced from the wokay backend spec) —
  * previously unconfirmed here, now settled by that canonical contract. Real implementation
- * still needs `react-native-keychain`'s RSA support (or a WebCrypto `RSA-OAEP` fallback) once
- * P0-1 lands; this stub should produce/consume the same base64 shape as
+ * needs an RSA-OAEP-capable library (NOT react-native-keychain — confirmed to have no
+ * asymmetric crypto API at all, see file header); keychain's role is limited to storing the
+ * resulting private key. This stub should produce/consume the same base64 shape as
  * `EncryptionDescriptor.wrappedBek`.
  *
  * NOT IMPLEMENTED — see file header.
