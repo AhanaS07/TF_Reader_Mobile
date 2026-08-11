@@ -26,50 +26,20 @@
 //
 // No Buffer: this file runs in the RN JS runtime, which doesn't have Node's Buffer without a
 // polyfill (unlike the Node-only scripts under scripts/, which still use Buffer deliberately —
-// see their own headers). base64/hex codecs below are portable Uint8Array arithmetic, cross-
-// checked against Node's Buffer for every length 0-300 bytes before being used here.
+// see their own headers). base64 codec is the shared, cross-checked one in ./base64.ts; hex
+// codec (needed only here, for iv/tag) is portable Uint8Array arithmetic below.
+//
+// CONFIRMED on-device 2026-08-11: this file's encrypt/decrypt round-trip actually works at
+// runtime (not just "compiles") — logged RUNTIME_TEST: aesGcm roundTripOk= true from a real
+// iOS Simulator run. keyStorage.ts's ORIGINAL Buffer-based version failed at the same time with
+// "Property 'Buffer' doesn't exist" — which is exactly why this file never used Buffer to begin
+// with, and why keyStorage.ts was fixed to use ./base64.ts too.
 
 import AesGcmCrypto from 'react-native-aes-gcm-crypto';
 import { CipherPayload, NONCE_BYTES, GCM_TAG_BYTES, assertCipherLayout } from './cipherLayout';
+import { bytesToBase64, base64ToBytes } from './base64';
 
 const KEY_BYTES = 32; // AES-256
-
-const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let result = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b0 = bytes[i];
-    const b1 = i + 1 < bytes.length ? bytes[i + 1] : undefined;
-    const b2 = i + 2 < bytes.length ? bytes[i + 2] : undefined;
-    const triplet = (b0 << 16) | ((b1 ?? 0) << 8) | (b2 ?? 0);
-    result += B64_CHARS[(triplet >> 18) & 0x3f];
-    result += B64_CHARS[(triplet >> 12) & 0x3f];
-    result += b1 === undefined ? '=' : B64_CHARS[(triplet >> 6) & 0x3f];
-    result += b2 === undefined ? '=' : B64_CHARS[triplet & 0x3f];
-  }
-  return result;
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const clean = b64.replace(/=+$/, '');
-  const byteLength = Math.floor((clean.length * 6) / 8);
-  const bytes = new Uint8Array(byteLength);
-  let bitBuffer = 0;
-  let bitCount = 0;
-  let outIdx = 0;
-  for (let i = 0; i < clean.length; i++) {
-    const val = B64_CHARS.indexOf(clean[i]);
-    if (val === -1) throw new Error(`base64ToBytes: invalid character "${clean[i]}"`);
-    bitBuffer = (bitBuffer << 6) | val;
-    bitCount += 6;
-    if (bitCount >= 8) {
-      bitCount -= 8;
-      bytes[outIdx++] = (bitBuffer >> bitCount) & 0xff;
-    }
-  }
-  return bytes;
-}
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
