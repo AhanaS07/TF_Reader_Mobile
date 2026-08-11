@@ -9,9 +9,9 @@
 // a SEPARATE endpoint/record. Annotations (bookmarks/highlights) are also NOT
 // here — see annotations.ts.
 //
-// Carries id + userId + bookId like every other synced record. Because it
-// carries bookId, prefs are scoped PER (user, book) — one record per book, not
-// a per-user singleton. Conflict resolution = LWW (last-write-wins) on `updatedAt`.
+// Carries id + userId like every other synced record. Prefs are a per-user
+// SINGLETON — one record per user, applied across all books (NOT scoped per
+// book). Conflict resolution = LWW (last-write-wins) on `updatedAt`.
 
 export type Theme =
   | 'light'
@@ -45,8 +45,7 @@ export interface ZoomPrefs {
 export interface SharedPrefs {
   // Identity — sent with EVERY synced record (required by Sync/Karthik).
   id: string; // client-generated UUID
-  userId: string; // owner
-  bookId: string; // book scope (see note above — this makes prefs per-book)
+  userId: string; // owner (prefs are a per-user singleton — see note above)
 
   theme: Theme;
   font: FontPrefs;
@@ -63,7 +62,7 @@ export interface SharedPrefs {
 // Defaults + reset (Feature Breakdown §5: "defaults + reset; live preview").
 export const DEFAULT_PREFS: Omit<
   SharedPrefs,
-  'id' | 'userId' | 'bookId' | 'updatedAt' | 'synced'
+  'id' | 'userId' | 'updatedAt' | 'synced'
 > = {
   theme: 'system',
   font: { family: 'system' },
