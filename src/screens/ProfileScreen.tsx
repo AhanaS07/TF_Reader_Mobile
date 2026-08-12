@@ -1,8 +1,5 @@
 import { View, Text, StyleSheet } from 'react-native';
-import tokens from '../theme/tokens';
-
-const { color } = tokens;
-const typeScale = tokens.type;
+import { color, type } from '@theme/tokens';
 
 export default function ProfileScreen() {
   return (
@@ -15,9 +12,9 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.surface },
   title: {
-    fontWeight: typeScale.sectionHeader.weight,
-    fontSize: typeScale.sectionHeader.size,
-    lineHeight: typeScale.sectionHeader.lineHeight,
+    fontWeight: type.sectionHeader.weight,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
     color: color.textSecondary,
   },
 });
