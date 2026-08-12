@@ -124,6 +124,60 @@ describe('syncManager.run — PUSH', () => {
     const [a, b] = await Promise.all([syncManager.run(), syncManager.run()]);
     expect(a).toBe(b); // same report object — one execution, shared
   });
+
+  it('serverHasDiverged() must not drop the outbox op for an edit applyServerRecord actually kept', async () => {
+    // Base version this device last saw from the server.
+    const T1 = '2020-01-01T00:00:00.000Z';
+    // The OTHER device's divergent write - newer than T1, but (as constructed here) OLDER than
+    // this device's own pending local edit below.
+    const T2 = '2021-01-01T00:00:00.000Z';
+
+    const row = await progressRepository.savePosition(1);
+    // Simulate this row having already been synced once, with the server ack recorded as T1.
+    await progressRepository.adoptPushResult(
+      { id: row.id, userId: USER_ID, bookId: BOOK_ID, offset: 1, updatedAt: T1, isDeleted: false },
+      row.updated_at,
+    );
+
+    // A genuine new local edit, stamped with "now" - later than both T1 and T2.
+    const edited = await progressRepository.savePosition(2);
+    expect(edited.updated_at > T2).toBe(true);
+
+    global.fetch = routedFetch([
+      {
+        method: 'GET',
+        match: (url) => url.endsWith(`/progress/${row.id}`),
+        respond: () =>
+          jsonResponse({ id: row.id, userId: USER_ID, bookId: BOOK_ID, offset: 999, updatedAt: T2 }),
+      },
+      // Since applyServerRecord refuses to overwrite (our edit is newer), serverHasDiverged
+      // must let this op fall through to a normal push instead of dropping it.
+      {
+        method: 'PUT',
+        match: (url) => url.endsWith(`/progress/${row.id}`),
+        respond: () =>
+          jsonResponse({
+            id: row.id,
+            userId: USER_ID,
+            bookId: BOOK_ID,
+            offset: 2,
+            updatedAt: edited.updated_at,
+          }),
+      },
+    ]);
+
+    await syncManager.run();
+
+    // applyServerRecord correctly refused to overwrite - the local edit (offset 2) is still the
+    // row's value - and it actually reached the server this time instead of being silently
+    // dropped from the queue.
+    const stored = await progressRepository.findById(row.id);
+    expect(stored?.offset).toBe(2);
+    expect(stored?.synced).toBe(1);
+
+    const stillQueued = (await outboxRepository.listAll()).filter((o) => o.entity_id === row.id);
+    expect(stillQueued).toHaveLength(0);
+  });
 });
 
 describe('syncManager.run — PULL', () => {

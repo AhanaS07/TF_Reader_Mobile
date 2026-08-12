@@ -248,6 +248,15 @@ async function sendDelete(entityPath: string, id: string, payload: any): Promise
  * us. Since ids are minted on the device as UUIDs, any document already sitting
  * under that id is one of our own earlier pushes whose response was lost - so
  * that is not a conflict either, and overwriting it is exactly right.
+ *
+ * A timestamp difference here only means the server's copy is *worth checking* -
+ * `applyServerRecord`'s own comparison is what actually decides whether it overwrites the local
+ * row. Treating every difference as resolved regardless of that outcome - the previous version
+ * of this function discarded `applyServerRecord`'s return value - let a genuinely newer local
+ * edit survive on the row while its outbox entry was deleted anyway: correct data, silently
+ * orphaned, with nothing left queued to ever push it. Returning `applyServerRecord`'s own
+ * verdict keeps the row and the outbox in agreement: `push` only drops the operation when the
+ * server's copy actually won.
  */
 async function serverHasDiverged(
   op: OutboxRow,
@@ -269,9 +278,11 @@ async function serverHasDiverged(
 
   if (!record?.updatedAt || record.updatedAt === base) return false;
 
-  // Someone else got there first: adopt their copy and drop our operation.
-  await TABLES[op.entity_type].applyServerRecord(record);
-  return true;
+  // Someone else wrote there since we last looked. Adopt their copy - but only report a
+  // resolved conflict (and let `push` drop our operation) if it actually took: `saveLocal`'s LWW
+  // guard can and does refuse to overwrite a local row that is itself newer, in which case our
+  // edit still needs to reach the server, not vanish from the queue.
+  return TABLES[op.entity_type].applyServerRecord(record);
 }
 
 // ------------------------------------------------------------------- PULL
