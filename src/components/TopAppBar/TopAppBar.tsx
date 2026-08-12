@@ -1,11 +1,9 @@
 import type { ReactNode } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import tokens from '../../theme/tokens';
-
-// Named destructure — 'type' is a TS keyword in import positions, so pull via default.
-const { color, space } = tokens;
-const typeScale = tokens.type;
+// `type` is aliased on import — bare `import { type }` reads as TS's type-only
+// import modifier, not the token named `type`.
+import { color, space, type as typeScale } from '../../theme/tokens';
 
 // Bar height excluding the safe-area inset above it.
 const BAR_HEIGHT = 56;

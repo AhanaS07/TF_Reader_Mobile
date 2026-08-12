@@ -3,10 +3,7 @@
 import { ScrollView, View, Text, StyleSheet } from 'react-native';
 import BottomTabBar from './BottomTabBar';
 import type { TabItem } from './BottomTabBar';
-import tokens from '../../theme/tokens';
-
-const { color, space } = tokens;
-const typeScale = tokens.type;
+import { color, space, type as typeScale } from '../../theme/tokens';
 
 const TABS: TabItem[] = [
   { key: 'Catalogue', label: 'Catalogue', iconActive: 'book', iconInactive: 'book-outline' },

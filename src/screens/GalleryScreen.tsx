@@ -1,10 +1,7 @@
 // Dev-only route — never user-reachable in production.
 // Khushi (K5) fills this with the full component gallery.
 import { View, Text, StyleSheet } from 'react-native';
-import tokens from '../theme/tokens';
-
-const { color, space } = tokens;
-const typeScale = tokens.type;
+import { color, space, type as typeScale } from '../theme/tokens';
 
 export default function GalleryScreen() {
   return (
