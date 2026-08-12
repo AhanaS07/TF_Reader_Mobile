@@ -5,13 +5,10 @@
 // come from (readerAssets.ts owns that) and renders no chrome (ReaderScreen does).
 //
 // >>> WHY THIS WEBVIEW IS LOCKED DOWN AS HARD AS IT IS <<<
-// Today it renders a 3.6KB plaintext fixture, so none of this is load-bearing
-// yet. It is written this way now because THIS COMPONENT IS WHERE DECRYPTED,
-// LICENSED BOOK CONTENT WILL BE RENDERED. Once whole-book decrypt lands, the
-// HTML/CSS/JS inside a book is untrusted input running in a context that holds
-// plaintext, and the failure mode is exfiltration — a book that navigates or
-// beacons out. Locking navigation down after that content arrives means
-// retrofitting security onto a live path; locking it down now costs nothing.
+// This is where DECRYPTED, LICENSED BOOK CONTENT is rendered. Now that
+// whole-book decrypt is wired, the HTML/CSS/JS inside a book is untrusted input
+// running in a context that holds plaintext, and the failure mode is
+// exfiltration — a book that navigates or beacons out. This is load-bearing.
 //
 // The load is fully local and self-contained (zero sub-resource requests), so
 // there is no legitimate navigation for the deny rules below to break.
@@ -96,12 +93,9 @@ export function ReaderWebView({
   }, [isReady]);
 
   /**
-   * NOTE: this handler is intentionally SYNCHRONOUS and does no async work.
-   *
-   * Type-aware ESLint is off repo-wide (a deliberate choice recorded in
-   * eslint.config.js), so `@typescript-eslint/no-floating-promises` is NOT
-   * available to catch a dropped promise here. A floating rejection in this
-   * handler would surface as a reader that silently stops responding. Keeping it
+   * Intentionally SYNCHRONOUS. Type-aware ESLint is off repo-wide, so
+   * `no-floating-promises` cannot catch a dropped promise here, and a floating
+   * rejection would surface as a reader that silently stops responding. Staying
    * sync removes the hazard rather than relying on a rule that cannot run.
    */
   const handleMessage = useCallback(
@@ -187,17 +181,15 @@ export function ReaderWebView({
         source={{ uri: sourceUri }}
         // Local file, so the origin is the file scheme. NOT '*' — see the header.
         //
-        // `about:*`, NOT `about:blank`: epub.js renders each chapter by assigning
-        // `iframe.srcdoc` (epub.js dist, View.prototype.create -> `this.iframe.srcdoc
-        // = contents`), and WKWebView surfaces that to RN as a navigation to
-        // `about:srcdoc`. react-native-webview checks originWhitelist BEFORE it ever
-        // calls onShouldStartLoadWithRequest (see createOnShouldStartLoadWithRequest
-        // in WebViewShared.js), so a too-narrow list here silently kills the chapter
-        // iframe: `rendition.display()` never resolves, no 'rendered' is posted, and
-        // the screen sits on "Opening book…" forever with NO error, because our own
-        // handler — the thing that would have raised BLOCKED_NAVIGATION — was never
-        // reached. The whitelist is a coarse pre-filter, not the security boundary;
-        // handleShouldStartLoad below is still the real allow-list.
+        // `about:*` AND NOT `about:blank`: epub.js renders each chapter by
+        // assigning `iframe.srcdoc`, which WKWebView surfaces to RN as a
+        // navigation to `about:srcdoc`. react-native-webview checks
+        // originWhitelist BEFORE it calls onShouldStartLoadWithRequest, so a
+        // too-narrow list here silently kills the chapter iframe: display() never
+        // resolves, no 'rendered' is posted, and the screen sits on "Opening
+        // book…" forever with NO error — our handler, the thing that would have
+        // raised BLOCKED_NAVIGATION, is never reached. The whitelist is a coarse
+        // pre-filter; handleShouldStartLoad below is the real allow-list.
         originWhitelist={['file://*', 'about:*']}
         onShouldStartLoadWithRequest={handleShouldStartLoad}
         onNavigationStateChange={handleNavigationStateChange}

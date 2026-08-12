@@ -1,8 +1,13 @@
 // App.tsx — the Expo entry component.
 //
-// `package.json` main = node_modules/expo/AppEntry.js, which does
-// `import App from '../../App'` and hands it to registerRootComponent. That
-// resolves to THIS file, so the name and root location are load-bearing.
+// `package.json` main = index.js at the repo root, which does
+// `import App from './App'` and hands it to registerRootComponent. That resolves
+// to THIS file, so the name and root location are load-bearing.
+//
+// (It used to be `node_modules/expo/AppEntry.js`, the pre-SDK-50 convention.
+// Expo SDK 57 serves /index.bundle literally and no longer falls back to the
+// `main` field, so with no root index.js Metro answered 404 and the dev client
+// showed "Failed to load app from http://<ip>:8081" with no other diagnostics.)
 //
 // Deliberately near-empty. RootNavigator (src/navigation/) is CAP work owned by
 // the feature teams — this file only proves the toolchain boots and should grow
@@ -27,6 +32,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+import { DEV_SAMPLE_BOOK_ID } from '@/features/reader/devContentSeed';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 
 export default function App() {
@@ -36,7 +42,12 @@ export default function App() {
         <View style={styles.header}>
           <Text style={styles.title}>TF Reader</Text>
         </View>
-        <ReaderScreen />
+        {/*
+          TEMP, with the block above: the bookId comes from devContentSeed's
+          stand-in fixture because there is no library/navigation yet to select a
+          real book. When RootNavigator lands, the route supplies this instead.
+        */}
+        <ReaderScreen bookId={DEV_SAMPLE_BOOK_ID} />
       </SafeAreaView>
     </SafeAreaProvider>
   );

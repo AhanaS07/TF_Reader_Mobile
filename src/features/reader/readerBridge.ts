@@ -4,21 +4,17 @@
 // IIFE at the bottom of src/features/reader/webview/reader.template.html.
 //
 // >>> HAND-SYNC CONTRACT — READ BEFORE EDITING <<<
-// The WebView side is NOT typechecked. It lives inside a .html file precisely to
-// keep it out of tsc's view (tsconfig sets allowJs + checkJs over src/), and
-// type-aware ESLint is off repo-wide, so NOTHING mechanically enforces that these
-// two files agree. The only thing keeping that safe is that the surface is tiny
-// and 1:1:
+// The WebView side is NOT typechecked — it lives in a .html file precisely to
+// keep it out of tsc's view — so NOTHING mechanically enforces that these two
+// files agree. What keeps that safe is that the surface is tiny and 1:1:
 //
 //   ReaderMessage['type']   <-> every post({ type: ... }) in the template
 //   READER_COMMANDS keys    <-> every method name on window.TFReader
 //
-// Both directions are asserted at runtime below (parseReaderMessage rejects an
-// unknown type; TFReader membership is checked in the injected script), so a
-// drift shows up as a loud, coded error instead of a silently ignored message.
-// KEEP THIS UNION MINIMAL. The moment it needs to grow much past this, the right
-// answer is to switch the WebView payload to a real typechecked build step, not
-// to add more hand-synced cases.
+// Both directions are asserted at runtime below, so a drift shows up as a loud,
+// coded error rather than a silently ignored message. KEEP THIS UNION MINIMAL:
+// once it needs to grow much past this, the right answer is a real typechecked
+// build step for the WebView payload, not more hand-synced cases.
 
 /** Chapter entry from epub.js `book.loaded.navigation`. */
 export interface ReaderTocItem {
@@ -47,6 +43,11 @@ export const WEBVIEW_ERROR_CODES = [
  */
 export const HOST_ERROR_CODES = [
   'ASSET_LOAD_FAILED',
+  // getBook(bookId) rejected — decrypt/licence/keystore. Distinct from
+  // ASSET_LOAD_FAILED, which means a bundled asset would not resolve. The
+  // specific ContentError rides in the message rather than being duplicated into
+  // this union: the two vocabularies belong to different contracts.
+  'CONTENT_LOAD_FAILED',
   'READY_TIMEOUT',
   'WEBVIEW_LOAD_FAILED',
   'BRIDGE_PARSE_FAILED',

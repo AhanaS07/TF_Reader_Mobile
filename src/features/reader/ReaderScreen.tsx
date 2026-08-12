@@ -1,8 +1,7 @@
 // Owner: Reader (Ahana).
 //
 // The reader screen: WebView + Prev/Next/Contents controls + a visible error
-// banner. This is the plaintext baseline for CAP-7 — it proves the shell renders
-// and paginates a real EPUB end-to-end, with no crypto anywhere in the path.
+// banner, reading decrypted bytes through the ContentProvider seam.
 //
 // Colours are inline for the same reason App.tsx's are: src/theme/ has not landed
 // yet. Replace with tokens when it does.
@@ -10,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { closeBook } from '@/features/encryption/contentProvider';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import { getBookBase64, getReaderHtmlUri } from '@/features/reader/readerAssets';
 import type {
@@ -18,6 +18,7 @@ import type {
   ReaderMessage,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
+import { ContentFailure } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
 interface ReaderError {
@@ -27,18 +28,17 @@ interface ReaderError {
 
 interface ReaderScreenProps {
   /**
-   * The book this screen is reading. OPTIONAL only for as long as the plaintext
-   * baseline lasts: today `readerAssets.getBookBase64()` reads a bundled sample
-   * and never opens a ContentStore session, so there is no session to identify.
+   * Identifies the ContentStore session `getBook(bookId)` opens and
+   * `closeBook(bookId)` wipes.
    *
-   * Once the decrypted-content seam lands (see readerAssets.ts), this becomes
-   * REQUIRED — `getBook(bookId)` needs it, and so does the `closeBook(bookId)`
-   * teardown below.
+   * REQUIRED, deliberately: while it was optional the teardown effect below hit
+   * an early return and never ran, so the "wipe on close" guarantee was dead
+   * code. Making it required is what keeps that from silently regressing.
    */
-  bookId?: BookId;
+  bookId: BookId;
 }
 
-export function ReaderScreen({ bookId }: ReaderScreenProps = {}): React.JSX.Element {
+export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [htmlUri, setHtmlUri] = useState<string | null>(null);
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
@@ -82,41 +82,20 @@ export function ReaderScreen({ bookId }: ReaderScreenProps = {}): React.JSX.Elem
 
   // LIFECYCLE, not optional — contentProvider.ts states it outright: closeBook()
   // MUST run when the reader view for a book closes, or the whole decrypted book
-  // stays in RAM indefinitely. That is the "wipe on close" guarantee behind
-  // BuildPlan.md's whole-file-decrypt amendment.
+  // stays in RAM indefinitely.
   //
-  // Deliberately its OWN effect keyed on [bookId], not folded into the htmlUri
-  // effect above: this must also fire when the screen SWITCHES books, not just on
-  // unmount. Sharing that effect would tie teardown to `raiseError` and re-run it
-  // for reasons unrelated to the session.
-  //
-  // Safe today even though the plaintext baseline never opens a session:
-  // contentStore.close() is documented idempotent — "closing a book with no open
-  // session is a no-op" — so this is inert until the seam swap, then correct the
-  // moment it lands. Wiring it now is what stops it being forgotten then.
+  // Its OWN effect keyed on [bookId], not folded into the htmlUri effect above,
+  // so it also fires when the screen SWITCHES books rather than only on unmount.
+  // Sharing that effect would tie teardown to `raiseError` and re-run it for
+  // reasons unrelated to the session.
   //
   // Fire-and-forget with an explicit catch: React cleanups cannot be async, and a
   // rejected teardown must not surface as an unhandled rejection. There is also
   // nothing useful to show the user — the screen is already gone.
-  //
-  // WHY dynamic import() AND NOT A TOP-LEVEL ONE: importing contentProvider at
-  // module scope would pull this whole file's graph through contentStore ->
-  // deviceKeypair -> react-native-quick-crypto (a Nitro native module), plus
-  // aesGcm -> react-native-aes-gcm-crypto and keyStorage -> react-native-keychain.
-  // That would load the entire crypto native stack just to mount the PLAINTEXT
-  // baseline, which this file's header and readerAssets.ts both state must have no
-  // crypto in its path — and would hard-crash the screen on any build where those
-  // pods aren't linked yet. Deferring the import to teardown keeps the baseline's
-  // module graph crypto-free: nothing here loads until a real bookId exists, which
-  // only happens after the seam swap, by which point the pods are a prerequisite
-  // anyway.
   useEffect(() => {
-    if (bookId === undefined) return;
-
     return () => {
       void (async () => {
         try {
-          const { closeBook } = await import('@/features/encryption/contentProvider');
           await closeBook(bookId);
         } catch {
           // Teardown is best-effort: close() zeroes the session buffer itself, and
@@ -141,18 +120,25 @@ export function ReaderScreen({ bookId }: ReaderScreenProps = {}): React.JSX.Elem
 
       void (async () => {
         try {
-          const base64 = await getBookBase64();
+          const base64 = await getBookBase64(bookId);
           sender({ type: 'open', base64 });
         } catch (cause) {
+          // ContentFailure carries a typed ContentError discriminant (and the
+          // bookId) that a bare message would throw away. Surfacing that code is
+          // what lets "the licence expired" be told apart from "the ciphertext
+          // was tampered with" on screen, which errors.ts requires be distinct
+          // and explicit rather than one generic failure.
           raiseError(
-            'ASSET_LOAD_FAILED',
-            `Could not read the bundled sample EPUB. Run \`npm run reader:build-sample\`. ` +
-              `(${cause instanceof Error ? cause.message : String(cause)})`,
+            'CONTENT_LOAD_FAILED',
+            cause instanceof ContentFailure
+              ? `Could not open this book: ${cause.code}. (${String(cause.cause ?? cause.message)})`
+              : `Could not open this book. ` +
+                  `(${cause instanceof Error ? cause.message : String(cause)})`,
           );
         }
       })();
     },
-    [raiseError],
+    [bookId, raiseError],
   );
 
   const handleMessage = useCallback((message: ReaderMessage): void => {
@@ -164,10 +150,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps = {}): React.JSX.Elem
         setIsRendered(true);
         break;
       case 'relocated':
-        // The CFI lands here. Nothing consumes it yet — persisting it is
-        // Personalization's Progress record (@/shared/contracts progress.ts),
-        // whose open question is precisely that an integer offset cannot anchor
-        // a reflowable EPUB and a CFI can.
+        // The CFI lands here. Nothing consumes it yet — persisting it belongs to
+        // Personalization's Progress record, whose open question is exactly that
+        // an integer offset cannot anchor a reflowable EPUB and a CFI can.
         break;
       case 'toc':
         setToc(message.items);
