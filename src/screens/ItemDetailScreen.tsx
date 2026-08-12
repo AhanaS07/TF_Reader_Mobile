@@ -2,7 +2,7 @@
 // Both stacks define ItemDetail: { itemId: string }, so a shared minimal type is safe.
 // Feature screens (screens 04 & 05) land in Week 2.
 import { View, Text, StyleSheet } from 'react-native';
-import { color, type as typeScale } from '../theme/tokens';
+import { color, type } from '@theme/tokens';
 
 interface ItemDetailRouteProps {
   route: { params: { itemId: string } };
@@ -21,9 +21,9 @@ export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.surface },
   stub: {
-    fontWeight: typeScale.body.weight,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
+    fontWeight: type.body.weight,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
     color: color.textSecondary,
   },
 });

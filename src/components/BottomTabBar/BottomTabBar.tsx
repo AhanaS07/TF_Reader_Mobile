@@ -1,7 +1,7 @@
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { ComponentProps } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { color, space, radius, type as typeScale } from '../../theme/tokens';
+import { color, space, radius, type } from '@theme/tokens';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -97,9 +97,9 @@ const styles = StyleSheet.create({
     backgroundColor: color.error,
   },
   label: {
-    fontWeight: typeScale.smallLabel.weight,
-    fontSize: typeScale.smallLabel.size,
-    lineHeight: typeScale.smallLabel.lineHeight,
+    fontWeight: type.smallLabel.weight,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
     marginTop: space.xs / 2, // =2 — fine-grained icon-to-label gap
   },
 });
