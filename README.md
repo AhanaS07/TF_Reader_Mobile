@@ -1,31 +1,14 @@
-# TF_Reader_Mobile — team1
-
-React Native (Expo) client for **T&F Reader**. team1 owns **CAP-2** (institution listing) and
-**CAP-3** (institute selection) — "Discovery & Selection".
-
-**This fork's `main` is team1's dev line, not production.** Production is `main` on the
-upstream repo, which we never touch. There is no `develop` branch.
+# TF_Reader_Mobile
 
 ## Stack
 
-**TypeScript** (team decision — this reverses the earlier JavaScript call), Expo SDK 57 with a
-**development build**, React Navigation (`bottom-tabs` + `native-stack`), Zustand, AsyncStorage,
-Jest + React Native Testing Library.
+**TypeScript** (`strict: true`), Expo managed, React Navigation
+(`bottom-tabs` + `native-stack`), Zustand, AsyncStorage, Jest + React Native Testing Library.
 
-`strict: true` is on and `npm run typecheck` is its own CI job. The compiler is now the contract
-enforcement mechanism, which retires the three things that were standing in for it:
-
-| Was                                                                                  | Now                                                                                                                       |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| JSDoc `@typedef` in `src/model/types.js`                                             | Real types in `src/shared/` — `tsc --noEmit` enforces them                                                                |
-| `prop-types` on every component                                                      | **Deleted.** Its only job was runtime prop warnings without a compiler. It is not a dependency and should not become one. |
-| An adapter conformance suite as the only thing keeping mock and real interchangeable | Still valuable, but now backed by a shared `interface` both must implement                                                |
-
-`allowJs`/`checkJs` stay on only to keep the door open during the changeover. There is no
-JavaScript in `src/` today; once that is still true at the end of Week 2, turn them off.
-
-Frozen contracts are enforced by a typecheck canary that runs as its own CI job. It is
-team-scoped, so it is documented with the team that owns it — see the team docs below.
+> **Changed 11 Aug: TypeScript, not JavaScript.** The contract is now
+> `src/model/types.ts` with real interfaces, and `MockAdapter implements DataAdapter` is
+> compiler-checked. Anything in the planning documents that says "JavaScript, not
+> TypeScript" is superseded by this line.
 
 ## Structure
 
@@ -132,8 +115,8 @@ reports drift and is worth running after any dependency change. Two consequences
 knowing:
 
 - **TypeScript is 6.0.x**, not 5.x — SDK 57 expects it. TS 6 deprecates `baseUrl`, so
-  `tsconfig.json` uses tsconfig-relative `paths` instead (see the comment there), and it no
-  longer auto-includes `@types`, hence the explicit `"types": ["jest"]`.
+  `tsconfig.json` uses tsconfig-relative `paths` instead, and it no longer auto-includes
+  `@types`, hence the explicit `"types": ["jest", "node"]`.
 - **`render` from `@testing-library/react-native` v14 is async.** `await` it. Destructuring the
   Promise gives you `getByText is not a function`, which reads like a broken install.
 
@@ -167,35 +150,16 @@ Two files are **cross-team contracts**, not just our code — add the other team
 reviewer when you touch them: the institution shape (shaped by **wokay**) and auth routing
 (hands `institutionId` into **flambeau**'s sign-in flow).
 
-## Planning docs
-
-The authoritative docs live in the separate `team1-docs` repo: `final_plan.docx` (Delivery
-Plan v2), `TF_Reader_Week1_Foundation_Spec.md` (Week 1 per person, per day),
-`TF_Reader_Design_Specification.md`, `GITHUB_WORKFLOW_AND_CICD.md`.
-
-Where the Foundation Spec and **Section 05** of the delivery plan disagree, the Foundation
-Spec is correct: Section 05 says Khushi owns the top ten components, three other sections
-say a five-way split. Section 05 is the outlier and is stale.
-
-## Unratified — do not build as if these are settled
-
-| Item    | Question                                                                                                    | Build so that…                               |
-| ------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| **L-2** | Is the post-sign-in catalogue scoped by entitlement? Contradicts Design Spec §4.1, a signed document.       | scope is config, not branching logic         |
-| **L-3** | Final action vocabulary — `Buy` removed, `borrow` redefined, `subscribe` B2C-only                           | variants come off the `ActionId` union       |
-| **L-5** | Three feed tabs, or one merged list?                                                                        | tabs are **data, not code**                  |
-| **Q-D** | Will wokay supply `accessTier`? OPDS 2.0 has no equivalent. Longest lead time of anything we're asking for. | read it from our own fixture field meanwhile |
-
-Also open: who is team1's lead, and whether team1 owns any backend module at all.
-
----
-
 ## Per-team docs
 
 This file covers what is repo-wide: toolchain, setup, branch model, PR process. Anything scoped
 to a single team's capabilities — its feature folders, owner map and capability-specific
 constraints — lives in that team's own file rather than here.
 
+- **[`team1_README.md`](team1_README.md)** — team1, CAP-2 Institution Listing & CAP-3 Institute
+  Selection. Covers everything under `src/` except `src/features/`, the owner map,
+  `src/model/types.ts` as the single contract, and the cross-team contracts with wokay and
+  flambeau.
 - **[`T4_Readme.md`](T4_Readme.md)** — t4targaryen, CAP-7 Reader & Offline. Covers
   `src/shared/`, `src/features/`, `samples/`, the contract freeze and canary, and why the
   development build is mandatory for the reader stack.
