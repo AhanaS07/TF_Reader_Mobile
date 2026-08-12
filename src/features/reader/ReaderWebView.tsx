@@ -186,7 +186,19 @@ export function ReaderWebView({
         ref={webViewRef}
         source={{ uri: sourceUri }}
         // Local file, so the origin is the file scheme. NOT '*' — see the header.
-        originWhitelist={['file://*', 'about:blank']}
+        //
+        // `about:*`, NOT `about:blank`: epub.js renders each chapter by assigning
+        // `iframe.srcdoc` (epub.js dist, View.prototype.create -> `this.iframe.srcdoc
+        // = contents`), and WKWebView surfaces that to RN as a navigation to
+        // `about:srcdoc`. react-native-webview checks originWhitelist BEFORE it ever
+        // calls onShouldStartLoadWithRequest (see createOnShouldStartLoadWithRequest
+        // in WebViewShared.js), so a too-narrow list here silently kills the chapter
+        // iframe: `rendition.display()` never resolves, no 'rendered' is posted, and
+        // the screen sits on "Opening book…" forever with NO error, because our own
+        // handler — the thing that would have raised BLOCKED_NAVIGATION — was never
+        // reached. The whitelist is a coarse pre-filter, not the security boundary;
+        // handleShouldStartLoad below is still the real allow-list.
+        originWhitelist={['file://*', 'about:*']}
         onShouldStartLoadWithRequest={handleShouldStartLoad}
         onNavigationStateChange={handleNavigationStateChange}
         onMessage={handleMessage}
