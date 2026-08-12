@@ -1,11 +1,7 @@
 import type { ReactNode } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import tokens from '../../theme/tokens';
-
-// Named destructure — 'type' is a TS keyword in import positions, so pull via default.
-const { color, space } = tokens;
-const typeScale = tokens.type;
+import { color, space, type } from '@theme/tokens';
 
 // Bar height excluding the safe-area inset above it.
 const BAR_HEIGHT = 56;
@@ -119,9 +115,9 @@ const styles = StyleSheet.create({
     marginRight: space.xs,
   },
   title: {
-    fontWeight: typeScale.sectionHeader.weight,
-    fontSize: typeScale.sectionHeader.size,
-    lineHeight: typeScale.sectionHeader.lineHeight,
+    fontWeight: type.sectionHeader.weight,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
     color: color.surface,
     flex: 1,
   },
