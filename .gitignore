@@ -39,3 +39,9 @@ GoogleService-Info.plist
 CLAUDE.md
 .claude/
 docs/superpowers/
+# local-only planning/dev tooling — never pushed
+BuildPlan.md
+mock-backend/
+
+docs
+samples

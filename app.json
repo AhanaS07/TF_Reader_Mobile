@@ -6,7 +6,9 @@
     "orientation": "portrait",
     "scheme": "tfreader",
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": ["assets/**/*"],
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
@@ -14,6 +16,18 @@
     "android": {
       "package": "com.taylorandfrancis.tfreader.dev"
     },
-    "plugins": ["expo-dev-client", "expo-font"]
+    "plugins": [
+      "expo-dev-client",
+      "expo-font",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ],
+      "react-native-quick-crypto"
+    ]
   }
 }

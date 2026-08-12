@@ -11,7 +11,14 @@
 // Also validates the wiring: importing via '@/shared/contracts' exercises the
 // tsconfig `paths` alias AND the index.ts barrel in one line.
 
-import { ContentError, ContentFailure } from '@/shared/contracts';
+import {
+  ContentError,
+  ContentFailure,
+  DEFAULT_PREFS,
+  DEFAULT_ACCESSIBILITY_PREFS,
+  createDefaultAccessibilityPrefs,
+  resolveReduceMotion,
+} from '@/shared/contracts';
 import type {
   EncryptedPackage,
   SyncRecordBase,
@@ -20,6 +27,11 @@ import type {
   BookSearchIndex,
   ContentFormat,
   Bytes,
+  SharedPrefs,
+  Theme,
+  AccessibilityPrefs,
+  ReduceMotion,
+  TtsHighlightMode,
 } from '@/shared/contracts';
 
 // --- ContentError is a real enum (value import must work) ------------------
@@ -79,3 +91,52 @@ true satisfies 'cipherLength' extends keyof EncryptedPackage ? true : false;
 
 // --- getBook stays async (Promise<Bytes>), not a sync in-RAM read ----------
 true satisfies ReturnType<ContentProvider['getBook']> extends Promise<Bytes> ? true : false;
+
+// --- prefs is a PER-USER SINGLETON: bookId stays out ----------------------
+// Reversal guard for the T4_Ahana -> dev_T4 decision. A keyof check rather than
+// an expect-error directive: an excess-property error lands on the literal, not
+// the property line, which makes directive placement fragile (see cipherLength).
+false satisfies 'bookId' extends keyof SharedPrefs ? true : false;
+true satisfies SharedPrefs extends SyncRecordBase ? true : false;
+
+// --- accessibility is a COMPOSED block, NOT a second synced record --------
+// It must carry no identity/sync fields of its own — one prefs record per user
+// holds all of it, under one updatedAt.
+true satisfies SharedPrefs['accessibility'] extends AccessibilityPrefs ? true : false;
+false satisfies 'updatedAt' extends keyof AccessibilityPrefs ? true : false;
+false satisfies 'id' extends keyof AccessibilityPrefs ? true : false;
+
+// --- reduceMotion is a TRI-STATE, not a boolean ---------------------------
+// A boolean cannot express "follow the OS" — `false` would be ambiguous between
+// "user turned it off" and "user never chose". Pinned on the FIELD, not just the
+// alias, so re-typing the field boolean fails even if ReduceMotion survives.
+'system' satisfies AccessibilityPrefs['display']['reduceMotion'];
+'on' satisfies ReduceMotion;
+'off' satisfies ReduceMotion;
+// @ts-expect-error the boolean shape was rejected at sign-off
+false satisfies AccessibilityPrefs['display']['reduceMotion'];
+
+// The stored value alone is not applicable — it only resolves against live OS
+// state, so the resolver must stay part of the contract.
+resolveReduceMotion('system', true) satisfies boolean;
+
+// --- TTS highlight granularity is the three named modes -------------------
+'sentence' satisfies TtsHighlightMode;
+// @ts-expect-error paragraph-level sync was never in the union
+'paragraph' satisfies TtsHighlightMode;
+
+// --- Theme keeps 'highContrast' ONLY so old records still parse -----------
+// Deprecated in favour of accessibility.display.highContrast, which is the
+// single source of truth. Removing the variant is a breaking read, not a
+// cleanup — it must outlive the migration.
+'highContrast' satisfies Theme;
+true satisfies 'highContrast' extends keyof AccessibilityPrefs['display'] ? true : false;
+
+// --- DEFAULT_PREFS carries VALUES only, no identity/sync fields -----------
+false satisfies 'id' extends keyof typeof DEFAULT_PREFS ? true : false;
+false satisfies 'synced' extends keyof typeof DEFAULT_PREFS ? true : false;
+DEFAULT_PREFS.accessibility satisfies AccessibilityPrefs;
+
+// --- defaults are shared; "reset" must hand back a detached copy ----------
+DEFAULT_ACCESSIBILITY_PREFS satisfies AccessibilityPrefs;
+createDefaultAccessibilityPrefs() satisfies AccessibilityPrefs;

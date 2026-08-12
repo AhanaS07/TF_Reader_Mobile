@@ -19,6 +19,31 @@
       "node"
     ],
     "ignoreDeprecations": "6.0",
+
+    // Explicit because TS 6 no longer auto-pulls every node_modules/@types
+    // package into global scope. Without this, describe/it/expect are
+    // "Cannot find name" (TS2593) even though @types/jest is installed.
+    // Only affects GLOBAL types — @types/react still resolves through the
+    // normal `import ... from 'react'` path and does not belong in this list.
+    //
+    // "node" is here for src/features/encryption/: keyStorage.ts and scripts/
+    // still legitimately use `Buffer`/`fs`/`path`/`__dirname`. aesGcm.ts itself
+    // has already been swapped to the real react-native-aes-gcm-crypto native
+    // module (no more Node `crypto`), per that file's own header — this entry
+    // stays for the files that haven't made that swap yet.
+    //
+    // CAVEAT: this makes Buffer/process/fs typecheck ANYWHERE, including in
+    // React Native code where they do not exist at runtime. tsc will not catch
+    // that mistake for you — the encryption module is the only place Node
+    // globals are legitimate, and that is a review-time rule, not a compiler
+    // one.
+    "types": ["jest", "node"],
+
+    // NO baseUrl. TypeScript 6 deprecates it (TS5101) and it stops working in
+    // 7. Since TS 4.x, `paths` alone is resolved relative to this file's
+    // directory, which is what the "./src/*" prefixes below rely on — so this
+    // is the migration, not a workaround. Do not "fix" a future TS7 warning by
+    // adding baseUrl back; and do not silence TS5101 with ignoreDeprecations.
     "paths": {
       "@/*": [
         "./src/*"
