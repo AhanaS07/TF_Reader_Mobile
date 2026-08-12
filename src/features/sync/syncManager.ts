@@ -1,16 +1,16 @@
-import { BOOK_ID, SERVER_RESOLVES_CONFLICTS, SUPPORTS_UPDATED_AFTER, USER_ID } from '../config';
-import { ENTITY_PATHS } from '../db/mappers';
-import { SYNC_KEYS } from '../db/schema';
-import type { EntityType, OutboxRow } from '../db/types';
-import { nowIso } from '../db/database';
-import { accessibilityTable } from '../repositories/accessibilityRepository';
-import { bookmarkTable } from '../repositories/bookmarkRepository';
-import { downloadTable } from '../repositories/downloadRepository';
-import { highlightTable } from '../repositories/highlightRepository';
-import { outboxRepository } from '../repositories/outboxRepository';
-import { personalizationTable } from '../repositories/personalizationRepository';
-import { progressTable } from '../repositories/progressRepository';
-import { syncMetadataRepository } from '../repositories/syncMetadataRepository';
+import { BOOK_ID, SERVER_RESOLVES_CONFLICTS, SUPPORTS_UPDATED_AFTER, USER_ID } from './config';
+import { ENTITY_PATHS } from './db/mappers';
+import { SYNC_KEYS } from './db/schema';
+import type { EntityType, OutboxRow } from './db/types';
+import { nowIso } from './db/database';
+import { accessibilityTable } from './repositories/accessibilityRepository';
+import { bookmarkTable } from './repositories/bookmarkRepository';
+import { downloadTable } from './repositories/downloadRepository';
+import { highlightTable } from './repositories/highlightRepository';
+import { outboxRepository } from './repositories/outboxRepository';
+import { personalizationTable } from './repositories/personalizationRepository';
+import { progressTable } from './repositories/progressRepository';
+import { syncMetadataRepository } from './repositories/syncMetadataRepository';
 import { api, ApiError } from './api';
 
 /** One place that knows how to apply a server record for each entity type. */

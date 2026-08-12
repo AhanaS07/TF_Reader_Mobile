@@ -115,21 +115,30 @@ Already frozen in `src/shared/contracts/content-provider.ts`:
 - `contentStore.ts` already **persists** it (`.index.bin`), tracks `hasIndex`, reads it back on
   cold start, and `destroy()` deletes it.
 
-**What is missing:** `contentStore.decryptBook()` decrypts only `pkg.content`. **Nothing decrypts
-`pkg.index` yet.** So there is no path today for the decrypted `BookSearchIndex` to reach RAM.
+**DONE (2026-08-12):** `contentStore.decryptSearchIndex(bookId)` decrypts `pkg.index` — same
+session as `decryptBook`, same BEK, its own nonce, zeroed on `close()` alongside the book buffer.
+Works for Elite (memory-only key, never touches the keychain) and Subscription alike. Independent
+decrypt pass from `decryptBook`: a tampered/corrupted index rejects on its own without taking the
+book down with it. `contentProvider.getIndex(bookId)` exposes this as the one-call Search-facing
+seam (parallel to `getBook`) — Search never needs to import `contentStore.ts`,
+`keyStorage.ts`, or `aesGcm.ts` directly. `mockSearchIndex.ts` supplies a real, structured
+`BookSearchIndex` fixture (typed exactly as `BuildIndex`) for the encrypt/decrypt round trip to
+run against ahead of the real word-extraction logic — a real builder is a drop-in replacement,
+nothing downstream changes shape. Tests: `contentStore`'s own `searchIndex.test.ts` +
+`.edgecases.test.ts`, and `contentProvider.test.ts`'s "search index available alongside the
+decrypted book" block (proves both are resident in RAM at once, under the same session, without
+disturbing each other).
+
+**Still open on Search's side:** decoding the raw bytes `getIndex` returns into a `BookSearchIndex`
+and running `queryIndex(index, term)` against it — that decode/query logic is Search's own, not
+built here. `mockSearchIndex.ts`'s `decodeSearchIndex` shows the shape but is explicitly a test
+fixture, not the real consumer path.
 
 ---
 
 ## Open items (cross-owner)
 
-**ITEM 1 — index decrypt path. Owner: Abhinav (Encryption).**
-Agreed: **Abhinav adds `decryptIndex(bookId)` to `ContentStore`**, mirroring `decryptBook` — same
-session, unwrap BEK, AES-GCM-decrypt `pkg.index` into RAM, zero on `close()`. This is the only
-approach that (a) works for **Elite** (whose BEK is memory-only in-session and never in the
-keychain) and (b) keeps all key/crypto material behind Encryption's seam — Search must not call
-`keyStorage.getBek` / `aesGcm.decrypt` directly. May also be exposed as `getIndex(bookId)` on
-`contentProvider`, parallel to `getBook`, so Search imports one tiny seam. Lands with Abhinav's
-Encryption + Sync co-freeze.
+**ITEM 1 — index decrypt path. Owner: Abhinav (Encryption). DONE — see above.**
 
 **ITEM 2 — EPUB CFI generation (with Ahana, Reader).**
 EPUB is committed final scope, so this is a planned task, not a deferral — only the _how_ is open.

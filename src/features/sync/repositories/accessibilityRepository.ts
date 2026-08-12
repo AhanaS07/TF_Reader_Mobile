@@ -2,7 +2,7 @@ import { getDatabase, newId, nowIso } from '../db/database';
 import { accessibilityMapper } from '../db/mappers';
 import type { AccessibilityRow } from '../db/types';
 import { USER_ID } from '../config';
-import { createSyncableTable } from './syncableTable';
+import { createSyncableTable, withWriteLock } from './syncableTable';
 
 export const accessibilityTable = createSyncableTable<AccessibilityRow>({
   table: 'accessibility',
@@ -52,18 +52,26 @@ export const accessibilityRepository = {
     );
   },
 
+  /**
+   * Runs under `withWriteLock`: without it, two overlapping calls would each see "no row yet"
+   * and each create their own, silently duplicating the one-row-per-user invariant.
+   */
   async update(patch: Partial<AccessibilityRow>): Promise<AccessibilityRow> {
-    const existing = await this.current();
-    const base = existing ?? defaults();
-    const row: AccessibilityRow = {
-      ...base,
-      ...patch,
-      id: base.id,
-      user_id: USER_ID,
-      updated_at: nowIso(),
-      is_deleted: 0,
-      synced: 0,
-    };
-    return accessibilityTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE');
+    return withWriteLock(async () => {
+      const existing = await this.current();
+      const base = existing ?? defaults();
+      const row: AccessibilityRow = {
+        ...base,
+        ...patch,
+        id: base.id,
+        user_id: USER_ID,
+        updated_at: nowIso(),
+        is_deleted: 0,
+        synced: 0,
+      };
+      return accessibilityTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', {
+        locked: true,
+      });
+    });
   },
 };

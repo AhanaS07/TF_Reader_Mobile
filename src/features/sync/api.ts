@@ -1,4 +1,4 @@
-import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from '../config';
+import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './config';
 
 /**
  * A thin client over the Mongo backend's per-entity CRUD endpoints.

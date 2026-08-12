@@ -2,7 +2,7 @@ import { getDatabase, newId, nowIso } from '../db/database';
 import { downloadMapper } from '../db/mappers';
 import type { DownloadRow } from '../db/types';
 import { BOOK_ID, USER_ID } from '../config';
-import { createSyncableTable } from './syncableTable';
+import { createSyncableTable, withWriteLock } from './syncableTable';
 
 export const downloadTable = createSyncableTable<DownloadRow>({
   table: 'downloads',
@@ -34,22 +34,24 @@ export const downloadRepository = {
    * the outbox payload omits it because the path means nothing on another device.
    */
   async recordCompleted(localPath: string, format = 'PDF'): Promise<DownloadRow> {
-    const existing = await this.currentForBook();
-    const now = nowIso();
-    const row: DownloadRow = {
-      id: existing?.id ?? newId(),
-      user_id: USER_ID,
-      book_id: BOOK_ID,
-      format,
-      local_path: localPath,
-      status: 'COMPLETED',
-      is_valid: 1,
-      downloaded_at: now,
-      updated_at: now,
-      is_deleted: 0,
-      synced: 0,
-    };
-    return downloadTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE');
+    return withWriteLock(async () => {
+      const existing = await this.currentForBook();
+      const now = nowIso();
+      const row: DownloadRow = {
+        id: existing?.id ?? newId(),
+        user_id: USER_ID,
+        book_id: BOOK_ID,
+        format,
+        local_path: localPath,
+        status: 'COMPLETED',
+        is_valid: 1,
+        downloaded_at: now,
+        updated_at: now,
+        is_deleted: 0,
+        synced: 0,
+      };
+      return downloadTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', { locked: true });
+    });
   },
 
   remove(id: string): Promise<void> {

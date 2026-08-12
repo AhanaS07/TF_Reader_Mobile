@@ -2,7 +2,7 @@ import { getDatabase, newId, nowIso } from '../db/database';
 import { progressMapper } from '../db/mappers';
 import type { ProgressRow } from '../db/types';
 import { BOOK_ID, USER_ID } from '../config';
-import { createSyncableTable } from './syncableTable';
+import { createSyncableTable, withWriteLock } from './syncableTable';
 
 export const progressTable = createSyncableTable<ProgressRow>({
   table: 'progress',
@@ -29,18 +29,27 @@ export const progressRepository = {
     );
   },
 
-  /** Called whenever the reader lands on a different page. */
+  /**
+   * Called whenever the reader lands on a different page.
+   *
+   * The whole read-current-row-then-create-or-update sequence runs under `withWriteLock`:
+   * without it, two overlapping calls (e.g. two rapid page turns) would each see "no row yet"
+   * and each create their own, silently duplicating the one-row-per-book invariant this
+   * repository documents above.
+   */
   async savePosition(page: number): Promise<ProgressRow> {
-    const existing = await this.current();
-    const row: ProgressRow = {
-      id: existing?.id ?? newId(),
-      user_id: USER_ID,
-      book_id: BOOK_ID,
-      offset: page,
-      updated_at: nowIso(),
-      is_deleted: 0,
-      synced: 0,
-    };
-    return progressTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE');
+    return withWriteLock(async () => {
+      const existing = await this.current();
+      const row: ProgressRow = {
+        id: existing?.id ?? newId(),
+        user_id: USER_ID,
+        book_id: BOOK_ID,
+        offset: page,
+        updated_at: nowIso(),
+        is_deleted: 0,
+        synced: 0,
+      };
+      return progressTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', { locked: true });
+    });
   },
 };
