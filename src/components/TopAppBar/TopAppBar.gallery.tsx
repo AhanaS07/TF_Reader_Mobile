@@ -3,10 +3,7 @@
 import { ScrollView, View, Text, StyleSheet } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import TopAppBar from './TopAppBar';
-import tokens from '../../theme/tokens';
-
-const { color, space } = tokens;
-const typeScale = tokens.type;
+import { color, space, type as typeScale } from '../../theme/tokens';
 
 export default function TopAppBarGallery() {
   return (

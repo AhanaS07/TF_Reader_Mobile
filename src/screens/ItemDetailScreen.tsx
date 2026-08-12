@@ -2,10 +2,7 @@
 // Both stacks define ItemDetail: { itemId: string }, so a shared minimal type is safe.
 // Feature screens (screens 04 & 05) land in Week 2.
 import { View, Text, StyleSheet } from 'react-native';
-import tokens from '../theme/tokens';
-
-const { color } = tokens;
-const typeScale = tokens.type;
+import { color, type as typeScale } from '../theme/tokens';
 
 interface ItemDetailRouteProps {
   route: { params: { itemId: string } };

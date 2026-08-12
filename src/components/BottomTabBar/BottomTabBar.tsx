@@ -1,10 +1,7 @@
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { ComponentProps } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import tokens from '../../theme/tokens';
-
-const { color, space, radius } = tokens;
-const typeScale = tokens.type;
+import { color, space, radius, type as typeScale } from '../../theme/tokens';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

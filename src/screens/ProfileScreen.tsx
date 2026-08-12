@@ -1,8 +1,5 @@
 import { View, Text, StyleSheet } from 'react-native';
-import tokens from '../theme/tokens';
-
-const { color } = tokens;
-const typeScale = tokens.type;
+import { color, type as typeScale } from '../theme/tokens';
 
 export default function ProfileScreen() {
   return (

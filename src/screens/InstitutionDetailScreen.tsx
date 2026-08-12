@@ -4,12 +4,9 @@
 import { View, Text, StyleSheet } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { CatalogueStackParamList } from '../navigation/types';
-import tokens from '../theme/tokens';
+import { color, type as typeScale } from '../theme/tokens';
 
 type Props = NativeStackScreenProps<CatalogueStackParamList, 'InstitutionDetail'>;
-
-const { color } = tokens;
-const typeScale = tokens.type;
 
 export default function InstitutionDetailScreen({ route }: Props) {
   const { institutionId } = route.params;
