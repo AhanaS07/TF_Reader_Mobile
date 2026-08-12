@@ -29,13 +29,32 @@
 // Errors are typed ContentFailure (INTEGRITY_FAILED, LICENCE_EXPIRED, KEYSTORE_UNAVAILABLE, etc.
 // — see errors.ts). Fail-closed: render an explicit error state per code, never a blank or
 // partial book.
+//
+// getIndex() — Search's (Vaishnavi's) seam, added per src/features/search/README.md's
+// "OPEN ITEM 1": the same one-call pattern as getBook, so Search never has to import
+// contentStore.ts directly (that would mean reaching into Encryption's internals, and Search
+// must not call keyStorage/aesGcm/deviceKeypair itself — the README's own item 1 says so).
+// Same session as getBook: call getBook(bookId) first if you need the book text too — the
+// index is decrypted alongside it in the SAME bookId-keyed session (contentStore.ts), and both
+// are zeroed together on closeBook(). Returns the raw decrypted index bytes (or null if this
+// book has none) — decoding them into a BookSearchIndex and running queryIndex() is Search's
+// own job, not Encryption's (see mockSearchIndex.ts's decodeSearchIndex for the shape, used
+// there only as a test fixture, not as the real consumer path).
+//
+//   const indexBytes = await getIndex(bookId); // null if this book has no search index
+//   if (indexBytes) { /* Search decodes + queries these bytes */ }
 
 import type { BookId, Bytes, ContentProvider } from '@/shared/contracts';
-import { contentStore } from './contentStore';
+import { contentStore, decryptSearchIndex } from './contentStore';
 
 export async function getBook(bookId: BookId): Promise<Bytes> {
   await contentStore.openSession(bookId);
   return contentStore.decryptBook(bookId);
+}
+
+export async function getIndex(bookId: BookId): Promise<Bytes | null> {
+  await contentStore.openSession(bookId);
+  return decryptSearchIndex(bookId);
 }
 
 export const contentProvider: ContentProvider = { getBook };
