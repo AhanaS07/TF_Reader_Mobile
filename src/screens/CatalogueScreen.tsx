@@ -29,6 +29,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
+import { SectionHeader } from '../components/SectionHeader';
 import { getCatalogueSource } from '../config/catalogue';
 import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
@@ -114,7 +115,11 @@ export default function CatalogueScreen() {
           ))
         : catalogue?.shelves.map((shelf) => (
             <View key={shelf.id} style={styles.section}>
-              <Text style={styles.sectionTitle}>{shelf.title}</Text>
+              {/* No `actionLabel`: "See all" would open the full paginated
+                  shelf, and that screen does not exist yet (same reason the
+                  category cards carry no onPress). Screen 01's design shows no
+                  action on these headers either. */}
+              <SectionHeader title={shelf.title} />
               <View style={styles.list}>
                 {shelf.publications.map((publication) => (
                   <ContentCard
@@ -172,12 +177,6 @@ const styles = StyleSheet.create({
   },
   section: {
     gap: space.sm,
-  },
-  sectionTitle: {
-    fontWeight: typeScale.sectionHeader.weight,
-    fontSize: typeScale.sectionHeader.size,
-    lineHeight: typeScale.sectionHeader.lineHeight,
-    color: color.textPrimary,
   },
   list: {
     gap: space.sm,
