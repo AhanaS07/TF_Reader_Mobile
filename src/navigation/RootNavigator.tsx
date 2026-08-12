@@ -120,6 +120,7 @@ function LibraryNavigator() {
         component={LibraryScreen}
         options={{ title: 'Library' }}
       />
+      
     </LibraryStack.Navigator>
   );
 }
