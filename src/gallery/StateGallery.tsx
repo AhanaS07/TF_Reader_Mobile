@@ -2,12 +2,13 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
 import { color, radius, space, type } from '@theme/tokens';
 
-const SECTIONS = ['Skeleton', 'TopAppBar', 'BottomTabBar'] as const;
+const SECTIONS = ['Skeleton', 'TopAppBar', 'BottomTabBar', 'BottomSheet'] as const;
 
 type Section = (typeof SECTIONS)[number];
 
@@ -42,6 +43,7 @@ export default function StateGallery() {
       )}
       {section === 'TopAppBar' && <TopAppBarGallery />}
       {section === 'BottomTabBar' && <BottomTabBarGallery />}
+      {section === 'BottomSheet' && <BottomSheetGallery />}
     </View>
   );
 }
