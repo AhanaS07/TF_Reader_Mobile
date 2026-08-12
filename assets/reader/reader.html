@@ -155,8 +155,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         // Android's system WebView.
         //
         // Base64 is the transport ONLY because injectJavaScript is a string
-        // channel. It is fine for the small plaintext sample this baseline
-        // ships; it will NOT scale to a ~20MB book and is a known follow-up.
+        // channel. Fine for the 3.6KB dev fixture; it will NOT scale to a ~20MB
+        // book and is a known follow-up (readerAssets.ts records the same
+        // constraint on the sending side).
         function base64ToArrayBuffer(base64) {
           var binary = atob(base64);
           var length = binary.length;
@@ -174,17 +175,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           /**
            * Open a whole book from base64-encoded EPUB bytes and paginate it.
            *
-           * >>> FUTURE DECRYPTED-CONTENT HANDOFF SLOTS IN HERE <<<
-           * This is the whole-book-in-memory seam. Today RN reads a bundled
-           * PLAINTEXT sample and passes its base64. Later it will pass the bytes
-           * from ContentProvider.getBook(bookId) (see
-           * src/shared/contracts/content-provider.ts), which returns the whole
-           * book decrypted in RAM as `Bytes` (Uint8Array). The line below is
-           * already the documented `book.open(arrayBuffer)` call from that
-           * contract, so the handoff replaces WHERE the bytes come from and
-           * nothing else in this file changes.
+           * >>> THE DECRYPTED-CONTENT HANDOFF. THIS IS LIVE. <<<
+           * The base64 handed in is a whole book already decrypted in RAM by
+           * ContentProvider.getBook(bookId) (src/shared/contracts/
+           * content-provider.ts returns it as `Bytes`). It never touched disk as
+           * plaintext, and it must not start here — nothing below may write,
+           * cache or postMessage these bytes back out.
            *
-           * No crypto here. No crypto anywhere in this baseline.
+           * No crypto runs in this file; the decrypt already happened host-side.
+           * That is a division of labour, NOT an absence of licensed content —
+           * ReaderWebView.tsx's navigation lockdown is what contains what lands
+           * here, and it is load-bearing for exactly this reason.
            */
           open: function (base64) {
             try {

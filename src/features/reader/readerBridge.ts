@@ -15,6 +15,45 @@
 // coded error rather than a silently ignored message. KEEP THIS UNION MINIMAL:
 // once it needs to grow much past this, the right answer is a real typechecked
 // build step for the WebView payload, not more hand-synced cases.
+//
+// >>> REVISIT WEBVIEW-JS TYPING WHEN THE BRIDGE GROWS <<<
+// Full analysis, stage forecast and conversion plan: WEBVIEW_BRIDGE.md, in this
+// folder. Read it before changing anything below, and update it in the same
+// change. The summary here is so this decision is not missed by someone who only
+// opens this file.
+//
+// Accepted debt, not an oversight — but it compounds with surface area, so here
+// is the trigger rather than a vague "someday". Surface as of 2026-08-12:
+//
+//   5 message types (ready, rendered, relocated, toc, error)
+//   4 commands      (open, next, prev, goTo)
+//
+// Runtime assertions cover a tiny 1:1 surface cheaply. They stop being enough
+// when a mismatch can be SHAPE-level rather than NAME-level — parseReaderMessage
+// can check that `type` is one of five strings, but it cannot tell you the
+// template stopped sending a field some case needs. Switch to a typechecked
+// WebView build (tsc over a real .ts entry, bundled into the template by
+// buildReaderHtml.ts) when ANY of these becomes true:
+//
+//   - the message union passes ~8 cases, or any case grows past ~3 fields
+//   - a command needs a RESPONSE (request/reply, not fire-and-forget) — that
+//     doubles the hand-synced surface per call and adds correlation ids
+//   - the transport stops being base64-over-injectJavaScript (see the note on
+//     getBookBase64 in readerAssets.ts); a new transport means re-agreeing the
+//     whole payload shape, which is the cheapest moment to get a compiler
+//   - anything inside the WebView starts holding state RN also models
+//
+// Day 3 (whole-book decrypt) did NOT trip any of these — worth recording,
+// because it was the predicted trigger. The decrypted-buffer handoff reused
+// `open` unchanged, TOC already existed, and the one new code
+// (CONTENT_LOAD_FAILED) is host-side and never crosses the bridge. The debt is
+// still cheap.
+//
+// EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
+// epub.js rendition). That is the first stage that trips a trigger, and it trips
+// two — nested multi-field payloads AND a frozen shared contract crossing the
+// boundary. Convert BEFORE writing those commands, not after: 4 flat commands is
+// a morning, 9 commands plus annotations' `Locator` union is a week.
 
 /** Chapter entry from epub.js `book.loaded.navigation`. */
 export interface ReaderTocItem {
