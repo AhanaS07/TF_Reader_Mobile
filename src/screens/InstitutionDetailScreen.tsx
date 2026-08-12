@@ -4,7 +4,7 @@
 import { View, Text, StyleSheet } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { CatalogueStackParamList } from '../navigation/types';
-import { color, type as typeScale } from '../theme/tokens';
+import { color, type } from '@theme/tokens';
 
 type Props = NativeStackScreenProps<CatalogueStackParamList, 'InstitutionDetail'>;
 
@@ -25,9 +25,9 @@ export default function InstitutionDetailScreen({ route }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.surface },
   stub: {
-    fontWeight: typeScale.body.weight,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
+    fontWeight: type.body.weight,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
     color: color.textSecondary,
   },
 });
