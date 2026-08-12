@@ -33,7 +33,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import type { BookId, ContentStore, EncryptedPackage, SessionHandle } from '@/shared/contracts';
 import { ContentError, ContentFailure } from '@/shared/contracts';
-import { decrypt } from './aesGcm';
+import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
 import { deleteBek, getBek, storeBek } from './keyStorage';
 import { unwrapBek } from './deviceKeypair';
@@ -142,6 +142,12 @@ function assertLicenceMatchesPackage(pkg: EncryptedPackage): void {
 interface OpenSession {
   handle: SessionHandle;
   plaintext: Uint8Array | null;
+  // Decrypted search index, once decryptSearchIndex() has actually run and pkg.index existed.
+  // Deliberately an INDEPENDENT decrypt pass from `plaintext` above, not bundled into
+  // decryptBook()'s own run() — a corrupted/tampered index must not block reading the book
+  // itself (an index-only failure has a much smaller, more appropriate blast radius than "the
+  // book won't open"). They still share the same resolved BEK, per search.ts's contract.
+  indexPlaintext: Uint8Array | null;
   rawKey: Uint8Array | null; // Elite only — never touches the keychain
   // In-flight decryptBook() promise, if one is currently running for this session. Two calls to
   // decryptBook(bookId) issued before the first resolves must share ONE decrypt, not each race
@@ -150,6 +156,10 @@ interface OpenSession {
   // live plaintext in RAM after "close". Sharing one promise means both callers hold the SAME
   // buffer reference, so close() zeroing session.plaintext zeroes the only copy that exists.
   pending: Promise<Uint8Array> | null;
+  // Same concurrency-safety pattern as `pending`, for decryptSearchIndex()'s own independent
+  // pass — two concurrent callers must share one decrypt, not race two separate buffers that
+  // close() can only zero one of.
+  indexPending: Promise<Uint8Array | null> | null;
 }
 
 const packageCache = new Map<BookId, EncryptedPackage>();
@@ -252,7 +262,14 @@ async function openSession(bookId: BookId): Promise<SessionHandle> {
   packageCache.set(bookId, pkg); // lazily repopulate the in-memory cache on a cold start
 
   const handle: SessionHandle = { bookId, format: pkg.format, openedAt: Date.now() };
-  sessions.set(bookId, { handle, plaintext: null, rawKey: null, pending: null });
+  sessions.set(bookId, {
+    handle,
+    plaintext: null,
+    indexPlaintext: null,
+    rawKey: null,
+    pending: null,
+    indexPending: null,
+  });
   return handle;
 }
 
@@ -386,15 +403,115 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
 }
 
 /**
- * End THIS book's session: zero its decrypted buffer (and, for Elite, its in-memory-only key).
- * REVERSIBLE — ciphertext + wrappedBek stay on device (Subscription), reopenable offline.
- * Idempotent: closing a book with no open session is a no-op.
+ * Return the decrypted search index bundled with this book, or null if it has none. NOT part of
+ * the frozen `ContentStore` interface (that only defines `decryptBook`) — exported separately
+ * from this module, same pattern as `MAX_DECRYPTED_BYTES`.
+ *
+ * Deliberately an INDEPENDENT decrypt pass from decryptBook() — does NOT require decryptBook() to
+ * have been called first, and a corrupted/tampered index rejects on its OWN without touching the
+ * book content's session state. search.ts's contract says the index is encrypted "under the SAME
+ * BEK as the book" and decrypted "in one go" alongside it — read as "same key, same download
+ * session," not "one failure must take down the other." An index-only integrity failure has no
+ * business making the book unreadable too.
+ *
+ * Requires an open session (call openSession(bookId) first), same as decryptBook. Caches the
+ * result on the session so repeat calls don't re-decrypt, and shares one in-flight promise across
+ * concurrent callers (same reasoning as decryptBook's `pending`, applied to `indexPending`).
+ */
+async function decryptSearchIndex(bookId: BookId): Promise<Uint8Array | null> {
+  const session = sessions.get(bookId);
+  if (!session) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      bookId,
+      new Error('no open session — call openSession(bookId) first')
+    );
+  }
+  if (session.indexPlaintext) return session.indexPlaintext;
+  if (session.indexPending) return session.indexPending;
+
+  const run = async (): Promise<Uint8Array | null> => {
+    const pkg = packageCache.get(bookId);
+    if (!pkg) {
+      throw new ContentFailure(ContentError.DECRYPTION_FAILED, bookId, new Error('session outlived its package'));
+    }
+    if (!pkg.index) return null; // legitimately no index — not an error, nothing to decrypt
+
+    if (isLicenceExpired(pkg)) {
+      throw new ContentFailure(ContentError.LICENCE_EXPIRED, bookId);
+    }
+
+    // Same RAM-budget guard as decryptBook (checked before AND after decrypt) — an index has no
+    // separately-recorded "original length" the way book content does (see the encrypted branch's
+    // own comment), so the ciphertext length is used as the pre-decrypt upper-bound proxy
+    // (plaintext is always <= ciphertext length for this layout: nonce+tag overhead only adds to
+    // it). Without this, a maliciously or accidentally huge search index would decrypt straight
+    // into RAM with zero guard, unlike the book content path.
+    if (pkg.index.length > MAX_DECRYPTED_BYTES) {
+      throw new ContentFailure(
+        ContentError.DECRYPTION_FAILED,
+        bookId,
+        new Error(`search index is ${pkg.index.length} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`)
+      );
+    }
+
+    let indexPlaintext: Uint8Array;
+    if (!pkg.encryption) {
+      // No BEK for an open-access book, so an index shipped alongside it ships plaintext too,
+      // same as the content. Copied, not aliased — same close()-corrupts-the-cache reasoning as
+      // decryptBook's open-access branch.
+      indexPlaintext = new Uint8Array(pkg.index);
+    } else {
+      // Same BEK as the book (resolveRawKey is idempotent — cheap no-op if decryptBook already
+      // resolved it this session), OWN nonce. No recorded cipherLength/originalLength exists for
+      // the index the way it does for content, so this uses the raw
+      // decryptBook(ciphertextWithTag, nonce, key) primitive directly — the same
+      // nonce(12) || ciphertext || tag(16) layout as content, self-describing from the buffer.
+      const rawKey = await resolveRawKey(pkg, session);
+      try {
+        const indexNonce = pkg.index.subarray(0, NONCE_BYTES);
+        const indexCiphertextWithTag = pkg.index.subarray(NONCE_BYTES);
+        indexPlaintext = await decryptRaw(indexCiphertextWithTag, indexNonce, rawKey);
+      } catch (cause) {
+        // Tag failure on the index is exactly as loud as tag failure on the book — errors.ts
+        // rule 3 doesn't carve out an exception for "just the index" — it just doesn't take the
+        // book down with it (see this function's own doc comment).
+        throw new ContentFailure(ContentError.INTEGRITY_FAILED, bookId, cause);
+      }
+    }
+
+    if (indexPlaintext.length > MAX_DECRYPTED_BYTES) {
+      throw new ContentFailure(
+        ContentError.DECRYPTION_FAILED,
+        bookId,
+        new Error(
+          `decrypted search index is ${indexPlaintext.length} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`
+        )
+      );
+    }
+
+    session.indexPlaintext = indexPlaintext;
+    return indexPlaintext;
+  };
+
+  const pending = run().finally(() => {
+    session.indexPending = null;
+  });
+  session.indexPending = pending;
+  return pending;
+}
+
+/**
+ * End THIS book's session: zero its decrypted buffer (and search index, and, for Elite, its
+ * in-memory-only key). REVERSIBLE — ciphertext + wrappedBek stay on device (Subscription),
+ * reopenable offline. Idempotent: closing a book with no open session is a no-op.
  */
 async function close(bookId: BookId): Promise<void> {
   const session = sessions.get(bookId);
   if (!session) return;
 
   session.plaintext?.fill(0);
+  session.indexPlaintext?.fill(0);
   session.rawKey?.fill(0);
   sessions.delete(bookId);
 }
@@ -436,3 +553,6 @@ export const contentStore: ContentStore = {
   destroy,
   isAvailableOffline,
 };
+
+// Not part of the frozen ContentStore interface — see decryptSearchIndex's own doc comment.
+export { decryptSearchIndex };
