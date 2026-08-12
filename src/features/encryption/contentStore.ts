@@ -199,6 +199,23 @@ function loadPersisted(bookId: BookId): EncryptedPackage | null {
   if (!meta.exists) return null;
 
   const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+
+  // Check the RAM budget against the SMALL metadata read before touching the (potentially huge)
+  // content file at all. Without this, a cold read (openSession() with nothing cached yet — the
+  // normal "app was closed and reopened" path) would unconditionally load an oversized file's
+  // full bytes into a JS Uint8Array before decryptBook()'s own budget check ever runs, defeating
+  // the "checked before decrypt" claim in this file's own header. Found via an adversarial
+  // cross-file review, 2026-08-12 — not a hypothetical.
+  if (parsed.originalLength > MAX_DECRYPTED_BYTES) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      bookId,
+      new Error(
+        `book is ${parsed.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget — refusing to read it into memory`
+      )
+    );
+  }
+
   const content = contentFile(bookId).bytesSync();
   const index = parsed.hasIndex ? indexFile(bookId).bytesSync() : undefined;
 
@@ -299,6 +316,16 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
     if (!pkg) {
       throw new ContentFailure(ContentError.DECRYPTION_FAILED, bookId, new Error('session outlived its package'));
     }
+
+    // Re-check the length invariant at DECRYPT time, not just at store() time. For encrypted
+    // packages this is redundant with assertCipherLayout inside aesGcm.decrypt() below, but for
+    // OPEN-ACCESS packages (pkg.encryption === null) nothing else on this path re-validates that
+    // pkg.content still matches the length recorded in meta.json — decrypt just does
+    // `new Uint8Array(pkg.content)` with no cipher/tag to catch drift. Without this, a book
+    // correctly store()'d, then truncated/extended on disk before the next cold read, would
+    // "successfully" decrypt to silently wrong-length data instead of failing loudly (errors.ts
+    // rule 2). Found via an adversarial cross-file review, 2026-08-12 — not a hypothetical.
+    assertLengthInvariant(pkg);
 
     if (isLicenceExpired(pkg)) {
       throw new ContentFailure(ContentError.LICENCE_EXPIRED, bookId);
