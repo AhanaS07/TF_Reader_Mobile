@@ -39,6 +39,5 @@ GoogleService-Info.plist
 BuildPlan.md
 mock-backend/
 
-*.test.ts
 docs
 samples

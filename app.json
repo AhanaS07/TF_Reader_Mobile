@@ -26,7 +26,8 @@
             "minSdkVersion": 26
           }
         }
-      ]
+      ],
+      "react-native-quick-crypto"
     ]
   }
 }
