@@ -66,7 +66,7 @@ order.
 personalization already supports both). `BookSearchIndex.format` allows `'EPUB' | 'PDF'`
 accordingly. The **Day-4 prototype starts PDF-first** — PDF `{page, offset}` locators are
 producible server-side with no extra tooling — while **EPUB CFI is committed, not deferred**; only
-the *how* of generating CFIs at ingestion is still to align with Ahana (see OPEN ITEM 2).
+the _how_ of generating CFIs at ingestion is still to align with Ahana (see OPEN ITEM 2).
 
 ### Tokenization & postings
 
@@ -94,7 +94,7 @@ the *how* of generating CFIs at ingestion is still to align with Ahana (see OPEN
 ### Multi-word queries — AND of tokens
 
 A query like `machine learning` is tokenized (same normalization as the index). Semantics for the
-prototype: **return hits only in the addressing unit that contains *all* tokens.**
+prototype: **return hits only in the addressing unit that contains _all_ tokens.**
 
 - Unit = **page** for PDF; **chapter** for EPUB (both are final scope — see OPEN ITEM 2).
 - Compute the set of pages that contain every query token, then return the matching postings on
@@ -132,7 +132,7 @@ keychain) and (b) keeps all key/crypto material behind Encryption's seam — Sea
 Encryption + Sync co-freeze.
 
 **ITEM 2 — EPUB CFI generation (with Ahana, Reader).**
-EPUB is committed final scope, so this is a planned task, not a deferral — only the *how* is open.
+EPUB is committed final scope, so this is a planned task, not a deferral — only the _how_ is open.
 `Posting.locator` uses the same `Locator` union as bookmarks/highlights so the Reader has one
 navigation path. PDF `{page, offset}` is straightforward to produce server-side. EPUB `{cfi}`
 normally comes from `epub.js` in the Reader's WebView — generating equivalent CFIs at
@@ -157,7 +157,7 @@ Day-4 internals this design implies (types/stubs land Day 4, not here):
 ```ts
 // Supplies plaintext to the build behind the frozen (bookId) façade.
 interface Extractor {
-  extract(bookId: string): Promise<{ format: 'PDF' | 'EPUB'; /* per-page/chapter text */ }>;
+  extract(bookId: string): Promise<{ format: 'PDF' | 'EPUB' /* per-page/chapter text */ }>;
 }
 
 // Pure, in-memory, no crypto/session — the unit-testable query core.
