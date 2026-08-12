@@ -3,10 +3,7 @@
 import { ScrollView, View, Text, StyleSheet } from 'react-native';
 import BottomTabBar from './BottomTabBar';
 import type { TabItem } from './BottomTabBar';
-import tokens from '../../theme/tokens';
-
-const { color, space } = tokens;
-const typeScale = tokens.type;
+import { color, space, type } from '@theme/tokens';
 
 const TABS: TabItem[] = [
   { key: 'Catalogue', label: 'Catalogue', iconActive: 'book', iconInactive: 'book-outline' },
@@ -59,16 +56,16 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: color.surface },
   content: { paddingBottom: space.xl },
   heading: {
-    fontWeight: typeScale.pageTitle.weight,
-    fontSize: typeScale.pageTitle.size,
-    lineHeight: typeScale.pageTitle.lineHeight,
+    fontWeight: type.pageTitle.weight,
+    fontSize: type.pageTitle.size,
+    lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,
     margin: space.md,
   },
   label: {
-    fontWeight: typeScale.meta.weight,
-    fontSize: typeScale.meta.size,
-    lineHeight: typeScale.meta.lineHeight,
+    fontWeight: type.meta.weight,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
     marginHorizontal: space.md,
     marginTop: space.md,
