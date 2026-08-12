@@ -11,7 +11,7 @@
 // today instead of the day the backend lands.
 import type { BookId } from '@/shared/types/primitives';
 import type { Catalogue, Publication, Shelf } from '@model/types';
-import type { DataSource } from '@adapters/InstitutionSource';
+import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
 import { type Institution, normalizeInstitutionList } from '@model/institution';
@@ -21,6 +21,11 @@ import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue
 import shelfGroupFixture from '@model/fixtures/OPDS-samples/02-shelf-group.json';
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
+
+// Strip combining diacritical marks so "Zurich" matches "Zürich".
+function fold(str: string): string {
+  return str.normalize('NFD').replace(/\p{M}/gu, '');
+}
 
 // The one institution the fixtures describe. Any other id is NOT_FOUND rather
 // than silently serving Imperial's catalogue under someone else's name — CAP-3
@@ -48,7 +53,9 @@ export class MockAdapter implements DataSource {
 
   async getHomeCatalogue(institutionId: string): Promise<Catalogue> {
     await this.simulate(institutionId);
-    this.assertInstitution(institutionId);
+    // Mock serves the same fixture catalogue for any institution — only one
+    // OPDS feed exists in fixtures. assertInstitution is intentionally skipped
+    // here now that CAP-3 is wired; the real API will serve per-institution feeds.
 
     const catalogue = normalizeCatalogue(homeCatalogueFixture);
     catalogue.shelves.flatMap((shelf) => shelf.publications).forEach(assertPublication);
@@ -57,7 +64,7 @@ export class MockAdapter implements DataSource {
 
   async getShelf(institutionId: string, shelfId: string, page?: number): Promise<Shelf> {
     await this.simulate(shelfId);
-    this.assertInstitution(institutionId);
+    // Same as getHomeCatalogue — fixture serves any institution.
 
     const shelf = this.shelvesById().get(shelfId);
     // A shelf that navigation advertises but no fixture backs (e.g. 'audiobooks')
@@ -81,7 +88,7 @@ export class MockAdapter implements DataSource {
 
   async getPublication(institutionId: string, bookId: BookId): Promise<Publication> {
     await this.simulate(bookId);
-    this.assertInstitution(institutionId);
+    // Same as getHomeCatalogue — fixture serves any institution.
 
     const publication = this.publicationsById().get(bookId);
     if (publication === undefined) {
@@ -92,10 +99,30 @@ export class MockAdapter implements DataSource {
     return publication;
   }
 
-  async getInstitutions(): Promise<Institution[]> {
+  async getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]> {
     await this.simulate('institutions');
 
-    return normalizeInstitutionList(institutionsFixture);
+    let results = normalizeInstitutionList(institutionsFixture);
+
+    if (params?.institutionId !== undefined) {
+      results = results.filter((i) => i.id === params.institutionId);
+    }
+
+    if (params?.q !== undefined && params.q.length > 0) {
+      const needle = fold(params.q.toLowerCase());
+      results = results.filter((i) => fold(i.name.toLowerCase()).includes(needle));
+    }
+
+    if (params?.country !== undefined) {
+      const target = params.country.toLowerCase();
+      results = results.filter((i) => i.country.toLowerCase() === target);
+    }
+
+    const size = params?.size ?? results.length;
+    const page = params?.page ?? 0;
+    results = results.slice(page * size, page * size + size);
+
+    return results;
   }
 
   async getInstitution(institutionId: string): Promise<Institution> {

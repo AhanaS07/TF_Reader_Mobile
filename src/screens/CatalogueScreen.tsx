@@ -33,11 +33,10 @@ import { SectionHeader } from '../components/SectionHeader';
 import { getCatalogueSource } from '../config/catalogue';
 import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
+import { useInstitutionStore } from '@store/institutionStore';
 import { color, space, type as typeScale } from '../theme/tokens';
 
-type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>;
-
-const PLACEHOLDER_INSTITUTION_ID = 'inst_7f3';
+type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
 // Cycled by POSITION, never by category name — types.ts: "NAVIGATION IS DATA,
 // NOT CODE ... no tab is named in a type or a branch anywhere". A fourth
@@ -54,6 +53,9 @@ export default function CatalogueScreen() {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
+  const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
+  const institutionId = selectedInstitution?.id ?? 'inst_7f3';
+
   // No synchronous setState here — only inside the async continuations. A
   // setState reachable directly from an effect body triggers a lint error
   // ("cascading renders"); `loading`/`failed` are also already at these exact
@@ -62,11 +64,11 @@ export default function CatalogueScreen() {
   // handler, not an effect — see below.
   const fetchCatalogue = useCallback(() => {
     getCatalogueSource()
-      .getHomeCatalogue(PLACEHOLDER_INSTITUTION_ID)
+      .getHomeCatalogue(institutionId)
       .then(setCatalogue)
       .catch(() => setFailed(true))
       .finally(() => setLoading(false));
-  }, []);
+  }, [institutionId]);
 
   useEffect(() => {
     fetchCatalogue();
@@ -91,6 +93,18 @@ export default function CatalogueScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <Pressable
+        style={styles.institutionPicker}
+        onPress={() => navigation.navigate('InstitutionList')}
+        accessibilityRole="button"
+        accessibilityLabel="Change institution"
+      >
+        <Text style={styles.institutionName} numberOfLines={1}>
+          {selectedInstitution?.name ?? 'Select institution'}
+        </Text>
+        <Text style={styles.institutionChange}>Change</Text>
+      </Pressable>
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -143,6 +157,31 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: color.surface,
+  },
+  institutionPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    backgroundColor: color.surface,
+    borderRadius: space.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  institutionName: {
+    flex: 1,
+    fontWeight: typeScale.body.weight,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textPrimary,
+  },
+  institutionChange: {
+    fontWeight: typeScale.button.weight,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
+    marginLeft: space.sm,
   },
   content: {
     padding: space.md,
