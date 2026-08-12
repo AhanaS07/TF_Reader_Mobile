@@ -1,7 +1,7 @@
-import { newId, nowIso } from '../db/database';
-import { bookmarkMapper } from '../db/mappers';
-import type { BookmarkRow, Locator } from '../db/types';
-import { BOOK_ID, USER_ID } from '../config';
+import { newId, nowIso } from '../localDb/database';
+import { bookmarkMapper } from '../localDb/mappers';
+import type { BookmarkRow, Locator } from '../localDb/types';
+import { BOOK_ID, USER_ID } from '../syncConfig';
 import { createSyncableTable } from './syncableTable';
 
 export const bookmarkTable = createSyncableTable<BookmarkRow>({
@@ -11,7 +11,7 @@ export const bookmarkTable = createSyncableTable<BookmarkRow>({
   toRow: bookmarkMapper.toRow,
 });
 
-export const bookmarkRepository = {
+export const bookmarkStore = {
   ...bookmarkTable,
 
   list(): Promise<BookmarkRow[]> {

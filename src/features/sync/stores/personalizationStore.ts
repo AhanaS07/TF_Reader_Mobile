@@ -1,8 +1,8 @@
-import { getDatabase, newId, nowIso } from '../db/database';
-import { personalizationMapper } from '../db/mappers';
-import type { PersonalizationRow } from '../db/types';
-import { USER_ID } from '../config';
-import { createSyncableTable, withWriteLock } from './syncableTable';
+import { getDatabase, newId, nowIso } from '../localDb/database';
+import { personalizationMapper } from '../localDb/mappers';
+import type { PersonalizationRow } from '../localDb/types';
+import { USER_ID } from '../syncConfig';
+import { createSyncableTable } from './syncableTable';
 
 export const personalizationTable = createSyncableTable<PersonalizationRow>({
   table: 'personalization',
@@ -30,7 +30,7 @@ const defaults = (): PersonalizationRow => ({
 });
 
 /** Personalization is user scoped - one preference set applies to every book. */
-export const personalizationRepository = {
+export const personalizationStore = {
   ...personalizationTable,
 
   async current(): Promise<PersonalizationRow | null> {
@@ -44,27 +44,18 @@ export const personalizationRepository = {
     );
   },
 
-  /**
-   * Runs under `withWriteLock`: without it, two overlapping calls (e.g. two settings toggled
-   * in quick succession) would each see "no row yet" and each create their own, silently
-   * duplicating the one-preference-set-per-user invariant this repository documents above.
-   */
   async update(patch: Partial<PersonalizationRow>): Promise<PersonalizationRow> {
-    return withWriteLock(async () => {
-      const existing = await this.current();
-      const base = existing ?? defaults();
-      const row: PersonalizationRow = {
-        ...base,
-        ...patch,
-        id: base.id,
-        user_id: USER_ID,
-        updated_at: nowIso(),
-        is_deleted: 0,
-        synced: 0,
-      };
-      return personalizationTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', {
-        locked: true,
-      });
-    });
+    const existing = await this.current();
+    const base = existing ?? defaults();
+    const row: PersonalizationRow = {
+      ...base,
+      ...patch,
+      id: base.id,
+      user_id: USER_ID,
+      updated_at: nowIso(),
+      is_deleted: 0,
+      synced: 0,
+    };
+    return personalizationTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE');
   },
 };

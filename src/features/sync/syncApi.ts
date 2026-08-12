@@ -1,4 +1,4 @@
-import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './config';
+import { API_BASE_URL, API_V1, licenceExpiredPath, REQUEST_TIMEOUT_MS } from './syncConfig';
 
 /**
  * A thin client over the Mongo backend's per-entity CRUD endpoints.
@@ -9,7 +9,7 @@ import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './config';
  *   - `POST /api/v1/{entity}` stores the `id` in the body, so ids stay
  *     device-minted. A second POST with the same id answers **409**.
  *   - `PUT /api/v1/{entity}/{id}` does **not** upsert: an unknown id is 404.
- *     Push therefore falls back between the two - see `syncManager`.
+ *     Push therefore falls back between the two - see `syncEngine`.
  *   - `updatedAt` is always overwritten with the server clock. `createdAt` is
  *     stored as sent; `isDeleted` on a create is ignored.
  *   - `DELETE` without `?hard=true` writes a tombstone and returns it.
@@ -176,6 +176,18 @@ export const api = {
       return error instanceof ApiError && !error.isTransient;
     }
   },
+
+  /**
+   * Has this book's licence expired?
+   *
+   * The only read-only, non-entity call here: no push, no pull, no outbox. The
+   * response body is a bare JSON boolean rather than a document, which
+   * `request` passes through untouched - `normalize` only rewrites objects.
+   *
+   * A book with no licence document answers 404, which arrives as an `ApiError`
+   * the caller can tell apart from being offline (status 0).
+   */
+  licenceExpired: (bookId: string) => request<boolean>(licenceExpiredPath(bookId)),
 
   /**
    * PUSH, create. The device-minted `id` in the body is honoured, so the server

@@ -1,7 +1,7 @@
-import { newId, nowIso } from '../db/database';
-import { highlightMapper } from '../db/mappers';
-import type { HighlightRow, Locator } from '../db/types';
-import { BOOK_ID, USER_ID } from '../config';
+import { newId, nowIso } from '../localDb/database';
+import { highlightMapper } from '../localDb/mappers';
+import type { HighlightRow, Locator } from '../localDb/types';
+import { BOOK_ID, USER_ID } from '../syncConfig';
 import { createSyncableTable } from './syncableTable';
 
 export const highlightTable = createSyncableTable<HighlightRow>({
@@ -17,7 +17,7 @@ export interface SelectionRange {
   endOffset: number;
 }
 
-export const highlightRepository = {
+export const highlightStore = {
   ...highlightTable,
 
   list(): Promise<HighlightRow[]> {

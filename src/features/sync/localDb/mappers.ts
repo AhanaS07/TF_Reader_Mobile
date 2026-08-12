@@ -8,7 +8,7 @@ import type {
   ProgressRow,
 } from './types';
 import { toBool, toInt } from './database';
-import { BOOK_ID, PERSONALIZATION_REQUIRES_BOOK_ID } from '../config';
+import { BOOK_ID, PERSONALIZATION_REQUIRES_BOOK_ID } from '../syncConfig';
 
 /**
  * Local rows are snake_case; the API is camelCase. These mappers are the only

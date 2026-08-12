@@ -147,4 +147,10 @@ export const SYNC_KEYS = {
   /** Server timestamp of the last pull that was fully applied locally. */
   LAST_PULL_TOKEN: 'last_pull_token',
   LAST_PUSH_AT: 'last_push_at',
+  /**
+   * When the licence check last got an answer out of the server. Null until it
+   * has succeeded once, which is what distinguishes "never asked" from "asked,
+   * and the book is fine" - the `is_valid` column reads as valid in both cases.
+   */
+  LAST_LICENCE_CHECK_AT: 'last_licence_check_at',
 } as const;
