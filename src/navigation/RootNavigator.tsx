@@ -15,7 +15,9 @@ import LibraryScreen from '../screens/LibraryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
+import InstitutionListScreen from '../screens/InstitutionListScreen';
 import ItemDetailScreen from '../screens/ItemDetailScreen';
+import ShelfScreen from '../screens/ShelfScreen';
 
 import type {
   RootStackParamList,
@@ -90,6 +92,16 @@ function CatalogueNavigator() {
         name="ItemDetail"
         component={ItemDetailScreen}
         options={{ title: 'Item Detail' }}
+      />
+      <CatalogueStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <CatalogueStack.Screen
+        name="Shelf"
+        component={ShelfScreen}
+        options={({ route }) => ({ title: route.params.title })}
       />
     </CatalogueStack.Navigator>
   );

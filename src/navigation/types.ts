@@ -18,8 +18,13 @@ export type RootTabParamList = {
 /** Catalogue nested stack — has pushed detail screens. */
 export type CatalogueStackParamList = {
   CatalogueHome: undefined;
+  // Institution picker — CAP-3 selection flow.
+  InstitutionList: undefined;
   InstitutionDetail: { institutionId: string };
   ItemDetail: { itemId: string };
+  // Shelf detail — Prayas wires CategoryCard.onPress to this route (C1).
+  // title is passed so the AppHeader can display it without a network call.
+  Shelf: { shelfId: string; title: string };
 };
 
 /** Search nested stack — shares ItemDetail shape. */
