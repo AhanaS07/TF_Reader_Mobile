@@ -26,10 +26,8 @@ describe('toolchain', () => {
   // RenderResult. Forget the `await` and you get the baffling
   // "getByText is not a function", because you destructured a Promise.
   it('renders the app root', async () => {
-    // App now mounts the full navigator. 'Taylor & Francis' is the title
-    // rendered by TopAppBar on the Catalogue home screen — unique in the tree.
     const { getByText } = await render(<App />);
-    expect(getByText('Taylor & Francis')).toBeTruthy();
+    expect(getByText('TF Reader')).toBeTruthy();
   });
 
   it('resolves the @/ alias to a runtime value', () => {
