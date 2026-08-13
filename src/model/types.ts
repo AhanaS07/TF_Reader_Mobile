@@ -194,6 +194,40 @@ export interface Catalogue {
   searchHref?: string;
 }
 
+// One page of catalogue search results — what `normalizeSearchFeed` produces and
+// what the search pipeline (B1) hands the UI.
+//
+// SEARCH IS SERVER-SIDE AND ENTITLEMENT-SCOPED. Matching, tokenising and ranking
+// all happen behind the search endpoint; nothing above the adapter re-orders or
+// re-filters this list. "We filter, you render."
+//
+// THREE FIELDS THAT LOOK ALIKE AND ARE NOT:
+//
+//   `publications` is ALWAYS AN ARRAY HERE, even when the response omitted the
+//   key entirely. A zero-result search legitimately comes back as a navigation
+//   feed with no `publications` at all, and that is a valid empty state — not a
+//   malformed feed. Defaulting it here is what stops every consumer having to
+//   remember that.
+//
+//   `browseInstead` is what the server offers INSTEAD of results: somewhere to go
+//   when the query matched nothing. Empty on a successful search. Reuses
+//   `NavLink` because a browse target is exactly a navigation entry — same title,
+//   same href, same precomputed shelfId.
+//
+//   `next` is the response's own `next` value, KEPT VERBATIM as an opaque string.
+//   Deliberately NOT `Shelf.nextPage`: that is a page INDEX parsed out of the
+//   href, which forces the client to understand the server's paging scheme and
+//   throws MALFORMED_FEED on a cursor it cannot parse. A search response is
+//   followed, not reconstructed — so no caller ever builds this value, and a
+//   cursor-based server needs no change here. Absent ⇒ last page.
+export interface SearchFeed {
+  publications: Publication[];
+  // Server-reported total across all pages. Absent ⇒ the server did not say.
+  totalItems?: number;
+  next?: string;
+  browseInstead: NavLink[];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // From Akriti's dcd04fe types.ts — net-new scope only. Everything below is
 // additive: it does not touch OPDS normalization (rels.ts/normalize.ts) or
