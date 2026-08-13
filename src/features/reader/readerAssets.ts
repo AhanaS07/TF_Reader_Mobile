@@ -21,6 +21,7 @@ import { Asset } from 'expo-asset';
 import { getBook } from '@/features/encryption/contentProvider';
 import { bytesToBase64 } from '@/features/encryption/base64';
 import { ensureSeeded } from '@/features/reader/devContentSeed';
+import { logSpan, now } from '@/features/reader/readerTiming';
 import type { BookId } from '@/shared/contracts';
 
 const READER_HTML_MODULE = require('../../../assets/reader/reader.html') as number;
@@ -77,8 +78,24 @@ export async function getReaderHtmlUri(): Promise<string> {
  * decrypted book stays in RAM. ReaderScreen's unmount effect does that.
  */
 export async function getBookBase64(bookId: BookId): Promise<string> {
-  await ensureSeeded(bookId);
+  const startedAt = now();
 
+  const seedStartedAt = now();
+  await ensureSeeded(bookId);
+  logSpan('seed', seedStartedAt);
+
+  // Split from the encode below so the two costs can be attributed separately: getBook is
+  // Encryption's decrypt (which itself base64s twice around a string-only native API — see
+  // aesGcm.ts:140-148), while bytesToBase64 is Reader's own transport encode. Conflating them
+  // would point optimisation work at the wrong module.
+  const decryptStartedAt = now();
   const bytes = await getBook(bookId);
-  return bytesToBase64(bytes);
+  logSpan('decrypt', decryptStartedAt, { bytes: bytes.length });
+
+  const encodeStartedAt = now();
+  const base64 = bytesToBase64(bytes);
+  logSpan('encode', encodeStartedAt, { chars: base64.length });
+
+  logSpan('getBookBase64 TOTAL', startedAt, { bytes: bytes.length });
+  return base64;
 }
