@@ -111,10 +111,16 @@ say a five-way split. Section 05 is the outlier and is stale.
 
 ## Unratified — do not build as if these are settled
 
+The access spine's own board — what it waits on and what has been decided — is
+[`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md). The rows below are the ones that
+cut across more than one person's work.
+
 | Item | Question | Build so that… |
 |---|---|---|
 | **L-2** | Is the post-sign-in catalogue scoped by entitlement? Contradicts Design Spec §4.1, a signed document. | scope is config, not branching logic |
-| **L-3** | Final action vocabulary — `Buy` removed, `borrow` redefined, `subscribe` B2C-only | variants come off the `ActionId` union |
+| **L-3** | ✅ **CLOSED 13 Aug — the vocabulary is `read` · `download` · `addToQueue` · `revokeLicence` · `subscribe` · `signIn`.** Six words, but not the same six: `borrow` is gone as a button and `revokeLicence` replaces it. `borrow` survives only as an OPDS *wire rel* on `AcquisitionRel`, which is a different thing. Anything describing a Borrow button — including the signed design specification — is superseded. | variants come off the `ActionId` union — see `src/model/types.ts` |
+| **L-3b** | ✅ **CLOSED 13 Aug — `ELITE` may not Download.** Elite is read-only: `addToQueue`, then `read` + `revokeLicence` once a licence is held. No offline copy at any point, which is what screen 18's "No offline copy" line already said. | one branch in `resolveAccess`; `download` stays in `ActionId` for Open Access and Subscription |
+| **L-3c** | ✅ **CLOSED 13 Aug — Elite always joins the queue**, whether or not a seat is free. So the seat count decides nothing: `no_seats` left `ACCESS_STATES` and `requires_queue` / `queued` replaced it, and an Elite item now resolves the same on a list as on the detail screen. | `Availability` is fetched for `queuePosition` only — never to pick a button |
 | **L-5** | Three feed tabs, or one merged list? | tabs are **data, not code** |
 | **Q-D** | ✅ **CLOSED 11 Aug — there is no `accessTier` field and there will not be one.** Derive the tier from the acquisition link's `licenceModel`: `UNLIMITED` → Subscription, `CONCURRENT` → Elite, key absent → Open Access. wokay's own mapping. | derived in the adapter, never in a component — see `src/model/types.ts` |
 | **Q-12** | **NEW** — with no tier field, is `?accessTier=` still a valid filter parameter, or are the filter chips content-type only? | ask wokay; Moktik builds `FilterChip` on Day 3 |
