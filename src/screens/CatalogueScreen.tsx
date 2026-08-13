@@ -5,12 +5,9 @@
 // access from the real fixture); the "Recently published" section below is the
 // home-catalogue's OWN shelves ("New this term", "Free to read"), each under its
 // own heading. Tapping a category card does not filter that list — CLAUDE.md L-5
-// (three tabs, or one merged list?) is unsettled, and the mockup's "tap eBooks,
-// see its shelf on a separate screen" needs getShelf() + a route that does not
-// exist in the navigator yet (RootNavigator / navigation/types.ts are Keshav's,
-// P0-6). So a category card has nowhere to send the user today: it renders with
-// no onPress and no chevron, honestly, rather than pretending. Wire it up when
-// that screen lands — it is a one-line addition here.
+// (three tabs, or one merged list?) is unsettled — it pushes ShelfDetail
+// (ShelfScreen) instead, which fetches that shelf's own full, paginated
+// listing via getShelf(). See ShelfScreen.tsx.
 //
 // `institutionId` IS HARDCODED to the one id the mock fixtures serve. CAP-3
 // (institution selection) has not landed, so there is no real value to read yet.
@@ -118,7 +115,18 @@ export default function CatalogueScreen() {
             ))
           : catalogue?.navigation.map((entry, index) => (
               <View key={entry.shelfId} style={styles.categoryCard}>
-                <CategoryCard title={entry.title} accent={ACCENTS[index % ACCENTS.length]} />
+                <CategoryCard
+                  title={entry.title}
+                  accent={ACCENTS[index % ACCENTS.length]}
+                  // `title` rides along so the pushed screen's app bar can name
+                  // the shelf immediately, before its feed has loaded.
+                  onPress={() =>
+                    navigation.navigate('Shelf', {
+                      shelfId: entry.shelfId,
+                      title: entry.title,
+                    })
+                  }
+                />
               </View>
             ))}
       </ScrollView>
@@ -129,10 +137,10 @@ export default function CatalogueScreen() {
           ))
         : catalogue?.shelves.map((shelf) => (
             <View key={shelf.id} style={styles.section}>
-              {/* No `actionLabel`: "See all" would open the full paginated
-                  shelf, and that screen does not exist yet (same reason the
-                  category cards carry no onPress). Screen 01's design shows no
-                  action on these headers either. */}
+              {/* No `actionLabel`: these are the home-catalogue's own preview
+                  shelves, not one of the tappable navigation categories above,
+                  so there is no "See all" destination for them. Screen 01's
+                  design shows no action on these headers either. */}
               <SectionHeader title={shelf.title} />
               <View style={styles.list}>
                 {shelf.publications.map((publication) => (

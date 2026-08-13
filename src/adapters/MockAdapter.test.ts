@@ -29,15 +29,29 @@ describe('MockAdapter institutions', () => {
     });
   });
 
-  // Only inst_7f3 has catalogue fixtures. Selecting any other institution and
-  // then loading its catalogue is a dead end until more fixtures exist — asserted
-  // so the gap is visible rather than discovered during a demo.
-  it('lists institutions whose catalogues do not exist yet', async () => {
+  // Every institution the picker can offer must load, or CAP-3 looks broken for
+  // 7 of its own 8 choices. Only inst_7f3 has real catalogue fixtures, so the
+  // others are served that same feed — a mock convenience, stated here rather
+  // than left as a surprise. Replace this with per-institution fixtures if the
+  // demo ever needs the catalogues to differ.
+  it('serves a catalogue for every institution it lists, not just inst_7f3', async () => {
     const adapter = new MockAdapter();
     const others = (await adapter.getInstitutions()).filter((i) => i.id !== 'inst_7f3');
 
     expect(others.length).toBeGreaterThan(0);
-    await expect(adapter.getHomeCatalogue(others[0].id)).rejects.toMatchObject({
+    for (const institution of others) {
+      const catalogue = await adapter.getHomeCatalogue(institution.id);
+      expect(catalogue.shelves.length).toBeGreaterThan(0);
+    }
+  });
+
+  // The other half of that bargain: only ids the fixtures know are accepted, so
+  // MockAdapter still agrees with ApiAdapter (which maps a 404 to NOT_FOUND) and
+  // the shared conformance suite stays meaningful.
+  it('still rejects an institution that appears in no fixture', async () => {
+    const adapter = new MockAdapter();
+
+    await expect(adapter.getHomeCatalogue('inst_not_in_any_fixture')).rejects.toMatchObject({
       code: CatalogueError.NOT_FOUND,
     });
   });
@@ -131,13 +145,56 @@ describe('MockAdapter error injection', () => {
 });
 
 describe('MockAdapter shelf resolution', () => {
-  it('serves home-catalogue groups as shelves by their own ids', async () => {
+  it('serves a shelf that has a standalone feed fixture', async () => {
     const adapter = new MockAdapter();
 
-    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, 'new-this-term');
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks');
 
-    expect(shelf.id).toBe('new-this-term');
+    expect(shelf.id).toBe('ebooks');
     expect(shelf.publications.length).toBeGreaterThan(0);
+  });
+
+  it('serves the second page of a multi-page shelf from its own fixture', async () => {
+    const adapter = new MockAdapter();
+
+    const firstPage = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks');
+    const secondPage = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks', firstPage.nextPage);
+
+    // Real rows off 02-shelf-group-page1.json, not a fabricated empty page — the
+    // two pages together add up to the shelf's advertised total.
+    expect(secondPage.publications.length).toBeGreaterThan(0);
+    expect(firstPage.publications.length + secondPage.publications.length).toBe(
+      firstPage.totalItems,
+    );
+    // Last page, so nothing left to advertise.
+    expect(secondPage.nextPage).toBeUndefined();
+  });
+
+  // MockAdapter's own choice, NOT part of the shared conformance contract: what a
+  // real server does past the end is undecided (see conformance.ts). An empty
+  // page is the kinder of the two for a mock, since a 404 here would show the
+  // full-screen error for what is really just "no more results".
+  it('answers a page past the end with an empty final page', async () => {
+    const adapter = new MockAdapter();
+
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks', 99);
+
+    expect(shelf.id).toBe('ebooks');
+    expect(shelf.publications).toEqual([]);
+    // Stripped, so a caller looping on `nextPage` terminates instead of spinning.
+    expect(shelf.nextPage).toBeUndefined();
+  });
+
+  it('does not serve a home-catalogue preview group as a drillable shelf', async () => {
+    const adapter = new MockAdapter();
+
+    // 'new-this-term' exists only as a group inside the home feed. That group is
+    // a preview of a collection, not the full listing its self href would
+    // return, so it cannot stand in for one: doing so would fake a paginated
+    // shelf out of data that has no pages. The home feed is for the home screen.
+    await expect(adapter.getShelf(KNOWN_INSTITUTION, 'new-this-term')).rejects.toMatchObject({
+      code: CatalogueError.NOT_FOUND,
+    });
   });
 
   it('reports NOT_FOUND for a navigable shelf that has no fixture yet', async () => {
