@@ -38,16 +38,33 @@
 //   - the message union passes ~8 cases, or any case grows past ~3 fields
 //   - a command needs a RESPONSE (request/reply, not fire-and-forget) — that
 //     doubles the hand-synced surface per call and adds correlation ids
+//   - a bridge payload is a type owned by a FROZEN contract in src/shared/
+//     contracts/ (Locator, SharedPrefs, SearchHit, …) rather than a primitive
+//     local to this file. WEBVIEW_BRIDGE.md calls this the sharpest one: tsc
+//     walks every TS consumer of a frozen contract and walks straight past the
+//     .html, so hand-copying a frozen shape silently removes the WebView from
+//     the freeze's blast radius
 //   - the transport stops being base64-over-injectJavaScript (see the note on
 //     getBookBase64 in readerAssets.ts); a new transport means re-agreeing the
 //     whole payload shape, which is the cheapest moment to get a compiler
 //   - anything inside the WebView starts holding state RN also models
 //
+// (This list is a copy of WEBVIEW_BRIDGE.md's; keep the two in step. The frozen-
+// contract trigger above was missing here until 2026-08-13 — which is precisely
+// the drift a duplicated list invites, and the reason the note below about
+// "trips two" only ever parsed against the doc's version.)
+//
 // Day 3 (whole-book decrypt) did NOT trip any of these — worth recording,
 // because it was the predicted trigger. The decrypted-buffer handoff reused
 // `open` unchanged, TOC already existed, and the one new code
-// (CONTENT_LOAD_FAILED) is host-side and never crosses the bridge. The debt is
-// still cheap.
+// (CONTENT_LOAD_FAILED) is host-side and never crosses the bridge.
+//
+// Day 4 (the 20 MB whole-book transport) did NOT trip any either, and that one
+// was expected to: base64-over-injectJavaScript was ASSERTED not to scale to a
+// 20 MB book. Measured instead — the payload crosses and renders in ~330ms, ~5%
+// of a warm open — so the transport stayed and only the base64 IMPLEMENTATION
+// changed on each side, behind an unchanged open(base64). Chunking would have
+// fired trigger 4 and 5; it turned out not to be needed. The debt is still cheap.
 //
 // EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
 // epub.js rendition). That is the first stage that trips a trigger, and it trips

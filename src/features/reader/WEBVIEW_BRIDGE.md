@@ -1,7 +1,8 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
 **Owner:** Reader (Ahana) · **Status:** accepted debt, not yet due
-**Last reviewed:** 2026-08-12, after the whole-book-decrypt wiring (`5f8a59a`)
+**Last reviewed:** 2026-08-13, after the 20 MB whole-book transport measurement — **trigger 4
+re-run against real numbers and did NOT fire** (see the Day 4 row in [Stage forecast](#stage-forecast))
 
 This file exists because the WebView half of the reader bridge is **not typechecked**, that is a
 deliberate choice, and a deliberate choice with a cost needs a written expiry date. Everything
@@ -99,6 +100,14 @@ Convert to a typechecked WebView build when **any one** of these becomes true:
 4. The transport stops being base64-over-`injectJavaScript` (see `getBookBase64` in
    `readerAssets.ts`). A new transport means re-agreeing the whole payload shape anyway, which is
    the cheapest possible moment to acquire a compiler.
+   > **Re-run 2026-08-13 against a real 20 MB book: DID NOT FIRE.** The transport is still
+   > base64-over-`injectJavaScript` and is staying, because measurement showed it is not the
+   > bottleneck (~330 ms, ~5% of a warm open). Swapping the base64 *implementation* on each side —
+   > `react-native-quick-base64` host-side, `Uint8Array.fromBase64` in the template — changes no
+   > command, no payload shape and no message type, so it is not a new transport. See the Day 4 row
+   > in [Stage forecast](#stage-forecast). **Chunking would still fire this** (and trigger 5), so if
+   > a future book size forces a sequenced `openBegin`/`openChunk`/`openEnd` protocol, the
+   > conversion is the task and comes first.
 5. Anything inside the WebView starts holding **state that RN also models**.
 
 ### Why trigger 3 is the sharp one
@@ -116,6 +125,7 @@ Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not c
 | Stage                                                  | Owner                               | What it adds to the bridge                                                                        | Triggers                    | Verdict                       |
 | ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------- |
 | **Day 3 — whole-book decrypt** ✅ done                 | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                        | debt stayed cheap             |
+| **Day 4 — 20 MB whole-book transport** ✅ done          | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit** | ⚠️ was the predicted trigger  |
 | **Navigation / library shell**                         | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                        | no action                     |
 | **Progress persistence** (`progress.ts`)               | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                        | no action                     |
 | **Prefs applied to the rendition** (`prefs.ts`)        | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                 | ⚠️ **convert here**           |
@@ -123,13 +133,26 @@ Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not c
 | **In-book search** (`search.ts`)                       | Vaishnavi                           | _probably nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo` | none, if `goTo` takes a CFI | cheap — don't let it fool you |
 | **TTS + word/sentence highlight** (`accessibility.ts`) | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                 | unthinkable by hand           |
 
-Two things worth calling out, because both contradict the obvious guess:
+Three things worth calling out, because all three contradict the obvious guess:
 
 - **Day 3 was the predicted trigger and it didn't fire.** The reviewer expected the
   decrypted-buffer handoff, new error codes and TOC payloads to grow the bridge. In the event the
   handoff reused `open` with an unchanged signature, TOC already existed, and the one new code
   (`CONTENT_LOAD_FAILED`) is host-side and never crosses the bridge. Not blocking on it was
   correct.
+- **Day 4 was going to fire trigger 4, and measurement is why it didn't.** This row was not in the
+  forecast at all — the table assumed prefs-application would be first. The 20 MB work looked
+  certain to trip trigger 4, because `readerAssets.ts` and this file both *asserted in comments*
+  that base64-over-`injectJavaScript` "does not scale" to a 20 MB book. **Both comments were
+  predictions, and both were wrong.** Tested before changing anything: a 27,962,028-char payload
+  (the exact base64 length of a 20 MB book) crossed `injectJavaScript` into WKWebView in **305 ms**,
+  and the real book renders in **~330 ms**, about **5%** of a warm open. The remaining ~93% is
+  Encryption's base64 round-trip inside `getBook`, which never touches the bridge.
+  So the fix was to swap the codec on each side **behind an unchanged `open(base64)`** — no command,
+  no payload shape, no message type altered. **Trigger 4 was checked and did not fire.** The
+  conversion stays due at prefs-application, exactly as this file already said.
+  Recorded because a trigger that was *tested* and held is evidence; a trigger nobody re-ran is
+  just an assumption with a date on it.
 - **Search looks like a bridge feature and mostly isn't.** `search.ts` builds the index
   server-side and decrypts it into RAM alongside the book, so querying happens in RN. Only
   _seeking_ touches the WebView, and `goTo` already covers it. Don't schedule the conversion

@@ -70,22 +70,74 @@ on Reader's schedule. **To opt your directory in, add it to that block's `files`
 set and the `projectService` wiring are already there, so it is a one-line change. Do not enable
 it for someone else's directory on their behalf.
 
-**Known open item:** `contentStore.store()` does not invalidate the keychain-cached BEK, and
-`resolveRawKey()` prefers that cache over unwrapping `wrappedBek` — so a re-download with a new
-BEK fails `INTEGRITY_FAILED` permanently. Documented in `contentStore.edgecases.test.ts`
+### Known open items — all three are Abhinav's call
+
+**1. Stale keychain-cached BEK.** `contentStore.store()` does not invalidate the keychain-cached
+BEK, and `resolveRawKey()` prefers that cache over unwrapping `wrappedBek` — so a re-download with
+a new BEK fails `INTEGRITY_FAILED` permanently. Documented in `contentStore.edgecases.test.ts`
 ("stale-cached-BEK trap") and worked around by `destroy()`-before-`store()` in `devContentSeed.ts`.
-The real fix is Abhinav's call.
+
+**2. `close()` leaves the ciphertext resident.** `contentStore.close()` zeroes `session.plaintext`,
+`indexPlaintext` and `rawKey` and drops the session, but does **not** touch the module-level
+`packageCache` — only `destroy()` does. So after `closeBook(bookId)` the whole **ciphertext** stays
+in RAM: 20 MB for the test book, indefinitely, for a book the reader has finished with.
+
+Reader has **no legitimate workaround**, and this is not a style opinion: `contentProvider.ts`
+exposes only `closeBook` (→ `close`), reaching past the frozen one-call seam into `contentStore` is
+exactly what that seam exists to prevent, and `destroy()` is terminal anyway (deletes ciphertext +
+BEK, forcing a re-download). The one-line fix is `packageCache.delete(bookId)` inside `close()`, and
+it is genuinely a trade-off rather than an oversight — it makes the next open a cold read, i.e. a
+fresh 20 MB **synchronous** `bytesSync()` on the JS thread (`contentStore.ts:229`). That call is
+Abhinav's to make.
+
+**3. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** Measured
+2026-08-13 on a real 20 MB EPUB (iPhone 17 Pro simulator, dev build):
+
+| | Before codec swaps | After | Verdict |
+| --- | --- | --- | --- |
+| App RSS peak | 609 MB | **609 MB — unchanged** | 🔴 |
+| WebContent RSS peak | 389 MB | 376 MB | 🟢 |
+| `encode` (Reader's hop) | 1820 ms | **18 ms** | ✅ fixed |
+| `decrypt` (`getBook`) | 4882 ms | 4981 ms — unchanged | Abhinav's |
+
+Reader's `react-native-quick-base64` swap cut its own encode by ~99% and **moved app-side peak by
+zero**, because a faster encoder still produces one 27 MB string. Opening a book materialises the
+payload at full size roughly **six** times, and `aesGcm.ts:140-148` owns **two** of them — it
+base64-encodes the ciphertext and decodes the plaintext around a string-only native API. **That hop
+is the only remaining lever on app-side memory**, and after Reader's swaps it is also ~93% of the
+time in a warm open. Proposal for Abhinav: have `base64.ts` delegate to `react-native-quick-base64`
+(already a direct dependency and pod-linked, as a peer of his own `react-native-quick-crypto`, so no
+prebuild) — though note that addresses the *time*, and only removing copies addresses the *peak*.
+
+Caveat that must travel with these numbers: **simulator, dev build, and the simulator has no
+jetsam.** ~985 MB combined would be a likely foreground kill on a 2 GB device. Real-device
+confirmation is still outstanding. Also still unmeasured: the post-`closeBook` drop, which needs
+`RootNavigator` before anything can unmount `ReaderScreen`.
 
 ## Temporary scaffolding
 
-`src/features/reader/devContentSeed.ts` stands in for Download's real download pass. Delete it and
-`assets/reader/sample-plaintext.epub`, and drop the `ensureSeeded()` call in `readerAssets.ts`,
-when the real pass lands.
+`src/features/reader/devContentSeed.ts` stands in for Download's real download pass. Drop the
+`ensureSeeded()` call in `readerAssets.ts` and delete the file when the real pass lands — Abhinav's
+`src/features/download/downloadManager.ts` is that pass and has now landed, so this is closer than
+it reads.
 
 It has a **second** call site that is easy to miss: `App.tsx` imports `DEV_SAMPLE_BOOK_ID` from it
 to feed `<ReaderScreen bookId={...} />`, because there is no navigator yet to supply a real one.
 So deleting `devContentSeed.ts` is blocked on `RootNavigator` landing, and the temp wiring in
 `App.tsx` (header, styles, direct mount) goes at the same time — one removal, not two.
+
+**`assets/reader/sample-plaintext.epub` is NO LONGER Reader's to delete alongside it.** This file
+used to say to remove both together. Since Vaishnavi's search extractor landed, that EPUB is a
+**shared fixture**: `src/features/search/extractor.ts:43` hard-codes its path, and deleting it breaks
+`search.test.ts`. So its removal now needs Search looped in, separately from and later than
+`devContentSeed.ts`.
+
+`devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_PATH` when set, to load a large EPUB
+pushed into the app container instead of the bundled sample (measurement scaffolding — Metro cannot
+`require()` an untracked 20 MB asset, and real content must never be committed). It goes with the
+rest of the file. **Anything using it must delete the pushed plaintext EPUB from the container when
+finished** — that path puts an unencrypted book on disk by construction, which is exactly what a
+storage-leak sweep should flag.
 
 ## Verifying a change
 
