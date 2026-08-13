@@ -3,14 +3,27 @@
 // BuildPlan.md Phase 3 + Phase 4 items 1/3/4: the download skeleton's single entry point.
 // Permission -> storage -> 5-book limit -> resolve the encrypted asset by Book ID -> verify its
 // checksum -> reject if the decrypted size would exceed contentStore's RAM budget
-// (MAX_DECRYPTED_BYTES, BOOK_TOO_LARGE) -> hand the bytes to Encryption's store() (never persist
-// plaintext) -> record the download locally.
+// (MAX_DECRYPTED_BYTES, BOOK_TOO_LARGE) -> best-effort fetch the encrypted search index, if the
+// licence has one -> hand the bytes to Encryption's store() (never persist plaintext) -> record
+// the download locally.
 //
 // Uses `downloadTable` (the general primitive `downloadRepository.ts` is built on), NOT
 // `downloadRepository`'s own convenience methods (list/currentForBook/recordCompleted) — those
 // are hardcoded to sync/config.ts's single fixed BOOK_ID, a prototype shortcut that can't count
 // across DIFFERENT books. downloadTable already supports multiple books; the wrapper just wasn't
 // built for this case. See docs/superpowers/specs/2026-08-13-download-devicekey-skeleton-design.md.
+//
+// SEARCH INDEX (added 2026-08-14): `ContentLicenceResponse.index` (content-licence.ts) carries an
+// optional `{ url, encrypted, termCount }` — the real backend shape (team flambeau's
+// `ReadingSessionResponse.index`, forwarding wokay's `IndexUrl` unchanged). Fetched the same way
+// as the main asset and attached to `EncryptedPackage.index`, which contentStore.ts's
+// decryptSearchIndex/getIndex already know how to decrypt — they just never had anything real to
+// decrypt before this, since nothing in the download flow could reach an index URL. A failure
+// fetching the index does NOT fail the whole download: contentStore.ts already treats the index
+// as an independent failure domain from the book itself ("an index-only integrity failure has no
+// business making the book unreadable too" — decryptSearchIndex's own doc comment), so the same
+// philosophy applies here — a book with a temporarily-unfetchable index still downloads and reads
+// fine, just without offline search until a later attempt succeeds.
 
 import * as Crypto from 'expo-crypto';
 import type { BookId, EncryptedPackage } from '@/shared/contracts';
@@ -104,10 +117,23 @@ export async function downloadBook(bookId: BookId): Promise<void> {
     );
   }
 
+  let indexBytes: Uint8Array | undefined;
+  if (licence.index) {
+    try {
+      indexBytes = await fetchEncryptedAsset(bookId, licence.index.url);
+    } catch (cause) {
+      console.warn(
+        `downloadManager: failed to fetch search index for ${bookId}, continuing without it`,
+        cause,
+      );
+    }
+  }
+
   const pkg: EncryptedPackage = {
     bookId,
     format: licence.format,
     content: bytes,
+    index: indexBytes,
     encryption: licence.encryption,
     licence: licence.licence,
     cipherLength: bytes.length,

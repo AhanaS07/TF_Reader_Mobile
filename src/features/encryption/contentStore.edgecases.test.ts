@@ -206,15 +206,19 @@ describe('EDGE: store() called twice (re-download / update)', () => {
 //
 // Found on device (iOS simulator, 2026-08-12) while probing the licence-expiry gate: an expired
 // licence makes isAvailableOffline() false, devContentSeed's ensureSeeded() re-seeds with a fresh
-// random BEK, and the book then failed INTEGRITY_FAILED permanently.
-describe('EDGE: re-store with a NEW BEK, no manual storeBek — the stale-cached-BEK trap', () => {
+// random BEK, and the book then failed INTEGRITY_FAILED permanently — store() was not
+// invalidating the stale cached BEK from the previous version of the book. FIXED 2026-08-14:
+// store() now compares the incoming wrappedBek against the previously-persisted one and clears
+// the keychain cache when they differ (see invalidateStaleCachedKeyIfRotated in contentStore.ts).
+// This test used to document the defect; it now pins the fix.
+describe('EDGE: re-store with a NEW BEK, no manual storeBek — key-rotation invalidation', () => {
   // deviceKeypair.ts's keychain entry is a single global service, not scoped per bookId like the
   // BEK cache — same scoped cleanup contentStore.test.ts's real-keypair block uses.
   afterEach(async () => {
     await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
   });
 
-  it('DOCUMENTS A DEFECT: the stale cached BEK wins over the new wrappedBek, so the re-stored book fails INTEGRITY_FAILED — destroy() before store() is the only way through', async () => {
+  it('re-storing with a genuinely NEW wrappedBek (real re-download, no destroy() first) still decrypts correctly', async () => {
     const bookId = 'edge-restore-stale-cached-bek';
     const bekA = randomKey();
     const bekB = randomKey();
@@ -232,29 +236,55 @@ describe('EDGE: re-store with a NEW BEK, no manual storeBek — the stale-cached
     );
 
     // That successful unwrap wrote bekA into the keychain (resolveRawKey's documented caching for
-    // non-Elite tiers). The trap is now armed.
+    // non-Elite tiers) — this is the cache a real re-download must not be tripped up by.
     expect(Buffer.from(await getBek(bookId)).equals(Buffer.from(bekA))).toBe(true);
     await contentStore.close(bookId);
 
-    // A genuine re-download: new ciphertext under bekB, new wrappedBek, nothing pre-cached.
+    // A genuine re-download: new ciphertext under bekB, new wrappedBek, no destroy() first —
+    // exactly what downloadManager.ts's real UPDATE-in-place re-download path does.
     const pkgB = await buildEncryptedPackage(bookId, plaintextB, bekB);
     pkgB.encryption = { ...pkgB.encryption!, wrappedBek: await wrapBek(bekB, publicKey) };
     await contentStore.store(pkgB);
+
+    // The fix: store() detected wrappedBek changed and invalidated the cache before this point.
+    await expect(getBek(bookId)).rejects.toThrow();
+
     await contentStore.openSession(bookId);
+    // Previously (the defect): bekA decrypted bekB's ciphertext, the GCM tag failed, and the book
+    // was unreadable from here on with no recovery path except destroy()-then-store(). Now:
+    // resolveRawKey() has no cache to fall back to, genuinely unwraps the current wrappedBek, and
+    // decrypts the new content correctly on the FIRST try, no destroy() needed.
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintextB))).toBe(
+      true
+    );
+    expect(Buffer.from(await getBek(bookId)).equals(Buffer.from(bekB))).toBe(true);
+  });
 
-    // THE DEFECT. store() does not invalidate the cached BEK, and resolveRawKey() prefers the
-    // cache over unwrapping — so bekA decrypts bekB's ciphertext, the GCM tag fails, and the book
-    // is unreadable from here on. Not a transient error: every later session repeats it, because
-    // nothing in the read path ever falls back to the wrappedBek that would have worked.
-    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
-      code: ContentError.INTEGRITY_FAILED,
-    });
+  it('re-storing with the SAME wrappedBek (no rotation) does not break the existing cache path', async () => {
+    const bookId = 'edge-restore-same-bek';
+    const bek = randomKey();
+    const plaintextA = plaintextOf(128, 'first store');
+    const plaintextB = plaintextOf(128, 'second store, identical key');
 
-    // The only escape, and what devContentSeed.ts's ensureSeeded() therefore does: destroy()
-    // BEFORE store(). destroy() calls deleteBek, which clears the cache, so the very same package
-    // now unwraps bekB for real and decrypts.
-    await contentStore.destroy(bookId);
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+
+    const pkgA = await buildEncryptedPackage(bookId, plaintextA, bek);
+    pkgA.encryption = { ...pkgA.encryption!, wrappedBek };
+    await contentStore.store(pkgA);
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId);
+    await contentStore.close(bookId);
+    expect(Buffer.from(await getBek(bookId)).equals(Buffer.from(bek))).toBe(true);
+
+    // Re-store with the exact same wrappedBek string — store() must not treat this as a
+    // rotation (the comparison is a straightforward string equality, so an unchanged
+    // wrappedBek is unchanged).
+    const pkgB = await buildEncryptedPackage(bookId, plaintextB, bek);
+    pkgB.encryption = { ...pkgB.encryption!, wrappedBek };
     await contentStore.store(pkgB);
+    expect(Buffer.from(await getBek(bookId)).equals(Buffer.from(bek))).toBe(true);
+
     await contentStore.openSession(bookId);
     expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintextB))).toBe(
       true
