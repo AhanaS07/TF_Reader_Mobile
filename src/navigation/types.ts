@@ -24,6 +24,10 @@ export type CatalogueStackParamList = {
   ItemDetail: { itemId: string };
   // Shelf detail — Prayas wires CategoryCard.onPress to this route (C1).
   // title is passed so the AppHeader can display it without a network call.
+  //
+  // `title` is the NAV ENTRY's label, not the shelf feed's own title: the two
+  // legitimately differ (the "Open access" nav entry points at a shelf the feed
+  // titles "Free to read"), and only the nav label is known at push time.
   Shelf: { shelfId: string; title: string };
 };
 
