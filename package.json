@@ -51,6 +51,7 @@
     "patch-package": "^8.0.1",
     "prettier": "^3.9.6",
     "sql.js": "^1.14.1",
+    "tsx": "4.23.12",
     "typescript": "~6.0.3"
   },
   "dependencies": {

@@ -93,10 +93,14 @@ export function ReaderWebView({
   }, [isReady]);
 
   /**
-   * Intentionally SYNCHRONOUS. Type-aware ESLint is off repo-wide, so
-   * `no-floating-promises` cannot catch a dropped promise here, and a floating
-   * rejection would surface as a reader that silently stops responding. Staying
-   * sync removes the hazard rather than relying on a rule that cannot run.
+   * Intentionally SYNCHRONOUS: nothing on this path needs to await, and a
+   * floating rejection here would surface as a reader that silently stops
+   * responding rather than as an error.
+   *
+   * This used to be the whole defence, because type-aware ESLint was off and
+   * `no-floating-promises` could not run. It is now enabled for this directory
+   * (see eslint.config.js), so if this ever does need to go async, the rule —
+   * not this comment — is what will hold the line.
    */
   const handleMessage = useCallback(
     (event: WebViewMessageEvent): void => {
