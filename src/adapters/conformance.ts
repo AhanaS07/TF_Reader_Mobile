@@ -116,6 +116,44 @@ export function describeCatalogueSourceConformance(
         }
       });
 
+      // The pagination contract end to end, not just the shape of one response:
+      // follow the advertised cursor and the page it names must arrive, carry
+      // different titles, and eventually stop advertising a successor.
+      //
+      // KNOWN_SHELF is required to be multi-page for this reason — a source that
+      // silently re-served page 0 for every request would pass every other test
+      // in this suite, and ShelfScreen would append the same rows forever.
+      it('serves the page its own next cursor names', async () => {
+        const source = createSource();
+        const firstPage = await source.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+        expect(firstPage.nextPage).toBeDefined();
+
+        const secondPage = await source.getShelf(
+          KNOWN_INSTITUTION,
+          KNOWN_SHELF,
+          firstPage.nextPage,
+        );
+
+        expect(secondPage.id).toBe(KNOWN_SHELF);
+        expect(secondPage.publications.length).toBeGreaterThan(0);
+        // Distinct rows, so "page 2" is genuinely a further page and not page 0
+        // handed back a second time.
+        const firstIds = firstPage.publications.map((publication) => publication.id);
+        for (const publication of secondPage.publications) {
+          expect(firstIds).not.toContain(publication.id);
+        }
+        // Paging terminates: the last page advertises no successor, which is what
+        // lets a caller stop rather than loop.
+        expect(secondPage.nextPage).toBeUndefined();
+      });
+
+      // DELIBERATELY NOT PINNED HERE: what a source does with a page past the end
+      // (empty feed, or 404?) is a server decision wokay have not made, so
+      // requiring one answer of both adapters would assert a contract that does
+      // not exist yet. It costs nothing today because a caller only ever requests
+      // a `nextPage` the feed itself advertised. MockAdapter's own choice is
+      // covered in MockAdapter.test.ts.
+
       it('returns publications that satisfy the model invariants', async () => {
         const shelf = await createSource().getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
 

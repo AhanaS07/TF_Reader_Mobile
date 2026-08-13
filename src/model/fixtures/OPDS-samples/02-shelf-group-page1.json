@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "title": "eBooks",
+    "numberOfItems": 3,
+    "itemsPerPage": 2,
+    "modified": "2026-08-10T09:00:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks?page=1",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "previous",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks?page=0",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:tf:catalogue:item_ab6",
+        "title": "Ethnographies of Waiting",
+        "editor": [{ "name": "Manpreet K. Janeja" }, { "name": "Andreas Bandak" }],
+        "publisher": { "name": "CRC Press" },
+        "language": "en",
+        "published": "2018-11-01",
+        "subject": [{ "name": "Anthropology" }],
+        "numberOfPages": 264
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_ab6",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://api.tf/api/v1/reading-sessions?itemId=item_ab6",
+          "type": "application/epub+zip",
+          "properties": {
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        { "href": "https://cdn.tf/covers/item_ab6.jpg", "type": "image/jpeg", "width": 400, "height": 600 }
+      ]
+    }
+  ]
+}

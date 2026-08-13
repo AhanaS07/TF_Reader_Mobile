@@ -20,6 +20,7 @@ export type CatalogueStackParamList = {
   CatalogueHome: undefined;
   InstitutionDetail: { institutionId: string };
   ItemDetail: { itemId: string };
+  ShelfDetail: {shelfId: string};
 };
 
 /** Search nested stack — shares ItemDetail shape. */
