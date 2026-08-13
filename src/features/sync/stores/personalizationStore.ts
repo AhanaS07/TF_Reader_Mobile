@@ -25,10 +25,17 @@ export const personalizationTable = createSyncableTable<PersonalizationRow>({
 export const personalizationId = (userId: string) => `prefs-${userId}`;
 
 /**
- * Typography units are POINTS, matching DEFAULT_PREFS in the frozen contract - not the scale
- * factors this table used to default to. The two readings were both committed, and the scale
- * factors were the ones reaching Reader: Vaishnavi's adapter passes the value straight through,
- * so a defaulted row handed Reader `typography.size = 1.0` and rendered 1pt text.
+ * Every default is taken from DEFAULT_PREFS rather than restated, so this table cannot drift
+ * from the contract again. `lineHeight` (1.5) and `margins` (16) are settled per review; the
+ * table previously defaulted both to scale factors (1.0 / 0.0), and since the prefs adapter
+ * passes values through untouched, a defaulted row handed Reader 1pt text.
+ *
+ * PROVISIONAL - `typography_size`. The pt-vs-scale-factor question is prefs.ts STILL-OPEN #4
+ * and is not Sync's to close. Review asked to "leave size for now", but a column needs some
+ * default, so 1.0 and 16 are equally a choice - there is no neutral value. It follows
+ * DEFAULT_PREFS (16) because that is the only value committed anywhere that does not render
+ * 1pt text, and because deriving it here means the decision changes in exactly one place: if
+ * #4 lands on scale factors, DEFAULT_PREFS moves and this follows automatically.
  */
 const defaults = (): PersonalizationRow => ({
   id: personalizationId(USER_ID),
@@ -36,6 +43,7 @@ const defaults = (): PersonalizationRow => ({
   theme: DEFAULT_PREFS.theme,
   font_family: DEFAULT_PREFS.font.family,
   custom_font_uri: null,
+  // See PROVISIONAL note above - tracks DEFAULT_PREFS, does not decide the units.
   typography_size: DEFAULT_PREFS.typography.size,
   typography_line_height: DEFAULT_PREFS.typography.lineHeight,
   typography_spacing: DEFAULT_PREFS.typography.spacing,
