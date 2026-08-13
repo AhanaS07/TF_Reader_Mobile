@@ -35,6 +35,9 @@ GoogleService-Info.plist
 
 .DS_Store
 
+# scratch git worktrees (superpowers:using-git-worktrees) — never committed
+.worktrees/
+
 # local-only planning/dev tooling — never pushed
 BuildPlan.md
 mock-backend/
