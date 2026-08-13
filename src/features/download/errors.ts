@@ -16,6 +16,10 @@ export enum DownloadError {
   LICENCE_FETCH_FAILED = 'LICENCE_FETCH_FAILED',
   ASSET_FETCH_FAILED = 'ASSET_FETCH_FAILED',
   CHECKSUM_MISMATCH = 'CHECKSUM_MISMATCH',
+  // The book's decrypted size would exceed contentStore.ts's MAX_DECRYPTED_BYTES RAM budget, so
+  // it could never be opened after download. Rejected BEFORE store() rather than after: a stored
+  // oversized book burns one of the 5 offline slots and throws on every later decryptBook().
+  BOOK_TOO_LARGE = 'BOOK_TOO_LARGE',
   REGISTRATION_FAILED = 'REGISTRATION_FAILED',
 }
 
