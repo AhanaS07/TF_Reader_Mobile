@@ -12,6 +12,7 @@ import { normalizeInstitutionList } from '@model/institution';
 
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 import shelfGroupFixture from '@model/fixtures/OPDS-samples/02-shelf-group.json';
+import shelfGroupPage1Fixture from '@model/fixtures/OPDS-samples/02-shelf-group-page1.json';
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
@@ -34,7 +35,13 @@ const serveFixtures: FetchLike = async (url) => {
     return ok(homeCatalogueFixture);
   }
   if (pathname === `/opds/v1/institutions/${KNOWN_INSTITUTION}/groups/ebooks`) {
-    return ok(shelfGroupFixture);
+    // Paged on the query string, exactly as the adapter builds it. Serving page 0
+    // for every request would let a paging bug pass this suite — the adapter
+    // could drop the page param entirely and nothing here would notice.
+    const page = new URL(url).searchParams.get('page');
+    if (page === null || page === '0') return ok(shelfGroupFixture);
+    if (page === '1') return ok(shelfGroupPage1Fixture);
+    return notFound();
   }
   if (pathname === `/opds/v1/institutions/${KNOWN_INSTITUTION}/publications/item_42`) {
     return ok(publicationDetailFixture);
