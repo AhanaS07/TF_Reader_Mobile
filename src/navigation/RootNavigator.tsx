@@ -25,6 +25,7 @@ import type {
   LibraryStackParamList,
   ProfileStackParamList,
 } from './types';
+import ShelfScreen from '@/screens/ShelfScreen';
 
 // ─── Navigator instances ──────────────────────────────────────────────────────
 
@@ -90,6 +91,11 @@ function CatalogueNavigator() {
         name="ItemDetail"
         component={ItemDetailScreen}
         options={{ title: 'Item Detail' }}
+      />
+      <CatalogueStack.Screen 
+        name="ShelfDetail"
+        component={ShelfScreen}
+        options = {{ title: 'Shelf Detail'}}
       />
     </CatalogueStack.Navigator>
   );

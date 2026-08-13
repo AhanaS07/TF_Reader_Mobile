@@ -19,6 +19,7 @@ import { assertPublication } from '@model/validate';
 
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 import shelfGroupFixture from '@model/fixtures/OPDS-samples/02-shelf-group.json';
+import shelfGroupPage1Fixture from '@model/fixtures/OPDS-samples/02-shelf-group-page1.json';
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
@@ -59,19 +60,25 @@ export class MockAdapter implements DataSource {
     await this.simulate(shelfId);
     this.assertInstitution(institutionId);
 
-    const shelf = this.shelvesById().get(shelfId);
-    // A shelf that navigation advertises but no fixture backs (e.g. 'audiobooks')
-    // is NOT_FOUND, not an empty shelf. An empty result would read as "this
+    const pages = this.pagesByShelfId().get(shelfId);
+    // A shelf no standalone feed fixture backs is NOT_FOUND, not an empty shelf.
+    // Covers both 'audiobooks' (advertised in navigation, no fixture at all) and
+    // 'open-access'/'new-this-term' (a home-feed preview group exists, but that
+    // is not a listing — see pagesByShelfId). An empty result would read as "this
     // institution has no audiobooks" and quietly hide the missing fixture.
-    if (shelf === undefined) {
+    if (pages === undefined) {
       throw new CatalogueFailure(CatalogueError.NOT_FOUND, shelfId);
     }
 
-    // Only one page of fixture data exists. Asking beyond it is answered with an
-    // empty final page rather than NOT_FOUND: running off the end of a listing is
-    // normal paging, not a missing shelf.
-    if (page !== undefined && page > 0) {
-      const { nextPage: _nextPage, ...lastPage } = shelf;
+    // Page omitted means the first one, matching ApiAdapter: it sends no `page`
+    // query param at all in that case and lets the server pick its default.
+    const shelf = pages[page ?? 0];
+
+    // Past the last page of fixture data: an empty final page rather than
+    // NOT_FOUND, because running off the end of a listing is normal paging, not
+    // a missing shelf. `nextPage` is stripped so a caller cannot loop forever.
+    if (shelf === undefined) {
+      const { nextPage: _nextPage, ...lastPage } = pages[pages.length - 1];
       return { ...lastPage, publications: [] };
     }
 
@@ -131,29 +138,53 @@ export class MockAdapter implements DataSource {
     }
   }
 
-  // Shelves the fixtures can answer for: the standalone shelf feed, plus every
-  // group embedded in the home catalogue.
+  // Shelves the fixtures can answer for, keyed by id, each value being ITS PAGES
+  // IN ORDER — index 0 is page 0. A shelf is a sequence of documents, not one
+  // document, so the mock stores it that way rather than faking later pages.
+  //
+  // Home-catalogue groups are deliberately NOT registered here. A group embedded
+  // in the home feed is a PREVIEW of a collection, not the document GETting its
+  // self href returns — at real scale "Free to read" would advertise
+  // numberOfItems: 47 and carry three rows. Our fixture's group looks complete
+  // only because the fixture is tiny.
+  //
+  // So serving a preview from getShelf() would hand ShelfScreen a document with
+  // no production analogue: ApiAdapter fetches the full paginated feed for the
+  // same id, and pagination would appear to work against data that has no pages.
+  // A group-only shelf is therefore NOT_FOUND until its own feed fixtures exist,
+  // exactly like 'audiobooks' — the home feed is for the home screen, and
+  // drilling in needs the real listing.
   //
   // Rebuilt per call rather than cached in the constructor so each call returns
   // fresh objects. A shared instance handing out the same mutable arrays would
   // let one screen's edit show up in another's — a bug class the real adapter
   // could never have, so the mock must not invent it.
-  private shelvesById(): Map<string, Shelf> {
-    const shelves = new Map<string, Shelf>();
-    for (const group of normalizeCatalogue(homeCatalogueFixture).shelves) {
-      shelves.set(group.id, group);
-    }
-    // The dedicated shelf feed wins: it is a full paginated listing, while the
-    // home-catalogue group is only a preview of the same shelf.
-    const standalone = normalizeShelf(shelfGroupFixture);
-    shelves.set(standalone.id, standalone);
-    return shelves;
+  private pagesByShelfId(): Map<string, Shelf[]> {
+    const pages = new Map<string, Shelf[]>();
+    // Both files normalize to id 'ebooks' — idFromHref strips the `?page=` — so
+    // the pair is one shelf across two pages, which is what the `next` link on
+    // page 0 and its absence on page 1 already say.
+    const firstPage = normalizeShelf(shelfGroupFixture);
+    pages.set(firstPage.id, [firstPage, normalizeShelf(shelfGroupPage1Fixture)]);
+    return pages;
   }
 
   // Every publication the fixtures mention, detail feed preferred over summary.
+  //
+  // Reads the home catalogue DIRECTLY rather than only through pagesByShelfId():
+  // a preview group is not a drillable listing, but its rows are still real
+  // publications, and a row rendered on the home screen must open its detail
+  // screen. Listing identity and publication identity are separate concerns.
   private publicationsById(): Map<BookId, Publication> {
     const publications = new Map<BookId, Publication>();
-    for (const shelf of this.shelvesById().values()) {
+    const shelves = [
+      ...normalizeCatalogue(homeCatalogueFixture).shelves,
+      // Standalone feeds last: same titles, but a full listing's summary is the
+      // one a drill-down would have shown. Flattened across pages — a title on
+      // page 2 is no less openable than one on page 0.
+      ...[...this.pagesByShelfId().values()].flat(),
+    ];
+    for (const shelf of shelves) {
       for (const publication of shelf.publications) {
         publications.set(publication.id, publication);
       }
