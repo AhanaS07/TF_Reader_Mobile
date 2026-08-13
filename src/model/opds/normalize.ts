@@ -16,6 +16,7 @@ import type {
   CatalogueEncryption,
   NavLink,
   Publication,
+  SearchFeed,
   Shelf,
 } from '@model/types';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
@@ -267,5 +268,60 @@ export function normalizeCatalogue(doc: unknown): Catalogue {
     ...(search !== undefined
       ? { searchHref: reqString(search.href, 'search href') }
       : {}),
+  };
+}
+
+// The two keys a zero-result search may offer browse targets under.
+//
+// `browseInstead` is the name the B1 spec gives it; `navigation` is the OPDS
+// equivalent for the same thing (a feed of places to go rather than results).
+// BOTH ARE ACCEPTED because neither has been confirmed against a real response
+// from wokay — the search endpoint is R3c and does not exist yet. Accepting two
+// spellings of one concept is cheaper than being wrong about which one arrives,
+// and the day it is confirmed this list loses an entry rather than gaining logic.
+const BROWSE_INSTEAD_KEYS = ['browseInstead', 'navigation'] as const;
+
+/**
+ * OPDS search response → one page of results.
+ *
+ * DELIBERATELY THE MOST PERMISSIVE NORMALIZER IN THIS FILE, and for one specific
+ * reason: **a missing `publications` key is not an error.** A search that matched
+ * nothing legitimately comes back as a navigation feed — browse targets, no
+ * results array at all — and treating that as MALFORMED_FEED would turn the most
+ * ordinary outcome in the whole feature into a red error screen.
+ *
+ * So absence is tolerated everywhere and only CONTRADICTION is rejected: a
+ * `publications` key that is not an array, or a link list that is not a list, is
+ * still a broken feed and still fails loudly. Absent ≠ wrong; wrong is wrong.
+ *
+ * Pagination is the response's `next` href KEPT WHOLE. `normalizeShelf` above
+ * parses a page index out of it and throws when there isn't one — correct for a
+ * shelf listing whose paging scheme we have seen, wrong for a search endpoint
+ * whose paging scheme we have not. See the note on `SearchFeed.next`.
+ */
+export function normalizeSearchFeed(doc: unknown): SearchFeed {
+  const feed = asRecord(doc, 'search feed');
+
+  const metadata =
+    feed.metadata === undefined ? {} : asRecord(feed.metadata, 'search feed metadata');
+  const links = feed.links === undefined ? [] : asArray(feed.links, 'search feed links');
+  const next = findLink(links, (rel) => rel === 'next');
+
+  const totalItems = optNumber(metadata.numberOfItems);
+  const browseInstead = BROWSE_INSTEAD_KEYS.map((key) => feed[key]).find(
+    (value) => value !== undefined,
+  );
+
+  return {
+    publications:
+      feed.publications === undefined
+        ? []
+        : asArray(feed.publications, 'search feed publications').map(normalizePublication),
+    ...(totalItems !== undefined ? { totalItems } : {}),
+    ...(next !== undefined ? { next: reqString(next.href, 'next href') } : {}),
+    browseInstead:
+      browseInstead === undefined
+        ? []
+        : asArray(browseInstead, 'browse instead').map(toNavLink),
   };
 }

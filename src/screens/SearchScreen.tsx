@@ -1,53 +1,48 @@
-// The Search tab — screen 09, the catalogue search surface.
+// The Search tab — screen 09, the catalogue search surface. B1's query surface.
 //
-// THE SCREEN OWNS THE QUERY AND THE CRITERIA; THE SHELL DECIDES THE RESULTS.
-// `src/search` is pure (no React, no adapter), so everything below is state plus
-// one call to `runCatalogueSearch`. CONVENTIONS §3: components are handed data
-// and report events, screens hold the state and pass it down.
+// IT RENDERS WHAT CAME BACK AND NOTHING ELSE. Catalogue search is server-side and
+// entitlement-scoped: "we filter, you render." There is no matching, no
+// tokenising, no ranking and no local narrowing anywhere below this line — the
+// query and the filters go out as one request, and the list is drawn in the order
+// it arrived. Everything that could tempt a screen into doing otherwise lives
+// behind `useCatalogueSearch`, which hands this file a lifecycle union and a list.
 //
-// IT SEARCHES WHAT IS ALREADY IN HAND. `CatalogueSource` has no search method and
-// Q-E (does wokay expose a search link template?) is unresolved, so this is the
-// Foundation Spec's fetch-and-filter contingency: pull the home catalogue once,
-// then match locally. When a server-side endpoint lands it becomes another source
-// of `Publication[]` and none of the ranking changes.
+// SEARCH IS METADATA-ONLY, AND THE COPY HAS TO SAY SO. The corpus is title,
+// authors, subjects and description. It is NOT the text inside a book — that is a
+// separate index, per book, built at ingestion and owned by t4targaryen. The
+// placeholder and the line beneath the field both exist to stop a reader
+// concluding otherwise, because the failure is silent: they search for a phrase
+// they remember from chapter nine, get nothing, and reasonably decide the app is
+// broken.
 //
-// NO ACCESS BADGE, for the reason CatalogueScreen already documents —
+// NO ACCESS BADGE, for the reason CatalogueScreen already documents:
 // `ContentCard`'s `badge` slot takes already-resolved UI, and
-// `src/access/resolveAccess` does not exist yet. Faking one from
+// `src/access/resolveAccess` does not exist yet. Deriving one from
 // `publication.acquisition` here is exactly the Design Spec §5.1 violation the
-// slot exists to prevent. It is also why the sheet's Access Type row is inert.
+// slot exists to prevent.
 //
-// THE NO-RESULTS TREATMENT IS INLINE AND TEMPORARY. Khushi's `EmptyState` (K1)
-// owns this copy and its two variants — "no results for a query" versus "no
-// results for your filters". Building a second one here would break the rule the
-// spec calls most likely to fail quietly: a feature may not introduce a
-// component. This is screen-local text, to be deleted when EmptyState lands.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+// THE EMPTY / ERROR TREATMENTS ARE INLINE AND TEMPORARY. Khushi's `EmptyState`
+// (K1) owns this copy. Building a second one here would break the rule the spec
+// calls most likely to fail quietly — a feature may not introduce a component —
+// so this is screen-local text, to be deleted when EmptyState lands.
+import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import Ionicons from '@expo/vector-icons/Ionicons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
+import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { FilterChip } from '@components/FilterChip';
 import { SearchInput } from '@components/SearchInput';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
-import { getCatalogueSource } from '@config/catalogue';
-import type { Publication } from '@model/types';
+import { getSearchPipeline } from '@config/search';
+import { CatalogueError } from '@model/errors';
+import { ACCESS_TIERS, type AccessTier } from '@model/types';
+import type { SearchStatus } from '@/search';
+import { ACCESS_TIER_FILTER_CONFIRMED, useCatalogueSearch } from '@/search';
+import type { ContentFormat } from '@/shared/types/primitives';
 import type { SearchStackParamList } from '@navigation/types';
-// `@/search` rather than `@search` — tsconfig maps `@search/*`, which needs a
-// path segment after it, whereas `@/*` resolves the folder itself and so picks
-// up its index.ts. Adding a bare `@search` alias would mean editing tsconfig AND
-// babel.config together (the README requires they mirror exactly), which is not
-// worth it for one import.
-import { CONTENT_TYPES, isContentTypeSupported, runCatalogueSearch } from '@/search';
 import { color, radius, space, type } from '@theme/tokens';
-
-import FilterSheet, {
-  CONTENT_TYPE_LABELS,
-  DEFAULT_CRITERIA,
-  type FilterCriteria,
-} from './FilterScreen';
 
 type Nav = NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>;
 
@@ -56,210 +51,276 @@ type Nav = NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>;
 const PLACEHOLDER_INSTITUTION_ID = 'inst_7f3';
 
 const SKELETON_COUNT = 3;
-const FILTER_ICON_SIZE = 16;
 
-// The fixtures deliberately include the same work in two feeds under one id
-// (P0-4's cross-feed dedup case), so flattening shelves without this shows it
-// twice and React warns about duplicate keys.
-function dedupeById(publications: Publication[]): Publication[] {
-  const byId = new Map<string, Publication>();
+// ─── Copy ────────────────────────────────────────────────────────────────────
 
-  for (const publication of publications) {
-    if (!byId.has(publication.id)) byId.set(publication.id, publication);
-  }
+// Stated twice, on purpose. The placeholder names the four fields so a reader
+// forms the right expectation before typing; the helper line rules out the wrong
+// one explicitly, because "searches titles" does not by itself tell anybody that
+// it does not also search inside the book.
+const PLACEHOLDER = 'Search titles, authors, subjects, and descriptions';
+const HELPER = 'Catalogue metadata only — this does not search inside books.';
 
-  return [...byId.values()];
-}
+// Reader-facing labels, kept apart from the machine values so a rewording can
+// never change what goes on the wire.
+//
+// TYPED AS A FULL Record, WHICH IS WHAT MAKES THE ROW EXHAUSTIVE. `ContentFormat`
+// is a type with no const array behind it (primitives.ts declares only the union),
+// so the chip row is driven by this map's keys — and omitting a format here is a
+// compile error rather than a chip that silently stops being offered.
+const CONTENT_TYPE_LABELS: Record<ContentFormat, string> = {
+  EPUB: 'eBooks',
+  PDF: 'PDF',
+  AUDIO: 'Audiobooks',
+};
 
-// How many dimensions are away from their default, for the trigger's badge.
-// Counted rather than a boolean so the button can say "Filter & Sort · 2".
-function activeCriteriaCount(criteria: FilterCriteria): number {
-  return (Object.keys(criteria) as (keyof FilterCriteria)[]).filter(
-    (key) => criteria[key] !== DEFAULT_CRITERIA[key],
-  ).length;
-}
+const CONTENT_TYPES = Object.keys(CONTENT_TYPE_LABELS) as ContentFormat[];
+
+const ACCESS_TIER_LABELS: Record<AccessTier, string> = {
+  OPEN_ACCESS: 'Open access',
+  SUBSCRIPTION: 'Subscription',
+  ELITE: 'Elite',
+};
+
+// Copy per failure code, keyed on wokay's own vocabulary rather than on an HTTP
+// status, so a reader never sees a number. A map rather than a switch: adding a
+// code makes the compiler name this line.
+const ERROR_COPY: Record<CatalogueError, string> = {
+  [CatalogueError.NOT_FOUND]: 'This catalogue cannot be searched.',
+  [CatalogueError.NETWORK_UNAVAILABLE]: 'You appear to be offline.',
+  [CatalogueError.MALFORMED_FEED]: 'The catalogue sent something we could not read.',
+  [CatalogueError.TIMEOUT]: 'The search took too long to answer.',
+};
+
+// Browse-instead cards cycle the accents so three targets do not read as one
+// block of colour. Cycled by INDEX, never chosen from the title — types.ts is
+// explicit that navigation is data, not code, and no shelf may be named in a
+// branch anywhere.
+const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'elite'];
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
 
 export default function SearchScreen() {
   const navigation = useNavigation<Nav>();
 
-  const [publications, setPublications] = useState<Publication[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  // The reference point for the date filter, stamped when the catalogue arrives.
-  //
-  // NOT read during render. `Date.now()` in the useMemo below is an impure call
-  // and `react-hooks/purity` rejects it — rightly, since the filter would then
-  // silently recompute against a different "now" on any incidental re-render.
-  // Setting it in an effect body is out for the same reason CatalogueScreen
-  // documents (cascading renders), so it is stamped in the async continuation.
-  // Zero until then, which only matters while `publications` is still empty.
-  const [loadedAt, setLoadedAt] = useState(0);
-
-  const [query, setQuery] = useState('');
-  const [criteria, setCriteria] = useState<FilterCriteria>(DEFAULT_CRITERIA);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
+  // where the fixture-vs-api choice gets made — by config, never by this file.
+  const pipeline = useMemo(() => getSearchPipeline(), []);
+  const search = useCatalogueSearch({
+    institutionId: PLACEHOLDER_INSTITUTION_ID,
+    pipeline,
+  });
 
   // The overlay is a pure view; nothing here records audio. See the mic handler.
   const [voiceState, setVoiceState] = useState<VoiceOverlayState | null>(null);
 
-  const fetchCatalogue = useCallback(() => {
-    getCatalogueSource()
-      .getHomeCatalogue(PLACEHOLDER_INSTITUTION_ID)
-      .then((catalogue) => {
-        setPublications(dedupeById(catalogue.shelves.flatMap((shelf) => shelf.publications)));
-        setLoadedAt(Date.now());
-      })
-      .catch(() => setFailed(true))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    fetchCatalogue();
-  }, [fetchCatalogue]);
-
-  const retry = useCallback(() => {
-    setLoading(true);
-    setFailed(false);
-    fetchCatalogue();
-  }, [fetchCatalogue]);
-
-  // Derived, never stored. A `results` state variable would need keeping in step
-  // with four other pieces of state, and the first missed update is a list that
-  // disagrees with the query that produced it.
-  //
-  // `now` is passed IN rather than read inside `src/search`, so the whole shell
-  // stays a pure function of its arguments and the date filter is testable
-  // without freezing the clock.
-  const results = useMemo(
-    () =>
-      runCatalogueSearch({
-        publications,
-        query,
-        contentType: criteria.contentType,
-        dateRange: criteria.dateRange,
-        sort: criteria.sort,
-        now: loadedAt,
-      }),
-    [publications, query, criteria, loadedAt],
-  );
-
-  const activeCount = activeCriteriaCount(criteria);
-
-  // Blank query AND nothing filtered means the reader has not asked anything
-  // yet. That is different from having asked and found nothing, which is why the
-  // two get different copy below.
-  const searching = query.trim().length > 0 || activeCount > 0;
-
-  if (failed) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.message}>Couldn&apos;t load the catalogue.</Text>
-        <Pressable onPress={retry} accessibilityRole="button" accessibilityLabel="Retry">
-          <Text style={styles.retry}>Retry</Text>
-        </Pressable>
-      </View>
-    );
-  }
+  const state: SearchStatus = search.state;
+  const hasResults = search.publications.length > 0;
+  // A failure with results already on screen is a failed NEXT PAGE — the reader
+  // keeps what they were reading and gets a retry where the page would have been.
+  const pageFailed = state === 'error' && hasResults;
 
   return (
     <View style={styles.screen}>
       <View style={styles.field}>
         <SearchInput
-          value={query}
-          placeholder="Search books, journals and articles"
-          onChangeText={setQuery}
-          onClear={() => setQuery('')}
+          value={search.draft}
+          placeholder={PLACEHOLDER}
+          onChangeText={search.onChangeQuery}
+          onSubmit={search.onSubmit}
+          onClear={search.onClear}
           // Screen 09 is catalogue search, so the mic belongs here. Screen 06
           // (institution search) passes nothing and gets no mic.
           //
           // NOTHING IS RECORDED. A recogniser is a native dependency and adding
-          // one is a team decision, not a per-person one, so the overlay opens
-          // as a view only: the transcript stays empty and its Search button
-          // stays disabled. When a recogniser lands it feeds `transcript` and
-          // drives `voiceState` — the overlay itself needs no change.
+          // one is a team decision, so the overlay opens as a view only: the
+          // transcript stays empty and its Search button stays disabled. When a
+          // recogniser lands it feeds `transcript` and drives `voiceState`, and
+          // submitting it is `onChangeQuery` then `onSubmit` — no change here.
           onVoicePress={() => setVoiceState('listening')}
-          disabled={loading}
         />
+
+        <Text testID="search-helper" style={styles.helper}>
+          {HELPER}
+        </Text>
       </View>
 
-      {/* Quick access to the one dimension a reader changes most, plus the way
-          into everything else. Both drive the SAME state as the sheet, so the
-          row and the sheet can never disagree. */}
+      {/* Content type. Sent as a query parameter with the search itself, so the
+          server narrows before it paginates — changing a chip starts a new search
+          rather than trimming the page already on screen. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        // flexGrow: 0 is load-bearing. A horizontal ScrollView in a column
-        // parent expands to fill the free vertical space, which pushes the
-        // results list a couple of hundred pixels down the screen and reads as
-        // a mysterious gap rather than as a layout bug.
+        // flexGrow: 0 is load-bearing. A horizontal ScrollView in a column parent
+        // expands to fill the free vertical space, which pushes the results list
+        // down the screen and reads as a mysterious gap rather than a layout bug.
         style={styles.chipsBar}
         contentContainerStyle={styles.chips}
       >
-        <Pressable
-          testID="filter-sort-trigger"
-          onPress={() => setFiltersOpen(true)}
-          style={styles.trigger}
-          accessibilityRole="button"
-          accessibilityLabel="Filter and sort"
-        >
-          <Ionicons name="options-outline" size={FILTER_ICON_SIZE} color={color.surface} />
-          <Text style={styles.triggerLabel}>
-            {activeCount > 0 ? `Filter & Sort · ${activeCount}` : 'Filter & Sort'}
-          </Text>
-        </Pressable>
-
-        {CONTENT_TYPES.map((value) => (
+        <FilterChip
+          label="All"
+          // "No constraint" is the absence of a value, not a fourth format — so
+          // there is no 'ALL' member to filter back out before the wire.
+          selected={search.filters.contentType === undefined}
+          onPress={() => search.onSelectContentType(undefined)}
+        />
+        {CONTENT_TYPES.map((contentType) => (
           <FilterChip
-            key={value}
-            label={CONTENT_TYPE_LABELS[value]}
-            selected={criteria.contentType === value}
-            disabled={!isContentTypeSupported(value)}
-            onPress={() => setCriteria({ ...criteria, contentType: value })}
+            key={contentType}
+            label={CONTENT_TYPE_LABELS[contentType]}
+            selected={search.filters.contentType === contentType}
+            onPress={() => search.onSelectContentType(contentType)}
           />
         ))}
       </ScrollView>
 
+      {/* Access tier. SHOWN AND DISABLED, not hidden — Q-12 is open (is
+          `?accessTier=` a valid parameter with no tier field?), so the dimension
+          is modelled and rendered but no parameter is sent. Dropping the row
+          would make the filter set look complete when it is not; sending a
+          guessed parameter would be worse. See ACCESS_TIER_FILTER_CONFIRMED. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.chipsBar}
+        contentContainerStyle={styles.chips}
+      >
+        {ACCESS_TIERS.map((tier) => (
+          <FilterChip
+            key={tier}
+            label={ACCESS_TIER_LABELS[tier]}
+            selected={search.filters.accessTier === tier}
+            disabled={!ACCESS_TIER_FILTER_CONFIRMED}
+            onPress={() => search.onSelectAccessTier(tier)}
+          />
+        ))}
+      </ScrollView>
+
+      {!ACCESS_TIER_FILTER_CONFIRMED && (
+        <Text testID="search-tier-note" style={styles.note}>
+          Access tier filtering is awaiting confirmation from the catalogue team.
+        </Text>
+      )}
+
       <ScrollView contentContainerStyle={styles.results}>
-        {loading &&
+        {state === 'idle' && (
+          <Text testID="search-idle" style={styles.message}>
+            Search this catalogue by title, author, subject or description.
+          </Text>
+        )}
+
+        {state === 'loading' &&
           Array.from({ length: SKELETON_COUNT }, (_, index) => (
             <ContentCard key={index} state="loading" title="" />
           ))}
 
-        {!loading &&
-          results.map((publication) => (
-            <ContentCard
-              key={publication.id}
-              title={publication.title}
-              publisher={publication.publisher}
-              imageUrl={publication.coverUrl}
-              onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
-            />
-          ))}
+        {/* THE ERROR STATE, and only for an actual failure. A response that
+            arrived and contained nothing never reaches this branch. */}
+        {state === 'error' && !hasResults && (
+          <View testID="search-error" style={styles.panel}>
+            <Text style={styles.message}>
+              {search.errorCode === undefined
+                ? 'The search could not be completed.'
+                : ERROR_COPY[search.errorCode]}
+            </Text>
+            <Pressable
+              testID="search-retry"
+              onPress={search.onRetry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry search"
+            >
+              <Text style={styles.action}>Retry</Text>
+            </Pressable>
+          </View>
+        )}
 
-        {!loading && results.length === 0 && (
-          <Text style={styles.message}>
-            {query.trim().length > 0
-              ? `No books or articles match “${query.trim()}”.`
-              : 'Nothing matches these filters.'}
+        {/* THE ZERO-RESULT STATE. A successful response with nothing in it —
+            including one that carried no `publications` key at all and only
+            browse targets. Not an error, and it must never render as one. */}
+        {state === 'empty' && (
+          <View testID="search-empty" style={styles.panel}>
+            <Text style={styles.emptyTitle}>No publications found</Text>
+            <Text style={styles.message}>
+              Nothing in this catalogue matches “{search.query}”.
+            </Text>
+
+            {search.browseInstead.length > 0 && (
+              <View testID="search-browse-instead" style={styles.browse}>
+                <Text style={styles.browseHeading}>Browse instead</Text>
+                {search.browseInstead.map((entry, index) => (
+                  // NOT PRESSABLE, AND THAT IS A GAP RATHER THAN A CHOICE. Each
+                  // entry carries a `shelfId` ready to open, but no stack in this
+                  // app has a shelf route yet (navigation is P0-6's) — so there is
+                  // nowhere to send the tap. A card that looked tappable and did
+                  // nothing would be worse than one that does not claim to be.
+                  // When a shelf route lands this becomes one `onPress`.
+                  <CategoryCard
+                    key={entry.shelfId}
+                    title={entry.title}
+                    accent={BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
+        {search.publications.map((publication) => (
+          <ContentCard
+            key={publication.id}
+            title={publication.title}
+            publisher={publication.publisher}
+            imageUrl={publication.coverUrl}
+            onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+          />
+        ))}
+
+        {/* PAGINATION IS THE RESPONSE'S `next`, FOLLOWED. No page numbers: the
+            server said where the next page is, and there is nothing else to
+            offer — a numbered control would have to invent a total page count
+            from a cursor it cannot read. */}
+        {search.canLoadMore && (
+          <Pressable
+            testID="search-load-more"
+            onPress={search.onLoadMore}
+            style={styles.moreButton}
+            accessibilityRole="button"
+            accessibilityLabel="Show more results"
+          >
+            <Text style={styles.action}>Show more results</Text>
+          </Pressable>
+        )}
+
+        {/* One skeleton where the next page will land, so the list grows downward
+            instead of the results already read being replaced by a loading view. */}
+        {state === 'paging' && <ContentCard state="loading" title="" />}
+
+        {pageFailed && (
+          <View testID="search-page-error" style={styles.panel}>
+            <Text style={styles.message}>
+              {search.errorCode === undefined
+                ? 'More results could not be loaded.'
+                : ERROR_COPY[search.errorCode]}
+            </Text>
+            <Pressable
+              testID="search-retry-page"
+              onPress={search.onRetry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading more results"
+            >
+              <Text style={styles.action}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* Server-reported, never counted locally: `publications.length` is what
+            has been paged in so far, not how many there are. */}
+        {hasResults && search.totalItems !== undefined && (
+          <Text testID="search-total" style={styles.note}>
+            Showing {search.publications.length} of {search.totalItems}
           </Text>
         )}
-
-        {!loading && !searching && results.length > 0 && (
-          <Text style={styles.hint}>Showing everything. Type above to narrow it down.</Text>
-        )}
       </ScrollView>
-
-      {filtersOpen && (
-        <FilterSheet
-          criteria={criteria}
-          onApply={(next) => {
-            setCriteria(next);
-            setFiltersOpen(false);
-          }}
-          onDismiss={() => setFiltersOpen(false)}
-        />
-      )}
 
       <VoiceOverlay
         visible={voiceState !== null}
@@ -282,42 +343,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.md,
   },
+  helper: {
+    fontWeight: type.meta.weight,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+    marginTop: space.sm,
+  },
   chipsBar: {
     flexGrow: 0,
   },
   chips: {
     gap: space.sm,
     paddingHorizontal: space.md,
-    paddingVertical: space.md,
+    paddingTop: space.md,
   },
-  // Navy rather than teal so it reads as the way INTO the filters, not as one
-  // more filter that happens to be switched on.
-  trigger: {
-    height: space.xl + space.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.xs,
+  note: {
+    fontWeight: type.meta.weight,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
     paddingHorizontal: space.md,
-    borderRadius: radius.pill,
-    backgroundColor: color.navy,
-  },
-  triggerLabel: {
-    fontWeight: type.button.weight,
-    fontSize: type.button.size,
-    lineHeight: type.button.lineHeight,
-    color: color.surface,
+    paddingTop: space.sm,
+    textAlign: 'center',
   },
   results: {
     paddingHorizontal: space.md,
+    paddingTop: space.md,
     paddingBottom: space.xl,
     gap: space.sm,
   },
-  center: {
-    flex: 1,
+  panel: {
     alignItems: 'center',
-    justifyContent: 'center',
     gap: space.sm,
-    backgroundColor: color.surface,
+    paddingVertical: space.lg,
+  },
+  emptyTitle: {
+    fontWeight: type.sectionHeader.weight,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  browse: {
+    alignSelf: 'stretch',
+    gap: space.sm,
+    marginTop: space.md,
+  },
+  browseHeading: {
+    fontWeight: type.sectionHeader.weight,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
   },
   message: {
     fontWeight: type.body.weight,
@@ -325,17 +401,16 @@ const styles = StyleSheet.create({
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
     textAlign: 'center',
-    marginTop: space.lg,
   },
-  hint: {
-    fontWeight: type.meta.weight,
-    fontSize: type.meta.size,
-    lineHeight: type.meta.lineHeight,
-    color: color.textSecondary,
-    textAlign: 'center',
-    marginTop: space.md,
+  moreButton: {
+    height: space.xl + space.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.card,
+    borderWidth: 1,
+    borderColor: color.border,
   },
-  retry: {
+  action: {
     fontWeight: type.button.weight,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
