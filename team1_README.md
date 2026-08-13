@@ -111,6 +111,10 @@ say a five-way split. Section 05 is the outlier and is stale.
 
 ## Unratified — do not build as if these are settled
 
+The access spine's own board — what it waits on and what has been decided — is
+[`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md). The rows below are the ones that
+cut across more than one person's work.
+
 | Item | Question | Build so that… |
 |---|---|---|
 | **L-2** | Is the post-sign-in catalogue scoped by entitlement? Contradicts Design Spec §4.1, a signed document. | scope is config, not branching logic |
