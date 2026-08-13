@@ -2,13 +2,32 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import AccessTierBadgeGallery from '@/components/AccessTierBadge/AccessTierBadge.gallery';
+import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
+import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
 import { color, radius, space, type } from '@theme/tokens';
 
-const SECTIONS = ['Skeleton', 'TopAppBar', 'BottomTabBar', 'BottomSheet'] as const;
+// A gallery entry that is not in this list is not on screen — nothing else
+// imports these files. AccessTierBadge shipped with an entry that was never
+// registered, so it was invisible on a device until now (CONVENTIONS §9: "a
+// component is not done until its gallery entry renders every state it claims
+// to support").
+//
+// Still orphaned, and not ours to wire: EmptyState, ErrorState, InstitutionRow,
+// ListRow, SearchInput, SectionHeader. Raise with the gallery route's owner.
+const SECTIONS = [
+  'Skeleton',
+  'TopAppBar',
+  'BottomTabBar',
+  'BottomSheet',
+  'AccessTierBadge',
+  'ActionButton',
+  'ActionBar',
+] as const;
 
 type Section = (typeof SECTIONS)[number];
 
@@ -34,7 +53,7 @@ export default function StateGallery() {
         })}
       </View>
 
-      {/* SkeletonGallery has no ScrollView of its own; the other two supply theirs. */}
+      {/* SkeletonGallery has no ScrollView of its own; every other entry supplies theirs. */}
       {section === 'Skeleton' && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           <Text style={styles.heading}>Skeleton</Text>
@@ -44,6 +63,9 @@ export default function StateGallery() {
       {section === 'TopAppBar' && <TopAppBarGallery />}
       {section === 'BottomTabBar' && <BottomTabBarGallery />}
       {section === 'BottomSheet' && <BottomSheetGallery />}
+      {section === 'AccessTierBadge' && <AccessTierBadgeGallery />}
+      {section === 'ActionButton' && <ActionButtonGallery />}
+      {section === 'ActionBar' && <ActionBarGallery />}
     </View>
   );
 }
