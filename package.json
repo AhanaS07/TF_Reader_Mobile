@@ -2,13 +2,15 @@
   "name": "tf-reader-mobile-team1",
   "private": true,
   "version": "0.1.0",
-  "main": "node_modules/expo/AppEntry.js",
+  "main": "index.js",
   "scripts": {
     "postinstall": "patch-package",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "lint": "eslint . --max-warnings=0",
+    "reader:build-html": "npx tsx src/features/reader/scripts/buildReaderHtml.ts",
+    "reader:build-sample": "npx tsx src/features/reader/scripts/generateSampleEpub.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
@@ -18,7 +20,10 @@
     "preset": "jest-expo",
     "setupFilesAfterEnv": [
       "<rootDir>/jest.setup.js"
-    ]
+    ],
+    "moduleNameMapper": {
+      "\\.epub$": "<rootDir>/jest.assetStub.js"
+    }
   },
   "expo": {
     "doctor": {
@@ -36,14 +41,17 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "babel-plugin-module-resolver": "^5.0.0",
+    "epubjs": "^0.3.93",
     "eslint": "9.39.5",
     "eslint-config-expo": "57.0.1",
     "eslint-import-resolver-typescript": "3.10.1",
     "jest": "^29.7.0",
     "jest-expo": "^57.0.4",
+    "jszip": "^3.10.1",
     "patch-package": "^8.0.1",
     "prettier": "^3.9.6",
     "sql.js": "^1.14.1",
+    "tsx": "4.23.12",
     "typescript": "~6.0.3"
   },
   "dependencies": {
@@ -54,6 +62,7 @@
     "@react-navigation/native": "^7.3.16",
     "@react-navigation/native-stack": "^7.18.8",
     "expo": "^57.0.12",
+    "expo-asset": "~57.0.10",
     "expo-build-properties": "~57.0.10",
     "expo-constants": "~57.0.10",
     "expo-crypto": "~57.0.1",
@@ -71,6 +80,7 @@
     "react-native-quick-crypto": "^1.1.6",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
+    "react-native-webview": "13.16.1",
     "zustand": "^5.0.14"
   }
 }
