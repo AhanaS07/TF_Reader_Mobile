@@ -9,12 +9,18 @@
 // __mocks__/expo-file-system.js, in-memory Map via __mocks__/react-native-keychain.js.
 
 import * as crypto from 'crypto';
+import * as Keychain from 'react-native-keychain';
 import { File, Directory, Paths } from 'expo-file-system';
 import { encrypt } from './aesGcm';
-import { storeBek } from './keyStorage';
+import { getBek, storeBek } from './keyStorage';
+import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
 import { contentStore, MAX_DECRYPTED_BYTES } from './contentStore';
 import { ContentError } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+
+// Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
+// cleanup in the stale-cached-BEK block below (deviceKeypair.ts exposes no reset of its own).
+const DEVICE_PRIVATE_KEY_SERVICE = 'tf-reader-device-private-key';
 
 // Mirrors contentStore.ts's own private path helper so this test file can check disk state
 // directly (whether a stale file was left behind), without contentStore.ts exporting internals.
@@ -190,6 +196,69 @@ describe('EDGE: store() called twice (re-download / update)', () => {
     await contentStore.destroy(bookId);
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
     expect(indexFilePath(bookId).exists).toBe(false);
+  });
+});
+
+// Both double-store tests above call storeBek(bookId, key2) by hand before the second store(),
+// which quietly repairs the BEK cache and so never exercises what a REAL re-download does: hand
+// contentStore a new wrappedBek and let resolveRawKey() work it out. This block removes that
+// crutch and pins down what actually happens.
+//
+// Found on device (iOS simulator, 2026-08-12) while probing the licence-expiry gate: an expired
+// licence makes isAvailableOffline() false, devContentSeed's ensureSeeded() re-seeds with a fresh
+// random BEK, and the book then failed INTEGRITY_FAILED permanently.
+describe('EDGE: re-store with a NEW BEK, no manual storeBek — the stale-cached-BEK trap', () => {
+  // deviceKeypair.ts's keychain entry is a single global service, not scoped per bookId like the
+  // BEK cache — same scoped cleanup contentStore.test.ts's real-keypair block uses.
+  afterEach(async () => {
+    await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
+  });
+
+  it('DOCUMENTS A DEFECT: the stale cached BEK wins over the new wrappedBek, so the re-stored book fails INTEGRITY_FAILED — destroy() before store() is the only way through', async () => {
+    const bookId = 'edge-restore-stale-cached-bek';
+    const bekA = randomKey();
+    const bekB = randomKey();
+    const plaintextA = plaintextOf(256, 'version A, first download');
+    const plaintextB = plaintextOf(256, 'version B, re-download with a new BEK');
+
+    const { publicKey } = await generateDeviceKeypair();
+
+    const pkgA = await buildEncryptedPackage(bookId, plaintextA, bekA);
+    pkgA.encryption = { ...pkgA.encryption!, wrappedBek: await wrapBek(bekA, publicKey) };
+    await contentStore.store(pkgA);
+    await contentStore.openSession(bookId);
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintextA))).toBe(
+      true
+    );
+
+    // That successful unwrap wrote bekA into the keychain (resolveRawKey's documented caching for
+    // non-Elite tiers). The trap is now armed.
+    expect(Buffer.from(await getBek(bookId)).equals(Buffer.from(bekA))).toBe(true);
+    await contentStore.close(bookId);
+
+    // A genuine re-download: new ciphertext under bekB, new wrappedBek, nothing pre-cached.
+    const pkgB = await buildEncryptedPackage(bookId, plaintextB, bekB);
+    pkgB.encryption = { ...pkgB.encryption!, wrappedBek: await wrapBek(bekB, publicKey) };
+    await contentStore.store(pkgB);
+    await contentStore.openSession(bookId);
+
+    // THE DEFECT. store() does not invalidate the cached BEK, and resolveRawKey() prefers the
+    // cache over unwrapping — so bekA decrypts bekB's ciphertext, the GCM tag fails, and the book
+    // is unreadable from here on. Not a transient error: every later session repeats it, because
+    // nothing in the read path ever falls back to the wrappedBek that would have worked.
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
+      code: ContentError.INTEGRITY_FAILED,
+    });
+
+    // The only escape, and what devContentSeed.ts's ensureSeeded() therefore does: destroy()
+    // BEFORE store(). destroy() calls deleteBek, which clears the cache, so the very same package
+    // now unwraps bekB for real and decrypts.
+    await contentStore.destroy(bookId);
+    await contentStore.store(pkgB);
+    await contentStore.openSession(bookId);
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintextB))).toBe(
+      true
+    );
   });
 });
 

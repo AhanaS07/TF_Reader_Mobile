@@ -1,3 +1,4 @@
+
 // prefsStore.test.ts — scratch/behaviour check for the Day-2 personalization stub.
 // Run: npm test    (or: npx jest src/features/personalization)
 //
