@@ -24,10 +24,12 @@
 // header/footer lines + newlines — no non-ASCII byte ever appears in a PEM), so a direct
 // charCodeAt-per-character mapping to bytes is exact, not an approximation — no need for a full
 // UTF-8 encoder (React Native's JS runtime has no Buffer and no guaranteed TextEncoder either).
+// asciiToBytes() below ASSERTS that assumption rather than relying on it, so a future non-ASCII
+// input fails loudly instead of silently sending a corrupted key (see its own comment).
 
 import * as Crypto from 'expo-crypto';
 import * as Keychain from 'react-native-keychain';
-import type { DeviceKeyRegistrationResponse } from '@/shared/contracts';
+import type { DeviceKeyRegistrationRequest, DeviceKeyRegistrationResponse } from '@/shared/contracts';
 import { generateDeviceKeypair } from '../encryption/deviceKeypair';
 import { bytesToBase64 } from '../encryption/base64';
 import { API_BASE_URL } from './config';
@@ -35,10 +37,20 @@ import { DownloadError, DownloadFailure } from './errors';
 
 const DEVICE_ID_SERVICE = 'tf-reader-device-id';
 
-function asciiToBytes(text: string): Uint8Array {
+// Exported for its own test only — nothing outside this module should be encoding strings here.
+// Guards the ASCII assumption instead of trusting it: `bytes[i] = code` on a Uint8Array silently
+// wraps a code point above 255 (and truncates the high byte of anything 0x80..0xFF's multi-byte
+// UTF-8 form would need), so a non-ASCII input would base64-encode to CORRUPT bytes the server
+// would accept as a valid-looking public key. Same guard, same reason, as
+// encryption/mockSearchIndex.ts's asciiEncode.
+export function asciiToBytes(text: string): Uint8Array {
   const bytes = new Uint8Array(text.length);
   for (let i = 0; i < text.length; i++) {
-    bytes[i] = text.charCodeAt(i);
+    const code = text.charCodeAt(i);
+    if (code > 0x7f) {
+      throw new Error(`asciiToBytes: non-ASCII character at index ${i} (code ${code}) — a PEM public key must be ASCII`);
+    }
+    bytes[i] = code;
   }
   return bytes;
 }
@@ -64,14 +76,19 @@ async function getOrCreateDeviceId(): Promise<string> {
 export async function provisionDeviceKey(): Promise<DeviceKeyRegistrationResponse> {
   const { publicKey } = await generateDeviceKeypair();
   const deviceId = await getOrCreateDeviceId();
-  const publicKeyBase64 = bytesToBase64(asciiToBytes(publicKey));
+  // Typed against the shared contract rather than an inline object literal, so a change to
+  // DeviceKeyRegistrationRequest is a compile error here instead of a 400 at runtime.
+  const requestBody: DeviceKeyRegistrationRequest = {
+    deviceId,
+    publicKey: bytesToBase64(asciiToBytes(publicKey)),
+  };
 
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/device/register-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId, publicKey: publicKeyBase64 }),
+      body: JSON.stringify(requestBody),
     });
   } catch (cause) {
     throw new DownloadFailure(DownloadError.REGISTRATION_FAILED, null, cause);
