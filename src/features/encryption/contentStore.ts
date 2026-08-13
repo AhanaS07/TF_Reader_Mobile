@@ -84,7 +84,16 @@ function isElite(pkg: EncryptedPackage): boolean {
 
 function isLicenceExpired(pkg: EncryptedPackage): boolean {
   if (!pkg.licence) return false;
-  return Date.now() >= new Date(pkg.licence.expiresAt).getTime();
+  const expiresAtMs = new Date(pkg.licence.expiresAt).getTime();
+  // `new Date(x).getTime()` is NaN for an unparseable/missing expiresAt, and `Date.now() >= NaN`
+  // is always false — treat that as EXPIRED (fail closed), not "never expires". store()'s own
+  // assertLicenceMatchesPackage rejects a malformed expiresAt at ingestion time, but that gate
+  // only covers packages that went through the CURRENT store() — a meta.json already persisted
+  // by an older build (before that gate existed) reaches this function directly on every cold
+  // read via loadPersisted(), bypassing the ingestion-time check entirely. This function must not
+  // rely on store() having already validated its input.
+  if (Number.isNaN(expiresAtMs)) return true;
+  return Date.now() >= expiresAtMs;
 }
 
 function assertLengthInvariant(pkg: EncryptedPackage): void {
@@ -176,6 +185,36 @@ interface OpenSession {
 const packageCache = new Map<BookId, EncryptedPackage>();
 const sessions = new Map<BookId, OpenSession>();
 
+// A re-download of an already-persisted book under a DIFFERENT wrapped key (key rotation or
+// re-licensing — confirmed as a real backend behavior, not hypothetical: flambeau's contract
+// mints a new `encryption.keyId`/`wrappedBek` per rotation period) must not let resolveRawKey()
+// keep returning the OLD raw BEK from the keychain cache. resolveRawKey() prefers that cache
+// over ever re-unwrapping (see its own comment) — without this, the newly-stored ciphertext
+// would be permanently undecryptable (ContentFailure(INTEGRITY_FAILED)), with no recovery path
+// exposed anywhere in the download/read flow. This was a real, confirmed gap: previously the
+// only escape was devContentSeed.ts's dev-only destroy()-before-store() workaround; the real
+// production caller (downloadManager.ts's re-download path) never does that.
+//
+// Compares `wrappedBek` itself, NOT `keyFingerprint`/`keyId`: keyFingerprint identifies the
+// DEVICE key used to wrap (content-provider.ts: "sha256:... of the device public key we sent"),
+// so two different BEKs wrapped to the same device produce the SAME fingerprint — comparing it
+// would miss a genuine rotation. wrappedBek is the one field that actually changes when the BEK
+// does. RSA-OAEP's randomized padding means wrappedBek can also legitimately differ across two
+// calls that wrapped the SAME BEK (a false-positive "rotation") — that costs one extra, harmless
+// RSA unwrap on the next read (still decrypts correctly, just skips the cache once), which is a
+// safe trade-off for guaranteeing a genuine rotation is never missed.
+async function invalidateStaleCachedKeyIfRotated(pkg: EncryptedPackage): Promise<void> {
+  const meta = metaFile(pkg.bookId);
+  if (!meta.exists) return; // first store for this book — nothing cached yet to invalidate
+
+  const previous = JSON.parse(meta.textSync()) as PersistedMeta;
+  const previousWrappedBek = previous.encryption?.wrappedBek ?? null;
+  const nextWrappedBek = pkg.encryption?.wrappedBek ?? null;
+  if (previousWrappedBek !== nextWrappedBek) {
+    await deleteBek(pkg.bookId);
+  }
+}
+
 /**
  * Persist an EncryptedPackage exactly as received (Subscription) or cache it in memory only
  * (Elite). Asserts the content-length and licence/bookId invariants the frozen contract requires
@@ -184,6 +223,12 @@ const sessions = new Map<BookId, OpenSession>();
 async function store(pkg: EncryptedPackage): Promise<void> {
   assertLengthInvariant(pkg);
   assertLicenceMatchesPackage(pkg);
+
+  // Elite never touches the keychain (see resolveRawKey) — nothing there to invalidate, and
+  // checking would be pointless work on every Elite store().
+  if (!isElite(pkg)) {
+    await invalidateStaleCachedKeyIfRotated(pkg);
+  }
 
   packageCache.set(pkg.bookId, pkg);
 
@@ -550,8 +595,14 @@ async function isAvailableOffline(bookId: BookId): Promise<boolean> {
   if (!meta.exists) return false;
 
   const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
-  if (parsed.licence && Date.now() >= new Date(parsed.licence.expiresAt).getTime()) {
-    return false;
+  // Same fail-closed reasoning as isLicenceExpired() above (and the same reason this can't just
+  // trust store() to have already validated the date): NaN must count as expired, not as
+  // "never expires".
+  if (parsed.licence) {
+    const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
+    if (Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs) {
+      return false;
+    }
   }
   return contentFile(bookId).exists;
 }

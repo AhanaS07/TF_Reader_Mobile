@@ -28,9 +28,30 @@
 // src/features/encryption/cipherLayout.ts.
 //
 // DRAFT — written against a mock backend, not a confirmed backend contract yet.
+//
+// `index` ADDED 2026-08-14, against the REAL backend contract this time, not a guess: team
+// flambeau's public OpenAPI spec (https://deepu1004.github.io/flambeau-api-contracts/,
+// `POST /api/v1/reading-sessions`'s `ReadingSessionResponse.index`) forwards wokay's `IndexUrl`
+// shape unchanged, documented there as "Absent when there is none or none was asked for", with
+// this example:
+//     index: { url: "https://storage.tf/tf-index/item_42.enc?...", encrypted: true, termCount: 6120 }
+// Before this, `EncryptedPackage.index?: Bytes` (content-provider.ts) had NO way to ever be
+// populated from a real download: this endpoint had nowhere to put an index URL, so
+// downloadManager.ts could never fetch one, and contentStore's already-built, already-tested
+// decryptSearchIndex/getIndex path was unreachable end-to-end outside unit tests and fixtures.
+// `termCount` is carried through even though nothing on-device reads it yet, because it is part
+// of the real upstream shape and dropping it here would silently diverge from the contract this
+// was reconciled against.
 
 import type { BookId, ContentFormat } from '../types/primitives';
 import type { EncryptionDescriptor, SignedLicence } from './content-provider';
+
+/** wokay's `IndexUrl`, forwarded by flambeau unchanged — see this file's header for the source. */
+export interface ContentLicenceIndexInfo {
+  url: string; // fetch this the same way as encryptedFileUrl; encrypted under the SAME BEK
+  encrypted: boolean;
+  termCount?: number;
+}
 
 export interface ContentLicenceResponse {
   bookId: BookId;
@@ -44,4 +65,8 @@ export interface ContentLicenceResponse {
   // Reused verbatim from content-provider.ts. Both null => OA (open access, no encryption).
   encryption: EncryptionDescriptor | null;
   licence: SignedLicence | null;
+
+  // Absent when this book has no search index, or (matching the real backend) when the client
+  // didn't ask for one. This client always asks — see contentLicenceClient.ts.
+  index?: ContentLicenceIndexInfo;
 }

@@ -26,18 +26,33 @@
 //
 // No Buffer: this file runs in the RN JS runtime, which doesn't have Node's Buffer without a
 // polyfill (unlike the Node-only scripts under scripts/, which still use Buffer deliberately —
-// see their own headers). base64 codec is the shared, cross-checked one in ./base64.ts; hex
-// codec (needed only here, for iv/tag) is portable Uint8Array arithmetic below.
+// see their own headers). Hex codec (needed only here, for iv/tag) is portable Uint8Array
+// arithmetic below — iv/tag are 12/16 bytes, far too small for a codec choice to matter.
 //
 // CONFIRMED on-device 2026-08-11: this file's encrypt/decrypt round-trip actually works at
 // runtime (not just "compiles") — logged RUNTIME_TEST: aesGcm roundTripOk= true from a real
 // iOS Simulator run. keyStorage.ts's ORIGINAL Buffer-based version failed at the same time with
 // "Property 'Buffer' doesn't exist" — which is exactly why this file never used Buffer to begin
 // with, and why keyStorage.ts was fixed to use ./base64.ts too.
+//
+// BASE64 CODEC (changed 2026-08-14): the native module's string-only API means every call here
+// round-trips the WHOLE plaintext/ciphertext through base64 twice — once to encode the input,
+// once to decode the output — and for a whole-book payload that pair dominates this file's own
+// cost. `readerAssets.ts` already proved (measured, not assumed) that swapping the portable JS
+// codec (./base64.ts) for `react-native-quick-base64`'s native (C++/JSI) one cut its OWN transport
+// encode from ~1820ms to ~18ms on Hermes for a 20MB payload — ~100x, not a rounding difference.
+// This file is the OTHER half of that same round trip (readerAssets.ts's own header: "~93% [of a
+// warm open] is inside getBook, which base64-ENCODES the ciphertext and DECODES the plaintext
+// around a string-only native module... it belongs to Encryption, not here" — this IS that fix,
+// on Encryption's side). `./base64.ts` remains correct and is kept as the portable fallback for
+// callers that must not depend on a native module (see its own header) — this file already
+// requires one (`react-native-aes-gcm-crypto`), so adding a second native codec dependency here
+// costs nothing architecturally. `key`/`iv`/`tag` stay on the same codec as the payload rather
+// than mixing two, for one code path to reason about.
 
 import AesGcmCrypto from 'react-native-aes-gcm-crypto';
+import { fromByteArray, toByteArray } from 'react-native-quick-base64';
 import { CipherPayload, NONCE_BYTES, GCM_TAG_BYTES, assertCipherLayout } from './cipherLayout';
-import { bytesToBase64, base64ToBytes } from './base64';
 
 const KEY_BYTES = 32; // AES-256
 
@@ -68,10 +83,10 @@ export async function encrypt(plaintext: Uint8Array, key: Uint8Array): Promise<C
     throw new Error(`encrypt: key must be ${KEY_BYTES} bytes (AES-256), got ${key.length}`);
   }
 
-  const { iv, tag, content } = await AesGcmCrypto.encrypt(bytesToBase64(plaintext), true, bytesToBase64(key));
+  const { iv, tag, content } = await AesGcmCrypto.encrypt(fromByteArray(plaintext), true, fromByteArray(key));
 
   const nonce = hexToBytes(iv);
-  const ciphertext = base64ToBytes(content);
+  const ciphertext = toByteArray(content);
   const tagBytes = hexToBytes(tag);
 
   if (nonce.length !== NONCE_BYTES) {
@@ -138,14 +153,14 @@ export async function decryptBook(
   // decrypt() rejects if the auth tag doesn't verify (tamper/corruption detection). Deliberately
   // not wrapped in try/catch: that rejection must propagate to the caller.
   const decryptedBase64 = await AesGcmCrypto.decrypt(
-    bytesToBase64(ciphertext),
-    bytesToBase64(key),
+    fromByteArray(ciphertext),
+    fromByteArray(key),
     bytesToHex(nonce),
     bytesToHex(tag),
     true // isBinary: return decrypted data as base64, since our plaintext is arbitrary bytes
   );
 
-  return base64ToBytes(decryptedBase64);
+  return toByteArray(decryptedBase64);
 }
 
 /**

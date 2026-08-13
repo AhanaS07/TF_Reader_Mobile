@@ -9,7 +9,7 @@ import * as Keychain from 'react-native-keychain';
 import { downloadBook } from './downloadManager';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { USER_ID } from '../sync/syncConfig';
-import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
+import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
 import { encrypt } from '../encryption/aesGcm';
 import { generateDeviceKeypair, wrapBek } from '../encryption/deviceKeypair';
 import { DownloadError } from './errors';
@@ -216,5 +216,125 @@ describe('downloadBook — failure branches', () => {
     await expect(downloadBook('missing-book')).rejects.toMatchObject({
       code: DownloadError.LICENCE_FETCH_FAILED,
     });
+  });
+});
+
+// Regression tests for the "no way to deliver a search index" gap (content-licence.ts's
+// `index` field, added 2026-08-14 against the real backend contract — see that file's header).
+describe('downloadBook — search index delivery', () => {
+  const originalFetch = global.fetch;
+  const bookIds = ['book-with-index', 'book-with-unfetchable-index', 'book-without-index'];
+
+  // Every other describe block in this file stays under the 5-book cap by construction (its
+  // failure branches never reach contentStore.store(), and the happy-path tests reuse the same
+  // book). This block stores 3 DIFFERENT books against the same real, un-reset downloadTable —
+  // without cleanup, the 3rd test here would itself trip BOOK_LIMIT_REACHED before ever
+  // exercising the "no index URL" assertion it's meant to test. Soft-delete keeps each test's
+  // row from counting against the ones that run after it.
+  afterEach(async () => {
+    global.fetch = originalFetch;
+    await contentStore.close('book-with-index');
+    await contentStore.close('book-with-unfetchable-index');
+    for (const bookId of bookIds) {
+      const rows = await downloadTable.listActive(USER_ID, bookId);
+      for (const row of rows) {
+        await downloadTable.softDeleteLocal(row.id);
+      }
+    }
+  });
+
+  it('fetches and attaches the search index when the licence has one', async () => {
+    const bookId = 'book-with-index';
+    const content = new Uint8Array([1, 2, 3, 4]);
+    const indexBytes = new Uint8Array([9, 8, 7]);
+    const licence: ContentLicenceResponse = {
+      ...openAccessLicenceFor(bookId, content),
+      index: { url: `http://localhost:4000/fixtures/${bookId}.index.enc`, encrypted: false, termCount: 3 },
+    };
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith('/content-licence')) return new Response(JSON.stringify(licence), { status: 200 });
+      if (url === licence.encryptedFileUrl) return new Response(content, { status: 200 });
+      if (url === licence.index!.url) return new Response(indexBytes, { status: 200 });
+      return new Response(null, { status: 404 });
+    });
+
+    await downloadBook(bookId);
+
+    await contentStore.openSession(bookId);
+    const decodedIndex = await decryptSearchIndex(bookId);
+    expect(decodedIndex).not.toBeNull();
+    expect(Array.from(decodedIndex!)).toEqual(Array.from(indexBytes));
+  });
+
+  it('still downloads the book successfully if fetching the index fails — independent failure domain', async () => {
+    const bookId = 'book-with-unfetchable-index';
+    const content = new Uint8Array([5, 6, 7]);
+    const licence: ContentLicenceResponse = {
+      ...openAccessLicenceFor(bookId, content),
+      index: { url: `http://localhost:4000/fixtures/${bookId}.index.enc`, encrypted: false },
+    };
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith('/content-licence')) return new Response(JSON.stringify(licence), { status: 200 });
+      if (url === licence.encryptedFileUrl) return new Response(content, { status: 200 });
+      if (url === licence.index!.url) return new Response(null, { status: 500 });
+      return new Response(null, { status: 404 });
+    });
+
+    await expect(downloadBook(bookId)).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    await contentStore.openSession(bookId);
+    expect(await decryptSearchIndex(bookId)).toBeNull(); // no index made it through
+  });
+
+  it('never requests an index URL when the licence has none', async () => {
+    const bookId = 'book-without-index';
+    const content = new Uint8Array([1]);
+    const licence = openAccessLicenceFor(bookId, content); // no .index field at all
+    const fetchMock = mockFetchFor(licence, content);
+    global.fetch = fetchMock;
+
+    await downloadBook(bookId);
+
+    // Exactly 2 requests: content-licence, then the main asset. No third URL was ever built.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Regression test for the parked "rollback destroy() isn't guarded" finding: the in-lock
+// re-check (downloadManager.ts's withWriteLock block) can lose a race that the pre-fetch check
+// above didn't see, in which case it must roll back via contentStore.destroy(bookId) and still
+// surface the ORIGINAL BOOK_LIMIT_REACHED DownloadFailure — even if destroy() itself throws.
+describe('downloadBook — book-limit race rollback', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('still rejects with the original BOOK_LIMIT_REACHED error when the in-lock rollback destroy() itself throws', async () => {
+    const bookId = 'race-rollback-book';
+    const content = new Uint8Array([1, 2, 3]);
+    const licence = openAccessLicenceFor(bookId, content);
+    global.fetch = mockFetchFor(licence, content);
+
+    // Pre-fetch check (outside the lock) sees room; the re-check INSIDE the lock sees 5 other
+    // books already at the cap — simulating another download winning the race in between.
+    const roomyRows = [] as unknown as Awaited<ReturnType<typeof downloadTable.listActive>>;
+    const fullRows = Array.from({ length: 5 }, (_, i) => ({
+      book_id: `other-book-${i}`,
+    })) as unknown as Awaited<ReturnType<typeof downloadTable.listActive>>;
+    jest.spyOn(downloadTable, 'listActive').mockResolvedValueOnce(roomyRows).mockResolvedValueOnce(fullRows);
+
+    const destroySpy = jest
+      .spyOn(contentStore, 'destroy')
+      .mockRejectedValueOnce(new Error('keychain unavailable during rollback'));
+
+    await expect(downloadBook(bookId)).rejects.toMatchObject({
+      code: DownloadError.BOOK_LIMIT_REACHED,
+      bookId,
+    });
+    expect(destroySpy).toHaveBeenCalledWith(bookId);
   });
 });
