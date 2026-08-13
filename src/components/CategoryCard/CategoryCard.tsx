@@ -1,7 +1,12 @@
 // src/components/CategoryCard/CategoryCard.tsx
-// One card in the home screen's top carousel: a category the reader can open.
-// The current fixtures give three — eBooks, Audiobooks, Open access — straight
-// from `catalogue.navigation`.
+// One card in the home screen's top category strip: a category the reader can
+// open. The current fixtures give three — eBooks, Audiobooks, Open access —
+// straight from `catalogue.navigation`.
+//
+// A STRIP, NOT A CAROUSEL. The featured carousel and its page dots were dropped
+// from the plan; these cards took that slot. So there is no paging, no momentum
+// snap and no dot to keep in sync — CatalogueScreen lays them out in a plain
+// horizontal ScrollView.
 //
 // THE ACCENT FILLS THE WHOLE CARD. An earlier version put a block of colour
 // above a white body, which read as a large empty panel with nothing in it: a
@@ -17,7 +22,7 @@
 // optional count and an accent; a fourth category tomorrow renders with no code
 // change at all.
 //
-// It sets no width — the carousel that lays it out owns that (CONVENTIONS §8).
+// It sets no width — the strip that lays it out owns that (CONVENTIONS §8).
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { color, elevation, radius, space, type } from '@theme/tokens';
@@ -31,7 +36,7 @@ import { color, elevation, radius, space, type } from '@theme/tokens';
 export type CategoryAccent = 'primary' | 'navy' | 'success' | 'subscription' | 'elite';
 
 // `error` and `offline` belong to the screen that owns the feed request, not to
-// one card in a carousel (CONVENTIONS §6).
+// one card in the strip (CONVENTIONS §6).
 export type CategoryCardState = 'idle' | 'loading';
 
 export interface CategoryCardProps {
