@@ -120,6 +120,17 @@ function assertLicenceMatchesPackage(pkg: EncryptedPackage): void {
     );
   }
   if (!pkg.licence) return;
+  // `new Date(x).getTime()` is NaN for an unparseable/missing expiresAt, and `Date.now() >= NaN`
+  // is always false — isLicenceExpired() would silently treat a malformed expiry as "never
+  // expires" (unlimited access) rather than denying it, violating errors.ts's fail-closed rule.
+  // Reject at store() time rather than let it decrypt forever.
+  if (Number.isNaN(new Date(pkg.licence.expiresAt).getTime())) {
+    throw new ContentFailure(
+      ContentError.LICENCE_INVALID,
+      pkg.bookId,
+      new Error(`licence.expiresAt "${pkg.licence.expiresAt}" is not a valid date`)
+    );
+  }
   if (pkg.licence.itemId !== pkg.bookId) {
     throw new ContentFailure(
       ContentError.LICENCE_INVALID,

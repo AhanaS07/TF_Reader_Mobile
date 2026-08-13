@@ -25,7 +25,11 @@ The WebView side is plain ES5-ish JS inside a `.html` file _precisely_ so `tsc` 
 would fail — it references browser globals and epub.js internals that RN's types don't model).
 `buildReaderHtml.ts` inlines JSZip + epub.js into that template and emits
 `assets/reader/reader.html`, which is a **tracked, generated artifact** — regenerate it with
-`npm run reader:build-html` after any template edit, or the two diverge silently.
+`npm run reader:build-html` after any template edit. CI's "Reader HTML is freshly generated" step
+rebuilds and `git diff --exit-code`s that file, so forgetting is a red build rather than a stale
+ship. Note what that step does and does not cover: it proves the artifact matches the template,
+_not_ that the template matches `readerBridge.ts` — the drift guard in `readerBridge.test.ts` is
+what does that (see [What protects it today](#what-protects-it-today--and-what-doesnt)).
 
 ## Current surface
 
@@ -55,10 +59,20 @@ contract. It is small enough to hold in your head, which is the only reason this
 
 ## What protects it today — and what doesn't
 
-**Protected: name drift.** `parseReaderMessage()` rejects any `type` outside the union, and the
-injected command script checks `typeof window.TFReader.<method> === 'function'` before calling.
-So renaming one side without the other produces a loud, coded error (`BRIDGE_PARSE_FAILED`,
-`NOT_READY`) instead of silence. Cheap, and genuinely sufficient at this size.
+**Protected: name drift, at runtime.** `parseReaderMessage()` rejects any `type` outside the union,
+and the injected command script checks `typeof window.TFReader.<method> === 'function'` before
+calling. So renaming one side without the other produces a loud, coded error
+(`BRIDGE_PARSE_FAILED`, `NOT_READY`) instead of silence. Cheap, and genuinely sufficient at this
+size.
+
+**Protected: name drift, at build time.** The drift guard in `readerBridge.test.ts` reads the
+template as text and asserts that the message types it posts, the `fail()` codes it raises, and the
+`window.TFReader` methods it defines each match their TS counterpart exactly. Both sides of those
+assertions are derived, not transcribed: `READER_MESSAGE_TYPES` (pinned to the `ReaderMessage`
+union by a `satisfies` plus an `Exclude`-based exhaustiveness proof), `WEBVIEW_ERROR_CODES`,
+`HOST_ERROR_CODES`, and `Object.values(READER_COMMANDS)`. Adding a case to the union without
+listing it fails `tsc`; listing it without teaching the template fails jest. So a rename is a red
+build, not a runtime error a user has to hit first.
 
 **NOT protected: shape drift.** `parseReaderMessage()` can tell you `type` is one of five strings.
 It cannot tell you the template stopped sending a field that a case needs, started sending a
@@ -171,6 +185,7 @@ Every time you add or change a message type or command:
 - [ ] Add the case to `parseReaderMessage()`; a new type without a `case` returns `null` and
       surfaces as `BRIDGE_PARSE_FAILED`.
 - [ ] Run `npm run reader:build-html` — `assets/reader/reader.html` is generated **and tracked**.
+      CI fails if you skip this, but it fails on _your_ PR; running it locally is still faster.
 - [ ] Update the [Current surface](#current-surface) table above.
 - [ ] **Re-run the trigger test.** If any trigger now fires, converting is the task — not a
       follow-up ticket. Say so in the PR.

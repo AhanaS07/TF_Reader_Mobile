@@ -527,6 +527,59 @@ describe('EDGE: type-legal but contract-inconsistent field combinations', () => 
   });
 });
 
+describe('EDGE: licence.expiresAt boundary conditions', () => {
+  it('exactly-at-expiry (Date.now() === expiresAt) is treated as expired, not a one-instant-early pass', async () => {
+    const bookId = 'edge-licence-exact-boundary';
+    const key = randomKey();
+    const now = Date.now();
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(64, 'exact boundary'), key, {
+      expiresAt: new Date(now).toISOString(),
+    });
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+    await contentStore.openSession(bookId);
+
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
+        code: ContentError.LICENCE_EXPIRED,
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('a malformed (unparseable) licence.expiresAt string must NOT be treated as "never expires" — fail closed, not open', async () => {
+    const bookId = 'edge-licence-malformed-expiresat';
+    const key = randomKey();
+    // new Date('not-a-real-date').getTime() is NaN, and `Date.now() >= NaN` is always false, so
+    // isLicenceExpired()'s naive comparison would let this book decrypt FOREVER, on every future
+    // call, no matter how far in the future "now" is. A corrupted/malformed expiry field must
+    // deny (fail closed, per errors.ts's own rule), not silently grant unlimited access.
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(64, 'malformed expiry'), key, {
+      expiresAt: 'not-a-real-date',
+    });
+    await storeBek(bookId, key);
+
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.LICENCE_INVALID,
+    });
+  });
+
+  it('an empty-string licence.expiresAt is rejected the same way (also NaN under Date parsing)', async () => {
+    const bookId = 'edge-licence-empty-expiresat';
+    const key = randomKey();
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(64, 'empty expiry'), key, {
+      expiresAt: '',
+    });
+    await storeBek(bookId, key);
+
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.LICENCE_INVALID,
+    });
+  });
+});
+
 describe('EDGE: Elite tier — persistence really does not survive a process restart', () => {
   it('after jest.resetModules() (simulating a fresh process), an Elite book is unrecoverable: isAvailableOffline false AND openSession rejects', async () => {
     jest.resetModules();

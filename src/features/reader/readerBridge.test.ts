@@ -7,9 +7,11 @@
 //
 // readerBridge.ts and webview/reader.template.html are two halves of one
 // protocol, and the template half is deliberately outside tsc's view (it is
-// plain JS inside a .html so allowJs/checkJs cannot reach it), while type-aware
-// ESLint is off repo-wide. So NOTHING in the toolchain can see that the two
-// agree. The drift guard closes that by reading the template as text and
+// plain JS inside a .html so allowJs/checkJs cannot reach it). ESLint cannot see
+// it either — type-aware linting now covers src/features/reader/, but only the
+// .ts/.tsx in it, and a .html is neither. So NOTHING in the toolchain can see
+// that the two agree. The drift guard closes that by reading the template as text
+// and
 // asserting, mechanically, that every message type it posts has a case in the
 // TS union and every method RN calls exists on window.TFReader.
 //
@@ -26,6 +28,7 @@ import * as path from 'path';
 import {
   HOST_ERROR_CODES,
   READER_COMMANDS,
+  READER_MESSAGE_TYPES,
   WEBVIEW_ERROR_CODES,
   buildCommandScript,
   parseReaderMessage,
@@ -129,12 +132,12 @@ describe('buildCommandScript', () => {
 
 describe('readerBridge <-> reader.template.html stay in sync', () => {
   it('every message type the template posts has a case in ReaderMessage', () => {
-    // Mirror of the ReaderMessage union. Kept as a literal on purpose: a TS union
-    // has no runtime representation to enumerate, so this list is the assertion.
-    // Adding a case to the union without adding it here fails the next check.
-    const unionTypes = ['error', 'ready', 'relocated', 'rendered', 'toc'];
-
-    expect(messageTypesPostedByTemplate()).toEqual(unionTypes);
+    // READER_MESSAGE_TYPES, not a literal copy of the union. This used to be a
+    // hand-written array, which left one hand-synced list inside the guard whose
+    // whole job is removing them: a case added to ReaderMessage but to neither the
+    // template nor the literal failed nothing. readerBridge.ts now pins that array
+    // to the union at compile time, so both sides of this assertion are derived.
+    expect(messageTypesPostedByTemplate()).toEqual([...READER_MESSAGE_TYPES].sort());
   });
 
   it('every message type in the union is parseable (no dead cases)', () => {

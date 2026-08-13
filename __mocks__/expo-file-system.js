@@ -87,6 +87,10 @@ class File {
   }
 }
 
+// Mutable default so tests can override via Object.defineProperty and restore it afterward —
+// `configurable: true` is required for that restore to work.
+let mockAvailableDiskSpace = 10 * 1024 * 1024 * 1024; // 10GB — comfortably "plenty of space" default
+
 class Paths {
   static get document() {
     return new Directory(ROOT, 'document');
@@ -94,6 +98,13 @@ class Paths {
   static get cache() {
     return new Directory(ROOT, 'cache');
   }
+  static get availableDiskSpace() {
+    return mockAvailableDiskSpace;
+  }
 }
 
 module.exports = { File, Directory, Paths };
+Object.defineProperty(Paths, 'availableDiskSpace', {
+  get: () => mockAvailableDiskSpace,
+  configurable: true,
+});
