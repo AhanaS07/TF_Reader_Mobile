@@ -1,7 +1,6 @@
 // Exercises this file's HTTP client logic against a mocked global.fetch — the real mock-backend
-// integration is proven separately (docs/superpowers/specs/2026-08-13-download-devicekey-skeleton-design.md
-// records a manual curl check against a live mock-backend), this test only needs to prove
-// request-building and error-classification.
+// integration was manually verified against a live server during development, outside this test
+// suite; this test only needs to prove request-building and error-classification.
 
 import { fetchContentLicence, fetchEncryptedAsset } from './contentLicenceClient';
 import { API_BASE_URL } from './config';
@@ -80,5 +79,53 @@ describe('fetchEncryptedAsset', () => {
       code: DownloadError.ASSET_FETCH_FAILED,
       bookId: 'book-001',
     });
+  });
+});
+
+// The mock backend hands back an ABSOLUTE http://localhost:4000/... encryptedFileUrl. On a real
+// device that "localhost" is the DEVICE, not the machine running the backend, so the asset fetch
+// would fail even though the content-licence request just succeeded via config.ts's resolved LAN
+// host. Under Jest, API_BASE_URL resolves to localhost itself (no expo-constants hostUri), which
+// would make the rewrite an unobservable no-op — so these two cases mock ./config to a LAN host,
+// same jest.isolateModules pattern config.test.ts uses.
+describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.dontMock('./config');
+    jest.resetModules();
+  });
+
+  const LAN_BASE_URL = 'http://192.168.1.20:4000';
+
+  function loadClientWithLanBaseUrl(): typeof import('./contentLicenceClient') {
+    let mod!: typeof import('./contentLicenceClient');
+    jest.resetModules();
+    jest.isolateModules(() => {
+      jest.doMock('./config', () => ({ __esModule: true, API_BASE_URL: LAN_BASE_URL }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      mod = require('./contentLicenceClient');
+    });
+    return mod;
+  }
+
+  it('rewrites a localhost encryptedFileUrl to API_BASE_URL’s host/port, keeping path and query', async () => {
+    const client = loadClientWithLanBaseUrl();
+    global.fetch = jest.fn().mockResolvedValue(new Response(new Uint8Array([7, 8]), { status: 200 }));
+
+    const bytes = await client.fetchEncryptedAsset('book-001', 'http://localhost:4000/fixtures/sample.epub.enc?v=2');
+
+    expect(global.fetch).toHaveBeenCalledWith(`${LAN_BASE_URL}/fixtures/sample.epub.enc?v=2`);
+    expect(Array.from(bytes)).toEqual([7, 8]);
+  });
+
+  it('leaves a non-localhost (e.g. real CDN) url completely untouched', async () => {
+    const client = loadClientWithLanBaseUrl();
+    global.fetch = jest.fn().mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }));
+
+    const cdnUrl = 'https://cdn.example.com/fixtures/sample.epub.enc';
+    await client.fetchEncryptedAsset('book-001', cdnUrl);
+
+    expect(global.fetch).toHaveBeenCalledWith(cdnUrl);
   });
 });

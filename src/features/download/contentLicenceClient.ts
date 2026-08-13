@@ -30,10 +30,42 @@ export async function fetchContentLicence(bookId: BookId): Promise<ContentLicenc
   return (await response.json()) as ContentLicenceResponse;
 }
 
+/**
+ * `encryptedFileUrl` is an ABSOLUTE url the backend chose, and the mock backend always emits
+ * `http://localhost:4000/...` for it. "localhost" is resolved by whoever fetches it — on a
+ * physical device or a simulator that isn't the machine running the mock backend, that's the
+ * DEVICE, and the fetch fails. config.ts already went to the trouble of resolving a LAN-reachable
+ * host for `API_BASE_URL` (the content-licence request that produced this url succeeded via it),
+ * so reuse that host here: same path and query, the host/port that actually answered.
+ *
+ * Any other host is left completely alone — a real CDN url must not be rewritten.
+ */
+function reachableAssetUrl(url: string): string {
+  let parsed: URL;
+  let base: URL;
+  try {
+    parsed = new URL(url);
+    base = new URL(API_BASE_URL);
+  } catch {
+    // Not something the URL parser understands — hand it to fetch verbatim and let fetch's own
+    // error be the one the caller sees, rather than inventing a different failure here.
+    return url;
+  }
+  if (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+    return url;
+  }
+  if (base.hostname === parsed.hostname && base.port === parsed.port) {
+    return url; // API_BASE_URL is itself localhost (e.g. a simulator on the dev machine) — no-op.
+  }
+  parsed.hostname = base.hostname;
+  parsed.port = base.port;
+  return parsed.toString();
+}
+
 export async function fetchEncryptedAsset(bookId: BookId, url: string): Promise<Uint8Array> {
   let response: Response;
   try {
-    response = await fetch(url);
+    response = await fetch(reachableAssetUrl(url));
   } catch (cause) {
     throw new DownloadFailure(DownloadError.ASSET_FETCH_FAILED, bookId, cause);
   }
