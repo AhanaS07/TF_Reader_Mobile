@@ -1,7 +1,7 @@
 
-import { getDatabase, newId, nowIso } from '../db/database';
-import type { EntityType, OutboxOperation, OutboxRow } from '../db/types';
-import { MAX_PUSH_RETRIES, USER_ID } from '../config';
+import { getDatabase, newId, nowIso } from '../localDb/database';
+import type { EntityType, OutboxOperation, OutboxRow } from '../localDb/types';
+import { MAX_PUSH_RETRIES, USER_ID } from '../syncConfig';
 
 /** Exponential backoff for a rejected payload: 30s, 1m, 2m, 4m, … capped at 30m. */
 function backoffMs(retryCount: number): number {
@@ -14,7 +14,7 @@ function backoffMs(retryCount: number): number {
  *
  * A row is deleted only when the server has acknowledged it.
  */
-export const outboxRepository = {
+export const outboxStore = {
   /**
    * Appends an operation to the queue.
    *

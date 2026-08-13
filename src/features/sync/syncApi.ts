@@ -1,4 +1,4 @@
-import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './config';
+import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './syncConfig';
 
 /**
  * A thin client over the Mongo backend's per-entity CRUD endpoints.
@@ -9,10 +9,27 @@ import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './config';
  *   - `POST /api/v1/{entity}` stores the `id` in the body, so ids stay
  *     device-minted. A second POST with the same id answers **409**.
  *   - `PUT /api/v1/{entity}/{id}` does **not** upsert: an unknown id is 404.
- *     Push therefore falls back between the two - see `syncManager`.
+ *     Push therefore falls back between the two - see `syncEngine`.
  *   - `updatedAt` is always overwritten with the server clock. `createdAt` is
  *     stored as sent; `isDeleted` on a create is ignored.
  *   - `DELETE` without `?hard=true` writes a tombstone and returns it.
+ */
+
+/**
+ * WIRE FORMAT — timestamps.
+ *
+ * Every `…At` field crosses this boundary as an ISO-8601 UTC string, because that is what the
+ * Mongo services emit and accept. The frozen contract's `Timestamp` is epoch-ms (a number), and
+ * both are correct in their own layer: the contract describes the in-memory object Reader and
+ * Personalization pass around, this describes the HTTP body. Personalization's adapter already
+ * converts between them in the same direction (`msToText` / `textToMs`), and
+ * `sharedPrefs.timestampCodec` is the sync-side equivalent, so local storage stays consistent.
+ *
+ * OPEN, and worth confirming before anyone POSTs a contract object straight at the backend:
+ * a caller who skipped the adapters and sent `updatedAt` as a raw number would be sending a
+ * shape these endpoints have not been tested against. Nothing in this feature does that today.
+ *
+ * `serverTime` below is a separate, coarser thing - see its own note.
  */
 
 /** Carries the HTTP status so the Sync Manager can tell transient from permanent. */
@@ -53,6 +70,13 @@ export interface ApiResponse<T> {
    * checkpoint so it never depends on the device clock. Second precision, and
    * truncated downwards, which is the safe direction - it can only widen the
    * next pull window, never skip a record.
+   *
+   * That truncation is currently free, because SUPPORTS_UPDATED_AFTER is off and the
+   * checkpoint is stored but never sent. It stops being free the moment that flag flips: a
+   * checkpoint a fraction of a second early means the next pull re-fetches a handful of records
+   * it already has, which Last-Write-Wins then discards. Wasteful, not wrong - but if the
+   * collection GETs ever gain a millisecond-precision `updatedAfter`, take the checkpoint from
+   * a record's own `updatedAt` rather than from this header.
    */
   serverTime: string;
 }

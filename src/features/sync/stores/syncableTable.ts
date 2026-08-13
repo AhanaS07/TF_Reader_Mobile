@@ -1,6 +1,6 @@
-import { getDatabase, nowIso } from '../db/database';
-import type { EntityType, OutboxOperation } from '../db/types';
-import { outboxRepository } from './outboxRepository';
+import { getDatabase, nowIso } from '../localDb/database';
+import type { EntityType, OutboxOperation } from '../localDb/types';
+import { outboxStore } from './outboxStore';
 
 interface SyncableTableOptions<TRow> {
   table: string;
@@ -34,8 +34,35 @@ interface RowShape {
  * inventing time - the ordering is what Last-Write-Wins actually needs.
  */
 function monotonicStamp(candidate: string, previous?: string): string {
-  if (!previous || candidate > previous) return candidate;
+  if (!previous || isAfter(candidate, previous)) return candidate;
   return new Date(new Date(previous).getTime() + 1).toISOString();
+}
+
+/**
+ * Compares two wire timestamps as instants, not as text.
+ *
+ * Lexicographic string comparison is only correct while every timestamp shares one format, one
+ * precision and one zone. That holds today because `syncApi.normalize` truncates every `…At`
+ * field to millisecond UTC on the way in - but it holds because of that function, not because
+ * of anything the comparison itself enforces. A backend that started emitting microseconds
+ * (`…54.199801Z`) or an offset form (`…+05:30`) would silently invert the ordering, and
+ * Last-Write-Wins would start discarding the newer record. Parsing costs nothing here and
+ * removes the coupling.
+ *
+ * An unparseable timestamp sorts as older, which is the safe direction: it can only lose a
+ * comparison, never win one and overwrite good data.
+ */
+function toMs(iso: string): number {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? -Infinity : ms;
+}
+
+function isAfter(a: string, b: string): boolean {
+  return toMs(a) > toMs(b);
+}
+
+function isAtOrAfter(a: string, b: string): boolean {
+  return toMs(a) >= toMs(b);
 }
 
 /**
@@ -44,14 +71,14 @@ function monotonicStamp(candidate: string, previous?: string): string {
  * One SQLite connection backs the whole app (`getDatabase()`'s cached promise), and a
  * connection can only have one transaction open at a time - confirmed against both the real
  * expo-sqlite (`withTransactionAsync`'s own doc comment: "this transaction is not exclusive and
- * can be interrupted by other async queries") and the `node:sqlite`-backed test mock, which
- * throws "cannot start a transaction within a transaction" outright. Two concurrent calls to
+ * can be interrupted by other async queries") and the sql.js-backed test mock, which throws
+ * "cannot start a transaction within a transaction" outright. Two concurrent calls to
  * `saveLocal` - even for two entirely unrelated rows, e.g. adding two different bookmarks at
  * once - would otherwise both try to open a transaction and one throws.
  *
  * It also gives the four "find the current singleton row for this user (+book), else create
- * one" repository methods (progress, personalization, accessibility, downloads) somewhere to
- * make their read-then-write atomic: without this, two concurrent first-time callers each see
+ * one" store methods (progress, personalization, accessibility, downloads) somewhere to make
+ * their read-then-write atomic: without this, two concurrent first-time callers each see
  * "nothing yet" and each create their own row, silently producing two live rows where the
  * design promises exactly one. `saveLocal`'s own `{ locked: true }` escape hatch lets those
  * callers hold the queue across their read *and* their write instead of it being reacquired
@@ -143,7 +170,7 @@ export function createSyncableTable<TRow extends RowShape>(
 
         await db.withTransactionAsync(async () => {
           await db.runAsync(sql, values);
-          await outboxRepository.enqueue(
+          await outboxStore.enqueue(
             entityType,
             stamped.id,
             operation,
@@ -219,7 +246,7 @@ export function createSyncableTable<TRow extends RowShape>(
         [incoming.id],
       );
 
-      if (existing && existing.updated_at >= incoming.updated_at) {
+      if (existing && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
         return false;
       }
 

@@ -1,11 +1,11 @@
-import { getDatabase, nowIso } from '../db/database';
-import type { SyncMetadataRow } from '../db/types';
+import { getDatabase, nowIso } from '../localDb/database';
+import type { SyncMetadataRow } from '../localDb/types';
 
 /**
  * The pull checkpoint store. This is what lets the device ask the server
  * "what changed since I last looked?" instead of downloading everything.
  */
-export const syncMetadataRepository = {
+export const syncMetadataStore = {
   async get(key: string): Promise<string | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<SyncMetadataRow>(

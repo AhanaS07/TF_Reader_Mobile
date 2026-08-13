@@ -9,7 +9,7 @@
 //
 // Uses `downloadTable` (the general primitive `downloadRepository.ts` is built on), NOT
 // `downloadRepository`'s own convenience methods (list/currentForBook/recordCompleted) — those
-// are hardcoded to sync/config.ts's single fixed BOOK_ID, a prototype shortcut that can't count
+// are hardcoded to sync/syncConfig.ts's single fixed BOOK_ID, a prototype shortcut that can't count
 // across DIFFERENT books. downloadTable already supports multiple books; the wrapper just wasn't
 // built for this case. See docs/superpowers/specs/2026-08-13-download-devicekey-skeleton-design.md.
 //
@@ -29,11 +29,11 @@ import * as Crypto from 'expo-crypto';
 import type { BookId, EncryptedPackage } from '@/shared/contracts';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
-import { downloadTable } from '../sync/repositories/downloadRepository';
-import { withWriteLock } from '../sync/repositories/syncableTable';
-import { newId, nowIso } from '../sync/db/database';
-import { USER_ID } from '../sync/config';
-import type { DownloadRow } from '../sync/db/types';
+import { downloadTable } from '../sync/stores/downloadStore';
+import { withWriteLock } from '../sync/stores/syncableTable';
+import { newId, nowIso } from '../sync/localDb/database';
+import { USER_ID } from '../sync/syncConfig';
+import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
 import { fetchContentLicence, fetchEncryptedAsset } from './contentLicenceClient';

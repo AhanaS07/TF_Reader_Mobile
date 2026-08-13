@@ -7,7 +7,7 @@
 import * as crypto from 'crypto';
 import { downloadBook, BOOK_LIMIT } from './downloadManager';
 import { DownloadError } from './errors';
-import { getDatabase } from '../sync/db/database';
+import { getDatabase } from '../sync/localDb/database';
 import type { ContentLicenceResponse } from '@/shared/contracts';
 
 function sha256Hex(bytes: Uint8Array): string {

@@ -1,5 +1,5 @@
 // Exercises resolveBackendHost() indirectly through API_BASE_URL, since it is a private
-// function. `config.ts` computes API_BASE_URL once at module load, so each scenario needs a
+// function. `syncConfig.ts` computes API_BASE_URL once at module load, so each scenario needs a
 // fresh module registry with `expo-constants` mocked before the import.
 
 const BACKEND_PORT = 9000;
@@ -12,14 +12,14 @@ function loadApiBaseUrl(constantsShape: Record<string, unknown>): string {
   jest.isolateModules(() => {
     jest.doMock('expo-constants', () => ({ __esModule: true, default: constantsShape }));
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    url = require('./config').API_BASE_URL;
+    url = require('./syncConfig').API_BASE_URL;
   });
   if (original === undefined) delete process.env.EXPO_PUBLIC_API_URL;
   else process.env.EXPO_PUBLIC_API_URL = original;
   return url;
 }
 
-describe('config.ts resolveBackendHost (via API_BASE_URL)', () => {
+describe('syncConfig.ts resolveBackendHost (via API_BASE_URL)', () => {
   afterEach(() => {
     jest.dontMock('expo-constants');
     jest.resetModules();
