@@ -119,6 +119,45 @@ export type ReaderMessage =
 export type ReaderMessageType = ReaderMessage['type'];
 
 /**
+ * Every member of `ReaderMessageType`, as something that exists at runtime.
+ *
+ * WHY: a TS union has no runtime form, so the drift guard in readerBridge.test.ts
+ * mirrored this list as a hand-written literal — which made the guard itself the
+ * one hand-synced thing it exists to eliminate. Adding a case to `ReaderMessage`
+ * and to the template while forgetting the test's copy was green. The test reads
+ * this instead, and the two checks below make it impossible for this array and
+ * the union to disagree.
+ *
+ * The command side needs no equivalent: `READER_COMMANDS` is already a runtime
+ * object, and the test enumerates it with `Object.values`.
+ */
+export const READER_MESSAGE_TYPES = [
+  'ready',
+  'rendered',
+  'relocated',
+  'toc',
+  'error',
+] as const satisfies readonly ReaderMessageType[];
+
+/**
+ * `satisfies` above rejects an entry that is NOT in the union — a typo, or a name
+ * left behind by a rename. It cannot catch the opposite direction, because a
+ * SHORTER array still satisfies the constraint: drop `toc` and nothing complains.
+ *
+ * That is the direction that actually matters here (the failure is "added a union
+ * case, forgot to list it"), so it gets its own check. `Exclude` is `never` only
+ * when every union member appears in the array; anything left over fails
+ * `AssertNever`'s constraint at compile time, naming the missing case.
+ *
+ * Exported because it is a proof, not a utility — nothing should import it, but
+ * an unexported type alias used only for its own constraint reads as dead code.
+ */
+type AssertNever<T extends never> = T;
+export type ReaderMessageTypesAreExhaustive = AssertNever<
+  Exclude<ReaderMessageType, (typeof READER_MESSAGE_TYPES)[number]>
+>;
+
+/**
  * Commands RN can send. The VALUE is the literal method name on window.TFReader —
  * that mapping is the whole point of this object: command name and method name
  * are pinned together in one place instead of being spelled out at each call
