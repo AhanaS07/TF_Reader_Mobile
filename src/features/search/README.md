@@ -115,6 +115,7 @@ Already frozen in `src/shared/contracts/content-provider.ts`:
 - `contentStore.ts` already **persists** it (`.index.bin`), tracks `hasIndex`, reads it back on
   cold start, and `destroy()` deletes it.
 
+
 **DONE (2026-08-12):** `contentStore.decryptSearchIndex(bookId)` decrypts `pkg.index` — same
 session as `decryptBook`, same BEK, its own nonce, zeroed on `close()` alongside the book buffer.
 Works for Elite (memory-only key, never touches the keychain) and Subscription alike. Independent
@@ -133,6 +134,8 @@ disturbing each other).
 and running `queryIndex(index, term)` against it — that decode/query logic is Search's own, not
 built here. `mockSearchIndex.ts`'s `decodeSearchIndex` shows the shape but is explicitly a test
 fixture, not the real consumer path.
+
+
 
 ---
 
