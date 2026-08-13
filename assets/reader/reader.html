@@ -151,14 +151,31 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         });
 
         // ---- bytes -----------------------------------------------------------
-        // base64 -> ArrayBuffer. atob is available in both WKWebView (iOS) and
-        // Android's system WebView.
+        // base64 -> ArrayBuffer.
         //
-        // Base64 is the transport ONLY because injectJavaScript is a string
-        // channel. Fine for the 3.6KB dev fixture; it will NOT scale to a ~20MB
-        // book and is a known follow-up (readerAssets.ts records the same
-        // constraint on the sending side).
+        // Base64 is the transport because injectJavaScript is a string channel.
+        // MEASURED 2026-08-13 on a real 20MB EPUB (20,951,889 bytes -> 27,935,852
+        // base64 chars, iPhone 17 Pro simulator): open -> rendered is ~330ms, about
+        // 5% of a warm open. So the transport is NOT the bottleneck and does not
+        // need replacing — the cost of opening a book is the base64 CODEC on either
+        // side of it, not the crossing. This replaced a comment that predicted the
+        // opposite; the prediction was wrong.
+        //
+        // Uint8Array.fromBase64 is native and single-pass. Swapping to it moved this
+        // window 371ms -> ~330ms — real but small, because these ~330ms are mostly
+        // JSZip unzipping (388 entries in the test book) and epub.js laying out 364
+        // image blobs, not base64. Confirmed the native branch is actually taken by
+        // making the fallback throw and observing a successful render.
+        //
+        // The atob path below is the fallback and is two full-size intermediates: a
+        // binary STRING the size of the book, then a per-byte charCodeAt loop to copy
+        // it out. Kept because fromBase64 is recent (Safari 18.2+) and Android's
+        // system WebView may not have it — this must degrade, not break.
         function base64ToArrayBuffer(base64) {
+          if (typeof Uint8Array.fromBase64 === 'function') {
+            return Uint8Array.fromBase64(base64).buffer;
+          }
+
           var binary = atob(base64);
           var length = binary.length;
           var bytes = new Uint8Array(length);
