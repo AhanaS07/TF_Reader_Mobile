@@ -1,11 +1,12 @@
 // src/components/CategoryCard/CategoryCard.test.tsx
-// CategoryCard fills the home screen's top carousel — one card per entry in
-// `catalogue.navigation`, which for the current fixtures is eBooks, Audiobooks
-// and Open access. Tapping one opens that shelf on its own screen.
+// CategoryCard fills the home screen's top category strip — one card per entry
+// in `catalogue.navigation`, which for the current fixtures is eBooks,
+// Audiobooks and Open access. Tapping one opens that shelf on its own screen.
 //
-// The carousel slot originally held featured publications; the cards there are
-// now these category entry points, so the card carries a title and a count
-// rather than a cover and an author.
+// That slot originally held a featured-publication carousel with page dots. The
+// carousel was dropped and these category entry points took its place, so the
+// card carries a title and a count rather than a cover and an author — and
+// nothing here tests paging, because a plain scroll strip does not page.
 //
 // `await render(...)` is required — see the note in ContentCard.test.tsx.
 import { StyleSheet } from 'react-native';

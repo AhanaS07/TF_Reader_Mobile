@@ -218,7 +218,7 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingHorizontal: space.xs,
   },
-  // The carousel owns tile width; neither card sets its own (CONVENTIONS §8).
+  // The strip owns tile width; neither card sets its own (CONVENTIONS §8).
   categoryCard: {
     width: space.xl * 5,
   },
