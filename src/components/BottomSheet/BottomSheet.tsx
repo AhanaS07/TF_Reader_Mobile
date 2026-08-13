@@ -123,6 +123,7 @@ export default function BottomSheet({
         <View style={styles.backdrop} />
 
         <Pressable
+          testID="bottom-sheet-backdrop"
           style={StyleSheet.absoluteFill}
           onPress={dismissible ? slideOut : undefined}
           accessible={dismissible}

@@ -9,7 +9,7 @@
 // and supply a `migrate` function — do not silently serve stale data.
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import storage from '@storage/storage';
 import type { Institution } from '@model/institution';
 
 interface InstitutionState {
@@ -51,7 +51,7 @@ export const useInstitutionStore = create<InstitutionState>()(
     }),
     {
       name: 'institution-selection',
-      storage: createJSONStorage(() => AsyncStorage),
+      storage: createJSONStorage(() => storage),
       // Only data crosses the storage boundary — _hasHydrated resets to false
       // on every cold start (by design), and actions are never serialisable.
       partialize: (state) => ({
