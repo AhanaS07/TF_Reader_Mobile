@@ -132,16 +132,22 @@ describe('CatalogueScreen with data', () => {
     expect(screen.getByText('Ethnographies of Waiting')).toBeTruthy();
   });
 
-  // No shelf-detail screen exists in the navigator yet (RootNavigator /
-  // navigation/types.ts are Keshav's — P0-6), so a category card has nowhere to
-  // send the user. It must not claim otherwise: no press handler, no chevron.
-  it('does not make a category card pressable, since no destination screen exists yet', async () => {
+  // The Shelf route exists in the navigator, so a category card sends the user
+  // to that shelf — see ShelfScreen.test.tsx for its own screen tests. `title`
+  // travels with the id so the pushed screen's app bar can name the shelf before
+  // its feed has loaded.
+  it('navigates to the Shelf route with the shelfId and title when a category card is pressed', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
     await render(<CatalogueScreen />);
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
-    expect(screen.queryByTestId('category-card-chevron')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: 'eBooks' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('Shelf', {
+      shelfId: 'ebooks',
+      title: 'eBooks',
+    });
   });
 
   it('navigates to ItemDetail with the publication id when a row is pressed', async () => {
