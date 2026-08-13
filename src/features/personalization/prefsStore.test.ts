@@ -61,4 +61,43 @@ describe('InMemoryPrefsStore (Day-2 stub)', () => {
     expect(reset.synced).toBe(false); // still a real write
     expect(reset.isDeleted).toBe(false); // reset is NOT a delete
   });
+
+  // Regression: DEFAULT_PREFS (and DEFAULT_ACCESSIBILITY_PREFS) are shared
+  // singleton objects (see prefs.ts / accessibility.ts). Seeding two DIFFERENT
+  // users must not hand out the SAME nested objects — this is a per-user
+  // singleton store, so each user's record must be independently mutable
+  // without leaking into anyone else's "defaults".
+  it('does not alias nested default objects across different users', () => {
+    const store = new InMemoryPrefsStore();
+    const a = store.getPrefs('userA');
+    const b = store.getPrefs('userB');
+
+    expect(a.accessibility).not.toBe(b.accessibility);
+    expect(a.typography).not.toBe(b.typography);
+    expect(a.font).not.toBe(b.font);
+    expect(a.layout).not.toBe(b.layout);
+    expect(a.zoom).not.toBe(b.zoom);
+
+    // Prove it's not just identity: a mutation on one user's nested object
+    // must not leak into another user's "independent" record.
+    a.accessibility.text.dyslexiaFont = true;
+    expect(b.accessibility.text.dyslexiaFont).toBe(false);
+  });
+
+  // Same aliasing hazard, but via resetPrefs: two users who both reset must
+  // not end up sharing the post-reset nested objects either.
+  it('does not alias nested default objects across different users after reset', () => {
+    const store = new InMemoryPrefsStore();
+    store.savePrefs('userA', { theme: 'dark' });
+    store.savePrefs('userB', { theme: 'sepia' });
+
+    const a = store.resetPrefs('userA');
+    const b = store.resetPrefs('userB');
+
+    expect(a.accessibility).not.toBe(b.accessibility);
+    expect(a.typography).not.toBe(b.typography);
+
+    a.typography.size = 999;
+    expect(b.typography.size).toBe(16);
+  });
 });

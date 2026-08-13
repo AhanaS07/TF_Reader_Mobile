@@ -203,6 +203,62 @@ describe('applyServerRecord (pull, Last-Write-Wins)', () => {
     );
     expect(row?.local_path).toBe('/var/books/book-001.pdf');
   });
+
+  it('an explicit isValid:false from the server survives an unchanged re-pull', async () => {
+    // The server marked the download invalid (e.g. its licence expired server-side) and
+    // echoed that back. A later pull re-fetching the SAME unchanged record must not flip
+    // is_valid back to 1 - toRow()'s `isValid !== false` mapping defaults a MISSING field to
+    // valid, so a stale, wrongly-unconditional re-apply would undo the invalidation.
+    const id = 'd-invalid';
+    await downloadTable.writeRow({
+      id,
+      user_id: USER,
+      book_id: BOOK,
+      format: 'PDF',
+      local_path: '/var/books/book-001.pdf',
+      status: 'COMPLETED',
+      is_valid: 1,
+      downloaded_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      is_deleted: 0,
+      synced: 1,
+      server_updated_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    const invalidatedAt = '2030-01-01T00:00:00.000Z';
+    await downloadTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      format: 'PDF',
+      status: 'COMPLETED',
+      isValid: false,
+      updatedAt: invalidatedAt,
+      isDeleted: false,
+    });
+    const db = await getDatabase();
+    expect(
+      (await db.getFirstAsync<DownloadRow>(`SELECT * FROM downloads WHERE id = ?`, [id]))
+        ?.is_valid,
+    ).toBe(0);
+
+    const reapplied = await downloadTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      format: 'PDF',
+      status: 'COMPLETED',
+      isValid: false,
+      updatedAt: invalidatedAt, // unchanged - LWW should skip the rewrite entirely
+      isDeleted: false,
+    });
+
+    expect(reapplied).toBe(false);
+    expect(
+      (await db.getFirstAsync<DownloadRow>(`SELECT * FROM downloads WHERE id = ?`, [id]))
+        ?.is_valid,
+    ).toBe(0);
+  });
 });
 
 describe('adoptPushResult (push echo)', () => {

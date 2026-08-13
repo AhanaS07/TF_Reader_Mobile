@@ -18,9 +18,11 @@
 
 import { Asset } from 'expo-asset';
 
+import { fromByteArray } from 'react-native-quick-base64';
+
 import { getBook } from '@/features/encryption/contentProvider';
-import { bytesToBase64 } from '@/features/encryption/base64';
 import { ensureSeeded } from '@/features/reader/devContentSeed';
+import { logSpan, now } from '@/features/reader/readerTiming';
 import type { BookId } from '@/shared/contracts';
 
 const READER_HTML_MODULE = require('../../../assets/reader/reader.html') as number;
@@ -69,16 +71,59 @@ export async function getReaderHtmlUri(): Promise<string> {
  * TWO CONSTRAINTS:
  *  1. PLAINTEXT NEVER TOUCHES DISK. The route is RAM -> base64 -> bridge. The
  *     only bytes persisted are ciphertext, written by ContentStore.
- *  2. BASE64 OVER injectJavaScript DOES NOT SCALE. Fine for this 3.6KB fixture,
- *     not for a ~20MB book — at that point the TRANSPORT needs replacing, not
- *     this seam. Known and recorded, not accidental.
+ *  2. BASE64 OVER injectJavaScript SCALES — MEASURED, not assumed. A real 20MB
+ *     EPUB (20,951,889 bytes -> 27,935,852 base64 chars, iPhone 17 Pro simulator)
+ *     crosses and renders in ~330ms, ~5% of a warm open. The transport does not
+ *     need replacing; the cost is the CODEC on either side of it. Do not "fix" the
+ *     transport for a slow open — WEBVIEW_BRIDGE.md records the measurement and
+ *     why replacing it would needlessly fire the typechecked-build trigger.
+ *
+ * WHERE THE TIME ACTUALLY GOES — warm open, ciphertext already stored:
+ *
+ *     decrypt  ~4.9s   getBook: Encryption's base64 round-trip (aesGcm.ts:140-148)
+ *     encode    ~18ms  this file, since the react-native-quick-base64 swap below
+ *     render   ~330ms  transport + JSZip + epub.js
+ *
+ * That is ~93% inside getBook, which base64-ENCODES the ciphertext and DECODES the
+ * plaintext around a string-only native module. It belongs to Encryption, not here
+ * — do not try to work around it from this side; the seam exists so this file
+ * cannot. Before the swap, `encode` was 1820ms (Hermes) / 574ms (V8), so Reader's
+ * own half of the codec cost went from ~26% of a warm open to ~0.3%.
+ *
+ * MEMORY, so nobody re-derives it: the swap bought TIME, not MEMORY. App-side peak
+ * stayed at 609MB because peak tracks the NUMBER of full-size copies (~6), not the
+ * cost of building each one, and this swap changed only the latter. Removing copies
+ * means removing Encryption's double hop — again, not this file's call.
  *
  * Caller owes a matching closeBook(bookId) when the reader view closes, or the
  * decrypted book stays in RAM. ReaderScreen's unmount effect does that.
  */
 export async function getBookBase64(bookId: BookId): Promise<string> {
-  await ensureSeeded(bookId);
+  const startedAt = now();
 
+  const seedStartedAt = now();
+  await ensureSeeded(bookId);
+  logSpan('seed', seedStartedAt);
+
+  // Split from the encode below so the two costs can be attributed separately: getBook is
+  // Encryption's decrypt (which itself base64s twice around a string-only native API — see
+  // aesGcm.ts:140-148), while the encode below is Reader's own transport encode. Keeping them
+  // apart is what showed the remaining cost is entirely on Encryption's side, not this one.
+  const decryptStartedAt = now();
   const bytes = await getBook(bookId);
-  return bytesToBase64(bytes);
+  logSpan('decrypt', decryptStartedAt, { bytes: bytes.length });
+
+  // C++-backed, NOT the portable JS codec in encryption/base64.ts. Measured 2026-08-13: that
+  // codec's per-3-byte loop with four string appends cost 1820ms on Hermes for this book (574ms on
+  // V8), which was ~26% of a warm open. `react-native-quick-base64` is already a direct dependency
+  // and already pod-linked as a peer of react-native-quick-crypto, so this needed no prebuild.
+  //
+  // base64.ts remains correct and is still the right thing for small payloads and for anything that
+  // must not depend on a native module — it is the portable fallback shape, not dead code.
+  const encodeStartedAt = now();
+  const base64 = fromByteArray(bytes);
+  logSpan('encode', encodeStartedAt, { chars: base64.length });
+
+  logSpan('getBookBase64 TOTAL', startedAt, { bytes: bytes.length });
+  return base64;
 }

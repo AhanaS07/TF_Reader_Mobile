@@ -6,8 +6,16 @@
 // Colours are inline for the same reason App.tsx's are: src/theme/ has not landed
 // yet. Replace with tokens when it does.
 
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
@@ -18,6 +26,7 @@ import type {
   ReaderMessage,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
+import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
@@ -45,6 +54,42 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [showToc, setShowToc] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
+
+  // When the `open` command was handed to injectJavaScript. A ref, not state: it is written on the
+  // bridge path and read in the message handler, and re-rendering on it would perturb the very
+  // interval being measured. `rendered - openSentAt` is the only view we get of bridge transfer +
+  // atob + the charCodeAt loop + JSZip + epub.js, and it costs no change to the bridge itself.
+  const openSentAtRef = useRef<number | null>(null);
+
+  /**
+   * Covers the rendered book while the app is not frontmost.
+   *
+   * NOT cosmetic — this closes a measured leak. iOS writes a full-screen capture of the app into
+   * Library/SplashBoard/Snapshots/ when it backgrounds, to animate the app switcher. Verified on
+   * 2026-08-13 by backgrounding with a 20 MB book open and decoding the resulting .ktx: it
+   * contained fully legible body text, the page number and two figures. That is decrypted licensed
+   * content at rest on disk, which is the one thing this feature must never produce — and it
+   * bypasses every other control, because ContentStore is careful, the WebView is `incognito`, and
+   * none of that matters when the window server photographs the screen.
+   *
+   * `inactive` matters as much as `background`: iOS snapshots during the inactive transition, so
+   * gating on 'background' alone covers too late to be useful.
+   *
+   * Honest limitation: this is a race we usually win, not a guarantee. The real guarantee is
+   * platform-level — Android has FLAG_SECURE (already a T4 dependency); iOS has no equivalent for
+   * the switcher snapshot, so an opaque cover driven by AppState is the accepted mitigation.
+   */
+  const [isObscured, setIsObscured] = useState(false);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      setIsObscured(nextState !== 'active');
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   const raiseError = useCallback((code: ReaderErrorCode, message: string): void => {
     setError({ code, message });
@@ -119,10 +164,13 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const handleReady = useCallback(
     (sender: (command: ReaderCommand) => void): void => {
       setSend(() => sender);
+      logEvent('ready');
 
       void (async () => {
         try {
           const base64 = await getBookBase64(bookId);
+          openSentAtRef.current = now();
+          logEvent('open sent', { chars: base64.length });
           sender({ type: 'open', base64 });
         } catch (cause) {
           // ContentFailure carries a typed ContentError discriminant (and the
@@ -149,6 +197,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         // Handled by onReady, which also carries the sender.
         break;
       case 'rendered':
+        if (openSentAtRef.current !== null) {
+          logSpan('open -> rendered', openSentAtRef.current);
+        }
         setIsRendered(true);
         break;
       case 'relocated':
@@ -160,6 +211,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         setToc(message.items);
         break;
       case 'error':
+        // Timed as well as rendered: on the large-payload smoke test a returning OPEN_FAILED is the
+        // signal that the transport SURVIVED, so its elapsed time is a real measurement, not a
+        // footnote to a failure.
+        if (openSentAtRef.current !== null) {
+          logSpan('open -> error', openSentAtRef.current, { code: message.code });
+        }
         setError({ code: message.code, message: message.message });
         break;
     }
@@ -208,9 +265,14 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
               {toc.length === 0 ? (
                 <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
               ) : (
-                toc.map((item) => (
+                // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
+                // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
+                // producer emitted from citation text), which collided and raised React's
+                // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
+                // be identity here.
+                toc.map((item, index) => (
                   <Pressable
-                    key={item.href}
+                    key={`${index}-${item.href}`}
                     onPress={() => {
                       goTo(item.href);
                     }}
@@ -221,6 +283,18 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                 ))
               )}
             </ScrollView>
+          </View>
+        )}
+
+        {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
+            and the TOC panel, all of which can be showing book-derived content. */}
+        {isObscured && (
+          <View
+            style={styles.privacyCover}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            <Text style={styles.privacyCoverText}>TF Reader</Text>
           </View>
         )}
       </View>
@@ -293,6 +367,15 @@ const styles = StyleSheet.create({
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },
+
+  // FULLY OPAQUE is the whole point — a translucent cover still photographs the text underneath.
+  privacyCover: {
+    ...FILL,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  privacyCoverText: { fontSize: 17, fontWeight: '600', color: '#8a8a8a' },
 
   controls: {
     flexDirection: 'row',

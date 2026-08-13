@@ -115,7 +115,6 @@ Already frozen in `src/shared/contracts/content-provider.ts`:
 - `contentStore.ts` already **persists** it (`.index.bin`), tracks `hasIndex`, reads it back on
   cold start, and `destroy()` deletes it.
 
-
 **DONE (2026-08-12):** `contentStore.decryptSearchIndex(bookId)` decrypts `pkg.index` — same
 session as `decryptBook`, same BEK, its own nonce, zeroed on `close()` alongside the book buffer.
 Works for Elite (memory-only key, never touches the keychain) and Subscription alike. Independent
@@ -135,23 +134,48 @@ and running `queryIndex(index, term)` against it — that decode/query logic is 
 built here. `mockSearchIndex.ts`'s `decodeSearchIndex` shows the shape but is explicitly a test
 fixture, not the real consumer path.
 
-
-
 ---
 
 ## Open items (cross-owner)
 
 **ITEM 1 — index decrypt path. Owner: Abhinav (Encryption). DONE — see above.**
 
-**ITEM 2 — EPUB CFI generation (with Ahana, Reader).**
-EPUB is committed final scope, so this is a planned task, not a deferral — only the _how_ is open.
-`Posting.locator` uses the same `Locator` union as bookmarks/highlights so the Reader has one
-navigation path. PDF `{page, offset}` is straightforward to produce server-side. EPUB `{cfi}`
-normally comes from `epub.js` in the Reader's WebView — generating equivalent CFIs at
-ingestion-time build is non-trivial and the output must match what the Reader's WebView expects.
-To align with Ahana: how CFIs are produced at ingestion (server-side `epub.js`-equivalent) so the
-build-time CFI and the runtime navigation CFI agree. Day-4 prototype starts PDF-first; EPUB
-indexing follows once this is settled.
+**ITEM 2 — EPUB CFI generation (with Ahana, Reader). SETTLED + build side DONE.**
+
+**The split (confirmed with Ahana):** Search **generates** the CFI at index-build time; the Reader
+**owns the format + resolves** it via `goTo`. Data flows Search → `Posting.locator` → Reader, not
+the other way: the index is built once, server-side, at ingestion, where there is no WebView/
+rendition to call — so the Reader can't mint CFIs for Search. (This is the original design
+position; an interim draft of this note had briefly proposed the reverse.)
+
+**Build side — DONE.** The EPUB extractor now emits real `{type:'EPUB', cfi}` locators (replaced
+the PDF-modeled stand-in). CFIs are generated headlessly with `epub.js`'s `EpubCFI` under `jsdom`
+(`extractor.ts`, Node-only). Two rules from Ahana:
+
+- **cfiBase (e.g. `/6/2[ch1]`) is COMPUTED from the OPF, not assumed `/6`** — the spine step and
+  the itemref step each apply the CFI even-index rule `(elementIndex + 1) * 2`.
+- **The risky in-document path (`/4/4/1:offset`, text nodes on ODD indices) is left to `epub.js`**
+  via a `Range` rather than hand-derived — Ahana's explicit advice.
+
+Verified against her real fixtures (`search.test.ts`): the generator reproduces
+`epubcfi(/6/2[ch1]!/4/4/1:0)` and `epubcfi(/6/2[ch1]!/4/4/1:113)` (the word "paginated") **exactly**.
+Her parser-mode risk — spine item parsed `application/xhtml+xml` at build vs an HTML-document
+iframe at runtime — is enforced in the extractor: every chapter is generated under both parses and
+divergence throws, rather than shipping silently-wrong hits.
+
+**Still open (Ahana's side / integration):**
+
+- `goTo` accepting a bare `cfi` string (arg rename + type change; `epub.js` already resolves CFIs
+  via `isCfiString`, so no new capability). The bridge must carry a **bare `cfi` string, not the
+  `Locator` union** — a frozen union crossing into the WebView trips trigger 3 in
+  `WEBVIEW_BRIDGE.md`. Search stores the `Locator`; the RN host unwraps to the string.
+- The **runtime half of the round-trip**: build-time CFI resolving in the live WebView. Can't run
+  in jest (the webview is mocked), so it's Ahana's fixture test. Watch the highlight-wrapper case
+  (`ignoreClass` sees through wrapped text nodes at runtime; a build-time CFI is against a clean
+  DOM).
+
+Server extractor (production) still swaps in behind the same seam; `buildIndex`/`queryIndex` do not
+change shape.
 
 ---
 

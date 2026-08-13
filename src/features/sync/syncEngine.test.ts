@@ -140,6 +140,43 @@ describe('push', () => {
     expect(await outboxAll()).toHaveLength(0);
   });
 
+  it('creates then deletes when a coalesced create+delete never reached the server (404 on delete)', async () => {
+    // A record created and deleted in the same offline session coalesces into a single
+    // queued DELETE (outboxStore keeps only the newest op per record) - the server has
+    // never heard of it, so the delete 404s until sendDelete's fallback creates it first.
+    await progressTable.saveLocal(progressRow('p5b', 3, '2026-08-01T00:00:00.000Z'), 'CREATE');
+    await progressTable.softDeleteLocal('p5b');
+
+    const queued = await outboxAll();
+    expect(queued).toHaveLength(1);
+    expect(queued[0].operation).toBe('DELETE');
+    expect(JSON.parse(queued[0].payload).isDeleted).toBe(true);
+
+    let removeCalls = 0;
+    mockApi.remove.mockImplementation(() => {
+      removeCalls += 1;
+      if (removeCalls === 1) return Promise.reject(new ApiError('not found', 404));
+      return ok({
+        id: 'p5b',
+        userId: USER,
+        bookId: BOOK,
+        updatedAt: '2026-08-13T09:56:00.000Z',
+        isDeleted: true,
+      }) as any;
+    });
+    mockApi.create.mockImplementation((_path, body: any) =>
+      ok({ ...body, updatedAt: '2026-08-13T09:55:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(mockApi.create).toHaveBeenCalledTimes(1);
+    expect(mockApi.remove).toHaveBeenCalledTimes(2);
+    expect(report.pushed).toBe(1);
+    expect(report.failed).toBe(0);
+    expect(await outboxAll()).toHaveLength(0);
+  });
+
   it('yields to a concurrent write from another device and drops our operation', async () => {
     // server_updated_at is the base version: the value the server had when this
     // device last saw it. A different value now means someone else wrote it.
