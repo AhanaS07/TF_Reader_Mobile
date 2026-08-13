@@ -3,11 +3,11 @@
 // invariants under test:
 //   1. An outbox row is removed only after the server has acknowledged it.
 //   2. The pull checkpoint advances only after every pulled record is applied.
-//   3. The licence check fails open - it never revokes a book on a bad connection.
+//   3. A conflict verdict is only acted on when the server's copy actually won.
 
 import { getDatabase } from './localDb/database';
 import { SYNC_KEYS } from './localDb/schema';
-import type { DownloadRow, OutboxRow, ProgressRow } from './localDb/types';
+import type { OutboxRow, ProgressRow } from './localDb/types';
 import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
 import { api, ApiError } from './syncApi';
@@ -27,7 +27,6 @@ jest.mock('./syncApi', () => {
       remove: jest.fn(),
       findById: jest.fn(),
       list: jest.fn(),
-      licenceExpired: jest.fn(),
       health: jest.fn(),
     },
   };
@@ -47,6 +46,7 @@ function progressRow(id: string, offset: number, updatedAt: string): ProgressRow
     user_id: USER,
     book_id: BOOK,
     offset,
+    locator: JSON.stringify({ type: 'PDF', page: offset }),
     updated_at: updatedAt,
     is_deleted: 0,
     synced: 0,
@@ -69,9 +69,8 @@ beforeEach(async () => {
   jest.clearAllMocks();
   await resetTables();
 
-  // Defaults: nothing on the server, licence current. Individual tests override.
+  // Default: nothing on the server. Individual tests override.
   mockApi.list.mockImplementation(() => ok([]) as any);
-  mockApi.licenceExpired.mockImplementation(() => ok(false) as any);
 });
 
 describe('push', () => {
@@ -169,6 +168,48 @@ describe('push', () => {
     expect((await progressTable.findById('p6'))?.offset).toBe(77);
     expect(await outboxAll()).toHaveLength(0);
   });
+
+  it('KEEPS the operation queued when the server moved but our local edit is still newer', async () => {
+    // REGRESSION. serverHasDiverged used to `await applyServerRecord(record); return true;` -
+    // discarding the boolean. applyServerRecord returns FALSE when the local row is newer
+    // (its Last-Write-Wins guard refuses to overwrite it), but push saw `true` and deleted the
+    // outbox row anyway. The local edit then survived on disk with nothing queued to push it,
+    // so it never reached the server and was lost on the next pull. The verdict has to be
+    // returned, not assumed.
+    await progressTable.writeRow({
+      ...progressRow('p-orphan', 1, '2026-08-01T00:00:00.000Z'),
+      synced: 1,
+      server_updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    // Our local edit is dated AFTER the server's competing write below.
+    await progressTable.saveLocal(
+      progressRow('p-orphan', 42, '2026-08-20T00:00:00.000Z'),
+      'UPDATE',
+    );
+
+    mockApi.findById.mockImplementation(() =>
+      ok({
+        id: 'p-orphan',
+        userId: USER,
+        bookId: BOOK,
+        offset: 7,
+        updatedAt: '2026-08-05T00:00:00.000Z', // diverged from base, but OLDER than our edit
+        isDeleted: false,
+      }) as any,
+    );
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...body, updatedAt: '2026-08-21T00:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    // Not a resolved conflict: the server's copy did not win, so our edit must still go out.
+    expect(report.conflicts).toBe(0);
+    expect(report.pushed).toBe(1);
+    expect(mockApi.update).toHaveBeenCalledTimes(1);
+    expect((await progressTable.findById('p-orphan'))?.offset).toBe(42);
+    expect(await outboxAll()).toHaveLength(0);
+  });
 });
 
 describe('pull', () => {
@@ -208,100 +249,6 @@ describe('pull', () => {
 
     expect(report.error).toBeDefined();
     expect(await syncMetadataStore.get(SYNC_KEYS.LAST_PULL_TOKEN)).toBeNull();
-  });
-});
-
-describe('licence check', () => {
-  async function seedDownload(isValid: number): Promise<void> {
-    const db = await getDatabase();
-    await db.runAsync(
-      `INSERT INTO downloads
-         (id, user_id, book_id, format, local_path, status, is_valid,
-          downloaded_at, updated_at, is_deleted, synced)
-       VALUES (?, ?, ?, 'PDF', '/tmp/b.pdf', 'COMPLETED', ?, ?, ?, 0, 1)`,
-      ['d1', USER, BOOK, isValid, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'],
-    );
-  }
-
-  async function validityFlag(): Promise<number | undefined> {
-    const db = await getDatabase();
-    const row = await db.getFirstAsync<DownloadRow>(
-      `SELECT * FROM downloads WHERE id = ?`,
-      ['d1'],
-    );
-    return row?.is_valid;
-  }
-
-  it('revokes the book when the server reports the licence expired', async () => {
-    await seedDownload(1);
-    mockApi.licenceExpired.mockImplementation(() => ok(true) as any);
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ valid: false, changed: true });
-    expect(await validityFlag()).toBe(0);
-  });
-
-  it('restores a book whose licence is current again', async () => {
-    await seedDownload(0);
-    mockApi.licenceExpired.mockImplementation(() => ok(false) as any);
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ valid: true, changed: true });
-    expect(await validityFlag()).toBe(1);
-  });
-
-  it('reports changed:false when the verdict only confirms what we knew', async () => {
-    await seedDownload(1);
-    mockApi.licenceExpired.mockImplementation(() => ok(false) as any);
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ valid: true, changed: false });
-    expect(await validityFlag()).toBe(1);
-  });
-
-  it('fails open when offline - a dropped connection must not revoke a book', async () => {
-    await seedDownload(1);
-    mockApi.licenceExpired.mockRejectedValue(new ApiError('offline', 0));
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ changed: false });
-    expect(await validityFlag()).toBe(1);
-  });
-
-  it('leaves validity alone on 404, since an unseeded collection is not a revocation', async () => {
-    await seedDownload(1);
-    mockApi.licenceExpired.mockRejectedValue(new ApiError('no licence', 404));
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ changed: false });
-    expect(await validityFlag()).toBe(1);
-  });
-
-  it('ignores a non-boolean 200 from a proxy or error page', async () => {
-    await seedDownload(1);
-    mockApi.licenceExpired.mockImplementation(() => ok('<html>' as any) as any);
-
-    const report = await syncEngine.run();
-
-    expect(report.licence).toEqual({ changed: false });
-    expect(await validityFlag()).toBe(1);
-  });
-
-  it('still runs after a push failure, because it is independent of the queue', async () => {
-    await seedDownload(1);
-    await progressTable.saveLocal(progressRow('p7', 1, '2026-08-01T00:00:00.000Z'), 'CREATE');
-    mockApi.create.mockRejectedValue(new ApiError('offline', 0));
-    mockApi.licenceExpired.mockImplementation(() => ok(true) as any);
-
-    const report = await syncEngine.run();
-
-    expect(report.error).toBeDefined();
-    expect(report.licence).toEqual({ valid: false, changed: true });
   });
 });
 

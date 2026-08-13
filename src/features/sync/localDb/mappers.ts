@@ -4,9 +4,11 @@ import type {
   DownloadRow,
   EntityType,
   HighlightRow,
+  Locator,
   PersonalizationRow,
   ProgressRow,
 } from './types';
+import { DEFAULT_PREFS } from '@/shared/contracts';
 import { toBool, toInt } from './database';
 import { BOOK_ID, PERSONALIZATION_REQUIRES_BOOK_ID } from '../syncConfig';
 
@@ -29,6 +31,41 @@ const parseJson = (value: string | null): unknown =>
 
 const stringifyJson = (value: unknown): string => JSON.stringify(value ?? null);
 
+/**
+ * Reads a stored {@link Locator}, upgrading the discriminant if the row predates the casing
+ * freeze.
+ *
+ * This feature wrote `'epub'` / `'pdf'` while annotations.ts reconciled the contract to
+ * `'EPUB'` / `'PDF'` to match ContentFormat. Rows already on disk still carry the old casing,
+ * and a strict `type === 'PDF'` check would silently drop every one of them - the same class of
+ * failure as the bug this replaces, just pointed the other way. Normalising on read means the
+ * old rows keep rendering and get rewritten in the new casing the next time they are saved.
+ *
+ * Returns null for a locator that is corrupt or of an unknown type, so callers can decide
+ * whether to skip it rather than having it silently vanish.
+ */
+export function parseLocator(json: string | null): Locator | null {
+  if (json == null) return null;
+  let raw: any;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object') return null;
+
+  const type = typeof raw.type === 'string' ? raw.type.toUpperCase() : '';
+  if (type === 'PDF' && typeof raw.page === 'number') {
+    return raw.offset == null
+      ? { type: 'PDF', page: raw.page }
+      : { type: 'PDF', page: raw.page, offset: raw.offset };
+  }
+  if (type === 'EPUB' && typeof raw.cfi === 'string') {
+    return { type: 'EPUB', cfi: raw.cfi };
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------ progress
 
 export const progressMapper = {
@@ -37,6 +74,8 @@ export const progressMapper = {
     userId: row.user_id,
     bookId: row.book_id,
     offset: row.offset,
+    // The authoritative position for a reflowable EPUB; `offset` cannot express a CFI.
+    locator: parseJson(row.locator),
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
   }),
@@ -45,6 +84,7 @@ export const progressMapper = {
     user_id: record.userId,
     book_id: record.bookId,
     offset: record.offset ?? 1,
+    locator: record.locator == null ? null : stringifyJson(record.locator),
     updated_at: record.updatedAt,
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,
@@ -167,13 +207,16 @@ export const personalizationMapper = {
   toRow: (record: any): PersonalizationRow => ({
     id: record.id,
     user_id: record.userId,
-    theme: record.theme ?? 'system',
-    font_family: record.fontFamily ?? 'system',
+    theme: record.theme ?? DEFAULT_PREFS.theme,
+    font_family: record.fontFamily ?? DEFAULT_PREFS.font.family,
     custom_font_uri: record.customFontUri ?? null,
-    typography_size: record.typographySize ?? 1.0,
-    typography_line_height: record.typographyLineHeight ?? 1.0,
-    typography_spacing: record.typographySpacing ?? 0.0,
-    typography_margins: record.typographyMargins ?? 0.0,
+    // Points, matching DEFAULT_PREFS - these fell back to scale factors, so a server record
+    // that omitted them handed Reader a 1pt font size.
+    typography_size: record.typographySize ?? DEFAULT_PREFS.typography.size,
+    typography_line_height:
+      record.typographyLineHeight ?? DEFAULT_PREFS.typography.lineHeight,
+    typography_spacing: record.typographySpacing ?? DEFAULT_PREFS.typography.spacing,
+    typography_margins: record.typographyMargins ?? DEFAULT_PREFS.typography.margins,
     layout_flow: record.layoutFlow ?? 'paginated',
     layout_spread: record.layoutSpread ?? 'single',
     zoom: record.zoom ?? 1.0,
@@ -208,6 +251,7 @@ export const accessibilityMapper = {
     largeAudioControls: toBool(row.large_audio_controls),
     announcePageChanges: toBool(row.announce_page_changes),
     announceChapterChanges: toBool(row.announce_chapter_changes),
+    screenReaderHints: toBool(row.screen_reader_hints),
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
   }),
@@ -232,6 +276,7 @@ export const accessibilityMapper = {
     large_audio_controls: toInt(!!record.largeAudioControls),
     announce_page_changes: toInt(record.announcePageChanges !== false),
     announce_chapter_changes: toInt(record.announceChapterChanges !== false),
+    screen_reader_hints: toInt(!!record.screenReaderHints),
     updated_at: record.updatedAt,
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,

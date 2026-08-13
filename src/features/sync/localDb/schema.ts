@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS progress (
   user_id     TEXT NOT NULL,
   book_id     TEXT NOT NULL,
   "offset"    INTEGER NOT NULL,
+  -- JSON-encoded Locator. The authoritative position: a reflowable EPUB has no stable
+  -- integer offset, so "offset" alone cannot restore it. Nullable for rows written before
+  -- this column existed.
+  locator     TEXT,
   updated_at  TEXT NOT NULL,
   is_deleted  INTEGER NOT NULL DEFAULT 0,
   synced      INTEGER NOT NULL DEFAULT 0,
@@ -60,10 +64,14 @@ CREATE TABLE IF NOT EXISTS personalization (
   theme                   TEXT DEFAULT 'system',
   font_family             TEXT DEFAULT 'system',
   custom_font_uri         TEXT,
-  typography_size         REAL DEFAULT 1.0,
-  typography_line_height  REAL DEFAULT 1.0,
+  -- POINTS, matching DEFAULT_PREFS in the frozen contract. These were scale factors
+  -- (1.0 / 1.0 / 0.0), which the prefs adapter passed through untouched and Reader then
+  -- applied as points - rendering 1pt text. Two readings were committed; this is the one
+  -- the contract specifies.
+  typography_size         REAL DEFAULT 16.0,
+  typography_line_height  REAL DEFAULT 1.5,
   typography_spacing      REAL DEFAULT 0.0,
-  typography_margins      REAL DEFAULT 0.0,
+  typography_margins      REAL DEFAULT 16.0,
   layout_flow             TEXT DEFAULT 'paginated',
   layout_spread           TEXT DEFAULT 'single',
   zoom                    REAL DEFAULT 1.0,
@@ -95,6 +103,8 @@ CREATE TABLE IF NOT EXISTS accessibility (
   large_audio_controls       INTEGER DEFAULT 0,
   announce_page_changes      INTEGER DEFAULT 1,
   announce_chapter_changes   INTEGER DEFAULT 1,
+  -- The nineteenth contract field. Reaches native RN controls only, not the EPUB WebView.
+  screen_reader_hints        INTEGER DEFAULT 0,
   updated_at                 TEXT NOT NULL,
   is_deleted                 INTEGER NOT NULL DEFAULT 0,
   synced                     INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +119,10 @@ CREATE TABLE IF NOT EXISTS downloads (
   format         TEXT NOT NULL,
   local_path     TEXT,
   status         TEXT,
+  -- NOT the entitlement gate. Encryption owns licence enforcement, offline included, from
+  -- SignedLicence.expiresAt inside the EncryptedPackage - see contentStore. This column only
+  -- records that a download completed; a second, weaker source of entitlement truth sourced
+  -- from a different backend collection is exactly what review rejected.
   is_valid       INTEGER DEFAULT 1,
   downloaded_at  TEXT,
   updated_at     TEXT NOT NULL,
@@ -147,10 +161,4 @@ export const SYNC_KEYS = {
   /** Server timestamp of the last pull that was fully applied locally. */
   LAST_PULL_TOKEN: 'last_pull_token',
   LAST_PUSH_AT: 'last_push_at',
-  /**
-   * When the licence check last got an answer out of the server. Null until it
-   * has succeeded once, which is what distinguishes "never asked" from "asked,
-   * and the book is fine" - the `is_valid` column reads as valid in both cases.
-   */
-  LAST_LICENCE_CHECK_AT: 'last_licence_check_at',
 } as const;

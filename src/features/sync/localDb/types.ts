@@ -1,7 +1,14 @@
-/** A position inside a book. Always a tagged object, never a bare string. */
-export type Locator =
-  | { type: 'epub'; cfi: string }
-  | { type: 'pdf'; page: number; offset?: number };
+/**
+ * A position inside a book. Always a tagged object, never a bare string.
+ *
+ * Re-exported from the frozen contract rather than redeclared. The local copy that used to
+ * live here had LOWERCASE discriminants (`'epub' | 'pdf'`), which annotations.ts reconciled to
+ * UPPERCASE to match ContentFormat - "no more 'epub'/'EPUB' split". Because it was a parallel
+ * declaration the compiler had nothing to compare, so the split survived here and silently
+ * dropped every EPUB highlight at render time. Importing it is what makes __typecheck__.ts
+ * able to see this feature at all.
+ */
+export type { Locator } from '@/shared/contracts';
 
 /** Fields every syncable local row carries. */
 export interface LocalSyncFields {
@@ -26,8 +33,20 @@ export interface ProgressRow extends LocalSyncFields {
   id: string;
   user_id: string;
   book_id: string;
-  /** For a PDF this is the current page number. */
+  /**
+   * For a PDF this is the current page number. Kept because the Day-1 freeze and the Mongo
+   * document both carry it, and it is what a PDF actually needs.
+   */
   offset: number;
+  /**
+   * JSON-encoded {@link Locator}, the authoritative position.
+   *
+   * A reflowable EPUB has no stable integer offset - the same character sits at a different
+   * offset at a different font size or viewport - so `offset` alone cannot restore position and
+   * Reader emits a CFI instead. This closes the OPEN item progress.ts addressed to Sync.
+   * Null on rows written before this column existed; fall back to `offset` when it is.
+   */
+  locator: string | null;
 }
 
 export interface BookmarkRow extends LocalSyncFields {
@@ -60,6 +79,7 @@ export interface DownloadRow extends LocalSyncFields {
   /** Device-specific. Never sent to the server. */
   local_path: string | null;
   status: string | null;
+  /** Download bookkeeping only - entitlement is enforced by Encryption, not here. */
   is_valid: number;
   downloaded_at: string | null;
 }
@@ -101,6 +121,11 @@ export interface AccessibilityRow extends LocalSyncFields {
   large_audio_controls: number;
   announce_page_changes: number;
   announce_chapter_changes: number;
+  /**
+   * Extra a11y labels for TalkBack / VoiceOver. The nineteenth contract field, and the one
+   * this table used to be missing - so it could neither persist nor sync.
+   */
+  screen_reader_hints: number;
 }
 
 export type OutboxOperation = 'CREATE' | 'UPDATE' | 'DELETE';
@@ -108,8 +133,14 @@ export type OutboxOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  * FAILED is retryable and waits for `next_retry_at`. DEAD has exhausted its
  * retries - the payload is rejected every time, so it is parked rather than
  * retried forever. A fresh edit to the same record supersedes a DEAD op.
+ *
+ * There is no PROCESSING: it was declared here but never written, and it would be actively
+ * misleading if it were. The drain is a single in-process loop that removes each row only
+ * after the server acknowledges it, so an op is either queued or gone - there is no window
+ * where "in flight" is durable state. A row stuck in PROCESSING after a crash would need
+ * recovery logic that does not exist, and would be skipped by `listPending` forever.
  */
-export type OutboxStatus = 'PENDING' | 'PROCESSING' | 'FAILED' | 'DEAD';
+export type OutboxStatus = 'PENDING' | 'FAILED' | 'DEAD';
 
 /** Entity types the sync engine understands. Must match the backend registry. */
 export type EntityType =

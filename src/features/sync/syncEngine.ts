@@ -1,7 +1,5 @@
 import {
-  BLOCK_WHEN_LICENCE_MISSING,
   BOOK_ID,
-  LICENCE_RESPONSE_IS_EXPIRED_FLAG,
   SERVER_RESOLVES_CONFLICTS,
   SUPPORTS_UPDATED_AFTER,
   USER_ID,
@@ -12,7 +10,7 @@ import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
 import { accessibilityTable } from './stores/accessibilityStore';
 import { bookmarkTable } from './stores/bookmarkStore';
-import { downloadStore, downloadTable } from './stores/downloadStore';
+import { downloadTable } from './stores/downloadStore';
 import { highlightTable } from './stores/highlightStore';
 import { outboxStore } from './stores/outboxStore';
 import { personalizationTable } from './stores/personalizationStore';
@@ -50,20 +48,6 @@ export interface SyncReport {
   pulled: number;
   applied: number;
   error?: string;
-  /** The licence verdict, when the server answered. See {@link LicenceCheck}. */
-  licence?: LicenceCheck;
-}
-
-/** The outcome of one licence check. */
-export interface LicenceCheck {
-  /**
-   * Whether the book may be opened. `undefined` means the server could not be
-   * asked at all - offline, timed out, or the endpoint is not deployed - and the
-   * book keeps whatever validity it already had.
-   */
-  valid?: boolean;
-  /** True when this answer actually changed `downloads.is_valid`. */
-  changed: boolean;
 }
 
 let inFlight: Promise<SyncReport> | null = null;
@@ -71,8 +55,8 @@ let inFlight: Promise<SyncReport> | null = null;
 /**
  * The Sync Manager, talking to the Mongo backend's per-entity CRUD endpoints.
  *
- * Push first so the server has our changes before we ask what it has, then pull,
- * then check the licence. Three invariants:
+ * Push first so the server has our changes before we ask what it has, then pull.
+ * Three invariants:
  *   1. An outbox row is removed only after the server has acknowledged it.
  *   2. The pull checkpoint advances only after every pulled change is applied.
  *   3. A stale local edit never overwrites a newer server record. Whoever does
@@ -91,18 +75,6 @@ export const syncEngine = {
 
   isRunning(): boolean {
     return inFlight !== null;
-  },
-
-  /**
-   * The licence check on its own.
-   *
-   * `run()` already ends with it, so this is for the case a sync never covers:
-   * the app sitting open and online with an empty outbox, where nothing would
-   * otherwise trigger a sync until the next reconnect or foreground. One cheap
-   * GET, and no interaction with the queue at all.
-   */
-  checkLicence(): Promise<LicenceCheck> {
-    return runLicenceCheck();
   },
 };
 
@@ -123,12 +95,6 @@ async function execute(): Promise<SyncReport> {
     // pushed before it stays pushed; nothing is lost and nothing is duplicated.
     report.error = error instanceof Error ? error.message : String(error);
   }
-
-  // Outside the block above, and last. Outside because the licence question is
-  // read-only and independent of the queue, so a push that stalled on one bad
-  // payload should not stop us asking it. Last because the answer has to survive
-  // the pull - see runLicenceCheck.
-  report.licence = await runLicenceCheck();
 
   return report;
 }
@@ -191,13 +157,16 @@ async function push(report: SyncReport): Promise<void> {
     report.pushed += 1;
     await outboxStore.remove([op.id]);
 
-    // Take the server's copy of the record, which carries the `updatedAt` it
-    // actually stored. When it declines, the row was edited mid-push and is
-    // deliberately left unsynced - the fresh outbox entry covers it.
-    const adopted = saved
-      ? await TABLES[op.entity_type].adoptPushResult(saved, payload.updatedAt)
-      : false;
-    if (!adopted && !saved) {
+    // Take the server's copy of the record, which carries the `updatedAt` it actually stored.
+    // When it declines, the row was edited mid-push and is deliberately left unsynced - the
+    // fresh outbox entry covers it.
+    //
+    // A 204 leaves nothing to adopt, so the row is just marked synced. This used to read
+    // `!adopted && !saved`, where `adopted` is always false whenever `saved` is null - the
+    // first half could never change the outcome.
+    if (saved) {
+      await TABLES[op.entity_type].adoptPushResult(saved, payload.updatedAt);
+    } else {
       await TABLES[op.entity_type].markSynced([op.entity_id]);
     }
   }
@@ -309,9 +278,11 @@ async function serverHasDiverged(
 
   if (!record?.updatedAt || record.updatedAt === base) return false;
 
-  // Someone else got there first: adopt their copy and drop our operation.
-  await TABLES[op.entity_type].applyServerRecord(record);
-  return true;
+  // Someone else wrote there since we last looked. Adopt their copy - but only report a
+  // resolved conflict (and let `push` drop our operation) if it actually took:
+  // `applyServerRecord`'s LWW guard can and does refuse to overwrite a local row that is itself
+  // newer, in which case our edit still needs to reach the server, not vanish from the queue.
+  return TABLES[op.entity_type].applyServerRecord(record);
 }
 
 // ------------------------------------------------------------------- PULL
@@ -323,6 +294,10 @@ async function serverHasDiverged(
  * tombstones, a record deleted on another device would come back to life here.
  */
 async function pull(report: SyncReport): Promise<void> {
+  // NOTE: userBook entities are filtered by the single hard-coded BOOK_ID, so this pulls one
+  // book and one book only - a second book on the same device would never sync. That is a
+  // deliberate prototype limitation, not an oversight, but the reader is multi-book by
+  // construction, so this loop and BOOK_ID both have to take a book list before it ships.
   const since = SUPPORTS_UPDATED_AFTER
     ? await syncMetadataStore.get(SYNC_KEYS.LAST_PULL_TOKEN)
     : null;
@@ -354,54 +329,4 @@ async function pull(report: SyncReport): Promise<void> {
   if (checkpoint) {
     await syncMetadataStore.set(SYNC_KEYS.LAST_PULL_TOKEN, checkpoint);
   }
-}
-
-// ---------------------------------------------------------------- LICENCE
-
-/**
- * Asks whether this book's licence has expired and writes the answer to
- * `downloads.is_valid`, the column the reader gates on.
- *
- * Two things make this different from the six entities above, and both are the
- * reason it is not modelled as one:
- *
- * **It must run after the pull.** `is_valid` is a synced column, so a pulled
- * `downloads` record carries the server's own copy of it and Last-Write-Wins
- * would cheerfully overwrite a verdict written before the pull. Asking last
- * gives the licence check the final word within every run.
- *
- * **It never throws, and it fails open.** Offline, a timeout, or a missing
- * endpoint all leave the book exactly as valid as it already was. Revoking a
- * book because the Wi-Fi dropped would be a far worse failure than asking again
- * a moment later, and every trigger that drives a sync - reconnect, foreground,
- * the retry timer, a page turn - asks again anyway. Note the consequence: a
- * revocation only lands once the device has actually reached the server, so an
- * expired book stays readable for as long as the device stays offline. Enforcing
- * it offline would need an expiry date cached on the device, not a boolean.
- */
-async function runLicenceCheck(): Promise<LicenceCheck> {
-  let answer: boolean;
-
-  try {
-    answer = (await api.licenceExpired(BOOK_ID)).data;
-  } catch (error) {
-    if (error instanceof ApiError && error.isNotFound) {
-      // No licence document for this book. Almost always an unseeded collection
-      // rather than a real absence of entitlement - see BLOCK_WHEN_LICENCE_MISSING.
-      return BLOCK_WHEN_LICENCE_MISSING ? applyLicenceVerdict(false) : { changed: false };
-    }
-    return { changed: false };
-  }
-
-  // A proxy or an error page that answered 200 with something that is not a
-  // boolean must not be read as a revocation.
-  if (typeof answer !== 'boolean') return { changed: false };
-
-  return applyLicenceVerdict(LICENCE_RESPONSE_IS_EXPIRED_FLAG ? !answer : answer);
-}
-
-async function applyLicenceVerdict(valid: boolean): Promise<LicenceCheck> {
-  const changed = await downloadStore.setValidity(valid);
-  await syncMetadataStore.set(SYNC_KEYS.LAST_LICENCE_CHECK_AT, nowIso());
-  return { valid, changed };
 }

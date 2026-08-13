@@ -17,6 +17,7 @@ function progressRow(id: string, offset: number, updatedAt: string): ProgressRow
     user_id: USER,
     book_id: BOOK,
     offset,
+    locator: JSON.stringify({ type: 'PDF', page: offset }),
     updated_at: updatedAt,
     is_deleted: 0,
     synced: 0,

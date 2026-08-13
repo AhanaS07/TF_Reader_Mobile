@@ -1,17 +1,39 @@
 // src/shared/contracts/accessibility.ts
 // Accessibility preferences — CAP-7 Reader & Offline.
 //
-// This is NOT a synced record. It is a composed block: `SharedPrefs` in
-// prefs.ts embeds it as `accessibility`, the same way it extends
-// `SyncRecordBase` from sync-record.ts. There is no accessibility endpoint, no
-// accessibility table, no separate `updatedAt` — one prefs record per user
-// carries all of this.
+// This file defines the SHAPE of the accessibility block. `SharedPrefs` in prefs.ts embeds it
+// as `accessibility`, the same way it extends `SyncRecordBase` from sync-record.ts, so every
+// consumer still reads one merged prefs object and this file still owns every a11y type,
+// default, guard and resolver.
 //
 //     sync-record.ts    ──imported by──>  prefs.ts   (extends SyncRecordBase)
 //     accessibility.ts  ──imported by──>  prefs.ts   (accessibility: AccessibilityPrefs)
 //
 // Applied universally per user, like the rest of the prefs record — NOT scoped
 // per book.
+//
+// AMENDED (a11y persistence, Sync — resolves prefs.ts STILL-OPEN #1):
+// This block PERSISTS AND SYNCS AS ITS OWN RECORD, with its own row, its own endpoint and its
+// own `updatedAt`. It previously read "NOT a synced record… no accessibility endpoint, no
+// accessibility table, no separate updatedAt", which described the composed SHAPE and was then
+// read as a storage mandate.
+//
+// Why the change: folding a11y onto the prefs singleton gave both blocks ONE `updatedAt`, and
+// conflict resolution for prefs is whole-record LWW. Two devices — one changing `tts.rate`, the
+// other changing `theme` — would resolve by picking one whole record, silently discarding the
+// other edit. For a reading preference that is annoying; for an accessibility setting a user
+// depends on, it is a correctness failure. Two records resolve independently, so neither edit
+// can be lost to the other.
+//
+// What did NOT change: this is a storage decision, not a shape decision. `AccessibilityPrefs`
+// still carries no identity or sync fields of its own — the canary in __typecheck__.ts still
+// pins that — and consumers still receive it composed into `SharedPrefs`. Sync joins the two
+// rows on read and splits them on write (see features/sync/sharedPrefs.ts); Reader and the
+// settings UI never see the seam.
+//
+// Owner note: the shape here remains Accessibility's (Hruthik). Only the persistence sentence
+// moved, and it moved into Sync's area. Flag it if the split causes trouble at the settings-UI
+// layer.
 
 /* ────────────────────────────────────────────────────────────────
    VALUE TYPES

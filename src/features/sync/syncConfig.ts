@@ -43,43 +43,6 @@ export const API_BASE_URL =
 /** Every CRUD collection lives under this prefix on the Mongo backend. */
 export const API_V1 = '/api/v1';
 
-/**
- * Licence check for one book: `GET /api/v1/licences/book/{bookId}/expired`,
- * answering a bare JSON boolean. Note the British spelling - `licenses` is a 404.
- *
- * Unlike the six CRUD collections this is not a syncable entity. There is no
- * local licences table and nothing is ever pushed to it; the device only ever
- * asks the question and records the answer in `downloads.is_valid`.
- */
-export const licenceExpiredPath = (bookId: string) =>
-  `${API_V1}/licences/book/${encodeURIComponent(bookId)}/expired`;
-
-/**
- * Whether the boolean from {@link licenceExpiredPath} is an *expired* flag
- * (true = expired = the book must not open) rather than a *validity* flag
- * (false = the book must not open).
- *
- * It is the expired reading, confirmed against the running server rather than
- * inferred from the `isExpiredForBook` method name: `book-001` holds licence
- * `lic-001` running 2026-08-01 to 2027-08-01, which is current, and the endpoint
- * answers `false`. Taking `false` as "invalid" would therefore revoke a book
- * whose licence has another year to run.
- *
- * Flip this if the endpoint's meaning is ever inverted server-side.
- */
-export const LICENCE_RESPONSE_IS_EXPIRED_FLAG = true;
-
-/**
- * What a 404 - "Licence for book 'x' was not found" - should mean.
- *
- * Left at false, a book with no licence record keeps whatever validity it had.
- * Strictly, no licence means no entitlement and it should be blocked; in
- * practice a 404 is far more likely to mean the licences collection is simply
- * unseeded, and blocking on that would brick the reader for everyone. Set to
- * true once every book is guaranteed to have a licence document.
- */
-export const BLOCK_WHEN_LICENCE_MISSING = false;
-
 /** Point EXPO_PUBLIC_ASSET_URL at whatever serves the book - see ASSET_PORT. */
 export const ASSET_BASE_URL =
   process.env.EXPO_PUBLIC_ASSET_URL ?? `http://${resolveBackendHost()}:${ASSET_PORT}`;
