@@ -2,8 +2,9 @@
 //
 // BuildPlan.md Phase 3 + Phase 4 items 1/3/4: the download skeleton's single entry point.
 // Permission -> storage -> 5-book limit -> resolve the encrypted asset by Book ID -> verify its
-// checksum -> hand the bytes to Encryption's store() (never persist plaintext) -> record the
-// download locally.
+// checksum -> reject if the decrypted size would exceed contentStore's RAM budget
+// (MAX_DECRYPTED_BYTES, BOOK_TOO_LARGE) -> hand the bytes to Encryption's store() (never persist
+// plaintext) -> record the download locally.
 //
 // Uses `downloadTable` (the general primitive `downloadRepository.ts` is built on), NOT
 // `downloadRepository`'s own convenience methods (list/currentForBook/recordCompleted) — those
@@ -137,7 +138,15 @@ export async function downloadBook(bookId: BookId): Promise<void> {
     try {
       assertBookLimitNotExceeded(bookId, rows);
     } catch (cause) {
-      await contentStore.destroy(bookId);
+      // Best-effort rollback: destroy() failing here (e.g. a keychain/FS error) must NOT replace
+      // `cause` — the caller needs the coded BOOK_LIMIT_REACHED DownloadFailure to switch on, not
+      // a raw, untyped error from the cleanup attempt. Swallow (log) any destroy failure and
+      // still surface the original reason.
+      try {
+        await contentStore.destroy(bookId);
+      } catch (destroyCause) {
+        console.warn(`downloadManager: rollback contentStore.destroy(${bookId}) failed`, destroyCause);
+      }
       throw cause;
     }
 

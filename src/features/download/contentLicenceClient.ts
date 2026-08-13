@@ -57,6 +57,7 @@ function reachableAssetUrl(url: string): string {
   if (base.hostname === parsed.hostname && base.port === parsed.port) {
     return url; // API_BASE_URL is itself localhost (e.g. a simulator on the dev machine) — no-op.
   }
+  parsed.protocol = base.protocol;
   parsed.hostname = base.hostname;
   parsed.port = base.port;
   return parsed.toString();

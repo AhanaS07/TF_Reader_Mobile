@@ -218,3 +218,41 @@ describe('downloadBook — failure branches', () => {
     });
   });
 });
+
+// Regression test for the parked "rollback destroy() isn't guarded" finding: the in-lock
+// re-check (downloadManager.ts's withWriteLock block) can lose a race that the pre-fetch check
+// above didn't see, in which case it must roll back via contentStore.destroy(bookId) and still
+// surface the ORIGINAL BOOK_LIMIT_REACHED DownloadFailure — even if destroy() itself throws.
+describe('downloadBook — book-limit race rollback', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('still rejects with the original BOOK_LIMIT_REACHED error when the in-lock rollback destroy() itself throws', async () => {
+    const bookId = 'race-rollback-book';
+    const content = new Uint8Array([1, 2, 3]);
+    const licence = openAccessLicenceFor(bookId, content);
+    global.fetch = mockFetchFor(licence, content);
+
+    // Pre-fetch check (outside the lock) sees room; the re-check INSIDE the lock sees 5 other
+    // books already at the cap — simulating another download winning the race in between.
+    const roomyRows = [] as unknown as Awaited<ReturnType<typeof downloadTable.listActive>>;
+    const fullRows = Array.from({ length: 5 }, (_, i) => ({
+      book_id: `other-book-${i}`,
+    })) as unknown as Awaited<ReturnType<typeof downloadTable.listActive>>;
+    jest.spyOn(downloadTable, 'listActive').mockResolvedValueOnce(roomyRows).mockResolvedValueOnce(fullRows);
+
+    const destroySpy = jest
+      .spyOn(contentStore, 'destroy')
+      .mockRejectedValueOnce(new Error('keychain unavailable during rollback'));
+
+    await expect(downloadBook(bookId)).rejects.toMatchObject({
+      code: DownloadError.BOOK_LIMIT_REACHED,
+      bookId,
+    });
+    expect(destroySpy).toHaveBeenCalledWith(bookId);
+  });
+});

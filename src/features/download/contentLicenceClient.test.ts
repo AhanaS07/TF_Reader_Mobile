@@ -128,4 +128,24 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
 
     expect(global.fetch).toHaveBeenCalledWith(cdnUrl);
   });
+
+  // Regression test: the rewrite used to copy only hostname/port from API_BASE_URL, leaving the
+  // rewritten URL on whatever scheme the backend originally emitted for encryptedFileUrl
+  // (always http). If API_BASE_URL itself is https (e.g. an https tunnel/proxy override via
+  // EXPO_PUBLIC_MOCK_BACKEND_URL), the rewritten asset URL must follow API_BASE_URL's scheme too
+  // — not silently stay on http.
+  it("rewrites the scheme to match an https API_BASE_URL's protocol, not just its host/port", async () => {
+    let mod!: typeof import('./contentLicenceClient');
+    jest.resetModules();
+    jest.isolateModules(() => {
+      jest.doMock('./config', () => ({ __esModule: true, API_BASE_URL: 'https://192.168.1.20:4000' }));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      mod = require('./contentLicenceClient');
+    });
+    global.fetch = jest.fn().mockResolvedValue(new Response(new Uint8Array([7, 8]), { status: 200 }));
+
+    await mod.fetchEncryptedAsset('book-001', 'http://localhost:4000/fixtures/sample.epub.enc?v=2');
+
+    expect(global.fetch).toHaveBeenCalledWith('https://192.168.1.20:4000/fixtures/sample.epub.enc?v=2');
+  });
 });
