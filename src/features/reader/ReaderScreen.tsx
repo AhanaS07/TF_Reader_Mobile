@@ -53,10 +53,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // Resolve the bundled reader.html before mounting the WebView.
   //
   // The `cancelled` flag is the standard unmount guard: without it, navigating
-  // away mid-resolve sets state on an unmounted component. `void` on the IIFE is
-  // explicit rather than incidental — type-aware lint is off, so nothing would
-  // flag a dropped promise here, and the .catch() is the only thing standing
-  // between an asset failure and a permanently blank screen.
+  // away mid-resolve sets state on an unmounted component. The `void` is now
+  // REQUIRED, not stylistic — no-floating-promises is enabled for this directory
+  // (see eslint.config.js) and removing it is a lint error. It marks "this
+  // rejection is handled below" rather than "this promise was forgotten", and the
+  // catch() is the only thing standing between an asset failure and a
+  // permanently blank screen.
   useEffect(() => {
     let cancelled = false;
 

@@ -36,6 +36,11 @@ The prefs-application stage is expected to trip it. Flag it rather than quietly 
 `assets/reader/sample-plaintext.epub` (via `npm run reader:build-sample`). Never hand-edit either;
 regenerate and commit the result.
 
+CI enforces this for `reader.html` only (the "Reader HTML is freshly generated" step: rebuild,
+then `git diff --exit-code`). Forgetting the rebuild is a red build, not a silent stale ship.
+`sample-plaintext.epub` is **not** covered — JSZip stamps each entry with the generation time, so
+it is not byte-reproducible and the same check would fail every run. That one is still on you.
+
 ## Frozen contracts
 
 `src/shared/contracts/` is the Week-1 freeze — the interface between seven capabilities owned by
@@ -57,6 +62,14 @@ line-positional). Import via the `index.ts` barrel, never deep paths.
 Editing outside Reader needs the owner looped in. Prefer a test that documents the defect plus a
 local workaround, and say clearly that the real fix needs sign-off.
 
+The same boundary applies to **tooling strictness**, not just code. Type-aware ESLint
+(`no-floating-promises`, `no-misused-promises`, `await-thenable`) is enabled for
+`src/features/reader/**` only — see the scoped block at the bottom of `eslint.config.js`. It is
+scoped because turning it on repo-wide would hand every other capability a pile of lint failures
+on Reader's schedule. **To opt your directory in, add it to that block's `files` list** — the rule
+set and the `projectService` wiring are already there, so it is a one-line change. Do not enable
+it for someone else's directory on their behalf.
+
 **Known open item:** `contentStore.store()` does not invalidate the keychain-cached BEK, and
 `resolveRawKey()` prefers that cache over unwrapping `wrappedBek` — so a re-download with a new
 BEK fails `INTEGRITY_FAILED` permanently. Documented in `contentStore.edgecases.test.ts`
@@ -68,6 +81,11 @@ The real fix is Abhinav's call.
 `src/features/reader/devContentSeed.ts` stands in for Download's real download pass. Delete it and
 `assets/reader/sample-plaintext.epub`, and drop the `ensureSeeded()` call in `readerAssets.ts`,
 when the real pass lands.
+
+It has a **second** call site that is easy to miss: `App.tsx` imports `DEV_SAMPLE_BOOK_ID` from it
+to feed `<ReaderScreen bookId={...} />`, because there is no navigator yet to supply a real one.
+So deleting `devContentSeed.ts` is blocked on `RootNavigator` landing, and the temp wiring in
+`App.tsx` (header, styles, direct mount) goes at the same time — one removal, not two.
 
 ## Verifying a change
 

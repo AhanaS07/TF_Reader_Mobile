@@ -64,3 +64,21 @@ jobs:
       # flag once every CAP has at least one spec.
       - name: Test
         run: npm run test:ci
+
+      # assets/reader/reader.html is GENERATED (from webview/reader.template.html)
+      # AND TRACKED, so editing the template without rerunning the generator ships
+      # HTML that no longer matches its source — and nothing else catches it. The
+      # bridge drift guard in readerBridge.test.ts reads the TEMPLATE, not this
+      # artifact, so the whole suite goes green on a stale file. This step is the
+      # only thing standing between a forgotten rebuild and shipping stale HTML.
+      #
+      # Regenerate-and-diff rather than a jest test: the check is "is the tracked
+      # artifact what the generator produces", and only git can answer that.
+      #
+      # reader.html ONLY, not the sibling `reader:build-sample` artifact —
+      # generateSampleEpub.ts builds a zip whose entries carry generation
+      # timestamps, so it is not byte-reproducible and would fail this every run.
+      - name: Reader HTML is freshly generated
+        run: |
+          npm run reader:build-html
+          git diff --exit-code -- assets/reader/reader.html
