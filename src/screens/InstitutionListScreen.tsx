@@ -4,24 +4,21 @@ import {
   FlatList,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { InstitutionRow } from '@components/InstitutionRow';
+import { SearchInput } from '@components/SearchInput';
 import type { Institution } from '@model/institution';
+import { searchInstitutions } from '../search/searchInstitutions';
 import { useInstitutionStore } from '@store/institutionStore';
-import { getCatalogueSource } from '../config/catalogue';
 import type { CatalogueStackParamList } from '../navigation/types';
-import { color, radius, space, type } from '@theme/tokens';
+import { color, space, type } from '@theme/tokens';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'InstitutionList'>;
 
-// Prevents a network call on every keystroke without a dependency on a debounce
-// library. Empty query fires instantly so the initial list appears without delay.
 const DEBOUNCE_MS = 300;
 
 export default function InstitutionListScreen() {
@@ -41,8 +38,7 @@ export default function InstitutionListScreen() {
   const fetchInstitutions = useCallback((q: string) => {
     setLoading(true);
     setFetchError(false);
-    getCatalogueSource()
-      .getInstitutions(q.length > 0 ? { q } : undefined)
+    searchInstitutions(q.length > 0 ? { q } : undefined)
       .then(setInstitutions)
       .catch(() => setFetchError(true))
       .finally(() => setLoading(false));
@@ -65,8 +61,6 @@ export default function InstitutionListScreen() {
     [setSelectedInstitution, navigation],
   );
 
-  // Preserve recentlyUsedIds order (most recent first), only include institutions
-  // that are present in the current result set (i.e. match the active query).
   const pinnedInstitutions = useMemo(
     () =>
       recentlyUsedIds
@@ -75,31 +69,22 @@ export default function InstitutionListScreen() {
     [recentlyUsedIds, institutions],
   );
 
-  // Everything not pinned goes into the "All Institutions" section.
   const mainInstitutions = useMemo(
     () => institutions.filter((i) => !recentlyUsedIds.includes(i.id)),
     [institutions, recentlyUsedIds],
   );
 
   const searchBar = (
-    <View style={styles.searchBar}>
-      <Ionicons name="search-outline" size={18} color={color.textSecondary} />
-      <TextInput
-        style={styles.searchInput}
-        placeholder="Search institutions..."
-        placeholderTextColor={color.textSecondary}
+    <View style={styles.searchWrapper}>
+      <SearchInput
         value={query}
+        placeholder="Search institutions..."
         onChangeText={setQuery}
-        autoCorrect={false}
-        autoCapitalize="none"
-        returnKeyType="search"
-        accessibilityLabel="Search institutions"
+        onClear={() => setQuery('')}
       />
     </View>
   );
 
-  // Full-screen spinner only on the very first load — subsequent query changes
-  // show the previous results while the new fetch completes.
   if (loading && institutions.length === 0) {
     return (
       <View style={styles.screen}>
@@ -178,25 +163,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: color.surface,
   },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    margin: space.md,
-    paddingHorizontal: space.sm,
+  searchWrapper: {
+    paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    backgroundColor: color.surface,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: color.border,
-    gap: space.xs,
-  },
-  searchInput: {
-    flex: 1,
-    fontWeight: type.body.weight,
-    fontSize: type.body.size,
-    lineHeight: type.body.lineHeight,
-    color: color.textPrimary,
-    padding: 0,
   },
   sectionHeader: {
     paddingHorizontal: space.md,
