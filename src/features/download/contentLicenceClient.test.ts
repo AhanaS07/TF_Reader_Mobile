@@ -72,4 +72,13 @@ describe('fetchEncryptedAsset', () => {
       bookId: 'book-001',
     });
   });
+
+  it('throws DownloadFailure(ASSET_FETCH_FAILED) when fetch itself rejects (offline)', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    await expect(fetchEncryptedAsset('book-001', 'http://x/f.enc')).rejects.toMatchObject({
+      code: DownloadError.ASSET_FETCH_FAILED,
+      bookId: 'book-001',
+    });
+  });
 });
