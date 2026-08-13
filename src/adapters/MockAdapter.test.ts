@@ -29,15 +29,29 @@ describe('MockAdapter institutions', () => {
     });
   });
 
-  // Only inst_7f3 has catalogue fixtures. Selecting any other institution and
-  // then loading its catalogue is a dead end until more fixtures exist — asserted
-  // so the gap is visible rather than discovered during a demo.
-  it('lists institutions whose catalogues do not exist yet', async () => {
+  // Every institution the picker can offer must load, or CAP-3 looks broken for
+  // 7 of its own 8 choices. Only inst_7f3 has real catalogue fixtures, so the
+  // others are served that same feed — a mock convenience, stated here rather
+  // than left as a surprise. Replace this with per-institution fixtures if the
+  // demo ever needs the catalogues to differ.
+  it('serves a catalogue for every institution it lists, not just inst_7f3', async () => {
     const adapter = new MockAdapter();
     const others = (await adapter.getInstitutions()).filter((i) => i.id !== 'inst_7f3');
 
     expect(others.length).toBeGreaterThan(0);
-    await expect(adapter.getHomeCatalogue(others[0].id)).rejects.toMatchObject({
+    for (const institution of others) {
+      const catalogue = await adapter.getHomeCatalogue(institution.id);
+      expect(catalogue.shelves.length).toBeGreaterThan(0);
+    }
+  });
+
+  // The other half of that bargain: only ids the fixtures know are accepted, so
+  // MockAdapter still agrees with ApiAdapter (which maps a 404 to NOT_FOUND) and
+  // the shared conformance suite stays meaningful.
+  it('still rejects an institution that appears in no fixture', async () => {
+    const adapter = new MockAdapter();
+
+    await expect(adapter.getHomeCatalogue('inst_not_in_any_fixture')).rejects.toMatchObject({
       code: CatalogueError.NOT_FOUND,
     });
   });

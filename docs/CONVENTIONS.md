@@ -5,17 +5,21 @@ Rules for every shared component in `src/components/`. A PR is checked against t
 - TypeScript is the project's source language.
 - Components use `.tsx`.
 - `@theme/*` aliases resolve in both the editor and the bundler.
-- Import design tokens from `@theme/tokens`.
+- Import design tokens **by name** from `@theme/tokens` — `import { color, space } from '@theme/tokens'`,
+  never `import tokens from '../../theme/tokens'`. `tokens.ts` has both a default and named
+  exports, so the default form trips `import/no-named-as-default` and `npm run lint` runs with
+  `--max-warnings=0`.
 - `npm run typecheck` runs `tsc --noEmit`.
 
 ## 1. Folder structure
 
-One component, one folder, three files. PascalCase for folder and component name.
+One component, one folder, four files. PascalCase for folder and component name.
 
 ```
 src/components/ComponentName/
 ├── ComponentName.tsx           the component
 ├── ComponentName.gallery.tsx   its gallery entry
+├── ComponentName.test.tsx      renders every variant
 └── index.ts                    re-export only
 ```
 
@@ -36,26 +40,28 @@ import ComponentName from '@components/ComponentName/ComponentName';    // no
 A part used by only one component sits beside it (`ComponentName.Row.tsx`) and is not exported
 from `index.ts`. When a second component needs it, give it its own folder.
 
-## 2. Every component needs two things
+## 2. Every component needs three things
 
-Both in the same PR.
+All in the same PR.
 
-- A TypeScript type or interface for its props.
+- One exported props interface. Where the contract already defines a union, import the type
+  rather than retyping the literals.
 - A gallery entry covering every variant and state.
+- A test that renders every variant.
 
 No PropTypes. No JSDoc typedefs for props — the types are the contract.
 
 ```tsx
 import { StyleSheet, Text, View } from 'react-native';
+
+import type { AccessTier } from '@model/types';
 import { color, radius, space, type } from '@theme/tokens';
 
-type StatusPillVariant = 'subscription' | 'elite';
-type StatusPillState = 'idle' | 'pending';
-
-interface StatusPillProps {
+export interface StatusPillProps {
   label: string;
-  variant: StatusPillVariant;
-  state?: StatusPillState;
+  /** Imported from the contract, never retyped as literals. */
+  variant: AccessTier;
+  state?: 'idle' | 'pending';
   onPress?: () => void;
 }
 
@@ -69,8 +75,11 @@ export default function StatusPill({ label, variant, state = 'idle' }: StatusPil
 
 const styles = StyleSheet.create({
   pill: { borderRadius: radius.pill, paddingHorizontal: space.md, paddingVertical: space.xs },
-  subscription: { backgroundColor: color.subscription },
-  elite: { backgroundColor: color.elite },
+  // Keys match AccessTier exactly, so styles[variant] type-checks and a new tier
+  // fails to compile until it has a style.
+  OPEN_ACCESS: { backgroundColor: color.success },
+  SUBSCRIPTION: { backgroundColor: color.subscription },
+  ELITE: { backgroundColor: color.elite },
   pending: { backgroundColor: color.wait },
   label: {
     fontWeight: type.smallLabel.weight,
@@ -115,8 +124,9 @@ given. The same props must always render the same thing.
 `variant` for visual differences. Always a union, never booleans.
 
 ```ts
-variant: 'subscription' | 'elite';        // yes
-isElite?: boolean; isSubscription?: boolean;   // no
+variant: AccessTier                          // yes — imported from the contract
+variant: 'segmented' | 'underline'           // yes — local to this component
+isElite?: boolean; isSubscription?: boolean; // no
 ```
 
 `state` for lifecycle: `'loading' | 'empty' | 'error' | 'offline' | 'idle'`. Also a union, and
@@ -191,8 +201,9 @@ props and no provider, store, network or navigation container.
 
 ## 9. The State Gallery
 
-`src/gallery/` renders every component, variant and state side by side from static props. It is
-dev tooling and never a user-reachable route.
+`src/screens/GalleryScreen.tsx` renders every component, variant and state side by side from
+static props. It is dev tooling. It is registered in `RootNavigator`, but nothing in the UI may
+navigate to it in a release build.
 
 Each component ships its own `ComponentName.gallery.tsx` so the entry moves with the component.
 
@@ -210,8 +221,9 @@ prop without a caller passing it. If the library is missing something, raise it 
 
 ## PR checklist
 
-- [ ] Folder is `ComponentName/` with `.tsx`, `.gallery.tsx`, `index.ts`
-- [ ] Props typed with a type or interface; unions for `variant` and `state`
+- [ ] Folder is `ComponentName/` with `.tsx`, `.gallery.tsx`, `.test.tsx`, `index.ts`
+- [ ] One exported props interface; unions for `variant` and `state`, imported from
+      `@model/types` where the contract defines them
 - [ ] No fetch, navigation, store, adapter or access logic
 - [ ] Callbacks are `on<Event>`
 - [ ] No raw hexes or bare numbers; tokens from `theme/tokens.ts`
@@ -226,6 +238,5 @@ If you wrote the component being extended, you are a required reviewer.
 ## Open questions
 
 - Accessibility baseline: required `accessibilityRole` / `accessibilityLabel`, minimum touch target.
-- What gets a test, and whether a gallery entry substitutes for one.
 - Dark mode. `tokens.ts` has no scheme dimension, so adding one later touches every component.
-- Where `/gallery` mounts, and what keeps it out of a release build.
+- What keeps `GalleryScreen` out of a release build. It sits in `RootNavigator` today with no guard.

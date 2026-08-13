@@ -101,14 +101,15 @@ function pagedSource(pages: Shelf[]) {
   return getShelf;
 }
 
-// Route prop ShelfScreen actually reads (`route.params.shelfId`).
+// Route prop ShelfScreen actually reads (`route.params.shelfId`). `title` is in
+// the param list because RootNavigator uses it for the app bar, so it is supplied
+// here for type parity even though the screen itself never reads it.
 // `navigation` is never read from props — the screen gets it from the
 // `useNavigation` mock above — so it is cast rather than fully constructed.
-type ShelfDetailProps = { route: { params: CatalogueStackParamList['ShelfDetail'] } };
-const routeProps = { route: { params: { shelfId: 'ebooks' } } } as unknown as Parameters<
-  typeof ShelfScreen
->[0] &
-  ShelfDetailProps;
+type ShelfProps = { route: { params: CatalogueStackParamList['Shelf'] } };
+const routeProps = {
+  route: { params: { shelfId: 'ebooks', title: 'eBooks' } },
+} as unknown as Parameters<typeof ShelfScreen>[0] & ShelfProps;
 
 afterEach(() => {
   setCatalogueSource(undefined);
@@ -139,13 +140,15 @@ describe('ShelfScreen with data', () => {
     expect(getShelf.mock.calls[0][1]).toBe('ebooks');
   });
 
-  it('renders the shelf title and its publications', async () => {
+  // The shelf's NAME is not asserted here: RootNavigator puts it in the app bar
+  // from route.params.title, which is outside this component. Rendering it again
+  // inside the screen would print it twice on device.
+  it('renders the publications the shelf carries', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_SHELF));
 
     await render(<ShelfScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
-    expect(screen.getByText('Rights for Robots')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
   });
 
   it('navigates to ItemDetail with the publication id when a row is pressed', async () => {
@@ -177,7 +180,7 @@ describe('ShelfScreen error', () => {
 
     fireEvent.press(screen.getByRole('button', { name: /retry/i }));
 
-    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
     expect(attempt).toBe(2);
   });
 });

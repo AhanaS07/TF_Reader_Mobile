@@ -13,11 +13,28 @@
 import type { CatalogueSource } from '@adapters/CatalogueSource';
 import type { Institution } from '@model/institution';
 
+// Optional search/filter params for getInstitutions.
+// Defined here so MockAdapter and ApiAdapter share one type — a mismatch between
+// them is the bug class the conformance suite exists to prevent.
+export interface InstitutionQueryParams {
+  // Exact match on institution id — used when re-resolving a persisted selection.
+  institutionId?: string;
+  // Free-text search against institution name. Diacritic-folded and
+  // case-insensitive so "Zurich" matches "Zürich".
+  q?: string;
+  // Case-insensitive exact match on country name.
+  country?: string;
+  // Zero-based page index. Defaults to 0 when omitted.
+  page?: number;
+  // Items per page. Defaults to the full result set when omitted.
+  size?: number;
+}
+
 export interface InstitutionSource {
-  // Every institution the user may pick from (CAP-2). No pagination: the spec's
-  // DataAdapter returns a plain array, and the real list is ~thousands at most —
-  // if that changes, it changes here rather than in every caller.
-  getInstitutions(): Promise<Institution[]>;
+  // Every institution the user may pick from (CAP-2).
+  // All params are optional — calling with none returns the full list, so the
+  // conformance suite and any caller that does not need filtering are unaffected.
+  getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]>;
 
   // One institution, for the selected-institution header and for re-resolving a
   // persisted selection on app start (FL-5).
