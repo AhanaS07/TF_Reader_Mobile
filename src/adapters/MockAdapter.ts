@@ -11,7 +11,7 @@
 // today instead of the day the backend lands.
 import type { BookId } from '@/shared/types/primitives';
 import type { Catalogue, Publication, Shelf } from '@model/types';
-import type { DataSource } from '@adapters/InstitutionSource';
+import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
 import { type Institution, normalizeInstitutionList } from '@model/institution';
@@ -23,11 +23,15 @@ import shelfGroupPage1Fixture from '@model/fixtures/OPDS-samples/02-shelf-group-
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
-// The one institution the fixtures describe. Any other id is NOT_FOUND rather
-// than silently serving Imperial's catalogue under someone else's name — CAP-3
-// switches institutions, and a mock that answers for all of them would hide a
-// wiring bug until production.
-const FIXTURE_INSTITUTION = 'inst_7f3';
+// Strip combining diacritical marks so "Zurich" matches "Zürich".
+function fold(str: string): string {
+  return str.normalize('NFD').replace(/\p{M}/gu, '');
+}
+
+// Only inst_7f3 has catalogue fixtures, but no constant names it any more: every
+// institution in institutions.json is served that same catalogue (see
+// assertKnownInstitution), so there is no id to compare against. Authoring eight
+// parallel OPDS feeds would buy nothing the one feed does not already prove.
 
 export interface MockAdapterOptions {
   // Artificial delay before every resolve OR reject. Defaults to 0 so the
@@ -49,7 +53,9 @@ export class MockAdapter implements DataSource {
 
   async getHomeCatalogue(institutionId: string): Promise<Catalogue> {
     await this.simulate(institutionId);
-    this.assertInstitution(institutionId);
+    // Every LISTED institution is served this one fixture catalogue; an id that
+    // is in no fixture at all is NOT_FOUND. See assertKnownInstitution.
+    this.assertKnownInstitution(institutionId);
 
     const catalogue = normalizeCatalogue(homeCatalogueFixture);
     catalogue.shelves.flatMap((shelf) => shelf.publications).forEach(assertPublication);
@@ -58,7 +64,7 @@ export class MockAdapter implements DataSource {
 
   async getShelf(institutionId: string, shelfId: string, page?: number): Promise<Shelf> {
     await this.simulate(shelfId);
-    this.assertInstitution(institutionId);
+    this.assertKnownInstitution(institutionId);
 
     const pages = this.pagesByShelfId().get(shelfId);
     // A shelf no standalone feed fixture backs is NOT_FOUND, not an empty shelf.
@@ -88,7 +94,7 @@ export class MockAdapter implements DataSource {
 
   async getPublication(institutionId: string, bookId: BookId): Promise<Publication> {
     await this.simulate(bookId);
-    this.assertInstitution(institutionId);
+    this.assertKnownInstitution(institutionId);
 
     const publication = this.publicationsById().get(bookId);
     if (publication === undefined) {
@@ -99,10 +105,30 @@ export class MockAdapter implements DataSource {
     return publication;
   }
 
-  async getInstitutions(): Promise<Institution[]> {
+  async getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]> {
     await this.simulate('institutions');
 
-    return normalizeInstitutionList(institutionsFixture);
+    let results = normalizeInstitutionList(institutionsFixture);
+
+    if (params?.institutionId !== undefined) {
+      results = results.filter((i) => i.id === params.institutionId);
+    }
+
+    if (params?.q !== undefined && params.q.length > 0) {
+      const needle = fold(params.q.toLowerCase());
+      results = results.filter((i) => fold(i.name.toLowerCase()).includes(needle));
+    }
+
+    if (params?.country !== undefined) {
+      const target = params.country.toLowerCase();
+      results = results.filter((i) => i.country.toLowerCase() === target);
+    }
+
+    const size = params?.size ?? results.length;
+    const page = params?.page ?? 0;
+    results = results.slice(page * size, page * size + size);
+
+    return results;
   }
 
   async getInstitution(institutionId: string): Promise<Institution> {
@@ -132,8 +158,28 @@ export class MockAdapter implements DataSource {
     }
   }
 
-  private assertInstitution(institutionId: string): void {
-    if (institutionId !== FIXTURE_INSTITUTION) {
+  // An institution the fixtures have never heard of is NOT_FOUND; one that is
+  // listed in institutions.json is served the single fixture catalogue.
+  //
+  // THE LINE IS "LISTED", NOT "HAS ITS OWN FEED". Two things pull in opposite
+  // directions here and this is where they meet:
+  //
+  //   - CAP-3's picker offers all eight institutions, so rejecting seven of them
+  //     would make the feature look broken for 7/8 of its own choices.
+  //   - ApiAdapter maps a 404 to NOT_FOUND, so a mock that resolved for LITERALLY
+  //     any string would no longer agree with it, and the conformance suite the
+  //     two share exists precisely to stop them drifting apart.
+  //
+  // Keying on the institution list satisfies both: `inst_does_not_exist` is
+  // rejected by both adapters, while every id a user can actually select works.
+  // What it deliberately gives up is catching a caller that invents a plausible
+  // id — acceptable, because the id now comes from the picker's own list rather
+  // than a hardcoded constant.
+  private assertKnownInstitution(institutionId: string): void {
+    const listed = normalizeInstitutionList(institutionsFixture).some(
+      (candidate) => candidate.id === institutionId,
+    );
+    if (!listed) {
       throw new CatalogueFailure(CatalogueError.NOT_FOUND, institutionId);
     }
   }

@@ -15,7 +15,9 @@ import LibraryScreen from '../screens/LibraryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
+import InstitutionListScreen from '../screens/InstitutionListScreen';
 import ItemDetailScreen from '../screens/ItemDetailScreen';
+import ShelfScreen from '../screens/ShelfScreen';
 
 import type {
   RootStackParamList,
@@ -25,7 +27,6 @@ import type {
   LibraryStackParamList,
   ProfileStackParamList,
 } from './types';
-import ShelfScreen from '@/screens/ShelfScreen';
 
 // ─── Navigator instances ──────────────────────────────────────────────────────
 
@@ -92,10 +93,15 @@ function CatalogueNavigator() {
         component={ItemDetailScreen}
         options={{ title: 'Item Detail' }}
       />
-      <CatalogueStack.Screen 
-        name="ShelfDetail"
+      <CatalogueStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <CatalogueStack.Screen
+        name="Shelf"
         component={ShelfScreen}
-        options = {{ title: 'Shelf Detail'}}
+        options={({ route }) => ({ title: route.params.title })}
       />
     </CatalogueStack.Navigator>
   );

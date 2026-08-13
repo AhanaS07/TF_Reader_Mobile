@@ -1,5 +1,14 @@
 // A4 (Prayas) — one shelf as a full, paginated listing.
 //
+// Replaces the navigation stub that landed on main as scaffolding for this work
+// ("renders the shelfId so Prayas can verify navigation is wired"). Its route
+// contract is kept exactly: `Shelf` with `{ shelfId, title }`, so the navigator
+// entry and every caller on main keep working unchanged.
+//
+// THE APP BAR OWNS THE TITLE. RootNavigator sets it from `route.params.title`,
+// so this screen renders no heading of its own — a SectionHeader here would
+// print the shelf name twice, once in the bar and once under it.
+//
 // Reached by tapping a CategoryCard on CatalogueScreen, which pushes
 // ShelfDetail with the tapped nav entry's `shelfId`. This screen fetches that
 // shelf on its own (getShelf) rather than receiving it as a route param: the
@@ -46,15 +55,14 @@ import type {
 } from '@react-navigation/native-stack';
 
 import { ContentCard } from '../components/ContentCard';
-import { SectionHeader } from '../components/SectionHeader';
 import { getCatalogueSource } from '../config/catalogue';
 import type { Publication, Shelf } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import { color, space, type as typeScale } from '../theme/tokens';
 
-type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'ShelfDetail'>;
+type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'Shelf'>;
 
-type Props = NativeStackScreenProps<CatalogueStackParamList, 'ShelfDetail'>;
+type Props = NativeStackScreenProps<CatalogueStackParamList, 'Shelf'>;
 
 // State of a SUBSEQUENT page request only. A union rather than two booleans so
 // "loading and failed at once" cannot be represented.
@@ -168,10 +176,8 @@ export default function ShelfScreen({ route }: Props) {
         ))
       ) : (
         <View style={styles.section}>
-          {/* No `actionLabel`: this screen IS the "see all" destination, so a
-              trailing action here would have nowhere left to go. */}
-          <SectionHeader title={shelf?.title ?? ''} />
-
+          {/* No heading here — the app bar already shows this shelf's name, set
+              by RootNavigator from route.params.title. */}
           <View style={styles.list}>
             {publications.map((publication) => (
               <ContentCard

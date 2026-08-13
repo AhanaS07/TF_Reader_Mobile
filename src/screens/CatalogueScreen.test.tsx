@@ -132,9 +132,11 @@ describe('CatalogueScreen with data', () => {
     expect(screen.getByText('Ethnographies of Waiting')).toBeTruthy();
   });
 
-  // ShelfDetail now exists in the navigator, so a category card sends the
-  // user to that shelf — see ShelfScreen.test.tsx for its own screen tests.
-  it('navigates to ShelfDetail with the shelfId when a category card is pressed', async () => {
+  // The Shelf route exists in the navigator, so a category card sends the user
+  // to that shelf — see ShelfScreen.test.tsx for its own screen tests. `title`
+  // travels with the id so the pushed screen's app bar can name the shelf before
+  // its feed has loaded.
+  it('navigates to the Shelf route with the shelfId and title when a category card is pressed', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
     await render(<CatalogueScreen />);
@@ -142,7 +144,10 @@ describe('CatalogueScreen with data', () => {
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     fireEvent.press(screen.getByRole('button', { name: 'eBooks' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith('ShelfDetail', { shelfId: 'ebooks' });
+    expect(mockNavigate).toHaveBeenCalledWith('Shelf', {
+      shelfId: 'ebooks',
+      title: 'eBooks',
+    });
   });
 
   it('navigates to ItemDetail with the publication id when a row is pressed', async () => {
