@@ -7,7 +7,8 @@ import { getDatabase } from '../db/database';
 import { outboxRepository } from './outboxRepository';
 import { bookmarkRepository, parseLocator } from './bookmarkRepository';
 import { highlightRepository, toPaintable } from './highlightRepository';
-import { downloadRepository } from './downloadRepository';
+import { downloadRepository, downloadTable } from './downloadRepository';
+import { USER_ID, BOOK_ID } from '../config';
 import { personalizationRepository } from './personalizationRepository';
 import { accessibilityRepository } from './accessibilityRepository';
 import { progressRepository } from './progressRepository';
@@ -65,6 +66,23 @@ describe('highlightRepository', () => {
     const list = await highlightRepository.list();
     expect(list.map((r) => r.id)).not.toContain(row.id);
   });
+
+  it('toPaintable drops a row with a corrupted locator without crashing or corrupting the others (correlates by id, not index)', async () => {
+    const good1 = await highlightRepository.addFromSelection({ page: 1, startOffset: 0, endOffset: 5 });
+    const corrupted = { ...good1, id: 'corrupted-row', start_locator: '{not valid json' };
+    const good2 = await highlightRepository.addFromSelection({ page: 9, startOffset: 1, endOffset: 2 });
+
+    const paintable = toPaintable([good1, corrupted as any, good2]);
+
+    expect(paintable.map((p) => p.id).sort()).toEqual([good1.id, good2.id].sort());
+    expect(paintable.find((p) => p.id === good1.id)).toEqual({
+      id: good1.id,
+      page: 1,
+      startOffset: 0,
+      endOffset: 5,
+      color: 'yellow',
+    });
+  });
 });
 
 describe('downloadRepository', () => {
@@ -80,6 +98,40 @@ describe('downloadRepository', () => {
     const second = await downloadRepository.recordCompleted('/tmp/b.pdf');
     expect(second.id).toBe(first.id);
     expect((await downloadRepository.currentForBook())?.local_path).toBe('/tmp/b.pdf');
+  });
+
+  it('an explicit isValid:false from the server survives an unchanged re-pull (no flip back to valid)', async () => {
+    const row = await downloadRepository.recordCompleted('/tmp/a.pdf');
+
+    // Server marks the download invalid (e.g. the file expired server-side) and echoes it back
+    // on the push acknowledgement.
+    const invalidUpdatedAt = '2030-01-01T00:00:00.000Z';
+    await downloadTable.adoptPushResult(
+      {
+        id: row.id,
+        userId: USER_ID,
+        bookId: BOOK_ID,
+        format: 'PDF',
+        status: 'COMPLETED',
+        isValid: false,
+        updatedAt: invalidUpdatedAt,
+      },
+      row.updated_at,
+    );
+    expect((await downloadRepository.findById(row.id))?.is_valid).toBe(0);
+
+    // A later pull re-fetches the SAME unchanged record - it must not flip is_valid back to 1.
+    const applied = await downloadTable.applyServerRecord({
+      id: row.id,
+      userId: USER_ID,
+      bookId: BOOK_ID,
+      format: 'PDF',
+      status: 'COMPLETED',
+      isValid: false,
+      updatedAt: invalidUpdatedAt,
+    });
+    expect(applied).toBe(false); // unchanged updated_at - LWW correctly skips the rewrite
+    expect((await downloadRepository.findById(row.id))?.is_valid).toBe(0);
   });
 });
 

@@ -4,6 +4,7 @@
 
 import { syncManager } from './syncManager';
 import { progressRepository } from './repositories/progressRepository';
+import { bookmarkRepository } from './repositories/bookmarkRepository';
 import { outboxRepository } from './repositories/outboxRepository';
 import { getDatabase } from './db/database';
 import { USER_ID, BOOK_ID } from './config';
@@ -21,7 +22,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 // touch before each test instead.
 beforeEach(async () => {
   const db = await getDatabase();
-  await db.execAsync('DELETE FROM progress; DELETE FROM outbox; DELETE FROM sync_metadata;');
+  await db.execAsync(
+    'DELETE FROM progress; DELETE FROM bookmarks; DELETE FROM outbox; DELETE FROM sync_metadata;',
+  );
 });
 
 /** Routes mocked fetch calls by method + URL instead of call order, since push
@@ -176,6 +179,64 @@ describe('syncManager.run — PUSH', () => {
     expect(stored?.synced).toBe(1);
 
     const stillQueued = (await outboxRepository.listAll()).filter((o) => o.entity_id === row.id);
+    expect(stillQueued).toHaveLength(0);
+  });
+  it('a CREATE immediately followed by a DELETE, before either ever synced, still tells the server to delete the record (not a silent no-op)', async () => {
+    const created = await bookmarkRepository.addForPage(12, 'My bookmark');
+    await bookmarkRepository.remove(created.id);
+
+    // Only one outbox op should survive the coalescing - a DELETE carrying the
+    // full (tombstoned) snapshot, not the original CREATE.
+    const queued = (await outboxRepository.listAll()).filter((o) => o.entity_id === created.id);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].operation).toBe('DELETE');
+    const payload = JSON.parse(queued[0].payload);
+    expect(payload.isDeleted).toBe(true);
+    expect(payload.name).toBe('My bookmark');
+
+    // The DELETE only answers 404 the first time - the CREATE was coalesced away and never
+    // pushed, so the server has never heard of this record. After the fallback CREATE lands,
+    // the retried DELETE succeeds.
+    let deleteCalls = 0;
+    const fetchMock = routedFetch([
+      {
+        method: 'DELETE',
+        match: (url) => url.endsWith(`/bookmarks/${created.id}`),
+        respond: () => {
+          deleteCalls += 1;
+          if (deleteCalls === 1) return jsonResponse({ error: 'not found' }, 404);
+          return jsonResponse({
+            id: created.id,
+            userId: USER_ID,
+            bookId: BOOK_ID,
+            updatedAt: created.updated_at,
+            isDeleted: true,
+          });
+        },
+      },
+      {
+        method: 'POST',
+        match: (url) => url.endsWith('/bookmarks'),
+        respond: () =>
+          jsonResponse({ id: created.id, userId: USER_ID, bookId: BOOK_ID, updatedAt: created.updated_at }),
+      },
+    ]);
+    global.fetch = fetchMock;
+
+    const report = await syncManager.run();
+
+    expect(report.error).toBeUndefined();
+    expect(report.pushed).toBeGreaterThanOrEqual(1);
+
+    const methods: string[] = (fetchMock as jest.Mock).mock.calls
+      .filter(([url]: [string]) => String(url).includes('/bookmarks'))
+      .map(([, init]: [string, RequestInit]) => init?.method ?? 'GET');
+    // The server must actually see a create AND a delete - not have the delete
+    // silently swallowed because the server never knew the record existed.
+    expect(methods).toContain('POST');
+    expect(methods.filter((m) => m === 'DELETE')).toHaveLength(2);
+
+    const stillQueued = (await outboxRepository.listAll()).filter((o) => o.entity_id === created.id);
     expect(stillQueued).toHaveLength(0);
   });
 });
