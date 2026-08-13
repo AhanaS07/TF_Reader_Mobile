@@ -2,13 +2,40 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import AccessTierBadgeGallery from '@/components/AccessTierBadge/AccessTierBadge.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
+import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
+import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
+import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
+import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
+import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
+import ListRowGallery from '@/components/ListRow/ListRow.gallery';
+import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.gallery';
+import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
+import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
+import VoiceOverlayGallery from '@/components/VoiceOverlay/VoiceOverlay.gallery';
 import { color, radius, space, type } from '@theme/tokens';
 
-const SECTIONS = ['Skeleton', 'TopAppBar', 'BottomTabBar', 'BottomSheet'] as const;
+const SECTIONS = [
+  'Skeleton',
+  'TopAppBar',
+  'BottomTabBar',
+  'BottomSheet',
+  'OfflineBanner',
+  'EmptyState',
+  'ErrorState',
+  'SearchInput',
+  'AccessTierBadge',
+  'FilterChip',
+  'InstitutionRow',
+  'ListRow',
+  'SectionHeader',
+  'VoiceOverlay',
+  'InstitutionDetailView',
+] as const;
 
 type Section = (typeof SECTIONS)[number];
 
@@ -34,7 +61,7 @@ export default function StateGallery() {
         })}
       </View>
 
-      {/* SkeletonGallery has no ScrollView of its own; the other two supply theirs. */}
+      {/* SkeletonGallery has no ScrollView of its own; every other entry supplies theirs. */}
       {section === 'Skeleton' && (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           <Text style={styles.heading}>Skeleton</Text>
@@ -44,6 +71,17 @@ export default function StateGallery() {
       {section === 'TopAppBar' && <TopAppBarGallery />}
       {section === 'BottomTabBar' && <BottomTabBarGallery />}
       {section === 'BottomSheet' && <BottomSheetGallery />}
+      {section === 'OfflineBanner' && <OfflineBannerGallery />}
+      {section === 'EmptyState' && <EmptyStateGallery />}
+      {section === 'ErrorState' && <ErrorStateGallery />}
+      {section === 'SearchInput' && <SearchInputGallery />}
+      {section === 'AccessTierBadge' && <AccessTierBadgeGallery />}
+      {section === 'FilterChip' && <FilterChipGallery />}
+      {section === 'InstitutionRow' && <InstitutionRowGallery />}
+      {section === 'ListRow' && <ListRowGallery />}
+      {section === 'SectionHeader' && <SectionHeaderGallery />}
+      {section === 'VoiceOverlay' && <VoiceOverlayGallery />}
+      {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
     </View>
   );
 }
