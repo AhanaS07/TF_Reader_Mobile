@@ -107,14 +107,26 @@ export const DEFAULT_PREFS: Omit<
 //     screenReaderHints). No second accessibility store, no second endpoint.
 //   Both live in accessibility.ts. The knock-on effects below are NOT settled.
 
-// STILL OPEN:
+// RESOLVED:
 //
-// 1. [Sync owner] Folding a11y onto the prefs singleton means a11y
-//    edits and reader-pref edits share ONE `updatedAt`. Two devices — one
-//    changing ttsRate, the other changing theme — resolve by whole-record LWW,
-//    so one edit is silently discarded. Per-field LWW, or a separate a11y
-//    record, or accept the loss. This is the cost of the fold-in and it should
-//    be an explicit choice, not a side effect. (Day-1 sync questions Q1/Q4).
+// 1. [Sync owner] SETTLED — a SEPARATE a11y record. Folding a11y onto the prefs
+//    singleton meant a11y edits and reader-pref edits shared ONE `updatedAt`, so two
+//    devices — one changing ttsRate, the other changing theme — resolved by whole-record
+//    LWW and one edit was silently discarded. Of the three options offered (per-field LWW,
+//    a separate a11y record, accept the loss), the separate record is taken: per-field LWW
+//    needs per-field timestamps the wire format does not carry, and accepting the loss is
+//    not acceptable for a setting a user depends on to read at all.
+//
+//    Accessibility now persists and syncs as its own record, with its own row, endpoint and
+//    `updatedAt`. accessibility.ts is amended to match. The COMPOSED SHAPE is unchanged:
+//    `SharedPrefs.accessibility` is still an `AccessibilityPrefs`, still carries no identity
+//    or sync fields, and consumers still read one merged object — Sync joins the two rows on
+//    read and splits them on write (features/sync/sharedPrefs.ts).
+//
+//    Recorded as the explicit choice this item asked for rather than a side effect.
+//    (Day-1 sync questions Q1/Q4.)
+//
+// STILL OPEN:
 //
 // 2. [Ahana] reduceMotion default moves false -> 'system', so reduced motion is
 //    now honoured out of the box and Reader must suppress the page-turn
@@ -128,6 +140,11 @@ export const DEFAULT_PREFS: Omit<
 // 4. [Ahana + Vaishnavi] Three knobs now scale text: typography.size,
 //    text.respectOsFontScale, text.fontScaleMultiplier. Agree the composition
 //    order and the units question already flagged on typography.size.
+//    NOTE (Sync): the local `personalization` table defaulted these to SCALE FACTORS
+//    (1.0 / 1.0 / 0.0) while DEFAULT_PREFS says points (16 / 1.5 / 16). Sync has moved its
+//    schema and mappers onto DEFAULT_PREFS, so the contradiction is gone and DEFAULT_PREFS is
+//    now the only committed answer — but this item stays open, because agreeing the units is
+//    yours to close, not Sync's to close by picking one.
 //
 // 5. [Accessibility] TtsHighlightMode's union beyond 'sentence' is inferred,
 //    not specified. Nothing reads it until word/sentence sync leaves the

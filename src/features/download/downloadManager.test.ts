@@ -7,8 +7,8 @@
 import * as crypto from 'crypto';
 import * as Keychain from 'react-native-keychain';
 import { downloadBook } from './downloadManager';
-import { downloadTable } from '../sync/repositories/downloadRepository';
-import { USER_ID } from '../sync/config';
+import { downloadTable } from '../sync/stores/downloadStore';
+import { USER_ID } from '../sync/syncConfig';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
 import { encrypt } from '../encryption/aesGcm';
 import { generateDeviceKeypair, wrapBek } from '../encryption/deviceKeypair';

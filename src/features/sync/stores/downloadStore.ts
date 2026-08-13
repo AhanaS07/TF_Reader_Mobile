@@ -1,7 +1,7 @@
-import { getDatabase, newId, nowIso } from '../db/database';
-import { downloadMapper } from '../db/mappers';
-import type { DownloadRow } from '../db/types';
-import { BOOK_ID, USER_ID } from '../config';
+import { getDatabase, newId, nowIso } from '../localDb/database';
+import { downloadMapper } from '../localDb/mappers';
+import type { DownloadRow } from '../localDb/types';
+import { BOOK_ID, USER_ID } from '../syncConfig';
 import { createSyncableTable, withWriteLock } from './syncableTable';
 
 export const downloadTable = createSyncableTable<DownloadRow>({
@@ -11,7 +11,7 @@ export const downloadTable = createSyncableTable<DownloadRow>({
   toRow: downloadMapper.toRow,
 });
 
-export const downloadRepository = {
+export const downloadStore = {
   ...downloadTable,
 
   list(): Promise<DownloadRow[]> {

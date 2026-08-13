@@ -62,6 +62,21 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       await db.execAsync(`ALTER TABLE ${table} ADD COLUMN server_updated_at TEXT`);
     }
   }
+
+  // Progress gained a Locator so a reflowable EPUB can restore its position; the integer
+  // offset it used to carry alone cannot express a CFI. Existing rows keep offset and get a
+  // null locator, which readers fall back from.
+  if (!(await columnNames(db, 'progress')).includes('locator')) {
+    await db.execAsync(`ALTER TABLE progress ADD COLUMN locator TEXT`);
+  }
+
+  // The nineteenth accessibility field, previously absent, so it could neither persist nor
+  // sync. Defaulting to 0 matches DEFAULT_ACCESSIBILITY_PREFS.screenReaderHints.
+  if (!(await columnNames(db, 'accessibility')).includes('screen_reader_hints')) {
+    await db.execAsync(
+      `ALTER TABLE accessibility ADD COLUMN screen_reader_hints INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
 }
 
 /** Client-generated UUID - ids are minted on the device, never by the server. */

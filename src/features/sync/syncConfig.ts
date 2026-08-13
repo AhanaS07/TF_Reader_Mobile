@@ -1,21 +1,22 @@
-// Owner: Sync (Karthik).
-//
-// Trimmed down from the original standalone prototype (src/features/sync/frontend/) when that
-// project was folded into this app as a normal module — the PDF-demo-only exports
-// (ASSET_BASE_URL, BOOK_FILE_URL, PDFJS_*) were dropped along with the demo reader that used
-// them. Everything below is real sync-engine config, still in use.
-
 import Constants from 'expo-constants';
 
 /**
  * Fixed prototype identity. Every local record and every synced record uses
- * these two values - no random ids anywhere. Overridable so a verification
+ * these two values - no random ids anywhere. Overridable so the verification
  * harness can run against its own user without touching the app's data.
  */
 export const USER_ID = process.env.EXPO_PUBLIC_USER_ID ?? 'user-001';
 export const BOOK_ID = process.env.EXPO_PUBLIC_BOOK_ID ?? 'book-001';
 
 const BACKEND_PORT = 9000;
+
+/**
+ * The book file and the pdf.js runtime are static resources, not CRUD, and the
+ * Mongo backend does not serve them - `/api/books/{id}/file` is a 404 on 9000.
+ * Until it does, they come from the old Spring app on 8090. Once the Mongo
+ * service picks them up, set this to BACKEND_PORT and the SQLite backend can go.
+ */
+const ASSET_PORT = 8090;
 
 /**
  * Expo Go runs on a physical device, so "localhost" would mean the phone itself.
@@ -35,12 +36,16 @@ function resolveBackendHost(): string {
   return 'localhost';
 }
 
-/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:9000 */
+/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:8090 */
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL ?? `http://${resolveBackendHost()}:${BACKEND_PORT}`;
 
 /** Every CRUD collection lives under this prefix on the Mongo backend. */
 export const API_V1 = '/api/v1';
+
+/** Point EXPO_PUBLIC_ASSET_URL at whatever serves the book - see ASSET_PORT. */
+export const ASSET_BASE_URL =
+  process.env.EXPO_PUBLIC_ASSET_URL ?? `http://${resolveBackendHost()}:${ASSET_PORT}`;
 
 /**
  * Set to true once the Mongo services compare `updatedAt` on write and answer
@@ -76,6 +81,19 @@ export const PERSONALIZATION_REQUIRES_BOOK_ID = true;
 
 /** A validation failure is retried this many times before the op is parked as DEAD. */
 export const MAX_PUSH_RETRIES = 6;
+
+export const BOOK_FILE_URL = `${ASSET_BASE_URL}/api/books/${BOOK_ID}/file`;
+export const PDFJS_LIB_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.min.js`;
+export const PDFJS_WORKER_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.worker.min.js`;
+
+/** pdf.js needs these to draw the PDF base-14 fonts (Helvetica, Helvetica-Bold). */
+export const PDFJS_STANDARD_FONTS = [
+  'LiberationSans-Regular.ttf',
+  'LiberationSans-Bold.ttf',
+] as const;
+
+export const pdfjsFontUrl = (filename: string) =>
+  `${ASSET_BASE_URL}/api/assets/pdfjs/standard_fonts/${filename}`;
 
 /** How long a single network call may take before we treat the device as offline. */
 export const REQUEST_TIMEOUT_MS = 8000;

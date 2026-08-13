@@ -1,17 +1,22 @@
-import { BOOK_ID, SERVER_RESOLVES_CONFLICTS, SUPPORTS_UPDATED_AFTER, USER_ID } from './config';
-import { ENTITY_PATHS } from './db/mappers';
-import { SYNC_KEYS } from './db/schema';
-import type { EntityType, OutboxRow } from './db/types';
-import { nowIso } from './db/database';
-import { accessibilityTable } from './repositories/accessibilityRepository';
-import { bookmarkTable } from './repositories/bookmarkRepository';
-import { downloadTable } from './repositories/downloadRepository';
-import { highlightTable } from './repositories/highlightRepository';
-import { outboxRepository } from './repositories/outboxRepository';
-import { personalizationTable } from './repositories/personalizationRepository';
-import { progressTable } from './repositories/progressRepository';
-import { syncMetadataRepository } from './repositories/syncMetadataRepository';
-import { api, ApiError } from './api';
+import {
+  BOOK_ID,
+  SERVER_RESOLVES_CONFLICTS,
+  SUPPORTS_UPDATED_AFTER,
+  USER_ID,
+} from './syncConfig';
+import { ENTITY_PATHS } from './localDb/mappers';
+import { SYNC_KEYS } from './localDb/schema';
+import type { EntityType, OutboxRow } from './localDb/types';
+import { nowIso } from './localDb/database';
+import { accessibilityTable } from './stores/accessibilityStore';
+import { bookmarkTable } from './stores/bookmarkStore';
+import { downloadTable } from './stores/downloadStore';
+import { highlightTable } from './stores/highlightStore';
+import { outboxStore } from './stores/outboxStore';
+import { personalizationTable } from './stores/personalizationStore';
+import { progressTable } from './stores/progressStore';
+import { syncMetadataStore } from './stores/syncMetadataStore';
+import { api, ApiError } from './syncApi';
 
 /** One place that knows how to apply a server record for each entity type. */
 const TABLES = {
@@ -57,7 +62,7 @@ let inFlight: Promise<SyncReport> | null = null;
  *   3. A stale local edit never overwrites a newer server record. Whoever does
  *      the comparison, the later `updatedAt` wins.
  */
-export const syncManager = {
+export const syncEngine = {
   /** Concurrent calls share one run rather than racing each other. */
   run(): Promise<SyncReport> {
     if (!inFlight) {
@@ -90,6 +95,7 @@ async function execute(): Promise<SyncReport> {
     // pushed before it stays pushed; nothing is lost and nothing is duplicated.
     report.error = error instanceof Error ? error.message : String(error);
   }
+
   return report;
 }
 
@@ -103,7 +109,7 @@ async function execute(): Promise<SyncReport> {
  * sent are already cleared, and the rest are still queued in order.
  */
 async function push(report: SyncReport): Promise<void> {
-  const pending = await outboxRepository.listPending();
+  const pending = await outboxStore.listPending();
 
   for (const op of pending) {
     const entityPath = ENTITY_PATHS[op.entity_type];
@@ -115,7 +121,7 @@ async function push(report: SyncReport): Promise<void> {
         const serverWins = await serverHasDiverged(op, entityPath);
         if (serverWins) {
           report.conflicts += 1;
-          await outboxRepository.remove([op.id]);
+          await outboxStore.remove([op.id]);
           continue;
         }
       }
@@ -132,14 +138,14 @@ async function push(report: SyncReport): Promise<void> {
         if (apiError.body) {
           await TABLES[op.entity_type].applyServerRecord(apiError.body);
         }
-        await outboxRepository.remove([op.id]);
+        await outboxStore.remove([op.id]);
         continue;
       }
 
       // The payload is unacceptable. Back it off rather than blocking the queue.
       if (apiError?.isValidation) {
         report.failed += 1;
-        await outboxRepository.markFailed(op, apiError.message);
+        await outboxStore.markFailed(op, apiError.message);
         continue;
       }
 
@@ -149,20 +155,23 @@ async function push(report: SyncReport): Promise<void> {
 
     // Only now - after acknowledgement - is it safe to clear the queue.
     report.pushed += 1;
-    await outboxRepository.remove([op.id]);
+    await outboxStore.remove([op.id]);
 
-    // Take the server's copy of the record, which carries the `updatedAt` it
-    // actually stored. When it declines, the row was edited mid-push and is
-    // deliberately left unsynced - the fresh outbox entry covers it.
-    const adopted = saved
-      ? await TABLES[op.entity_type].adoptPushResult(saved, payload.updatedAt)
-      : false;
-    if (!adopted && !saved) {
+    // Take the server's copy of the record, which carries the `updatedAt` it actually stored.
+    // When it declines, the row was edited mid-push and is deliberately left unsynced - the
+    // fresh outbox entry covers it.
+    //
+    // A 204 leaves nothing to adopt, so the row is just marked synced. This used to read
+    // `!adopted && !saved`, where `adopted` is always false whenever `saved` is null - the
+    // first half could never change the outcome.
+    if (saved) {
+      await TABLES[op.entity_type].adoptPushResult(saved, payload.updatedAt);
+    } else {
       await TABLES[op.entity_type].markSynced([op.entity_id]);
     }
   }
 
-  await syncMetadataRepository.set(SYNC_KEYS.LAST_PUSH_AT, nowIso());
+  await syncMetadataStore.set(SYNC_KEYS.LAST_PUSH_AT, nowIso());
 }
 
 /** Dispatches one outbox operation and returns the record the server stored. */
@@ -248,15 +257,6 @@ async function sendDelete(entityPath: string, id: string, payload: any): Promise
  * us. Since ids are minted on the device as UUIDs, any document already sitting
  * under that id is one of our own earlier pushes whose response was lost - so
  * that is not a conflict either, and overwriting it is exactly right.
- *
- * A timestamp difference here only means the server's copy is *worth checking* -
- * `applyServerRecord`'s own comparison is what actually decides whether it overwrites the local
- * row. Treating every difference as resolved regardless of that outcome - the previous version
- * of this function discarded `applyServerRecord`'s return value - let a genuinely newer local
- * edit survive on the row while its outbox entry was deleted anyway: correct data, silently
- * orphaned, with nothing left queued to ever push it. Returning `applyServerRecord`'s own
- * verdict keeps the row and the outbox in agreement: `push` only drops the operation when the
- * server's copy actually won.
  */
 async function serverHasDiverged(
   op: OutboxRow,
@@ -279,9 +279,9 @@ async function serverHasDiverged(
   if (!record?.updatedAt || record.updatedAt === base) return false;
 
   // Someone else wrote there since we last looked. Adopt their copy - but only report a
-  // resolved conflict (and let `push` drop our operation) if it actually took: `saveLocal`'s LWW
-  // guard can and does refuse to overwrite a local row that is itself newer, in which case our
-  // edit still needs to reach the server, not vanish from the queue.
+  // resolved conflict (and let `push` drop our operation) if it actually took:
+  // `applyServerRecord`'s LWW guard can and does refuse to overwrite a local row that is itself
+  // newer, in which case our edit still needs to reach the server, not vanish from the queue.
   return TABLES[op.entity_type].applyServerRecord(record);
 }
 
@@ -294,8 +294,12 @@ async function serverHasDiverged(
  * tombstones, a record deleted on another device would come back to life here.
  */
 async function pull(report: SyncReport): Promise<void> {
+  // NOTE: userBook entities are filtered by the single hard-coded BOOK_ID, so this pulls one
+  // book and one book only - a second book on the same device would never sync. That is a
+  // deliberate prototype limitation, not an oversight, but the reader is multi-book by
+  // construction, so this loop and BOOK_ID both have to take a book list before it ships.
   const since = SUPPORTS_UPDATED_AFTER
-    ? await syncMetadataRepository.get(SYNC_KEYS.LAST_PULL_TOKEN)
+    ? await syncMetadataStore.get(SYNC_KEYS.LAST_PULL_TOKEN)
     : null;
 
   let checkpoint: string | null = null;
@@ -323,6 +327,6 @@ async function pull(report: SyncReport): Promise<void> {
 
   // The checkpoint moves only once everything above has landed in SQLite.
   if (checkpoint) {
-    await syncMetadataRepository.set(SYNC_KEYS.LAST_PULL_TOKEN, checkpoint);
+    await syncMetadataStore.set(SYNC_KEYS.LAST_PULL_TOKEN, checkpoint);
   }
 }
