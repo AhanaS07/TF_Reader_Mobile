@@ -52,9 +52,31 @@
         -webkit-text-size-adjust: 100%;
       }
 
+      /*
+        HORIZONTAL safe-area insets only, and the asymmetry is deliberate.
+        `viewport-fit=cover` in the meta above is what makes env() resolve to a
+        real number rather than 0 — without it these are no-ops.
+
+        Why not top/bottom: env() reports the WINDOW's inset, not this element's
+        offset within it, and App.tsx already wraps the reader in a SafeAreaView
+        with edges={['top','bottom']}. Adding them here would inset twice and
+        lose a line of text to nothing. Left/right are exactly the edges RN is
+        not covering, and they are 0 in portrait — so this is a landscape and
+        notch fix that changes nothing on a portrait phone.
+
+        Whoever removes App.tsx's temporary SafeAreaView (it goes with
+        RootNavigator) owns the vertical half of this.
+
+        box-sizing keeps the html/body/#viewer height chain exact: without it,
+        padding would push #viewer past 100% and reintroduce overflow on a page
+        that must not have any.
+      */
       #viewer {
         width: 100%;
         height: 100%;
+        box-sizing: border-box;
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
       }
 
       /*
@@ -98,6 +120,387 @@
 
         var book = null;
         var rendition = null;
+
+        // ---- reader metrics and stylesheet: PURE ------------------------------
+        // Everything from here to the "DOM glue" marker below is a pure function of
+        // its arguments, and readerTemplate.test.ts lifts this whole region out of
+        // the file and runs it under Jest. That is the only executable coverage this
+        // untypechecked file gets, so keep it pure: read the DOM in the glue section,
+        // not here.
+        //
+        // THE RENDITION FLOW LIVES IN ONE PLACE ON PURPOSE. Everything below that is
+        // pagination-specific keys off isPaginated(), so when LayoutPrefs.flow starts
+        // arriving over the bridge (WEBVIEW_BRIDGE.md's converting stage) this
+        // constant becomes the value it sets, and the two guarded blocks are the only
+        // things that have to change. `scrolled-doc` needs no line grid (there are no
+        // page edges to slice a line) and no column breaks (there are no columns).
+        var READER_FLOW = 'paginated';
+
+        function isPaginated() {
+          return READER_FLOW === 'paginated';
+        }
+
+        // MIRRORS DEFAULT_PREFS.typography (src/shared/contracts/prefs.ts) BY HAND,
+        // because this file has no module system to import a frozen contract through.
+        // readerTemplate.test.ts asserts all three against DEFAULT_PREFS, so the copy
+        // fails a build rather than drifting silently. They stop being constants at
+        // the prefs-application stage.
+        //
+        // `size` is 16 under a contract comment reading "units not yet agreed (pt vs
+        // scale factor)". Treated as px at the REFERENCE WIDTH below — 16px is plainly
+        // the UA default it came from. Settling that unit is Personalization's call.
+        //
+        // `spacing` (letter/word spacing) is deliberately absent: it defaults to 0,
+        // and a rule setting a property to its own default only adds another
+        // declaration for a real book's CSS to lose to.
+        var BASELINE_FONT_SIZE_PX = 16;
+        var BASELINE_LINE_HEIGHT = 1.5;
+        var BASELINE_MARGIN_PX = 16;
+
+        // The width BASELINE_FONT_SIZE_PX is calibrated for (a 393pt iPhone), and the
+        // range the scaled result is held inside. Type scales WITH the viewport rather
+        // than being fixed, but proportional scaling alone would give a 34px body on
+        // an iPad and 13px on the smallest phone, so the clamp is what keeps it a
+        // reading size on both.
+        var REFERENCE_VIEWPORT_WIDTH_PX = 393;
+        var MIN_FONT_SIZE_PX = 15;
+        var MAX_FONT_SIZE_PX = 22;
+
+        /**
+         * Every number the stylesheet needs, derived from the viewport.
+         *
+         * THE LINE GRID IS THE POINT, and it is why these are integers. In paginated
+         * flow the text column is a fixed height, so unless that height is an exact
+         * whole number of line boxes the last line on every page is sliced through the
+         * middle — you get the top half of a row of words on one page and the bottom
+         * half on the next. It reads as a rendering bug and it is really just
+         * arithmetic: quantise the column to floor(available / lineHeight) lines and
+         * put the remainder into padding-bottom.
+         *
+         * That only holds if EVERY line box is a whole multiple of `linePx`, which is
+         * what forces the heading line-heights and block margins in baselineCss() to
+         * be multiples of it too, and `line-height: 0` on sup/sub. A fractional
+         * line-height (1.5 unitless against an odd font size) would break the grid on
+         * its own, hence the rounding here rather than in CSS.
+         *
+         * Images are the honest exception: an arbitrary-height figure knocks the text
+         * after it off the grid until the next page. Bounding them to the page
+         * (max-height) limits that to one page rather than fixing it.
+         */
+        function readerMetrics(width, height) {
+          var scaled = Math.round((BASELINE_FONT_SIZE_PX * width) / REFERENCE_VIEWPORT_WIDTH_PX);
+          var fontPx = Math.min(Math.max(scaled, MIN_FONT_SIZE_PX), MAX_FONT_SIZE_PX);
+          var linePx = Math.round(fontPx * BASELINE_LINE_HEIGHT);
+
+          if (!isPaginated()) {
+            // No page edge to slice a line, so no quantisation — just even margins.
+            return {
+              fontPx: fontPx,
+              linePx: linePx,
+              padTop: BASELINE_MARGIN_PX,
+              padBottom: BASELINE_MARGIN_PX,
+              lines: 0,
+            };
+          }
+
+          var padTop = BASELINE_MARGIN_PX;
+          var lines = Math.max(1, Math.floor((height - padTop - BASELINE_MARGIN_PX) / linePx));
+
+          return {
+            fontPx: fontPx,
+            linePx: linePx,
+            padTop: padTop,
+            // The remainder, so padTop + lines * linePx + padBottom === height exactly.
+            // Never smaller than BASELINE_MARGIN_PX, because `lines` floored first.
+            padBottom: height - padTop - lines * linePx,
+            lines: lines,
+          };
+        }
+
+        /**
+         * The reader's stylesheet, as CSS text.
+         *
+         * WHY CSS TEXT AND NOT rendition.themes: Contents.addStylesheetCss REPLACES the
+         * <style> node it owns (contents.js:750-757), so re-applying on every rotation
+         * is idempotent, where themes' rule form appends. Themes also cannot carry this
+         * at all — Themes.inject() checks `theme.rules` and `theme.url` and never
+         * `theme.serialized` (themes.js:161-166), so a CSS-text theme is applied to the
+         * chapters already loaded and silently skipped for every chapter loaded after.
+         * Registering our own hooks.content handler avoids both.
+         *
+         * WHY SO MUCH `!important`: two different fights.
+         *  1. epub.js sets padding-top/bottom as an INLINE style during pagination
+         *     (contents.js:1085-1086), and an inline declaration beats a stylesheet
+         *     rule unless that rule is !important. padding-left/right it sets inline
+         *     AND important, so those are not ours to set — the horizontal margin is
+         *     epub.js's `gap` (renderTo's option), not this file's.
+         *  2. The BOOK's own CSS. "The text size keeps changing" is not a bug in the
+         *     reader — it is the book: the 20 MB fixture ships 11 distinct em-based
+         *     font-sizes on .calibreN classes, and em compounds through nesting, so a
+         *     paragraph inside two scaled wrappers lands somewhere nobody chose.
+         *     Overriding by element type loses to a class on specificity, so a uniform
+         *     size has to be forced. This is a deliberate trade: the book's typographic
+         *     intent is discarded in exchange for one predictable size, which is what
+         *     was asked for, and it becomes a preference (TypographyPrefs) rather than
+         *     a constant at the prefs stage.
+         *
+         * NOT set here, on purpose: font-family (books ship their own; overriding is
+         * FontPrefs, not a baseline) and text-align (justification is a preference and
+         * a bad default on a narrow column).
+         */
+        function baselineCss(m) {
+          var f = m.fontPx;
+          var l = m.linePx;
+          var css = [
+            // The iframe inherits nothing from the host document, so the host's own
+            // -webkit-text-size-adjust does not reach it. Without this, WKWebView
+            // inflates text inside a fixed-height column: clipped rows, phantom pages.
+            'html, body {',
+            '  -webkit-text-size-adjust: 100% !important;',
+            '  text-size-adjust: 100% !important;',
+            '}',
+            'body {',
+            '  font-size: ' + f + 'px !important;',
+            '  line-height: ' + l + 'px !important;',
+            '  padding-top: ' + m.padTop + 'px !important;',
+            '  padding-bottom: ' + m.padBottom + 'px !important;',
+            // No hyphenation and no mid-word wrapping: a word broken across a page
+            // boundary is the thing that reads as broken. Long unbreakable tokens are
+            // handled below, where they actually occur, rather than by letting every
+            // word in the book break.
+            '  hyphens: none !important;',
+            '  -webkit-hyphens: none !important;',
+            '  word-break: normal !important;',
+            '  overflow-wrap: normal !important;',
+            '}',
+            // One size for every text-bearing element. `div` and `span` are in the
+            // list because Calibre-converted books put their scaling on wrappers.
+            'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',
+            '  font-size: ' + f + 'px !important;',
+            '  line-height: ' + l + 'px !important;',
+            '}',
+            // Raised/lowered glyphs must not grow the line box, or the grid drifts by
+            // a fraction of a line on every citation marker — and this fixture is full
+            // of them. line-height: 0 is the standard way to hold the rhythm.
+            'sup, sub {',
+            '  font-size: ' + Math.round(f * 0.75) + 'px !important;',
+            '  line-height: 0 !important;',
+            '}',
+            // Heading scale. Sizes step by a fixed ratio; line-heights snap to whole
+            // multiples of the grid unit rather than to the font size.
+            'h1 {',
+            '  font-size: ' + Math.round(f * 1.6) + 'px !important;',
+            '  line-height: ' + 2 * l + 'px !important;',
+            '}',
+            'h2 {',
+            '  font-size: ' + Math.round(f * 1.35) + 'px !important;',
+            '  line-height: ' + 2 * l + 'px !important;',
+            '}',
+            'h3 {',
+            '  font-size: ' + Math.round(f * 1.15) + 'px !important;',
+            '  line-height: ' + l + 'px !important;',
+            '}',
+            'h4, h5, h6 {',
+            '  font-size: ' + f + 'px !important;',
+            '  line-height: ' + l + 'px !important;',
+            '}',
+            // Vertical rhythm: every block gap is one grid unit, top margins zeroed so
+            // adjacent blocks collapse to exactly one rather than to an odd sum.
+            'p, ul, ol, dl, blockquote, figure, table, pre, hr {',
+            '  margin-top: 0 !important;',
+            '  margin-bottom: ' + l + 'px !important;',
+            '}',
+            'h1, h2, h3, h4, h5, h6 {',
+            '  margin-top: ' + l + 'px !important;',
+            '  margin-bottom: ' + l + 'px !important;',
+            '}',
+            // Bound to the page, forced: a figure wider than the column is clipped and
+            // one taller than the page pushes a blank page after itself, and neither is
+            // recoverable by the reader. max-height resolves against the body height
+            // epub.js sets during pagination, which is what makes 100% mean "one page".
+            'img, svg, video {',
+            '  max-width: 100% !important;',
+            '  max-height: 100% !important;',
+            '  height: auto !important;',
+            '}',
+            // Where long unbreakable tokens really live. Scoped so prose is unaffected.
+            'a, code, pre, kbd, samp, tt {',
+            '  overflow-wrap: break-word !important;',
+            '}',
+          ];
+
+          if (isPaginated()) {
+            css = css.concat([
+              // Keep a figure or table whole rather than sliced by a page edge.
+              'figure, table, img, svg {',
+              '  break-inside: avoid;',
+              '  -webkit-column-break-inside: avoid;',
+              '}',
+              // A heading alone at the foot of a page, its text on the next one.
+              'h1, h2, h3, h4, h5, h6 {',
+              '  break-after: avoid;',
+              '  -webkit-column-break-after: avoid;',
+              '}',
+            ]);
+          }
+
+          return css.join('\n');
+        }
+
+        /**
+         * Does a computed break value mean "force a break here"?
+         *
+         * Covers the CSS3 `break-*` vocabulary and the legacy `page-break-*` one that
+         * EPUB CSS is actually written in, including the recto/verso spellings.
+         */
+        function isForcedBreak(value) {
+          return (
+            value === 'always' ||
+            value === 'page' ||
+            value === 'left' ||
+            value === 'right' ||
+            value === 'recto' ||
+            value === 'verso'
+          );
+        }
+
+        // ---- reader DOM glue -------------------------------------------------
+        // Below here the code reads the document, so it is not extractable and not
+        // unit-tested. Keep it thin for that reason.
+
+        // Key for OUR <style> node inside each chapter document. Stable, because
+        // addStylesheetCss replaces the node with this id rather than adding another.
+        var STYLESHEET_KEY = 'tf-baseline';
+
+        // The last CSS we built. Read by the content hook for chapters that load later
+        // (a book is many documents, and each one needs the sheet inserted again).
+        var currentCss = '';
+
+        function viewportSize() {
+          var viewer = document.getElementById('viewer');
+          return {
+            // Fallbacks matter only if #viewer is somehow unmeasurable; a zero would
+            // quantise the column to a single line and look like a broken book.
+            width: (viewer && viewer.clientWidth) || REFERENCE_VIEWPORT_WIDTH_PX,
+            height: (viewer && viewer.clientHeight) || 480,
+          };
+        }
+
+        /**
+         * Rebuild the stylesheet for the current viewport and push it into every
+         * chapter already loaded.
+         *
+         * Called once before the first display() and again on every rendition resize —
+         * rotation changes both the type size and the line-grid remainder, so a sheet
+         * built for portrait leaves sliced lines in landscape.
+         *
+         * This cannot loop: it changes content size, which epub.js answers with a
+         * contents resize and a re-format, and neither of those emits the rendition
+         * `resized` that got us here (that one comes from the window).
+         */
+        function applyBaselineCss() {
+          var size = viewportSize();
+          currentCss = baselineCss(readerMetrics(size.width, size.height));
+
+          if (!rendition) return;
+
+          var contents = rendition.getContents();
+          for (var i = 0; i < contents.length; i++) {
+            contents[i].addStylesheetCss(currentCss, STYLESHEET_KEY);
+          }
+        }
+
+        // Cap on how many elements we will ask for a computed style. A book that
+        // manages to exceed this gets its later breaks ignored rather than a frozen
+        // reader; nothing in the fixture comes close (its largest chapter is ~2k
+        // elements) and no book in the wild should.
+        var MAX_BREAK_CANDIDATES = 4000;
+        var BREAK_CANDIDATE_SELECTOR =
+          'h1,h2,h3,h4,h5,h6,section,article,div,p,hr,figure,table,blockquote,aside,ol,ul,dl';
+
+        /**
+         * Honour the book's OWN page breaks in a paginated column layout.
+         *
+         * When an EPUB says an element starts a new page, it says so as
+         * `page-break-before: always` — which is a PAGE-context property, and our pages
+         * are CSS columns, so it is not guaranteed to fragment anything. This reads the
+         * book's computed value and restates it as the column-context equivalent, which
+         * WebKit does act on.
+         *
+         * Reading the COMPUTED value rather than matching selectors is the whole trick:
+         * Calibre-converted books declare these on generated classes, so there is no
+         * selector worth guessing. It also means we honour exactly what the book asked
+         * for and invent nothing.
+         */
+        function applyAuthoredBreaks(doc) {
+          if (!doc || !doc.body || !doc.defaultView) return 0;
+
+          var win = doc.defaultView;
+          var nodes = doc.body.querySelectorAll(BREAK_CANDIDATE_SELECTOR);
+          var limit = Math.min(nodes.length, MAX_BREAK_CANDIDATES);
+          var applied = 0;
+
+          for (var i = 0; i < limit; i++) {
+            var el = nodes[i];
+            var computed = win.getComputedStyle(el);
+
+            if (isForcedBreak(computed.breakBefore) || isForcedBreak(computed.pageBreakBefore)) {
+              el.style.setProperty('-webkit-column-break-before', 'always', 'important');
+              applied++;
+            }
+
+            if (isForcedBreak(computed.breakAfter) || isForcedBreak(computed.pageBreakAfter)) {
+              el.style.setProperty('-webkit-column-break-after', 'always', 'important');
+              applied++;
+            }
+          }
+
+          return applied;
+        }
+
+        // ---- table of contents -----------------------------------------------
+        // Deepest nesting the flattener will mark. Anything deeper is flattened ONTO
+        // the cap rather than dropped: no entry ever disappears, its indent just
+        // stops growing. Six is past any real book's nav depth, and it keeps a
+        // malformed navigation document from producing an indent nobody can read.
+        // Mirrored by MAX_TOC_DEPTH in readerBridge.ts, which re-clamps host-side
+        // because this payload originates in book content and is therefore untrusted.
+        var MAX_TOC_DEPTH = 6;
+
+        /**
+         * epub.js's `navigation.toc` is a TREE — every item may carry `subitems`
+         * (epubjs/src/navigation.js:218), and a real book puts its chapters there
+         * while the top level holds only parts or front/body/back matter. Reading
+         * just the top level, as this did until 2026-08-14, leaves most of a book's
+         * chapters absent from the Contents panel entirely — not merely below the
+         * fold.
+         *
+         * Flattened depth-first into one ordered list with a `depth` marker, rather
+         * than sent as a tree: the host indents by depth, and a RECURSIVE payload
+         * shape hand-copied into untypechecked JS is the single worst case for this
+         * file's hand-sync contract (WEBVIEW_BRIDGE.md).
+         *
+         * Order is the reading order — a parent immediately followed by its own
+         * subtree — so the flat list is still navigable top to bottom.
+         */
+        function flattenToc(items, depth, into) {
+          if (!items || !items.length) return into;
+
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item) continue;
+
+            into.push({
+              label: (item.label || '').trim(),
+              href: item.href,
+              depth: depth,
+            });
+
+            flattenToc(item.subitems, Math.min(depth + 1, MAX_TOC_DEPTH), into);
+          }
+
+          return into;
+        }
 
         // ---- bridge: WebView -> RN -------------------------------------------
         // Mirrors the ReaderMessage union in readerBridge.ts. Keep in sync.
@@ -202,13 +605,49 @@
                 .open(buffer, 'binary')
                 .then(function () {
                   rendition = book.renderTo('viewer', {
-                    flow: 'paginated',
+                    // The one place the flow is chosen; see READER_FLOW above.
+                    flow: READER_FLOW,
+                    // '100%' AS STRINGS, NOT NUMBERS — this is what makes the
+                    // reader survive a rotation. Stage.onResize only attaches a
+                    // window resize listener when width/height are NOT numeric
+                    // (epubjs/src/managers/helpers/stage.js:147-153), and that
+                    // listener is the whole of our resize handling: it lands in
+                    // Rendition.onResized, which re-lays out and re-displays the
+                    // current CFI (rendition.js:479-481). Pass pixel numbers here
+                    // and rotation silently stops re-flowing. Pinned by
+                    // readerTemplate.test.ts.
                     width: '100%',
                     height: '100%',
                     // 'none' keeps one page per screen. The default ('auto')
                     // shows two side-by-side on wide screens, which makes
                     // next/prev look like it is skipping pages.
                     spread: 'none',
+                  });
+
+                  // BEFORE display(), deliberately. The hook is what inserts the
+                  // stylesheet into each chapter document as it loads, so registering
+                  // it first means the first chapter is columnised with the baseline
+                  // already applied. Register it after and the first page paints at UA
+                  // defaults and then re-flows — a visible flash of the exact bug this
+                  // fixes.
+                  //
+                  // One hook, both jobs, because both need the chapter's document and
+                  // both must run for every chapter rather than once per book.
+                  applyBaselineCss();
+                  rendition.hooks.content.register(function (contents) {
+                    contents.addStylesheetCss(currentCss, STYLESHEET_KEY);
+
+                    if (isPaginated()) {
+                      applyAuthoredBreaks(contents.document);
+                    }
+                  });
+
+                  // Rotation changes the type size AND the line-grid remainder, so a
+                  // sheet built for portrait leaves sliced lines in landscape. epub.js
+                  // already re-lays out and re-displays the current CFI on resize (see
+                  // the note on width/height below); this is the stylesheet half of it.
+                  rendition.on('resized', function () {
+                    applyBaselineCss();
                   });
 
                   rendition.on('relocated', function (location) {
@@ -227,9 +666,7 @@
                   return book.loaded.navigation;
                 })
                 .then(function (navigation) {
-                  var toc = (navigation && navigation.toc ? navigation.toc : []).map(function (i) {
-                    return { label: (i.label || '').trim(), href: i.href };
-                  });
+                  var toc = flattenToc(navigation && navigation.toc ? navigation.toc : [], 0, []);
                   post({ type: 'toc', items: toc });
                 })
                 .catch(function (error) {

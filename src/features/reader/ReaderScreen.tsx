@@ -17,6 +17,8 @@ import {
   View,
 } from 'react-native';
 
+import { LinearGradient } from 'expo-linear-gradient';
+
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
@@ -55,6 +57,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [showToc, setShowToc] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
+
+  /**
+   * Which edges of the Contents list are currently faded.
+   *
+   * ONE STATE OBJECT OF TWO BOOLEANS, NOT THE SCROLL OFFSET. Keeping the offset in
+   * state would re-render the whole panel — every row — on every scroll frame. These
+   * flip at most twice per gesture, and setFades() below returns the previous object
+   * unchanged when nothing flipped, so React bails out of the render entirely.
+   */
+  const [fades, setFades] = useState({ top: false, bottom: false });
+
+  // Measurements behind the fades, in refs for the same reason: they are inputs to a
+  // derived boolean, and nothing should re-render because a scroll offset moved.
+  const listFrameRef = useRef(0);
+  const listContentRef = useRef(0);
+  const listOffsetRef = useRef(0);
+
+  /**
+   * Decide which edges get a fade from the three numbers above.
+   *
+   * Driven from THREE events, not just onScroll: a list too short to scroll never
+   * emits a scroll event at all, so onLayout (frame) and onContentSizeChange (content)
+   * are what stop a fade appearing over a list that has nothing hidden below it.
+   */
+  const recomputeFades = useCallback((): void => {
+    const frame = listFrameRef.current;
+    const content = listContentRef.current;
+    const offset = listOffsetRef.current;
+    const scrollable = content > frame + FADE_EPSILON_PX;
+
+    const next = {
+      top: scrollable && offset > FADE_EPSILON_PX,
+      bottom: scrollable && offset + frame < content - FADE_EPSILON_PX,
+    };
+
+    setFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
+  }, []);
 
   // When the `open` command was handed to injectJavaScript. A ref, not state: it is written on the
   // bridge path and read in the message handler, and re-rendering on it would perturb the very
@@ -272,28 +311,112 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         {showToc && (
           <View style={styles.tocPanel}>
             <Text style={styles.tocTitle}>Contents</Text>
-            <ScrollView>
-              {toc.length === 0 ? (
-                <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
-              ) : (
-                // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
-                // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
-                // producer emitted from citation text), which collided and raised React's
-                // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
-                // be identity here.
-                toc.map((item, index) => (
-                  <Pressable
-                    key={`${index}-${item.href}`}
-                    onPress={() => {
-                      goTo(item.href);
-                    }}
-                    style={styles.tocItem}
-                  >
-                    <Text style={styles.tocItemText}>{item.label}</Text>
-                  </Pressable>
-                ))
+            {/*
+              DO NOT ADD `flex: 1` HERE "so the list scrolls". It was tried, and it is a
+              no-op: RN's ScrollView already carries flexGrow/flexShrink: 1 in its own
+              base style (react-native/Libraries/Components/ScrollView/ScrollView.js:1881),
+              so it is already bounded by this absolutely-filled panel. Measured on device
+              2026-08-14 with the 22-entry fixture TOC and NO style here: frame 600pt,
+              content 1054pt — i.e. already scrolling. Yoga's flexShrink: 0 default, which
+              is the usual reason to reach for flex: 1, does not apply to ScrollView.
+            */}
+            {/*
+              The fades anchor to THIS wrapper rather than to the panel, so their
+              offsets are the list's own edges — no restating the panel's padding and
+              no guessing the header's height. `flex: 1` IS needed here (unlike on the
+              ScrollView, which brings its own base style): a plain View defaults to
+              flexShrink: 0.
+            */}
+            <View style={styles.tocListWrap}>
+              <ScrollView
+                testID="reader-toc-list"
+                // BOUNDING THE LIST, which is a different problem from scrolling it. The
+                // panel's edge cuts whichever row happens to cross it, and a row sliced
+                // by a straight edge reads as a broken layout rather than as "there is
+                // more below". Four parts:
+                //  - the fades below dissolve the cut instead of ending it on a line;
+                //  - contentContainerStyle's paddingBottom lets the FINAL entry come
+                //    fully clear of the edge rather than resting half-hidden under it;
+                //  - the divider above the list closes the header off;
+                //  - the scroll indicator is the affordance that says "scrollable".
+                // The three handlers feed recomputeFades — see the note there for why a
+                // short list needs all three and not just onScroll.
+                style={styles.tocList}
+                contentContainerStyle={styles.tocListContent}
+                showsVerticalScrollIndicator
+                scrollEventThrottle={16}
+                onLayout={(event) => {
+                  listFrameRef.current = event.nativeEvent.layout.height;
+                  recomputeFades();
+                }}
+                onContentSizeChange={(_width, height) => {
+                  listContentRef.current = height;
+                  recomputeFades();
+                }}
+                onScroll={(event) => {
+                  listOffsetRef.current = event.nativeEvent.contentOffset.y;
+                  recomputeFades();
+                }}
+              >
+                {toc.length === 0 ? (
+                  <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
+                ) : (
+                  // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
+                  // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
+                  // producer emitted from citation text), which collided and raised React's
+                  // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
+                  // be identity here.
+                  toc.map((item, index) => (
+                    <Pressable
+                      key={`${index}-${item.href}`}
+                      onPress={() => {
+                        goTo(item.href);
+                      }}
+                      // Indent, do not inset the row: paddingLeft keeps the whole
+                      // width tappable at every depth, where marginLeft would shrink
+                      // the touch target of the entries that are already hardest to
+                      // hit. `depth` is clamped by parseReaderMessage, so this cannot
+                      // run away.
+                      style={[styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]}
+                    >
+                      <Text style={styles.tocItemText}>{item.label}</Text>
+                    </Pressable>
+                  ))
+                )}
+              </ScrollView>
+
+              {/*
+              THE FADES. Rendered as siblings AFTER the ScrollView so they paint over
+              it, and `pointerEvents="none"` so they never eat a tap meant for the row
+              underneath — a fade that swallows touches is worse than the sliced row it
+              replaced.
+
+              Conditional rather than always-mounted with zero opacity: at the top of
+              the list there is nothing above to fade, and a permanent white veil over
+              the first row would be the same visual bug in a different place.
+
+              The colour is the panel's own background, so the gradient dissolves the
+              row into the panel rather than tinting it. If the panel ever stops being
+              #ffffff (src/theme/ landing, or a dark theme) these two constants move
+              with it — which is why they sit next to it rather than inline.
+            */}
+              {fades.top && (
+                <LinearGradient
+                  testID="reader-toc-fade-top"
+                  pointerEvents="none"
+                  colors={TOC_FADE_DOWN}
+                  style={[styles.tocFade, styles.tocFadeTop]}
+                />
               )}
-            </ScrollView>
+              {fades.bottom && (
+                <LinearGradient
+                  testID="reader-toc-fade-bottom"
+                  pointerEvents="none"
+                  colors={TOC_FADE_UP}
+                  style={[styles.tocFade, styles.tocFadeBottom]}
+                />
+              )}
+            </View>
           </View>
         )}
 
@@ -344,6 +467,26 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   );
 }
 
+/**
+ * Indent per TOC nesting level. A book's navigation document is a tree; the bridge
+ * flattens it and carries a `depth`, so this is the only place the tree is visible.
+ */
+const TOC_INDENT_PX = 16;
+
+/**
+ * Slack, in points, before an edge counts as "scrolled away from".
+ *
+ * Not zero: contentOffset and contentSize are floats that rarely land on exactly the
+ * same value (the fixture's list measures 1053.666…), so an equality test leaves the
+ * bottom fade showing when the list IS at its end.
+ */
+const FADE_EPSILON_PX = 1;
+
+// Transparent → panel background. Written as rgba rather than '#ffffff00' because
+// Android's colour parser has historically been unreliable with 8-digit hex.
+const TOC_FADE_UP = ['rgba(255, 255, 255, 0)', '#ffffff'] as const;
+const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
+
 /** Overlay fill. See the note on `busy` below for why this is not absoluteFillObject. */
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
 
@@ -375,6 +518,25 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
+
+  // Only a TOP hairline, to close the header off. There is deliberately no bottom
+  // border any more: a hairline and a fade at the same edge fight each other — the
+  // line reasserts the hard cut the fade exists to dissolve.
+  tocList: { borderTopWidth: 1, borderTopColor: '#e2e2e2' },
+
+  // Room for the last entry to scroll clear of the panel edge. One row's worth, so it
+  // does not read as a gap when the list is short.
+  tocListContent: { paddingBottom: 48 },
+
+  tocListWrap: { flex: 1 },
+
+  // Anchored to tocListWrap, so these offsets are the list's own edges. 40pt is about
+  // one and a half rows: long enough that the dissolve is gradual rather than a
+  // soft-edged band, short enough that it never obscures a whole entry.
+  tocFade: { position: 'absolute', left: 0, right: 0, height: 40 },
+  // 1, not 0: sits directly below the list's top hairline instead of washing it out.
+  tocFadeTop: { top: 1 },
+  tocFadeBottom: { bottom: 0 },
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },

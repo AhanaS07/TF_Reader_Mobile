@@ -1,9 +1,11 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
 **Owner:** Reader (Ahana) · **Status:** accepted debt, not yet due
-**Last reviewed:** 2026-08-14, after `goTo` was widened to accept an EPUB CFI for Search —
-**all five triggers re-run and NONE fired** (see the in-book search row in
-[Stage forecast](#stage-forecast)). The conversion is still due at prefs-application.
+**Last reviewed:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
+into the `toc` message — **all five triggers re-run and NONE fired**, but trigger 1 is now _at_ its
+field boundary rather than comfortably inside it, because this was the first change to grow a
+payload **shape** rather than a name (see the TOC row in [Stage forecast](#stage-forecast)). The
+conversion is still due at prefs-application.
 
 This file exists because the WebView half of the reader bridge is **not typechecked**, that is a
 deliberate choice, and a deliberate choice with a cost needs a written expiry date. Everything
@@ -39,13 +41,13 @@ As of 2026-08-14. **Keep this table accurate — it is the input to the trigger 
 
 **WebView → host** (`ReaderMessage`, one case per `post({ type: ... })` in the template)
 
-| Type        | Payload fields              | Count |
-| ----------- | --------------------------- | ----- |
-| `ready`     | —                           | 0     |
-| `rendered`  | —                           | 0     |
-| `relocated` | `cfi`, `atStart`, `atEnd`   | 3     |
-| `toc`       | `items[]` (`{label, href}`) | 1     |
-| `error`     | `code`, `message`           | 2     |
+| Type        | Payload fields                     | Count |
+| ----------- | ---------------------------------- | ----- |
+| `ready`     | —                                  | 0     |
+| `rendered`  | —                                  | 0     |
+| `relocated` | `cfi`, `atStart`, `atEnd`          | 3     |
+| `toc`       | `items[]` (`{label, href, depth}`) | 1     |
+| `error`     | `code`, `message`                  | 2     |
 
 **Host → WebView** (`READER_COMMANDS` keys ↔ `window.TFReader` method names)
 
@@ -63,6 +65,15 @@ discriminates the two forms itself via `isCfiString()`.
 
 **5 message types, 4 commands, max 3 fields per case, zero request/reply.** That is the whole
 contract. It is small enough to hold in your head, which is the only reason this is safe.
+
+`toc.items[].depth` is the nesting level in the book's navigation tree, 0 for a top-level entry.
+The tree is flattened depth-first **in the template** and crosses as one ordered flat list, because
+a recursive payload is the shape hand-sync is worst at — the host indents by `depth` instead. Both
+sides clamp it to `MAX_TOC_DEPTH` (6): the template as it flattens, and `parseReaderMessage` again
+because the value originates in a book's own navigation document. A **missing** `depth` parses as 0
+rather than rejecting the entry, so a working tree holding a stale generated `reader.html` degrades
+to today's flat list instead of an empty Contents panel. **Counting the TOC entry as 3 fields, this
+case is now at trigger 1's boundary — the next field added to it converts.**
 
 ## What protects it today — and what doesn't
 
@@ -87,6 +98,15 @@ differently-shaped object, or that a payload type owned by _another team's froze
 changed underneath it. Today every case has ≤3 flat primitive fields, so there is almost no shape
 to get wrong. **That is the property that expires**, and the triggers below are all restatements
 of "shape now matters".
+
+**Partly protected, as of the TOC flatten: template-side payload construction.** The `toc` message
+is the one place the template _shapes_ a payload rather than forwarding a primitive, and the failure
+it can produce is invisible to everything above — a perfectly well-formed `toc` message carrying
+only the top level of a nested navigation tree. `readerTemplate.test.ts` covers that specific class
+by reading the template as text: it asserts the flatten recurses through `subitems`, that the depth
+cap matches `MAX_TOC_DEPTH`, and that the three typographic constants copied out of `DEFAULT_PREFS`
+still equal it. That is a **guard per known trap, not a type system** — it does not generalise, and
+each new one has to be written by hand. Which is the argument for the conversion, not against it.
 
 **Also not protected: prose.** The template's comments went stale within one day of the Day-3
 wiring — it still claimed "No crypto anywhere in this baseline" while receiving decrypted
@@ -128,18 +148,38 @@ risk drift; it silently removes that shape from the freeze's blast radius.
 
 Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not certainty.
 
-| Stage                                                  | Owner                               | What it adds to the bridge                                                                        | Triggers                     | Verdict                       |
-| ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------- | ----------------------------- |
-| **Day 3 — whole-book decrypt** ✅ done                 | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                         | debt stayed cheap             |
-| **Day 4 — 20 MB whole-book transport** ✅ done         | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit** | ⚠️ was the predicted trigger  |
-| **Navigation / library shell**                         | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                         | no action                     |
-| **Progress persistence** (`progress.ts`)               | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                         | no action                     |
-| **Prefs applied to the rendition** (`prefs.ts`)        | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                  | ⚠️ **convert here**           |
-| **Annotations** (`annotations.ts`)                     | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                  | 🛑 hard deadline              |
-| **In-book search** (`search.ts`) ✅ bridge side done   | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**   | cheap — don't let it fool you |
-| **TTS + word/sentence highlight** (`accessibility.ts`) | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                  | unthinkable by hand           |
+| Stage                                                              | Owner                               | What it adds to the bridge                                                                        | Triggers                             | Verdict                       |
+| ------------------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ | ----------------------------- |
+| **Day 3 — whole-book decrypt** ✅ done                             | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                                 | debt stayed cheap             |
+| **Day 4 — 20 MB whole-book transport** ✅ done                     | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit**         | ⚠️ was the predicted trigger  |
+| **Contents panel fix — nested TOC + typographic baseline** ✅ done | Ahana                               | `toc` items gain `depth`; stylesheet, line grid and column breaks are all inside the WebView      | **none — 1 tested, AT the boundary** | ⚠️ next TOC field converts    |
+| **Navigation / library shell**                                     | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                                 | no action                     |
+| **Progress persistence** (`progress.ts`)                           | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                                 | no action                     |
+| **Prefs applied to the rendition** (`prefs.ts`)                    | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                          | ⚠️ **convert here**           |
+| **Annotations** (`annotations.ts`)                                 | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                          | 🛑 hard deadline              |
+| **In-book search** (`search.ts`) ✅ bridge side done               | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**           | cheap — don't let it fool you |
+| **TTS + word/sentence highlight** (`accessibility.ts`)             | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                          | unthinkable by hand           |
 
-Three things worth calling out, because all three contradict the obvious guess:
+Four things worth calling out, because all four contradict the obvious guess:
+
+- **A typographic baseline looks like prefs-application and is not.** Applying
+  `rendition.themes.default(...)` is one of the exact `rendition.*` calls this file names as the
+  converting stage — but the theme is built inside the WebView from three local constants and
+  crosses nothing. No command, no message type, no `SharedPrefs`. The same distinction as Search:
+  what converts is prefs **arriving from RN**, not the epub.js call they eventually drive. What it
+  did cost is worth naming honestly, though — three values are now hand-copied out of a frozen
+  contract (`DEFAULT_PREFS.typography`) into untypechecked JS. That is trigger 3's _smell_ without
+  being trigger 3, since no frozen type crosses the bridge, and it is only survivable because
+  `readerTemplate.test.ts` pins the copies to the contract. It is also the clearest preview yet of
+  why prefs converts: the second those numbers start arriving over the bridge, a test that greps for
+  literals cannot help.
+
+  What that stage inherits, though, is a single seam rather than a rewrite. The template now holds
+  the flow in one constant (`READER_FLOW`) and derives everything flow-specific — the line grid, the
+  authored-page-break translation — from `isPaginated()`. `LayoutPrefs.flow` becomes the value that
+  sets that constant, and `TypographyPrefs` becomes the argument to `readerMetrics()`, which is
+  already a pure function of its inputs. So prefs-application is a conversion of how this file is
+  BUILT, not a redesign of what it does.
 
 - **Day 3 was the predicted trigger and it didn't fire.** The reviewer expected the
   decrypted-buffer handoff, new error codes and TOC payloads to grow the bridge. In the event the
@@ -230,6 +270,9 @@ Every time you add or change a message type or command:
 ## Related
 
 - `src/features/reader/readerBridge.ts` — the typed half; carries the same trigger list inline.
+- `src/features/reader/readerTemplate.test.ts` — the non-protocol template guards: the
+  `DEFAULT_PREFS` constants copied into the theme, the TOC flatten, and the `'100%'` rendition
+  dimensions that epub.js's resize handling depends on being non-numeric.
 - `src/features/reader/scripts/buildReaderHtml.ts` — the generator that would host the build step.
 - `src/features/reader/ReaderWebView.tsx` — the navigation lockdown that contains decrypted
   content; load-bearing since Day 3.
