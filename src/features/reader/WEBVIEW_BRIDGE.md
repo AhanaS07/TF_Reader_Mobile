@@ -1,8 +1,9 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
 **Owner:** Reader (Ahana) · **Status:** accepted debt, not yet due
-**Last reviewed:** 2026-08-13, after the 20 MB whole-book transport measurement — **trigger 4
-re-run against real numbers and did NOT fire** (see the Day 4 row in [Stage forecast](#stage-forecast))
+**Last reviewed:** 2026-08-14, after `goTo` was widened to accept an EPUB CFI for Search —
+**all five triggers re-run and NONE fired** (see the in-book search row in
+[Stage forecast](#stage-forecast)). The conversion is still due at prefs-application.
 
 This file exists because the WebView half of the reader bridge is **not typechecked**, that is a
 deliberate choice, and a deliberate choice with a cost needs a written expiry date. Everything
@@ -34,7 +35,7 @@ what does that (see [What protects it today](#what-protects-it-today--and-what-d
 
 ## Current surface
 
-As of 2026-08-12. **Keep this table accurate — it is the input to the trigger test below.**
+As of 2026-08-14. **Keep this table accurate — it is the input to the trigger test below.**
 
 **WebView → host** (`ReaderMessage`, one case per `post({ type: ... })` in the template)
 
@@ -53,7 +54,12 @@ As of 2026-08-12. **Keep this table accurate — it is the input to the trigger 
 | `open`  | `base64` | no     |
 | `next`  | —        | no     |
 | `prev`  | —        | no     |
-| `goTo`  | `href`   | no     |
+| `goTo`  | `target` | no     |
+
+`goTo.target` is a spine href **or** an EPUB CFI, as one bare `string`. It is deliberately not a
+`Locator`: Search stores the union, the host unwraps `.cfi`, and only the string crosses. Widening
+it to the union would fire trigger 3 for no runtime gain, since epub.js's `spine.get()` already
+discriminates the two forms itself via `isCfiString()`.
 
 **5 message types, 4 commands, max 3 fields per case, zero request/reply.** That is the whole
 contract. It is small enough to hold in your head, which is the only reason this is safe.
@@ -102,7 +108,7 @@ Convert to a typechecked WebView build when **any one** of these becomes true:
    the cheapest possible moment to acquire a compiler.
    > **Re-run 2026-08-13 against a real 20 MB book: DID NOT FIRE.** The transport is still
    > base64-over-`injectJavaScript` and is staying, because measurement showed it is not the
-   > bottleneck (~330 ms, ~5% of a warm open). Swapping the base64 *implementation* on each side —
+   > bottleneck (~330 ms, ~5% of a warm open). Swapping the base64 _implementation_ on each side —
    > `react-native-quick-base64` host-side, `Uint8Array.fromBase64` in the template — changes no
    > command, no payload shape and no message type, so it is not a new transport. See the Day 4 row
    > in [Stage forecast](#stage-forecast). **Chunking would still fire this** (and trigger 5), so if
@@ -122,16 +128,16 @@ risk drift; it silently removes that shape from the freeze's blast radius.
 
 Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not certainty.
 
-| Stage                                                  | Owner                               | What it adds to the bridge                                                                        | Triggers                    | Verdict                       |
-| ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------- |
-| **Day 3 — whole-book decrypt** ✅ done                 | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                        | debt stayed cheap             |
-| **Day 4 — 20 MB whole-book transport** ✅ done          | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit** | ⚠️ was the predicted trigger  |
-| **Navigation / library shell**                         | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                        | no action                     |
-| **Progress persistence** (`progress.ts`)               | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                        | no action                     |
-| **Prefs applied to the rendition** (`prefs.ts`)        | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                 | ⚠️ **convert here**           |
-| **Annotations** (`annotations.ts`)                     | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                 | 🛑 hard deadline              |
-| **In-book search** (`search.ts`)                       | Vaishnavi                           | _probably nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo` | none, if `goTo` takes a CFI | cheap — don't let it fool you |
-| **TTS + word/sentence highlight** (`accessibility.ts`) | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                 | unthinkable by hand           |
+| Stage                                                  | Owner                               | What it adds to the bridge                                                                        | Triggers                     | Verdict                       |
+| ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------- | ----------------------------- |
+| **Day 3 — whole-book decrypt** ✅ done                 | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                         | debt stayed cheap             |
+| **Day 4 — 20 MB whole-book transport** ✅ done         | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit** | ⚠️ was the predicted trigger  |
+| **Navigation / library shell**                         | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                         | no action                     |
+| **Progress persistence** (`progress.ts`)               | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                         | no action                     |
+| **Prefs applied to the rendition** (`prefs.ts`)        | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                  | ⚠️ **convert here**           |
+| **Annotations** (`annotations.ts`)                     | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                  | 🛑 hard deadline              |
+| **In-book search** (`search.ts`) ✅ bridge side done   | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**   | cheap — don't let it fool you |
+| **TTS + word/sentence highlight** (`accessibility.ts`) | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                  | unthinkable by hand           |
 
 Three things worth calling out, because all three contradict the obvious guess:
 
@@ -142,7 +148,7 @@ Three things worth calling out, because all three contradict the obvious guess:
   correct.
 - **Day 4 was going to fire trigger 4, and measurement is why it didn't.** This row was not in the
   forecast at all — the table assumed prefs-application would be first. The 20 MB work looked
-  certain to trip trigger 4, because `readerAssets.ts` and this file both *asserted in comments*
+  certain to trip trigger 4, because `readerAssets.ts` and this file both _asserted in comments_
   that base64-over-`injectJavaScript` "does not scale" to a 20 MB book. **Both comments were
   predictions, and both were wrong.** Tested before changing anything: a 27,962,028-char payload
   (the exact base64 length of a 20 MB book) crossed `injectJavaScript` into WKWebView in **305 ms**,
@@ -151,12 +157,19 @@ Three things worth calling out, because all three contradict the obvious guess:
   So the fix was to swap the codec on each side **behind an unchanged `open(base64)`** — no command,
   no payload shape, no message type altered. **Trigger 4 was checked and did not fire.** The
   conversion stays due at prefs-application, exactly as this file already said.
-  Recorded because a trigger that was *tested* and held is evidence; a trigger nobody re-ran is
+  Recorded because a trigger that was _tested_ and held is evidence; a trigger nobody re-ran is
   just an assumption with a date on it.
 - **Search looks like a bridge feature and mostly isn't.** `search.ts` builds the index
   server-side and decrypts it into RAM alongside the book, so querying happens in RN. Only
   _seeking_ touches the WebView, and `goTo` already covers it. Don't schedule the conversion
   around search.
+  > **Re-run 2026-08-14, when `goTo` was widened to take a CFI: DID NOT FIRE.** This row was
+  > conditional on `goTo` accepting a CFI; it now does. The condition was met by renaming the arg
+  > `href` → `target` and carrying a bare `string`, so no command was added, none needs a reply,
+  > and no frozen contract crosses. Trigger 3 is the one to watch here and it turns entirely on the
+  > unwrap: the host converts `SearchHit.locator` → `.cfi` before sending. Hand the `Locator` union
+  > to the bridge instead and this row becomes a conversion. The capability needed no new epub.js
+  > surface — `rendition.display()` already resolved CFIs.
 
 ## The verdict
 

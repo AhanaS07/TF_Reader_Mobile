@@ -254,9 +254,12 @@
             });
           },
 
-          goTo: function (href) {
+          // `target` is a spine href (TOC) or an EPUB CFI (Search hit). No branch
+          // here on purpose: epub.js's spine.get() checks isCfiString() before its
+          // href lookup, so display() already routes both correctly.
+          goTo: function (target) {
             if (!rendition) return fail('NOT_READY', 'goTo() before a book was opened');
-            rendition.display(href).catch(function (error) {
+            rendition.display(target).catch(function (error) {
               fail('NAVIGATION_FAILED', error);
             });
           },

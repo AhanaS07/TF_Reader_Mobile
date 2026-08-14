@@ -112,10 +112,21 @@ describe('buildCommandScript', () => {
   });
 
   it('JSON-encodes arguments so book content cannot break out of the string', () => {
-    // A malicious/broken TOC href is content, and content is untrusted.
-    const script = buildCommandScript({ type: 'goTo', href: `a'); alert('xss` });
+    // A malicious/broken goTo target is content, and content is untrusted.
+    const script = buildCommandScript({ type: 'goTo', target: `a'); alert('xss` });
     expect(script).toContain(String.raw`window.TFReader.goTo("a'); alert('xss")`);
     expect(script).not.toContain(`goTo('a');`);
+  });
+
+  it('carries an EPUB CFI target verbatim, not just a spine href', () => {
+    // Search mints CFIs at index-build time (search/extractor.ts) and the Reader
+    // resolves them through this same command — epub.js's spine.get() branches on
+    // isCfiString() before its href lookup. The brackets and parens of a real CFI
+    // must survive JSON encoding unmangled or the seek silently misses.
+    const cfi = 'epubcfi(/6/2[ch1]!/4/4/1:113)';
+    expect(buildCommandScript({ type: 'goTo', target: cfi })).toContain(
+      `window.TFReader.goTo(${JSON.stringify(cfi)})`,
+    );
   });
 
   it('guards against a missing bridge and ends with a statement value', () => {
