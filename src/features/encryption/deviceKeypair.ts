@@ -122,6 +122,25 @@ export async function generateDeviceKeypair(): Promise<{ publicKey: string }> {
 }
 
 /**
+ * Converts a PEM (SPKI) public key into "base64 of raw key bytes" — the wire shape the real
+ * flambeau backend's `ReadingSessionRequest.devicePublicKey` requires (reading-session.ts's own
+ * header: "NOT a PEM, NOT a JWK"). A PEM body IS already base64 of the DER bytes, wrapped with a
+ * header/footer and line breaks per RFC 7468 — so this is a string strip, not a re-encode: no
+ * base64-decode/re-encode round trip, no DER parser dependency. Deliberately NOT what
+ * deviceKeyRegistration.ts's (now-unused) `asciiToBytes`+`bytesToBase64` pair did — that
+ * base64-encoded the PEM's own ASCII TEXT (headers, footers and newlines included) for the old
+ * mock `POST /device/register-key` body, a completely different, non-interoperable wire value.
+ *
+ * @param publicKeyPem - PEM (SPKI) public key, as returned by generateDeviceKeypair().
+ */
+export function publicKeyToRawBase64(publicKeyPem: string): string {
+  return publicKeyPem
+    .replace(/-----BEGIN PUBLIC KEY-----/, '')
+    .replace(/-----END PUBLIC KEY-----/, '')
+    .replace(/\s+/g, '');
+}
+
+/**
  * Returns a reference/handle to the device's stored private key — here, the keychain service
  * name it's namespaced under, NOT the key material itself. Throws if no keypair has been
  * generated yet (nothing to reference).

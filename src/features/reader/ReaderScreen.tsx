@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
+import { DownloadFailure } from '@/features/download/errors';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import { getBookBase64, getReaderHtmlUri } from '@/features/reader/readerAssets';
 import type {
@@ -178,12 +179,19 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           // what lets "the licence expired" be told apart from "the ciphertext
           // was tampered with" on screen, which errors.ts requires be distinct
           // and explicit rather than one generic failure.
+          // DownloadFailure (added 2026-08-14, verifyReadingAccess's per-open access re-check —
+          // readerAssets.ts's getBookBase64) carries the same kind of typed `.code` ContentFailure
+          // does, just from Download's own carrier (errors.ts) rather than Encryption's — checked
+          // alongside it for the same reason: a bare message would throw away which access-
+          // revocation code this was.
           raiseError(
             'CONTENT_LOAD_FAILED',
             cause instanceof ContentFailure
               ? `Could not open this book: ${cause.code}. (${String(cause.cause ?? cause.message)})`
-              : `Could not open this book. ` +
-                  `(${cause instanceof Error ? cause.message : String(cause)})`,
+              : cause instanceof DownloadFailure
+                ? `Could not open this book: ${cause.code}. (${String(cause.cause ?? cause.message)})`
+                : `Could not open this book. ` +
+                    `(${cause instanceof Error ? cause.message : String(cause)})`,
           );
         }
       })();

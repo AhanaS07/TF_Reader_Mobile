@@ -15,35 +15,17 @@
 //
 // Serialization: BookSearchIndex -> JSON -> bytes -> AES-256-GCM (this module's own `encrypt`,
 // the same primitive aesGcm.ts uses for book content) -> the nonce(12)||ciphertext||tag(16) shape
-// EncryptedPackage.index expects. String<->bytes uses a plain ASCII codec, not TextEncoder/
+// EncryptedPackage.index expects. String<->bytes uses utf8.ts's portable codec, not TextEncoder/
 // TextDecoder — this codebase has been burned twice by assuming an RN-runtime global exists
 // without on-device confirmation (Buffer, in both aesGcm.ts's and keyStorage.ts's early
-// versions — see docs/build-status.md). The mock index's own content (English words, chapter
-// ids, snippets) is ASCII-only by construction, so this is a safe, deliberately narrow
-// alternative, not a general-purpose UTF-8 codec.
+// versions — see docs/build-status.md). This file's own content (English words, chapter ids,
+// snippets) is ASCII-only by construction, but real extracted book text is not — a curly
+// apostrophe or an accented name is enough to break an ASCII-only codec — so this uses the
+// general-purpose UTF-8 codec, not a narrower one scoped to this file's own fixture content.
 
 import type { BookSearchIndex, BuildIndex, Locator, Posting, SearchIndex } from '@/shared/contracts';
 import { encrypt } from './aesGcm';
-
-function asciiEncode(str: string): Uint8Array {
-  const bytes = new Uint8Array(str.length);
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    if (code > 0x7f) {
-      throw new Error(`asciiEncode: non-ASCII character at index ${i} (code ${code}) — mock index content must be ASCII`);
-    }
-    bytes[i] = code;
-  }
-  return bytes;
-}
-
-function asciiDecode(bytes: Uint8Array): string {
-  let out = '';
-  for (let i = 0; i < bytes.length; i++) {
-    out += String.fromCharCode(bytes[i]);
-  }
-  return out;
-}
+import { utf8Encode, utf8Decode } from './utf8';
 
 function mockPosting(chapterId: string, format: 'EPUB' | 'PDF', position: number, snippet: string): Posting {
   const locator: Locator =
@@ -89,7 +71,7 @@ export const createMockSearchIndex: BuildIndex = async (bookId) => {
  */
 export async function encryptMockSearchIndex(bookId: string, bek: Uint8Array): Promise<Uint8Array> {
   const mockIndex = await createMockSearchIndex(bookId);
-  const plaintext = asciiEncode(JSON.stringify(mockIndex));
+  const plaintext = utf8Encode(JSON.stringify(mockIndex));
   const payload = await encrypt(plaintext, bek);
   return payload.content;
 }
@@ -101,5 +83,5 @@ export async function encryptMockSearchIndex(bookId: string, bek: Uint8Array): P
  * so tests can assert on structure, not just byte-equality.
  */
 export function decodeSearchIndex(bytes: Uint8Array): BookSearchIndex {
-  return JSON.parse(asciiDecode(bytes)) as BookSearchIndex;
+  return JSON.parse(utf8Decode(bytes)) as BookSearchIndex;
 }
