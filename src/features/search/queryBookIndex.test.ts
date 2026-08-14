@@ -79,4 +79,26 @@ describe('queryBookIndex — bridges getIndex (Bytes) to queryIndex (BookSearchI
     expect(hits).toHaveLength(1);
     expect(hits[0].snippet).toBe(snippet);
   });
+
+  it('throws on a wrong-book index (getIndex handed back the wrong ciphertext)', async () => {
+    const index: BookSearchIndex = {
+      bookId: 'some-other-book',
+      format: 'EPUB',
+      version: 1,
+      index: {
+        hello: [{ chapterId: 'chapter-1', locator: { type: 'EPUB', cfi: 'epubcfi(/6/2!/4/2:0)' }, snippet: 'hello there' }],
+      },
+    };
+    getIndex.mockResolvedValue(indexBytesFor(index));
+
+    await expect(queryBookIndex('book-1', 'hello')).rejects.toThrow(/does not match requested/);
+  });
+
+  it('wraps a decode/parse failure with the requested bookId', async () => {
+    getIndex.mockResolvedValue(utf8Encode('{ not valid json'));
+
+    await expect(queryBookIndex('book-1', 'hello')).rejects.toThrow(
+      /failed to decode search index for "book-1"/,
+    );
+  });
 });
