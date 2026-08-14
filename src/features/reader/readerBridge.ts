@@ -23,7 +23,7 @@
 // opens this file.
 //
 // Accepted debt, not an oversight — but it compounds with surface area, so here
-// is the trigger rather than a vague "someday". Surface as of 2026-08-12:
+// is the trigger rather than a vague "someday". Surface as of 2026-08-14:
 //
 //   5 message types (ready, rendered, relocated, toc, error)
 //   4 commands      (open, next, prev, goTo)
@@ -65,6 +65,12 @@
 // of a warm open — so the transport stayed and only the base64 IMPLEMENTATION
 // changed on each side, behind an unchanged open(base64). Chunking would have
 // fired trigger 4 and 5; it turned out not to be needed. The debt is still cheap.
+//
+// Widening `goTo` to take an EPUB CFI (for Search hits) did NOT trip any either.
+// It is an argument rename, not a new capability — `rendition.display()` already
+// resolved CFIs — and the payload stays a bare string, so trigger 3 is untouched.
+// That last part is the whole reason it stayed cheap: see the note on
+// ReaderCommand below, and do not "simplify" it by passing the Locator.
 //
 // EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
 // epub.js rendition). That is the first stage that trips a trigger, and it trips
@@ -187,11 +193,23 @@ export const READER_COMMANDS = {
   goTo: 'goTo',
 } as const;
 
+/**
+ * `goTo.target` is either a spine href (a TOC entry) or an EPUB CFI (a Search
+ * hit). One command covers both because epub.js discriminates them itself:
+ * `spine.get()` tests `isCfiString(target)` BEFORE the href branch, and
+ * `manager.display()` nulls the target when it equals the section href — so an
+ * href lands at the top of the chapter and a CFI scrolls to its exact offset,
+ * through the same `rendition.display()` call.
+ *
+ * It MUST stay a bare string. Search stores a `Locator`; the host unwraps
+ * `.cfi` before sending. Passing the `Locator` union itself would put a frozen
+ * contract inside untypechecked WebView JS — trigger 3, see WEBVIEW_BRIDGE.md.
+ */
 export type ReaderCommand =
   | { type: 'open'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
-  | { type: 'goTo'; href: string };
+  | { type: 'goTo'; target: string };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -274,10 +292,11 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
  * Three things this has to get right:
  *
  * 1. EVERY argument goes through JSON.stringify. Base64 is alphanumeric so it is
- *    harmless, but a TOC `href` comes from inside the book — i.e. from content —
- *    and pasting untrusted content into an eval'd string is the injection bug
- *    this whole file exists to avoid. It matters more, not less, once the book
- *    is decrypted licensed content.
+ *    harmless, but a `goTo` target comes from inside the book — a TOC href, or a
+ *    CFI minted from the book's own text by Search — and pasting untrusted
+ *    content into an eval'd string is the injection bug this whole file exists
+ *    to avoid. It matters more, not less, once the book is decrypted licensed
+ *    content.
  * 2. The guard for a missing window.TFReader. If the IIFE failed to define it,
  *    an unguarded call throws inside injectJavaScript where nobody sees it; the
  *    guard turns that into a normal coded error message instead.
@@ -290,7 +309,7 @@ export function buildCommandScript(command: ReaderCommand): string {
     command.type === 'open'
       ? JSON.stringify(command.base64)
       : command.type === 'goTo'
-        ? JSON.stringify(command.href)
+        ? JSON.stringify(command.target)
         : '';
 
   return `(function(){
