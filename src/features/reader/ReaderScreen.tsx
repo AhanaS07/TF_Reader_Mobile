@@ -222,10 +222,13 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     }
   }, []);
 
+  // `target` is a spine href or an EPUB CFI — see ReaderCommand in readerBridge.ts.
+  // A SearchHit carries a `Locator`; unwrap it to `locator.cfi` here rather than
+  // sending the union across the bridge.
   const goTo = useCallback(
-    (href: string): void => {
+    (target: string): void => {
       setShowToc(false);
-      send?.({ type: 'goTo', href });
+      send?.({ type: 'goTo', target });
     },
     [send],
   );
