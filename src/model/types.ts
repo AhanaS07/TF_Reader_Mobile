@@ -14,10 +14,14 @@
 import type { BookId, ContentFormat } from '@/shared/types/primitives';
 
 // The OPDS acquisition rel, normalized to a closed union. A union, not a
-// string, because the action vocabulary is explicitly still moving (CLAUDE.md
-// L-3: `Buy` removed, `borrow` redefined, `subscribe` B2C-only) — component
-// variants come off this union, so a vocabulary change edits this one line and
-// the compiler then finds every affected call site.
+// string, so an unrecognised rel fails loudly in rels.ts instead of flowing
+// onward as an arbitrary value.
+//
+// NOT THE BUTTON VOCABULARY, and the distinction now matters. `borrow` here is
+// the wire rel — literally what wokay's feed sends, and all three frozen
+// samples carry it. It survived the 12 Aug flow change untouched even though
+// the borrow BUTTON did not; see ACTION_IDS below. Two similar words, only one
+// of them moved.
 //
 //   http://opds-spec.org/acquisition/borrow       → 'borrow'
 //   http://opds-spec.org/acquisition              → 'acquire'
@@ -27,15 +31,36 @@ export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess';
 // The RESOLVED button vocabulary — what `AccessResult.actions` will hold once
 // `src/access/resolveAccess` exists. Distinct from `AcquisitionRel` above: a
 // rel says which acquisition mechanism a publication uses, this says which
-// buttons to draw once session/loan state is folded in (e.g. an 'acquire' rel
-// while signed out resolves to 'signin', not 'acquire'). Declared as a const
-// array first, with the union derived from it, so validate.ts, the state
-// gallery and filter chips/badges all enumerate the same runtime values the
-// type is derived from — one definition, not several kept in sync by hand.
+// buttons to draw once session and licence state is folded in (e.g. an
+// 'acquire' rel while signed out resolves to 'signIn', not 'acquire').
+// Declared as a const array first, with the union derived from it, so
+// validate.ts, the state gallery and ActionButton all enumerate the same
+// runtime values the type is derived from — one definition, not several kept in
+// sync by hand.
 //
-// `subscribe` STAYS — decided 11 Aug. Individual (B2C) subscribers are not cut
-// from scope; wokay will supply the details later.
-export const ACTION_IDS = ['read', 'download', 'borrow', 'signin', 'waitlist', 'subscribe'] as const;
+// L-3 IS CLOSED. Still six words, but not the same six as of the 12 Aug flow
+// change: `borrow` is gone and `revokeLicence` takes its place, `waitlist`
+// becomes `addToQueue`, `signin` becomes `signIn`. The reader no longer borrows
+// anything — the first tap generates a licence, every tap after it checks one,
+// and the reader is never shown the difference. Anything that still describes a
+// Borrow button is superseded, including the signed design specification.
+//
+// `subscribe` STAYS — decided 11 Aug. B2C is not cut. Tapping it resolves the
+// title to read + download, if the title falls inside the reader's licence.
+//
+// `download` IS NOT AN ELITE ACTION — decided 13 Aug. Elite is read-only: it
+// offers addToQueue, then read + revokeLicence once a licence is held, and no
+// path to an offline copy at any point. That rule lives in resolveAccess and
+// never in a component, which is exactly why `download` stays in this union —
+// Open Access and Subscription both still use it.
+export const ACTION_IDS = [
+  'read',
+  'download',
+  'addToQueue',
+  'revokeLicence',
+  'subscribe',
+  'signIn',
+] as const;
 export type ActionId = (typeof ACTION_IDS)[number];
 
 // How many simultaneous readers the institution's licence allows. Absent for
@@ -169,6 +194,40 @@ export interface Catalogue {
   searchHref?: string;
 }
 
+// One page of catalogue search results — what `normalizeSearchFeed` produces and
+// what the search pipeline (B1) hands the UI.
+//
+// SEARCH IS SERVER-SIDE AND ENTITLEMENT-SCOPED. Matching, tokenising and ranking
+// all happen behind the search endpoint; nothing above the adapter re-orders or
+// re-filters this list. "We filter, you render."
+//
+// THREE FIELDS THAT LOOK ALIKE AND ARE NOT:
+//
+//   `publications` is ALWAYS AN ARRAY HERE, even when the response omitted the
+//   key entirely. A zero-result search legitimately comes back as a navigation
+//   feed with no `publications` at all, and that is a valid empty state — not a
+//   malformed feed. Defaulting it here is what stops every consumer having to
+//   remember that.
+//
+//   `browseInstead` is what the server offers INSTEAD of results: somewhere to go
+//   when the query matched nothing. Empty on a successful search. Reuses
+//   `NavLink` because a browse target is exactly a navigation entry — same title,
+//   same href, same precomputed shelfId.
+//
+//   `next` is the response's own `next` value, KEPT VERBATIM as an opaque string.
+//   Deliberately NOT `Shelf.nextPage`: that is a page INDEX parsed out of the
+//   href, which forces the client to understand the server's paging scheme and
+//   throws MALFORMED_FEED on a cursor it cannot parse. A search response is
+//   followed, not reconstructed — so no caller ever builds this value, and a
+//   cursor-based server needs no change here. Absent ⇒ last page.
+export interface SearchFeed {
+  publications: Publication[];
+  // Server-reported total across all pages. Absent ⇒ the server did not say.
+  totalItems?: number;
+  next?: string;
+  browseInstead: NavLink[];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // From Akriti's dcd04fe types.ts — net-new scope only. Everything below is
 // additive: it does not touch OPDS normalization (rels.ts/normalize.ts) or
@@ -191,14 +250,31 @@ export type AccessTier = (typeof ACCESS_TIERS)[number];
 export const WORK_TYPES = ['book', 'journal', 'article', 'audiobook'] as const;
 export type WorkType = (typeof WORK_TYPES)[number];
 
-// OURS. A UI state, not a wokay field. `no_seats` is ELITE ONLY — Subscription
-// is UNLIMITED, so there is nothing to run out of and no queue can form.
+// OURS. A UI state, not a wokay field — one value per distinct thing the action
+// bar can render, so a state with no visible difference does not belong here.
+//
+// REBUILT for the 12 Aug flow change and the 13 Aug Elite decision. Two left:
+//
+//   `requires_loan` — there is no borrow step left to require.
+//   `no_seats`      — Elite joins the queue whether or not a seat is free, so
+//                     the seat count no longer changes a single button.
+//                     `Availability` is still worth fetching for
+//                     `queuePosition`, but that is a message to display, not a
+//                     state that picks buttons.
+//
+// Two arrived, both Elite: `requires_queue` (no licence held — offer
+// addToQueue) and `queued` (waiting — the same button reads "Added to queue"
+// and cannot be tapped again).
+//
+// `available` covers two shapes rather than one, because the difference is in
+// `actions` and not here: Open Access and Subscription resolve to
+// read + download, Elite-with-a-licence to read + revokeLicence.
 export const ACCESS_STATES = [
   'available',
-  'requires_loan',
   'requires_signin',
+  'requires_queue',
+  'queued',
   'not_entitled',
-  'no_seats',
 ] as const;
 export type AccessState = (typeof ACCESS_STATES)[number];
 
@@ -268,6 +344,12 @@ export interface Loan {
 
 // Elite only, detail screen only. `GET /api/v1/availability?itemId=` on
 // flambeau — the app asks, wokay never do.
+//
+// IT NO LONGER DECIDES A BUTTON — 13 Aug. Elite queues whether or not a seat is
+// free, so `total` and `available` are informational and `queuePosition` is the
+// only field with a job: telling a queued reader where they stand. Nothing in
+// `actions` depends on this call, which means an Elite item resolves the same on
+// a list as on the detail screen.
 export interface Availability {
   itemId: string;
   total: number;

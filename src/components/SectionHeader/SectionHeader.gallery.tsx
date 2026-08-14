@@ -41,7 +41,7 @@ export default function SectionHeaderGallery() {
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <Text style={styles.heading}>SectionHeader</Text>
 
-      <Row label="default — screen 01, the featured carousel" title="Featured" />
+      <Row label="default — screen 01, the category strip" title="Featured" />
 
       <Row label="default — screen 01, the subject row" title="Browse by Subject" />
 

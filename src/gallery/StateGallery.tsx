@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import AccessTierBadgeGallery from '@/components/AccessTierBadge/AccessTierBadge.gallery';
+import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
+import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
@@ -35,6 +37,8 @@ const SECTIONS = [
   'SectionHeader',
   'VoiceOverlay',
   'InstitutionDetailView',
+  'ActionButton',
+  'ActionBar',
 ] as const;
 
 type Section = (typeof SECTIONS)[number];
@@ -82,6 +86,8 @@ export default function StateGallery() {
       {section === 'SectionHeader' && <SectionHeaderGallery />}
       {section === 'VoiceOverlay' && <VoiceOverlayGallery />}
       {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
+      {section === 'ActionButton' && <ActionButtonGallery />}
+      {section === 'ActionBar' && <ActionBarGallery />}
     </View>
   );
 }
