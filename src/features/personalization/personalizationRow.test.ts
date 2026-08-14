@@ -64,4 +64,38 @@ describe('personalizationRow adapter (SQLite schema)', () => {
     const back = fromPersonalizationRow(row);
     expect('customFontUri' in back.font).toBe(false);
   });
+
+  // --- loose-TEXT validation at the read boundary ---------------------------
+  // theme/flow/spread are TEXT in SQLite; a blind cast would let garbage reach
+  // Reader as a typed enum. The read boundary rejects it instead.
+  it('rejects a theme value outside the Theme union rather than casting it', () => {
+    const row = { ...toPersonalizationRow(original), theme: 'neon' };
+    expect(() => fromPersonalizationRow(row)).toThrow(/not a valid theme/);
+  });
+
+  it("still ACCEPTS the deprecated 'highContrast' theme (a valid union member migrated on read)", () => {
+    const row = { ...toPersonalizationRow(original), theme: 'highContrast' };
+    expect(fromPersonalizationRow(row).theme).toBe('highContrast');
+  });
+
+  it('rejects an invalid layout flow / spread', () => {
+    expect(() => fromPersonalizationRow({ ...toPersonalizationRow(original), layout_flow: 'diagonal' })).toThrow(
+      /not a valid layout flow/,
+    );
+    expect(() => fromPersonalizationRow({ ...toPersonalizationRow(original), layout_spread: 'triple' })).toThrow(
+      /not a valid layout spread/,
+    );
+  });
+
+  // --- updated_at guard -----------------------------------------------------
+  // A NaN timestamp silently loses every LWW comparison; fail loud on read.
+  it('throws on an unparseable updated_at instead of returning NaN', () => {
+    const row = { ...toPersonalizationRow(original), updated_at: 'not-a-date' };
+    expect(() => fromPersonalizationRow(row)).toThrow(/unparseable updated_at/);
+  });
+
+  it('throws on a non-finite updatedAt instead of writing an invalid ISO string', () => {
+    const bad: SharedPrefs = { ...original, updatedAt: NaN };
+    expect(() => toPersonalizationRow(bad)).toThrow(/not finite epoch-ms/);
+  });
 });

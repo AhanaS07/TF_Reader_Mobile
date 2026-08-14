@@ -41,7 +41,44 @@ export interface Extractor {
 }
 
 const SAMPLE_EPUB = path.resolve(__dirname, '../../../assets/reader/sample-plaintext.epub');
-const OEBPS = 'OEBPS/';
+
+// --- locate the OPF (do NOT assume OEBPS/) --------------------------------
+//
+// A real EPUB may keep its package document anywhere (OEBPS/, OPS/, root, …);
+// the true location is declared in META-INF/container.xml. The prototype used to
+// hardcode `OEBPS/content.opf`, which happens to be where the sample puts it but
+// breaks on most real books. Resolve it properly so any EPUB works.
+
+async function resolveOpfPath(zip: JSZip): Promise<string> {
+  const containerXml = await zip.file('META-INF/container.xml')?.async('string');
+  if (!containerXml) throw new Error('EPUB missing META-INF/container.xml');
+  const doc = new JSDOM(containerXml, { contentType: 'application/xml' }).window.document;
+  const fullPath = doc.querySelector('rootfile')?.getAttribute('full-path');
+  if (!fullPath) throw new Error('container.xml has no <rootfile full-path>');
+  return fullPath;
+}
+
+/** The directory the OPF lives in, e.g. "OEBPS/content.opf" -> "OEBPS/" (""=root). */
+function opfDirOf(opfPath: string): string {
+  const i = opfPath.lastIndexOf('/');
+  return i === -1 ? '' : opfPath.slice(0, i + 1);
+}
+
+/**
+ * Resolve a spine href (relative to the OPF dir) to a zip entry key, collapsing
+ * `.`/`..` segments and dropping any fragment/percent-encoding. Zip keys have no
+ * leading slash, so empty segments are dropped too.
+ */
+function resolveZipPath(opfDir: string, href: string): string {
+  const decoded = decodeURIComponent(href.split('#')[0]);
+  const out: string[] = [];
+  for (const part of (opfDir + decoded).split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') out.pop();
+    else out.push(part);
+  }
+  return out.join('/');
+}
 
 // --- epub.js DOM env -------------------------------------------------------
 
@@ -179,24 +216,35 @@ function chapterEntriesChecked(xhtml: string, chapterId: string, base: string): 
 }
 
 /**
- * Prototype extractor: unzips the sample EPUB and emits one `IndexEntry` per token
- * across all chapters, in reading (spine, then document) order, each carrying a
- * real EPUB CFI locator.
+ * Prototype extractor for ANY local EPUB at `epubPath`: unzips it, locates the OPF
+ * via container.xml, and emits one `IndexEntry` per token across all chapters, in
+ * reading (spine, then document) order, each carrying a real EPUB CFI locator.
+ *
+ * Still NODE-ONLY (fs/jszip/jsdom). Production swaps in a server-fetch extractor
+ * behind this same `Extractor` seam; the caller (`createPrototypeBuildIndex`) does
+ * not change.
  */
-export const epubSampleExtractor: Extractor = {
-  async extract(_bookId: string): Promise<ExtractedBook> {
-    const zip = await JSZip.loadAsync(fs.readFileSync(SAMPLE_EPUB));
-    const opfXml = await zip.file(`${OEBPS}content.opf`)?.async('string');
-    if (!opfXml) throw new Error('sample EPUB is missing OEBPS/content.opf');
+export function createEpubExtractor(epubPath: string): Extractor {
+  return {
+    async extract(_bookId: string): Promise<ExtractedBook> {
+      const zip = await JSZip.loadAsync(fs.readFileSync(epubPath));
+      const opfPath = await resolveOpfPath(zip);
+      const opfXml = await zip.file(opfPath)?.async('string');
+      if (!opfXml) throw new Error(`EPUB is missing its OPF at ${opfPath}`);
+      const opfDir = opfDirOf(opfPath);
 
-    const entries: IndexEntry[] = [];
-    for (const { chapterId, href, base } of readSpine(opfXml)) {
-      const xhtml = await zip.file(`${OEBPS}${href}`)?.async('string');
-      if (!xhtml) continue;
-      entries.push(...chapterEntriesChecked(xhtml, chapterId, base));
-    }
+      const entries: IndexEntry[] = [];
+      for (const { chapterId, href, base } of readSpine(opfXml)) {
+        const xhtml = await zip.file(resolveZipPath(opfDir, href))?.async('string');
+        if (!xhtml) continue;
+        entries.push(...chapterEntriesChecked(xhtml, chapterId, base));
+      }
 
-    if (entries.length === 0) throw new Error('sample EPUB yielded no entries');
-    return { format: 'EPUB', entries };
-  },
-};
+      if (entries.length === 0) throw new Error(`EPUB ${epubPath} yielded no entries`);
+      return { format: 'EPUB', entries };
+    },
+  };
+}
+
+/** The sample-EPUB extractor the Day-4 tests build against. */
+export const epubSampleExtractor: Extractor = createEpubExtractor(SAMPLE_EPUB);
