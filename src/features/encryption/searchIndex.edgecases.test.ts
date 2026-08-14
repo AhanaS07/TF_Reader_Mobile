@@ -17,6 +17,7 @@ import { NONCE_BYTES } from './cipherLayout';
 import { storeBek } from './keyStorage';
 import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from './contentStore';
 import { createMockSearchIndex, encryptMockSearchIndex, decodeSearchIndex } from './mockSearchIndex';
+import { utf8Encode } from './utf8';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
 
@@ -122,25 +123,53 @@ describe('EDGE: concurrent decryptSearchIndex() calls share one in-flight decryp
   });
 });
 
-describe('EDGE: mockSearchIndex ASCII codec — non-ASCII bookId', () => {
-  it('encryptMockSearchIndex throws a clear error for a bookId containing a non-ASCII character (accented letter)', async () => {
+describe('EDGE: mockSearchIndex UTF-8 codec — non-ASCII bookId and content round-trip', () => {
+  // Was "EDGE: mockSearchIndex ASCII codec — non-ASCII bookId": the old ASCII-only codec threw
+  // here. Real book text isn't ASCII-only (a curly apostrophe or an accented name is enough), so
+  // the fix (utf8.ts) must round-trip this content correctly instead of rejecting it.
+
+  // `encryptMockSearchIndex` returns the assembled nonce(12)||ciphertext||tag(16) shape
+  // (cipherLayout.ts), not a `CipherPayload` object — split it the same way
+  // searchIndex.test.ts's own happy-path test does before handing it to decryptRaw.
+  async function decryptIndexBytes(assembled: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+    const nonce = assembled.subarray(0, NONCE_BYTES);
+    const ciphertextWithTag = assembled.subarray(NONCE_BYTES);
+    return decryptRaw(ciphertextWithTag, nonce, key);
+  }
+
+  it('encryptMockSearchIndex + decodeSearchIndex round-trips a bookId containing an accented letter', async () => {
     const key = randomKey();
-    await expect(encryptMockSearchIndex('boök-1', key)).rejects.toThrow(/asciiEncode: non-ASCII character/);
+    const bookId = 'boök-1';
+    const encrypted = await encryptMockSearchIndex(bookId, key);
+    const decrypted = await decryptIndexBytes(encrypted, key);
+    expect(decodeSearchIndex(decrypted).bookId).toBe(bookId);
   });
 
-  it('encryptMockSearchIndex throws a clear error for a bookId containing an em-dash', async () => {
+  it('encryptMockSearchIndex + decodeSearchIndex round-trips a bookId containing an em-dash', async () => {
     const key = randomKey();
-    await expect(encryptMockSearchIndex('book—1', key)).rejects.toThrow(/asciiEncode: non-ASCII character/);
+    const bookId = 'book—1';
+    const encrypted = await encryptMockSearchIndex(bookId, key);
+    const decrypted = await decryptIndexBytes(encrypted, key);
+    expect(decodeSearchIndex(decrypted).bookId).toBe(bookId);
   });
 
-  it('createMockSearchIndex itself does not throw for a non-ASCII bookId (only the encode step is ASCII-only)', async () => {
-    // createMockSearchIndex just builds the structured object — no encoding happens there, so a
-    // non-ASCII bookId flows through fine; the failure should surface only at encryptMockSearchIndex.
-    const built = await createMockSearchIndex('boök-1');
-    expect(built.bookId).toBe('boök-1');
+  it('round-trips the exact failure case from the original bug report: a curly apostrophe in a snippet', async () => {
+    const key = randomKey();
+    const bookId = 'plain-ascii-book';
+    const encrypted = await encryptMockSearchIndex(bookId, key);
+    const decrypted = await decryptIndexBytes(encrypted, key);
+    const decoded = decodeSearchIndex(decrypted);
+    // Graft a non-ASCII snippet onto the decoded shape and push it back through the same
+    // encode/decode pair the real pipeline uses, so this test exercises content — not just the
+    // bookId field — the way real extracted text would.
+    decoded.index.book[0].snippet = "Bernard’s café — a novella";
+    const replaintext = utf8Encode(JSON.stringify(decoded));
+    const repayload = await encrypt(replaintext, key);
+    const redecrypted = await decryptIndexBytes(repayload.content, key);
+    expect(decodeSearchIndex(redecrypted).index.book[0].snippet).toBe("Bernard’s café — a novella");
   });
 
-  it('createMockSearchIndex\'s own generated content (chapter ids, snippets, cfi strings) is pure ASCII and never trips asciiEncode for an ASCII bookId', async () => {
+  it('createMockSearchIndex\'s own generated content (chapter ids, snippets, cfi strings) is pure ASCII and round-trips for an ASCII bookId', async () => {
     const key = randomKey();
     await expect(encryptMockSearchIndex('plain-ascii-book', key)).resolves.toBeInstanceOf(Uint8Array);
   });

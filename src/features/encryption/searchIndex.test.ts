@@ -9,6 +9,7 @@ import { NONCE_BYTES } from './cipherLayout';
 import { storeBek } from './keyStorage';
 import { contentStore, decryptSearchIndex } from './contentStore';
 import { createMockSearchIndex, encryptMockSearchIndex, decodeSearchIndex } from './mockSearchIndex';
+import { utf8Encode } from './utf8';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
 
@@ -201,9 +202,7 @@ describe('contentStore.decryptSearchIndex — open access (no encryption)', () =
   it('returns the index bytes as-is (no crypto) when the book has no encryption', async () => {
     const bookId = 'idx-oa-1';
     const plaintext = plaintextOf(512, 'open access body');
-    const rawIndexBytes = new TextEncoderLike().encode(
-      JSON.stringify({ bookId, format: 'EPUB', version: 1, index: {} })
-    );
+    const rawIndexBytes = utf8Encode(JSON.stringify({ bookId, format: 'EPUB', version: 1, index: {} }));
 
     await contentStore.store(openAccessPackageWithIndex(bookId, plaintext, rawIndexBytes));
     await contentStore.openSession(bookId);
@@ -221,13 +220,3 @@ describe('contentStore.decryptSearchIndex — open access (no encryption)', () =
     await expect(decryptSearchIndex(bookId)).resolves.toBeNull();
   });
 });
-
-// Minimal ASCII-only encoder for this file's own test fixture — mirrors mockSearchIndex.ts's own
-// avoidance of TextEncoder/Buffer assumptions, kept local since it's only needed for one test.
-class TextEncoderLike {
-  encode(str: string): Uint8Array {
-    const bytes = new Uint8Array(str.length);
-    for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
-    return bytes;
-  }
-}
