@@ -7,24 +7,36 @@ import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
 import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
+import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
+import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
+import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
+import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
+import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
+import ListRowGallery from '@/components/ListRow/ListRow.gallery';
+import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.gallery';
+import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
+import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
+import VoiceOverlayGallery from '@/components/VoiceOverlay/VoiceOverlay.gallery';
 import { color, radius, space, type } from '@theme/tokens';
 
-// A gallery entry that is not in this list is not on screen — nothing else
-// imports these files. AccessTierBadge shipped with an entry that was never
-// registered, so it was invisible on a device until now (CONVENTIONS §9: "a
-// component is not done until its gallery entry renders every state it claims
-// to support").
-//
-// Still orphaned, and not ours to wire: EmptyState, ErrorState, InstitutionRow,
-// ListRow, SearchInput, SectionHeader. Raise with the gallery route's owner.
 const SECTIONS = [
   'Skeleton',
   'TopAppBar',
   'BottomTabBar',
   'BottomSheet',
+  'OfflineBanner',
+  'EmptyState',
+  'ErrorState',
+  'SearchInput',
   'AccessTierBadge',
+  'FilterChip',
+  'InstitutionRow',
+  'ListRow',
+  'SectionHeader',
+  'VoiceOverlay',
+  'InstitutionDetailView',
   'ActionButton',
   'ActionBar',
 ] as const;
@@ -63,7 +75,17 @@ export default function StateGallery() {
       {section === 'TopAppBar' && <TopAppBarGallery />}
       {section === 'BottomTabBar' && <BottomTabBarGallery />}
       {section === 'BottomSheet' && <BottomSheetGallery />}
+      {section === 'OfflineBanner' && <OfflineBannerGallery />}
+      {section === 'EmptyState' && <EmptyStateGallery />}
+      {section === 'ErrorState' && <ErrorStateGallery />}
+      {section === 'SearchInput' && <SearchInputGallery />}
       {section === 'AccessTierBadge' && <AccessTierBadgeGallery />}
+      {section === 'FilterChip' && <FilterChipGallery />}
+      {section === 'InstitutionRow' && <InstitutionRowGallery />}
+      {section === 'ListRow' && <ListRowGallery />}
+      {section === 'SectionHeader' && <SectionHeaderGallery />}
+      {section === 'VoiceOverlay' && <VoiceOverlayGallery />}
+      {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
     </View>
