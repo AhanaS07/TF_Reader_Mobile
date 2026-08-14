@@ -7,6 +7,8 @@ import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
 import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
+import CategoryCardGallery from '@/components/CategoryCard/CategoryCard.gallery';
+import ContentCardGallery from '@/components/ContentCard/ContentCard.gallery';
 import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
 import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
 import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
@@ -17,6 +19,8 @@ import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.galle
 import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
 import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
+import SubjectChipGallery from '@/components/SubjectChip/SubjectChip.gallery';
+import TabsGallery from '@/components/Tabs/Tabs.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
 import VoiceOverlayGallery from '@/components/VoiceOverlay/VoiceOverlay.gallery';
 import { color, radius, space, type } from '@theme/tokens';
@@ -39,6 +43,10 @@ const SECTIONS = [
   'InstitutionDetailView',
   'ActionButton',
   'ActionBar',
+  'CategoryCard',
+  'ContentCard',
+  'SubjectChip',
+  'Tabs',
 ] as const;
 
 type Section = (typeof SECTIONS)[number];
@@ -88,6 +96,10 @@ export default function StateGallery() {
       {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
+      {section === 'CategoryCard' && <CategoryCardGallery />}
+      {section === 'ContentCard' && <ContentCardGallery />}
+      {section === 'SubjectChip' && <SubjectChipGallery />}
+      {section === 'Tabs' && <TabsGallery />}
     </View>
   );
 }
