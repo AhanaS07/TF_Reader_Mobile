@@ -1,11 +1,47 @@
 // Owner: Download (Abhinav).
 //
 // BuildPlan.md Phase 3 + Phase 4 items 1/3/4: the download skeleton's single entry point.
-// Permission -> storage -> 5-book limit -> resolve the encrypted asset by Book ID -> verify its
-// checksum -> reject if the decrypted size would exceed contentStore's RAM budget
+// Permission -> storage -> 5-book limit -> borrow a loan -> open a reading session -> resolve the
+// encrypted asset -> reject if the decrypted size would exceed contentStore's RAM budget
 // (MAX_DECRYPTED_BYTES, BOOK_TOO_LARGE) -> best-effort fetch the encrypted search index, if the
-// licence has one -> hand the bytes to Encryption's store() (never persist plaintext) -> record
+// session has one -> hand the bytes to Encryption's store() (never persist plaintext) -> record
 // the download locally.
+//
+// REAL FLAMBEAU CONTRACT (2026-08-14) — this file now calls `readingSessionClient.ts`'s
+// `borrowLoan`/`openReadingSession` (team flambeau's real, published `POST /api/v1/loans` +
+// `POST /api/v1/reading-sessions`), NOT `contentLicenceClient.ts`'s `fetchContentLicence` (the
+// old mock-shaped `GET /books/:id/content-licence`) — that function, and `ContentLicenceResponse`
+// (content-licence.ts), are left fully in place and still exported/tested, just no longer called
+// from here. See `src/shared/contracts/reading-session.ts`'s header for the full loan-vs-session
+// distinction and why a loan step exists here (no borrow UI/screen exists anywhere in this repo —
+// this function borrows on the caller's behalf, silently, as a pragmatic stand-in).
+//
+// `format` is a NEW required parameter (default 'EPUB' so every pre-existing call site — tests
+// included — keeps compiling and behaving identically): the real request needs it up front
+// (`ReadingSessionRequest.format`), unlike the old mock, which told the CLIENT the format instead
+// of asking for it — there is no catalogue/browse step anywhere in this repo to source it from
+// otherwise.
+//
+// INTENT IS DERIVED FROM THE LOAN, NOT HARDCODED TO 'DOWNLOAD': `loan.canPersist` (from the
+// borrow step, BEFORE the reading session) decides `intent: 'DOWNLOAD'` vs `intent: 'STREAM'`.
+// Hardcoding `'DOWNLOAD'` would make every ELITE (online-only, canPersist:false) book's read
+// attempt fail outright with `403 DOWNLOAD_NOT_PERMITTED` — the real backend refuses that intent
+// for ELITE unconditionally — which would remove Elite readability entirely (the old mock never
+// refused anything; `contentStore.store()` already handles `canPersist:false` gracefully by not
+// persisting). Requesting `'STREAM'` for an ELITE loan instead keeps that path working exactly as
+// before: the bytes still get fetched and handed to `contentStore.store()`, which still declines
+// to write anything to disk/keychain for it, same as always.
+//
+// CHECKSUM: the real `ReadingSessionResponse` carries no checksum field at all — GCM's own
+// authentication tag (checked at decrypt time) is the integrity guarantee, not a separate SHA-256
+// (see `flambeau-contract-comparison.md` §3). `verifyChecksum`/`bytesToHex` stay defined and
+// EXPORTED below (not deleted, not orphaned-and-unused) for a caller that ever gets a checksum
+// from a future response shape, but nothing here calls them today.
+//
+// `cipherLength`/`originalLength` now arrive directly on `content` (`SignedUrl`) instead of being
+// derived — `computeOriginalLength` is kept and used as a defense-in-depth CROSS-CHECK against
+// the server-supplied value instead, matching `content-provider.ts`'s own stated philosophy for
+// `EncryptedPackage` ("REDUNDANT BY DESIGN, so the redundancy is made safe rather than removed").
 //
 // Uses `downloadTable` (the general primitive `downloadRepository.ts` is built on), NOT
 // `downloadRepository`'s own convenience methods (list/currentForBook/recordCompleted) — those
@@ -13,21 +49,18 @@
 // across DIFFERENT books. downloadTable already supports multiple books; the wrapper just wasn't
 // built for this case. See docs/superpowers/specs/2026-08-13-download-devicekey-skeleton-design.md.
 //
-// SEARCH INDEX (added 2026-08-14): `ContentLicenceResponse.index` (content-licence.ts) carries an
-// optional `{ url, encrypted, termCount }` — the real backend shape (team flambeau's
-// `ReadingSessionResponse.index`, forwarding wokay's `IndexUrl` unchanged). Fetched the same way
-// as the main asset and attached to `EncryptedPackage.index`, which contentStore.ts's
-// decryptSearchIndex/getIndex already know how to decrypt — they just never had anything real to
-// decrypt before this, since nothing in the download flow could reach an index URL. A failure
-// fetching the index does NOT fail the whole download: contentStore.ts already treats the index
-// as an independent failure domain from the book itself ("an index-only integrity failure has no
-// business making the book unreadable too" — decryptSearchIndex's own doc comment), so the same
-// philosophy applies here — a book with a temporarily-unfetchable index still downloads and reads
-// fine, just without offline search until a later attempt succeeds.
+// SEARCH INDEX (added 2026-08-14, unchanged by the flambeau migration): `ReadingSessionResponse
+// .index` (reading-session.ts) carries an optional `{ url, encrypted, termCount }`. Fetched the
+// same way as the main asset and attached to `EncryptedPackage.index`, which contentStore.ts's
+// decryptSearchIndex/getIndex already know how to decrypt. A failure fetching the index does NOT
+// fail the whole download: contentStore.ts already treats the index as an independent failure
+// domain from the book itself ("an index-only integrity failure has no business making the book
+// unreadable too" — decryptSearchIndex's own doc comment).
 
 import * as Crypto from 'expo-crypto';
-import type { BookId, EncryptedPackage } from '@/shared/contracts';
+import type { BookId, ContentFormat, EncryptedPackage, SignedLicence } from '@/shared/contracts';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
+import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { withWriteLock } from '../sync/stores/syncableTable';
@@ -36,12 +69,20 @@ import { USER_ID } from '../sync/syncConfig';
 import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
-import { fetchContentLicence, fetchEncryptedAsset } from './contentLicenceClient';
+import { borrowLoan, openReadingSession, fetchEncryptedAsset } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
 
 export const BOOK_LIMIT = 5;
 
-function bytesToHex(bytes: Uint8Array): string {
+// A book with no `dueAt` (open access, which never expires per the real contract) needs SOME
+// value for the local SignedLicence's required `expiresAt` — contentStore.ts's `isLicenceExpired`
+// only ever compares against `Date.now()`, so a far-future placeholder is exactly equivalent to
+// "never expires" for every real check, without needing a third, nullable licence shape.
+const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
+
+// Exported (not just used internally) so it stays a real, callable utility rather than orphaned
+// dead code now that the main flow below no longer calls it — see this file's header.
+export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
@@ -60,7 +101,8 @@ function assertBookLimitNotExceeded(bookId: BookId, rows: DownloadRow[]): void {
   }
 }
 
-async function verifyChecksum(bookId: BookId, bytes: Uint8Array, expectedHex: string): Promise<void> {
+// Exported for the same reason as bytesToHex above — see this file's header ("CHECKSUM:").
+export async function verifyChecksum(bookId: BookId, bytes: Uint8Array, expectedHex: string): Promise<void> {
   // `bytes` arrives typed as the bare (ArrayBufferLike-generic) Uint8Array — fetchEncryptedAsset's
   // declared return type (contentLicenceClient.ts, Task 4, not owned by this task) erases the
   // more specific inference its own body would otherwise carry. `Crypto.digest`'s BufferSource
@@ -80,11 +122,13 @@ async function verifyChecksum(bookId: BookId, bytes: Uint8Array, expectedHex: st
 // Encrypted layout is nonce(12) || ciphertext || tag(16) (cipherLayout.ts) — ciphertext length
 // equals plaintext length for AES-GCM, so originalLength is derivable from cipherLength alone,
 // with no decrypt needed. Open access ships plaintext directly: cipherLength IS originalLength.
-function computeOriginalLength(cipherLength: number, isEncrypted: boolean): number {
+// Used below as a cross-check against the server-supplied value, not to derive it — see this
+// file's header ("cipherLength/originalLength now arrive directly...").
+export function computeOriginalLength(cipherLength: number, isEncrypted: boolean): number {
   return isEncrypted ? cipherLength - NONCE_BYTES - GCM_TAG_BYTES : cipherLength;
 }
 
-export async function downloadBook(bookId: BookId): Promise<void> {
+export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB'): Promise<void> {
   const hasPermission = await checkStoragePermission();
   if (!hasPermission) {
     throw new DownloadFailure(DownloadError.PERMISSION_DENIED, bookId);
@@ -97,15 +141,43 @@ export async function downloadBook(bookId: BookId): Promise<void> {
   // whether a row is written is re-run inside the write lock at the bottom of this function.
   assertBookLimitNotExceeded(bookId, await downloadTable.listActive(USER_ID));
 
-  const licence = await fetchContentLicence(bookId);
-  const bytes = await fetchEncryptedAsset(bookId, licence.encryptedFileUrl);
-  await verifyChecksum(bookId, bytes, licence.checksum);
+  // Loan BEFORE session, always — the real contract's own ordering requirement (reading-session.ts
+  // header). `loan.canPersist` (not `licenceModel`) decides whether we ask to persist at all.
+  const loan = await borrowLoan(bookId);
+
+  const { publicKey } = await generateDeviceKeypair();
+  const devicePublicKey = publicKeyToRawBase64(publicKey);
+
+  const session = await openReadingSession(bookId, {
+    format,
+    intent: loan.canPersist ? 'DOWNLOAD' : 'STREAM',
+    devicePublicKey,
+    wantSearchIndex: true,
+  });
+
+  const bytes = await fetchEncryptedAsset(bookId, session.content.url);
+
+  const isEncrypted = session.encryption != null;
+  const expectedOriginalLength = computeOriginalLength(bytes.length, isEncrypted);
+  if (expectedOriginalLength !== session.content.originalLength) {
+    // The grant's own originalLength disagrees with what the ciphertext length implies — treat
+    // this the same as a checksum mismatch would have been: a loud, typed rejection BEFORE
+    // store(), never a silent trust of either number alone.
+    throw new DownloadFailure(
+      DownloadError.CHECKSUM_MISMATCH,
+      bookId,
+      new Error(
+        `content.originalLength (${session.content.originalLength}) disagrees with cipherLength ` +
+          `(${bytes.length}) for ${isEncrypted ? 'an encrypted' : 'an open-access'} book — expected ${expectedOriginalLength}`,
+      ),
+    );
+  }
 
   // Reject an over-budget book BEFORE store(): contentStore.ts enforces MAX_DECRYPTED_BYTES only
   // on the read paths (loadPersisted/decryptBook), so an oversized book would otherwise download
   // "successfully", occupy one of the BOOK_LIMIT offline slots, and then throw on every single
   // attempt to open it. Fail here instead, while nothing has been persisted yet.
-  const originalLength = computeOriginalLength(bytes.length, licence.encryption !== null);
+  const originalLength = session.content.originalLength;
   if (originalLength > MAX_DECRYPTED_BYTES) {
     throw new DownloadFailure(
       DownloadError.BOOK_TOO_LARGE,
@@ -118,9 +190,9 @@ export async function downloadBook(bookId: BookId): Promise<void> {
   }
 
   let indexBytes: Uint8Array | undefined;
-  if (licence.index) {
+  if (session.index) {
     try {
-      indexBytes = await fetchEncryptedAsset(bookId, licence.index.url);
+      indexBytes = await fetchEncryptedAsset(bookId, session.index.url);
     } catch (cause) {
       console.warn(
         `downloadManager: failed to fetch search index for ${bookId}, continuing without it`,
@@ -129,16 +201,31 @@ export async function downloadBook(bookId: BookId): Promise<void> {
     }
   }
 
+  // Synthesized locally — the real response has no `licence` field at all (see this file's
+  // header). `expiresAt` comes from the LOAN's `dueAt` (the real multi-week offline-reopen
+  // window), never from the session's own ~5-minute `expiresAt`. `signature` has no real-backend
+  // counterpart; contentStore.ts doesn't verify RS256 today regardless (a pre-existing, documented
+  // gap — this placeholder doesn't create a new one).
+  const licence: SignedLicence = {
+    licenceId: session.sessionId,
+    itemId: bookId,
+    keyFingerprint: session.encryption?.keyFingerprint ?? '',
+    expiresAt: loan.dueAt ?? OPEN_ACCESS_LICENCE_EXPIRES_AT,
+    canPersist: loan.canPersist,
+    rights: { print: false },
+    signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
+  };
+
   const pkg: EncryptedPackage = {
     bookId,
-    format: licence.format,
+    format,
     content: bytes,
     index: indexBytes,
-    encryption: licence.encryption,
-    licence: licence.licence,
+    encryption: session.encryption ?? null,
+    licence: isEncrypted ? licence : null, // null <=> open access, matching both fields together
     cipherLength: bytes.length,
     originalLength,
-    mimeType: licence.mimeType,
+    mimeType: session.content.mimeType,
   };
 
   await contentStore.store(pkg);
@@ -182,7 +269,7 @@ export async function downloadBook(bookId: BookId): Promise<void> {
       id: existing?.id ?? newId(),
       user_id: USER_ID,
       book_id: bookId,
-      format: licence.format,
+      format,
       local_path: null, // contentStore.ts does not expose its internal file path — see design doc.
       status: 'COMPLETED',
       is_valid: 1,

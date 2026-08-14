@@ -53,3 +53,9 @@ export * from './search';
 export * from './tier';
 export * from './device-key';
 export * from './content-licence';
+
+// reading-session.ts (2026-08-14): the REAL flambeau contract (Loans + Reading sessions),
+// replacing content-licence.ts as the primary flow. FROZEN on flambeau's side (every endpoint
+// modeled here carries `x-stability: FROZEN`) — unlike content-licence.ts/device-key.ts above,
+// this one's field names are not a guess.
+export * from './reading-session';
