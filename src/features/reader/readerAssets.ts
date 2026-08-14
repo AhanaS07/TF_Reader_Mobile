@@ -21,6 +21,7 @@ import { Asset } from 'expo-asset';
 import { fromByteArray } from 'react-native-quick-base64';
 
 import { getBook } from '@/features/encryption/contentProvider';
+import { verifyReadingAccess } from '@/features/download/readingSessionClient';
 import { ensureSeeded } from '@/features/reader/devContentSeed';
 import { logSpan, now } from '@/features/reader/readerTiming';
 import type { BookId } from '@/shared/contracts';
@@ -97,9 +98,26 @@ export async function getReaderHtmlUri(): Promise<string> {
  *
  * Caller owes a matching closeBook(bookId) when the reader view closes, or the
  * decrypted book stays in RAM. ReaderScreen's unmount effect does that.
+ *
+ * PER-OPEN ACCESS RE-VERIFICATION (added 2026-08-14): real flambeau backend re-checks entitlement
+ * on EVERY book open, not just at download time (Download's `readingSessionClient.ts` — "a
+ * subscription can lapse between borrow and read"). `verifyReadingAccess` is Download's call, not
+ * a new decrypt dependency — it FAILS OPEN on a network failure or an unconfirmable state (see its
+ * own doc comment for the exact policy), so this does not turn "I'm offline" into "I lost my
+ * books" for content already sitting on the device. It only ever rejects for an EXPLICIT
+ * revocation, which is deliberately fatal to opening the book — same as any other error below,
+ * caught by ReaderScreen's existing catch-and-raiseError.
+ *
+ * Hardcoded to `'EPUB'`: this Reader implementation is EPUB-only today (the WebView template is
+ * epub.js-specific, and devContentSeed.ts's own header says the same) — not a new limitation this
+ * introduces, just the first place that format needs to be named explicitly rather than implied.
  */
 export async function getBookBase64(bookId: BookId): Promise<string> {
   const startedAt = now();
+
+  const verifyStartedAt = now();
+  await verifyReadingAccess(bookId, 'EPUB');
+  logSpan('verifyAccess', verifyStartedAt);
 
   const seedStartedAt = now();
   await ensureSeeded(bookId);
