@@ -113,10 +113,16 @@ describe('Tapping a carousel card drills into a shelf screen', () => {
     expect(shelf.nextPage).toBe(1);
   });
 
-  it('opens the Open access section, reusing the home group as its listing', async () => {
-    const shelf = await new MockAdapter().getShelf(INSTITUTION, 'open-access');
-
-    expect(shelf.publications.map((p) => p.id)).toEqual(['item_ab6']);
+  // THE SAME GAP as audiobooks, one step less obvious: 'open-access' does have
+  // data in the fixtures, but only as a preview group inside the home feed. A
+  // preview is what the home screen renders; drilling in needs the full
+  // paginated listing, which no fixture supplies yet. Reusing the preview would
+  // make this card look finished while ShelfScreen paged through a shelf that
+  // has no pages.
+  it('cannot yet open the Open access section — only a home preview backs it', async () => {
+    await expect(new MockAdapter().getShelf(INSTITUTION, 'open-access')).rejects.toMatchObject({
+      code: CatalogueError.NOT_FOUND,
+    });
   });
 
   // THE GAP: 'audiobooks' is advertised in navigation but no fixture backs it, so
