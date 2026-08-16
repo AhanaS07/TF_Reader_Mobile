@@ -22,6 +22,15 @@ import { DownloadError, DownloadFailure } from './errors';
 
 export { fetchEncryptedAsset } from './contentLicenceClient';
 
+// React Native's `fetch` has no default timeout: a host that accepts the TCP connection and then
+// never answers (dead proxy, captive portal, a firewall silently dropping packets) leaves `await
+// fetch(...)` pending forever, and the fail-open catch in `verifyReadingAccess` below can only run
+// once the call actually rejects. Same value and same abort-controller-plus-timer shape as
+// `sync/syncApi.ts`'s `request()` (`REQUEST_TIMEOUT_MS` in `sync/syncConfig.ts`) — not imported
+// from there, since `sync/` and `download/` are separately owned modules with their own configs
+// (see `config.ts`'s header on why `download/` never reaches into `sync/config.ts`).
+const REQUEST_TIMEOUT_MS = 8000;
+
 // A DELIBERATE SUBSET of FlambeauErrorCode gets its own DownloadError member (errors.ts) — only
 // the ones a caller here can react to differently. Everything else falls back to the generic
 // per-endpoint code with the real FlambeauError attached as `cause`, so nothing is silently lost.
@@ -67,15 +76,21 @@ async function tryParseFlambeauError(response: Response): Promise<FlambeauError 
 export async function borrowLoan(bookId: BookId): Promise<Loan> {
   const body: BorrowRequest = { itemId: bookId };
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/loans`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
   } catch (cause) {
     throw new DownloadFailure(DownloadError.LOAN_FAILED, bookId, cause);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -107,15 +122,21 @@ export async function openReadingSession(
 ): Promise<ReadingSessionResponse> {
   const body: ReadingSessionRequest = { itemId: bookId, ...request };
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/reading-sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
   } catch (cause) {
     throw new DownloadFailure(DownloadError.SESSION_FETCH_FAILED, bookId, cause);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -163,9 +184,14 @@ const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
  * for a genuine revocation — the caller should treat that as fatal to opening the book.
  */
 export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat): Promise<void> {
-  const { publicKey } = await generateDeviceKeypair();
-
   try {
+    // Deliberately INSIDE the try, not above it: this fails open on the same terms as the
+    // network call below. Found in review — with this call outside the try, a keychain hiccup
+    // (device just booted and not yet unlocked, or `generateDeviceKeypair`'s own "keychain
+    // rejected storing the private key" throw on a first-ever call) escaped uncaught, turning a
+    // transient local error into "I lost my book" for content already sitting on the device —
+    // exactly the harm this function's fail-open policy exists to prevent.
+    const { publicKey } = await generateDeviceKeypair();
     await openReadingSession(bookId, {
       format,
       intent: 'STREAM',

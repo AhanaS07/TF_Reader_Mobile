@@ -5,7 +5,13 @@
 
 import * as crypto from 'crypto';
 import * as Keychain from 'react-native-keychain';
-import { generateDeviceKeypair, getStoredPrivateKeyRef, wrapBek, unwrapBek } from './deviceKeypair';
+import {
+  generateDeviceKeypair,
+  getStoredPrivateKeyRef,
+  wrapBek,
+  unwrapBek,
+  publicKeyFingerprint,
+} from './deviceKeypair';
 
 // Matches the constant inside deviceKeypair.ts — duplicated here deliberately so tests can reset
 // keychain state between cases; deviceKeypair.ts intentionally exposes no "reset" of its own
@@ -51,6 +57,43 @@ describe('generateDeviceKeypair', () => {
     const wrapped = await wrapBek(bek, publicKey);
     const unwrapped = await unwrapBek(wrapped);
     expect(Buffer.from(unwrapped).equals(Buffer.from(bek))).toBe(true);
+  });
+});
+
+describe('publicKeyFingerprint', () => {
+  it('returns a stable "sha256:<64-hex-chars>" string', async () => {
+    const { publicKey } = await generateDeviceKeypair();
+
+    const fingerprint = await publicKeyFingerprint(publicKey);
+
+    expect(fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('is deterministic: the same key produces the same fingerprint every time', async () => {
+    const { publicKey } = await generateDeviceKeypair();
+
+    const first = await publicKeyFingerprint(publicKey);
+    const second = await publicKeyFingerprint(publicKey);
+
+    expect(first).toBe(second);
+  });
+
+  it('produces different fingerprints for different keys', async () => {
+    const { publicKey: publicKeyA } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    const { publicKey: publicKeyB } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+
+    const fingerprintA = await publicKeyFingerprint(publicKeyA);
+    const fingerprintB = await publicKeyFingerprint(publicKeyB);
+
+    expect(fingerprintA).not.toBe(fingerprintB);
   });
 });
 

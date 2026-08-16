@@ -32,6 +32,11 @@ import type {
   AccessibilityPrefs,
   ReduceMotion,
   TtsHighlightMode,
+  ReadingIntent,
+  LicenceModel,
+  Loan,
+  ReadingSessionResponse,
+  FlambeauErrorCode,
 } from '@/shared/contracts';
 
 // --- ContentError is a real enum (value import must work) ------------------
@@ -140,3 +145,58 @@ DEFAULT_PREFS.accessibility satisfies AccessibilityPrefs;
 // --- defaults are shared; "reset" must hand back a detached copy ----------
 DEFAULT_ACCESSIBILITY_PREFS satisfies AccessibilityPrefs;
 createDefaultAccessibilityPrefs() satisfies AccessibilityPrefs;
+
+// --- ReadingIntent is exactly the two wire values --------------------------
+// DOWNLOAD is refused for ELITE server-side regardless of this union — that's
+// a runtime gate (Loan.canPersist), not something the type system can pin.
+'STREAM' satisfies ReadingIntent;
+'DOWNLOAD' satisfies ReadingIntent;
+// @ts-expect-error only STREAM | DOWNLOAD are frozen
+'BORROW' satisfies ReadingIntent;
+
+// --- LicenceModel is exactly the three wire values --------------------------
+// wokay's ENTITLED_UNLIMITED/ENTITLED_CONCURRENT are renamed to
+// SUBSCRIPTION/ELITE at this file's boundary — pin the renamed values, not
+// the spec's own names.
+'OPEN_ACCESS' satisfies LicenceModel;
+'SUBSCRIPTION' satisfies LicenceModel;
+'ELITE' satisfies LicenceModel;
+// @ts-expect-error only OPEN_ACCESS | SUBSCRIPTION | ELITE are frozen
+'PREMIUM' satisfies LicenceModel;
+
+// --- Loan: canPersist is THE download-button gate, not licenceModel --------
+// institutionId / dueAt / returnedAt are legitimately optional (open access
+// never expires; an individual subscriber has no institution) — omitted from
+// this literal on purpose, not missing by oversight.
+({
+  loanId: 'loan_1',
+  itemId: 'book_1',
+  userId: 'user_1',
+  licenceModel: 'SUBSCRIPTION',
+  status: 'ACTIVE',
+  borrowedAt: '2026-08-14T00:00:00Z',
+  canPersist: true,
+  serverTime: '2026-08-14T00:00:00Z',
+}) satisfies Loan;
+
+// --- ReadingSessionResponse: content ships a SignedUrl ---------------------
+// loanId (open access) / index (wantSearchIndex unset) / encryption (open
+// access or audio) are all legitimately absent — omitted here on purpose.
+// content's cipherLength/originalLength/mimeType are ALSO optional on the
+// real spec (a null field is omitted, not sent as null — see SignedUrl's own
+// comment) — only url/expiresAt are required, so only those two appear here.
+({
+  sessionId: 'sess_1',
+  itemId: 'book_1',
+  expiresAt: '2026-08-14T00:05:00Z',
+  serverTime: '2026-08-14T00:00:00Z',
+  content: {
+    url: 'https://example.com/signed',
+    expiresAt: '2026-08-14T00:10:00Z',
+  },
+}) satisfies ReadingSessionResponse;
+
+// --- FlambeauErrorCode wires through the barrel (sample, not exhaustive) ---
+'NO_ACTIVE_LOAN' satisfies FlambeauErrorCode;
+'DEVICE_LIMIT_REACHED' satisfies FlambeauErrorCode;
+'TOKEN_EXPIRED' satisfies FlambeauErrorCode;

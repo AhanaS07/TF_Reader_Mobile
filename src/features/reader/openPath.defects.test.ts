@@ -1,34 +1,21 @@
 // Owner: Reader (Ahana). Subject: Download (Abhinav).
 //
-// >>> THIS FILE ASSERTS BEHAVIOUR THAT IS WRONG ON PURPOSE. <<<
-//
 // `verifyReadingAccess` (src/features/download/readingSessionClient.ts) is the first thing on
-// Reader's open path, ahead of the seed and the decrypt, and it carries an explicit fail-open
-// policy in its own comments: "A reader must not lose access to a book already sitting on their
-// device just because they're offline right now." Fail CLOSED only for the codes that mean the
-// server successfully told us this reader's access is gone.
+// Reader's open path, ahead of the seed and the decrypt. Its fail-open policy: never let a local
+// (keychain) or network failure deny access to a book already on the device; fail closed only
+// when the server was actually reached and explicitly said access is gone.
 //
-// It does not fully hold. `generateDeviceKeypair()` is awaited OUTSIDE the try/catch that
-// implements the policy, so a keychain failure — or a corrupted stored private key, since that
-// path also re-parses the PEM on every call — propagates out and is fatal to opening a book whose
-// bytes are already on the device. That is the exact outcome the policy exists to prevent, and it
-// happens offline, where there is no server to have said anything.
+// These two cases pin that contract from the seam Reader actually depends on, independent of
+// readingSessionClient.ts's own unit tests. (A third case — a keychain failure escaping the
+// policy's try/catch and making an offline reopen fatal — used to be documented here as a defect
+// pinned on purpose; fixed in readingSessionClient.ts, so the case was removed rather than kept
+// as dead history — see readingSessionClient.test.ts's own `verifyReadingAccess` coverage for the
+// regression test that replaced it.)
 //
-// WHY A TEST RATHER THAN A FIX: readingSessionClient.ts is Download's file (see the ownership table
-// in CLAUDE.md). The fix is one line — move that await inside the try — and it is Abhinav's call,
-// not something to smuggle in from Reader. This pins the current behaviour so the defect is visible
-// in CI rather than living in a comment, and pairs it with the case that DOES work so the
-// difference is legible.
-//
-// WHEN THIS FILE GOES RED, THE BUG WAS FIXED. The first test asserts the defect. If it starts
-// failing, the fail-open policy now covers the keypair too: delete that test (and this header)
-// rather than "repairing" it.
-//
-// Reader's own mitigation for the LATENCY half of this — the missing fetch timeout — is
-// ReaderScreen's OPEN_TIMEOUT_MS, covered in ReaderScreen.test.tsx. It bounds what the reader waits
-// for; it cannot make a fatal failure non-fatal, which is why this one still needs Download.
+// Reader's own mitigation for the LATENCY half of the open path — the missing fetch timeout — is
+// ReaderScreen's OPEN_TIMEOUT_MS, covered in ReaderScreen.test.tsx.
 
-import { DownloadError, DownloadFailure } from '@/features/download/errors';
+import { DownloadError } from '@/features/download/errors';
 import { verifyReadingAccess } from '@/features/download/readingSessionClient';
 
 // The keychain read that generateDeviceKeypair() performs before anything else. Replaced per-test
@@ -55,23 +42,14 @@ afterEach(() => {
 });
 
 describe('the fail-open policy on Reader’s open path', () => {
-  it('DOES NOT cover a keychain failure — an offline reopen is fatal (DEFECT, Download’s to fix)', async () => {
-    // No network at all, so nothing can have revoked anything: the only possible verdict is
-    // "cannot confirm", which the policy says must allow the read.
+  it('covers a keychain failure too — an offline reopen is not fatal', async () => {
+    // No network at all, and the keychain itself fails (locked, corrupted stored key, "User
+    // interaction is not allowed."). Nothing here is a server saying access is gone, so the only
+    // correct verdict is "cannot confirm", which the policy says must allow the read.
     global.fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
     Keychain.getGenericPassword.mockRejectedValue(new Error('User interaction is not allowed.'));
 
-    // Rejects — so ReaderScreen raises CONTENT_LOAD_FAILED and the book will not open, for a
-    // reader holding a fully downloaded copy. `expect.assertions` because a change that makes
-    // this resolve must not pass silently through an empty catch.
-    expect.assertions(2);
-    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).rejects.toThrow();
-
-    // And it is not even a typed DownloadFailure, so nothing downstream can tell this apart from
-    // a corrupt book: ReaderScreen falls through to its generic "Could not open this book" branch.
-    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).rejects.not.toBeInstanceOf(
-      DownloadFailure,
-    );
+    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).resolves.toBeUndefined();
   });
 
   it('does cover a network failure — the read proceeds, as intended', async () => {

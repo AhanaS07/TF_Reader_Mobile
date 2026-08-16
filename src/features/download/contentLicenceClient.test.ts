@@ -29,7 +29,10 @@ describe('fetchContentLicence', () => {
     const result = await fetchContentLicence('book-001');
 
     expect(result).toEqual(sampleLicence);
-    expect(global.fetch).toHaveBeenCalledWith(`${API_BASE_URL}/books/book-001/content-licence`);
+    expect(global.fetch).toHaveBeenCalledWith(
+      `${API_BASE_URL}/books/book-001/content-licence`,
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it('throws DownloadFailure(LICENCE_FETCH_FAILED) on a non-2xx response', async () => {
@@ -80,6 +83,67 @@ describe('fetchEncryptedAsset', () => {
       bookId: 'book-001',
     });
   });
+
+  // Regression test: this was the one call in the download flow with no timeout at all — see
+  // readingSessionClient.ts's borrowLoan/openReadingSession, which already had this guard.
+  // A server that accepts the connection and then never answers (dead proxy, captive portal) used
+  // to leave `await fetch(...)` pending forever here, with no way for downloadBook() to reject.
+  // Must match contentLicenceClient.ts's own (deliberately un-exported) ASSET_FETCH_TIMEOUT_MS —
+  // kept as a literal so this test also catches an accidental change to that value, same reasoning
+  // readingSessionClient.test.ts's own REQUEST_TIMEOUT_MS literal uses.
+  const ASSET_FETCH_TIMEOUT_MS = 60_000;
+
+  it('rejects with DownloadFailure(ASSET_FETCH_FAILED) instead of hanging forever when the server accepts the connection and never answers', async () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const abortError = new Error('The operation was aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        });
+      });
+    });
+
+    const pending = fetchEncryptedAsset('book-001', 'http://x/f.enc');
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: DownloadError.ASSET_FETCH_FAILED,
+      bookId: 'book-001',
+    });
+
+    await jest.advanceTimersByTimeAsync(ASSET_FETCH_TIMEOUT_MS);
+    await assertion;
+    jest.useRealTimers();
+  });
+
+  // Regression test for the SECOND bug found in review: 8s (the metadata-call budget) used to be
+  // reused here too, which would abort a legitimate, still-progressing download of a large book
+  // well before it could finish. Proves the timer does NOT fire at the old, too-short value.
+  it('does not time out at the old, too-short 8s metadata-call budget', async () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const abortError = new Error('The operation was aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        });
+      });
+    });
+
+    const pending = fetchEncryptedAsset('book-001', 'http://x/f.enc');
+    let settled = false;
+    pending.catch(() => {
+      settled = true;
+    });
+
+    await jest.advanceTimersByTimeAsync(8000);
+    expect(settled).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(ASSET_FETCH_TIMEOUT_MS - 8000);
+    await expect(pending).rejects.toMatchObject({ code: DownloadError.ASSET_FETCH_FAILED });
+    jest.useRealTimers();
+  });
 });
 
 // The mock backend hands back an ABSOLUTE http://localhost:4000/... encryptedFileUrl. On a real
@@ -115,7 +179,10 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
 
     const bytes = await client.fetchEncryptedAsset('book-001', 'http://localhost:4000/fixtures/sample.epub.enc?v=2');
 
-    expect(global.fetch).toHaveBeenCalledWith(`${LAN_BASE_URL}/fixtures/sample.epub.enc?v=2`);
+    expect(global.fetch).toHaveBeenCalledWith(
+      `${LAN_BASE_URL}/fixtures/sample.epub.enc?v=2`,
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(Array.from(bytes)).toEqual([7, 8]);
   });
 
@@ -126,7 +193,7 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
     const cdnUrl = 'https://cdn.example.com/fixtures/sample.epub.enc';
     await client.fetchEncryptedAsset('book-001', cdnUrl);
 
-    expect(global.fetch).toHaveBeenCalledWith(cdnUrl);
+    expect(global.fetch).toHaveBeenCalledWith(cdnUrl, expect.objectContaining({ signal: expect.anything() }));
   });
 
   // Regression test: the rewrite used to copy only hostname/port from API_BASE_URL, leaving the
@@ -146,6 +213,9 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
 
     await mod.fetchEncryptedAsset('book-001', 'http://localhost:4000/fixtures/sample.epub.enc?v=2');
 
-    expect(global.fetch).toHaveBeenCalledWith('https://192.168.1.20:4000/fixtures/sample.epub.enc?v=2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://192.168.1.20:4000/fixtures/sample.epub.enc?v=2',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 });
