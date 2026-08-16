@@ -102,27 +102,51 @@ describe('ActionBar', () => {
     });
   });
 
-  // Elite, 13 Aug: no Download at any point, and the queue is the only way in.
-  describe("Elite's three steps", () => {
-    it('1 — no licence held offers the queue', async () => {
+  // Elite, 16 Aug: one Grant access button to start, then either an offer straight
+  // back or a queue position and the same offer later. No Download at any point.
+  //
+  // Every step asserts Download is ABSENT. That is the assertion with teeth: it is
+  // the one button that must never appear on this tier, and the bar cannot know
+  // the tier — so what is really being checked is that nothing here invents an
+  // action the caller did not pass.
+  describe("Elite's four steps", () => {
+    it('1 — nothing held offers Grant access, and nothing else', async () => {
       const { getByText, queryByText } = await render(
-        <ActionBar actions={['addToQueue']} onAction={jest.fn()} />,
+        <ActionBar actions={['grantAccess']} onAction={jest.fn()} />,
       );
-      expect(getByText('Add me to queue')).toBeTruthy();
+      expect(getByText('Grant access')).toBeTruthy();
       expect(queryByText('Download')).toBeNull();
     });
 
-    it('2 — once queued the same button is spent', async () => {
-      const onAction = jest.fn();
-      const { getByText, getByTestId } = await render(
-        <ActionBar actions={['addToQueue']} done="addToQueue" onAction={onAction} />,
+    // The position is the screen's job. A queued reader has nothing to tap, so the
+    // bar contributes no height at all rather than an empty strip.
+    it('2 — queued draws nothing, because a position is a status and not a button', async () => {
+      const { queryByTestId, queryByText } = await render(
+        <ActionBar actions={[]} onAction={jest.fn()} />,
       );
-      expect(getByText('Added to queue')).toBeTruthy();
-      fireEvent.press(getByTestId('action-button-addToQueue'));
+      expect(queryByTestId('action-bar')).toBeNull();
+      expect(queryByText('Grant access')).toBeNull();
+    });
+
+    it('3 — an offer draws Accept and Reject together', async () => {
+      const { getByText, queryByText } = await render(
+        <ActionBar actions={['acceptOffer', 'rejectOffer']} onAction={jest.fn()} />,
+      );
+      expect(getByText('Accept')).toBeTruthy();
+      expect(getByText('Reject')).toBeTruthy();
+      expect(queryByText('Download')).toBeNull();
+    });
+
+    it('3b — an answered offer cannot be answered twice', async () => {
+      const onAction = jest.fn();
+      const { getByTestId } = await render(
+        <ActionBar actions={['acceptOffer', 'rejectOffer']} done="acceptOffer" onAction={onAction} />,
+      );
+      fireEvent.press(getByTestId('action-button-acceptOffer'));
       expect(onAction).not.toHaveBeenCalled();
     });
 
-    it('3 — licence held offers read and revoke, and no download', async () => {
+    it('4 — licence held offers read and revoke, and no download', async () => {
       const { getByText, queryByText } = await render(
         <ActionBar actions={['read', 'revokeLicence']} onAction={jest.fn()} />,
       );

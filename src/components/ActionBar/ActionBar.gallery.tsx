@@ -11,17 +11,28 @@ import ActionBar from './ActionBar';
 // Every row of index.html's access table, written out by hand. Nothing here
 // derives a tier — the point of the component is that it cannot. This is the
 // screen's job, and in Week 2 it becomes resolveAccess's.
+//
+// The Elite rows follow the 16 Aug flow. The `queued` row is NOT here: it
+// resolves to no actions at all, so it gets its own group below where an empty
+// bar can be seen rather than mistaken for a missing row.
 const RESOLVES: { caption: string; actions: ActionId[]; done?: ActionId }[] = [
   { caption: 'Open Access — no licence, no check, ever', actions: ['read', 'download'] },
   { caption: 'Subscription — same pair, licence work hidden behind the tap', actions: ['read', 'download'] },
-  { caption: 'Elite 1 of 3 — no licence held, so the queue is the only way in', actions: ['addToQueue'] },
   {
-    caption: 'Elite 2 of 3 — queued and waiting; the same button, spent',
-    actions: ['addToQueue'],
-    done: 'addToQueue',
+    caption: 'Elite — nothing held. One button, and it says nothing about the queue',
+    actions: ['grantAccess'],
   },
   {
-    caption: 'Elite 3 of 3 — licence held. Read and revoke, and NO Download at any point',
+    caption: 'Elite — a copy is offered. Two answers of equal weight, side by side',
+    actions: ['acceptOffer', 'rejectOffer'],
+  },
+  {
+    caption: 'Elite — offer answered. Accept is inert while the borrow is in flight',
+    actions: ['acceptOffer', 'rejectOffer'],
+    done: 'acceptOffer',
+  },
+  {
+    caption: 'Elite — licence held. Read and revoke, and NO Download at any point',
     actions: ['read', 'revokeLicence'],
   },
   { caption: 'Signed out on a licensed tier', actions: ['signIn'] },
@@ -95,6 +106,17 @@ export default function ActionBarGallery() {
           />
         </View>
       ))}
+
+      <View style={styles.group}>
+        <Text style={styles.label}>
+          Elite — queued and waiting. Resolves to NO actions, so the bar draws nothing and the
+          dashed box below is empty. The reader&apos;s position is rendered by the screen, not by
+          this component: a position is a status, and the bar only ever holds buttons.
+        </Text>
+        <View style={styles.emptyProof}>
+          <ActionBar actions={[]} onAction={press} />
+        </View>
+      </View>
 
       <View style={styles.group}>
         <Text style={styles.label}>
