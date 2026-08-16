@@ -12,12 +12,12 @@
 
 import * as crypto from 'crypto';
 import * as Keychain from 'react-native-keychain';
-import { downloadBook } from './downloadManager';
+import { downloadBook, BOOK_LIMIT } from './downloadManager';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { USER_ID } from '../sync/syncConfig';
 import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
 import { encrypt } from '../encryption/aesGcm';
-import { generateDeviceKeypair, wrapBek } from '../encryption/deviceKeypair';
+import { generateDeviceKeypair, wrapBek, publicKeyFingerprint } from '../encryption/deviceKeypair';
 import { DownloadError } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
@@ -130,6 +130,29 @@ describe('downloadBook — happy path', () => {
     expect(matching).toHaveLength(1);
     expect(matching[0].id).toBe(firstRow.id);
   });
+
+  // Found in review (D-16): `content.originalLength`/`mimeType` are OPTIONAL on the real spec (no
+  // `*` on either in wokay's schema) — comparing a real number against an ABSENT field used to be
+  // unconditional, so a response that legitimately omitted `originalLength` made every download
+  // reject with a CHECKSUM_MISMATCH blaming a field that was never sent. `computeOriginalLength`
+  // must be the FALLBACK VALUE when absent, not just a cross-check against one.
+  it('succeeds when content.originalLength and mimeType are both absent from the response', async () => {
+    const bookId = 'optional-fields-absent-book';
+    const content = new Uint8Array([7, 8, 9, 10]); // open access: content IS plaintext
+    const loan = openAccessLoanFor(bookId);
+    const session = sessionFor(bookId, content);
+    delete (session.content as { originalLength?: number }).originalLength;
+    delete (session.content as { mimeType?: string }).mimeType;
+    global.fetch = mockFetchFor(loan, session, content);
+
+    await expect(downloadBook(bookId)).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(content));
+    await contentStore.close(bookId);
+  });
 });
 
 // Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
@@ -167,7 +190,12 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
     const payload = await encrypt(plaintext, bek);
     const encryptedBytes = new Uint8Array(payload.content);
 
-    const keyFingerprint = 'sha256:downloadmanager-encrypted-test';
+    // downloadManager.ts now derives SignedLicence.keyFingerprint from the device's OWN key
+    // (publicKeyFingerprint), independently of whatever encryption.keyFingerprint the server
+    // reports — contentStore.ts's licence/encryption fingerprint check only means anything if
+    // this mock server "claim" genuinely matches the same device key downloadBook wraps the BEK
+    // under below, same as a real backend fingerprinting the devicePublicKey it received.
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
     const loan = openAccessLoanFor(bookId, {
       licenceModel: 'SUBSCRIPTION',
       canPersist: true, // Subscription, not Elite: persists to disk
@@ -226,7 +254,9 @@ describe('downloadBook — the ELITE (online-only) path, for real', () => {
     const payload = await encrypt(plaintext, bek);
     const encryptedBytes = new Uint8Array(payload.content);
 
-    const keyFingerprint = 'sha256:downloadmanager-elite-test';
+    // Same reasoning as the SUBSCRIPTION test above: must match the real fingerprint of the
+    // device key `publicKey` wraps the BEK under, not an arbitrary literal.
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
     let requestedIntent: string | undefined;
     const loan = openAccessLoanFor(bookId, {
       licenceModel: 'ELITE',
@@ -272,10 +302,94 @@ describe('downloadBook — the ELITE (online-only) path, for real', () => {
     // isAvailableOffline stays false even though the download itself succeeded.
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
 
+    // Found in review (D-18): this used to write a `status: 'COMPLETED'` downloads row and burn
+    // one of the 5 offline slots for a book that was never actually persisted. An ELITE (STREAM)
+    // read must leave the downloads table exactly as it found it — nothing to track, since
+    // nothing was written.
+    const rows = await downloadTable.listActive(USER_ID);
+    expect(rows.find((row) => row.book_id === bookId)).toBeUndefined();
+
     await contentStore.openSession(bookId);
     const decrypted = await contentStore.decryptBook(bookId);
     expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
     await contentStore.close(bookId);
+  });
+
+  // Found in review (D-18), the other half of the same fix: the fast-fail cap check used to run
+  // BEFORE borrowLoan(), so it couldn't tell an ELITE (never-persisted) read apart from a real
+  // download. A reader already at the 5-book cap on real downloads would get a bogus
+  // BOOK_LIMIT_REACHED trying to just READ an ELITE book online, even though doing so was never
+  // going to consume a slot. This proves the gate now checks `loan.canPersist` (post-borrow),
+  // not just book count, before rejecting.
+  it('reading an ELITE book succeeds even when already at the 5-book cap on real downloads', async () => {
+    const eliteBookId = 'elite-at-cap-book';
+    const plaintext = new Uint8Array([31, 32, 33]);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
+
+    // Fill the cap with real (open-access, canPersist: true) downloads. Topped up RELATIVE to
+    // whatever is already active, not from an assumed-empty table — other describe blocks in
+    // this file share this same real, un-reset downloadTable and don't all clean up after
+    // themselves (see the search-index block's own comment on the identical trap), so a literal
+    // "start from 0" assumption here would be fragile to run order.
+    const before = (await downloadTable.listActive(USER_ID)).length;
+    const fillerIds: string[] = [];
+    for (let i = before; i < BOOK_LIMIT; i++) {
+      const bookId = `elite-at-cap-filler-${i}`;
+      fillerIds.push(bookId);
+      const content = new Uint8Array([i, i + 1, i + 2]);
+      const loan = openAccessLoanFor(bookId);
+      const session = sessionFor(bookId, content);
+      global.fetch = mockFetchFor(loan, session, content);
+      await downloadBook(bookId);
+    }
+    const atCap = (await downloadTable.listActive(USER_ID)).length;
+    expect(atCap).toBeGreaterThanOrEqual(BOOK_LIMIT);
+
+    const eliteLoan = openAccessLoanFor(eliteBookId, { licenceModel: 'ELITE', canPersist: false });
+    const eliteSession = sessionFor(eliteBookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${eliteBookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint,
+      },
+    });
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      if (url === `${API_BASE_URL}/api/v1/loans`) return new Response(JSON.stringify(eliteLoan), { status: 200 });
+      if (url === `${API_BASE_URL}/api/v1/reading-sessions`)
+        return new Response(JSON.stringify(eliteSession), { status: 200 });
+      if (url === eliteSession.content.url) return new Response(encryptedBytes, { status: 200 });
+      return new Response(null, { status: 404 });
+    });
+
+    await expect(downloadBook(eliteBookId)).resolves.toBeUndefined();
+    // Count unchanged — the ELITE read didn't add a row, and wasn't blocked by the cap already there.
+    expect((await downloadTable.listActive(USER_ID)).length).toBe(atCap);
+
+    // Soft-delete only the filler rows THIS test created — this file's `downloadTable` is real
+    // and un-reset across tests (see the search-index describe block's own comment on the
+    // identical trap), so leaving them would trip BOOK_LIMIT_REACHED in every test that runs
+    // after this one.
+    for (const bookId of fillerIds) {
+      const rows = await downloadTable.listActive(USER_ID, bookId);
+      for (const row of rows) {
+        await downloadTable.softDeleteLocal(row.id);
+      }
+    }
   });
 });
 

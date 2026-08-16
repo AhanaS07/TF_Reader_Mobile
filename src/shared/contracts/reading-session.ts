@@ -64,22 +64,35 @@ export interface ReadingSessionRequest {
 
 /** wokay's `SignedUrl`, forwarded by flambeau unchanged. Carries its OWN `expiresAt` — the signed
  * URL's, not the session's or the loan's. Slightly outlives the session in the spec's own example
- * (content 10:15 vs session 10:05) so a slow download doesn't race the grant. */
+ * (content 10:15 vs session 10:05) so a slow download doesn't race the grant.
+ *
+ * `cipherLength`/`originalLength`/`mimeType` are OPTIONAL on the real spec (no `*` on any of the
+ * three in wokay's schema) — only `url` and `expiresAt` are required. Marking them required here
+ * was a real bug, found in review: `downloadManager.ts` trusted `originalLength` unconditionally,
+ * so an absent field would make its own length cross-check compare a real number against
+ * `undefined`, always fail, and reject every download with a `CHECKSUM_MISMATCH` that blames a
+ * field that no longer exists. `computeOriginalLength` (downloadManager.ts) is the fallback for
+ * exactly this case — test presence, per the real spec's own stated convention ("a null field is
+ * omitted rather than sent as null; test for presence, not length"). */
 export interface SignedUrl {
   url: string;
   expiresAt: string; // ISO-8601 UTC
-  cipherLength: number;
-  originalLength: number;
-  mimeType: string;
+  cipherLength?: number;
+  originalLength?: number;
+  mimeType?: string;
 }
 
 /** wokay's `IndexUrl`, forwarded by flambeau unchanged. Same shape `content-licence.ts`'s
  * `ContentLicenceIndexInfo` already models — kept as a separate named type here rather than
  * reused, so this file's exports mirror the spec 1:1 without a cross-file dependency on the
- * mock-shaped contract it's replacing. */
+ * mock-shaped contract it's replacing.
+ *
+ * `url`/`encrypted` are OPTIONAL on the real spec too (same "test for presence" convention as
+ * `SignedUrl` above) — only present when the caller asked for an index (`wantSearchIndex`) AND
+ * the book actually has one. */
 export interface IndexUrl {
-  url: string;
-  encrypted: boolean;
+  url?: string;
+  encrypted?: boolean;
   termCount?: number;
 }
 

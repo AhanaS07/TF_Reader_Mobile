@@ -60,7 +60,7 @@
 import * as Crypto from 'expo-crypto';
 import type { BookId, ContentFormat, EncryptedPackage, SignedLicence } from '@/shared/contracts';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
-import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
+import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { withWriteLock } from '../sync/stores/syncableTable';
@@ -79,6 +79,16 @@ export const BOOK_LIMIT = 5;
 // only ever compares against `Date.now()`, so a far-future placeholder is exactly equivalent to
 // "never expires" for every real check, without needing a third, nullable licence shape.
 const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
+
+// Fallback for `SignedUrl.mimeType`, which is optional on the real spec — `EncryptedPackage
+// .mimeType` (content-provider.ts) is NOT optional, so an absent server value needs a real one
+// from somewhere. `format` alone can't name an exact audio codec, so AUDIO gets a generic
+// container type rather than a guess at a specific one.
+const FORMAT_MIME_TYPES: Record<ContentFormat, string> = {
+  EPUB: 'application/epub+zip',
+  PDF: 'application/pdf',
+  AUDIO: 'application/octet-stream',
+};
 
 // Exported (not just used internally) so it stays a real, callable utility rather than orphaned
 // dead code now that the main flow below no longer calls it — see this file's header.
@@ -137,13 +147,23 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
     throw new DownloadFailure(DownloadError.INSUFFICIENT_STORAGE, bookId);
   }
 
-  // Fast-fail before spending bandwidth. NOT the authoritative check — the one that decides
-  // whether a row is written is re-run inside the write lock at the bottom of this function.
-  assertBookLimitNotExceeded(bookId, await downloadTable.listActive(USER_ID));
-
   // Loan BEFORE session, always — the real contract's own ordering requirement (reading-session.ts
   // header). `loan.canPersist` (not `licenceModel`) decides whether we ask to persist at all.
   const loan = await borrowLoan(bookId);
+
+  // Fast-fail before spending bandwidth on the asset — NOT the authoritative check (the one that
+  // decides whether a row is written is re-run inside the write lock at the bottom of this
+  // function). Gated on `loan.canPersist`: an ELITE (STREAM-intent) read never persists anything
+  // and never writes a downloads row (see the `withWriteLock` block below), so it must not count
+  // against, or be blocked by, the 5-book limit either — found in review (D-18): without this
+  // gate, a reader already at the cap on real downloads would get a bogus BOOK_LIMIT_REACHED
+  // trying to just READ an ELITE book online, even though doing so would never actually consume a
+  // slot. Checking AFTER the loan (rather than before, as this used to) costs one small loan-borrow
+  // call on a doomed attempt instead of zero — a proportionate trade against blocking legitimate
+  // online-only reads at the cap.
+  if (loan.canPersist) {
+    assertBookLimitNotExceeded(bookId, await downloadTable.listActive(USER_ID));
+  }
 
   const { publicKey } = await generateDeviceKeypair();
   const devicePublicKey = publicKeyToRawBase64(publicKey);
@@ -157,9 +177,18 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
 
   const bytes = await fetchEncryptedAsset(bookId, session.content.url);
 
+  // `content.originalLength`/`mimeType` are OPTIONAL on the real spec (reading-session.ts's own
+  // header — "test for presence, not length"). Found in review: comparing a real number against
+  // an ABSENT field unconditionally made every download reject with a CHECKSUM_MISMATCH that
+  // blamed a field the response never carried. Only cross-check when the server actually sent a
+  // value; when it didn't, `computeOriginalLength` IS the value, not just a defense-in-depth
+  // check against one.
   const isEncrypted = session.encryption != null;
   const expectedOriginalLength = computeOriginalLength(bytes.length, isEncrypted);
-  if (expectedOriginalLength !== session.content.originalLength) {
+  if (
+    session.content.originalLength !== undefined &&
+    session.content.originalLength !== expectedOriginalLength
+  ) {
     // The grant's own originalLength disagrees with what the ciphertext length implies — treat
     // this the same as a checksum mismatch would have been: a loud, typed rejection BEFORE
     // store(), never a silent trust of either number alone.
@@ -177,7 +206,7 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   // on the read paths (loadPersisted/decryptBook), so an oversized book would otherwise download
   // "successfully", occupy one of the BOOK_LIMIT offline slots, and then throw on every single
   // attempt to open it. Fail here instead, while nothing has been persisted yet.
-  const originalLength = session.content.originalLength;
+  const originalLength = session.content.originalLength ?? expectedOriginalLength;
   if (originalLength > MAX_DECRYPTED_BYTES) {
     throw new DownloadFailure(
       DownloadError.BOOK_TOO_LARGE,
@@ -190,7 +219,10 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   }
 
   let indexBytes: Uint8Array | undefined;
-  if (session.index) {
+  // `session.index.url` is optional too (reading-session.ts) — `session.index` being present
+  // doesn't guarantee a fetchable url came with it under the real spec's "absent means absent"
+  // convention, even though every scenario this mock currently returns happens to include one.
+  if (session.index?.url) {
     try {
       indexBytes = await fetchEncryptedAsset(bookId, session.index.url);
     } catch (cause) {
@@ -209,7 +241,7 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   const licence: SignedLicence = {
     licenceId: session.sessionId,
     itemId: bookId,
-    keyFingerprint: session.encryption?.keyFingerprint ?? '',
+    keyFingerprint: await publicKeyFingerprint(publicKey),
     expiresAt: loan.dueAt ?? OPEN_ACCESS_LICENCE_EXPIRES_AT,
     canPersist: loan.canPersist,
     rights: { print: false },
@@ -225,10 +257,21 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
     licence: isEncrypted ? licence : null, // null <=> open access, matching both fields together
     cipherLength: bytes.length,
     originalLength,
-    mimeType: session.content.mimeType,
+    mimeType: session.content.mimeType ?? FORMAT_MIME_TYPES[format],
   };
 
   await contentStore.store(pkg);
+
+  // ELITE (STREAM-intent, `!loan.canPersist`) never reaches this point with anything actually
+  // written to disk — `contentStore.store()` already declines to persist for it. Found in review
+  // (D-18): the code below used to run unconditionally anyway, writing a `status: 'COMPLETED'`
+  // downloads row and burning one of the 5 offline slots for a book that was never actually
+  // downloaded. Five ELITE reads and zero real offline books would incorrectly hit
+  // BOOK_LIMIT_REACHED. Skip the whole block for a non-persisting read — there is nothing to
+  // track, and nothing to roll back if a race loses, since nothing was written.
+  if (!loan.canPersist) {
+    return;
+  }
 
   // Everything below runs under withWriteLock — the lock every other repository call site in this
   // repo takes, and the one that serializes writes onto the app's single SQLite connection

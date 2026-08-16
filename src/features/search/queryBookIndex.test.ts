@@ -80,6 +80,16 @@ describe('queryBookIndex — bridges getIndex (Bytes) to queryIndex (BookSearchI
     expect(hits[0].snippet).toBe(snippet);
   });
 
+  it('throws a clear error (not a silent []) when the index bytes are not valid UTF-8 at all', async () => {
+    // A real download fetches backend-supplied index bytes (downloadManager.ts) — this decode
+    // step's wire-format assumption is live, not hypothetical. A mismatch must surface loudly,
+    // the same way a genuinely-absent index (getIndex resolving null) must NOT. This exercises
+    // utf8Decode's own throw path, distinct from the JSON.parse failure path below.
+    getIndex.mockResolvedValue(new Uint8Array([0xff, 0xfe, 0x00, 0x01])); // not valid UTF-8
+
+    await expect(queryBookIndex('book-1', 'hello')).rejects.toThrow(/failed to decode search index for "book-1"/);
+  });
+
   it('throws on a wrong-book index (getIndex handed back the wrong ciphertext)', async () => {
     const index: BookSearchIndex = {
       bookId: 'some-other-book',
