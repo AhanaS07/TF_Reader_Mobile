@@ -11,6 +11,7 @@
 // a loud MALFORMED_FEED rather than an `undefined` that surfaces three screens
 // later as a blank row.
 import type {
+  AccessTier,
   Acquisition,
   Catalogue,
   CatalogueEncryption,
@@ -19,6 +20,7 @@ import type {
   SearchFeed,
   Shelf,
 } from '@model/types';
+import { ACCESS_TIERS } from '@model/types';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import { idFromHref, toActionId, toAlgorithm, toContentFormat } from '@model/opds/rels';
 
@@ -114,20 +116,46 @@ function toEncryption(properties: Json): CatalogueEncryption | null {
   };
 }
 
+// Required on every acquisition link, including open access. The contract is
+// explicit that `rel` says how a book is obtained and `licenceModel` says what to
+// render, so an absent tier is a broken feed rather than a default to guess at.
+function toAccessTier(properties: Json): AccessTier {
+  const raw = reqString(properties.licenceModel, 'licenceModel');
+  for (const tier of ACCESS_TIERS) {
+    if (raw === tier) return tier;
+  }
+  throw malformed(`unknown licenceModel: ${raw}`);
+}
+
+// The book's own media type, which is NOT the acquisition link's `type`. The
+// href points at flambeau and answers with JSON, so the link says
+// 'application/json' and the real type sits under `indirectAcquisition` — the
+// standard OPDS field for a link that leads to a file rather than being one.
+//
+// The contract pins the array to exactly one entry. Read the first and reject an
+// empty array rather than indexing blind, because a blank format would surface
+// later as a row that cannot be opened.
+//
+// NOT HANDLED YET: a `subscribe` link has no indirectAcquisition at all (rels.ts),
+// because it leads to a page rather than a file. Such a publication is currently
+// rejected as malformed here. It only appears on the public discovery routes, and
+// giving it a home means letting Publication represent "metadata, no file".
+function toFileType(link: Json): string {
+  const properties = asRecord(link.properties, 'acquisition properties');
+  const entries = asArray(properties.indirectAcquisition, 'indirectAcquisition');
+  const first = entries[0];
+  if (first === undefined) throw malformed('indirectAcquisition is empty');
+  return reqString(asRecord(first, 'indirectAcquisition entry').type, 'indirect acquisition type');
+}
+
 function toAcquisition(link: Json): Acquisition {
   const properties = link.properties === undefined ? {} : asRecord(link.properties, 'properties');
-  const licenceModelRaw = optString(properties.licenceModel);
-  if (licenceModelRaw !== undefined && licenceModelRaw !== 'CONCURRENT' && licenceModelRaw !== 'UNLIMITED') {
-    throw malformed(`unknown licenceModel: ${licenceModelRaw}`);
-  }
   const copies = properties.copies === undefined ? undefined : asRecord(properties.copies, 'copies');
 
   return {
     actionId: toActionId(reqString(link.rel, 'acquisition rel')),
     href: reqString(link.href, 'acquisition href'),
-    // Left off the object entirely when absent, rather than set to undefined, so
-    // deep-equality assertions and JSON round-trips stay honest.
-    ...(licenceModelRaw !== undefined ? { licenceModel: licenceModelRaw } : {}),
+    licenceModel: toAccessTier(properties),
     ...(copies !== undefined && optNumber(copies.total) !== undefined
       ? { copiesTotal: optNumber(copies.total) as number }
       : {}),
@@ -199,7 +227,7 @@ export function normalizePublication(doc: unknown): Publication {
     ...(optNumber(metadata.numberOfPages) !== undefined
       ? { numberOfPages: optNumber(metadata.numberOfPages) as number }
       : {}),
-    format: toContentFormat(reqString(acquisitionLink.type, 'acquisition mime type')),
+    format: toContentFormat(toFileType(acquisitionLink)),
     ...toImages(publication.images),
     acquisition: toAcquisition(acquisitionLink),
   };

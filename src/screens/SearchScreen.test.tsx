@@ -40,6 +40,7 @@ function publication(id: string, title: string, publisher: string): Publication 
     acquisition: {
       actionId: 'openAccess',
       href: `https://api.tf/api/v1/reading-sessions?itemId=${id}`,
+      licenceModel: 'OPEN_ACCESS',
       encryption: null,
       hasSearchIndex: true,
       canPersist: true,

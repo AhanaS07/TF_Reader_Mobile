@@ -18,9 +18,12 @@ import { type Institution, normalizeInstitutionList } from '@model/institution';
 import { assertPublication } from '@model/validate';
 
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
-import shelfGroupFixture from '@model/fixtures/OPDS-samples/02-shelf-group.json';
-import shelfGroupPage1Fixture from '@model/fixtures/OPDS-samples/02-shelf-group-page1.json';
-import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
+import newInstitutionCatalogueFixture from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
+import allTitlesPage0Fixture from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
+import allTitlesPage1Fixture from '@model/fixtures/OPDS-samples/04-shelf-all-page1.json';
+import curatedShelfFixture from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
+import curatedShelfAltFixture from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
+import publicationDetailFixture from '@model/fixtures/OPDS-samples/07-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
 // Strip combining diacritical marks so "Zurich" matches "Zürich".
@@ -28,10 +31,14 @@ function fold(str: string): string {
   return str.normalize('NFD').replace(/\p{M}/gu, '');
 }
 
-// Only inst_7f3 has catalogue fixtures, but no constant names it any more: every
-// institution in institutions.json is served that same catalogue (see
-// assertKnownInstitution), so there is no id to compare against. Authoring eight
-// parallel OPDS feeds would buy nothing the one feed does not already prove.
+// Two institutions have their own root feed; the rest are served the first one
+// (see assertKnownInstitution). The second exists to make the nothing-curated
+// case reachable without editing a file — admins configure the shelves, so an
+// institution with none is a state the app must survive, not a bug.
+const CATALOGUE_BY_INSTITUTION: Record<string, unknown> = {
+  inst_7f3: homeCatalogueFixture,
+  inst_a21: newInstitutionCatalogueFixture,
+};
 
 export interface MockAdapterOptions {
   // Artificial delay before every resolve OR reject. Defaults to 0 so the
@@ -57,7 +64,8 @@ export class MockAdapter implements DataSource {
     // is in no fixture at all is NOT_FOUND. See assertKnownInstitution.
     this.assertKnownInstitution(institutionId);
 
-    const catalogue = normalizeCatalogue(homeCatalogueFixture);
+    const fixture = CATALOGUE_BY_INSTITUTION[institutionId] ?? homeCatalogueFixture;
+    const catalogue = normalizeCatalogue(fixture);
     catalogue.shelves.flatMap((shelf) => shelf.publications).forEach(assertPublication);
     return catalogue;
   }
@@ -68,10 +76,10 @@ export class MockAdapter implements DataSource {
 
     const pages = this.pagesByShelfId().get(shelfId);
     // A shelf no standalone feed fixture backs is NOT_FOUND, not an empty shelf.
-    // Covers both 'audiobooks' (advertised in navigation, no fixture at all) and
-    // 'open-access'/'new-this-term' (a home-feed preview group exists, but that
-    // is not a listing — see pagesByShelfId). An empty result would read as "this
-    // institution has no audiobooks" and quietly hide the missing fixture.
+    // 'shelf_3' is the deliberate case: it is advertised in navigation and has a
+    // preview group, but no listing fixture — a preview is not a listing, see
+    // pagesByShelfId. An empty result would read as "this shelf has no titles"
+    // and quietly hide the missing fixture.
     if (pages === undefined) {
       throw new CatalogueFailure(CatalogueError.NOT_FOUND, shelfId);
     }
@@ -184,34 +192,34 @@ export class MockAdapter implements DataSource {
     }
   }
 
-  // Shelves the fixtures can answer for, keyed by id, each value being ITS PAGES
-  // IN ORDER — index 0 is page 0. A shelf is a sequence of documents, not one
-  // document, so the mock stores it that way rather than faking later pages.
+  // Standalone feed fixtures only, keyed by id, each value being ITS PAGES IN
+  // ORDER — index 0 is page 0.
   //
-  // Home-catalogue groups are deliberately NOT registered here. A group embedded
-  // in the home feed is a PREVIEW of a collection, not the document GETting its
-  // self href returns — at real scale "Free to read" would advertise
-  // numberOfItems: 47 and carry three rows. Our fixture's group looks complete
-  // only because the fixture is tiny.
+  // Home-catalogue groups are deliberately NOT registered. A group in the home
+  // feed is a PREVIEW, not the paginated document its self href returns, so
+  // serving one here would fake pages out of data that has none while ApiAdapter
+  // fetched the real feed for the same id. A preview-only shelf is NOT_FOUND
+  // until its own listing fixture exists.
   //
-  // So serving a preview from getShelf() would hand ShelfScreen a document with
-  // no production analogue: ApiAdapter fetches the full paginated feed for the
-  // same id, and pagination would appear to work against data that has no pages.
-  // A group-only shelf is therefore NOT_FOUND until its own feed fixtures exist,
-  // exactly like 'audiobooks' — the home feed is for the home screen, and
-  // drilling in needs the real listing.
+  // Keyed off each fixture's own self href rather than a literal written here, so
+  // the ids live in one place. idFromHref strips the `?page=`, which is how two
+  // files become one shelf's two pages.
   //
-  // Rebuilt per call rather than cached in the constructor so each call returns
-  // fresh objects. A shared instance handing out the same mutable arrays would
-  // let one screen's edit show up in another's — a bug class the real adapter
-  // could never have, so the mock must not invent it.
+  // Rebuilt per call rather than cached, so each caller gets fresh objects. A
+  // shared instance handing out the same mutable arrays would let one screen's
+  // edit surface in another — a bug class the real adapter could never have.
   private pagesByShelfId(): Map<string, Shelf[]> {
     const pages = new Map<string, Shelf[]>();
-    // Both files normalize to id 'ebooks' — idFromHref strips the `?page=` — so
-    // the pair is one shelf across two pages, which is what the `next` link on
-    // page 0 and its absence on page 1 already say.
-    const firstPage = normalizeShelf(shelfGroupFixture);
-    pages.set(firstPage.id, [firstPage, normalizeShelf(shelfGroupPage1Fixture)]);
+
+    const allTitles = [normalizeShelf(allTitlesPage0Fixture), normalizeShelf(allTitlesPage1Fixture)];
+    pages.set(allTitles[0].id, allTitles);
+
+    const curated = normalizeShelf(curatedShelfFixture);
+    pages.set(curated.id, [curated]);
+
+    const curatedAlt = normalizeShelf(curatedShelfAltFixture);
+    pages.set(curatedAlt.id, [curatedAlt]);
+
     return pages;
   }
 
@@ -225,9 +233,12 @@ export class MockAdapter implements DataSource {
     const publications = new Map<BookId, Publication>();
     const shelves = [
       ...normalizeCatalogue(homeCatalogueFixture).shelves,
-      // Standalone feeds last: same titles, but a full listing's summary is the
-      // one a drill-down would have shown. Flattened across pages — a title on
-      // page 2 is no less openable than one on page 0.
+      // Empty today: that institution has curated nothing. Included so a shelf
+      // added to its feed is picked up without touching this method.
+      ...normalizeCatalogue(newInstitutionCatalogueFixture).shelves,
+      // Standalone feeds last: a full listing's summary is the one a drill-down
+      // would have shown, and they carry titles no home preview does. Flattened
+      // across pages — a title on page 2 is no less openable than one on page 0.
       ...[...this.pagesByShelfId().values()].flat(),
     ];
     for (const shelf of shelves) {

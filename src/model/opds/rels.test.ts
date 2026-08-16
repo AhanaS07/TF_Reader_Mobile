@@ -17,6 +17,14 @@ describe('toActionId', () => {
     expect(toActionId('http://opds-spec.org/acquisition/open-access')).toBe('openAccess');
   });
 
+  // The fourth rel, and the reason the whole feed used to die on it: an
+  // unrecognised rel throws, so one unobtainable title took down the page it
+  // arrived on. Mapping it here is only half the job — see the gap test in
+  // normalize.test.ts.
+  it('maps the subscribe rel to subscribe', () => {
+    expect(toActionId('http://opds-spec.org/acquisition/subscribe')).toBe('subscribe');
+  });
+
   // A rel we do not understand means the action vocabulary moved under us
   // (L-3 is explicitly unsettled). Guessing would put a wrong button in the UI.
   it('rejects an unknown rel as a malformed feed', () => {
@@ -75,8 +83,8 @@ describe('idFromHref', () => {
 
   it('ignores a query string when taking the id', () => {
     expect(
-      idFromHref('https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks?page=1'),
-    ).toBe('ebooks');
+      idFromHref('https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_2?page=1'),
+    ).toBe('shelf_2');
   });
 
   it('rejects an href with no usable segment', () => {

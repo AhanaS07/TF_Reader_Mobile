@@ -67,9 +67,10 @@ describe('CategoryCard content', () => {
 
 describe('CategoryCard accent', () => {
   // The accent is a TOKEN NAME chosen by the caller, never derived from the
-  // title. types.ts: "NAVIGATION IS DATA, NOT CODE ... no tab is named in a type
-  // or a branch anywhere" — a `variant: 'ebooks' | 'audiobooks'` union here
-  // would hardcode the very tab vocabulary CLAUDE.md L-5 says is unsettled.
+  // title. types.ts: "NAVIGATION IS DATA, NOT CODE ... no shelf is named in a
+  // type or a branch anywhere" — a `variant: 'ebooks' | 'audiobooks'` union here
+  // would hardcode shelf names that belong to one institution's administrator
+  // (AGENTS.md L-5, settled 16 Aug 2026).
   // The accent fills the whole card rather than a panel inside it, so the tint
   // lands on the card itself.
   it('tints the card with the accent token it is given', async () => {

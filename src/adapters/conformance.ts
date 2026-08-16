@@ -19,10 +19,20 @@ import type { CatalogueSource } from '@adapters/CatalogueSource';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
 import { assertPublication } from '@model/validate';
 
-// Both implementations are backed by the same three frozen fixtures, so these ids
-// are part of the shared contract the suite tests against.
+// Both implementations are backed by the same fixtures, so these ids are part of
+// the shared contract the suite tests against.
+//
+// KNOWN_SHELF IS 'all' because it is the one RESERVED groupId: the contract
+// guarantees it exists and never 404s, whereas a curated shelf may legally be
+// empty and 404 — which would fail this suite against a real server for a reason
+// that is not a bug.
+//
+// Reserved is not the same as meaningful. Curated ids stay opaque (AGENTS.md L-5).
+// And multi-page, which the tests below require, is a property of our fixtures
+// rather than a contract guarantee: worst case `all` is a feed with only a self
+// link.
 export const KNOWN_INSTITUTION = 'inst_7f3';
-export const KNOWN_SHELF = 'ebooks';
+export const KNOWN_SHELF = 'all';
 export const KNOWN_PUBLICATION = 'item_42';
 
 async function expectNotFound(operation: Promise<unknown>, what: string): Promise<void> {
