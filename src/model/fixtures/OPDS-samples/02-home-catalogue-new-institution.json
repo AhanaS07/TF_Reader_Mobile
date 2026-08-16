@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "title": "University of Manchester Library",
+    "numberOfItems": 0,
+    "modified": "2026-08-16T08:30:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_a21/catalogue",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_a21/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "navigation": [
+    {
+      "title": "All titles",
+      "href": "https://api.tf/opds/v1/institutions/inst_a21/groups/all",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    }
+  ]
+}

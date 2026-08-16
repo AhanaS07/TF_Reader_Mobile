@@ -15,12 +15,11 @@
 // padding around it.
 //
 // IT HAS NO PER-CATEGORY VARIANT, ON PURPOSE. A union like
-// `variant: 'ebooks' | 'audiobooks' | 'openAccess'` would bake the tab vocabulary
-// into a type, and both types.ts ("NAVIGATION IS DATA, NOT CODE ... no tab is
-// named in a type or a branch anywhere") and CLAUDE.md L-5 (three tabs or one
-// merged list is still undecided) forbid that. The card is handed a title, an
-// optional count and an accent; a fourth category tomorrow renders with no code
-// change at all.
+// `variant: 'ebooks' | 'audiobooks' | 'openAccess'` would bake one institution's
+// shelf names into a type. There is no such vocabulary to bake: an administrator
+// names the shelves (AGENTS.md L-5, settled 16 Aug 2026), so two institutions see
+// different rows. The card is handed a title, an optional count and an accent; a
+// shelf added tomorrow renders with no code change at all.
 //
 // It sets no width — the strip that lays it out owns that (CONVENTIONS §8).
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';

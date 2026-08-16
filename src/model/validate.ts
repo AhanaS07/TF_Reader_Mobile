@@ -32,20 +32,31 @@ export function assertPublication(publication: Publication): void {
     }
   }
 
-  // Open access is unlicensed and plaintext by definition. Either contradiction
-  // would hand resolveAccess two conflicting answers about the same title.
-  if (acquisition.actionId === 'openAccess') {
-    if (acquisition.licenceModel !== undefined) {
-      throw invalid(id, 'open access carries a licenceModel');
-    }
-    if (acquisition.encryption !== null) {
-      throw invalid(id, 'open access carries an encryption block');
-    }
+  // The tier and the rel must agree, both ways, or resolveAccess gets two answers
+  // about one title. `rel` says how a book is obtained and `licenceModel` says
+  // what to render; they describe the same fact from two sides.
+  const openAccessRel = acquisition.actionId === 'openAccess';
+  const openAccessTier = acquisition.licenceModel === 'OPEN_ACCESS';
+  if (openAccessRel !== openAccessTier) {
+    throw invalid(id, `rel ${acquisition.actionId} disagrees with tier ${acquisition.licenceModel}`);
   }
 
-  // A concurrent licence is a count of copies; without the count there is
-  // nothing for resolveAccess to compare against.
-  if (acquisition.licenceModel === 'CONCURRENT' && acquisition.copiesTotal === undefined) {
-    throw invalid(id, 'CONCURRENT licence has no copiesTotal');
+  // Open access is plaintext by definition. Keyed off the TIER, not the rel: the
+  // contract states this rule about the tier, and says to read one field rather
+  // than two.
+  if (openAccessTier && acquisition.encryption !== null) {
+    throw invalid(id, 'open access carries an encryption block');
+  }
+
+  // ELITE is the copy-limited tier, and the count is the point of it: without one
+  // there is nothing for resolveAccess to compare against.
+  //
+  // STRICTER THAN THE CONTRACT, knowingly. `copies` is not required, and on the
+  // public discovery routes an ELITE title arrives with `availability` and no
+  // copies at all. Those routes cannot be normalized yet for other reasons (see
+  // toFileType), so nothing hits this today — but it is the first thing to revisit
+  // when they can be.
+  if (acquisition.licenceModel === 'ELITE' && acquisition.copiesTotal === undefined) {
+    throw invalid(id, 'ELITE licence has no copiesTotal');
   }
 }

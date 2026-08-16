@@ -16,12 +16,26 @@
         "@type": "http://schema.org/Audiobook",
         "identifier": "urn:tf:catalogue:item_stat",
         "title": "An Introduction to Statistics",
-        "author": [{ "name": "Priya Raman" }],
-        "narrator": [{ "name": "Alan Fitzgerald" }],
-        "publisher": { "name": "CRC Press" },
+        "author": [
+          {
+            "name": "Priya Raman"
+          }
+        ],
+        "narrator": [
+          {
+            "name": "Alan Fitzgerald"
+          }
+        ],
+        "publisher": {
+          "name": "CRC Press"
+        },
         "language": "en",
         "published": "2022-06-01",
-        "subject": [{ "name": "Statistics" }],
+        "subject": [
+          {
+            "name": "Statistics"
+          }
+        ],
         "duration": 2305
       },
       "links": [
@@ -33,9 +47,14 @@
         {
           "rel": "http://opds-spec.org/acquisition",
           "href": "https://api.tf/api/v1/loans?itemId=item_stat",
-          "type": "audio/mpeg",
+          "type": "application/json",
           "properties": {
-            "licenceModel": "UNLIMITED",
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "audio/mpeg"
+              }
+            ],
             "hasSearchIndex": false,
             "canPersist": true
           }

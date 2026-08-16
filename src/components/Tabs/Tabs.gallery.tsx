@@ -10,8 +10,9 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import Tabs from './Tabs';
 import { color, space, type } from '@theme/tokens';
 
-// Sample data only. Tabs never names a tab itself — it renders whatever it is
-// handed (L-5 is still unsettled).
+// Sample data only, and one institution's at that. Tabs never names a tab
+// itself — it renders whatever it is handed, because an administrator picks the
+// shelves and their names (AGENTS.md L-5, settled 16 Aug 2026).
 const FEED_TABS = [
   { id: 'ebooks', label: 'eBooks' },
   { id: 'audiobooks', label: 'Audiobooks' },

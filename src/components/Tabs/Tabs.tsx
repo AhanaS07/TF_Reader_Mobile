@@ -4,11 +4,11 @@
 // teal rule under the active label).
 //
 // ⚠ TABS ARE DATA, NOT CODE — and this is the whole reason the component exists
-// in this shape. Foundation Spec §6.4 component 5: the three-feed-tab model is
-// L-5 and UNRATIFIED (design screen 01 still shows a single merged list). So no
-// tab is named anywhere in this file, no count is assumed, and the bar renders
-// whatever array it is handed. If L-5 reverses, the fix is a config edit in the
-// caller, not a rewrite of screens 01 and 09. Same rule as `NavLink` in
+// in this shape. Settled 16 Aug 2026 (AGENTS.md L-5): an administrator configures
+// the shelves for their institution and names them, so the count, the titles and
+// the ids are all theirs and two institutions see different bars. No tab is named
+// anywhere in this file, no count is assumed, and the bar renders whatever array
+// it is handed, in the order it arrives. Same rule as `NavLink` in
 // model/types.ts.
 //
 // IT HOLDS NO SELECTION STATE. `activeId` comes in, `onChange` goes out, and

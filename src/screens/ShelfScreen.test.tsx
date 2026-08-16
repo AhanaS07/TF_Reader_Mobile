@@ -34,6 +34,7 @@ function publication(id: string, title: string): Shelf['publications'][number] {
     acquisition: {
       actionId: 'borrow',
       href: `https://x/loan/${id}`,
+      licenceModel: 'SUBSCRIPTION',
       encryption: null,
       hasSearchIndex: true,
       canPersist: true,

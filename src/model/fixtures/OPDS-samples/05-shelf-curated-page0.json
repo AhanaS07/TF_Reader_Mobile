@@ -1,67 +1,67 @@
 {
   "metadata": {
-    "title": "Search results",
-    "numberOfItems": 3,
-    "itemsPerPage": 2
+    "title": "New this month",
+    "numberOfItems": 2,
+    "itemsPerPage": 20,
+    "currentPage": 0
   },
   "links": [
     {
       "rel": "self",
-      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search?query=climate",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_1?page=0",
       "type": "application/opds+json"
     },
     {
-      "rel": "next",
-      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search?query=climate&page=1",
-      "type": "application/opds+json"
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
     }
   ],
   "publications": [
     {
       "metadata": {
         "@type": "http://schema.org/Book",
-        "identifier": "urn:tf:catalogue:item_env",
-        "title": "Environmental Policy and Air Pollution in China",
+        "identifier": "urn:isbn:9780367559021",
+        "title": "Sociology of Everyday Risk",
         "author": [
           {
-            "name": "Yuan Xu"
+            "name": "Tom Weller"
           }
         ],
         "publisher": {
           "name": "Routledge"
         },
         "language": "en",
-        "published": "2021-03-15",
+        "published": "2022-09-01",
         "subject": [
           {
-            "name": "Environment"
-          },
-          {
-            "name": "Public Policy"
+            "name": "Sociology"
           }
         ],
-        "numberOfPages": 184
+        "numberOfPages": 298
       },
       "links": [
         {
           "rel": "self",
-          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_env",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_soc",
           "type": "application/opds-publication+json"
         },
         {
-          "rel": "http://opds-spec.org/acquisition",
-          "href": "https://api.tf/api/v1/loans?itemId=item_env",
+          "rel": "http://opds-spec.org/acquisition/borrow",
+          "href": "https://api.tf/api/v1/loans?itemId=item_soc",
           "type": "application/json",
           "properties": {
             "licenceModel": "SUBSCRIPTION",
             "indirectAcquisition": [
               {
-                "type": "application/pdf"
+                "type": "application/epub+zip"
               }
             ],
             "encrypted": {
               "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
-              "originalLength": 3596255
+              "originalLength": 2210544
             },
             "hasSearchIndex": true,
             "canPersist": true
@@ -70,7 +70,7 @@
       ],
       "images": [
         {
-          "href": "https://cdn.tf/covers/item_env.jpg",
+          "href": "https://cdn.tf/covers/item_soc.jpg",
           "type": "image/jpeg",
           "width": 400,
           "height": 600
