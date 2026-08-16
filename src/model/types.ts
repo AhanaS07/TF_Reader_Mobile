@@ -310,9 +310,14 @@ export type WorkType = (typeof WORK_TYPES)[number];
 // `available` covers two shapes rather than one, because the difference is in
 // `actions` and not here: Open Access and Subscription resolve to
 // read + download, Elite-with-a-licence to read + revokeLicence.
+// `requires_subscription` is the `subscribe` rel's home — a title the caller
+// cannot obtain, which wokay hands over with a route to access rather than a file.
+// It is NOT `not_entitled`: one renders a Subscribe button and the other renders
+// nothing, and a state whose bar looks different is a state of its own.
 export const ACCESS_STATES = [
   'available',
   'requires_signin',
+  'requires_subscription',
   'requires_grant',
   'queued',
   'offered',
@@ -500,7 +505,12 @@ export interface PagedList<T> {
 export interface AccessResult {
   // Which institution this resolve was performed for. Part of the identity, not
   // context — see above.
-  institutionId: string;
+  //
+  // `null` IS A REAL VALUE, not missing data: it is the public open-access path,
+  // where the reader has chosen no institution at all. Explicitly nullable rather
+  // than optional so that anything deriving a cache key has to spell out the
+  // no-institution case instead of quietly falling back to keying on the item.
+  institutionId: string | null;
   itemId: string;
   // A badge label. Not an input to `actions`.
   tier: AccessTier;
