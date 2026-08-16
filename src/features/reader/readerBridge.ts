@@ -84,6 +84,14 @@
 // two — nested multi-field payloads AND a frozen shared contract crossing the
 // boundary. Convert BEFORE writing those commands, not after: 4 flat commands is
 // a morning, 9 commands plus annotations' `Locator` union is a week.
+//
+// THE BRIDGE IS NOW THE ONLY THING LEFT BLOCKING THAT STAGE. Until Sync landed,
+// there was a second blocker that made this date feel far away: prefs existed only
+// as an in-memory stub that reset every launch, so there was nothing durable to
+// apply. That is no longer true — `features/sync/sharedPrefs.ts`'s
+// `readSharedPrefs()` reads both tables off SQLite and merges them into one
+// contract-shaped `SharedPrefs`. So the work can start the day someone asks for it,
+// and when it does, the conversion is the first task rather than a discovery.
 
 /**
  * One entry from epub.js `book.loaded.navigation`, flattened.

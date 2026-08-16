@@ -32,14 +32,20 @@ The prefs-application stage is expected to trip it. Flag it rather than quietly 
 
 ## Generated and tracked artifacts
 
-`assets/reader/reader.html` (from `reader.template.html`, via `npm run reader:build-html`) and
-`assets/reader/sample-plaintext.epub` (via `npm run reader:build-sample`). Never hand-edit either;
-regenerate and commit the result.
+`assets/reader/reader.html` (from `reader.template.html`, via `npm run reader:build-html`),
+`assets/reader/sample-plaintext.epub` (via `npm run reader:build-sample`), and
+`assets/reader/sample-search-index.json` (via `npm run reader:build-sample-index`). Never hand-edit
+any of them; regenerate and commit the result.
 
 CI enforces this for `reader.html` only (the "Reader HTML is freshly generated" step: rebuild,
 then `git diff --exit-code`). Forgetting the rebuild is a red build, not a silent stale ship.
 `sample-plaintext.epub` is **not** covered — JSZip stamps each entry with the generation time, so
 it is not byte-reproducible and the same check would fail every run. That one is still on you.
+
+`sample-search-index.json` is not covered either, but for a different reason: it *is* byte-
+reproducible (no timestamps), so a freshness check would work. It is left out to keep CI's scope
+unchanged for a file that is temporary scaffolding — see the deletion table below. Regenerate it if
+the sample EPUB changes, or its CFIs will point into a book that no longer matches.
 
 ## Frozen contracts
 
@@ -131,6 +137,25 @@ used to say to remove both together. Since Vaishnavi's search extractor landed, 
 **shared fixture**: `src/features/search/extractor.ts:43` hard-codes its path, and deleting it breaks
 `search.test.ts`. So its removal now needs Search looped in, separately from and later than
 `devContentSeed.ts`.
+
+**The dev search index goes with `devContentSeed.ts` too — five items, not one.** Nothing ships a
+search index for the seeded book, so `queryBookIndex` returns `[]` for every search and the search
+UI cannot be exercised on a device. `devContentSeed.ts` therefore encrypts a generated index into
+`EncryptedPackage.index` (same BEK, own nonce) so there is something real to find. Delete together:
+
+| # | Delete |
+| - | ------ |
+| 1 | `src/features/reader/scripts/buildSampleSearchIndex.ts` |
+| 2 | `assets/reader/sample-search-index.json` |
+| 3 | the `reader:build-sample-index` script in `package.json` |
+| 4 | the `index` attachment + `!FIXTURE_PATH` guard in `devContentSeed.ts` |
+| 5 | `src/features/reader/devSearchIndex.test.ts` (guards 2 against 4) |
+| 6 | this table |
+
+`SearchPanel.tsx`, `useBookSearch.ts` and the search wiring in `ReaderScreen.tsx` are **not** on
+that list — the UI is permanent and does not know the fixture exists. Removing all five must leave
+it compiling and green, with on-device searches simply returning `[]` again. If deleting the
+fixture breaks the UI or a test, the boundary has leaked and that is the bug.
 
 `devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_PATH` when set, to load a large EPUB
 pushed into the app container instead of the bundled sample (measurement scaffolding — Metro cannot

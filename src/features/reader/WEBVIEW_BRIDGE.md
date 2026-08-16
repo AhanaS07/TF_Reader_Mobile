@@ -1,7 +1,15 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
 **Owner:** Reader (Ahana) · **Status:** accepted debt, not yet due
-**Last reviewed:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
+**Last reviewed:** 2026-08-16, when the in-book search UI landed — **all five triggers re-run and
+NONE fired**; the bridge was not touched at all (see the In-book search row in
+[Stage forecast](#stage-forecast)). The state of trigger 1 is unchanged from the review below.
+Same review confirmed the prefs row's **second** blocker is gone: prefs now have a real persisted
+source (`readSharedPrefs()`), so the bridge is the only thing left standing between here and
+prefs-application. Status stays "not yet due" — but "not yet due" now means nobody has asked, not
+that it couldn't be done.
+
+**Previously reviewed:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
 into the `toc` message — **all five triggers re-run and NONE fired**, but trigger 1 is now _at_ its
 field boundary rather than comfortably inside it, because this was the first change to grow a
 payload **shape** rather than a name (see the TOC row in [Stage forecast](#stage-forecast)). The
@@ -210,6 +218,19 @@ Four things worth calling out, because all four contradict the obvious guess:
   > unwrap: the host converts `SearchHit.locator` → `.cfi` before sending. Hand the `Locator` union
   > to the bridge instead and this row becomes a conversion. The capability needed no new epub.js
   > surface — `rendition.display()` already resolved CFIs.
+  >
+  > **Re-run 2026-08-16, when the search UI landed: DID NOT FIRE.** The unwrap this row was
+  > conditional on is now real code rather than an intention — `cfiOf()` in `useBookSearch.ts` is
+  > the single place `locator.type` is read, and it returns a bare `string`. All five re-checked:
+  > no command added (still 4), none needs a reply, no frozen contract crosses, transport
+  > unchanged, and hits/active-index/query all live in RN — the WebView holds nothing new. The
+  > surface table above is unchanged and `reader.html` was not regenerated because the template was
+  > not touched.
+  >
+  > What makes this durable rather than a promise is the test: `ReaderScreen.test.tsx`'s "sends
+  > goTo carrying a bare CFI string" asserts the injected script equals
+  > `buildCommandScript({ type: 'goTo', target: '<cfi>' })`. Widening the bridge to carry the
+  > `Locator` union now fails that test instead of quietly succeeding.
 
 ## The verdict
 
@@ -229,6 +250,15 @@ Rationale, in order of weight:
    confidence: the `type` field validates fine while the variant's payload is wrong.
 4. Prefs is a natural rewrite of the template's rendition setup anyway (`flow`, `spread`, themes
    are all `rendition.*` calls), so the file is already open.
+
+**What is no longer a reason to wait: the source.** This stage used to have two blockers, and the
+other one was upstream — `InMemoryPrefsStore` reset on every launch, so there was no durable
+`SharedPrefs` to apply and no way to tell a bug from a restart. Sync closed that:
+`features/sync/sharedPrefs.ts`'s `readSharedPrefs()` reads the `personalization` and `accessibility`
+rows off SQLite and merges them into one contract-shaped record, falling back to `DEFAULT_PREFS`
+when a row is missing. Reader does not call it yet — there is no prefs command to feed. So the
+sequencing is now unambiguous rather than merely recommended: **the bridge is the whole of what is
+left**, and it is the first thing to do, not the thing discovered halfway through.
 
 **Do not convert before then.** At 5 messages and 4 fire-and-forget commands, a build step buys a
 compiler check over a surface you can verify by eye in thirty seconds, and costs a new toolchain
@@ -277,3 +307,6 @@ Every time you add or change a message type or command:
 - `src/features/reader/ReaderWebView.tsx` — the navigation lockdown that contains decrypted
   content; load-bearing since Day 3.
 - `src/features/reader/readerAssets.ts` — the base64 transport constraint (trigger 4).
+- `src/features/sync/sharedPrefs.ts` — `readSharedPrefs()`, the persisted `SharedPrefs` the prefs
+  stage will apply. Not Reader's, and not called from Reader yet; listed so the conversion is not
+  re-scheduled on the belief that prefs have nowhere to come from.

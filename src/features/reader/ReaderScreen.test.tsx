@@ -31,7 +31,10 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import { getBookBase64 } from '@/features/reader/readerAssets';
+import { buildCommandScript } from '@/features/reader/readerBridge';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
+import { queryBookIndex } from '@/features/search/queryBookIndex';
+import type { SearchHit } from '@/shared/contracts';
 
 jest.mock('@/features/reader/readerAssets', () => ({
   getReaderHtmlUri: jest.fn(() => Promise.resolve('file:///reader.html')),
@@ -41,6 +44,48 @@ jest.mock('@/features/reader/readerAssets', () => ({
 jest.mock('@/features/encryption/contentProvider', () => ({
   closeBook: jest.fn(() => Promise.resolve()),
 }));
+
+/**
+ * Mock the SEARCH SEAM, not contentProvider's getIndex behind it.
+ *
+ * Required, not merely convenient: the real queryBookIndex imports getIndex from
+ * contentProvider, and the factory above deliberately supplies only closeBook — so an
+ * unmocked search call dies with "getIndex is not a function", which reads like a
+ * search bug rather than a missing mock. Widening that factory instead would drag
+ * contentStore, expo-file-system and the keychain into a chrome test.
+ */
+jest.mock('@/features/search/queryBookIndex', () => ({
+  queryBookIndex: jest.fn(() => Promise.resolve([])),
+}));
+
+/**
+ * A WebView mock with a usable ref, overriding the inert one in jest.setup.js.
+ *
+ * The global mock is a bare <View>, whose host instance has no injectJavaScript — so
+ * `send` optional-chains to nothing and every command vanishes silently. That is fine
+ * for the Contents tests, which assert on rendered chrome, but it would make "tapping
+ * a search hit navigates" untestable. This keeps the same testID and prop spreading,
+ * and adds the two ref methods ReaderWebView actually calls.
+ */
+jest.mock('react-native-webview', () => {
+  const ReactModule = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  const injectJavaScript = jest.fn();
+
+  const WebView = ReactModule.forwardRef(function MockWebView(
+    props: Record<string, unknown>,
+    ref: React.Ref<unknown>,
+  ) {
+    ReactModule.useImperativeHandle(ref, () => ({ injectJavaScript, stopLoading: jest.fn() }));
+    return ReactModule.createElement(View, { testID: 'reader-webview', ...props });
+  });
+
+  return { WebView, __injectJavaScript: injectJavaScript };
+});
+
+const { __injectJavaScript } = jest.requireMock('react-native-webview') as {
+  __injectJavaScript: jest.Mock;
+};
 
 /**
  * Deliver a bridge message the way the device does: as a raw JSON string through
@@ -240,5 +285,325 @@ describe('ReaderScreen Contents panel', () => {
     expect(
       screen.getByRole('button', { name: 'Contents (0)' }).props.accessibilityState,
     ).toMatchObject({ disabled: true });
+  });
+});
+
+describe('ReaderScreen in-book search', () => {
+  beforeEach(() => {
+    jest.mocked(queryBookIndex).mockReset().mockResolvedValue([]);
+    __injectJavaScript.mockClear();
+  });
+
+  function epubHit(n: number, chapterId = 'ch1'): SearchHit {
+    return {
+      bookId: 'test-book',
+      chapterId,
+      locator: { type: 'EPUB', cfi: `epubcfi(/6/2[${chapterId}]!/4/4/1:${n})` },
+      snippet: `…the grey wolf number ${n} moved…`,
+    };
+  }
+
+  async function openSearch(): Promise<void> {
+    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+  }
+
+  /** Type a term and press the panel's Search button. */
+  async function runSearch(term: string): Promise<void> {
+    await fireEvent.changeText(screen.getByTestId('reader-search-input'), term);
+    await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+  }
+
+  it('opens and closes the panel from the toolbar', async () => {
+    await mountReader();
+
+    await openSearch();
+    expect(screen.getByTestId('reader-search-input')).toBeTruthy();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('reader-search-input')).toBeNull();
+  });
+
+  it('keeps Contents and Search mutually exclusive', async () => {
+    // Both toggles render a "Close" affordance when open. If they could be open at
+    // once, every getByRole('button', { name: 'Close' }) in this file would become
+    // ambiguous — so the exclusion is load-bearing for the suite, not just for looks.
+    await mountReader();
+    await deliver({ type: 'toc', items: flatToc(3) });
+
+    await openSearch();
+    expect(screen.getByTestId('reader-search-input')).toBeTruthy();
+
+    await openContents(3);
+    expect(screen.queryByTestId('reader-search-input')).toBeNull();
+    expect(screen.getByTestId('reader-toc-list')).toBeTruthy();
+
+    await openSearch();
+    expect(screen.queryByTestId('reader-toc-list')).toBeNull();
+  });
+
+  it('queries only on submit, and passes the raw typed text through', async () => {
+    await mountReader();
+    await openSearch();
+
+    const input = screen.getByTestId('reader-search-input');
+    await fireEvent.changeText(input, 'Tur');
+    await fireEvent.changeText(input, 'Turbo');
+    await fireEvent.changeText(input, 'Turbocharger!');
+
+    // Not once per keystroke: every call re-parses the whole index, and Search caches
+    // nothing.
+    expect(queryBookIndex).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+
+    // Raw, uncleaned. Search's termTokens lowercases and strips punctuation itself;
+    // normalising here would be a second, divergent implementation of that.
+    expect(queryBookIndex).toHaveBeenCalledTimes(1);
+    expect(queryBookIndex).toHaveBeenCalledWith('test-book', 'Turbocharger!');
+  });
+
+  it('lists a row per occurrence and reports the count', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2), epubHit(3, 'ch2')]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    expect(screen.getByText('3 matches for “wolf”.')).toBeTruthy();
+    expect(screen.getByText('…the grey wolf number 3 moved…')).toBeTruthy();
+    // Chapter run headers, emitted only where the chapter changes.
+    expect(screen.getByText('ch2')).toBeTruthy();
+  });
+
+  it('explains that a multi-word search is not a phrase search', async () => {
+    // Without this the count is actively misleading. Measured against the real sample
+    // index, "chapter 9" returns 91 hits — 88 of them the word "chapter" alone —
+    // because Search ANDs the tokens at CHAPTER granularity and then returns every
+    // posting of EVERY query word in the qualifying chapters. Adding a word makes the
+    // list LONGER, which is the opposite of what typing a second word implies.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('chapter 9');
+
+    expect(
+      screen.getByText(
+        'Not a phrase search: this lists every occurrence of “chapter” and “9” in chapters that contain all of them.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('does not claim phrase semantics for a single-word search', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('chapter');
+
+    expect(screen.queryByText(/Not a phrase search/)).toBeNull();
+  });
+
+  it('reports an empty result without making the book look broken', async () => {
+    // THE STATE THE APP IS IN whenever a book ships no index: queryBookIndex returns
+    // [] for that and for "no matches" alike.
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    expect(screen.getByText('No matches for “wolf” in this book.')).toBeTruthy();
+    // The top banner is for ReaderErrorCodes and means the BOOK failed. Search finding
+    // nothing must never light it up.
+    expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
+    expect(screen.queryByText('BRIDGE_PARSE_FAILED')).toBeNull();
+  });
+
+  it('keeps a thrown query inside the panel, leaving the book readable', async () => {
+    jest
+      .mocked(queryBookIndex)
+      .mockRejectedValue(
+        new Error('queryBookIndex: failed to decode search index for "test-book" — Unexpected token'),
+      );
+
+    await mountReader();
+    await deliver({ type: 'toc', items: flatToc(3) });
+    await openSearch();
+    await runSearch('wolf');
+
+    expect(screen.getByText('Search is unavailable for this book.')).toBeTruthy();
+    expect(screen.getByText(/failed to decode search index/)).toBeTruthy();
+    expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
+
+    // The book itself is untouched by a search failure.
+    await openContents(3);
+    expect(screen.getByTestId('reader-toc-list')).toBeTruthy();
+  });
+
+  it('sends goTo carrying a bare CFI string when a result is tapped', async () => {
+    // THE LOAD-BEARING ONE. WEBVIEW_BRIDGE.md's claim that search trips no conversion
+    // trigger holds only while the host unwraps SearchHit.locator to a string. Pinning
+    // the injected script against buildCommandScript means widening the bridge to
+    // carry the Locator union breaks this test rather than the bridge.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+
+    await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: 'epubcfi(/6/2[ch1]!/4/4/1:2)' }),
+    );
+    // The panel DISMISSES on select — it covers the page, so staying open would hide
+    // the text the jump just went to. The floating match bar is what remains.
+    expect(screen.queryByTestId('reader-search-input')).toBeNull();
+    expect(screen.getByTestId('reader-search-match-bar')).toBeTruthy();
+    expect(screen.getByText('Match 2 of 2')).toBeTruthy();
+  });
+
+  it('leaves the viewer mounted and unresized while searching', async () => {
+    // THE REGRESSION THIS GUARDS. Both search surfaces overlay the viewer instead of
+    // sharing the column with it. A sibling that occupies layout changes the viewer's
+    // height, which resizes the WebView, which makes epub.js re-paginate — and a CFI
+    // resolved under one pagination points at a different page under another, so every
+    // jump lands off by a page. Asserting the WebView is continuously mounted with an
+    // unchanged style is the closest a layout-engine-less test can get to that.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await reportReady();
+
+    const styleBefore = screen.getByTestId('reader-webview').props.style;
+
+    await openSearch();
+    expect(screen.getByTestId('reader-webview')).toBeTruthy();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.getByTestId('reader-webview').props.style).toEqual(styleBefore);
+  });
+
+  it('reopens the results from the match bar', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    // The counter doubles as the way back in — it is the widest target in the bar and
+    // already names what tapping it shows.
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Match 1 of 2 for wolf. Show all results.' }),
+    );
+
+    expect(screen.getByTestId('reader-search-input')).toBeTruthy();
+    // Reopening must not re-run the query or lose the place in the results.
+    expect(queryBookIndex).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('…the grey wolf number 2 moved…')).toBeTruthy();
+  });
+
+  it('steps through matches from the match bar and clamps at both ends', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2), epubHit(3)]);
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+
+    // Dismiss the panel to get at the match bar — stepping is something you do while
+    // looking at the page, which is why the arrows live there and not in the results.
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
+    // Nothing selected yet, so the count reads as a total rather than a position.
+    expect(screen.getByText('3 matches')).toBeTruthy();
+
+    const next = (): Promise<void> =>
+      fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+
+    await next();
+    expect(screen.getByText('Match 1 of 3')).toBeTruthy();
+    await next();
+    await next();
+    expect(screen.getByText('Match 3 of 3')).toBeTruthy();
+
+    // Clamp, not wrap — the arrow disables rather than looping back to the first hit.
+    expect(
+      screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+  });
+
+  it('lists a PDF hit but never navigates to it', async () => {
+    const pdfHit: SearchHit = {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'PDF', page: 4 },
+      snippet: '…a page-addressed hit…',
+    };
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), pdfHit, epubHit(3)]);
+
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+
+    // Listed, not filtered: dropping it would desynchronise the ordinals from
+    // "Match n of m", and an all-PDF result set would render as an empty list under a
+    // "no matches" heading.
+    expect(screen.getByText('…a page-addressed hit…')).toBeTruthy();
+    expect(screen.getByText('Not available in this reader')).toBeTruthy();
+
+    // Stepping skips straight over it to the next EPUB hit.
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+    expect(screen.getByText('Match 3 of 3')).toBeTruthy();
+  });
+
+  it('drops a stale response that lands after a newer search', async () => {
+    // Justifies the sequence guard in useBookSearch: queryBookIndex takes no
+    // AbortSignal, so a slow broad search can still be parsing when a narrower one has
+    // already returned.
+    function deferred(): { promise: Promise<SearchHit[]>; resolve: (v: SearchHit[]) => void } {
+      let resolve!: (value: SearchHit[]) => void;
+      const promise = new Promise<SearchHit[]>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+
+    const slow = deferred();
+    const fast = deferred();
+    jest
+      .mocked(queryBookIndex)
+      .mockReturnValueOnce(slow.promise)
+      .mockReturnValueOnce(fast.promise);
+
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await runSearch('bear');
+
+    await act(async () => {
+      fast.resolve([epubHit(2)]);
+    });
+    await act(async () => {
+      slow.resolve([epubHit(1), epubHit(3)]); // arrives late, for the abandoned term
+    });
+
+    expect(screen.getByText('…the grey wolf number 2 moved…')).toBeTruthy();
+    expect(screen.queryByText('…the grey wolf number 1 moved…')).toBeNull();
+    expect(screen.getByText('1 match for “bear”.')).toBeTruthy();
+  });
+
+  it('dismisses the match bar and forgets the results', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Dismiss search' }));
+
+    expect(screen.queryByTestId('reader-search-match-bar')).toBeNull();
+    // Reopening the panel starts clean rather than restoring the dismissed hits.
+    await openSearch();
+    expect(screen.queryByText('…the grey wolf number 1 moved…')).toBeNull();
   });
 });

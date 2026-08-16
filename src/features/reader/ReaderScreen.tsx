@@ -30,6 +30,9 @@ import type {
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
+import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
+import { SearchPanel } from '@/features/reader/SearchPanel';
+import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
@@ -133,8 +136,13 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [showToc, setShowToc] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
+
+  // Search state lives ABOVE the panel, so closing and reopening it keeps the results
+  // and the place you had reached in them.
+  const search = useBookSearch(bookId);
 
   /**
    * Which edges of the Contents list are currently faded.
@@ -358,14 +366,61 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   }, []);
 
   // `target` is a spine href or an EPUB CFI — see ReaderCommand in readerBridge.ts.
-  // A SearchHit carries a `Locator`; unwrap it to `locator.cfi` here rather than
-  // sending the union across the bridge.
+  // A SearchHit carries a `Locator`; it is unwrapped to `locator.cfi` by cfiOf() in
+  // useBookSearch.ts rather than sent across the bridge as the union.
   const goTo = useCallback(
     (target: string): void => {
       setShowToc(false);
       send?.({ type: 'goTo', target });
     },
     [send],
+  );
+
+  /**
+   * Seek to a search hit and dismiss the results, leaving the match bar behind.
+   *
+   * Dismissing is the point: the panel covers the page, so staying open would hide the
+   * text the jump just went to. The match bar floats, so stepping continues against
+   * the book itself.
+   *
+   * Deliberately not `goTo`: that closes the Contents panel, which is the right
+   * teardown for a TOC entry and the wrong one here.
+   */
+  const selectHit = useCallback(
+    (index: number): void => {
+      const hit = search.hits[index];
+      if (!hit) return;
+      const cfi = cfiOf(hit);
+      if (cfi === null) return; // PDF hit: listed in the panel, but nowhere to send it
+      search.setActiveIndex(index);
+      setShowSearch(false);
+      send?.({ type: 'goTo', target: cfi });
+    },
+    [search, send],
+  );
+
+  const stepHit = useCallback(
+    (delta: 1 | -1): void => {
+      // With nothing selected, the first press lands on the first (or last) match.
+      // Starting from activeIndex + delta would reach index 0 only by accident of
+      // -1 + 1, and would skip the last match when stepping backwards.
+      const from =
+        search.activeIndex < 0
+          ? delta === 1
+            ? 0
+            : search.hits.length - 1
+          : search.activeIndex + delta;
+
+      for (let i = from; i >= 0 && i < search.hits.length; i += delta) {
+        if (cfiOf(search.hits[i]) !== null) {
+          selectHit(i);
+          return;
+        }
+      }
+      // Nothing navigable that way. CLAMP rather than wrap: the arrows disable at the
+      // ends, and wrapping would contradict what the UI is showing.
+    },
+    [search.activeIndex, search.hits, selectHit],
   );
 
   const isBusy = htmlUri === null || (!isRendered && error === null);
@@ -378,6 +433,26 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <Text style={styles.errorMessage}>{error.message}</Text>
         </View>
       )}
+
+      <View style={styles.toolbar}>
+        <Pressable
+          accessibilityRole="button"
+          // The repo's first accessibilityLabel, and required rather than stylistic: a
+          // glyph child gives a screen reader nothing to say, and every existing test
+          // finds buttons by accessible name.
+          accessibilityLabel="Search this book"
+          onPress={() => {
+            // Mutual exclusion with Contents. Not cosmetic: both panels' toggles read
+            // "Close" when open, and two buttons with that name make every
+            // getByRole('button', { name: 'Close' }) ambiguous.
+            setShowToc(false);
+            setShowSearch((open) => !open);
+          }}
+          style={styles.toolbarButton}
+        >
+          <Text style={styles.toolbarIcon}>🔍</Text>
+        </Pressable>
+      </View>
 
       <View style={styles.viewer}>
         {htmlUri !== null && (
@@ -508,6 +583,47 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           </View>
         )}
 
+        {/*
+          Both search surfaces OVERLAY the viewer rather than sharing the column with
+          it, and that is load-bearing rather than cosmetic: anything that changes the
+          viewer's height resizes the WebView, epub.js re-paginates on resize, and a
+          CFI resolved under one pagination points at a different page under another.
+          Floating them keeps the viewer a fixed size, so a hit's CFI means the same
+          thing when it is tapped as when it was indexed. See SearchMatchBar.tsx.
+        */}
+        {showSearch && (
+          <SearchPanel
+            query={search.query}
+            onQueryChange={search.setQuery}
+            onSubmit={search.submit}
+            onClose={() => {
+              setShowSearch(false);
+            }}
+            status={search.status}
+            hits={search.hits}
+            submittedTerm={search.submittedTerm}
+            failure={search.failure}
+            activeIndex={search.activeIndex}
+            onSelectHit={selectHit}
+          />
+        )}
+
+        {/* The find bar you read against: only once there is something to step through,
+            and only while the panel is closed, since the panel covers it anyway. */}
+        {!showSearch && search.hits.length > 0 && (
+          <SearchMatchBar
+            hits={search.hits}
+            activeIndex={search.activeIndex}
+            submittedTerm={search.submittedTerm}
+            onStep={stepHit}
+            onOpenResults={() => {
+              setShowToc(false);
+              setShowSearch(true);
+            }}
+            onDismiss={search.clear}
+          />
+        )}
+
         {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
             and the TOC panel, all of which can be showing book-derived content. */}
         {isObscured && (
@@ -535,6 +651,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           accessibilityRole="button"
           disabled={toc.length === 0}
           onPress={() => {
+            setShowSearch(false); // mutual exclusion — see the toolbar button above
             setShowToc((open) => !open);
           }}
           style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -583,6 +700,23 @@ const styles = StyleSheet.create({
   // renders nothing at all into a zero-height container.
   container: { flex: 1, backgroundColor: '#ffffff' },
   viewer: { flex: 1 },
+
+  // Right-aligned so the icon falls under the thumb rather than next to App.tsx's
+  // temporary title. 44pt is the minimum comfortable touch target.
+  toolbar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  toolbarButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
+  toolbarIcon: { fontSize: 20 },
 
   // Explicit inset rather than StyleSheet.absoluteFillObject: RN 0.86's types
   // export only `absoluteFill`, so the *Object form is a typecheck error here.

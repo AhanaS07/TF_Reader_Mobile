@@ -5,11 +5,25 @@
 // personalization store (settings → SQLite via Karthik's schema, marked for sync)."
 //
 // STUB: persists SharedPrefs IN MEMORY only, behind the PrefsStore interface.
-// The on-device SQLite store isn't in this repo yet (Karthik's SQLite/Mongo live
-// in the backend repo; src/features/sync is a .gitkeep). We depend ONLY on the
-// frozen contract (SyncRecordBase, in shared/contracts) — not on the DB. When an
-// on-device SQLite adapter lands, add a SqlitePrefsStore implementing this same
-// interface and swap it in with no caller changes.
+// We depend ONLY on the frozen contract (SyncRecordBase, in shared/contracts) —
+// not on the DB.
+//
+// SUPERSEDED, AND CURRENTLY UNREFERENCED — decide before building on it.
+// The swap this file was written to anticipate ("when an on-device SQLite adapter
+// lands, add a SqlitePrefsStore implementing this same interface") did not happen
+// through this interface. Sync landed its own on-device layer instead:
+// features/sync/stores/personalizationStore.ts + accessibilityStore.ts behind
+// features/sync/sharedPrefs.ts's readSharedPrefs() / writeSharedPrefs(), which
+// merge both tables into one SharedPrefs and are the real persisted read path.
+// Nothing in src/ imports PrefsStore or InMemoryPrefsStore any more (this file and
+// its test are the only references).
+//
+// So this is either the settings-screen-facing seam that Sync's stores get plugged
+// into, or it is dead code to delete. That is Personalization's call, not Reader's
+// — it is only flagged here so the next reader does not treat an unreferenced stub
+// as the live store. Its own value is intact either way: freshDefaultPrefs() below
+// is the one place that solves prefs.ts:79's shared-reference trap, and the two
+// cross-user aliasing tests are the only coverage of it.
 //
 // Prefs are a per-user SINGLETON. Every write stamps updatedAt and sets
 // synced=false ("marked for sync"). LWW on updatedAt (see prefs.ts).
