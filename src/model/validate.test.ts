@@ -16,7 +16,7 @@ function publication(overrides: Partial<Publication> = {}): Publication {
     acquisition: {
       actionId: 'borrow',
       href: 'https://api.tf/api/v1/loans?itemId=item_42',
-      licenceModel: 'CONCURRENT',
+      licenceModel: 'ELITE',
       copiesTotal: 2,
       encryption: { algorithm: 'AES-256-GCM', originalLength: 6373752 },
       hasSearchIndex: true,
@@ -36,7 +36,7 @@ it('accepts an audiobook that is plaintext and unindexed', () => {
     acquisition: {
       actionId: 'acquire',
       href: 'https://api.tf/api/v1/loans?itemId=item_stat',
-      licenceModel: 'UNLIMITED',
+      licenceModel: 'SUBSCRIPTION',
       encryption: null,
       hasSearchIndex: false,
       canPersist: true,
@@ -69,20 +69,35 @@ it('rejects audio claiming a search index', () => {
   );
 });
 
-// Open access is unlicensed and unencrypted by definition. An open-access title
-// carrying a licence model would mean resolveAccess gets contradictory inputs.
-it('rejects open access that carries a licence model', () => {
-  const licensedOpenAccess = publication({
+// The tier now arrives on every link, so the rule is no longer "open access has
+// no tier" but "the tier agrees with the rel". A mismatch means resolveAccess
+// gets contradictory inputs about the same title.
+it('accepts open access carrying the OPEN_ACCESS tier', () => {
+  const openAccess = publication({
     acquisition: {
       actionId: 'openAccess',
       href: 'https://cdn.tf/oa/item_ab6.epub',
-      licenceModel: 'UNLIMITED',
+      licenceModel: 'OPEN_ACCESS',
       encryption: null,
       hasSearchIndex: true,
       canPersist: true,
     },
   });
-  expect(() => assertPublication(licensedOpenAccess)).toThrow(
+  expect(() => assertPublication(openAccess)).not.toThrow();
+});
+
+it('rejects open access whose tier disagrees with its rel', () => {
+  const mismatched = publication({
+    acquisition: {
+      actionId: 'openAccess',
+      href: 'https://cdn.tf/oa/item_ab6.epub',
+      licenceModel: 'SUBSCRIPTION',
+      encryption: null,
+      hasSearchIndex: true,
+      canPersist: true,
+    },
+  });
+  expect(() => assertPublication(mismatched)).toThrow(
     expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),
   );
 });
@@ -92,6 +107,7 @@ it('rejects open access that claims encryption', () => {
     acquisition: {
       actionId: 'openAccess',
       href: 'https://cdn.tf/oa/item_ab6.epub',
+      licenceModel: 'OPEN_ACCESS',
       encryption: { algorithm: 'AES-256-GCM', originalLength: 10 },
       hasSearchIndex: true,
       canPersist: true,
@@ -102,11 +118,11 @@ it('rejects open access that claims encryption', () => {
   );
 });
 
-// A concurrent licence with no copy count cannot be reasoned about: resolveAccess
+// An ELITE licence with no copy count cannot be reasoned about: resolveAccess
 // needs the total to decide whether a copy is free.
-it('rejects a concurrent licence with no copy count', () => {
+it('rejects an ELITE licence with no copy count', () => {
   const noCopies = publication({
-    acquisition: { ...publication().acquisition, licenceModel: 'CONCURRENT', copiesTotal: undefined },
+    acquisition: { ...publication().acquisition, licenceModel: 'ELITE', copiesTotal: undefined },
   });
   expect(() => assertPublication(noCopies)).toThrow(
     expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),

@@ -1,8 +1,7 @@
 // src/search/searchLink.test.ts
 // URL construction is the one part of B1 that a screenshot cannot review, so it
-// is tested directly and against the REAL frozen template rather than a
-// hand-written one — the same reasoning normalize.test.ts gives for using the
-// fixtures.
+// is tested directly and against the REAL template rather than a hand-written
+// one — the same reasoning normalize.test.ts gives for using the fixtures.
 import { normalizeCatalogue } from '@model/opds/normalize';
 import { CatalogueError } from '@model/errors';
 
@@ -14,10 +13,12 @@ import {
   searchParams,
 } from '@search/searchLink';
 
-// The template as wokay actually ship it, read out of the frozen sample.
+// The template shape the contract defines, read out of the home-catalogue fixture
+// rather than hand-written — the point is to expand what arrives. The host is ours;
+// wokay's own examples run on localhost.
 const TEMPLATE = normalizeCatalogue(homeCatalogue).searchHref as string;
 
-describe('the frozen template is what these tests are about', () => {
+describe('the template the feed itself carries is what these tests are about', () => {
   it('declares query and nothing else', () => {
     expect(TEMPLATE).toBe('https://api.tf/opds/v1/institutions/inst_7f3/search{?query}');
   });
@@ -130,11 +131,15 @@ describe('searchParams — filters travel as query parameters', () => {
   });
 });
 
-// Q-12 is open: with no tier field anywhere, is `?accessTier=` a parameter the
-// search endpoint accepts at all? The repository cannot answer it, so nothing is
-// sent. This test is the tripwire — flipping the constant when wokay confirm will
-// fail here, which is the reminder to update the expectation deliberately rather
-// than discovering the parameter went live by accident.
+// Q-12, narrowed by the pinned contract: wokay DO declare `?accessTier=` on the
+// search endpoint, so the parameter exists. What we still cannot do is send it —
+// the feed's own template declares only `{?query}`, and we expand what arrives
+// rather than inventing variables. So the open question is now "does the template
+// gain the variable", not "does the field exist".
+//
+// This test is the tripwire: flipping the constant will fail here, which is the
+// reminder to update the expectation deliberately rather than discovering the
+// parameter went live by accident.
 describe('accessTier is withheld while Q-12 is open', () => {
   it('is not confirmed by anything in the repository', () => {
     expect(ACCESS_TIER_FILTER_CONFIRMED).toBe(false);

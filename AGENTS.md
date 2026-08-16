@@ -74,13 +74,73 @@ specification where it disagrees — it is superseded.
   licence is held. No offline copy at any point, so Elite never offers Download.
 - **Elite always queues**, even when a seat is free. The queue is the only way
   in. There is no `no_seats` state and no `availability` dependency.
-- **There is no `accessTier` field** and there will not be one. Derive it in the
-  adapter from `licenceModel`: `UNLIMITED` → Subscription, `CONCURRENT` → Elite,
-  absent → Open Access.
+- **The tier arrives in the feed — do not derive it.** Superseded 16 Aug 2026 by
+  wokay's published contract. `licenceModel` is on every acquisition link
+  including open access, and carries one of `OPEN_ACCESS`, `SUBSCRIPTION`,
+  `ELITE`. Our old `CONCURRENT` / `UNLIMITED` vocabulary is gone; it never was
+  wokay's. Do not confuse this with flambeau's `ENTITLED_*` enum, which is a
+  separate live vocabulary they translate on their side. See `docs/contracts/`.
 - **`canPersist: false` hides Download** whatever the tier.
 - **`subscribe` is the B2C entry point.** After subscribing, titles inside the
   reader's licence resolve to `read` + `download`. The payment surface is not
   ours.
+
+## Shelves are data — L-5, settled 16 August 2026
+
+An administrator configures the shelves for their institution and names them, so
+the count, the titles and the ids are all theirs, and two institutions see
+different rows. The rule the codebase already follows is now the final rule
+rather than a hedge.
+
+- **Render whatever array arrives, in the order it arrives.** Never name a shelf
+  in a type, a branch, a test assertion or a style.
+- **Handle one and many.** `navigation` is `minItems: 1` and always carries an
+  *All titles* entry, so a zero-row feed cannot occur — don't build an empty
+  state for it. One row is a valid feed, not a failed load.
+- **`groupId` is an opaque string.** `shelf_1`, `ebooks`, anything — all just
+  keys. Don't sort the array, relabel an entry, or treat the first as special.
+- **Shelves are not filters.** The filter chips come from frozen enums in
+  wokay's contract; the category row comes from the feed. An administrator
+  naming a shelf "eBooks" does not make it the `contentType=EPUB` filter, and
+  neither may be built from the other.
+
+Still open, and it does not block anything: wokay said in chat that an
+administrator may add **any** number of shelves, but their contract caps
+`groups` at `maxItems: 3` with `groupId` fixed to `shelf_1..3` and `all`, on an
+operation marked `x-stability: FROZEN`. Both cannot be true. Fixtures stay
+contract-legal; the "any number" claim is carried by tests instead
+(`normalize.test.ts`, `CatalogueScreen.test.tsx`). Either answer costs us
+nothing, because nothing names a shelf.
+
+## Read the current week's plan before starting
+
+`team1-docs/index.html`, section `#wk2plan`. Clone `team1-docs` alongside this
+repo — it is not a submodule, so the path depends on your own layout.
+
+It holds what this file cannot: who owns which task, what each one builds in
+terms of a specific screen and section, which mockup elements are deliberately
+held rather than cut, and why decisions went the way they did. Read it before
+picking up a task, and before deciding a feature is dead.
+
+**It outranks a code comment on questions of intent.** Comments describe what
+the code does and why it was written that way at the time; the plan describes
+what has since been decided.
+
+**Absence from a contract is not an answer.** If a field a design needs is
+missing, that is a question to raise, not grounds to delete the UI. Presence is
+evidence; absence is a question.
+
+## The backend contracts
+
+Republished 15 August 2026 and pinned in `docs/contracts/`. They supersede the
+Week 1 sample feeds. Fetch the `.yaml` if you need a fresh copy — the `.html`
+siblings are Swagger shells that render nothing without JS.
+
+- wokay — `https://abhishek-tf.github.io/tf_reader_backend_temp/api-docs/wokay-api.yaml`
+- flambeau — `https://deepu1004.github.io/flambeau-api-contracts/flambeau-api.yaml`
+
+One example in a contract is one tenant's data, not the schema. Read the schema
+for what a field may contain; read the example only for shape.
 
 ## Not decided yet
 

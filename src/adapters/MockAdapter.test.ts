@@ -6,6 +6,7 @@ import {
   describeCatalogueSourceConformance,
   KNOWN_INSTITUTION,
   KNOWN_PUBLICATION,
+  KNOWN_SHELF,
 } from '@adapters/conformance';
 import { describeInstitutionSourceConformance } from '@adapters/institutionConformance';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -30,10 +31,13 @@ describe('MockAdapter institutions', () => {
   });
 
   // Every institution the picker can offer must load, or CAP-3 looks broken for
-  // 7 of its own 8 choices. Only inst_7f3 has real catalogue fixtures, so the
-  // others are served that same feed — a mock convenience, stated here rather
-  // than left as a surprise. Replace this with per-institution fixtures if the
-  // demo ever needs the catalogues to differ.
+  // 7 of its own 8 choices. Two have their own root feed and the rest are served
+  // the first one — a mock convenience, stated here rather than left as a
+  // surprise. Add per-institution fixtures if the demo needs more to differ.
+  //
+  // The assertion is that a catalogue RESOLVES, not that it has shelves: an
+  // administrator configures the shelves, so an institution with none is a valid
+  // feed rather than a broken one.
   it('serves a catalogue for every institution it lists, not just inst_7f3', async () => {
     const adapter = new MockAdapter();
     const others = (await adapter.getInstitutions()).filter((i) => i.id !== 'inst_7f3');
@@ -41,8 +45,20 @@ describe('MockAdapter institutions', () => {
     expect(others.length).toBeGreaterThan(0);
     for (const institution of others) {
       const catalogue = await adapter.getHomeCatalogue(institution.id);
-      expect(catalogue.shelves.length).toBeGreaterThan(0);
+      expect(catalogue.navigation.length).toBeGreaterThan(0);
     }
+  });
+
+  // The nothing-curated case, reachable without editing a fixture. A brand new
+  // institution has no shelves yet and still has to render: one signpost row and
+  // no sections. Nothing may treat an empty shelf list as an error.
+  it('serves an institution whose administrator has curated no shelves', async () => {
+    const adapter = new MockAdapter();
+
+    const catalogue = await adapter.getHomeCatalogue('inst_a21');
+
+    expect(catalogue.shelves).toEqual([]);
+    expect(catalogue.navigation.length).toBe(1);
   });
 
   // The other half of that bargain: only ids the fixtures know are accepted, so
@@ -122,7 +138,7 @@ describe('MockAdapter error injection', () => {
   it('applies injected failure to every method, not just the catalogue', async () => {
     const adapter = new MockAdapter({ failWith: CatalogueError.TIMEOUT });
 
-    await expect(adapter.getShelf(KNOWN_INSTITUTION, 'ebooks')).rejects.toMatchObject({
+    await expect(adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF)).rejects.toMatchObject({
       code: CatalogueError.TIMEOUT,
     });
     await expect(
@@ -148,20 +164,20 @@ describe('MockAdapter shelf resolution', () => {
   it('serves a shelf that has a standalone feed fixture', async () => {
     const adapter = new MockAdapter();
 
-    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks');
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
 
-    expect(shelf.id).toBe('ebooks');
+    expect(shelf.id).toBe(KNOWN_SHELF);
     expect(shelf.publications.length).toBeGreaterThan(0);
   });
 
   it('serves the second page of a multi-page shelf from its own fixture', async () => {
     const adapter = new MockAdapter();
 
-    const firstPage = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks');
-    const secondPage = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks', firstPage.nextPage);
+    const firstPage = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+    const secondPage = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, firstPage.nextPage);
 
-    // Real rows off 02-shelf-group-page1.json, not a fabricated empty page — the
-    // two pages together add up to the shelf's advertised total.
+    // Real rows, not a fabricated empty page — the two pages together add up to
+    // the shelf's advertised total.
     expect(secondPage.publications.length).toBeGreaterThan(0);
     expect(firstPage.publications.length + secondPage.publications.length).toBe(
       firstPage.totalItems,
@@ -177,33 +193,42 @@ describe('MockAdapter shelf resolution', () => {
   it('answers a page past the end with an empty final page', async () => {
     const adapter = new MockAdapter();
 
-    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks', 99);
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 99);
 
-    expect(shelf.id).toBe('ebooks');
+    expect(shelf.id).toBe(KNOWN_SHELF);
     expect(shelf.publications).toEqual([]);
     // Stripped, so a caller looping on `nextPage` terminates instead of spinning.
     expect(shelf.nextPage).toBeUndefined();
   });
 
-  it('does not serve a home-catalogue preview group as a drillable shelf', async () => {
+  // The fixture set keeps one advertised shelf without a listing on purpose, so the
+  // not-found path is reachable by tapping a card rather than only via an invented
+  // id. Such a shelf may still have a PREVIEW group in the home feed — a preview is
+  // not the paginated listing its self href would return, and serving it as one
+  // would fake pages out of data that has none.
+  //
+  // Found by walking the row, never by name: which shelf is unbacked is the
+  // fixture's business (AGENTS.md L-5).
+  it('reports NOT_FOUND for a navigable shelf whose listing has no fixture', async () => {
     const adapter = new MockAdapter();
+    const catalogue = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
 
-    // 'new-this-term' exists only as a group inside the home feed. That group is
-    // a preview of a collection, not the full listing its self href would
-    // return, so it cannot stand in for one: doing so would fake a paginated
-    // shelf out of data that has no pages. The home feed is for the home screen.
-    await expect(adapter.getShelf(KNOWN_INSTITUTION, 'new-this-term')).rejects.toMatchObject({
-      code: CatalogueError.NOT_FOUND,
-    });
-  });
+    const unbacked = [];
+    for (const entry of catalogue.navigation) {
+      try {
+        await adapter.getShelf(KNOWN_INSTITUTION, entry.shelfId);
+      } catch (err) {
+        expect((err as { code: CatalogueError }).code).toBe(CatalogueError.NOT_FOUND);
+        unbacked.push(entry.shelfId);
+      }
+    }
 
-  it('reports NOT_FOUND for a navigable shelf that has no fixture yet', async () => {
-    const adapter = new MockAdapter();
-
-    // 'audiobooks' appears in navigation but no fixture backs it. Pretending it
-    // is empty would hide the gap; NOT_FOUND states it.
-    await expect(adapter.getShelf(KNOWN_INSTITUTION, 'audiobooks')).rejects.toMatchObject({
-      code: CatalogueError.NOT_FOUND,
-    });
+    expect(unbacked.length).toBeGreaterThan(0);
+    // And at least one of them is a preview group too, which is the case that would
+    // regress if pagesByShelfId ever started serving home-feed groups.
+    const previewed = unbacked.filter((shelfId) =>
+      catalogue.shelves.some((shelf) => shelf.id === shelfId),
+    );
+    expect(previewed.length).toBeGreaterThan(0);
   });
 });

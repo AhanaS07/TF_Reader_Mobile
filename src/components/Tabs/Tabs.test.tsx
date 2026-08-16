@@ -5,11 +5,11 @@
 // two-tab set, because the component must render whatever array it is handed.
 //
 // THE TESTS NAME NO TAB IN AN ASSERTION ABOUT BEHAVIOUR. Foundation Spec §6.4
-// component 5: tabs are "data, not code", because the three-feed-tab model is
-// L-5 and unratified. Every behavioural test below drives off the array's
-// length or index, never off a hardcoded label — a test that knew 'eBooks' was
-// tab zero would have to change when L-5 is decided, which is exactly the
-// coupling the component exists to avoid.
+// component 5: tabs are "data, not code", and since 16 Aug 2026 that is settled
+// rather than provisional — an administrator names the shelves per institution
+// (AGENTS.md L-5). Every behavioural test below drives off the array's length or
+// index, never off a hardcoded label, because a test that knew 'eBooks' was tab
+// zero would only hold for one customer.
 //
 // The two behaviours worth protecting hardest: the component must hold NO
 // internal selection state (§6.4 — "onChange must be the only way the active tab

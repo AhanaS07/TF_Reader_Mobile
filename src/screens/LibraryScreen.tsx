@@ -1,19 +1,20 @@
 // The Library tab. The real Library feature has not been built yet.
 //
-// ⚠ TEMPORARY COMPONENT PREVIEW — DELETE WHEN THE GALLERY IS REACHABLE.
+// ⚠ TEMPORARY COMPONENT PREVIEW — this block belongs in the Gallery, and moving
+// it is its own task, not part of this file's job.
 // Everything below the "Library" title is scaffolding, not the Library screen.
 // SubjectChip and Tabs (Foundation Spec §6.4, components 3 and 5) are both built
-// and tested, but neither can be seen running yet: subject filtering needs OPDS
-// facets, and feed tabs are blocked on L-5 and on getShelf() having no fixture
-// behind 'ebooks'/'audiobooks'. `GalleryScreen` is where these belong — but its
-// route is registered in RootNavigator and nothing navigates to it, so it cannot
-// be opened on a device today.
+// and tested. Tabs can now be seen running for real — shelves are settled and
+// getShelf() has fixtures behind several of them (AGENTS.md L-5, 16 Aug 2026) —
+// so only SubjectChip still lacks a home, because subject filtering needs OPDS
+// facets we do not receive yet. `GalleryScreen` is where both belong, and it is
+// reachable from ProfileScreen as of 14 Aug.
 //
 // So this is a LOOK-AT-IT harness, not a feature. The state below exists only to
 // exercise the components' props; nothing here reads the catalogue, and none of
-// it is a claim about how the Library screen or screen 01 will work. When the
-// Gallery route becomes reachable, this whole block moves there verbatim and this
-// file goes back to being the four-line stub it was.
+// it is a claim about how the Library screen or screen 01 will work. Moving this
+// block to GalleryScreen is a separate task; until someone does it, this file
+// stays a harness rather than going back to the four-line stub it was.
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -22,7 +23,7 @@ import { SubjectChip } from '@components/SubjectChip';
 import { Tabs } from '@components/Tabs';
 import { color, space, type } from '@theme/tokens';
 
-// The real subjects carried by the home-catalogue fixture's four publications.
+// Sample subjects for the preview. Not read from any fixture.
 const SUBJECTS = [
   'Law',
   'Technology',
@@ -32,7 +33,8 @@ const SUBJECTS = [
   'Anthropology',
 ];
 
-// The fixture's three navigation rows, and screen 04's detail sections.
+// Invented labels for the preview — a real bar comes from catalogue.navigation,
+// whose contents are an administrator's. Plus screen 04's detail sections.
 const FEED_TABS = [
   { id: 'ebooks', label: 'eBooks' },
   { id: 'audiobooks', label: 'Audiobooks' },
