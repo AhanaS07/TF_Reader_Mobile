@@ -172,58 +172,78 @@ export function SearchPanel({
         </View>
       )}
 
-      <ScrollView
-        testID="reader-search-results"
-        style={styles.list}
-        contentContainerStyle={styles.listContent}
-        // Without this the first tap on a result only dismisses the keyboard and the
-        // user has to tap twice. It is the classic bug in exactly this UI.
-        keyboardShouldPersistTaps="handled"
-      >
-        {rendered.map((hit, index) => {
-          const navigable = cfiOf(hit) !== null;
-          // A run header, not a section list: chapterId is an extractor-side id, and
-          // resolving it to a human chapter title would mean guessing that it shares a
-          // namespace with the TOC's hrefs. Nothing states that it does.
-          const startsChapter = index === 0 || hit.chapterId !== rendered[index - 1].chapterId;
+      {/*
+        THE WRAPPER IS WHAT MAKES THE LIST SCROLL, and it is not optional — the
+        Contents panel learned this and the note there is easy to half-apply.
+        `flex: 1` is needed HERE, on a plain View, because a View defaults to
+        flexShrink: 0; without it this box grows to its content height and the
+        overflow is simply clipped by the panel, so the results past the first
+        screenful cannot be reached.
 
-          return (
-            <View key={`${index}-${locatorKey(hit)}`}>
-              {startsChapter && <Text style={styles.chapterCaption}>{hit.chapterId}</Text>}
-              <Pressable
-                accessibilityRole="button"
-                disabled={!navigable}
-                onPress={() => {
-                  onSelectHit(index);
-                }}
-                style={[
-                  styles.row,
-                  index === activeIndex && styles.rowActive,
-                  !navigable && styles.disabled,
-                ]}
-              >
-                <Text style={styles.rowOrdinal}>{index + 1}</Text>
-                <View style={styles.rowBody}>
-                  <Text style={styles.rowSnippet}>{hit.snippet}</Text>
-                  {/* Listed rather than filtered out. Dropping it would desynchronise
+        It is deliberately NOT on the ScrollView itself: that carries
+        flexGrow/flexShrink: 1 in its own base style, so once it has a bounded
+        parent it is already constrained, and adding `flex: 1` there is the no-op
+        recorded in ReaderScreen.tsx. Bounded parent, unstyled child.
+
+        Everything above this is variable height (the status line, the multi-word
+        hint, the failure box), which is the other reason the list needs a flexible
+        box rather than a fixed height.
+      */}
+      <View style={styles.listWrap}>
+        <ScrollView
+          testID="reader-search-results"
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+          // Without this the first tap on a result only dismisses the keyboard and the
+          // user has to tap twice. It is the classic bug in exactly this UI.
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+        >
+          {rendered.map((hit, index) => {
+            const navigable = cfiOf(hit) !== null;
+            // A run header, not a section list: chapterId is an extractor-side id, and
+            // resolving it to a human chapter title would mean guessing that it shares a
+            // namespace with the TOC's hrefs. Nothing states that it does.
+            const startsChapter = index === 0 || hit.chapterId !== rendered[index - 1].chapterId;
+
+            return (
+              <View key={`${index}-${locatorKey(hit)}`}>
+                {startsChapter && <Text style={styles.chapterCaption}>{hit.chapterId}</Text>}
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!navigable}
+                  onPress={() => {
+                    onSelectHit(index);
+                  }}
+                  style={[
+                    styles.row,
+                    index === activeIndex && styles.rowActive,
+                    !navigable && styles.disabled,
+                  ]}
+                >
+                  <Text style={styles.rowOrdinal}>{index + 1}</Text>
+                  <View style={styles.rowBody}>
+                    <Text style={styles.rowSnippet}>{hit.snippet}</Text>
+                    {/* Listed rather than filtered out. Dropping it would desynchronise
                       the ordinals from "Match n of m", and an all-PDF result set would
                       render as an empty list under a "no matches" message. */}
-                  {!navigable && (
-                    <Text style={styles.rowUnavailable}>Not available in this reader</Text>
-                  )}
-                </View>
-              </Pressable>
-            </View>
-          );
-        })}
+                    {!navigable && (
+                      <Text style={styles.rowUnavailable}>Not available in this reader</Text>
+                    )}
+                  </View>
+                </Pressable>
+              </View>
+            );
+          })}
 
-        {hits.length > MAX_RENDERED_HITS && (
-          <Text style={styles.hint}>
-            {`Showing the first ${MAX_RENDERED_HITS} of ${hits.length} matches. ` +
-              `Add another word to narrow it down.`}
-          </Text>
-        )}
-      </ScrollView>
+          {hits.length > MAX_RENDERED_HITS && (
+            <Text style={styles.hint}>
+              {`Showing the first ${MAX_RENDERED_HITS} of ${hits.length} matches. ` +
+                `Add another word to narrow it down.`}
+            </Text>
+          )}
+        </ScrollView>
+      </View>
     </View>
   );
 }
@@ -266,7 +286,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111111',
   },
-  action: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: '#f2f2f2' },
+  action: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#f2f2f2',
+  },
   actionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
 
   status: { marginTop: 10, fontSize: 13, fontWeight: '600', color: '#111111' },
@@ -286,10 +311,12 @@ const styles = StyleSheet.create({
 
   disabled: { opacity: 0.4 },
 
-  // No `flex: 1`, for the reason measured on the Contents list (see the long note in
-  // ReaderScreen.tsx): ScrollView carries flexGrow/flexShrink: 1 in its own base
-  // style, so inside an absolutely-filled panel it is already bounded. Adding it here
-  // is a no-op that only looks like it is doing something.
+  // `flex: 1` belongs on this plain View (which defaults to flexShrink: 0), not on the
+  // ScrollView inside it — see the note at the JSX.
+  listWrap: { flex: 1 },
+
+  // No `flex: 1` here: the wrapper above bounds it, and ScrollView already carries
+  // flexGrow/flexShrink: 1 in its own base style.
   list: { marginTop: 10, borderTopWidth: 1, borderTopColor: '#e2e2e2' },
   listContent: { paddingBottom: 48 },
 

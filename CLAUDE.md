@@ -164,6 +164,34 @@ rest of the file. **Anything using it must delete the pushed plaintext EPUB from
 finished** — that path puts an unencrypted book on disk by construction, which is exactly what a
 storage-leak sweep should flag.
 
+### `fakeReaderTextProvider.ts` — stands in for the real TTS text provider
+
+`src/features/reader/tts/fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs
+that resolve against no book**, so Accessibility (Hruthik) can build a TTS session before the real
+provider exists. The real one is blocked behind the typechecked-WebView conversion; without the
+fake, Accessibility either idles or hand-rolls a stub, and a hand-rolled stub is a guess at the
+interface that makes integration a rewrite rather than a substitution.
+
+**`src/features/reader/tts/readerTextProvider.ts` is NOT scaffolding.** It is the permanent,
+agreed contract and it stays. Only the fake goes. Delete together:
+
+| # | Delete |
+| - | ------ |
+| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` |
+| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` |
+| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` |
+| 4 | the fake's section in `src/features/reader/TTS_PROVIDER.md`, and this one |
+
+Port `fakeReaderTextProvider.test.ts` rather than dropping it — every case pins a property of the
+seam, not of the fake, so it is the checklist the real provider must satisfy. The test-only handles
+live on `FakeReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so production
+code typed against the interface cannot reach them; if deleting the fake breaks something outside
+`tts/`, the boundary has leaked and that is the bug.
+
+`src/features/reader/TTS_PROVIDER.md` is the source of truth for this seam — the decisions, the
+ownership boundary, the sequencing, and the open items. Read it before changing
+`readerTextProvider.ts`, and update it in the same change.
+
 ## Verifying a change
 
 ```

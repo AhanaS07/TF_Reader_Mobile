@@ -1,15 +1,23 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
-**Owner:** Reader (Ahana) · **Status:** accepted debt, not yet due
-**Last reviewed:** 2026-08-16, when the in-book search UI landed — **all five triggers re-run and
+**Owner:** Reader (Ahana) · **Status:** accepted debt — now due at whichever of prefs-application
+and TTS starts first, and TTS has a consumer building against it today
+**Last reviewed:** 2026-08-16, when the Reader → TTS seam was agreed (`TTS_PROVIDER.md`). **The
+bridge was not touched** — no message type, no command, no template edit, no regenerated
+`reader.html`; the interface and its fake are RN-side only. What changed is the forecast: the TTS
+row's design is now settled, trigger 5 is designed out of it, and triggers 1 and 2 fire harder than
+the row previously claimed. See the TTS bullet under [Stage forecast](#stage-forecast). The
+practical effect is that this file no longer has one predicted converting stage but two, either of
+which can go first.
+**Previously reviewed:** 2026-08-16, when the in-book search UI landed — **all five triggers re-run and
 NONE fired**; the bridge was not touched at all (see the In-book search row in
 [Stage forecast](#stage-forecast)). The state of trigger 1 is unchanged from the review below.
 Same review confirmed the prefs row's **second** blocker is gone: prefs now have a real persisted
 source (`readSharedPrefs()`), so the bridge is the only thing left standing between here and
-prefs-application. Status stays "not yet due" — but "not yet due" now means nobody has asked, not
-that it couldn't be done.
+prefs-application. Status was left at "not yet due", meaning nobody had asked rather than that it
+couldn't be done — which is exactly what the review above changed.
 
-**Previously reviewed:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
+**Before that:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
 into the `toc` message — **all five triggers re-run and NONE fired**, but trigger 1 is now _at_ its
 field boundary rather than comfortably inside it, because this was the first change to grow a
 payload **shape** rather than a name (see the TOC row in [Stage forecast](#stage-forecast)). The
@@ -166,9 +174,9 @@ Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not c
 | **Prefs applied to the rendition** (`prefs.ts`)                    | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                          | ⚠️ **convert here**           |
 | **Annotations** (`annotations.ts`)                                 | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                          | 🛑 hard deadline              |
 | **In-book search** (`search.ts`) ✅ bridge side done               | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**           | cheap — don't let it fool you |
-| **TTS + word/sentence highlight** (`accessibility.ts`)             | Hruthik                             | high-frequency range events + highlight driving                                                   | **1, 2, 5**                          | unthinkable by hand           |
+| **TTS + word/sentence highlight** (`accessibility.ts`)             | **Ahana** builds, Hruthik consumes  | `requestSentence` + `setSpokenRange` commands, one `sentence` reply — see the row note below      | **1 and 2 — 5 designed out**         | 🛑 convert first              |
 
-Four things worth calling out, because all four contradict the obvious guess:
+Five things worth calling out, because all five contradict the obvious guess:
 
 - **A typographic baseline looks like prefs-application and is not.** Applying
   `rendition.themes.default(...)` is one of the exact `rendition.*` calls this file names as the
@@ -211,6 +219,7 @@ Four things worth calling out, because all four contradict the obvious guess:
   server-side and decrypts it into RAM alongside the book, so querying happens in RN. Only
   _seeking_ touches the WebView, and `goTo` already covers it. Don't schedule the conversion
   around search.
+
   > **Re-run 2026-08-14, when `goTo` was widened to take a CFI: DID NOT FIRE.** This row was
   > conditional on `goTo` accepting a CFI; it now does. The condition was met by renaming the arg
   > `href` → `target` and carrying a bare `string`, so no command was added, none needs a reply,
@@ -231,6 +240,24 @@ Four things worth calling out, because all four contradict the obvious guess:
   > goTo carrying a bare CFI string" asserts the injected script equals
   > `buildCommandScript({ type: 'goTo', target: '<cfi>' })`. Widening the bridge to carry the
   > `Locator` union now fails that test instead of quietly succeeding.
+
+- **TTS was forecast to fire trigger 5 and the agreed design removes it — but 1 and 2 still fire,
+  so the conversion is still first.** This row long read "high-frequency range events + highlight
+  driving", which assumed a cursor: the WebView tracking which sentence is being spoken while RN
+  tracked it too. The seam agreed on 2026-08-16 (`TTS_PROVIDER.md`) is **stateless per request** —
+  every `requestSentence` carries its own anchor CFI, so the WebView holds no TTS position for RN
+  to duplicate. That is worth having deliberately rather than by luck: with no cursor there is
+  nothing to reset, so cancelling an in-flight request and starving one across `closeBook` are the
+  same mechanism, and the data-minimisation guarantee (no sentence delivered after teardown) does
+  not depend on the two sides agreeing about where the reader is.
+
+  What it does **not** buy is a cheaper bridge. `requestSentence` needs a **reply** — trigger 2,
+  outright, the first request/reply on this bridge — and the `sentence` payload carries seven
+  fields, past trigger 1's boundary twice over. So the verdict below is unchanged in substance and
+  sharper in scope: **whichever of prefs-application and TTS lands first pays for the conversion,
+  and neither can be built without it.** Nothing in this change touched the bridge — no message
+  type, no command, no template edit, and `reader.html` was not regenerated. The interface and its
+  fake are RN-side only, which is precisely why Accessibility is not blocked on any of this.
 
 ## The verdict
 

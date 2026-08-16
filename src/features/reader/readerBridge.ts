@@ -85,6 +85,16 @@
 // boundary. Convert BEFORE writing those commands, not after: 4 flat commands is
 // a morning, 9 commands plus annotations' `Locator` union is a week.
 //
+// SECOND CANDIDATE, AS OF 2026-08-16: TTS. The Reader -> TTS seam is agreed (see
+// TTS_PROVIDER.md in this folder) and Accessibility is building against it now.
+// Its bridge half needs `requestSentence` to RETURN a sentence — trigger 2
+// outright, the first request/reply here — and a 7-field reply payload, well past
+// trigger 1. The agreed design is stateless per request (the anchor CFI travels
+// with every call), which keeps trigger 5 clear, but that changes nothing about
+// the due date. Whichever of prefs-application and TTS starts first pays for the
+// conversion; neither can be built without it. Nothing about the TTS interface or
+// its fake touches this file — they are RN-side only.
+//
 // THE BRIDGE IS NOW THE ONLY THING LEFT BLOCKING THAT STAGE. Until Sync landed,
 // there was a second blocker that made this date feel far away: prefs existed only
 // as an in-memory stub that reset every launch, so there was nothing durable to

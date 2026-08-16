@@ -28,6 +28,7 @@
 // under test.
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import { getBookBase64 } from '@/features/reader/readerAssets';
@@ -372,6 +373,29 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.getByText('…the grey wolf number 3 moved…')).toBeTruthy();
     // Chapter run headers, emitted only where the chapter changes.
     expect(screen.getByText('ch2')).toBeTruthy();
+  });
+
+  it('bounds the results list so it can scroll past the first screenful', async () => {
+    // A PROXY, and worth saying so: Jest has no layout engine, so "the list scrolls"
+    // cannot be asserted here any more than it can for the Contents list (see this
+    // file's header). What CAN be pinned is the structure whose absence caused the
+    // clipping — the ScrollView needs a parent with `flex: 1`, because a plain View
+    // defaults to flexShrink: 0 and otherwise grows to its content height, letting the
+    // panel clip everything past the first screenful. Note the flex belongs to the
+    // WRAPPER, not the ScrollView, which brings flexGrow/flexShrink: 1 of its own.
+    jest
+      .mocked(queryBookIndex)
+      .mockResolvedValue(Array.from({ length: 60 }, (_, i) => epubHit(i + 1)));
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    const wrapper = screen.getByTestId('reader-search-results').parent;
+    expect(StyleSheet.flatten(wrapper?.props.style as never)).toMatchObject({ flex: 1 });
+
+    // And the tail of the list is rendered at all — clipping and not-rendering are
+    // different bugs with the same symptom, so rule the second one out.
+    expect(screen.getByText('…the grey wolf number 60 moved…')).toBeTruthy();
   });
 
   it('explains that a multi-word search is not a phrase search', async () => {
