@@ -72,17 +72,67 @@
 // That last part is the whole reason it stayed cheap: see the note on
 // ReaderCommand below, and do not "simplify" it by passing the Locator.
 //
+// Flattening the TOC (following epub.js's nested `subitems`) did NOT trip any
+// either — but it is the first change here that grew a SHAPE rather than a name:
+// ReaderTocItem went from {label, href} to {label, href, depth}. That is AT
+// trigger 1's "~3 fields" boundary rather than past it, and `depth` is a plain
+// number local to this file, not a frozen contract. The NEXT field added to a TOC
+// entry fires trigger 1; say so then instead of re-arguing the boundary.
+//
 // EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
 // epub.js rendition). That is the first stage that trips a trigger, and it trips
 // two — nested multi-field payloads AND a frozen shared contract crossing the
 // boundary. Convert BEFORE writing those commands, not after: 4 flat commands is
 // a morning, 9 commands plus annotations' `Locator` union is a week.
+//
+// SECOND CANDIDATE, AS OF 2026-08-16: TTS. The Reader -> TTS seam is agreed (see
+// TTS_PROVIDER.md in this folder) and Accessibility is building against it now.
+// Its bridge half needs `requestSentence` to RETURN a sentence — trigger 2
+// outright, the first request/reply here — and a 7-field reply payload, well past
+// trigger 1. The agreed design is stateless per request (the anchor CFI travels
+// with every call), which keeps trigger 5 clear, but that changes nothing about
+// the due date. Whichever of prefs-application and TTS starts first pays for the
+// conversion; neither can be built without it. Nothing about the TTS interface or
+// its fake touches this file — they are RN-side only.
+//
+// THE BRIDGE IS NOW THE ONLY THING LEFT BLOCKING THAT STAGE. Until Sync landed,
+// there was a second blocker that made this date feel far away: prefs existed only
+// as an in-memory stub that reset every launch, so there was nothing durable to
+// apply. That is no longer true — `features/sync/sharedPrefs.ts`'s
+// `readSharedPrefs()` reads both tables off SQLite and merges them into one
+// contract-shaped `SharedPrefs`. So the work can start the day someone asks for it,
+// and when it does, the conversion is the first task rather than a discovery.
 
-/** Chapter entry from epub.js `book.loaded.navigation`. */
+/**
+ * One entry from epub.js `book.loaded.navigation`, flattened.
+ *
+ * `depth` is the entry's nesting level in the book's navigation tree — 0 for a
+ * top-level entry. The tree is flattened depth-first in the template (see
+ * `flattenToc` there) and arrives as a single ordered list, so the host indents by
+ * `depth` rather than rendering a recursive structure. That is the point: a
+ * recursive payload is the shape a hand-synced, untypechecked boundary is worst at.
+ *
+ * A MISSING `depth` PARSES AS 0 ON PURPOSE. `assets/reader/reader.html` is a
+ * generated but tracked artifact, so a working tree can legitimately hold a
+ * template older than this file; degrading to a flat list beats dropping every
+ * entry, which is what a required field would do.
+ */
 export interface ReaderTocItem {
   label: string;
   href: string;
+  depth: number;
 }
+
+/**
+ * Deepest nesting the host will indent, mirroring `MAX_TOC_DEPTH` in the template.
+ *
+ * Both sides clamp, and the duplication is deliberate rather than sloppy: the
+ * template clamps as it flattens so the payload is sane, and this side clamps again
+ * because that payload is built from a book's own navigation document — untrusted
+ * input — and an out-of-range depth must not be able to indent an entry off the
+ * side of the screen.
+ */
+export const MAX_TOC_DEPTH = 6;
 
 /**
  * Error codes raised INSIDE the WebView. Exactly the strings passed to `fail()`
@@ -110,6 +160,14 @@ export const HOST_ERROR_CODES = [
   // specific ContentError rides in the message rather than being duplicated into
   // this union: the two vocabularies belong to different contracts.
   'CONTENT_LOAD_FAILED',
+  // The byte path did not SETTLE in time — distinct from CONTENT_LOAD_FAILED,
+  // which means it settled and said no. Kept apart because the two need different
+  // reactions: a failure is about this book, a timeout is about the network or the
+  // device, and telling a reader "could not open this book" when the truth is "we
+  // gave up waiting" sends them looking in the wrong place. Raised by
+  // ReaderScreen's bounded wait; see OPEN_TIMEOUT_MS there for why the wait exists
+  // at all and what it does NOT do.
+  'CONTENT_LOAD_TIMEOUT',
   'READY_TIMEOUT',
   'WEBVIEW_LOAD_FAILED',
   'BRIDGE_PARSE_FAILED',
@@ -129,7 +187,8 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *   relocated — the page changed (also fires for the first page). Carries the
  *               CFI, which is the stable anchor Progress will eventually store
  *               (see the OPEN note in @/shared/contracts progress.ts).
- *   toc       — navigation resolved. Arrives AFTER rendered, not with it.
+ *   toc       — navigation resolved, as one depth-first flattened list (a book's
+ *               nav document is a tree). Arrives AFTER rendered, not with it.
  *   error     — anything went wrong; always coded, never bare.
  */
 export type ReaderMessage =
@@ -217,13 +276,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/**
+ * A nesting level that is safe to indent by. Anything that is not a non-negative
+ * integer — absent, fractional, NaN, Infinity, a string — collapses to 0 rather
+ * than reaching a style calculation.
+ */
+function asTocDepth(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return 0;
+  return Math.min(value, MAX_TOC_DEPTH);
+}
+
 function asTocItems(value: unknown): ReaderTocItem[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry): ReaderTocItem[] => {
     if (!isRecord(entry)) return [];
-    const { label, href } = entry;
+    const { label, href, depth } = entry;
     if (typeof label !== 'string' || typeof href !== 'string') return [];
-    return [{ label, href }];
+    return [{ label, href, depth: asTocDepth(depth) }];
   });
 }
 

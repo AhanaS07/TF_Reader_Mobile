@@ -27,6 +27,7 @@ import * as path from 'path';
 
 import {
   HOST_ERROR_CODES,
+  MAX_TOC_DEPTH,
   READER_COMMANDS,
   READER_MESSAGE_TYPES,
   WEBVIEW_ERROR_CODES,
@@ -66,8 +67,8 @@ describe('parseReaderMessage', () => {
       ),
     ).toEqual({ type: 'relocated', cfi: 'epubcfi(/6/4!/2)', atStart: true, atEnd: false });
     expect(
-      parseReaderMessage('{"type":"toc","items":[{"label":"One","href":"ch1.xhtml"}]}'),
-    ).toEqual({ type: 'toc', items: [{ label: 'One', href: 'ch1.xhtml' }] });
+      parseReaderMessage('{"type":"toc","items":[{"label":"One","href":"ch1.xhtml","depth":0}]}'),
+    ).toEqual({ type: 'toc', items: [{ label: 'One', href: 'ch1.xhtml', depth: 0 }] });
     expect(parseReaderMessage('{"type":"error","code":"OPEN_FAILED","message":"boom"}')).toEqual({
       type: 'error',
       code: 'OPEN_FAILED',
@@ -94,7 +95,7 @@ describe('parseReaderMessage', () => {
     // Non-conforming TOC entries are dropped, not passed through.
     expect(
       parseReaderMessage('{"type":"toc","items":[{"label":"ok","href":"a"},{"label":1},"junk"]}'),
-    ).toEqual({ type: 'toc', items: [{ label: 'ok', href: 'a' }] });
+    ).toEqual({ type: 'toc', items: [{ label: 'ok', href: 'a', depth: 0 }] });
     expect(parseReaderMessage('{"type":"toc","items":"nope"}')).toEqual({ type: 'toc', items: [] });
     // An unknown code still yields a usable, typed error.
     expect(parseReaderMessage('{"type":"error","code":"WAT","message":"m"}')).toEqual({
@@ -102,6 +103,45 @@ describe('parseReaderMessage', () => {
       code: 'WEBVIEW_SCRIPT_ERROR',
       message: 'm',
     });
+  });
+});
+
+describe('TOC nesting depth', () => {
+  function depthsOf(items: string): (number | undefined)[] {
+    const message = parseReaderMessage(`{"type":"toc","items":${items}}`);
+    if (message?.type !== 'toc') throw new Error('not a toc message');
+    return message.items.map((item) => item.depth);
+  }
+
+  it('carries the depth the template flattened to', () => {
+    expect(
+      depthsOf('[{"label":"Part","href":"a","depth":0},{"label":"Ch","href":"b","depth":1}]'),
+    ).toEqual([0, 1]);
+  });
+
+  it('treats a missing depth as top level, so a stale reader.html still works', () => {
+    // assets/reader/reader.html is generated but TRACKED, so a working tree can
+    // hold a template older than this file. Degrading to a flat list is the
+    // failure mode we want; dropping every entry is not.
+    expect(depthsOf('[{"label":"Ch","href":"b"}]')).toEqual([0]);
+  });
+
+  it('refuses a depth that is not a non-negative integer', () => {
+    // The nav document these come from is book content, i.e. untrusted, and this
+    // number reaches a style calculation.
+    expect(
+      depthsOf(
+        '[{"label":"a","href":"a","depth":-1},' +
+          '{"label":"b","href":"b","depth":1.5},' +
+          '{"label":"c","href":"c","depth":"2"},' +
+          '{"label":"d","href":"d","depth":null}]',
+      ),
+    ).toEqual([0, 0, 0, 0]);
+  });
+
+  it('clamps an absurd depth to MAX_TOC_DEPTH rather than dropping the entry', () => {
+    // Losing a chapter is worse than mis-indenting one.
+    expect(depthsOf('[{"label":"a","href":"a","depth":9001}]')).toEqual([MAX_TOC_DEPTH]);
   });
 });
 

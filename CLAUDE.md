@@ -32,14 +32,20 @@ The prefs-application stage is expected to trip it. Flag it rather than quietly 
 
 ## Generated and tracked artifacts
 
-`assets/reader/reader.html` (from `reader.template.html`, via `npm run reader:build-html`) and
-`assets/reader/sample-plaintext.epub` (via `npm run reader:build-sample`). Never hand-edit either;
-regenerate and commit the result.
+`assets/reader/reader.html` (from `reader.template.html`, via `npm run reader:build-html`),
+`assets/reader/sample-plaintext.epub` (via `npm run reader:build-sample`), and
+`assets/reader/sample-search-index.json` (via `npm run reader:build-sample-index`). Never hand-edit
+any of them; regenerate and commit the result.
 
 CI enforces this for `reader.html` only (the "Reader HTML is freshly generated" step: rebuild,
 then `git diff --exit-code`). Forgetting the rebuild is a red build, not a silent stale ship.
 `sample-plaintext.epub` is **not** covered — JSZip stamps each entry with the generation time, so
 it is not byte-reproducible and the same check would fail every run. That one is still on you.
+
+`sample-search-index.json` is not covered either, but for a different reason: it *is* byte-
+reproducible (no timestamps), so a freshness check would work. It is left out to keep CI's scope
+unchanged for a file that is temporary scaffolding — see the deletion table below. Regenerate it if
+the sample EPUB changes, or its CFIs will point into a book that no longer matches.
 
 ## Frozen contracts
 
@@ -132,12 +138,59 @@ used to say to remove both together. Since Vaishnavi's search extractor landed, 
 `search.test.ts`. So its removal now needs Search looped in, separately from and later than
 `devContentSeed.ts`.
 
+**The dev search index goes with `devContentSeed.ts` too — five items, not one.** Nothing ships a
+search index for the seeded book, so `queryBookIndex` returns `[]` for every search and the search
+UI cannot be exercised on a device. `devContentSeed.ts` therefore encrypts a generated index into
+`EncryptedPackage.index` (same BEK, own nonce) so there is something real to find. Delete together:
+
+| # | Delete |
+| - | ------ |
+| 1 | `src/features/reader/scripts/buildSampleSearchIndex.ts` |
+| 2 | `assets/reader/sample-search-index.json` |
+| 3 | the `reader:build-sample-index` script in `package.json` |
+| 4 | the `index` attachment + `!FIXTURE_PATH` guard in `devContentSeed.ts` |
+| 5 | `src/features/reader/devSearchIndex.test.ts` (guards 2 against 4) |
+| 6 | this table |
+
+`SearchPanel.tsx`, `useBookSearch.ts` and the search wiring in `ReaderScreen.tsx` are **not** on
+that list — the UI is permanent and does not know the fixture exists. Removing all five must leave
+it compiling and green, with on-device searches simply returning `[]` again. If deleting the
+fixture breaks the UI or a test, the boundary has leaked and that is the bug.
+
 `devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_PATH` when set, to load a large EPUB
 pushed into the app container instead of the bundled sample (measurement scaffolding — Metro cannot
 `require()` an untracked 20 MB asset, and real content must never be committed). It goes with the
 rest of the file. **Anything using it must delete the pushed plaintext EPUB from the container when
 finished** — that path puts an unencrypted book on disk by construction, which is exactly what a
 storage-leak sweep should flag.
+
+### `fakeReaderTextProvider.ts` — stands in for the real TTS text provider
+
+`src/features/reader/tts/fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs
+that resolve against no book**, so Accessibility (Hruthik) can build a TTS session before the real
+provider exists. The real one is blocked behind the typechecked-WebView conversion; without the
+fake, Accessibility either idles or hand-rolls a stub, and a hand-rolled stub is a guess at the
+interface that makes integration a rewrite rather than a substitution.
+
+**`src/features/reader/tts/readerTextProvider.ts` is NOT scaffolding.** It is the permanent,
+agreed contract and it stays. Only the fake goes. Delete together:
+
+| # | Delete |
+| - | ------ |
+| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` |
+| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` |
+| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` |
+| 4 | the fake's section in `src/features/reader/TTS_PROVIDER.md`, and this one |
+
+Port `fakeReaderTextProvider.test.ts` rather than dropping it — every case pins a property of the
+seam, not of the fake, so it is the checklist the real provider must satisfy. The test-only handles
+live on `FakeReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so production
+code typed against the interface cannot reach them; if deleting the fake breaks something outside
+`tts/`, the boundary has leaked and that is the bug.
+
+`src/features/reader/TTS_PROVIDER.md` is the source of truth for this seam — the decisions, the
+ownership boundary, the sequencing, and the open items. Read it before changing
+`readerTextProvider.ts`, and update it in the same change.
 
 ## Verifying a change
 

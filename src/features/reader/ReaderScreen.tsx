@@ -17,6 +17,8 @@ import {
   View,
 } from 'react-native';
 
+import { LinearGradient } from 'expo-linear-gradient';
+
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
@@ -28,12 +30,93 @@ import type {
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
+import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
+import { SearchPanel } from '@/features/reader/SearchPanel';
+import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
   message: string;
+}
+
+/**
+ * How long to wait for the byte path before giving up on this open.
+ *
+ * WHY A BOUND IS NEEDED AT ALL. `getBookBase64` now begins with Download's per-open
+ * access re-check (`verifyReadingAccess` → `POST /api/v1/reading-sessions`), and that
+ * call has no timeout of its own — no `AbortSignal` anywhere in
+ * `src/features/download/`. Airplane mode rejects fast, so that case is fine; a
+ * reachable-but-unresponsive backend (captive portal, VPN, backend down) does not,
+ * and blocks on iOS URLSession's ~60s default. Nothing else covers that window:
+ * `READY_TIMEOUT` in ReaderWebView is cleared the moment the bridge reports `ready`,
+ * which happens BEFORE this runs. So without this, a book whose bytes are already on
+ * the device sits behind "Opening book…" for a minute with no error and no way to
+ * tell it from a slow decrypt.
+ *
+ * 20s: comfortably above the worst measured warm open (~5s for a 20 MB book, ~93% of
+ * it Encryption's decrypt) with room for a cold read and the access check, and well
+ * under the platform timeout it exists to pre-empt.
+ *
+ * WHAT THIS DOES NOT DO, and the distinction matters: it does not CANCEL anything.
+ * There is no cancellation to propagate — `fetch` here takes no signal and
+ * `getBook`'s decrypt is not interruptible. This bounds what the READER WAITS FOR,
+ * not what the system does. The work continues, and the consequences are recorded on
+ * `withOpenTimeout` below.
+ */
+const OPEN_TIMEOUT_MS = 20_000;
+
+/**
+ * Raised only by `withOpenTimeout`. A distinct class rather than a flag on Error so
+ * the catch below can tell "we stopped waiting" from "the open failed" without
+ * matching on a message string.
+ */
+class OpenTimedOut extends Error {
+  constructor() {
+    super(`The byte path did not settle within ${OPEN_TIMEOUT_MS}ms.`);
+    this.name = 'OpenTimedOut';
+  }
+}
+
+/**
+ * Resolve with `work`, or reject with OpenTimedOut once OPEN_TIMEOUT_MS has passed.
+ *
+ * `work.then(...)` IS THE POINT OF THIS SHAPE, not `Promise.race`. Handlers are
+ * attached to `work` unconditionally and stay attached after the timeout has already
+ * rejected, so when the abandoned open finally settles — and it will, minutes later
+ * if the platform is waiting on a socket — a rejection has somewhere to go. A
+ * `Promise.race` would leave that late rejection unhandled, which in React Native
+ * surfaces as a redbox in dev pointing at code that gave up long ago.
+ *
+ * TWO CONSEQUENCES OF NOT CANCELLING, both deliberate:
+ *  1. The decrypt finishes into nothing. A ~27 MB base64 string is built and dropped
+ *     for a book nobody is reading. It is garbage after that; the peak, however, is
+ *     real while it happens.
+ *  2. The ContentStore session opens anyway, so the plaintext is resident even though
+ *     the reader saw an error. `closeBook` on unmount is what reclaims it — the same
+ *     teardown as a normal read. Calling closeBook here instead was considered and
+ *     rejected: the decrypt may not have created the session yet, so a close would
+ *     be a no-op and the session would then appear behind it, leaving the plaintext
+ *     resident with nothing left to release it.
+ */
+function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new OpenTimedOut());
+    }, OPEN_TIMEOUT_MS);
+
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        clearTimeout(timer);
+        reject(cause instanceof Error ? cause : new Error(String(cause)));
+      },
+    );
+  });
 }
 
 interface ReaderScreenProps {
@@ -53,8 +136,50 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [showToc, setShowToc] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
+
+  // Search state lives ABOVE the panel, so closing and reopening it keeps the results
+  // and the place you had reached in them.
+  const search = useBookSearch(bookId);
+
+  /**
+   * Which edges of the Contents list are currently faded.
+   *
+   * ONE STATE OBJECT OF TWO BOOLEANS, NOT THE SCROLL OFFSET. Keeping the offset in
+   * state would re-render the whole panel — every row — on every scroll frame. These
+   * flip at most twice per gesture, and setFades() below returns the previous object
+   * unchanged when nothing flipped, so React bails out of the render entirely.
+   */
+  const [fades, setFades] = useState({ top: false, bottom: false });
+
+  // Measurements behind the fades, in refs for the same reason: they are inputs to a
+  // derived boolean, and nothing should re-render because a scroll offset moved.
+  const listFrameRef = useRef(0);
+  const listContentRef = useRef(0);
+  const listOffsetRef = useRef(0);
+
+  /**
+   * Decide which edges get a fade from the three numbers above.
+   *
+   * Driven from THREE events, not just onScroll: a list too short to scroll never
+   * emits a scroll event at all, so onLayout (frame) and onContentSizeChange (content)
+   * are what stop a fade appearing over a list that has nothing hidden below it.
+   */
+  const recomputeFades = useCallback((): void => {
+    const frame = listFrameRef.current;
+    const content = listContentRef.current;
+    const offset = listOffsetRef.current;
+    const scrollable = content > frame + FADE_EPSILON_PX;
+
+    const next = {
+      top: scrollable && offset > FADE_EPSILON_PX,
+      bottom: scrollable && offset + frame < content - FADE_EPSILON_PX,
+    };
+
+    setFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
+  }, []);
 
   // When the `open` command was handed to injectJavaScript. A ref, not state: it is written on the
   // bridge path and read in the message handler, and re-rendering on it would perturb the very
@@ -169,11 +294,21 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
       void (async () => {
         try {
-          const base64 = await getBookBase64(bookId);
+          const base64 = await withOpenTimeout(getBookBase64(bookId));
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length });
           sender({ type: 'open', base64 });
         } catch (cause) {
+          if (cause instanceof OpenTimedOut) {
+            raiseError(
+              'CONTENT_LOAD_TIMEOUT',
+              `Opening this book took longer than ${OPEN_TIMEOUT_MS / 1000}s and was given up on. ` +
+                `The book's own bytes are already on this device, so this is usually the network: ` +
+                `the per-open access check has no timeout of its own.`,
+            );
+            return;
+          }
+
           // ContentFailure carries a typed ContentError discriminant (and the
           // bookId) that a bare message would throw away. Surfacing that code is
           // what lets "the licence expired" be told apart from "the ciphertext
@@ -191,7 +326,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
               : cause instanceof DownloadFailure
                 ? `Could not open this book: ${cause.code}. (${String(cause.cause ?? cause.message)})`
                 : `Could not open this book. ` +
-                    `(${cause instanceof Error ? cause.message : String(cause)})`,
+                  `(${cause instanceof Error ? cause.message : String(cause)})`,
           );
         }
       })();
@@ -231,14 +366,61 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   }, []);
 
   // `target` is a spine href or an EPUB CFI — see ReaderCommand in readerBridge.ts.
-  // A SearchHit carries a `Locator`; unwrap it to `locator.cfi` here rather than
-  // sending the union across the bridge.
+  // A SearchHit carries a `Locator`; it is unwrapped to `locator.cfi` by cfiOf() in
+  // useBookSearch.ts rather than sent across the bridge as the union.
   const goTo = useCallback(
     (target: string): void => {
       setShowToc(false);
       send?.({ type: 'goTo', target });
     },
     [send],
+  );
+
+  /**
+   * Seek to a search hit and dismiss the results, leaving the match bar behind.
+   *
+   * Dismissing is the point: the panel covers the page, so staying open would hide the
+   * text the jump just went to. The match bar floats, so stepping continues against
+   * the book itself.
+   *
+   * Deliberately not `goTo`: that closes the Contents panel, which is the right
+   * teardown for a TOC entry and the wrong one here.
+   */
+  const selectHit = useCallback(
+    (index: number): void => {
+      const hit = search.hits[index];
+      if (!hit) return;
+      const cfi = cfiOf(hit);
+      if (cfi === null) return; // PDF hit: listed in the panel, but nowhere to send it
+      search.setActiveIndex(index);
+      setShowSearch(false);
+      send?.({ type: 'goTo', target: cfi });
+    },
+    [search, send],
+  );
+
+  const stepHit = useCallback(
+    (delta: 1 | -1): void => {
+      // With nothing selected, the first press lands on the first (or last) match.
+      // Starting from activeIndex + delta would reach index 0 only by accident of
+      // -1 + 1, and would skip the last match when stepping backwards.
+      const from =
+        search.activeIndex < 0
+          ? delta === 1
+            ? 0
+            : search.hits.length - 1
+          : search.activeIndex + delta;
+
+      for (let i = from; i >= 0 && i < search.hits.length; i += delta) {
+        if (cfiOf(search.hits[i]) !== null) {
+          selectHit(i);
+          return;
+        }
+      }
+      // Nothing navigable that way. CLAMP rather than wrap: the arrows disable at the
+      // ends, and wrapping would contradict what the UI is showing.
+    },
+    [search.activeIndex, search.hits, selectHit],
   );
 
   const isBusy = htmlUri === null || (!isRendered && error === null);
@@ -251,6 +433,26 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <Text style={styles.errorMessage}>{error.message}</Text>
         </View>
       )}
+
+      <View style={styles.toolbar}>
+        <Pressable
+          accessibilityRole="button"
+          // The repo's first accessibilityLabel, and required rather than stylistic: a
+          // glyph child gives a screen reader nothing to say, and every existing test
+          // finds buttons by accessible name.
+          accessibilityLabel="Search this book"
+          onPress={() => {
+            // Mutual exclusion with Contents. Not cosmetic: both panels' toggles read
+            // "Close" when open, and two buttons with that name make every
+            // getByRole('button', { name: 'Close' }) ambiguous.
+            setShowToc(false);
+            setShowSearch((open) => !open);
+          }}
+          style={styles.toolbarButton}
+        >
+          <Text style={styles.toolbarIcon}>🔍</Text>
+        </Pressable>
+      </View>
 
       <View style={styles.viewer}>
         {htmlUri !== null && (
@@ -272,29 +474,154 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         {showToc && (
           <View style={styles.tocPanel}>
             <Text style={styles.tocTitle}>Contents</Text>
-            <ScrollView>
-              {toc.length === 0 ? (
-                <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
-              ) : (
-                // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
-                // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
-                // producer emitted from citation text), which collided and raised React's
-                // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
-                // be identity here.
-                toc.map((item, index) => (
-                  <Pressable
-                    key={`${index}-${item.href}`}
-                    onPress={() => {
-                      goTo(item.href);
-                    }}
-                    style={styles.tocItem}
-                  >
-                    <Text style={styles.tocItemText}>{item.label}</Text>
-                  </Pressable>
-                ))
+            {/*
+              DO NOT ADD `flex: 1` HERE "so the list scrolls". It was tried, and it is a
+              no-op: RN's ScrollView already carries flexGrow/flexShrink: 1 in its own
+              base style (react-native/Libraries/Components/ScrollView/ScrollView.js:1881),
+              so it is already bounded by this absolutely-filled panel. Measured on device
+              2026-08-14 with the 22-entry fixture TOC and NO style here: frame 600pt,
+              content 1054pt — i.e. already scrolling. Yoga's flexShrink: 0 default, which
+              is the usual reason to reach for flex: 1, does not apply to ScrollView.
+            */}
+            {/*
+              The fades anchor to THIS wrapper rather than to the panel, so their
+              offsets are the list's own edges — no restating the panel's padding and
+              no guessing the header's height. `flex: 1` IS needed here (unlike on the
+              ScrollView, which brings its own base style): a plain View defaults to
+              flexShrink: 0.
+            */}
+            <View style={styles.tocListWrap}>
+              <ScrollView
+                testID="reader-toc-list"
+                // BOUNDING THE LIST, which is a different problem from scrolling it. The
+                // panel's edge cuts whichever row happens to cross it, and a row sliced
+                // by a straight edge reads as a broken layout rather than as "there is
+                // more below". Four parts:
+                //  - the fades below dissolve the cut instead of ending it on a line;
+                //  - contentContainerStyle's paddingBottom lets the FINAL entry come
+                //    fully clear of the edge rather than resting half-hidden under it;
+                //  - the divider above the list closes the header off;
+                //  - the scroll indicator is the affordance that says "scrollable".
+                // The three handlers feed recomputeFades — see the note there for why a
+                // short list needs all three and not just onScroll.
+                style={styles.tocList}
+                contentContainerStyle={styles.tocListContent}
+                showsVerticalScrollIndicator
+                scrollEventThrottle={16}
+                onLayout={(event) => {
+                  listFrameRef.current = event.nativeEvent.layout.height;
+                  recomputeFades();
+                }}
+                onContentSizeChange={(_width, height) => {
+                  listContentRef.current = height;
+                  recomputeFades();
+                }}
+                onScroll={(event) => {
+                  listOffsetRef.current = event.nativeEvent.contentOffset.y;
+                  recomputeFades();
+                }}
+              >
+                {toc.length === 0 ? (
+                  <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
+                ) : (
+                  // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
+                  // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
+                  // producer emitted from citation text), which collided and raised React's
+                  // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
+                  // be identity here.
+                  toc.map((item, index) => (
+                    <Pressable
+                      key={`${index}-${item.href}`}
+                      onPress={() => {
+                        goTo(item.href);
+                      }}
+                      // Indent, do not inset the row: paddingLeft keeps the whole
+                      // width tappable at every depth, where marginLeft would shrink
+                      // the touch target of the entries that are already hardest to
+                      // hit. `depth` is clamped by parseReaderMessage, so this cannot
+                      // run away.
+                      style={[styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]}
+                    >
+                      <Text style={styles.tocItemText}>{item.label}</Text>
+                    </Pressable>
+                  ))
+                )}
+              </ScrollView>
+
+              {/*
+              THE FADES. Rendered as siblings AFTER the ScrollView so they paint over
+              it, and `pointerEvents="none"` so they never eat a tap meant for the row
+              underneath — a fade that swallows touches is worse than the sliced row it
+              replaced.
+
+              Conditional rather than always-mounted with zero opacity: at the top of
+              the list there is nothing above to fade, and a permanent white veil over
+              the first row would be the same visual bug in a different place.
+
+              The colour is the panel's own background, so the gradient dissolves the
+              row into the panel rather than tinting it. If the panel ever stops being
+              #ffffff (src/theme/ landing, or a dark theme) these two constants move
+              with it — which is why they sit next to it rather than inline.
+            */}
+              {fades.top && (
+                <LinearGradient
+                  testID="reader-toc-fade-top"
+                  pointerEvents="none"
+                  colors={TOC_FADE_DOWN}
+                  style={[styles.tocFade, styles.tocFadeTop]}
+                />
               )}
-            </ScrollView>
+              {fades.bottom && (
+                <LinearGradient
+                  testID="reader-toc-fade-bottom"
+                  pointerEvents="none"
+                  colors={TOC_FADE_UP}
+                  style={[styles.tocFade, styles.tocFadeBottom]}
+                />
+              )}
+            </View>
           </View>
+        )}
+
+        {/*
+          Both search surfaces OVERLAY the viewer rather than sharing the column with
+          it, and that is load-bearing rather than cosmetic: anything that changes the
+          viewer's height resizes the WebView, epub.js re-paginates on resize, and a
+          CFI resolved under one pagination points at a different page under another.
+          Floating them keeps the viewer a fixed size, so a hit's CFI means the same
+          thing when it is tapped as when it was indexed. See SearchMatchBar.tsx.
+        */}
+        {showSearch && (
+          <SearchPanel
+            query={search.query}
+            onQueryChange={search.setQuery}
+            onSubmit={search.submit}
+            onClose={() => {
+              setShowSearch(false);
+            }}
+            status={search.status}
+            hits={search.hits}
+            submittedTerm={search.submittedTerm}
+            failure={search.failure}
+            activeIndex={search.activeIndex}
+            onSelectHit={selectHit}
+          />
+        )}
+
+        {/* The find bar you read against: only once there is something to step through,
+            and only while the panel is closed, since the panel covers it anyway. */}
+        {!showSearch && search.hits.length > 0 && (
+          <SearchMatchBar
+            hits={search.hits}
+            activeIndex={search.activeIndex}
+            submittedTerm={search.submittedTerm}
+            onStep={stepHit}
+            onOpenResults={() => {
+              setShowToc(false);
+              setShowSearch(true);
+            }}
+            onDismiss={search.clear}
+          />
         )}
 
         {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
@@ -324,6 +651,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           accessibilityRole="button"
           disabled={toc.length === 0}
           onPress={() => {
+            setShowSearch(false); // mutual exclusion — see the toolbar button above
             setShowToc((open) => !open);
           }}
           style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -344,6 +672,26 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   );
 }
 
+/**
+ * Indent per TOC nesting level. A book's navigation document is a tree; the bridge
+ * flattens it and carries a `depth`, so this is the only place the tree is visible.
+ */
+const TOC_INDENT_PX = 16;
+
+/**
+ * Slack, in points, before an edge counts as "scrolled away from".
+ *
+ * Not zero: contentOffset and contentSize are floats that rarely land on exactly the
+ * same value (the fixture's list measures 1053.666…), so an equality test leaves the
+ * bottom fade showing when the list IS at its end.
+ */
+const FADE_EPSILON_PX = 1;
+
+// Transparent → panel background. Written as rgba rather than '#ffffff00' because
+// Android's colour parser has historically been unreliable with 8-digit hex.
+const TOC_FADE_UP = ['rgba(255, 255, 255, 0)', '#ffffff'] as const;
+const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
+
 /** Overlay fill. See the note on `busy` below for why this is not absoluteFillObject. */
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
 
@@ -352,6 +700,23 @@ const styles = StyleSheet.create({
   // renders nothing at all into a zero-height container.
   container: { flex: 1, backgroundColor: '#ffffff' },
   viewer: { flex: 1 },
+
+  // Right-aligned so the icon falls under the thumb rather than next to App.tsx's
+  // temporary title. 44pt is the minimum comfortable touch target.
+  toolbar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  toolbarButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
+  toolbarIcon: { fontSize: 20 },
 
   // Explicit inset rather than StyleSheet.absoluteFillObject: RN 0.86's types
   // export only `absoluteFill`, so the *Object form is a typecheck error here.
@@ -375,6 +740,25 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
+
+  // Only a TOP hairline, to close the header off. There is deliberately no bottom
+  // border any more: a hairline and a fade at the same edge fight each other — the
+  // line reasserts the hard cut the fade exists to dissolve.
+  tocList: { borderTopWidth: 1, borderTopColor: '#e2e2e2' },
+
+  // Room for the last entry to scroll clear of the panel edge. One row's worth, so it
+  // does not read as a gap when the list is short.
+  tocListContent: { paddingBottom: 48 },
+
+  tocListWrap: { flex: 1 },
+
+  // Anchored to tocListWrap, so these offsets are the list's own edges. 40pt is about
+  // one and a half rows: long enough that the dissolve is gradual rather than a
+  // soft-edged band, short enough that it never obscures a whole entry.
+  tocFade: { position: 'absolute', left: 0, right: 0, height: 40 },
+  // 1, not 0: sits directly below the list's top hairline instead of washing it out.
+  tocFadeTop: { top: 1 },
+  tocFadeBottom: { bottom: 0 },
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },
