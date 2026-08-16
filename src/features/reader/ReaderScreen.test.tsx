@@ -30,6 +30,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
+import { getBookBase64 } from '@/features/reader/readerAssets';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
 
 jest.mock('@/features/reader/readerAssets', () => ({
@@ -52,6 +53,17 @@ async function deliver(message: unknown): Promise<void> {
   await act(async () => {
     webView.props.onMessage({ nativeEvent: { data: JSON.stringify(message) } });
   });
+}
+
+/**
+ * Report `ready` the way the WebView does once its IIFE has defined window.TFReader.
+ *
+ * REQUIRED BEFORE ANYTHING TOUCHES THE BYTE PATH: `getBookBase64` is called from
+ * `onReady`, so without this the open never starts at all — and a test that asserts
+ * "no timeout fired" would pass for the wrong reason.
+ */
+async function reportReady(): Promise<void> {
+  await deliver({ type: 'ready' });
 }
 
 async function mountReader(): Promise<void> {
@@ -79,6 +91,68 @@ function flatToc(count: number): ReaderTocItem[] {
     depth: 0,
   }));
 }
+
+describe('the bounded wait on the byte path', () => {
+  // Fake timers, because the real bound is 20s and no test should take 20s. Set up
+  // per-test rather than for the file: the panel tests above rely on real
+  // microtask/timer behaviour through @testing-library's async helpers.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+  });
+
+  it('surfaces a timeout as its own code once the wait elapses', async () => {
+    // A byte path that never settles is exactly what a reachable-but-unresponsive
+    // backend produces: verifyReadingAccess's fetch has no AbortSignal, so it hangs
+    // on the socket rather than rejecting. Before the bound, this presented as
+    // "Opening book…" forever with no error at all.
+    jest.mocked(getBookBase64).mockReturnValue(new Promise<string>(() => {}));
+
+    await mountReader();
+    await reportReady();
+
+    await act(async () => {
+      jest.advanceTimersByTime(20_000);
+    });
+
+    expect(screen.getByText('CONTENT_LOAD_TIMEOUT')).toBeTruthy();
+    // NOT the generic failure code: "could not open this book" would send a reader
+    // looking at the book when the problem is the network.
+    expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
+  });
+
+  it('does not fire once the bytes have arrived', async () => {
+    // The timer has to be cleared on success. If it is not, every successful open
+    // raises a timeout banner over an already-rendered book 20s later.
+    await mountReader();
+    await reportReady();
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+
+    expect(screen.queryByText('CONTENT_LOAD_TIMEOUT')).toBeNull();
+  });
+
+  it('reports a real failure as a failure, not as a timeout', async () => {
+    // The bound must not swallow the distinction it was added to preserve: a byte
+    // path that settles with an error is a different problem from one that never
+    // settles, and only the second is about the network.
+    jest.mocked(getBookBase64).mockRejectedValue(new Error('ciphertext is corrupt'));
+
+    await mountReader();
+    await reportReady();
+    await act(async () => {
+      jest.advanceTimersByTime(20_000);
+    });
+
+    expect(screen.getByText('CONTENT_LOAD_FAILED')).toBeTruthy();
+    expect(screen.queryByText('CONTENT_LOAD_TIMEOUT')).toBeNull();
+  });
+});
 
 describe('ReaderScreen Contents panel', () => {
   it('opens on the Contents button and lists every entry the book sent', async () => {

@@ -38,6 +38,84 @@ interface ReaderError {
   message: string;
 }
 
+/**
+ * How long to wait for the byte path before giving up on this open.
+ *
+ * WHY A BOUND IS NEEDED AT ALL. `getBookBase64` now begins with Download's per-open
+ * access re-check (`verifyReadingAccess` → `POST /api/v1/reading-sessions`), and that
+ * call has no timeout of its own — no `AbortSignal` anywhere in
+ * `src/features/download/`. Airplane mode rejects fast, so that case is fine; a
+ * reachable-but-unresponsive backend (captive portal, VPN, backend down) does not,
+ * and blocks on iOS URLSession's ~60s default. Nothing else covers that window:
+ * `READY_TIMEOUT` in ReaderWebView is cleared the moment the bridge reports `ready`,
+ * which happens BEFORE this runs. So without this, a book whose bytes are already on
+ * the device sits behind "Opening book…" for a minute with no error and no way to
+ * tell it from a slow decrypt.
+ *
+ * 20s: comfortably above the worst measured warm open (~5s for a 20 MB book, ~93% of
+ * it Encryption's decrypt) with room for a cold read and the access check, and well
+ * under the platform timeout it exists to pre-empt.
+ *
+ * WHAT THIS DOES NOT DO, and the distinction matters: it does not CANCEL anything.
+ * There is no cancellation to propagate — `fetch` here takes no signal and
+ * `getBook`'s decrypt is not interruptible. This bounds what the READER WAITS FOR,
+ * not what the system does. The work continues, and the consequences are recorded on
+ * `withOpenTimeout` below.
+ */
+const OPEN_TIMEOUT_MS = 20_000;
+
+/**
+ * Raised only by `withOpenTimeout`. A distinct class rather than a flag on Error so
+ * the catch below can tell "we stopped waiting" from "the open failed" without
+ * matching on a message string.
+ */
+class OpenTimedOut extends Error {
+  constructor() {
+    super(`The byte path did not settle within ${OPEN_TIMEOUT_MS}ms.`);
+    this.name = 'OpenTimedOut';
+  }
+}
+
+/**
+ * Resolve with `work`, or reject with OpenTimedOut once OPEN_TIMEOUT_MS has passed.
+ *
+ * `work.then(...)` IS THE POINT OF THIS SHAPE, not `Promise.race`. Handlers are
+ * attached to `work` unconditionally and stay attached after the timeout has already
+ * rejected, so when the abandoned open finally settles — and it will, minutes later
+ * if the platform is waiting on a socket — a rejection has somewhere to go. A
+ * `Promise.race` would leave that late rejection unhandled, which in React Native
+ * surfaces as a redbox in dev pointing at code that gave up long ago.
+ *
+ * TWO CONSEQUENCES OF NOT CANCELLING, both deliberate:
+ *  1. The decrypt finishes into nothing. A ~27 MB base64 string is built and dropped
+ *     for a book nobody is reading. It is garbage after that; the peak, however, is
+ *     real while it happens.
+ *  2. The ContentStore session opens anyway, so the plaintext is resident even though
+ *     the reader saw an error. `closeBook` on unmount is what reclaims it — the same
+ *     teardown as a normal read. Calling closeBook here instead was considered and
+ *     rejected: the decrypt may not have created the session yet, so a close would
+ *     be a no-op and the session would then appear behind it, leaving the plaintext
+ *     resident with nothing left to release it.
+ */
+function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new OpenTimedOut());
+    }, OPEN_TIMEOUT_MS);
+
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        clearTimeout(timer);
+        reject(cause instanceof Error ? cause : new Error(String(cause)));
+      },
+    );
+  });
+}
+
 interface ReaderScreenProps {
   /**
    * Identifies the ContentStore session `getBook(bookId)` opens and
@@ -208,11 +286,21 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
       void (async () => {
         try {
-          const base64 = await getBookBase64(bookId);
+          const base64 = await withOpenTimeout(getBookBase64(bookId));
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length });
           sender({ type: 'open', base64 });
         } catch (cause) {
+          if (cause instanceof OpenTimedOut) {
+            raiseError(
+              'CONTENT_LOAD_TIMEOUT',
+              `Opening this book took longer than ${OPEN_TIMEOUT_MS / 1000}s and was given up on. ` +
+                `The book's own bytes are already on this device, so this is usually the network: ` +
+                `the per-open access check has no timeout of its own.`,
+            );
+            return;
+          }
+
           // ContentFailure carries a typed ContentError discriminant (and the
           // bookId) that a bare message would throw away. Surfacing that code is
           // what lets "the licence expired" be told apart from "the ciphertext
@@ -230,7 +318,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
               : cause instanceof DownloadFailure
                 ? `Could not open this book: ${cause.code}. (${String(cause.cause ?? cause.message)})`
                 : `Could not open this book. ` +
-                    `(${cause instanceof Error ? cause.message : String(cause)})`,
+                  `(${cause instanceof Error ? cause.message : String(cause)})`,
           );
         }
       })();

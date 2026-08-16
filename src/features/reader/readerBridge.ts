@@ -142,6 +142,14 @@ export const HOST_ERROR_CODES = [
   // specific ContentError rides in the message rather than being duplicated into
   // this union: the two vocabularies belong to different contracts.
   'CONTENT_LOAD_FAILED',
+  // The byte path did not SETTLE in time — distinct from CONTENT_LOAD_FAILED,
+  // which means it settled and said no. Kept apart because the two need different
+  // reactions: a failure is about this book, a timeout is about the network or the
+  // device, and telling a reader "could not open this book" when the truth is "we
+  // gave up waiting" sends them looking in the wrong place. Raised by
+  // ReaderScreen's bounded wait; see OPEN_TIMEOUT_MS there for why the wait exists
+  // at all and what it does NOT do.
+  'CONTENT_LOAD_TIMEOUT',
   'READY_TIMEOUT',
   'WEBVIEW_LOAD_FAILED',
   'BRIDGE_PARSE_FAILED',
