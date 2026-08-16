@@ -1,0 +1,3637 @@
+openapi: 3.1.0
+
+info:
+  title: wokay API
+  version: 0.1.0
+  summary: Onboarding and Admin (CAP-1) and OPDS Catalogue (CAP-5)
+  description: |
+    Team wokay's HTTP surface for the Taylor and Francis Reader prototype.
+
+    ## Read this first
+
+    The backend is one Spring Boot application with every team's modules inside it, so
+    flambeau does not call us over HTTP. They call two Java interfaces in the same
+    process:
+
+    | Interface | Question it answers |
+    |---|---|
+    | `catalogue.api.EntitlementQuery` | May this institution access this book, and on what terms |
+    | `content.api.ContentAccessGrant` | Give me the file link and the key for this book |
+
+    The **interfaces** are published as code, not as endpoints. The **data shapes** they
+    pass are documented here anyway, so there is one file to read rather than two:
+    `ContentGrantRequest`, `SubjectRef`, `LoanProof`, `ContentGrant`, `SignedUrl`,
+    `IndexUrl` and `Encryption`. Those belong to no path in this file and never will. Nor
+    does `AdminSession`, which is a collection rather than a seam.
+
+    ## We do not serve content over HTTP
+
+    **There is no wokay endpoint that returns a book, in any tier.** Every acquisition
+    link in every feed points at flambeau, who checks the loan and then calls
+    `ContentAccessGrant` in the same process. The bytes then travel from object storage
+    straight to the device and pass through neither module.
+
+    | Tier | Acquisition `rel` | Href points at |
+    |---|---|---|
+    | Open access | `.../acquisition/open-access` | flambeau |
+    | Subscription | `.../acquisition/borrow` | flambeau |
+    | Elite | `.../acquisition/borrow` | flambeau |
+    | Not obtainable by this caller | `.../acquisition/subscribe` | our public institution list |
+
+    So there is one path for the app to learn instead of three, and one place that can
+    hand out a key.
+
+    **Every acquisition `href` in the examples below is a PLACEHOLDER.** flambeau's paths
+    are their own to define and reach us as configuration, `tf.flambeau.base-url`.
+    Follow the href we give you at runtime. Do not hardcode anything you read here.
+
+    ## Stability
+
+    Every operation carries `x-stability`.
+
+    * **FROZEN**: safe to build against. Changing it needs a cohort conversation.
+    * **DRAFT**: the shape may still move. Do not depend on field-level detail yet.
+
+    `x-called-by` is present on every operation another team calls. Admin operations
+    omit it, because the whole `/api/admin/v1/**` surface is ours alone.
+
+    ## Two token audiences and no third
+
+    | | Admin token | App token |
+    |---|---|---|
+    | Issued by | us, `/api/admin/v1/auth/login` | flambeau |
+    | `aud` claim | `tf-admin` | `tf-app` |
+    | Accepted on | `/api/admin/v1/**` | `/opds/v1/**`, `/api/v1/**` |
+
+    Checked on every request. An admin token cannot read a catalogue feed and an app
+    token cannot reach the admin API. There is no service audience, because module to
+    module calls carry no token at all.
+
+    ## Conventions
+
+    * Identifiers are prefixed strings: `pub_`, `inst_`, `col_`, `item_`, `ent_`, `adm_`,
+      plus `sess_` for an admin session and `loan_` for one of flambeau's loans
+    * All timestamps are ISO-8601 UTC
+    * Paging is `page` (zero based) and `size`; responses carry `page`, `size`, `total`
+    * Every error uses the same envelope, see the `Error` schema
+    * Deletes are soft. Records move to an inactive status, they are not removed
+    * Follow the URLs we hand you rather than building them
+
+    ## Reading the OPDS feeds
+
+    The feeds are OPDS 2.0, <https://specs.opds.io/opds-2.0>. Three response shapes
+    across seven endpoints, so write three parsers rather than seven.
+
+    **Arrays are never empty.** If there is nothing to put in one, the key is absent.
+    Test for presence, not length.
+
+    **`properties` appears on acquisition links and nowhere else.** Everything the UI
+    decides, `licenceModel` and `canPersist` and `copies`, lives there. These are our
+    extensions to OPDS: a generic reader ignores them, our app needs them.
+
+    **One vocabulary for the three tiers: `OPEN_ACCESS`, `SUBSCRIPTION`, `ELITE`.** The
+    same three values appear in `licenceModel` in a feed, in `accessTier` on a book, and
+    in the `?accessTier=` filter. There is nothing to translate.
+  contact:
+    name: Team wokay
+
+servers:
+  - url: http://localhost:8080
+    description: >-
+      Everyone runs the same Spring Boot application locally on port 8080, and every
+      example URL in this file assumes it. There is no shared deployment.
+
+tags:
+  - name: Institutions (public)
+    description: The only unauthenticated endpoints. A user must find their institution before they can sign in to it.
+  - name: Catalogue feed
+    description: >-
+      OPDS 2.0 feeds. Institution feeds are entitlement scoped and differ per customer.
+      The `/opds/v1/public/**` routes are not scoped: browsing shows open access only,
+      but discovery search and publication detail return every published book, without
+      the file.
+  - name: Catalogue fetch
+    description: Plain JSON for clients that do not want to parse a feed.
+  - name: Admin · auth
+  - name: Admin · publishers
+  - name: Admin · collections
+  - name: Admin · catalogue items
+  - name: Admin · institutions
+  - name: Admin · entitlements
+  - name: Admin · users
+  - name: Admin · audit
+
+security: []
+
+paths:
+
+  # ────────────────────────────────────────────────────────────────
+  # PUBLIC
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/institutions:
+    get:
+      tags: [Institutions (public)]
+      operationId: listInstitutions
+      summary: List institutions, for the find-your-institution screen
+      description: |
+        No token. Public fields only: no entitlements, no publisher links, no counts.
+
+        **Only `ACTIVE` institutions appear**, and a suspended one is simply absent rather
+        than flagged. Sorted ascending by `name`.
+
+        Asking for a suspended one by id is a `404` on the detail endpoint, not a `403`,
+        so its existence is never disclosed.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Free text search over the institution name
+          schema: { type: string }
+          example: imp
+        - name: country
+          in: query
+          description: ISO country name or code, exact match
+          schema: { type: string }
+          example: UK
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of institutions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstitutionPage' }
+              example:
+                items:
+                  - id: inst_7f3
+                    code: imperial
+                    name: Imperial College London
+                    country: UK
+                    city: London
+                    branding:
+                      logoUrl: https://cdn.tf/logos/imperial.png
+                      primaryColor: '#003E74'
+                  - id: inst_2b9
+                    code: oxford
+                    name: University of Oxford
+                    country: UK
+                    city: Oxford
+                    branding:
+                      logoUrl: https://cdn.tf/logos/oxford.png
+                      primaryColor: '#002147'
+                page: 0
+                size: 20
+                total: 2
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/institutions/{institutionId}:
+    get:
+      tags: [Institutions (public)]
+      operationId: getInstitution
+      summary: One institution, with branding and where to sign in
+      description: |
+        No token.
+
+        `signIn.method` is always `SAML`. It stays in the payload so the client needs
+        no special case, but there is no field on the institution record to configure.
+
+        `catalogueUrl` is handed over so the client never has to build our URLs. Follow
+        it rather than constructing it.
+      x-stability: FROZEN
+      x-called-by: [team1, flambeau]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+      responses:
+        '200':
+          description: The institution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstitutionDetail' }
+              example:
+                id: inst_7f3
+                code: imperial
+                name: Imperial College London
+                country: UK
+                city: London
+                branding:
+                  logoUrl: https://cdn.tf/logos/imperial.png
+                  primaryColor: '#003E74'
+                signIn:
+                  method: SAML
+                  idpHint: imperial-saml-mock
+                catalogueUrl: http://localhost:8080/opds/v1/institutions/inst_7f3/catalogue
+        '404':
+          description: Unknown or inactive institution. The two are deliberately indistinguishable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                timestamp: '2026-08-11T14:00:00Z'
+                status: 404
+                code: NOT_FOUND
+                message: No such institution
+                path: /api/v1/institutions/inst_999
+                traceId: b7c1f2a9
+
+  # ────────────────────────────────────────────────────────────────
+  # OPDS FEEDS
+  # ────────────────────────────────────────────────────────────────
+
+  /opds/v1/institutions/{institutionId}/catalogue:
+    get:
+      tags: [Catalogue feed]
+      operationId: getRootFeed
+      summary: Root feed. One request draws the home screen
+      description: |
+        The home screen in one request. Two parts, and they behave differently.
+
+        **`groups` are the three curated shelves.** An operator picks the title, the
+        position and the individual books on each one, in `feedSettings`. Each group
+        carries the first ten books inline plus a `self` link to the rest. A shelf with
+        no books, or whose books are all archived or no longer entitled, is **omitted
+        entirely** rather than returned empty.
+
+        **`navigation` always contains one entry, *All titles*.** Curated shelves cover
+        only what an operator chose, so without this there would be no way to browse the
+        rest of the entitled catalogue. It is present even when all three shelves are
+        empty, which is what keeps a brand new institution's feed valid.
+
+        Everything in either part is filtered to what this institution is entitled to
+        plus everything that is open access.
+
+        The `institutionId` in the path must match the one in the token, otherwise
+        `403 FORBIDDEN_INSTITUTION_MISMATCH`.
+
+        There is no `next` link on the root feed. It is a navigation feed, not a list.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+      responses:
+        '200':
+          description: The root feed
+          headers:
+            ETag:
+              description: Keyed on the institution's catalogueVersion. Send it back as If-None-Match.
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+              example: private, max-age=60
+          content:
+            application/opds+json:
+              schema: { $ref: '#/components/schemas/OpdsNavigationFeed' }
+              example:
+                metadata:
+                  title: Imperial College Library
+                  numberOfItems: 418
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/catalogue
+                    type: application/opds+json
+                  - rel: search
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/search{?query}
+                    type: application/opds+json
+                    templated: true
+                navigation:
+                  - title: All titles
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/groups/all
+                    type: application/opds+json
+                    rel: subsection
+                groups:
+                  - metadata: { title: New this month, numberOfItems: 1 }
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/institutions/inst_7f3/groups/shelf_1
+                        type: application/opds+json
+                    publications:
+                      - metadata:
+                          '@type': http://schema.org/Book
+                          identifier: urn:isbn:9780367211745
+                          title: Rights for Robots
+                          author: [{ name: Joshua C. Gellers }]
+                          publisher: { name: Routledge }
+                          language: en
+                          published: '2020-09-30'
+                          subject: [{ name: Law }, { name: Technology }]
+                          numberOfPages: 212
+                        images:
+                          - href: https://cdn.tf/covers/item_42.jpg
+                            type: image/jpeg
+                        links:
+                          - rel: self
+                            href: http://localhost:8080/opds/v1/institutions/inst_7f3/publications/item_42
+                            type: application/opds-publication+json
+                          - rel: http://opds-spec.org/acquisition/borrow
+                            href: '{flambeauBaseUrl}/api/v1/loans?itemId=item_42'
+                            type: application/json
+                            properties:
+                              licenceModel: ELITE
+                              indirectAcquisition: [{ type: application/pdf }]
+                              copies: { total: 2 }
+                              encrypted:
+                                algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
+                                originalLength: 6373752
+                              hasSearchIndex: true
+                              canPersist: false
+        '304': { description: Not modified. The If-None-Match value still matches. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/InstitutionMismatch' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /opds/v1/institutions/{institutionId}/groups/{groupId}:
+    get:
+      tags: [Catalogue feed]
+      operationId: getGroupFeed
+      summary: One shelf, or the whole entitled catalogue
+      description: |
+        `groupId` is one of `shelf_1`, `shelf_2`, `shelf_3` or the literal `all`.
+
+        | `groupId` | Returns | `sort` and filters |
+        |---|---|---|
+        | `shelf_1..3` | the operator's hand picked books, **in the order they chose** | ignored, curation is the order |
+        | `all` | every book this institution may see | honoured |
+
+        Follow `next` until it is absent. Do not count pages and do not build the URL
+        yourself.
+
+        A curated shelf that is empty, or whose books have all been archived or lost
+        their entitlement, returns `404`. It is not in the root feed either, so there is
+        nothing to link to. `all` never 404s: worst case it is a feed carrying only a
+        `self` link and a `navigation` entry back to the catalogue.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+        - name: groupId
+          in: path
+          required: true
+          description: A curated shelf, or `all` for the whole entitled catalogue.
+          schema:
+            type: string
+            enum: [shelf_1, shelf_2, shelf_3, all]
+          example: shelf_1
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: sort
+          in: query
+          description: >-
+            Applies to `all` only. Ignored on a curated shelf, where the operator's
+            order is the order.
+          schema: { $ref: '#/components/schemas/SortOrder' }
+          example: publishedAt.desc
+        - $ref: '#/components/parameters/ContentTypeFilter'
+        - $ref: '#/components/parameters/AccessTierFilter'
+      responses:
+        '200':
+          description: A page of publications
+          content:
+            application/opds+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationFeed' }
+              example:
+                metadata:
+                  title: New this month
+                  numberOfItems: 1
+                  itemsPerPage: 20
+                  currentPage: 0
+                  modified: '2026-08-10T09:00:00Z'
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/groups/shelf_1?page=0
+                    type: application/opds+json
+                  - rel: search
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/search{?query}
+                    type: application/opds+json
+                    templated: true
+                    title: Search this catalogue
+                publications:
+                  - metadata:
+                      '@type': http://schema.org/Book
+                      identifier: urn:isbn:9780367211745
+                      title: Rights for Robots
+                      author: [{ name: Joshua C. Gellers }]
+                      publisher: { name: Routledge }
+                      language: en
+                      published: '2020-09-30'
+                      subject: [{ name: Law }, { name: Technology }]
+                      numberOfPages: 212
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/institutions/inst_7f3/publications/item_42
+                        type: application/opds-publication+json
+                      - rel: http://opds-spec.org/acquisition/borrow
+                        href: '{flambeauBaseUrl}/api/v1/loans?itemId=item_42'
+                        type: application/json
+                        properties:
+                          licenceModel: ELITE
+                          indirectAcquisition: [{ type: application/pdf }]
+                          copies: { total: 2 }
+                          encrypted:
+                            algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
+                            originalLength: 6373752
+                          hasSearchIndex: true
+                          canPersist: false
+                    images:
+                      - href: https://cdn.tf/covers/item_42.jpg
+                        type: image/jpeg
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/InstitutionMismatch' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /opds/v1/institutions/{institutionId}/search:
+    get:
+      tags: [Catalogue feed]
+      operationId: searchCatalogue
+      summary: Catalogue search, always entitlement scoped
+      description: |
+        Searches **metadata**: title, authors, subjects, description and ISBN. It does
+        not search the text inside books. That is the in-file index, which runs on the
+        device with no server call.
+
+        **An ISBN is matched exactly, not fuzzily.** If the query matches the ISBN
+        pattern once hyphens are stripped, it becomes an equality lookup and returns at
+        most one book. Everything else goes to the text index. So `9780367211745` and
+        `978-0-367-21174-5` both find the same title.
+
+        The query is always combined with the entitlement filter, so a result the
+        caller cannot open is never returned.
+
+        A zero-result search returns a valid feed containing a `navigation` entry back
+        to the catalogue, never an empty `publications` array. The OPDS schema forbids
+        empty arrays.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+        - name: query
+          in: query
+          required: true
+          description: The search term
+          schema: { type: string }
+          example: robots
+        - $ref: '#/components/parameters/ContentTypeFilter'
+        - $ref: '#/components/parameters/AccessTierFilter'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Matching publications
+          content:
+            application/opds+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationFeed' }
+              examples:
+                hits:
+                  summary: The normal case. Matches come back in `publications`
+                  value:
+                    metadata:
+                      title: 'Search: robots'
+                      numberOfItems: 1
+                      itemsPerPage: 20
+                      currentPage: 0
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/institutions/inst_7f3/search?query=robots
+                        type: application/opds+json
+                    publications:
+                      - metadata:
+                          '@type': http://schema.org/Book
+                          identifier: urn:isbn:9780367211745
+                          title: Rights for Robots
+                          author: [{ name: Joshua C. Gellers }]
+                          publisher: { name: Routledge }
+                          language: en
+                          published: '2020-09-30'
+                          subject: [{ name: Law }, { name: Technology }]
+                          numberOfPages: 212
+                        links:
+                          - rel: self
+                            href: http://localhost:8080/opds/v1/institutions/inst_7f3/publications/item_42
+                            type: application/opds-publication+json
+                          - rel: http://opds-spec.org/acquisition/borrow
+                            href: '{flambeauBaseUrl}/api/v1/loans?itemId=item_42'
+                            type: application/json
+                            properties:
+                              licenceModel: ELITE
+                              indirectAcquisition: [{ type: application/pdf }]
+                              copies: { total: 2 }
+                              encrypted:
+                                algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
+                                originalLength: 6373752
+                              hasSearchIndex: true
+                              canPersist: false
+                        images:
+                          - href: https://cdn.tf/covers/item_42.jpg
+                            type: image/jpeg
+                noResults:
+                  summary: >-
+                    Nothing matched. Still 200, still a valid feed, but `navigation`
+                    replaces `publications` because an empty array is not allowed.
+                  value:
+                    metadata:
+                      title: 'Search: quantum knitting'
+                      numberOfItems: 0
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/institutions/inst_7f3/search?query=quantum+knitting
+                        type: application/opds+json
+                    navigation:
+                      - title: Browse the full catalogue
+                        href: http://localhost:8080/opds/v1/institutions/inst_7f3/catalogue
+                        type: application/opds+json
+                        rel: subsection
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/InstitutionMismatch' }
+
+  /opds/v1/institutions/{institutionId}/publications/{itemId}:
+    get:
+      tags: [Catalogue feed]
+      operationId: getPublication
+      summary: One book, in full
+      description: |
+        Returns a **standalone publication document**, not a feed. There is no
+        `publications` array: `metadata`, `links` and `images` are at the top level,
+        which is what the `application/opds-publication+json` content type means.
+
+        Returns `404` if the item is unknown, archived **or not entitled**. The three
+        are deliberately indistinguishable, so the catalogue cannot be mapped by
+        walking identifiers.
+
+        Refetch this after a borrow or a return. It is the only place a copy count
+        changes, and only for copy-limited titles.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: One publication, as a standalone document
+          content:
+            application/opds-publication+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationDocument' }
+              example:
+                '@context': https://readium.org/webpub-manifest/context.jsonld
+                metadata:
+                  '@type': http://schema.org/Book
+                  identifier: urn:isbn:9780367211745
+                  title: Rights for Robots
+                  subtitle: Artificial Intelligence, Animal and Environmental Law
+                  author:
+                    - { name: Joshua C. Gellers, sortAs: 'Gellers, Joshua C.' }
+                  publisher: { name: Routledge }
+                  language: en
+                  published: '2020-09-30'
+                  modified: '2026-08-02T11:00:00Z'
+                  subject: [{ name: Law }, { name: Technology }]
+                  description: >-
+                    Bringing a unique perspective to the ethical and legal issues
+                    surrounding artificial intelligence.
+                  numberOfPages: 212
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/institutions/inst_7f3/publications/item_42
+                    type: application/opds-publication+json
+                  - rel: http://opds-spec.org/acquisition/borrow
+                    href: '{flambeauBaseUrl}/api/v1/loans?itemId=item_42'
+                    type: application/json
+                    title: Borrow
+                    properties:
+                      licenceModel: ELITE
+                      indirectAcquisition: [{ type: application/pdf }]
+                      copies: { total: 2 }
+                      encrypted:
+                        algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
+                        originalLength: 6373752
+                      hasSearchIndex: true
+                      canPersist: false
+                images:
+                  - href: https://cdn.tf/covers/item_42.jpg
+                    type: image/jpeg
+                    width: 400
+                    height: 600
+                  - href: https://cdn.tf/covers/item_42-thumb.jpg
+                    type: image/jpeg
+                    width: 100
+                    height: 150
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/InstitutionMismatch' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /opds/v1/public/catalogue:
+    get:
+      tags: [Catalogue feed]
+      operationId: getPublicFeed
+      summary: Open access catalogue, no sign in
+      description: |
+        No token. **A flat, paginated list of every open access title.**
+
+        There are no shelves here and no groups. Curated shelves live in an institution's
+        `feedSettings`, and a reader with no institution has none, so this feed is a
+        single list rather than a home screen.
+
+        This is the second entry point into the app, for a reader who has not signed in.
+
+        **Browse deliberately shows less than search finds.** This feed is *what you can
+        read right now*; `/opds/v1/public/search` is *what exists*.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: The public feed
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: public, max-age=300
+          content:
+            application/opds+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationFeed' }
+              example:
+                metadata:
+                  title: Free to read
+                  numberOfItems: 1
+                  itemsPerPage: 20
+                  currentPage: 0
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/public/catalogue?page=0
+                    type: application/opds+json
+                  - rel: search
+                    href: http://localhost:8080/opds/v1/public/search{?query}
+                    type: application/opds+json
+                    templated: true
+                publications:
+                  - metadata:
+                      '@type': http://schema.org/Book
+                      title: Ethnographies of Waiting
+                      editor:
+                        - { name: Manpreet K. Janeja }
+                        - { name: Andreas Bandak }
+                      publisher: { name: CRC Press }
+                      language: en
+                      published: '2018-11-01'
+                      subject: [{ name: Anthropology }]
+                      numberOfPages: 264
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/public/publications/item_ab6
+                        type: application/opds-publication+json
+                      - rel: http://opds-spec.org/acquisition/open-access
+                        href: '{flambeauBaseUrl}/api/v1/content/item_ab6/access'
+                        type: application/json
+                        properties:
+                          licenceModel: OPEN_ACCESS
+                          indirectAcquisition: [{ type: application/epub+zip }]
+                          hasSearchIndex: true
+                          canPersist: true
+                    images:
+                      - href: https://cdn.tf/covers/item_ab6.jpg
+                        type: image/jpeg
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /opds/v1/public/search:
+    get:
+      tags: [Catalogue feed]
+      operationId: searchPublicCatalogue
+      summary: Discovery search. Every published book, entitled or not
+      description: |
+        **This is the one search that is not entitlement scoped.** It returns every book
+        that is `PUBLISHED` and `READY`, whether the caller can open it or not.
+
+        It exists for the reader with no institution: anonymous, or signed in
+        individually. Browsing shows them open access only, but searching shows them
+        what Taylor and Francis publishes, so there is something to discover and
+        something to sell.
+
+        Same search behaviour as the institutional endpoint, including exact ISBN
+        matching. The only difference is that the entitlement filter is left out.
+
+        A token is accepted and ignored. A member who calls this gets the same public
+        answer as anybody else; their own scoped search is under
+        `/opds/v1/institutions/{id}/search`.
+
+        Books the caller cannot obtain still carry an acquisition link, because OPDS
+        requires one on every publication. Theirs is
+        `rel: http://opds-spec.org/acquisition/subscribe` pointing at
+        `GET /api/v1/institutions`, with `properties.availability.state` of `unavailable`
+        and no `indirectAcquisition`. Render the metadata and a route to access rather
+        than a Read button.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: []
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string }
+          example: robots
+        - $ref: '#/components/parameters/ContentTypeFilter'
+        - $ref: '#/components/parameters/AccessTierFilter'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Matching publications, obtainable or not
+          headers:
+            Cache-Control:
+              description: >-
+                Public and global. These results are identical for every caller, so they
+                are not keyed on `catalogueVersion` the way institution feeds are.
+              schema: { type: string }
+              example: public, max-age=300
+          content:
+            application/opds+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationFeed' }
+              example:
+                metadata:
+                  title: 'Search: robots'
+                  numberOfItems: 2
+                  itemsPerPage: 20
+                  currentPage: 0
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/public/search?query=robots
+                    type: application/opds+json
+                publications:
+                  - metadata:
+                      '@type': http://schema.org/Book
+                      title: Ethnographies of Waiting
+                      publisher: { name: CRC Press }
+                      language: en
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/public/publications/item_ab6
+                        type: application/opds-publication+json
+                      - rel: http://opds-spec.org/acquisition/open-access
+                        href: '{flambeauBaseUrl}/api/v1/content/item_ab6/access'
+                        type: application/json
+                        properties:
+                          licenceModel: OPEN_ACCESS
+                          indirectAcquisition: [{ type: application/epub+zip }]
+                          hasSearchIndex: true
+                          canPersist: true
+                    images:
+                      - href: https://cdn.tf/covers/item_ab6.jpg
+                        type: image/jpeg
+                  - metadata:
+                      '@type': http://schema.org/Book
+                      identifier: urn:isbn:9780367211745
+                      title: Rights for Robots
+                      author: [{ name: Joshua C. Gellers }]
+                      publisher: { name: Routledge }
+                      language: en
+                    links:
+                      - rel: self
+                        href: http://localhost:8080/opds/v1/public/publications/item_42
+                        type: application/opds-publication+json
+                      - rel: http://opds-spec.org/acquisition/subscribe
+                        href: http://localhost:8080/api/v1/institutions
+                        type: application/json
+                        title: Available through your institution
+                        properties:
+                          licenceModel: ELITE
+                          availability: { state: unavailable }
+                    images:
+                      - href: https://cdn.tf/covers/item_42.jpg
+                        type: image/jpeg
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /opds/v1/public/publications/{itemId}:
+    get:
+      tags: [Catalogue feed]
+      operationId: getPublicPublication
+      summary: One book's metadata, for any published book
+      description: |
+        Full metadata for any book that is `PUBLISHED` and `READY`, with no token and
+        regardless of entitlement. This is the detail screen behind a discovery search
+        result.
+
+        `404` **only** when the book is genuinely unknown or archived. Not entitled is
+        no longer a 404 here, because the caller has just seen the book in their own
+        search results and pretending it does not exist would be a lie they can detect.
+
+        Metadata is returned. The **file is not**. An open access title carries a real
+        acquisition link to flambeau. Anything else carries a `subscribe` link to
+        `GET /api/v1/institutions` with `availability.state` of `unavailable`, so the
+        reader is shown how to get access rather than a dead end.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: One publication, as a standalone document
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              example: public, max-age=300
+          content:
+            application/opds-publication+json:
+              schema: { $ref: '#/components/schemas/OpdsPublicationDocument' }
+              example:
+                '@context': https://readium.org/webpub-manifest/context.jsonld
+                metadata:
+                  '@type': http://schema.org/Book
+                  identifier: urn:isbn:9780367211745
+                  title: Rights for Robots
+                  subtitle: Artificial Intelligence, Animal and Environmental Law
+                  author:
+                    - { name: Joshua C. Gellers, sortAs: 'Gellers, Joshua C.' }
+                  publisher: { name: Routledge }
+                  language: en
+                  published: '2020-09-30'
+                  subject: [{ name: Law }, { name: Technology }]
+                  numberOfPages: 212
+                links:
+                  - rel: self
+                    href: http://localhost:8080/opds/v1/public/publications/item_42
+                    type: application/opds-publication+json
+                  - rel: http://opds-spec.org/acquisition/subscribe
+                    href: http://localhost:8080/api/v1/institutions
+                    type: application/json
+                    title: Available through your institution
+                    properties:
+                      licenceModel: ELITE
+                      availability: { state: unavailable }
+                images:
+                  - href: https://cdn.tf/covers/item_42.jpg
+                    type: image/jpeg
+        '404':
+          description: Unknown or archived. Not entitled is **not** a 404 on this route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                timestamp: '2026-08-11T14:00:00Z'
+                status: 404
+                code: NOT_FOUND
+                message: No such item
+                path: /opds/v1/public/publications/item_999
+                traceId: b7c1f2a9
+
+  # ────────────────────────────────────────────────────────────────
+  # CATALOGUE FETCH
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/catalogue/items:batch:
+    post:
+      tags: [Catalogue fetch]
+      operationId: batchGetItems
+      summary: Turn a list of item ids into titles and covers, in one call
+      description: |
+        Loan records carry item ids only, so a My Library screen would otherwise make
+        twelve separate calls.
+
+        `notFound` and `denied` are separate arrays so one bad identifier does not break
+        the screen, and so the client can tell *gone* from *not yours*.
+
+        Capped at 100 ids. More than that is `400 TOO_MANY_IDS`.
+      x-stability: FROZEN
+      x-called-by: [flambeau, team1]
+      security: [{ appToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchItemsRequest' }
+            example:
+              ids: [item_42, item_77, item_bogus]
+      responses:
+        '200':
+          description: Found items, plus what could not be returned and why
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchItemsResponse' }
+              example:
+                items:
+                  - id: item_42
+                    title: Rights for Robots
+                    authors: [Joshua C. Gellers]
+                    coverUrl: https://cdn.tf/covers/item_42.jpg
+                    isbn: '9780367211745'
+                    contentType: PDF
+                    accessTier: ELITE
+                    totalCopies: 2
+                    hasSearchIndex: true
+                notFound: [item_bogus]
+                denied: [item_77]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # ADMIN · AUTH
+  # ────────────────────────────────────────────────────────────────
+
+  /api/admin/v1/auth/login:
+    post:
+      tags: [Admin · auth]
+      operationId: adminLogin
+      summary: Console sign in
+      x-stability: FROZEN
+      x-called-by: [wokay]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminLoginRequest' }
+            example:
+              email: ops@tandf.com
+              password: correct-horse-battery-staple
+      responses:
+        '200':
+          description: An access token and a refresh token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminLoginResponse' }
+              example:
+                accessToken: eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ0Zi1hZG1pbiJ9.sig
+                expiresIn: 900
+                refreshToken: 8Kd2mXqR7vT1nP4wZ0aB3cE6gH9jL5sY
+                refreshExpiresIn: 43200
+                user:
+                  id: adm_2
+                  email: ops@tandf.com
+                  name: Priya Ops
+                  role: PUBLISHER_ADMIN
+                  scopePublisherId: pub_rtlg
+                  scopeInstitutionId: null
+                  status: ACTIVE
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/admin/v1/auth/refresh:
+    post:
+      tags: [Admin · auth]
+      operationId: adminRefresh
+      summary: Trade a refresh token for a new access token
+      description: |
+        The access token lives 15 minutes. This is how a console session survives longer
+        than that without asking for the password again.
+
+        **The old refresh token is revoked and a new one issued** on every call, so a
+        stolen one is usable at most once before the real operator's next refresh
+        invalidates it.
+
+        Takes no access token: an expired access token is the normal reason to be here.
+        Holding the refresh token is the proof.
+
+        Admin only. App token refresh belongs to flambeau.
+      x-stability: DRAFT
+      x-called-by: [wokay]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+            example:
+              refreshToken: 8Kd2mXqR7vT1nP4wZ0aB3cE6gH9jL5sY
+      responses:
+        '200':
+          description: A new pair. The one you sent is now dead
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefreshResponse' }
+              example:
+                accessToken: eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ0Zi1hZG1pbiJ9.sig2
+                expiresIn: 900
+                refreshToken: 4Qw8zN2vC5xM7bK1rT6yU0pA3dF9hJ2e
+                refreshExpiresIn: 43200
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: >-
+            Unknown, expired, already used or revoked. All four are the same answer, and
+            the only cure is signing in again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                timestamp: '2026-08-12T14:00:00Z'
+                status: 401
+                code: UNAUTHENTICATED
+                message: Sign in again
+                path: /api/admin/v1/auth/refresh
+                traceId: b7c1f2a9
+
+  /api/admin/v1/auth/logout:
+    post:
+      tags: [Admin · auth]
+      operationId: adminLogout
+      summary: Revoke a refresh token
+      description: |
+        Marks the refresh token revoked so it can never be exchanged again.
+
+        **It kills the access token too.** Every admin request re-checks its session
+        against `adminSessions`, so once this call sets `revokedAt` the access token fails
+        on its next use. There is no residual window.
+
+        The console should still drop its own copy, to avoid one guaranteed `401`.
+
+        This applies to **admin tokens only**. App tokens on `/opds/v1/**` and
+        `/api/v1/**` carry no server lookup, which is what keeps feed rendering fast.
+
+        Always `204`, even for a token that never existed, so nobody can probe which
+        ones are live.
+      x-stability: DRAFT
+      x-called-by: [wokay]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+            example:
+              refreshToken: 8Kd2mXqR7vT1nP4wZ0aB3cE6gH9jL5sY
+      responses:
+        '204':
+          description: Revoked, or was never valid. Same answer either way.
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/admin/v1/auth/me:
+    get:
+      tags: [Admin · auth]
+      operationId: adminMe
+      summary: Who am I, and what may I do
+      description: The console draws its menus and buttons from this. No permission logic is hard coded in the client.
+      x-stability: FROZEN
+      x-called-by: [wokay]
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: The signed in operator
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # ADMIN · PUBLISHERS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/admin/v1/publishers:
+    get:
+      tags: [Admin · publishers]
+      operationId: listPublishers
+      summary: List publishers
+      x-stability: DRAFT
+      x-called-by: [wokay]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RecordStatus' } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of publishers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublisherPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin · publishers]
+      operationId: createPublisher
+      summary: Create a publisher
+      x-stability: DRAFT
+      x-called-by: [wokay]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublisherWrite' }
+            example:
+              code: routledge
+              name: Routledge
+              description: Academic imprint of Taylor and Francis
+              logoUrl: https://cdn.tf/logos/routledge.png
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publisher' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/CodeTaken' }
+
+  /api/admin/v1/publishers/{publisherId}:
+    parameters:
+      - $ref: '#/components/parameters/PublisherId'
+    get:
+      tags: [Admin · publishers]
+      operationId: getPublisher
+      summary: One publisher
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: The publisher
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publisher' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin · publishers]
+      operationId: updatePublisher
+      summary: Update a publisher
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublisherWrite' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publisher' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/v1/publishers/{publisherId}/status:
+    patch:
+      tags: [Admin · publishers]
+      operationId: setPublisherStatus
+      summary: Activate or suspend a publisher
+      description: Suspending removes the publisher's content from every institution's feed on the next request.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PublisherId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusChange' }
+            example: { status: SUSPENDED, reason: contract under review }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publisher' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/v1/publishers/{publisherId}/collections:
+    parameters:
+      - $ref: '#/components/parameters/PublisherId'
+    get:
+      tags: [Admin · collections]
+      operationId: listCollections
+      summary: Collections belonging to a publisher
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of the publisher's collections
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CollectionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Admin · collections]
+      operationId: createCollection
+      summary: Create a collection
+      description: A collection is the sellable package an entitlement points at.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CollectionWrite' }
+            example:
+              code: law-technology-2024
+              name: Law and Technology 2024
+              description: 84 titles
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Collection' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/CodeTaken' }
+
+  /api/admin/v1/collections/{collectionId}/items:
+    put:
+      tags: [Admin · collections]
+      operationId: setCollectionItems
+      summary: Set which books are in a collection
+      description: |
+        Replaces the membership list. Because entitlements point at collections rather
+        than at individual books, adding a title here immediately grants it to every
+        institution entitled to that collection. The change is audited and bumps
+        `catalogueVersion` on every affected institution.
+
+        **Membership is stored once, on the book.** A collection has no `itemIds` array.
+        This endpoint writes `catalogueItems.collectionIds`: it adds this collection to
+        every id in the body and removes it from every item no longer listed. Setting
+        `collectionIds` directly on a catalogue item reaches the same field, so the two
+        write paths cannot disagree.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - name: collectionId
+          in: path
+          required: true
+          schema: { type: string }
+          example: col_law2024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemIds]
+              properties:
+                itemIds:
+                  type: array
+                  items: { type: string }
+            example:
+              itemIds: [item_42, item_43, item_44]
+      responses:
+        '200':
+          description: Membership set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collectionId: { type: string }
+                  itemCount: { type: integer }
+                  affectedInstitutions:
+                    type: array
+                    items: { type: string }
+              example:
+                collectionId: col_law2024
+                itemCount: 3
+                affectedInstitutions: [inst_7f3]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ────────────────────────────────────────────────────────────────
+  # ADMIN · CATALOGUE ITEMS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/admin/v1/catalogue-items:
+    get:
+      tags: [Admin · catalogue items]
+      operationId: listCatalogueItems
+      summary: List books, filtered
+      description: Returns a summary projection. Full detail, including assets, comes from the single-item endpoint.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: publisherId, in: query, schema: { type: string } }
+        - { name: collectionId, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/ContentTypeFilter'
+        - $ref: '#/components/parameters/AccessTierFilter'
+        - name: q
+          in: query
+          description: >-
+            Free text over title, authors and subjects. An ISBN-shaped value is matched
+            exactly instead, so an operator can paste one in to find a single book.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of books
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogueItemPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Admin · catalogue items]
+      operationId: createCatalogueItem
+      summary: Create a book
+      description: |
+        Creates the record only. The file is uploaded separately, so bulk metadata can
+        be created before any file exists.
+
+        Validation is per content type: audio requires a duration, PDF requires a page
+        count once the file arrives.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CatalogueItemWrite' }
+            example:
+              publisherId: pub_rtlg
+              collectionIds: [col_law2024]
+              title: Rights for Robots
+              authors: [Joshua C. Gellers]
+              isbn: '9780367211745'
+              contentType: PDF
+              accessTier: ELITE
+              subjects: [Law, Technology]
+              language: en
+      responses:
+        '201':
+          description: Created, with contentState NONE until a file is uploaded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogueItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/v1/catalogue-items/{itemId}:
+    parameters:
+      - $ref: '#/components/parameters/ItemId'
+    get:
+      tags: [Admin · catalogue items]
+      operationId: getCatalogueItem
+      summary: One book, in full
+      description: >-
+        Includes assets, but never `storageKey`, `indexKey` or `masterWrappedBek`. Those
+        three are internal and are returned to no client, ever.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: The book
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogueItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin · catalogue items]
+      operationId: updateCatalogueItem
+      summary: Update a book
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CatalogueItemWrite' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CatalogueItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/v1/catalogue-items/{itemId}/content:
+    post:
+      tags: [Admin · catalogue items]
+      operationId: uploadContent
+      summary: Upload the file for a book
+      description: |
+        Returns `202` immediately. Locking, text extraction and index building happen in
+        the background. Poll the ingest status endpoint to watch progress.
+
+        Upload limit 100 MB, and 20 MB for anything that will be locked, because a
+        locked file is decrypted whole on the device.
+
+        Open access titles and all audio are stored as they are, with no lock.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, format]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                format:
+                  $ref: '#/components/schemas/AssetFormat'
+      responses:
+        '202':
+          description: Accepted. Processing has been queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestStatus' }
+              example:
+                itemId: item_42
+                format: PDF
+                contentState: QUEUED
+                contentError: null
+                updatedAt: '2026-08-10T09:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                timestamp: '2026-08-11T14:00:00Z'
+                status: 413
+                code: VALIDATION_FAILED
+                message: A file that will be locked may not exceed 20 MB
+                path: /api/admin/v1/catalogue-items/item_42/content
+                traceId: b7c1f2a9
+
+  /api/admin/v1/catalogue-items/{itemId}/ingest-status:
+    get:
+      tags: [Admin · catalogue items]
+      operationId: getIngestStatus
+      summary: Watch a file being processed
+      description: |
+        `QUEUED` to `PROCESSING` to `READY`, or `FAILED` with a reason.
+
+        A book that is not `READY` never appears in any feed, so failures must be
+        visible to the operator. Anything stuck for more than fifteen minutes is moved
+        to `FAILED` by a watchdog.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ────────────────────────────────────────────────────────────────
+  # ADMIN · INSTITUTIONS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/admin/v1/institutions:
+    get:
+      tags: [Admin · institutions]
+      operationId: adminListInstitutions
+      summary: List institutions
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: country, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RecordStatus' } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of institutions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminInstitutionPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Admin · institutions]
+      operationId: createInstitution
+      summary: Create an institution
+      description: Creating one also creates its default feed settings, so a brand new institution returns a valid, if sparse, feed rather than a 404.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstitutionWrite' }
+            example:
+              code: imperial
+              name: Imperial College London
+              type: UNIVERSITY
+              country: UK
+              city: London
+              emailDomains: [imperial.ac.uk]
+              signIn:
+                idpHint: imperial-saml-mock
+              branding:
+                logoUrl: https://cdn.tf/logos/imperial.png
+                primaryColor: '#003E74'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminInstitution' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/CodeTaken' }
+
+  /api/admin/v1/institutions/{institutionId}:
+    parameters:
+      - $ref: '#/components/parameters/InstitutionId'
+    get:
+      tags: [Admin · institutions]
+      operationId: adminGetInstitution
+      summary: One institution, with a summary of what it can access
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: The institution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminInstitution' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin · institutions]
+      operationId: updateInstitution
+      summary: Update an institution
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstitutionWrite' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminInstitution' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/v1/institutions/{institutionId}/status:
+    patch:
+      tags: [Admin · institutions]
+      operationId: setInstitutionStatus
+      summary: Activate or suspend an institution
+      description: A suspended institution disappears from the public list and its members receive 403 on every feed.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InstitutionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusChange' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminInstitution' }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/v1/institutions/{institutionId}/entitlements:
+    parameters:
+      - $ref: '#/components/parameters/InstitutionId'
+    get:
+      tags: [Admin · entitlements]
+      operationId: listEntitlements
+      summary: Access grants held by an institution
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of grants, each with how many books it resolves to
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntitlementPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Admin · entitlements]
+      operationId: createEntitlement
+      summary: Grant an institution access
+      description: |
+        Scope is a whole publisher, one collection, or a single book.
+
+        `copies` applies only when the granted items are copy limited. On overlapping
+        grants the most permissive wins.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EntitlementCreate' }
+            example:
+              scopeType: COLLECTION
+              scopeId: col_law2024
+              copies: 2
+              loanPeriodDays: 14
+              validFrom: '2026-01-01'
+              validTo: '2026-12-31'
+      responses:
+        '201':
+          description: Created, including how many books it resolves to
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/v1/entitlements/{entitlementId}:
+    parameters:
+      - name: entitlementId
+        in: path
+        required: true
+        schema: { type: string }
+        example: ent_5a1
+    put:
+      tags: [Admin · entitlements]
+      operationId: updateEntitlement
+      summary: Amend a grant
+      description: Uses optimistic locking. A stale `version` returns 409.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EntitlementUpdate' }
+            example:
+              copies: 5
+              loanPeriodDays: 21
+              validTo: '2027-12-31'
+              version: 3
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Somebody else changed this grant first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                timestamp: '2026-08-11T14:00:00Z'
+                status: 409
+                code: STALE_VERSION
+                message: This grant was changed by somebody else. Reload and try again
+                path: /api/admin/v1/entitlements/ent_5a1
+                traceId: b7c1f2a9
+    delete:
+      tags: [Admin · entitlements]
+      operationId: revokeEntitlement
+      summary: Revoke a grant
+      description: Soft. The grant moves to REVOKED and the content disappears from the feed on the next request.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/v1/institutions/{institutionId}/feed-settings:
+    parameters:
+      - $ref: '#/components/parameters/InstitutionId'
+    get:
+      tags: [Admin · institutions]
+      operationId: getFeedSettings
+      summary: Feed settings for an institution
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: The settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin · institutions]
+      operationId: setFeedSettings
+      summary: Update feed settings and curate the three shelves
+      description: |
+        Saving bumps `catalogueVersion`, which invalidates the cached feed on the next
+        request. That matters more here than anywhere else, because shelf **contents**
+        change, not just titles.
+
+        Validation, all `400 VALIDATION_FAILED`:
+
+        | Rule |
+        |---|
+        | Exactly three shelves, ids `shelf_1` to `shelf_3`, no duplicates |
+        | Every shelf has a non-blank title |
+        | `order` is 1, 2 and 3, each used once |
+        | Every `itemId` exists |
+        | Every `itemId` is currently entitled to this institution, and the message names any that are not |
+        | No more than 50 ids on a shelf |
+
+        There is deliberately **no rule that a shelf must be non-empty**, and no rule
+        that at least one shelf is filled. The root feed always carries an *All titles*
+        navigation entry, so it stays valid even when nothing has been curated yet.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeedSettingsWrite' }
+            example:
+              feedTitle: Imperial College Library
+              pageSize: 20
+              defaultSort: publishedAt.desc
+              version: 7
+              shelves:
+                - id: shelf_1
+                  title: New this month
+                  order: 1
+                  itemIds: [item_42]
+                - id: shelf_2
+                  title: Law essentials
+                  order: 2
+                  itemIds: [item_88]
+                - id: shelf_3
+                  title: Audio picks
+                  order: 3
+                  itemIds: []
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleVersion' }
+
+  # ────────────────────────────────────────────────────────────────
+  # ADMIN · USERS AND AUDIT
+  # ────────────────────────────────────────────────────────────────
+
+  /api/admin/v1/admin-users:
+    get:
+      tags: [Admin · users]
+      operationId: listAdminUsers
+      summary: List console operators
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of operators
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUserPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin · users]
+      operationId: createAdminUser
+      summary: Add an operator
+      description: SUPER_ADMIN only.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserCreate' }
+            example:
+              email: ops@tandf.com
+              name: Priya Ops
+              password: correct-horse-battery-staple
+              role: PUBLISHER_ADMIN
+              scopePublisherId: pub_rtlg
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/CodeTaken' }
+
+  /api/admin/v1/admin-users/{adminUserId}:
+    parameters:
+      - name: adminUserId
+        in: path
+        required: true
+        schema: { type: string }
+        example: adm_2
+    put:
+      tags: [Admin · users]
+      operationId: updateAdminUser
+      summary: Change an operator's role or scope
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserUpdate' }
+            example:
+              name: Priya Ops
+              role: INSTITUTION_ADMIN
+              scopeInstitutionId: inst_7f3
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin · users]
+      operationId: deactivateAdminUser
+      summary: Deactivate an operator
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      responses:
+        '204': { description: Deactivated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/admin/v1/audit-logs:
+    get:
+      tags: [Admin · audit]
+      operationId: listAuditLogs
+      summary: Every change, and every content access
+      description: Records are kept for 90 days, then removed automatically.
+      x-stability: DRAFT
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: entityType, in: query, schema: { type: string }, example: ENTITLEMENT }
+        - { name: entityId, in: query, schema: { type: string } }
+        - { name: actorId, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string }, example: CONTENT_ACCESS }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of audit records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLogPage' }
+
+        '401': { $ref: '#/components/responses/Unauthorized' }
+# ══════════════════════════════════════════════════════════════════
+components:
+
+  securitySchemes:
+    appToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Issued by flambeau. Carries `aud` of `tf-app`.
+        Accepted on `/opds/v1/**` and `/api/v1/**`.
+    adminToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Issued by us at `/api/admin/v1/auth/login`. Carries `aud` of `tf-admin`.
+        Accepted on `/api/admin/v1/**` only.
+        Bound to a live `adminSessions` row and rejected once that row is revoked or
+        expired.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Zero based page number
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      description: Items per page
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    InstitutionId:
+      name: institutionId
+      in: path
+      required: true
+      schema: { type: string }
+      example: inst_7f3
+    PublisherId:
+      name: publisherId
+      in: path
+      required: true
+      schema: { type: string }
+      example: pub_rtlg
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: { type: string }
+      example: item_42
+    ContentTypeFilter:
+      name: contentType
+      in: query
+      description: Fixed enum, so the client can hardcode the filter chips
+      schema: { $ref: '#/components/schemas/ContentType' }
+    AccessTierFilter:
+      name: accessTier
+      in: query
+      schema: { $ref: '#/components/schemas/AccessTier' }
+
+  responses:
+    BadRequest:
+      description: The request was malformed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 400
+            code: VALIDATION_FAILED
+            message: size must be between 1 and 100
+            path: /api/v1/institutions
+            traceId: b7c1f2a9
+    Unauthorized:
+      description: No token, an invalid token, or the wrong audience
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 401
+            code: UNAUTHENTICATED
+            message: A valid app token is required
+            path: /opds/v1/institutions/inst_7f3/catalogue
+            traceId: b7c1f2a9
+    Forbidden:
+      description: Authenticated, but not permitted
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 403
+            code: FORBIDDEN_SCOPE
+            message: This operator may only modify publisher pub_rtlg
+            path: /api/admin/v1/catalogue-items/item_99
+            traceId: b7c1f2a9
+    InstitutionMismatch:
+      description: The institution in the path does not match the one in the token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 403
+            code: FORBIDDEN_INSTITUTION_MISMATCH
+            message: This token belongs to a different institution
+            path: /opds/v1/institutions/inst_2b9/catalogue
+            traceId: b7c1f2a9
+    NotFound:
+      description: |
+        Unknown, archived, or not entitled. The three are deliberately indistinguishable,
+        so the catalogue cannot be mapped by walking identifiers.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 404
+            code: NOT_FOUND
+            message: No such item
+            path: /opds/v1/institutions/inst_7f3/publications/item_999
+            traceId: b7c1f2a9
+    ContentAccessErrors:
+      description: |
+        **Referenced by no path in this file, deliberately.** These are the three failures
+        our `ContentAccessGrant` code raises, and they reach the reader through
+        **flambeau's** content endpoint, because we serve no content over HTTP.
+
+        They are documented here so flambeau returns our envelope and our vocabulary
+        rather than inventing a second error shape.
+
+        | Code | Status | Cause |
+        |---|---|---|
+        | `NO_ENTITLEMENT` | 403 | the institution may not read this book |
+        | `DOWNLOAD_NOT_PERMITTED` | 403 | `intent: DOWNLOAD` on an `ELITE` title, which is online only |
+        | `CONTENT_NOT_READY` | 409 | ingest has not finished, or it failed |
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notEntitled:
+              summary: 403, the institution has no grant covering this book
+              value:
+                timestamp: '2026-08-10T14:00:00Z'
+                status: 403
+                code: NO_ENTITLEMENT
+                message: This title requires a subscription. Sign in through your institution
+                path: '{flambeauBaseUrl}/api/v1/content/item_42/access'
+                traceId: b7c1f2a9
+            downloadRefused:
+              summary: 403, elite titles are online only whatever the UI offered
+              value:
+                timestamp: '2026-08-10T14:00:00Z'
+                status: 403
+                code: DOWNLOAD_NOT_PERMITTED
+                message: This title can be read online only
+                path: '{flambeauBaseUrl}/api/v1/content/item_42/access'
+                traceId: b7c1f2a9
+            notReady:
+              summary: 409, the file is still being processed
+              value:
+                timestamp: '2026-08-10T14:00:00Z'
+                status: 409
+                code: CONTENT_NOT_READY
+                message: This book is still being processed
+                path: '{flambeauBaseUrl}/api/v1/content/item_42/access'
+                traceId: b7c1f2a9
+    StaleVersion:
+      description: >-
+        Somebody else saved this record after you loaded it. Reload, reapply your change
+        and save again. Returned instead of silently overwriting their work.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 409
+            code: STALE_VERSION
+            message: This record was changed by somebody else. Reload and try again
+            path: /api/admin/v1/institutions/inst_7f3/feed-settings
+            traceId: b7c1f2a9
+    CodeTaken:
+      description: >-
+        A record with that unique value already exists. The value is a `code` for
+        publishers, collections and institutions, and the `email` for an admin user.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-10T14:00:00Z'
+            status: 409
+            code: CODE_TAKEN
+            message: That value is already in use
+            path: /api/admin/v1/publishers
+            traceId: b7c1f2a9
+
+  schemas:
+
+    # ── shared ───────────────────────────────────────────────────
+    Error:
+      type: object
+      description: Every error in the system uses this shape.
+      required: [timestamp, status, code, message, path]
+      properties:
+        timestamp: { type: string, format: date-time }
+        status: { type: integer }
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: For a human. Do not switch on this, switch on `code`.
+        path: { type: string }
+        traceId:
+          type: string
+          description: Quote this when reporting a problem.
+
+    ErrorCode:
+      type: string
+      description: |
+        Machine readable. **Every value here is reachable.** There are no spare codes to
+        write dead handlers for.
+
+        Three of them, `NO_ENTITLEMENT`, `CONTENT_NOT_READY` and `DOWNLOAD_NOT_PERMITTED`,
+        are produced by our code but surface through **flambeau's** content endpoint rather
+        than through a path in this file, because we serve no content over HTTP. They use
+        this same envelope and this same vocabulary.
+
+        Note what is deliberately absent. There is no `TOKEN_EXPIRED`: an expired token
+        and a forged one both answer `UNAUTHENTICATED`, because telling a caller which
+        one they have is telling an attacker whether they guessed a real token. There is
+        no `INSTITUTION_INACTIVE` either, because an inactive institution answers
+        `NOT_FOUND` so its existence is not disclosed.
+      enum:
+        - UNAUTHENTICATED
+        - FORBIDDEN_SCOPE
+        - FORBIDDEN_INSTITUTION_MISMATCH
+        - NO_ENTITLEMENT
+        - CONTENT_NOT_READY
+        - DOWNLOAD_NOT_PERMITTED
+        - NOT_FOUND
+        - CODE_TAKEN
+        - TOO_MANY_IDS
+        - VALIDATION_FAILED
+        - STALE_VERSION
+
+    PageMeta:
+      type: object
+      required: [page, size, total]
+      properties:
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer }
+
+    RecordStatus:
+      type: string
+      enum: [ACTIVE, SUSPENDED, RETIRED]
+
+    SortOrder:
+      type: string
+      description: >-
+        The only sort vocabulary in the system. `feedSettings.defaultSort` and the
+        `sort` query parameter both use it, so a stored default can never name an
+        ordering the endpoint cannot perform.
+      enum: [publishedAt.desc, publishedAt.asc, title.asc, title.desc]
+
+    Isbn:
+      type: string
+      pattern: '^(97[89])?[0-9]{9}[0-9X]$'
+      description: >-
+        Digits only, no hyphens. ISBN-10 or ISBN-13. Hyphens and whitespace are
+        stripped on save, so `978-0-367-21174-5` is stored and returned as
+        `9780367211745`. Optional, because audiobooks frequently have none.
+        Indexed but not unique.
+      example: '9780367211745'
+
+    ContentType:
+      type: string
+      description: >-
+        What the **book** is, set by an operator at create time. Drives `@type` in OPDS
+        metadata and decides which validation rules apply, for example that audio needs a
+        duration.
+      enum: [PDF, EPUB, AUDIO]
+
+    AssetFormat:
+      type: string
+      description: >-
+        What an uploaded **file** is. Same three values as `ContentType` today, and a
+        separate name because they answer different questions: one book can carry more
+        than one asset, so a `contentType` of `PDF` may sit beside an `EPUB` asset.
+      enum: [PDF, EPUB, AUDIO]
+
+    AccessTier:
+      type: string
+      description: |
+        **The one tier vocabulary in the system.** An operator sets it on the book; the
+        feed reports it back as `licenceModel`; the `?accessTier=` filter takes it. Same
+        three values in all three places, so a client never translates.
+
+        | Value | Badge | Primary button | Download | Copy limit |
+        |---|---|---|---|---|
+        | `OPEN_ACCESS` | Free to read | Read | shown | no |
+        | `SUBSCRIPTION` | Included | Read | shown | no |
+        | `ELITE` | Limited copies | Borrow | **hidden** | yes |
+
+        A book is encrypted unless it is `OPEN_ACCESS`, or unless it is audio.
+      enum: [OPEN_ACCESS, SUBSCRIPTION, ELITE]
+
+    ItemStatus:
+      type: string
+      description: >-
+        The editorial lifecycle of a book, set by an operator. Only `PUBLISHED` books
+        appear in a feed, and only then if `contentState` is also `READY`.
+      enum: [DRAFT, PUBLISHED, ARCHIVED]
+
+    EntitlementScope:
+      type: string
+      description: What a grant points at. `scopeId` is read against this.
+      enum: [PUBLISHER, COLLECTION, ITEM]
+
+    EntitlementStatus:
+      type: string
+      enum: [ACTIVE, SUSPENDED, REVOKED]
+
+    Intent:
+      type: string
+      description: >-
+        How the reader means to use the file. Controls the signed URL lifetime.
+        `DOWNLOAD` is refused for `ELITE`, which is online only.
+      enum: [STREAM, DOWNLOAD]
+
+    InstitutionType:
+      type: string
+      enum: [UNIVERSITY, COLLEGE, LIBRARY, CORPORATE]
+
+    AdminRole:
+      type: string
+      enum: [SUPER_ADMIN, PUBLISHER_ADMIN, INSTITUTION_ADMIN]
+
+    ContentState:
+      type: string
+      description: >-
+        Where a file is in the ingest pipeline. A book that is not `READY` never appears
+        in any feed. Named `PROCESSING` rather than `ENCRYPTING` because open access
+        titles and all audio pass through it without ever being encrypted.
+      enum: [NONE, QUEUED, PROCESSING, READY, FAILED]
+
+    StatusChange:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/RecordStatus' }
+        reason: { type: string, maxLength: 500 }
+
+    # ── public institutions ──────────────────────────────────────
+    InstitutionSummary:
+      type: object
+      description: >-
+        Public fields only. `type` is on `AdminInstitution`, not here.
+      required: [id, code, name, country]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        country: { type: string }
+        city: { type: string }
+        branding: { $ref: '#/components/schemas/Branding' }
+
+    InstitutionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/InstitutionSummary' }
+
+    Branding:
+      type: object
+      properties:
+        logoUrl: { type: string, format: uri }
+        primaryColor: { type: string, example: '#003E74' }
+
+    SignIn:
+      type: object
+      description: Read shape. `method` is always present so the client needs no special case.
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [SAML]
+          description: Always SAML. Institutional sign in has no other mode.
+        idpHint:
+          type: string
+          maxLength: 60
+          description: Which mock identity provider flambeau should use for this institution.
+
+    SignInWrite:
+      type: object
+      description: >-
+        Write shape. **`method` is not here**, because it is always `SAML` and there is no
+        field on the record to configure. Only `idpHint` is settable.
+
+        Nested rather than flat so the console reads and writes the same path,
+        `signIn.idpHint`. A flat `idpHint` on write and a nested one on read is the kind of
+        mismatch that makes an operator think their save failed.
+      properties:
+        idpHint: { type: string, maxLength: 60 }
+
+    InstitutionDetail:
+      allOf:
+        - $ref: '#/components/schemas/InstitutionSummary'
+        - type: object
+          properties:
+            signIn: { $ref: '#/components/schemas/SignIn' }
+            catalogueUrl:
+              type: string
+              format: uri
+              description: Follow this rather than building it. Our URL scheme may change.
+
+    # ── OPDS ─────────────────────────────────────────────────────
+    OpdsLink:
+      type: object
+      description: A plain feed-level link. Carries no acquisition properties.
+      required: [href]
+      properties:
+        rel:
+          type: string
+          description: 'Feed level: `self`, `next`, `previous`, `last`, `search`.'
+        href: { type: string }
+        type: { type: string }
+        title: { type: string }
+        templated:
+          type: boolean
+          description: When true the href is an RFC 6570 template, for example `.../search{?query}`.
+
+    OpdsNavigationLink:
+      description: >-
+        An entry in a `navigation` array. Always titled, `rel` is `subsection`, and it
+        never carries acquisition properties or image dimensions. It is a signpost.
+      allOf:
+        - $ref: '#/components/schemas/OpdsLink'
+        - type: object
+          required: [title]
+          properties:
+            rel: { type: string, example: subsection }
+
+    OpdsPublicationLink:
+      description: >-
+        A link inside a publication. Either the `self` link, or **the one acquisition
+        link**, which is the only link in the whole feed that carries `properties`.
+      allOf:
+        - $ref: '#/components/schemas/OpdsLink'
+        - type: object
+          properties:
+            rel:
+              type: string
+              description: >-
+                `self`, or exactly one acquisition rel. Which one depends on the tier and
+                on whether this caller can obtain the book.
+              enum:
+                - self
+                - 'http://opds-spec.org/acquisition'
+                - 'http://opds-spec.org/acquisition/open-access'
+                - 'http://opds-spec.org/acquisition/borrow'
+                - 'http://opds-spec.org/acquisition/subscribe'
+            properties:
+              allOf:
+                - $ref: '#/components/schemas/OpdsLinkProperties'
+              description: Present on the acquisition link only, never on `self`.
+
+    OpdsImageLink:
+      description: A cover image. Carries dimensions, never acquisition properties.
+      allOf:
+        - $ref: '#/components/schemas/OpdsLink'
+        - type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+
+    OpdsLinkProperties:
+      type: object
+      description: >-
+        Extra facts about **an acquisition link**. Nothing else in the feed has these.
+        Switch on `licenceModel`.
+      required: [licenceModel]
+      properties:
+        licenceModel:
+          allOf:
+            - $ref: '#/components/schemas/AccessTier'
+          description: >-
+            **Always present on an acquisition link, including open access.** Do not
+            infer the tier from `rel` alone. `rel` says how the book is obtained,
+            `licenceModel` says what to render, and the client should read one field
+            rather than two. Same three values as `accessTier` on the book and as the
+            `?accessTier=` filter.
+        indirectAcquisition:
+          type: array
+          minItems: 1
+          maxItems: 1
+          description: >-
+            **What you eventually get, as opposed to what the href returns.** The
+            `open-access` and `borrow` hrefs point at flambeau and answer with JSON, not
+            with a book, so the link's own `type` is `application/json` and the real media
+            type is here.
+            This is the standard OPDS 2.0 field for a link that leads to a file rather
+            than being one. Absent on a `subscribe` link, which leads to a page and not to
+            a file at all.
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+                description: The media type of the book itself.
+                example: application/pdf
+        availability:
+          type: object
+          description: >-
+            Present only when this caller **cannot** obtain the book, which happens on the
+            public discovery routes. When it is present, `rel` is
+            `.../acquisition/subscribe` and there is no `indirectAcquisition`, so render
+            the metadata and a route to access rather than a Read button.
+          required: [state]
+          properties:
+            state:
+              type: string
+              enum: [available, unavailable]
+              example: unavailable
+        copies:
+          type: object
+          description: |
+            **`total` only.** We do not call flambeau while building a feed, so we cannot
+            know how many copies are free. Fetch `available` from flambeau on the detail
+            screen. Absent unless `licenceModel` is `ELITE`.
+          properties:
+            total: { type: integer, minimum: 1 }
+        encrypted:
+          allOf:
+            - $ref: '#/components/schemas/EncryptedInfo'
+          description: Absent for open access and for all audio.
+        hasSearchIndex:
+          type: boolean
+          description: False for audio, and for any book whose text could not be extracted.
+        canPersist:
+          type: boolean
+          description: |
+            Whether an offline copy is allowed. **Use this for the download button, not
+            the tier.** False for `ELITE`, and the server refuses a `DOWNLOAD` intent
+            regardless of what the UI shows.
+        fileSize: { type: integer, minimum: 1 }
+
+    EncryptedInfo:
+      type: object
+      description: Present only when the file is locked.
+      properties:
+        algorithm:
+          type: string
+          enum: ['http://www.w3.org/2009/xmlenc11#aes256-gcm']
+          description: >-
+            The **W3C XML Encryption 1.1 URI**, which is what the OPDS encryption
+            extension uses. This is the same cipher the `ContentGrant.encryption` block
+            calls `AES-256-GCM`; that surface is ours rather than OPDS, so it uses the
+            short name a reader can switch on. One algorithm, two spellings, one on each
+            side of the standard.
+          example: 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
+        originalLength:
+          type: integer
+          description: Plaintext length, after unlocking.
+
+    OpdsFeedMetadata:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        numberOfItems: { type: integer, minimum: 0 }
+        itemsPerPage: { type: integer, minimum: 1 }
+        currentPage:
+          type: integer
+          minimum: 0
+          description: >-
+            **Zero based**, the same as the `page` query parameter, so page 0 is the first
+            page. Worth stating because many OPDS readers assume one based.
+        modified:
+          type: string
+          format: date-time
+          description: When this feed last changed. Moves with `catalogueVersion`.
+
+    OpdsGroupMetadata:
+      type: object
+      description: A group has a title and a count. Paging belongs to the shelf behind it.
+      required: [title]
+      properties:
+        title: { type: string }
+        numberOfItems: { type: integer }
+
+    OpdsNavigationFeed:
+      type: object
+      description: |
+        The **root feed** shape. Signposts and shelves, no top-level publications.
+
+        `links` always contains `self`. Arrays are never empty: if there is nothing to
+        put in one the key is omitted.
+      required: [metadata, links, navigation]
+      properties:
+        metadata: { $ref: '#/components/schemas/OpdsFeedMetadata' }
+        links:
+          type: array
+          minItems: 1
+          contains:
+            type: object
+            required: [rel]
+            properties:
+              rel: { const: self }
+          items: { $ref: '#/components/schemas/OpdsLink' }
+        navigation:
+          type: array
+          minItems: 1
+          description: >-
+            **Always present, always at least the *All titles* entry.** Required rather
+            than optional, because a root feed with no way to reach the rest of the
+            catalogue would be a dead end, and because it is what keeps a brand new
+            institution's feed valid when no shelf has been curated yet.
+          items: { $ref: '#/components/schemas/OpdsNavigationLink' }
+        groups:
+          type: array
+          minItems: 1
+          maxItems: 3
+          description: One per curated shelf that survived filtering. Never more than three.
+          items: { $ref: '#/components/schemas/OpdsGroup' }
+
+    OpdsPublicationFeed:
+      type: object
+      description: |
+        The **list** shape: one shelf, a search result, or the public feed. A flat page
+        of books.
+
+        **There are no `groups` here.** You are already inside one shelf, so there is
+        nothing to nest.
+
+        Exactly one of `publications` or `navigation` is present. `navigation` appears
+        only in the empty case, carrying a single link back to the catalogue, because
+        the OPDS schema forbids an empty `publications` array.
+      required: [metadata, links]
+      anyOf:
+        - required: [publications]
+        - required: [navigation]
+      properties:
+        metadata: { $ref: '#/components/schemas/OpdsFeedMetadata' }
+        links:
+          type: array
+          minItems: 1
+          description: '`self`, plus `next` and `previous` while there are more pages.'
+          contains:
+            type: object
+            required: [rel]
+            properties:
+              rel: { const: self }
+          items: { $ref: '#/components/schemas/OpdsLink' }
+        publications:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/OpdsPublication' }
+        navigation:
+          type: array
+          minItems: 1
+          description: Empty result only. A way back to the catalogue.
+          items: { $ref: '#/components/schemas/OpdsNavigationLink' }
+
+    OpdsGroup:
+      type: object
+      description: >-
+        One curated shelf inside the root feed: a title, a link to the full shelf, and
+        the first few books inline. Groups do not nest.
+      required: [metadata, publications]
+      properties:
+        metadata: { $ref: '#/components/schemas/OpdsGroupMetadata' }
+        links:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/OpdsLink' }
+        publications:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/OpdsPublication' }
+
+    OpdsPublicationDocument:
+      description: >-
+        A **standalone publication**, which is what `application/opds-publication+json`
+        means. Not a feed, and no `publications` array: `metadata`, `links` and `images`
+        sit at the top level. Feeds embed the same object without the `@context`.
+      allOf:
+        - type: object
+          properties:
+            '@context':
+              type: string
+              example: https://readium.org/webpub-manifest/context.jsonld
+        - $ref: '#/components/schemas/OpdsPublication'
+
+    OpdsPublication:
+      type: object
+      required: [metadata, links]
+      properties:
+        metadata: { $ref: '#/components/schemas/OpdsPublicationMetadata' }
+        links:
+          type: array
+          minItems: 1
+          description: The `self` link, plus the acquisition link when the book is obtainable.
+          items: { $ref: '#/components/schemas/OpdsPublicationLink' }
+        images:
+          type: array
+          minItems: 1
+          description: >-
+            Cover images, largest first. `width` and `height` are emitted **only when we
+            know them**. Covers are URLs an operator pastes in, pointing at a public
+            bucket we never read, so unless the dimensions are stored on the record they
+            are omitted rather than guessed.
+          items: { $ref: '#/components/schemas/OpdsImageLink' }
+
+    OpdsContributor:
+      type: object
+      description: >-
+        The OPDS 2.0 shape for a named thing: authors, editors, narrators, the
+        publisher and subjects all use it. **Not a bare string.**
+      required: [name]
+      properties:
+        name: { type: string }
+        sortAs:
+          type: string
+          description: Surname first, for alphabetical listing. Omitted when unknown.
+          example: Gellers, Joshua C.
+
+    OpdsPublicationMetadata:
+      type: object
+      required: [title]
+      properties:
+        '@type':
+          type: string
+          enum: ['http://schema.org/Book', 'http://schema.org/Audiobook']
+          description: >-
+            Derived from `contentType`. AUDIO becomes `Audiobook`, PDF and EPUB become
+            `Book`.
+          example: http://schema.org/Book
+        identifier:
+          type: string
+          description: >-
+            The book's ISBN, prefixed. **OPDS 2.0 has no `isbn` key, so do not look
+            for one.** Read this and strip `urn:isbn:`. Absent entirely when the
+            title has no ISBN, so treat it as optional rather than as an empty
+            string. The plain-JSON `items:batch` response returns a bare `isbn`
+            field instead, because that shape is ours and is not OPDS.
+          example: urn:isbn:9780367211745
+        title: { type: string }
+        subtitle: { type: string }
+        author:
+          type: array
+          items: { $ref: '#/components/schemas/OpdsContributor' }
+        editor:
+          type: array
+          description: Edited volumes have editors and no authors. Both may be absent.
+          items: { $ref: '#/components/schemas/OpdsContributor' }
+        narrator:
+          type: array
+          description: Audiobooks only.
+          items: { $ref: '#/components/schemas/OpdsContributor' }
+        publisher: { $ref: '#/components/schemas/OpdsContributor' }
+        language: { type: string }
+        published:
+          type: string
+          format: date
+          description: Publication date, from `publishedAt`.
+        modified:
+          type: string
+          format: date-time
+          description: When the record last changed, from `updatedAt`.
+        description: { type: string }
+        numberOfPages: { type: integer }
+        duration:
+          type: integer
+          description: Seconds. Audio only.
+        subject:
+          type: array
+          maxItems: 20
+          description: '**Objects, not strings.** `[{ "name": "Law" }]`, never `["Law"]`.'
+          items: { $ref: '#/components/schemas/OpdsContributor' }
+
+    # ── catalogue fetch ──────────────────────────────────────────
+    BatchItemsRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string }
+
+    BatchItem:
+      type: object
+      required: [id, title, contentType, accessTier]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        authors:
+          type: array
+          items: { type: string }
+        coverUrl: { type: [string, 'null'], format: uri }
+        isbn:
+          description: >-
+            Null when the title has none. This response is plain JSON, not OPDS,
+            so the field is a bare `isbn` rather than a `urn:isbn:` identifier.
+          oneOf:
+            - $ref: '#/components/schemas/Isbn'
+            - type: 'null'
+        contentType: { $ref: '#/components/schemas/ContentType' }
+        accessTier: { $ref: '#/components/schemas/AccessTier' }
+        totalCopies: { type: [integer, 'null'] }
+        hasSearchIndex: { type: boolean }
+
+    BatchItemsResponse:
+      type: object
+      required: [items, notFound, denied]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BatchItem' }
+        notFound:
+          type: array
+          description: No such item, or archived.
+          items: { type: string }
+        denied:
+          type: array
+          description: The item exists, but this caller is not entitled to it.
+          items: { type: string }
+
+    # ── the Java seam ────────────────────────────────────────────
+    # The eight schemas below belong to NO PATH in this file, and that is deliberate.
+    # They are the data shapes of `content.api.ContentAccessGrant`, a Java interface
+    # flambeau calls in the same process. They are documented here so there is one file
+    # to read. There is no wokay HTTP endpoint that returns a book, in any tier.
+
+    ContentGrantRequest:
+      type: object
+      description: |
+        What flambeau passes in. Not an HTTP body: this is the argument to
+        `ContentAccessGrant.grant(...)`.
+
+        **`loan` and `devicePublicKey` are both null for open access, and both required
+        for anything else.** A request for a locked book with no `loan` is refused, so no
+        caller can obtain a key by forgetting a field.
+      required: [itemId, format, intent, subject]
+      properties:
+        itemId: { type: string, example: item_42 }
+        format: { $ref: '#/components/schemas/AssetFormat' }
+        intent:
+          allOf:
+            - $ref: '#/components/schemas/Intent'
+          description: >-
+            Controls how long the signed URL lives. `DOWNLOAD` is refused for `ELITE`
+            with `DOWNLOAD_NOT_PERMITTED`, whatever the client's UI showed.
+        subject:
+          allOf:
+            - $ref: '#/components/schemas/SubjectRef'
+          description: >-
+            **Required, even for open access.** `grant()` re-resolves the entitlement
+            itself rather than trusting that `EntitlementQuery.check()` was called first,
+            and it cannot do that without knowing who is asking. It is also what the
+            `CONTENT_ACCESS` audit row records.
+        devicePublicKey:
+          type: [string, 'null']
+          description: >-
+            Base64 SPKI DER, 392 characters for RSA-2048. **RSA-2048 is the minimum** and
+            a shorter key is rejected. Null for open access, where there is no key to wrap.
+        loan:
+          description: >-
+            flambeau's proof that a loan exists. Null for open access. Constructed by
+            flambeau and passed directly, so it carries no signature: in one process there
+            is no wire for anyone to forge it on.
+          oneOf:
+            - $ref: '#/components/schemas/LoanProof'
+            - type: 'null'
+        wantSearchIndex:
+          type: boolean
+          default: true
+          description: >-
+            Set false to skip signing an index URL. Saves a signature when the caller only
+            wants to stream. When false, `ContentGrant.index` comes back null.
+
+    SubjectRef:
+      type: object
+      description: >-
+        Who is asking. Passed to both seams. We own neither users nor institutions'
+        membership, so this is an identifier pair rather than a user record.
+      required: [userId, institutionId]
+      properties:
+        userId:
+          type: string
+          example: u_88
+          description: flambeau's user id. We store it only in `auditLogs.actorId`.
+        institutionId:
+          type: [string, 'null']
+          example: inst_7f3
+          description: >-
+            Null for a reader with no institution, which is how an open access grant to an
+            anonymous B2C reader is expressed.
+
+    LoanProof:
+      type: object
+      required: [loanId, dueAt]
+      properties:
+        loanId: { type: string, example: loan_9f2 }
+        dueAt: { type: string, format: date-time }
+
+    SignedUrl:
+      type: object
+      required: [url, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: >-
+            Points at object storage, not at us. The bytes travel storage to device and
+            pass through no module. Short lived, see `expiresAt`.
+        expiresAt: { type: string, format: date-time }
+        cipherLength:
+          type: integer
+          minimum: 1
+          description: >-
+            What you will download. For a locked file this is exactly
+            `12 + plaintext + 16`, so 28 bytes more than `originalLength`.
+        originalLength:
+          type: integer
+          minimum: 1
+          description: What you get after unlocking. Equal to `cipherLength` when plaintext.
+        mimeType: { type: string, example: application/pdf }
+
+    IndexUrl:
+      type: object
+      description: The in-file search index. Queried on the device, with no call to us.
+      properties:
+        url: { type: string, format: uri }
+        encrypted:
+          type: boolean
+          description: >-
+            True whenever the book is encrypted. **The index is a searchable copy of the
+            text**, so leaving it in plaintext beside a locked book would undo the lock.
+        termCount: { type: integer, minimum: 0 }
+
+    Encryption:
+      type: object
+      description: |
+        Null for open access and for all audio.
+
+        The nonce is **the first twelve bytes of the object**. The content file and the
+        index file use the same key but different random nonces.
+      required: [algorithm, layout, wrappedBek, wrapAlgorithm, keyFingerprint]
+      properties:
+        algorithm:
+          type: string
+          enum: [AES-256-GCM]
+          example: AES-256-GCM
+          description: >-
+            Short name, because this block is ours and not OPDS. The feed spells the
+            same cipher as `http://www.w3.org/2009/xmlenc11#aes256-gcm`.
+        layout:
+          type: string
+          enum: ['nonce(12) || ciphertext || tag(16)']
+          description: >-
+            A single fixed value, as an enum rather than free text, so a reader can assert
+            it instead of parsing prose. If it ever changes, clients fail loudly.
+        wrappedBek:
+          type: string
+          description: >-
+            Base64, **344 characters** for RSA-2048. The book key wrapped to the device
+            public key that was supplied, so only that device can unwrap it.
+
+            Not to be confused with `masterWrappedBek`, which is the same key wrapped with
+            our master key and **never leaves the server**. Two different values, two
+            different names, on purpose.
+        wrapAlgorithm:
+          type: string
+          enum: [RSA-OAEP-256]
+          description: >-
+            RSA-OAEP with SHA-256 **and MGF1 also SHA-256**. Java defaults MGF1 to SHA-1
+            unless an `OAEPParameterSpec` says otherwise, which makes every unwrap fail
+            with an unhelpful error. Both sides must set it explicitly.
+        keyId:
+          type: string
+          example: master-v1
+          description: Which master key wrapped it. Exists so a second one can be added later.
+        keyFingerprint:
+          type: string
+          description: |
+            SHA-256 of the device public key this key was wrapped for. **Required**, and
+            the reader must compare it against its own key and refuse if it differs. That
+            comparison is what proves nobody in the chain substituted a key, so it cannot
+            be optional.
+          example: sha256:d5e91261
+
+    ContentGrant:
+      type: object
+      description: >-
+        What `ContentAccessGrant.grant(...)` returns to flambeau. **Not an HTTP response
+        body anywhere in this file.** For open access `encryption` is null and the file is
+        plaintext. For subscription and elite it is filled in, as in the example below.
+      required: [content]
+      properties:
+        content: { $ref: '#/components/schemas/SignedUrl' }
+        index:
+          description: Null when the book has no search index, or the caller did not ask for one.
+          oneOf:
+            - $ref: '#/components/schemas/IndexUrl'
+            - type: 'null'
+        encryption:
+          description: Null for open access and for all audio. The file is then plaintext.
+          oneOf:
+            - $ref: '#/components/schemas/Encryption'
+            - type: 'null'
+      example:
+        content:
+          url: https://storage.tf/tf-content/item_42.enc?X-Amz-Signature=abc123
+          expiresAt: '2026-08-10T10:20:00Z'
+          cipherLength: 6373780
+          originalLength: 6373752
+          mimeType: application/pdf
+        index:
+          url: https://storage.tf/tf-content/item_42.index.enc?X-Amz-Signature=de44
+          encrypted: true
+          termCount: 18442
+        encryption:
+          algorithm: AES-256-GCM
+          layout: nonce(12) || ciphertext || tag(16)
+          wrappedBek: >-
+            0j+rOY95jvbSUz3p+prD2JofAxTBnwM3l3gtgvMvT5MHgjK3X4pCc1jb6X17FkNe
+            aXSCfR0d6NE4n+Mpjg7SFtI/qzmPeY720lM96fqaw9iaHwMUwZ8DN5d4LYLzL0+T
+            B4Iyt1+KQnNY2+l9exZDXml0gn0dHejROJ/jKY4O0hbSP6s5j3mO9tJTPen6msPY
+            mh8DFMGfAzeXeC2C8y9PkweCMrdfikJzWNvpfXsWQ15pdIJ9HR3o0Tif4ymODtIW
+            0j+rOY95jvbSUz3p+prD2JofAxTBnwM3l3gtgvMvT5MHgjK3X4pCc1jb6X17FkNe
+            aXSCfR0d6NE4n+Mpjg7SFg==
+          wrapAlgorithm: RSA-OAEP-256
+          keyId: master-v1
+          keyFingerprint: sha256:d5e91261
+
+    # ── admin ────────────────────────────────────────────────────
+    AdminLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    TokenPair:
+      type: object
+      description: >-
+        Two tokens with different jobs. The access token is a signed JWT that every
+        request carries and whose session is re-checked on each admin request, so logout
+        takes effect immediately. The refresh token is an opaque random string that exists
+        **only** in the `adminSessions` collection, stored hashed, and is sent to
+        `/auth/refresh` and `/auth/logout` and nowhere else.
+      required: [accessToken, expiresIn, refreshToken, refreshExpiresIn]
+      properties:
+        accessToken:
+          type: string
+          description: >-
+            JWT, `aud` of `tf-admin`. Send it as the `Authorization` bearer header.
+        expiresIn:
+          type: integer
+          description: >-
+            Seconds. Short on purpose, as defence in depth; logout also revokes it
+            immediately.
+          example: 900
+        refreshToken:
+          type: string
+          description: >-
+            Opaque, not a JWT. Nothing is encoded in it, so there is nothing to read out
+            of it. Never send it in an `Authorization` header.
+          example: 8Kd2mXqR7vT1nP4wZ0aB3cE6gH9jL5sY
+        refreshExpiresIn:
+          type: integer
+          description: Seconds. Twelve hours, so one working day needs one sign in.
+          example: 43200
+
+    AdminLoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/TokenPair'
+        - type: object
+          required: [user]
+          properties:
+            user: { $ref: '#/components/schemas/AdminUser' }
+
+    RefreshResponse:
+      allOf:
+        - $ref: '#/components/schemas/TokenPair'
+        - type: object
+          description: >-
+            No `user`. Refreshing proves nothing new about who you are, and the console
+            already has it. Call `/auth/me` if it needs re-reading.
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+
+    AdminSession:
+      type: object
+      description: |
+        **The ninth collection, `adminSessions`.** Returned by no endpoint. It is here
+        because refresh tokens need somewhere to live, and eight collections were
+        documented before refresh existed.
+
+        One row per sign in. `POST /auth/login` inserts, `POST /auth/refresh` revokes the
+        old row and inserts a new one, `POST /auth/logout` sets `revokedAt`.
+
+        **Two indexes are not optional.** A unique index on `refreshTokenHash`, because
+        every refresh is a lookup by it. And a **TTL index on `expiresAt`**, because
+        without it this is the one collection that grows forever: logout only marks a row
+        revoked, it never removes it.
+      required: [id, adminUserId, refreshTokenHash, issuedAt, expiresAt]
+      properties:
+        id: { type: string, example: sess_4b1 }
+        adminUserId: { type: string, example: adm_2 }
+        refreshTokenHash:
+          type: string
+          description: >-
+            SHA-256 of the token, hex. **The raw token is never stored.** A stolen
+            database therefore yields no usable session, the same reason passwords are
+            hashed. Unique index.
+        issuedAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: Twelve hours after `issuedAt`. TTL index, so expired rows delete themselves.
+        revokedAt:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Set by `/auth/refresh` when the token is rotated, and by `/auth/logout`. Null
+            while the session is live. A row with this set can never be exchanged again
+            and any access token carrying this session id is rejected from that moment.
+
+    AdminUser:
+      type: object
+      required: [id, email, role]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        scopePublisherId: { type: [string, 'null'] }
+        scopeInstitutionId: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/RecordStatus' }
+
+    AdminUserPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AdminUser' }
+
+    AdminUserCreate:
+      type: object
+      required: [email, name, role, password]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string, minLength: 1 }
+        password:
+          type: string
+          format: password
+          minLength: 12
+          description: Hashed before storage. Never returned by any endpoint.
+        role: { $ref: '#/components/schemas/AdminRole' }
+        scopePublisherId:
+          type: [string, 'null']
+          description: Required when `role` is PUBLISHER_ADMIN, otherwise null.
+        scopeInstitutionId:
+          type: [string, 'null']
+          description: Required when `role` is INSTITUTION_ADMIN, otherwise null.
+
+    AdminUserUpdate:
+      type: object
+      description: >-
+        `email` is not here. It is the operator's identity; to change it, deactivate and
+        create.
+      required: [name, role]
+      properties:
+        name: { type: string, minLength: 1 }
+        password:
+          type: string
+          format: password
+          minLength: 12
+          description: '**Omit to leave the password unchanged.** Sending it resets it.'
+        role: { $ref: '#/components/schemas/AdminRole' }
+        scopePublisherId: { type: [string, 'null'] }
+        scopeInstitutionId: { type: [string, 'null'] }
+
+    Publisher:
+      type: object
+      required: [id, code, name, status]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        logoUrl: { type: string, format: uri }
+        status: { $ref: '#/components/schemas/RecordStatus' }
+        itemCount: { type: integer }
+        collectionCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    PublisherWrite:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+          description: Lower case, digits and hyphens. Unique.
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 1000 }
+        logoUrl: { type: string, format: uri }
+
+    PublisherPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Publisher' }
+
+    Collection:
+      type: object
+      description: >-
+        A collection carries no membership array. Which books belong to it lives on
+        the books, in `catalogueItems.collectionIds`.
+      required: [id, publisherId, code, name]
+      properties:
+        id: { type: string }
+        publisherId: { type: string }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        itemCount:
+          type: integer
+          description: >-
+            Derived, not stored. Counted from `catalogueItems.collectionIds` on read,
+            the same way `Entitlement.resolvedItemCount` works.
+
+    CollectionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Collection' }
+
+    CollectionWrite:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+          description: Unique within its publisher.
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 1000 }
+
+    Asset:
+      type: object
+      description: |
+        What the operator sees about a file. `storageKey`, `indexKey` and `masterWrappedBek`
+        are internal and are never returned to any client.
+      properties:
+        format: { $ref: '#/components/schemas/AssetFormat' }
+        mimeType: { type: string }
+        sizeBytes: { type: integer, minimum: 1 }
+        cipherLength: { type: [integer, 'null'], minimum: 1 }
+        encrypted:
+          type: boolean
+          description: False for every open access title and for all audio, whatever the tier.
+        hasSearchIndex: { type: boolean }
+        indexSkipReason:
+          type: [string, 'null']
+          maxLength: 300
+          description: Set when text extraction failed. The book is still READY, just not searchable.
+        indexTerms: { type: [integer, 'null'], minimum: 0 }
+
+    CatalogueItem:
+      type: object
+      required: [id, publisherId, title, contentType, accessTier, status, contentState]
+      properties:
+        id: { type: string }
+        publisherId: { type: string }
+        publisherName: { type: string }
+        collectionIds:
+          type: array
+          description: >-
+            Where collection membership is stored. A `Collection` carries no matching
+            `itemIds` array, so this is the only copy of the relationship.
+          items: { type: string }
+        title: { type: string }
+        subtitle: { type: string }
+        authors:
+          type: array
+          items: { type: string }
+        editors:
+          type: array
+          description: Edited volumes have editors and no authors. Becomes `editor` in the feed.
+          items: { type: string }
+        narrators:
+          type: array
+          description: Audio only. Becomes `narrator` in the feed.
+          items: { type: string }
+        isbn:
+          description: Null when the title has none.
+          oneOf:
+            - $ref: '#/components/schemas/Isbn'
+            - type: 'null'
+        contentType: { $ref: '#/components/schemas/ContentType' }
+        accessTier: { $ref: '#/components/schemas/AccessTier' }
+        subjects:
+          type: array
+          items: { type: string }
+        language: { type: string }
+        description: { type: string }
+        publishedAt:
+          type: [string, 'null']
+          format: date
+          description: >-
+            Publication date. The `publishedAt.asc` and `publishedAt.desc` sort options
+            order on this, and it becomes `published` in OPDS metadata.
+        numberOfPages:
+          type: [integer, 'null']
+          description: PDF only. Set by ingest once the file is processed, null before that.
+        duration:
+          type: [integer, 'null']
+          description: Seconds. Audio only, supplied by the operator at create time.
+        coverUrl: { type: [string, 'null'], format: uri }
+        status: { $ref: '#/components/schemas/ItemStatus' }
+        contentState: { $ref: '#/components/schemas/ContentState' }
+        contentError: { type: [string, 'null'] }
+        assets:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        createdAt: { type: string, format: date-time }
+        updatedAt:
+          type: string
+          format: date-time
+          description: Touched by every write, including ingest state changes. `IngestStatus` returns it.
+
+    CatalogueItemWrite:
+      type: object
+      required: [publisherId, title, contentType, accessTier]
+      properties:
+        publisherId: { type: string }
+        collectionIds:
+          type: array
+          maxItems: 50
+          description: >-
+            The single source of truth for collection membership. A collection has no
+            `itemIds` array of its own, so this is the only place the relationship is
+            stored. Indexed.
+          items: { type: string }
+        title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { type: string, maxLength: 300 }
+        authors:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 120 }
+        editors:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 120 }
+        narrators:
+          type: array
+          maxItems: 10
+          items: { type: string, maxLength: 120 }
+        isbn: { $ref: '#/components/schemas/Isbn' }
+        contentType: { $ref: '#/components/schemas/ContentType' }
+        accessTier: { $ref: '#/components/schemas/AccessTier' }
+        subjects:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 80 }
+        language: { type: string, maxLength: 20 }
+        description: { type: string, maxLength: 4000 }
+        publishedAt: { type: [string, 'null'], format: date }
+        duration:
+          type: [integer, 'null']
+          minimum: 1
+          description: Seconds. Required when `contentType` is AUDIO. `numberOfPages` is not settable, ingest derives it.
+        coverUrl: { type: string, format: uri }
+        status: { $ref: '#/components/schemas/ItemStatus' }
+
+    CatalogueItemPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CatalogueItem' }
+
+    IngestStatus:
+      type: object
+      required: [itemId, contentState]
+      properties:
+        itemId: { type: string }
+        format: { $ref: '#/components/schemas/AssetFormat' }
+        contentState: { $ref: '#/components/schemas/ContentState' }
+        contentError: { type: [string, 'null'] }
+        updatedAt: { type: string, format: date-time }
+
+    AdminInstitution:
+      allOf:
+        - $ref: '#/components/schemas/InstitutionDetail'
+        - type: object
+          properties:
+            type: { $ref: '#/components/schemas/InstitutionType' }
+            emailDomains:
+              type: array
+              description: Used to help a user find their institution by email. Not used for authentication.
+              items: { type: string }
+            status: { $ref: '#/components/schemas/RecordStatus' }
+            catalogueVersion:
+              type: integer
+              minimum: 0
+              description: |
+                A counter bumped by any change that affects what a member would see. Both
+                the feed cache and the `ETag` are keyed on it, so bumping it makes every
+                stale cache entry unreachable rather than needing to be found and deleted.
+
+                **Miss a bump and that institution is served a stale feed until something
+                else changes it.** The full list of writes that must bump it:
+
+                | Write |
+                |---|
+                | entitlement created, amended or revoked |
+                | collection membership changed |
+                | catalogue item published or archived |
+                | catalogue item finished ingest, `contentState` becomes `READY` |
+                | publisher suspended or reactivated |
+                | institution suspended or reactivated |
+                | feed settings saved |
+
+                The last-but-one is the one that gets forgotten, because it happens in a
+                background worker rather than in a controller.
+            summary:
+              type: object
+              properties:
+                entitlementCount: { type: integer }
+                accessibleItemCount: { type: integer }
+                feedUrl: { type: string, format: uri }
+
+    AdminInstitutionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AdminInstitution' }
+
+    InstitutionWrite:
+      type: object
+      required: [code, name, type, country]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+        name: { type: string, minLength: 1, maxLength: 200 }
+        type: { $ref: '#/components/schemas/InstitutionType' }
+        country: { type: string, minLength: 2, maxLength: 60 }
+        city: { type: string, maxLength: 80 }
+        emailDomains:
+          type: array
+          maxItems: 20
+          items: { type: string }
+        signIn: { $ref: '#/components/schemas/SignInWrite' }
+        branding: { $ref: '#/components/schemas/Branding' }
+
+    Entitlement:
+      type: object
+      required: [id, institutionId, scopeType, scopeId, status]
+      properties:
+        id: { type: string }
+        institutionId: { type: string }
+        scopeType: { $ref: '#/components/schemas/EntitlementScope' }
+        scopeId: { type: string }
+        scopeLabel:
+          type: string
+          maxLength: 200
+          description: >-
+            Human readable, for the console.
+            For example "Collection - Law and Technology 2024".
+        copyLimited:
+          type: boolean
+          description: >-
+            Whether **this grant** caps concurrent readers. Derived on read: `false` when
+            `copies` is null, `true` when it is a number. Not settable, set `copies`
+            instead so the two can never disagree.
+
+            This describes the grant, **not the book**. A book's own terms are its
+            `accessTier`. The two are separate: an `ELITE` book is copy limited by nature,
+            while this field records what the institution actually bought.
+        copies:
+          type: [integer, 'null']
+          minimum: 1
+          description: Applies only to copy-limited titles. Null means no limit.
+        loanPeriodDays: { type: integer, minimum: 1 }
+        validFrom: { type: string, format: date }
+        validTo: { type: [string, 'null'], format: date }
+        status: { $ref: '#/components/schemas/EntitlementStatus' }
+        resolvedItemCount:
+          type: integer
+          minimum: 0
+          description: >-
+            How many books this grant currently resolves to. Recomputed on read.
+
+            **Overlapping grants each count the same book**, so two grants' counts do not
+            add up to a distinct total. `AdminInstitution.summary.accessibleItemCount`
+            de-duplicates; these numbers do not.
+        version:
+          type: integer
+          minimum: 0
+          description: For optimistic locking. Send it back on update.
+
+    EntitlementPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Entitlement' }
+
+    EntitlementCreate:
+      type: object
+      description: No `version` on create. The server sets it.
+      required: [scopeType, scopeId]
+      properties:
+        scopeType: { $ref: '#/components/schemas/EntitlementScope' }
+        scopeId: { type: string }
+        copies:
+          type: [integer, 'null']
+          minimum: 1
+          description: Null means unlimited. A number makes the grant copy limited.
+        loanPeriodDays: { type: integer, default: 14, minimum: 1 }
+        validFrom: { type: string, format: date }
+        validTo: { type: [string, 'null'], format: date }
+
+    EntitlementUpdate:
+      type: object
+      description: >-
+        Amends the **terms** of a grant. `scopeType` and `scopeId` are not here: to
+        re-point a grant, revoke it and create a new one. `version` is required.
+      required: [version]
+      properties:
+        copies: { type: [integer, 'null'], minimum: 1 }
+        loanPeriodDays: { type: integer, minimum: 1 }
+        validFrom: { type: string, format: date }
+        validTo: { type: [string, 'null'], format: date }
+        version:
+          type: integer
+          minimum: 0
+          description: >-
+            From the record you loaded. If somebody else saved since, you get
+            `409 STALE_VERSION` rather than silently overwriting them.
+
+    Shelf:
+      type: object
+      description: >-
+        One of exactly three curated slots. `id` is fixed; the operator sets the title,
+        the position and which books appear. An empty `itemIds` hides the shelf.
+      required: [id, title, order, itemIds]
+      properties:
+        id:
+          type: string
+          enum: [shelf_1, shelf_2, shelf_3]
+        title: { type: string, minLength: 1, maxLength: 60 }
+        order: { type: integer, minimum: 1, maximum: 3 }
+        itemIds:
+          type: array
+          maxItems: 50
+          description: >-
+            Hand picked by the operator, **in display order**. The feed preserves this
+            order exactly, so it is not re-sorted and the `sort` parameter does not
+            apply. Every id must be a book the institution is currently entitled to.
+            Empty means the shelf is hidden.
+          items: { type: string }
+
+    FeedSettings:
+      type: object
+      description: |
+        How one institution's feed is presented. Stored in the `feedSettings`
+        collection, 1:1 with an institution.
+
+        This does **not** control which books an institution gets. That is governed by
+        entitlements. Feed settings only decide the title, the shelves and the paging.
+
+        **Shelves are curated, not computed.** Three slots, `shelf_1` to `shelf_3`. The
+        operator chooses the title, the position and the individual books on each.
+
+        A shelf is a presentation list, never an authorisation one. Every id is
+        re-checked on read against `status = PUBLISHED`, `contentState = READY` and the
+        institution's current entitlements, and anything that fails is dropped.
+      required: [feedTitle, pageSize, shelves]
+      properties:
+        institutionId:
+          type: string
+          description: Read only. It is already in the path.
+        feedTitle: { type: string }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        defaultSort: { $ref: '#/components/schemas/SortOrder' }
+        shelves:
+          type: array
+          minItems: 3
+          maxItems: 3
+          description: Always exactly three, one per slot, even if some are empty.
+          items: { $ref: '#/components/schemas/Shelf' }
+        catalogueVersion:
+          type: integer
+          description: >-
+            Read only. A server counter the save bumps for you. Not accepted on write.
+        version:
+          type: integer
+          description: >-
+            For optimistic locking. Send it back on save. Not the same as
+            `catalogueVersion`: that one is a cache key the server bumps, this one is
+            **which copy of the record you edited**.
+
+    FeedSettingsWrite:
+      type: object
+      description: >-
+        What the console may set. `institutionId` is in the path and `catalogueVersion`
+        is server owned, so neither is accepted here.
+
+        **`version` is required**, because this endpoint replaces all three shelves at
+        once. Without it, two operators curating at the same time means the second save
+        silently wipes the first operator's shelves with no error shown to either of them.
+      required: [feedTitle, pageSize, shelves, version]
+      properties:
+        feedTitle: { type: string, minLength: 1, maxLength: 80 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        defaultSort: { $ref: '#/components/schemas/SortOrder' }
+        shelves:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: { $ref: '#/components/schemas/Shelf' }
+        version:
+          type: integer
+          minimum: 0
+          description: >-
+            From the record you loaded with `GET`. If somebody else saved since, you get
+            `409 STALE_VERSION` instead of overwriting their work.
+
+    AuditLog:
+      type: object
+      required: [id, action, at]
+      properties:
+        id: { type: string }
+        actorId: { type: [string, 'null'] }
+        actorEmail: { type: [string, 'null'] }
+        action:
+          type: string
+          example: UPDATE
+        entityType: { type: string }
+        entityId: { type: string }
+        before: { type: [object, 'null'] }
+        after: { type: [object, 'null'] }
+        meta:
+          type: [object, 'null']
+          description: On a CONTENT_ACCESS record this carries the device public key fingerprint, the intent and the format.
+        at: { type: string, format: date-time }
+
+    AuditLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AuditLog' }

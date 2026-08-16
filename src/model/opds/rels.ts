@@ -16,10 +16,15 @@ function malformed(what: string, value: string): CatalogueFailure {
 
 // OPDS acquisition rel → what the user can do. Exhaustive by design: L-3 says the
 // action vocabulary is still moving, so an unrecognised rel is news, not noise.
+//
+// All four rels the contract defines. `subscribe` means "not obtainable by you,
+// here is how to get access" — it points at the public institution list rather
+// than at a file, so it is the one rel that carries no `indirectAcquisition`.
 const ACTION_BY_REL: Record<string, AcquisitionRel> = {
   'http://opds-spec.org/acquisition/borrow': 'borrow',
   'http://opds-spec.org/acquisition': 'acquire',
   'http://opds-spec.org/acquisition/open-access': 'openAccess',
+  'http://opds-spec.org/acquisition/subscribe': 'subscribe',
 };
 
 export function toActionId(rel: string): AcquisitionRel {
@@ -28,9 +33,13 @@ export function toActionId(rel: string): AcquisitionRel {
   return action;
 }
 
-// Acquisition mime type → ContentFormat. The format comes from the ACQUISITION
-// LINK, not from metadata: OPDS metadata says "a Book" for both a PDF and an
-// audiobook, so the link's type is the only place the real format lives.
+// The book's media type → ContentFormat.
+//
+// NOT the acquisition link's own `type`, which is 'application/json': the href
+// answers with JSON rather than with a book. The real media type lives in
+// `properties.indirectAcquisition` — normalize.ts's toFileType pulls it out and
+// hands it here. Not from metadata either, which says "a Book" for both a PDF and
+// an audiobook.
 const FORMAT_BY_MIME: Record<string, ContentFormat> = {
   'application/pdf': 'PDF',
   'application/epub+zip': 'EPUB',
@@ -63,7 +72,7 @@ export function toAlgorithm(uri: string): 'AES-256-GCM' {
 // titles may lack entirely, and which is not what any other endpoint accepts.
 export function idFromHref(href: string): string {
   // Strip query and fragment before splitting: shelf self-hrefs are paginated
-  // ('.../groups/ebooks?page=1') and the page must not become part of the id.
+  // ('.../groups/shelf_2?page=1') and the page must not become part of the id.
   const path = href.split(/[?#]/)[0].replace(/\/+$/, '');
   // Drop scheme://host FIRST. Without this, 'https://api.tf' has a plausible
   // last segment ('api.tf' — the `//` in the scheme provides the slash), so a

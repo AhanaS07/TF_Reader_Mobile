@@ -18,15 +18,19 @@ import type { BookId, ContentFormat } from '@/shared/types/primitives';
 // onward as an arbitrary value.
 //
 // NOT THE BUTTON VOCABULARY, and the distinction now matters. `borrow` here is
-// the wire rel — literally what wokay's feed sends, and all three frozen
-// samples carry it. It survived the 12 Aug flow change untouched even though
-// the borrow BUTTON did not; see ACTION_IDS below. Two similar words, only one
-// of them moved.
+// the wire rel — literally what wokay's feed sends, and the contract still lists
+// it. It survived the 12 Aug flow change untouched even though the borrow BUTTON
+// did not; see ACTION_IDS below. Two similar words, only one of them moved.
 //
 //   http://opds-spec.org/acquisition/borrow       → 'borrow'
 //   http://opds-spec.org/acquisition              → 'acquire'
 //   http://opds-spec.org/acquisition/open-access  → 'openAccess'
-export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess';
+//   http://opds-spec.org/acquisition/subscribe    → 'subscribe'
+//
+// `subscribe` is the fourth rel, and it is the odd one: it leads to a page
+// explaining how to get access, not to a file. So it carries no
+// `indirectAcquisition`, which means no format can be derived from it.
+export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess' | 'subscribe';
 
 // The RESOLVED button vocabulary — what `AccessResult.actions` will hold once
 // `src/access/resolveAccess` exists. Distinct from `AcquisitionRel` above: a
@@ -63,9 +67,15 @@ export const ACTION_IDS = [
 ] as const;
 export type ActionId = (typeof ACTION_IDS)[number];
 
-// How many simultaneous readers the institution's licence allows. Absent for
-// open access, which is unlicensed by definition.
-export type LicenceModel = 'CONCURRENT' | 'UNLIMITED';
+// The one tier vocabulary. Across wokay's whole surface the same three values
+// appear in `licenceModel` in a feed, in `accessTier` on a book and in the
+// `?accessTier=` filter, so there is nothing to translate.
+//
+// Beware flambeau's `ENTITLED_UNLIMITED` / `ENTITLED_CONCURRENT`: that is a
+// different, live enum on the far side of the Java seam, not an older spelling of
+// these. flambeau owns the translation — see docs/contracts/.
+export const ACCESS_TIERS = ['OPEN_ACCESS', 'SUBSCRIPTION', 'ELITE'] as const;
+export type AccessTier = (typeof ACCESS_TIERS)[number];
 
 // The subset of the OPDS `encrypted` block the catalogue legitimately knows.
 //
@@ -98,9 +108,11 @@ export interface Acquisition {
   // Where the action is performed (loan creation, direct download). Absolute, as
   // supplied by the feed — the adapter does not rewrite hosts.
   href: string;
-  // Absent ⇒ open access (unlicensed), not "unknown".
-  licenceModel?: LicenceModel;
-  // Total copies the institution holds. Present only for CONCURRENT.
+  // ALWAYS PRESENT, including for open access. The contract requires it on every
+  // acquisition link: `rel` says how the book is obtained, `licenceModel` says
+  // what to render, and one field is read rather than two.
+  licenceModel: AccessTier;
+  // Total copies the institution holds. Present only for ELITE.
   copiesTotal?: number;
   // null ⇒ plaintext: open access, or ANY audio. Not `undefined` — the frozen
   // content-provider contract already defines null as exactly this state, so a
@@ -110,9 +122,11 @@ export interface Acquisition {
   hasSearchIndex: boolean;
   // Whether the book may be written to device storage. false ⇒ memory-only.
   canPersist: boolean;
-  // UNSETTLED (CLAUDE.md Q-D): OPDS 2.0 has no equivalent and wokay may never
-  // supply it, so it is read from our own fixture field and stays optional. When
-  // wokay decides, only rels.ts and resolveAccess should need to change.
+  // STILL OPEN (CLAUDE.md Q-D), but narrower than it was: wokay do publish an
+  // `accessTier` on their `/api/v1/catalogue/**` fetch surfaces, carrying the
+  // same three values as `licenceModel` above. What is unsettled is whether we
+  // ever read it, given the feed already answers the question. Kept optional
+  // until someone decides — the feed path never populates it.
   accessTier?: string;
 }
 
@@ -150,25 +164,28 @@ export interface Publication {
 
 // A tab/section pointer in the catalogue's navigation.
 //
-// NAVIGATION IS DATA, NOT CODE. CLAUDE.md L-5 (three feed tabs, or one merged
-// list?) is unsettled, so the UI renders whatever array it is handed and no tab
-// is named in a type or a branch anywhere.
+// NAVIGATION IS DATA, NOT CODE. Settled 16 Aug 2026 (AGENTS.md L-5): an
+// administrator configures the shelves per institution, so the count, the titles
+// and the ids are all theirs. The UI renders whatever array it is handed, in the
+// order it arrives, and no shelf is named in a type or a branch anywhere.
 export interface NavLink {
   title: string;
   href: string;
-  // Tail of the href ('.../groups/ebooks' → 'ebooks'), so a nav tap maps
+  // Tail of the href ('.../groups/shelf_2' → 'shelf_2'), so a nav tap maps
   // straight to getShelf(institutionId, shelfId) without re-parsing a URL.
+  // An OPAQUE KEY: it is whatever the server put in the URL, and nothing may
+  // read meaning into it.
   shelfId: string;
 }
 
 // A group of publications — one shelf/carousel on the home screen, or a full
 // paginated listing when fetched on its own.
 export interface Shelf {
-  // Tail of the shelf's `self` href ('.../groups/new-this-term').
+  // Tail of the shelf's `self` href ('.../groups/shelf_2').
   //
-  // IDENTITY, NOT TITLE. The two are independent in real data: the "Free to
-  // read" shelf and the "Open access" nav entry are both id 'open-access'
-  // despite differing titles. Never key a shelf by its title.
+  // IDENTITY, NOT TITLE. The two are independent in real data, and so are the two
+  // titles for one shelf: a nav row and the shelf's own feed can name the same id
+  // differently, and both are correct. Never key a shelf by its title.
   id: string;
   title: string;
   publications: Publication[];
@@ -237,11 +254,6 @@ export interface SearchFeed {
 // deliberately NOT here — those compete with code already built and tested in
 // this branch and need a real conversation with her before merging.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// OURS, as badge labels. Uppercase, unchanged.
-// DERIVED, NOT SENT — no access-tier field exists on any surface we consume.
-export const ACCESS_TIERS = ['OPEN_ACCESS', 'SUBSCRIPTION', 'ELITE'] as const;
-export type AccessTier = (typeof ACCESS_TIERS)[number];
 
 // OURS. The *work* type, which decides whether we render article detail
 // (screen 04) or book detail (screen 05). `@type` is OFFICIAL — confirmed

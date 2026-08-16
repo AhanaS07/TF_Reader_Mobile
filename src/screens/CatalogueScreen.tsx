@@ -1,18 +1,18 @@
 // P0-3/P0-4 (Prayas) — wires CategoryCard and ContentCard to the DataSource seam.
 //
-// SHAPE FOLLOWS THE FIXTURES, NOT THE MOCKUP'S TAB BEHAVIOUR. The top strip is
-// one CategoryCard per `catalogue.navigation` entry (eBooks/Audiobooks/Open
-// access from the real fixture); the "Recently published" section below is the
-// home-catalogue's OWN shelves ("New this term", "Free to read"), each under its
-// own heading. Tapping a category card does not filter that list — CLAUDE.md L-5
-// (three tabs, or one merged list?) is unsettled — it pushes ShelfDetail
-// (ShelfScreen) instead, which fetches that shelf's own full, paginated
-// listing via getShelf(). See ShelfScreen.tsx.
+// SHAPE FOLLOWS THE FEED, NOT THE MOCKUP'S TAB BEHAVIOUR. The top strip is one
+// CategoryCard per `catalogue.navigation` entry; the "Recently published" section
+// below is the home catalogue's OWN shelves, each under its own heading. Both
+// lists come from the feed and neither has a fixed length or a known name — an
+// administrator configures the shelves per institution (AGENTS.md L-5, settled
+// 16 Aug 2026), so handle none, one and many.
 //
-// `institutionId` IS HARDCODED to the one id the mock fixtures serve. CAP-3
-// (institution selection) has not landed, so there is no real value to read yet.
-// Replace this constant with whatever CAP-3 hands the screen; nothing else here
-// should need to change.
+// Tapping a category card does not filter the list below. A shelf is not a
+// filter: it pushes ShelfDetail (ShelfScreen), which fetches that shelf's own
+// full, paginated listing via getShelf(). See ShelfScreen.tsx.
+//
+// `institutionId` comes from the institution store, falling back to inst_7f3
+// until one is selected. The picker above the category row changes it.
 //
 // NO ACCESS BADGE YET. `ContentCard`'s `badge` slot takes already-resolved UI
 // (Design Spec §5.1 — the UI must never calculate access rights), and
@@ -35,9 +35,9 @@ import { color, space, type as typeScale } from '../theme/tokens';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
-// Cycled by POSITION, never by category name — types.ts: "NAVIGATION IS DATA,
-// NOT CODE ... no tab is named in a type or a branch anywhere". A fourth
-// category tomorrow just continues the cycle.
+// Cycled by POSITION, never by shelf name — types.ts: "NAVIGATION IS DATA, NOT
+// CODE ... no shelf is named in a type or a branch anywhere". There are already
+// more shelves than accents, so the cycle wraps rather than running out.
 const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'success', 'subscription', 'elite'];
 
 // How many skeleton rows/cards to show before the first real payload arrives.

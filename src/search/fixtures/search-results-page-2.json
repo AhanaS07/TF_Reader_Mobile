@@ -17,11 +17,24 @@
         "@type": "http://schema.org/Book",
         "identifier": "urn:tf:catalogue:item_ab6",
         "title": "Ethnographies of Waiting",
-        "editor": [{ "name": "Manpreet K. Janeja" }, { "name": "Andreas Bandak" }],
-        "publisher": { "name": "CRC Press" },
+        "editor": [
+          {
+            "name": "Manpreet K. Janeja"
+          },
+          {
+            "name": "Andreas Bandak"
+          }
+        ],
+        "publisher": {
+          "name": "CRC Press"
+        },
         "language": "en",
         "published": "2018-11-01",
-        "subject": [{ "name": "Anthropology" }],
+        "subject": [
+          {
+            "name": "Anthropology"
+          }
+        ],
         "numberOfPages": 264
       },
       "links": [
@@ -33,8 +46,14 @@
         {
           "rel": "http://opds-spec.org/acquisition/open-access",
           "href": "https://api.tf/api/v1/reading-sessions?itemId=item_ab6",
-          "type": "application/epub+zip",
+          "type": "application/json",
           "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "application/epub+zip"
+              }
+            ],
             "hasSearchIndex": true,
             "canPersist": true
           }

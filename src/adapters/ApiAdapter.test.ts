@@ -5,15 +5,24 @@
 // does not exist, but the adapter's parsing, URL building and error mapping all
 // do, and all three are exercised here.
 import { ApiAdapter, type FetchLike, type FetchResponse } from '@adapters/ApiAdapter';
-import { describeCatalogueSourceConformance, KNOWN_INSTITUTION } from '@adapters/conformance';
+import {
+  describeCatalogueSourceConformance,
+  KNOWN_INSTITUTION,
+  KNOWN_PUBLICATION,
+  KNOWN_SHELF,
+} from '@adapters/conformance';
 import { describeInstitutionSourceConformance } from '@adapters/institutionConformance';
 import { CatalogueError } from '@model/errors';
 import { normalizeInstitutionList } from '@model/institution';
+import { idFromHref } from '@model/opds/rels';
 
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
-import shelfGroupFixture from '@model/fixtures/OPDS-samples/02-shelf-group.json';
-import shelfGroupPage1Fixture from '@model/fixtures/OPDS-samples/02-shelf-group-page1.json';
-import publicationDetailFixture from '@model/fixtures/OPDS-samples/03-publication-detail.json';
+import newInstitutionCatalogueFixture from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
+import allTitlesPage0Fixture from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
+import allTitlesPage1Fixture from '@model/fixtures/OPDS-samples/04-shelf-all-page1.json';
+import curatedShelfFixture from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
+import curatedShelfAltFixture from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
+import publicationDetailFixture from '@model/fixtures/OPDS-samples/07-publication-detail.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
 const BASE_URL = 'https://api.tf/opds/v1';
@@ -26,25 +35,74 @@ function notFound(): FetchResponse {
   return { ok: false, status: 404, json: async () => ({}) };
 }
 
+// The institution id inside a fixture's own self href, so no id is written twice.
+function selfHrefOf(fixture: unknown): string {
+  const { links } = fixture as { links: { rel: string; href: string }[] };
+  const self = links.find((link) => link.rel === 'self');
+  if (self === undefined) throw new Error('fixture has no self link');
+  return self.href;
+}
+
+function institutionIdOf(fixture: unknown): string {
+  const match = /\/institutions\/([^/]+)\//.exec(selfHrefOf(fixture));
+  if (match === null) throw new Error('fixture self href names no institution');
+  return match[1];
+}
+
+const CATALOGUE_BY_INSTITUTION: Record<string, unknown> = {
+  [institutionIdOf(homeCatalogueFixture)]: homeCatalogueFixture,
+  [institutionIdOf(newInstitutionCatalogueFixture)]: newInstitutionCatalogueFixture,
+};
+
+// Shelf listings keyed by the id in each fixture's own self href, so no shelf
+// name is spelled out here — the ids are the administrator's, not ours. Index in
+// the array is the page number.
+const SHELF_PAGES = new Map<string, unknown[]>();
+for (const pages of [
+  [allTitlesPage0Fixture, allTitlesPage1Fixture],
+  [curatedShelfFixture],
+  [curatedShelfAltFixture],
+]) {
+  SHELF_PAGES.set(idFromHref(selfHrefOf(pages[0])), pages);
+}
+
 // Serves the fixtures at the paths the real OPDS API is expected to expose,
 // derived from the self-hrefs inside the fixtures themselves.
 const serveFixtures: FetchLike = async (url) => {
-  const { pathname } = new URL(url);
+  const { pathname, searchParams } = new URL(url);
 
-  if (pathname === `/opds/v1/institutions/${KNOWN_INSTITUTION}/catalogue`) {
-    return ok(homeCatalogueFixture);
+  const catalogue = /^\/opds\/v1\/institutions\/([^/]+)\/catalogue$/.exec(pathname);
+  if (catalogue) {
+    const fixture = CATALOGUE_BY_INSTITUTION[decodeURIComponent(catalogue[1])];
+    return fixture === undefined ? notFound() : ok(fixture);
   }
-  if (pathname === `/opds/v1/institutions/${KNOWN_INSTITUTION}/groups/ebooks`) {
+
+  const group = /^\/opds\/v1\/institutions\/([^/]+)\/groups\/([^/]+)$/.exec(pathname);
+  if (group) {
+    // An institution the fixtures do not know is a 404 before the shelf is even
+    // looked at, so both adapters agree that an unknown institution is NOT_FOUND
+    // whichever method asked.
+    if (CATALOGUE_BY_INSTITUTION[decodeURIComponent(group[1])] === undefined) return notFound();
+    const pages = SHELF_PAGES.get(decodeURIComponent(group[2]));
+    if (pages === undefined) return notFound();
     // Paged on the query string, exactly as the adapter builds it. Serving page 0
     // for every request would let a paging bug pass this suite — the adapter
     // could drop the page param entirely and nothing here would notice.
-    const page = new URL(url).searchParams.get('page');
-    if (page === null || page === '0') return ok(shelfGroupFixture);
-    if (page === '1') return ok(shelfGroupPage1Fixture);
-    return notFound();
+    const page = searchParams.get('page');
+    const index = page === null ? 0 : Number(page);
+    const body = pages[index];
+    return body === undefined ? notFound() : ok(body);
   }
-  if (pathname === `/opds/v1/institutions/${KNOWN_INSTITUTION}/publications/item_42`) {
-    return ok(publicationDetailFixture);
+
+  const publication = /^\/opds\/v1\/institutions\/([^/]+)\/publications\/([^/]+)$/.exec(pathname);
+  if (publication) {
+    if (CATALOGUE_BY_INSTITUTION[decodeURIComponent(publication[1])] === undefined) {
+      return notFound();
+    }
+    if (decodeURIComponent(publication[2]) === KNOWN_PUBLICATION) {
+      return ok(publicationDetailFixture);
+    }
+    return notFound();
   }
 
   // The institution endpoints. `/institutions` is the list; `/institutions/<id>`
@@ -142,7 +200,7 @@ describe('ApiAdapter URL construction', () => {
       },
     });
 
-    await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks');
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
 
     expect(requested[0]).not.toContain('page=');
   });
@@ -153,14 +211,14 @@ describe('ApiAdapter URL construction', () => {
       baseUrl: BASE_URL,
       fetch: async (url) => {
         requested.push(url);
-        return ok(shelfGroupFixture);
+        return ok(allTitlesPage0Fixture);
       },
     });
 
-    await adapter.getShelf(KNOWN_INSTITUTION, 'ebooks', 2);
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 2);
 
     expect(requested[0]).toBe(
-      `${BASE_URL}/institutions/${KNOWN_INSTITUTION}/groups/ebooks?page=2`,
+      `${BASE_URL}/institutions/${KNOWN_INSTITUTION}/groups/${KNOWN_SHELF}?page=2`,
     );
   });
 
