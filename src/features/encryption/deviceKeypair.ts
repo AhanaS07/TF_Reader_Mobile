@@ -117,8 +117,14 @@ export async function generateDeviceKeypair(): Promise<{ publicKey: string }> {
 
       const { publicKey, privateKey } = generateRsaPemKeyPair();
 
+      // THIS_DEVICE_ONLY: without it, react-native-keychain's default (AFTER_FIRST_UNLOCK, no
+      // device binding) lets this private key migrate through an encrypted backup/restore onto a
+      // second device — silently defeating the whole point of a per-device keypair (flagged in
+      // full-audit-report.md S2). Restoring a backup onto a new device must force a fresh keypair,
+      // not carry the old one over.
       const result = await Keychain.setGenericPassword('device-private-key', privateKey, {
         service: PRIVATE_KEY_SERVICE,
+        accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
       });
       if (result === false) {
         throw new Error('generateDeviceKeypair: keychain rejected storing the private key');

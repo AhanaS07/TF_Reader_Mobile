@@ -39,6 +39,12 @@ const LOAN_ERROR_CODE_MAP: Partial<Record<FlambeauError['code'], DownloadError>>
   ENTITLEMENT_EXPIRED: DownloadError.ENTITLEMENT_EXPIRED,
   ENTITLEMENT_SUSPENDED: DownloadError.ENTITLEMENT_SUSPENDED,
   INSTITUTION_INACTIVE: DownloadError.INSTITUTION_INACTIVE,
+  // Promoted per API_CONTRACT_NOTES.md B10 — on the LOAN map (not just SESSION's) since either
+  // endpoint can fail auth once auth exists (B1), and SESSION_ERROR_CODE_MAP spreads this map in.
+  UNAUTHENTICATED: DownloadError.UNAUTHENTICATED,
+  TOKEN_EXPIRED: DownloadError.TOKEN_EXPIRED,
+  // 409 on borrow only, but harmless to include here even before it's reachable from a session.
+  NO_COPIES_AVAILABLE: DownloadError.NO_COPIES_AVAILABLE,
 };
 
 const SESSION_ERROR_CODE_MAP: Partial<Record<FlambeauError['code'], DownloadError>> = {
@@ -154,14 +160,17 @@ export async function openReadingSession(
 
 // Fail-open / fail-closed policy for verifyReadingAccess below. The real contract's own design
 // conversation doesn't resolve what a per-open call should do with NO network — flagged as an
-// open question in flambeau-contract-comparison.md §1 ("call on every open doesn't say what
-// happens reopening an already-downloaded book offline") — so this is a deliberate, documented
-// choice, not an oversight. A reader must not lose access to a book already sitting on their
+// open question in this directory's `API_CONTRACT_NOTES.md` (`B7`: "call on every open doesn't
+// say what happens reopening an already-downloaded book offline") — so this is a deliberate,
+// documented choice, not an oversight. A reader must not lose access to a book already sitting on their
 // device just because they're offline right now, or because this mock backend's in-memory loan
 // state didn't survive a restart. Fail CLOSED only for the codes that mean the server explicitly,
-// successfully told us this reader's access is gone — never for a network-level failure, and
-// never for NO_ACTIVE_LOAN/CONTENT_NOT_READY (state-not-found reads as "can't confirm", not "confirmed
-// revoked").
+// successfully told us this reader cannot proceed: genuine access revocations (NO_ENTITLEMENT,
+// ENTITLEMENT_EXPIRED, ENTITLEMENT_SUSPENDED, INSTITUTION_INACTIVE) AND device-limit concurrency
+// refusals (DEVICE_LIMIT_REACHED — reader is already reading on the max number of devices, so
+// THIS device cannot read right now). See API_CONTRACT_NOTES.md B7. Never fail closed for
+// network-level failures, and never for NO_ACTIVE_LOAN/CONTENT_NOT_READY (state-not-found reads
+// as "can't confirm", not "confirmed denied").
 const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
   DownloadError.NO_ENTITLEMENT,
   DownloadError.ENTITLEMENT_EXPIRED,
@@ -179,9 +188,13 @@ const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
  *
  * Called from `readerAssets.ts`'s `getBookBase64()`, ahead of every decrypt — including for a
  * book already fully downloaded and stored. FAILS OPEN for anything that isn't an explicit
- * access revocation (see `FAIL_CLOSED_CODES` above): resolves silently, allowing the read to
- * proceed against the already-persisted ciphertext exactly as before this existed. REJECTS only
- * for a genuine revocation — the caller should treat that as fatal to opening the book.
+ * server-side denial (see `FAIL_CLOSED_CODES` above): resolves silently, allowing the read to
+ * proceed against the already-persisted ciphertext exactly as before this existed. REJECTS for
+ * codes in `FAIL_CLOSED_CODES` — that set includes genuine access revocations (NO_ENTITLEMENT,
+ * ENTITLEMENT_EXPIRED, ENTITLEMENT_SUSPENDED, INSTITUTION_INACTIVE) AND DEVICE_LIMIT_REACHED
+ * (reader is at their device limit on *this* device, a concurrency refusal not a revocation, but
+ * still fail-closed: this device cannot read right now). See API_CONTRACT_NOTES.md B7 for the
+ * rationale — the caller should treat a DEVICE_LIMIT_REACHED as fatal to this per-open attempt.
  */
 export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat): Promise<void> {
   try {

@@ -33,8 +33,12 @@ function serviceFor(bookId: string): string {
  * @throws if the keychain rejects the write
  */
 export async function storeBek(bookId: string, key: Uint8Array): Promise<void> {
+  // THIS_DEVICE_ONLY: a BEK cached without it survives an encrypted backup/restore onto a second
+  // device, which can then decrypt this book's ciphertext without ever going through a real
+  // download or entitlement check on that device (full-audit-report.md S2).
   const result = await Keychain.setGenericPassword(bookId, bytesToBase64(key), {
     service: serviceFor(bookId),
+    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   });
   if (result === false) {
     throw new Error(`storeBek: keychain rejected storing the BEK for book "${bookId}"`);

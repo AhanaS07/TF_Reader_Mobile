@@ -555,6 +555,26 @@ describe('EDGE: type-legal but contract-inconsistent field combinations', () => 
       code: ContentError.LICENCE_INVALID,
     });
   });
+
+  // Previously untested branch (contentStore.ts:150). `downloadManager.ts` derives
+  // `licence.keyFingerprint` from THIS device's own key (`publicKeyFingerprint()`), independently
+  // of whatever `encryption.keyFingerprint` the server claims — so on a real download this check
+  // compares two independently-sourced values, not a value against itself. This test pins the
+  // rejection side of that comparison directly: two DIFFERENT fingerprints must fail store(),
+  // regardless of how each value was derived upstream.
+  it('licence.keyFingerprint disagreeing with encryption.keyFingerprint: store() rejects', async () => {
+    const bookId = 'edge-key-fingerprint-mismatch';
+    const key = randomKey();
+    const plaintext = plaintextOf(64, 'key fingerprint mismatch');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key, {
+      keyFingerprint: 'sha256:a-completely-different-fingerprint',
+    });
+    await storeBek(bookId, key);
+
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.LICENCE_INVALID,
+    });
+  });
 });
 
 describe('EDGE: licence.expiresAt boundary conditions', () => {
