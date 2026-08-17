@@ -1,6 +1,10 @@
 // Owner: Reader (Ahana).
 //
-// Invariants of reader.template.html that no compiler can see.
+// Invariants of the WebView templates that no compiler can see.
+//
+// `TEMPLATE` below is the EPUB template, which owns items 1-4: it is the one with the
+// typography machinery and the epub.js rendition. The PDF template has its own,
+// smaller set of invariants (item 5) and gets its own describe block at the bottom.
 //
 // readerBridge.test.ts guards the bridge PROTOCOL — message types, error codes,
 // command/method names. This file guards the things inside the template that are
@@ -20,6 +24,11 @@
 //      pure arithmetic, so it is testable here rather than only by looking at a
 //      screenshot — which is the whole reason readerMetrics/baselineCss were
 //      written as pure functions of the viewport.
+//   5. The PDF template's offline and worker wiring. pdf.js WANTS to fetch things —
+//      a worker script, cmaps, standard font data — and every one of those is a
+//      sub-resource this document cannot make. buildReaderHtml.ts refuses a remote
+//      URL at build time; these tests pin the POSITIVE choices that keep it from
+//      needing one, which a URL check cannot see.
 //
 // These are read out of the template as text, for the same reason the drift guard
 // is: it is the only view of that file the toolchain has. Where the code is pure it
@@ -31,7 +40,11 @@ import * as path from 'path';
 import { MAX_TOC_DEPTH } from '@/features/reader/readerBridge';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 
-const TEMPLATE = fs.readFileSync(path.join(__dirname, 'webview', 'reader.template.html'), 'utf8');
+const webviewFile = (name: string): string =>
+  fs.readFileSync(path.join(__dirname, 'webview', name), 'utf8');
+
+const TEMPLATE = webviewFile('reader-epub.template.html');
+const PDF_TEMPLATE = webviewFile('reader-pdf.template.html');
 
 /** The numeric literal assigned to a `var NAME = <number>;` in the template. */
 function baselineConstant(name: string): number {
@@ -397,5 +410,89 @@ describe('rotation keeps working', () => {
 
     expect(renderTo[1]).toMatch(/width: '100%'/);
     expect(renderTo[1]).toMatch(/height: '100%'/);
+  });
+});
+
+// --- THE PDF TEMPLATE --------------------------------------------------------
+
+describe('the PDF template stays offline', () => {
+  it('does not set a cMap or standard-font URL', () => {
+    // Both are sub-resource FETCHES. pdf.js works without them by substituting
+    // system fonts; asked for them, it would try to load a URL this document cannot
+    // reach and ReaderWebView would refuse with BLOCKED_NAVIGATION. Setting either
+    // is the single most likely way someone "fixes" a font-rendering complaint and
+    // breaks the offline guarantee instead.
+    //
+    // Matched as an OPTION ASSIGNMENT (`name:`), not as a bare word: the template's
+    // own comment explains why these two are absent, and naming them there must not
+    // fail the test that enforces it. This caught itself on first run.
+    expect(PDF_TEMPLATE).not.toMatch(/cMapUrl\s*:/);
+    expect(PDF_TEMPLATE).not.toMatch(/standardFontDataUrl\s*:/);
+  });
+
+  it('opts into system fonts, which is what makes the above survivable', () => {
+    // The positive half of the assertion above: without this, dropping the font URLs
+    // means no font data at all rather than substituted glyphs.
+    expect(PDF_TEMPLATE).toMatch(/useSystemFonts:\s*true/);
+  });
+
+  it('builds its worker from the inlined source, never from a URL', () => {
+    // workerSrc MUST come from a Blob built out of the text/plain block. Assigning it
+    // a path or a URL is the other way this template can start needing the network —
+    // and syncConfig.ts still declares a dead PDFJS_WORKER_URL that would fit here.
+    expect(PDF_TEMPLATE).toMatch(/URL\.createObjectURL\(\s*blob\s*\)/);
+    expect(PDF_TEMPLATE).toMatch(/GlobalWorkerOptions\.workerSrc\s*=/);
+    expect(PDF_TEMPLATE).not.toMatch(/PDFJS_WORKER_URL|pdfjsFontUrl|PDFJS_LIB_URL/);
+  });
+
+  it('parks the worker as inert text, so pdf.js does not fall back to the main thread', () => {
+    // THE LOAD-BEARING ONE, and it is counter-intuitive: pdf.js checks for an
+    // already-loaded worker module (globalThis.pdfjsWorker) and, finding one, parses
+    // every page ON THE MAIN THREAD. pdf.worker.min.js is UMD and sets exactly that
+    // global, so inlining it as an executable <script> would silently trade a worker
+    // thread for a frozen UI. type="text/plain" is what prevents it from executing.
+    expect(PDF_TEMPLATE).toMatch(/<script\s+type="text\/plain"\s+id="pdfjs-worker-src">/);
+
+    // And the marker must sit inside that block rather than anywhere else in the file.
+    const block = /<script\s+type="text\/plain"\s+id="pdfjs-worker-src">([\s\S]*?)<\/script>/.exec(
+      PDF_TEMPLATE,
+    );
+    if (!block) throw new Error('Could not find the text/plain worker block.');
+    expect(block[1]).toMatch(/@inject:pdfjsworker/);
+  });
+});
+
+describe('both templates support the shared fragment', () => {
+  it('each defines the #fallback element and .visible class showFallback() needs', () => {
+    // showFallback() lives in reader.bridge.html and can only carry JS, so the CSS it
+    // depends on is duplicated per template. That duplication is the coupling: if a
+    // template loses #fallback or .visible, the last-resort error display silently
+    // does nothing and a broken bridge presents as a white screen — the exact failure
+    // "not a blank page" exists to rule out.
+    const required = [/<pre id="fallback"><\/pre>/, /#fallback\s*\{/, /#fallback\.visible\s*\{/];
+
+    // Collected so a failure names the template AND what it is missing, rather than
+    // reporting that one of six regexes did not match one of two unnamed strings.
+    const missing = (
+      [
+        ['reader-epub.template.html', TEMPLATE],
+        ['reader-pdf.template.html', PDF_TEMPLATE],
+      ] as const
+    ).flatMap(([name, source]) =>
+      required.filter((re) => !re.test(source)).map((re) => `${name} is missing ${String(re)}`),
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  it('each injects the bridge inside its IIFE, not as a separate script tag', () => {
+    // The fragment's functions must be IIFE-locals: this document holds decrypted
+    // book content, and a separate <script> tag would be a separate scope, forcing
+    // them onto window where a malicious book's own script could reach them.
+    for (const source of [TEMPLATE, PDF_TEMPLATE]) {
+      const iife = /\(function \(\) \{[\s\S]*?\}\)\(\);/.exec(source);
+      if (!iife) throw new Error('Could not find the template IIFE.');
+      expect(iife[0]).toMatch(/@inject:bridge/);
+    }
   });
 });

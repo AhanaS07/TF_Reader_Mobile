@@ -5,18 +5,29 @@
 //   2. THE DRIFT GUARD (bottom of the file) — the reason this test matters more
 //      than its size suggests.
 //
-// readerBridge.ts and webview/reader.template.html are two halves of one
-// protocol, and the template half is deliberately outside tsc's view (it is
-// plain JS inside a .html so allowJs/checkJs cannot reach it). ESLint cannot see
-// it either — type-aware linting now covers src/features/reader/, but only the
-// .ts/.tsx in it, and a .html is neither. So NOTHING in the toolchain can see
-// that the two agree. The drift guard closes that by reading the template as text
-// and
-// asserting, mechanically, that every message type it posts has a case in the
-// TS union and every method RN calls exists on window.TFReader.
+// readerBridge.ts and the WebView halves are two descriptions of one protocol, and
+// the WebView side is deliberately outside tsc's view (plain JS inside .html files,
+// so allowJs/checkJs cannot reach it). ESLint cannot see it either — type-aware
+// linting now covers src/features/reader/, but only the .ts/.tsx in it, and a .html
+// is neither. So NOTHING in the toolchain can see that the sides agree. The drift
+// guard closes that by reading the WebView files as text and asserting, mechanically,
+// that every message type they post has a case in the TS union and every method RN
+// calls exists on window.TFReader.
 //
-// This converts the plan's "keep it in sync BY HAND" risk into a red test. If
-// you add a message to one side and not the other, this fails by name.
+// THE WEBVIEW SIDE IS NOW THREE FILES, NOT ONE, and the guard unions across them:
+//
+//   webview/reader-epub.template.html   epub.js renderer + openEpub
+//   webview/reader-pdf.template.html    pdf.js renderer + openPdf
+//   webview/reader.bridge.html          the shared half both inline (post/fail/…)
+//
+// Unioning is not a loosening. Each template legitimately raises codes the other
+// cannot (EPUBJS_MISSING vs PDFJS_MISSING) and defines only its own open command, so
+// a per-file equality assertion would be wrong. What must hold is that the union
+// equals the TS side exactly — nothing declared and unused, nothing used and
+// undeclared. Per-file expectations that DO still hold are asserted separately below.
+//
+// This converts the "keep it in sync BY HAND" risk into a red test. If you add a
+// message to one side and not the other, this fails by name.
 //
 // Node's fs is used to read the template fixture. That is a test-time Node
 // dependency, not device code — the same latitude the encryption scripts have,
@@ -35,26 +46,66 @@ import {
   parseReaderMessage,
 } from '@/features/reader/readerBridge';
 
-const TEMPLATE = fs.readFileSync(path.join(__dirname, 'webview', 'reader.template.html'), 'utf8');
+const webviewFile = (name: string): string =>
+  fs.readFileSync(path.join(__dirname, 'webview', name), 'utf8');
 
-/** Every distinct `post({ type: 'x' ... })` the template can emit. */
-function messageTypesPostedByTemplate(): string[] {
-  const matches = TEMPLATE.matchAll(/post\(\{\s*type:\s*'([a-zA-Z]+)'/g);
-  return [...new Set([...matches].map((m) => m[1]))].sort();
+const EPUB_TEMPLATE = webviewFile('reader-epub.template.html');
+const PDF_TEMPLATE = webviewFile('reader-pdf.template.html');
+const BRIDGE_FRAGMENT = webviewFile('reader.bridge.html');
+
+/**
+ * Every file the WebView half is assembled from.
+ *
+ * The fragment is included because it raises the two catch-all codes and posts the
+ * `error` message — leaving it out would report those as declared-but-unused and
+ * fail the guard for the wrong reason.
+ */
+const WEBVIEW_SOURCES: readonly { name: string; text: string }[] = [
+  { name: 'reader-epub.template.html', text: EPUB_TEMPLATE },
+  { name: 'reader-pdf.template.html', text: PDF_TEMPLATE },
+  { name: 'reader.bridge.html', text: BRIDGE_FRAGMENT },
+];
+
+const sortedUnique = (values: string[]): string[] => [...new Set(values)].sort();
+
+/** Every distinct `post({ type: 'x' ... })` one WebView source can emit. */
+function messageTypesPostedBy(source: string): string[] {
+  return sortedUnique([...source.matchAll(/post\(\{\s*type:\s*'([a-zA-Z]+)'/g)].map((m) => m[1]));
 }
 
-/** Every `fail('CODE', ...)` call site in the template. */
-function errorCodesRaisedByTemplate(): string[] {
-  const matches = TEMPLATE.matchAll(/fail\(\s*'([A-Z_]+)'/g);
-  return [...new Set([...matches].map((m) => m[1]))].sort();
+/** Every `fail('CODE', ...)` call site in one WebView source. */
+function errorCodesRaisedBy(source: string): string[] {
+  return sortedUnique([...source.matchAll(/fail\(\s*'([A-Z_]+)'/g)].map((m) => m[1]));
 }
 
-/** Method names defined on `window.TFReader`. */
+/**
+ * Method names defined on `window.TFReader` in one template.
+ *
+ * POSITION-ANCHORED, which is why both templates are in .prettierignore: the object
+ * is found by an 8-space `};` and its methods by a 10-space `name: function`. If a
+ * formatter re-indents a template, this returns an empty list and the failure reads
+ * as "the bridge drifted" rather than "the file was reformatted".
+ */
+function tfReaderMethodsIn(source: string, name: string): string[] {
+  const block = /window\.TFReader\s*=\s*\{([\s\S]*?)\n\s{8}\};/.exec(source);
+  if (!block) throw new Error(`Could not locate the window.TFReader object in ${name}.`);
+  return sortedUnique([...block[1].matchAll(/^\s{10}([a-zA-Z]+):\s*function/gm)].map((m) => m[1]));
+}
+
+/** Union across every WebView source — see the header on why this is a union. */
+function messageTypesPostedByWebView(): string[] {
+  return sortedUnique(WEBVIEW_SOURCES.flatMap((s) => messageTypesPostedBy(s.text)));
+}
+
+function errorCodesRaisedByWebView(): string[] {
+  return sortedUnique(WEBVIEW_SOURCES.flatMap((s) => errorCodesRaisedBy(s.text)));
+}
+
 function tfReaderMethods(): string[] {
-  const block = /window\.TFReader\s*=\s*\{([\s\S]*?)\n\s{8}\};/.exec(TEMPLATE);
-  if (!block) throw new Error('Could not locate the window.TFReader object in the template.');
-  const matches = block[1].matchAll(/^\s{10}([a-zA-Z]+):\s*function/gm);
-  return [...new Set([...matches].map((m) => m[1]))].sort();
+  return sortedUnique([
+    ...tfReaderMethodsIn(EPUB_TEMPLATE, 'reader-epub.template.html'),
+    ...tfReaderMethodsIn(PDF_TEMPLATE, 'reader-pdf.template.html'),
+  ]);
 }
 
 describe('parseReaderMessage', () => {
@@ -119,8 +170,8 @@ describe('TOC nesting depth', () => {
     ).toEqual([0, 1]);
   });
 
-  it('treats a missing depth as top level, so a stale reader.html still works', () => {
-    // assets/reader/reader.html is generated but TRACKED, so a working tree can
+  it('treats a missing depth as top level, so a stale reader-epub.html still works', () => {
+    // assets/reader/reader-epub.html is generated but TRACKED, so a working tree can
     // hold a template older than this file. Degrading to a flat list is the
     // failure mode we want; dropping every entry is not.
     expect(depthsOf('[{"label":"Ch","href":"b"}]')).toEqual([0]);
@@ -170,46 +221,124 @@ describe('buildCommandScript', () => {
   });
 
   it('guards against a missing bridge and ends with a statement value', () => {
-    const script = buildCommandScript({ type: 'open', base64: 'UEsDBA==' });
-    expect(script).toContain('window.TFReader.open("UEsDBA==")');
+    const script = buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' });
+    expect(script).toContain('window.TFReader.openEpub("UEsDBA==")');
     // Without the guard, a call before the IIFE defines TFReader throws unseen.
-    expect(script).toContain("typeof window.TFReader.open !== 'function'");
+    expect(script).toContain("typeof window.TFReader.openEpub !== 'function'");
     // Without a trailing value, iOS warns on every injectJavaScript call.
     expect(script.trimEnd().endsWith('true;')).toBe(true);
+  });
+
+  it('sends the base64 payload for BOTH open commands', () => {
+    // The two differ only in method name — the payload handling must not diverge,
+    // because base64ToArrayBuffer is shared and both renderers receive the same bytes.
+    // A PDF's base64 is not zip-shaped, so this also pins that nothing assumes it is.
+    const pdfBase64 = 'JVBERi0xLjQK'; // "%PDF-1.4\n"
+    expect(buildCommandScript({ type: 'openPdf', base64: pdfBase64 })).toContain(
+      `window.TFReader.openPdf(${JSON.stringify(pdfBase64)})`,
+    );
+    expect(buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' })).toContain(
+      'window.TFReader.openEpub("UEsDBA==")',
+    );
+  });
+
+  it('never puts a ContentFormat value into a command payload', () => {
+    // Trigger 3 in WEBVIEW_BRIDGE.md, as an executable assertion rather than a note.
+    // Format is routed by CHOOSING a command, so the literals 'EPUB'/'PDF'/'AUDIO'
+    // must never appear in what crosses. Widening to open(base64, format) fails here.
+    for (const script of [
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+      buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
+      buildCommandScript({ type: 'next' }),
+      buildCommandScript({ type: 'goTo', target: '12' }),
+    ]) {
+      for (const format of ['EPUB', 'PDF', 'AUDIO']) {
+        expect(script).not.toContain(`'${format}'`);
+        expect(script).not.toContain(`"${format}"`);
+      }
+    }
   });
 });
 
 // --- THE DRIFT GUARD ---------------------------------------------------------
 
-describe('readerBridge <-> reader.template.html stay in sync', () => {
-  it('every message type the template posts has a case in ReaderMessage', () => {
+describe('readerBridge <-> the WebView templates stay in sync', () => {
+  it('every message type the WebView posts has a case in ReaderMessage', () => {
     // READER_MESSAGE_TYPES, not a literal copy of the union. This used to be a
     // hand-written array, which left one hand-synced list inside the guard whose
     // whole job is removing them: a case added to ReaderMessage but to neither the
     // template nor the literal failed nothing. readerBridge.ts now pins that array
     // to the union at compile time, so both sides of this assertion are derived.
-    expect(messageTypesPostedByTemplate()).toEqual([...READER_MESSAGE_TYPES].sort());
+    expect(messageTypesPostedByWebView()).toEqual([...READER_MESSAGE_TYPES].sort());
   });
 
   it('every message type in the union is parseable (no dead cases)', () => {
-    for (const type of messageTypesPostedByTemplate()) {
+    for (const type of messageTypesPostedByWebView()) {
       expect(parseReaderMessage(JSON.stringify({ type }))).not.toBeNull();
     }
   });
 
-  it('every error code the template raises is declared in WEBVIEW_ERROR_CODES', () => {
-    expect(errorCodesRaisedByTemplate()).toEqual([...WEBVIEW_ERROR_CODES].sort());
+  it('every error code the WebView raises is declared in WEBVIEW_ERROR_CODES', () => {
+    expect(errorCodesRaisedByWebView()).toEqual([...WEBVIEW_ERROR_CODES].sort());
   });
 
   it('host-only error codes are never raised inside the WebView', () => {
-    // If one of these appears in the template, the two error namespaces have been
+    // If one of these appears in a WebView source, the two error namespaces have been
     // conflated and "where did this come from" stops being answerable.
     for (const code of HOST_ERROR_CODES) {
-      expect(errorCodesRaisedByTemplate()).not.toContain(code);
+      expect(errorCodesRaisedByWebView()).not.toContain(code);
     }
   });
 
   it('every command maps to a real window.TFReader method', () => {
     expect(tfReaderMethods()).toEqual([...Object.values(READER_COMMANDS)].sort());
+  });
+
+  // --- per-file expectations the union deliberately cannot make ---------------
+
+  it('each template defines exactly one open command, and it is its own format', () => {
+    // The point of two commands rather than open(base64, format): the renderer is
+    // chosen by WHICH METHOD EXISTS, so a template carrying both — or the wrong one —
+    // would silently make the host's format switch meaningless.
+    expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).toContain(READER_COMMANDS.openEpub);
+    expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).not.toContain(READER_COMMANDS.openPdf);
+
+    expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).toContain(READER_COMMANDS.openPdf);
+    expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).not.toContain(READER_COMMANDS.openEpub);
+  });
+
+  it('both templates implement every format-agnostic command', () => {
+    // next/prev/goTo are sent without the host knowing or caring which renderer is
+    // loaded, so a template missing one answers NOT_READY for a command the host
+    // believes is universal.
+    for (const command of [READER_COMMANDS.next, READER_COMMANDS.prev, READER_COMMANDS.goTo]) {
+      expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).toContain(command);
+      expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).toContain(command);
+    }
+  });
+
+  it('neither template redefines what the shared fragment provides', () => {
+    // The whole reason reader.bridge.html exists. A template that declared its own
+    // post() or fail() would shadow the shared one and drift silently — the guard
+    // above would still pass, because the codes and types would still match.
+    const shared = ['post', 'fail', 'showFallback', 'base64ToArrayBuffer'];
+
+    // Collected rather than asserted one at a time so a failure names the file AND
+    // the function, instead of reporting that some regex did not match something.
+    const offenders = WEBVIEW_SOURCES.filter((s) => s.name !== 'reader.bridge.html').flatMap((s) =>
+      shared
+        .filter((fn) => new RegExp(`function\\s+${fn}\\s*\\(`).test(s.text))
+        .map((fn) => `${s.name} defines its own ${fn}()`),
+    );
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('the shared fragment is what raises the catch-all codes', () => {
+    // These are registered once, in the fragment, for both formats. A template
+    // raising them itself would mean the fragment was not inlined where expected.
+    expect(errorCodesRaisedBy(BRIDGE_FRAGMENT)).toEqual(
+      ['WEBVIEW_SCRIPT_ERROR', 'WEBVIEW_UNHANDLED_REJECTION'].sort(),
+    );
   });
 });

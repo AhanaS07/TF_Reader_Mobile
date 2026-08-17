@@ -46,6 +46,12 @@ export default function App() {
           TEMP, with the block above: the bookId comes from devContentSeed's
           stand-in fixture because there is no library/navigation yet to select a
           real book. When RootNavigator lands, the route supplies this instead.
+
+          This needs no format switch of its own — DEV_SAMPLE_BOOK_ID already picks
+          the PDF fixture's id when EXPO_PUBLIC_READER_FORMAT=PDF, and ReaderScreen
+          resolves the format from the stored package rather than from a prop. So
+          `EXPO_PUBLIC_READER_FORMAT=PDF npm run ios` is the whole of how the pdf.js
+          path gets exercised on a device.
         */}
         <ReaderScreen bookId={DEV_SAMPLE_BOOK_ID} />
       </SafeAreaView>

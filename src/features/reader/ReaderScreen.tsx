@@ -22,7 +22,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
-import { getBookBase64, getReaderHtmlUri } from '@/features/reader/readerAssets';
+import {
+  getBookBase64,
+  getReaderHtmlUri,
+  prepareBook,
+  UnsupportedFormatError,
+} from '@/features/reader/readerAssets';
 import type {
   ReaderCommand,
   ReaderErrorCode,
@@ -34,7 +39,7 @@ import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
@@ -133,6 +138,12 @@ interface ReaderScreenProps {
 
 export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [htmlUri, setHtmlUri] = useState<string | null>(null);
+
+  // Which renderer this book needs. Drives BOTH the shell that gets loaded and the
+  // open command that gets sent, so the two can never disagree — a PDF shell asked
+  // to openEpub would answer NOT_READY, which is a confusing way to learn about a
+  // routing bug.
+  const [format, setFormat] = useState<ContentFormat | null>(null);
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [showToc, setShowToc] = useState(false);
@@ -221,7 +232,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     setError({ code, message });
   }, []);
 
-  // Resolve the bundled reader.html before mounting the WebView.
+  // Resolve the book's format and its matching shell before mounting the WebView.
   //
   // The `cancelled` flag is the standard unmount guard: without it, navigating
   // away mid-resolve sets state on an unmounted component. The `void` is now
@@ -230,28 +241,54 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // rejection is handled below" rather than "this promise was forgotten", and the
   // catch() is the only thing standing between an asset failure and a
   // permanently blank screen.
+  //
+  // FORMAT IS RESOLVED BEFORE THE WEBVIEW MOUNTS, and that ordering is forced by
+  // there being one shell per format: the URI cannot be chosen without knowing which
+  // renderer the book needs. The visible consequence is that a COLD seed now happens
+  // before first paint rather than alongside it, so the very first open after install
+  // shows the spinner slightly longer. The compensation is that READY_TIMEOUT's clock
+  // starts when the WebView actually starts loading, which is what it was always
+  // meant to measure.
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       try {
-        const uri = await getReaderHtmlUri();
+        const resolved = await prepareBook(bookId);
+        if (cancelled) return;
+        setFormat(resolved);
+
+        const uri = await getReaderHtmlUri(resolved);
         if (!cancelled) setHtmlUri(uri);
       } catch (cause) {
-        if (!cancelled) {
+        if (cancelled) return;
+
+        // A format with no renderer is not an asset failure — the asset is fine,
+        // there just isn't one for this book. Reported under its own code so the
+        // message can say something true instead of telling the reader to run a
+        // build script.
+        if (cause instanceof UnsupportedFormatError) {
           raiseError(
-            'ASSET_LOAD_FAILED',
-            `Could not resolve the bundled reader.html. Run \`npm run reader:build-html\`. ` +
-              `(${cause instanceof Error ? cause.message : String(cause)})`,
+            'UNSUPPORTED_FORMAT',
+            `This book is ${cause.format} content, which this reader cannot open yet. ` +
+              `EPUB and PDF are supported.`,
           );
+          return;
         }
+
+        raiseError(
+          'ASSET_LOAD_FAILED',
+          `Could not prepare this book for reading. If the reader shell failed to resolve, ` +
+            `run \`npm run reader:build-html\`. ` +
+            `(${cause instanceof Error ? cause.message : String(cause)})`,
+        );
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [raiseError]);
+  }, [bookId, raiseError]);
 
   // LIFECYCLE, not optional — contentProvider.ts states it outright: closeBook()
   // MUST run when the reader view for a book closes, or the whole decrypted book
@@ -294,10 +331,44 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
       void (async () => {
         try {
-          const base64 = await withOpenTimeout(getBookBase64(bookId));
+          // Cannot be null in practice: the WebView is only rendered once `format`
+          // is set (it is what chose the shell), and `ready` can only arrive from a
+          // rendered WebView. Checked rather than asserted because a non-null
+          // assertion here would be a promise the type system cannot keep.
+          if (format === null) {
+            raiseError('UNSUPPORTED_FORMAT', 'The reader became ready before its format was known.');
+            return;
+          }
+
+          const base64 = await withOpenTimeout(getBookBase64(bookId, format));
           openSentAtRef.current = now();
-          logEvent('open sent', { chars: base64.length });
-          sender({ type: 'open', base64 });
+          logEvent('open sent', { chars: base64.length, format });
+
+          // EXHAUSTIVE ON PURPOSE. This switch is the entire seam where
+          // ContentFormat becomes a bridge command, and the `never` default is what
+          // makes adding a fourth ContentFormat member a COMPILE error here rather
+          // than a book that silently opens in the wrong renderer. Do not replace it
+          // with an if/else or a lookup table that has a fallback.
+          switch (format) {
+            case 'EPUB':
+              sender({ type: 'openEpub', base64 });
+              break;
+            case 'PDF':
+              sender({ type: 'openPdf', base64 });
+              break;
+            case 'AUDIO':
+              // Unreachable: getReaderHtmlUri already refused this format, so no
+              // WebView exists to be ready. Handled anyway so the switch is total.
+              raiseError(
+                'UNSUPPORTED_FORMAT',
+                `This book is ${format} content, which this reader cannot open yet.`,
+              );
+              break;
+            default: {
+              const unhandled: never = format;
+              throw new Error(`Unhandled ContentFormat: ${String(unhandled)}`);
+            }
+          }
         } catch (cause) {
           if (cause instanceof OpenTimedOut) {
             raiseError(
@@ -331,7 +402,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         }
       })();
     },
-    [bookId, raiseError],
+    [bookId, format, raiseError],
   );
 
   const handleMessage = useCallback((message: ReaderMessage): void => {

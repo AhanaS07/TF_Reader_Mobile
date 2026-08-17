@@ -1,12 +1,19 @@
 <!doctype html>
 <!--
-  src/features/reader/webview/reader.template.html
+  src/features/reader/webview/reader-epub.template.html
 
   SOURCE TEMPLATE — not the file the app loads. `npm run reader:build-html`
-  (src/features/reader/scripts/buildReaderHtml.ts) inlines JSZip and epub.js
-  into the two @inject markers below and writes the result to
-  assets/reader/reader.html, which is what the WebView actually loads.
+  (src/features/reader/scripts/buildReaderHtml.ts) inlines JSZip, epub.js and the
+  shared bridge fragment into the @inject markers below and writes the result to
+  assets/reader/reader-epub.html, which is what the WebView actually loads.
   Edit THIS file, then re-run the build. Never hand-edit the generated one.
+
+  THIS IS THE EPUB TEMPLATE. Its sibling is reader-pdf.template.html, and the two
+  are separate files rather than one branching file so that an EPUB read does not
+  carry ~1.4MB of inlined pdf.js it can never call. What they SHARE — post(),
+  fail(), showFallback(), the catch-alls and base64ToArrayBuffer() — lives in
+  reader.bridge.html and is injected into both, so there is one copy of the bridge
+  rather than two to hand-sync.
 
   WHY THE LIBS ARE INLINED RATHER THAN <script src="./epub.min.js">:
   Metro treats `.js` as a SOURCE extension, not an asset extension, so a `.js`
@@ -120,6 +127,12 @@
 
         var book = null;
         var rendition = null;
+
+        // The shared bridge half — post(), fail(), showFallback(), the window.onerror
+        // and unhandledrejection catch-alls, and base64ToArrayBuffer(). Injected FIRST
+        // so the catch-alls are registered before any epub.js setup below can throw.
+        // Source: reader.bridge.html in this folder; shared with the PDF template.
+        <!-- @inject:bridge -->
 
         // ---- reader metrics and stylesheet: PURE ------------------------------
         // Everything from here to the "DOM glue" marker below is a pure function of
@@ -502,82 +515,19 @@
           return into;
         }
 
-        // ---- bridge: WebView -> RN -------------------------------------------
-        // Mirrors the ReaderMessage union in readerBridge.ts. Keep in sync.
-        function post(message) {
-          if (window.ReactNativeWebView) {
-            window.ReactNativeWebView.postMessage(JSON.stringify(message));
-          }
-        }
-
-        function fail(code, error) {
-          var message =
-            error && error.message ? error.message : String(error === undefined ? code : error);
-          post({ type: 'error', code: code, message: message });
-          showFallback(code + ': ' + message);
-        }
-
-        function showFallback(text) {
-          var el = document.getElementById('fallback');
-          if (el) {
-            el.textContent = 'Reader error\n\n' + text;
-            el.className = 'visible';
-          }
-        }
-
-        // Catch-alls so a throw anywhere becomes a visible, reported error
-        // instead of a white screen. Registered FIRST, before anything below can
-        // throw.
-        window.onerror = function (message, source, lineno, colno) {
-          fail('WEBVIEW_SCRIPT_ERROR', message + ' (' + lineno + ':' + colno + ')');
-          return true;
-        };
-
-        window.addEventListener('unhandledrejection', function (event) {
-          fail('WEBVIEW_UNHANDLED_REJECTION', event.reason);
-        });
-
-        // ---- bytes -----------------------------------------------------------
-        // base64 -> ArrayBuffer.
-        //
-        // Base64 is the transport because injectJavaScript is a string channel.
-        // MEASURED 2026-08-13 on a real 20MB EPUB (20,951,889 bytes -> 27,935,852
-        // base64 chars, iPhone 17 Pro simulator): open -> rendered is ~330ms, about
-        // 5% of a warm open. So the transport is NOT the bottleneck and does not
-        // need replacing — the cost of opening a book is the base64 CODEC on either
-        // side of it, not the crossing. This replaced a comment that predicted the
-        // opposite; the prediction was wrong.
-        //
-        // Uint8Array.fromBase64 is native and single-pass. Swapping to it moved this
-        // window 371ms -> ~330ms — real but small, because these ~330ms are mostly
-        // JSZip unzipping (388 entries in the test book) and epub.js laying out 364
-        // image blobs, not base64. Confirmed the native branch is actually taken by
-        // making the fallback throw and observing a successful render.
-        //
-        // The atob path below is the fallback and is two full-size intermediates: a
-        // binary STRING the size of the book, then a per-byte charCodeAt loop to copy
-        // it out. Kept because fromBase64 is recent (Safari 18.2+) and Android's
-        // system WebView may not have it — this must degrade, not break.
-        function base64ToArrayBuffer(base64) {
-          if (typeof Uint8Array.fromBase64 === 'function') {
-            return Uint8Array.fromBase64(base64).buffer;
-          }
-
-          var binary = atob(base64);
-          var length = binary.length;
-          var bytes = new Uint8Array(length);
-          for (var i = 0; i < length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          return bytes.buffer;
-        }
-
         // ---- bridge: RN -> WebView -------------------------------------------
         // RN calls these via injectJavaScript. Every one is wrapped so a failure
         // surfaces as an 'error' message rather than a silent no-op.
         window.TFReader = {
           /**
            * Open a whole book from base64-encoded EPUB bytes and paginate it.
+           *
+           * NAMED openEpub, NOT open, and that is the whole of how format routing
+           * crosses this bridge. The host reads ContentFormat in typechecked TS and
+           * picks the command name; the format VALUE never travels. Putting
+           * ContentFormat itself in a payload would drop a frozen shared contract
+           * into untypechecked JS — trigger 3 in WEBVIEW_BRIDGE.md. Same reason
+           * goTo carries a bare string instead of a Locator.
            *
            * >>> THE DECRYPTED-CONTENT HANDOFF. THIS IS LIVE. <<<
            * The base64 handed in is a whole book already decrypted in RAM by
@@ -591,7 +541,7 @@
            * ReaderWebView.tsx's navigation lockdown is what contains what lands
            * here, and it is load-bearing for exactly this reason.
            */
-          open: function (base64) {
+          openEpub: function (base64) {
             try {
               var buffer = base64ToArrayBuffer(base64);
 
