@@ -57,7 +57,8 @@ export interface ReadingSessionRequest {
   /** Base64 of RAW key bytes — NOT a PEM, NOT a JWK. See deviceKeypair.ts's
    * `publicKeyToRawBase64()`, added alongside this file for exactly this wire shape. */
   devicePublicKey: string;
-  /** Default false on the real backend. This client always asks (matches the OLD
+  /** wokay's schema states `Default=true`; flambeau's own rendered schema states no default.
+   * Moot either way — this client always sends the field explicitly (matches the OLD
    * content-licence.ts client's same stated behavior — see that file's `index` comment). */
   wantSearchIndex?: boolean;
 }

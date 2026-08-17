@@ -21,6 +21,7 @@ import { generateDeviceKeypair, wrapBek, publicKeyFingerprint } from '../encrypt
 import { DownloadError } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
+import { ContentError } from '@/shared/contracts';
 import type { FlambeauError, Loan, ReadingSessionResponse } from '@/shared/contracts';
 
 // A plain OPEN_ACCESS loan — canPersist:true (open access always persists; there's no key
@@ -230,6 +231,52 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
     expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
     await contentStore.close(bookId);
   });
+
+  // The end-to-end wiring for the anti-key-substitution check, not just contentStore's own unit
+  // coverage of it: downloadManager.ts derives `licence.keyFingerprint` from THIS device's own
+  // key (`publicKeyFingerprint()`), independently of whatever `encryption.keyFingerprint` the
+  // server sends — so a server claim that disagrees with this device's real key must be caught
+  // and rejected before the book is ever persisted, not silently trusted.
+  it('rejects — and never persists — when the server-claimed encryption.keyFingerprint does not match this device key', async () => {
+    const bookId = 'encrypted-subscription-bad-fingerprint';
+    const plaintext = new Uint8Array([1, 2, 3, 4, 5]);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey); // wraps to the REAL device key — only the
+    // claimed fingerprint below is wrong, isolating this test to the fingerprint check alone.
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'SUBSCRIPTION',
+      canPersist: true,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint: 'sha256:not-this-devices-key-at-all',
+      },
+    });
+    global.fetch = mockFetchFor(loan, session, encryptedBytes);
+
+    await expect(downloadBook(bookId)).rejects.toMatchObject({
+      code: ContentError.LICENCE_INVALID,
+    });
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+  });
 });
 
 describe('downloadBook — the ELITE (online-only) path, for real', () => {
@@ -389,6 +436,79 @@ describe('downloadBook — the ELITE (online-only) path, for real', () => {
       for (const row of rows) {
         await downloadTable.softDeleteLocal(row.id);
       }
+    }
+  });
+});
+
+describe('downloadBook — unencrypted audio under a real tier (B15 regression)', () => {
+  const originalFetch = global.fetch;
+  afterEach(async () => {
+    global.fetch = originalFetch;
+    await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
+  });
+
+  // Both contracts agree audio is never encrypted regardless of tier — `session.encryption` is
+  // absent here exactly like a real audio response, distinguishing "unencrypted because open
+  // access" from "unencrypted because audio, under a real ELITE loan". Before the `needsLicence`
+  // fix, `isEncrypted` gated the licence, so this book got `licence: null` — `contentStore.ts`'s
+  // `isElite()` reads `pkg.licence`, saw null, answered false, and persisted an Elite title
+  // permanently: unaccounted against the 5-book limit and immune to the loan ever expiring.
+  it('an ELITE audio book is treated as Elite (memory-only), not open access', async () => {
+    const bookId = 'elite-audio-book';
+    const plaintext = new Uint8Array([40, 41, 42, 43, 44]); // audio bytes, never encrypted
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'ELITE',
+      canPersist: false,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    // No `encryption` field — matches the real spec's "null for open access and for all audio".
+    const session = sessionFor(bookId, plaintext);
+    global.fetch = mockFetchFor(loan, session, plaintext);
+
+    await expect(downloadBook(bookId, 'AUDIO')).resolves.toBeUndefined();
+
+    // The crux of the regression: Elite writes nothing, even though nothing about this download
+    // was encrypted. Before the fix this was `true` — indistinguishable from real open access.
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+
+    const rows = await downloadTable.listActive(USER_ID);
+    expect(rows.find((row) => row.book_id === bookId)).toBeUndefined();
+
+    // The STREAM read itself must still succeed — Elite is "online-only", not "unreadable".
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
+    await contentStore.close(bookId);
+  });
+
+  // The other half of the same fix: a real Subscription audio book must still persist
+  // (Subscription IS a download tier) — this must not turn EVERY unencrypted book Elite-shaped.
+  it('a SUBSCRIPTION audio book still persists, with a real (non-null) licence attached', async () => {
+    const bookId = 'subscription-audio-book';
+    const plaintext = new Uint8Array([50, 51, 52, 53, 54]);
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'SUBSCRIPTION',
+      canPersist: true,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, plaintext);
+    global.fetch = mockFetchFor(loan, session, plaintext);
+
+    await expect(downloadBook(bookId, 'AUDIO')).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
+    await contentStore.close(bookId);
+
+    // This test's whole point is that it DOES persist (unlike the Elite case above) — so, same
+    // trap as the book-limit describe block's own comment: `downloadTable` is real and un-reset
+    // across tests in this file. Soft-delete the row this test created rather than leaving it to
+    // silently eat one of the 5 offline slots for every test that runs after this one.
+    const rows = await downloadTable.listActive(USER_ID, bookId);
+    for (const row of rows) {
+      await downloadTable.softDeleteLocal(row.id);
     }
   });
 });

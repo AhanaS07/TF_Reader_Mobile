@@ -184,6 +184,17 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   // value; when it didn't, `computeOriginalLength` IS the value, not just a defense-in-depth
   // check against one.
   const isEncrypted = session.encryption != null;
+  // Whether this download NEEDS a licence at all — deliberately NOT the same test as `isEncrypted`
+  // above. Both contracts agree audio is never encrypted regardless of tier ("Encryption is null
+  // for open access and for all audio"), so `encryption == null` means "unencrypted", not "open
+  // access, no rights to enforce". Gating the licence on `isEncrypted` (as this used to) made a
+  // SUBSCRIPTION or ELITE *audio* book indistinguishable from real open access: `licence` ended up
+  // null, `isElite()`/`isLicenceExpired()` (contentStore.ts) both read off `pkg.licence`, and a null
+  // licence makes both answer "no restriction" — an Elite audiobook would persist to disk forever
+  // instead of staying memory-only, and a Subscription audiobook's local copy would never expire.
+  // `loan.licenceModel === 'OPEN_ACCESS'` is the real test for "no rights to attach" — the app
+  // already has it on the Loan, from the borrow step, independent of the session's encryption block.
+  const needsLicence = loan.licenceModel !== 'OPEN_ACCESS';
   const expectedOriginalLength = computeOriginalLength(bytes.length, isEncrypted);
   if (
     session.content.originalLength !== undefined &&
@@ -254,7 +265,10 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
     content: bytes,
     index: indexBytes,
     encryption: session.encryption ?? null,
-    licence: isEncrypted ? licence : null, // null <=> open access, matching both fields together
+    // NOT tied to `encryption` being non-null (see `needsLicence` above) — an unencrypted
+    // SUBSCRIPTION/ELITE audio book still needs its licence attached to enforce expiry/canPersist;
+    // only genuine OPEN_ACCESS content ships with no licence at all.
+    licence: needsLicence ? licence : null,
     cipherLength: bytes.length,
     originalLength,
     mimeType: session.content.mimeType ?? FORMAT_MIME_TYPES[format],
