@@ -18,11 +18,15 @@
 
 import { Asset } from 'expo-asset';
 import { File, Paths } from 'expo-file-system';
-import { createHash, randomBytes } from 'react-native-quick-crypto';
+import { randomBytes } from 'react-native-quick-crypto';
 
 import { encrypt } from '@/features/encryption/aesGcm';
 import { contentStore } from '@/features/encryption/contentStore';
-import { generateDeviceKeypair, wrapBek } from '@/features/encryption/deviceKeypair';
+import {
+  generateDeviceKeypair,
+  publicKeyFingerprint,
+  wrapBek,
+} from '@/features/encryption/deviceKeypair';
 import { utf8Encode } from '@/features/encryption/utf8';
 import type { BookId, EncryptedPackage, SignedLicence } from '@/shared/contracts';
 
@@ -127,7 +131,13 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
   const index = FIXTURE_PATH
     ? undefined
     : (await encrypt(utf8Encode(JSON.stringify(SAMPLE_SEARCH_INDEX)), bek)).content;
-  const keyFingerprint = `sha256:${createHash('sha256').update(publicKey).digest('hex')}`;
+  // Deliberately the SAME function the real download path uses (downloadManager.ts), not a local
+  // sha256 of the PEM text. Both fields below get this one value, so a hand-rolled digest would
+  // also satisfy contentStore's licence/encryption fingerprint check — and would mean the one
+  // place that check can be rehearsed on-device never exercises the recipe production actually
+  // sends. The recipe itself (raw DER, `sha256:` prefix, full hex) is still unconfirmed with
+  // wokay — see `src/shared/contracts/CONTRACT_ALIGNMENT.md`, C7.
+  const keyFingerprint = await publicKeyFingerprint(publicKey);
 
   const licence: SignedLicence = {
     licenceId: 'dev-licence-sample-epub',
@@ -182,7 +192,12 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
  * no accessor for it. Adding one is Abhinav's call, and not worth it for scaffolding —
  * a version marker this file owns outright does the same job with no seam change.
  */
-const SEED_VERSION = 2;
+const SEED_VERSION = 3;
+// 3: keyFingerprint switched from a local sha256 of the PEM text to publicKeyFingerprint()'s
+//    raw-DER digest. Both are self-consistent, so a v2 seed keeps decrypting and nothing breaks
+//    without this bump — which is exactly why it is needed: without it, every install that has
+//    already run the app short-circuits and never executes the production recipe, defeating the
+//    point of calling it here at all.
 
 /** Reader-owned, deliberately NOT in ContentStore's directory — see SEED_VERSION. */
 function seedMarker(bookId: BookId): File {
@@ -205,13 +220,14 @@ function seedVersionOnDisk(bookId: BookId): number | null {
  * extra re-seed per install, then the short-circuit resumes.
  *
  * destroy() BEFORE store(), NOT store() alone. Every seed mints a fresh random
- * BEK, but contentStore.resolveRawKey() prefers a keychain-cached BEK over
- * unwrapping the package's wrappedBek. So re-seeding on top of a previous seed
- * decrypts the NEW ciphertext with the OLD cached key and fails
- * INTEGRITY_FAILED, permanently and confusingly. destroy() is what clears that
- * cache (it calls deleteBek) along with any orphaned files. Verified the hard
- * way: expiring the licence makes isAvailableOffline() false, which lands here,
- * and without the destroy() the book never decrypts again.
+ * BEK, and this used to be load-bearing: resolveRawKey() prefers a
+ * keychain-cached BEK over unwrapping the package's wrappedBek, so re-seeding
+ * on top of a previous seed decrypted the NEW ciphertext with the OLD cached
+ * key and failed INTEGRITY_FAILED, permanently. contentStore.store() now
+ * invalidates the cache itself when wrappedBek changes
+ * (invalidateStaleCachedKeyIfRotated), so that specific trap is closed. The
+ * destroy() stays because it does more: it clears orphaned files and the
+ * persisted meta from an older SEED_VERSION, which store() alone does not.
  *
  * Deliberately NOT a catch-all retry around a failed read: auto-destroying on
  * any failure would also erase a genuine INTEGRITY_FAILED, which errors.ts
