@@ -76,22 +76,15 @@ describe('a zero-result response with no publications key', () => {
     expect(normalizeSearchFeed(browseInsteadFixture).publications).toEqual([]);
   });
 
-  it('carries the browse-instead targets, each with a shelfId ready to open', () => {
+  // The target reads off the wire's `navigation` key, which is what the FROZEN
+  // searchCatalogue operation says a zero-result feed carries. `all` is the
+  // reserved groupId, so tapping it opens the whole entitled catalogue.
+  it('carries the browse-instead target with a shelfId ready to open', () => {
     expect(normalizeSearchFeed(browseInsteadFixture).browseInstead).toEqual([
       {
-        title: 'eBooks',
-        href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks',
-        shelfId: 'ebooks',
-      },
-      {
-        title: 'Audiobooks',
-        href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/audiobooks',
-        shelfId: 'audiobooks',
-      },
-      {
-        title: 'Open access',
-        href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/open-access',
-        shelfId: 'open-access',
+        title: 'Browse the full catalogue',
+        href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/all',
+        shelfId: 'all',
       },
     ]);
   });

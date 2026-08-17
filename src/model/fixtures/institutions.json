@@ -8,7 +8,8 @@
       "city": "London",
       "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_7f3/catalogue",
       "branding": {
-        "logoUrl": "https://cdn.tf/crests/inst_7f3.png"
+        "logoUrl": "https://cdn.tf/crests/inst_7f3.png",
+        "primaryColor": "#003E74"
       }
     },
     {
@@ -60,7 +61,8 @@
       "city": "Mumbai",
       "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_e62/catalogue",
       "branding": {
-        "logoUrl": "https://cdn.tf/crests/inst_e62.png"
+        "logoUrl": "https://cdn.tf/crests/inst_e62.png",
+        "primaryColor": "#00519E"
       }
     },
     {

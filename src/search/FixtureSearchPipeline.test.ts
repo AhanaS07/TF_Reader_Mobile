@@ -182,11 +182,7 @@ describe('a query with no results', () => {
       filters: {},
     });
 
-    expect(feed.browseInstead.map((entry) => entry.shelfId)).toEqual([
-      'ebooks',
-      'audiobooks',
-      'open-access',
-    ]);
+    expect(feed.browseInstead.map((entry) => entry.shelfId)).toEqual(['all']);
   });
 });
 
