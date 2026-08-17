@@ -264,6 +264,21 @@ describe('resolveAccess', () => {
       expect('serverTime' in result).toBe(false);
     });
 
+    // A missed offer is not restored to its old place, so the reader is back to
+    // asking from scratch — the same button as never having asked.
+    it('3 · a lapsed offer resolves to Grant access, not back to queued', () => {
+      const result = resolve({ item: elite(), hold: aHold('expired') });
+      expect(result.state).toBe('requires_grant');
+      expect(result.actions).toEqual(['grantAccess']);
+    });
+
+    // The reader lost their place, so there is no position to report. Reporting the
+    // one they used to have would be worse than reporting none.
+    it('3 · a lapsed offer carries no queue position', () => {
+      const result = resolve({ item: elite(), hold: aHold('expired', { position: 1 }) });
+      expect('queuePosition' in result).toBe(false);
+    });
+
     // Both routes to an offer must be indistinguishable, because one component
     // serves both. An offer straight back from the tap and one that arrived by
     // notification differ only in when they happened.

@@ -105,6 +105,17 @@ export function resolveAccess({
   // somebody can point at and test rather than a claim about code that does not
   // exist — and because the day `Publication` learns to represent "metadata, no
   // file" (see 2 below), this is the branch that catches it.
+  // `OPEN_ACCESS` AS THE TIER IS A DELIBERATE PLACEHOLDER, settled 17 Aug. With no
+  // acquisition link there is no `licenceModel` to read, but `AccessResult.tier` is
+  // required — something has to go there. Open Access is the chosen filler because
+  // B2B only ever surfaces the three real tiers, so this value is never the one a
+  // reader is looking at: `not_entitled` renders nothing at all, badge included.
+  //
+  // WHAT WOULD MAKE IT WRONG: a caller that reads `tier` without first checking
+  // `state`. `AccessTierBadge` takes a bare `AccessTier` and computes nothing, so
+  // it would happily draw "OPEN ACCESS" over a title with no buttons. Nothing does
+  // that today and nothing should; if a screen ever needs the badge in this state,
+  // the fix is to make `tier` optional here, not to pick a different filler.
   if (acquisition === undefined) {
     return result(institutionId, item.id, 'OPEN_ACCESS', 'not_entitled', []);
   }
@@ -170,9 +181,23 @@ export function resolveAccess({
       return result(institutionId, item.id, tier, 'available', ['read', 'revokeLicence']);
     }
 
-    // 5b · a copy is being offered right now. Reached two ways — straight back
-    // from the Grant access tap when nobody was ahead, or later by notification —
-    // and IDENTICAL either way, which is what lets one surface serve both.
+    // 5b · a copy is being offered right now.
+    //
+    // CORRECTED 17 Aug. This used to say the offer could arrive "straight back
+    // from the Grant access tap when nobody was ahead". It cannot: `POST /holds`
+    // documents only 200 and 201, and BOTH return `status: QUEUED`. There is no
+    // response shape in which placing a hold hands back an offer, so nothing
+    // should be wired to expect one.
+    //
+    // THE REASON THE CASE NEVER ARISES IS UPSTREAM OF THAT. Grant access borrows
+    // first — `POST /loans` refuses with `409 NO_COPIES_AVAILABLE` and names the
+    // hold endpoint so the app can offer the queue as a choice. So a reader only
+    // ever holds when there was no free copy to take, and a hold placed against a
+    // free copy is not a case to handle.
+    //
+    // AN OFFER THEREFORE ALWAYS ARRIVES LATER, by one of the reads: `GET /holds`,
+    // `GET /library`, or the change feed's `HOLD_PROMOTED`. One route, not two —
+    // which makes this branch simpler than the old comment claimed, not harder.
     if (hold?.state === 'offered') {
       return result(
         institutionId,
@@ -194,6 +219,18 @@ export function resolveAccess({
 
     // 5d · nothing held, nothing asked for. One button, and it says nothing about
     // how busy the title is.
+    //
+    // ALSO THE LAPSED-OFFER CASE, and by fallthrough rather than by a branch of
+    // its own — `hold.state === 'expired'` matches none of 5a–5c and lands here.
+    // That is the correct answer and not an accident: flambeau do not restore a
+    // missed offer to its old place, so a reader whose window closed has to ask
+    // again from the back, which is the same button as never having asked. There
+    // is no `offer_lapsed` access state for the same reason — a state whose bar
+    // is identical is not a state, and "your offer expired" is a thing to SAY,
+    // which the offer store says through QueueNotification.
+    //
+    // Nothing here reads a clock to discover the lapse. `isOfferLapsed` in
+    // src/access does that, and hands this function a hold already marked.
     return result(institutionId, item.id, tier, 'requires_grant', ['grantAccess']);
   }
 
