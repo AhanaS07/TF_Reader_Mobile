@@ -54,6 +54,44 @@ five people. `__typecheck__.ts` is the canary. **If the canary goes red, a freez
 why, don't "fix" the canary.** It is in `.prettierignore` deliberately (`@ts-expect-error` is
 line-positional). Import via the `index.ts` barrel, never deep paths.
 
+Relaxing a frozen field to match a **published** external spec is not a freeze break — it is the
+freeze doing its job, because the frozen type was wrong about the wire. Pin the new shape in
+`__typecheck__.ts` in the same change. Removing or renaming an exported type **is** a break, and
+that is a Contracts Gate conversation.
+
+## The external API contracts — read your capability's notes before touching wire code
+
+`src/shared/contracts/` is the *internal* freeze. The **external** contracts are team wokay's and
+team flambeau's published OpenAPI specs, and this app diverges from them in ways that are tracked,
+not accidental. Findings have stable IDs (`A1`, `B4`, `C7`) — quote the ID rather than restating the
+problem.
+
+| Read this | Before touching | Owner |
+| --------------------------------------------------------- | ---------------------------------------- | --------- |
+| `src/shared/contracts/CONTRACT_ALIGNMENT.md` | anything in `src/shared/contracts/` | Ahana |
+| `src/features/download/API_CONTRACT_NOTES.md` | any HTTP call, `DownloadError`, the open path | Abhinav |
+| `src/features/encryption/API_CONTRACT_NOTES.md` | licence/key logic, `deviceKeypair.ts` | Abhinav |
+| `src/features/sync/API_CONTRACT_NOTES.md` | `syncApi.ts` URLs, `syncConfig.ts`, a new entity | Karthik |
+| `src/features/search/API_CONTRACT_NOTES.md` | `queryIndex.ts`, anything catalogue-shaped | Vaishnavi |
+| `src/features/personalization/API_CONTRACT_NOTES.md` | prefs shapes that sync | Vaishnavi |
+| `src/features/accessibility/API_CONTRACT_NOTES.md` | prefs scope, the TTS seam | Hruthik |
+
+`CONTRACT_ALIGNMENT.md` is the ledger — status of every finding, and who has to close it. The
+per-capability files are the detail: what breaks, what to change, what is blocked on another team's
+answer, and which things look wrong but are correct and must not be "fixed".
+`src/shared/contracts/API_CONTRACT_REVIEW_CONTEXT.md` is the full evidence base (every quote and
+mapping table); it is committed rather than linked because three tracked files used to cite a
+`flambeau-contract-comparison.md` that has never existed on any branch. **If you add a contract
+citation, cite a path that resolves.**
+
+**When you close a finding, strike it in both the capability file and the ledger, in the same
+change.** A ledger that lags the code is worse than no ledger.
+
+Two items are blocking and are questions for other teams, not code: **`C6`** (neither contract says
+how the app receives its token after the SAML browser round trip — blocks all auth) and **`C7`**
+(the `keyFingerprint` digest recipe is a guess, and the check now fails closed, so a wrong guess
+rejects every encrypted download).
+
 ## Ownership — flag before editing another team's files
 
 | Area                                                    | Owner        |
@@ -76,14 +114,19 @@ on Reader's schedule. **To opt your directory in, add it to that block's `files`
 set and the `projectService` wiring are already there, so it is a one-line change. Do not enable
 it for someone else's directory on their behalf.
 
-### Known open items — all three are Abhinav's call
+### Known open items — both are Abhinav's call
 
-**1. Stale keychain-cached BEK.** `contentStore.store()` does not invalidate the keychain-cached
-BEK, and `resolveRawKey()` prefers that cache over unwrapping `wrappedBek` — so a re-download with
-a new BEK fails `INTEGRITY_FAILED` permanently. Documented in `contentStore.edgecases.test.ts`
-("stale-cached-BEK trap") and worked around by `destroy()`-before-`store()` in `devContentSeed.ts`.
+This list used to have three. **The stale keychain-cached BEK is fixed:** `store()` now clears the
+cached BEK when the incoming `wrappedBek` differs from the persisted one
+(`invalidateStaleCachedKeyIfRotated`, `contentStore.ts:206`), and
+`contentStore.edgecases.test.ts` pins the fix rather than the defect. `devContentSeed.ts`'s
+`destroy()`-before-`store()` stays, but for the other things destroy() clears, not for this.
 
-**2. `close()` leaves the ciphertext resident.** `contentStore.close()` zeroes `session.plaintext`,
+The two below are memory/lifecycle defects found from Reader's side. They are **not** the whole
+list of open items in Download/Encryption — the contract-driven ones live in those directories'
+`API_CONTRACT_NOTES.md` (see the table above).
+
+**1. `close()` leaves the ciphertext resident.** `contentStore.close()` zeroes `session.plaintext`,
 `indexPlaintext` and `rawKey` and drops the session, but does **not** touch the module-level
 `packageCache` — only `destroy()` does. So after `closeBook(bookId)` the whole **ciphertext** stays
 in RAM: 20 MB for the test book, indefinitely, for a book the reader has finished with.
@@ -96,27 +139,30 @@ it is genuinely a trade-off rather than an oversight — it makes the next open 
 fresh 20 MB **synchronous** `bytesSync()` on the JS thread (`contentStore.ts:229`). That call is
 Abhinav's to make.
 
-**3. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** Measured
-2026-08-13 on a real 20 MB EPUB (iPhone 17 Pro simulator, dev build):
+**2. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
+holds and is now proven twice over: **both** codec swaps have landed, time fell by ~30x, and the
+peak did not move. Measured on a real 20 MB EPUB (iPhone 17 Pro simulator, dev build):
 
-| | Before codec swaps | After | Verdict |
+| | 2026-08-13, before codec swaps | 2026-08-17, both landed | Verdict |
 | --- | --- | --- | --- |
-| App RSS peak | 609 MB | **609 MB — unchanged** | 🔴 |
-| WebContent RSS peak | 389 MB | 376 MB | 🟢 |
-| `encode` (Reader's hop) | 1820 ms | **18 ms** | ✅ fixed |
-| `decrypt` (`getBook`) | 4882 ms | 4981 ms — unchanged | Abhinav's |
+| App RSS peak | 609 MB | **631 MB — still unchanged** | 🔴 the real problem |
+| WebContent RSS peak | 389 MB | 385 MB | 🟢 |
+| `encode` (Reader's hop) | 1820 ms | 21 ms | ✅ fixed |
+| `decrypt` (`getBook`) | 4882 ms | **104–118 ms** | ✅ fixed by Abhinav, `47bc4ce` |
+| `getBookBase64` TOTAL | ~6.7 s | **149–310 ms** | ✅ |
 
-Reader's `react-native-quick-base64` swap cut its own encode by ~99% and **moved app-side peak by
-zero**, because a faster encoder still produces one 27 MB string. Opening a book materialises the
-payload at full size roughly **six** times, and `aesGcm.ts:140-148` owns **two** of them — it
-base64-encodes the ciphertext and decodes the plaintext around a string-only native API. **That hop
-is the only remaining lever on app-side memory**, and after Reader's swaps it is also ~93% of the
-time in a warm open. Proposal for Abhinav: have `base64.ts` delegate to `react-native-quick-base64`
-(already a direct dependency and pod-linked, as a peer of his own `react-native-quick-crypto`, so no
-prebuild) — though note that addresses the *time*, and only removing copies addresses the *peak*.
+Abhinav's `47bc4ce` swapped `aesGcm.ts` to `react-native-quick-base64` directly — better than this
+file's earlier proposal to route `base64.ts` through it, because `base64.ts` stays the portable,
+no-native-dependency fallback its own header promises. **Time is no longer the lever; nothing here
+is waiting on a codec.**
+
+What did NOT change is the point: opening a book still materialises the payload at full size
+roughly **six** times, so a ~630 MB peak survives making every one of those copies ~30x faster. Only
+*removing* copies moves the peak. That is now the sole remaining lever, and it is a design change
+(streaming, or a bytes-in/bytes-out native API), not an optimisation.
 
 Caveat that must travel with these numbers: **simulator, dev build, and the simulator has no
-jetsam.** ~985 MB combined would be a likely foreground kill on a 2 GB device. Real-device
+jetsam.** ~1.0 GB combined would be a likely foreground kill on a 2 GB device. Real-device
 confirmation is still outstanding. Also still unmeasured: the post-`closeBook` drop, which needs
 `RootNavigator` before anything can unmount `ReaderScreen`.
 

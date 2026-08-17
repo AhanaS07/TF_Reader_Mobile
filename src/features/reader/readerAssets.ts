@@ -111,6 +111,12 @@ export async function getReaderHtmlUri(): Promise<string> {
  * Hardcoded to `'EPUB'`: this Reader implementation is EPUB-only today (the WebView template is
  * epub.js-specific, and devContentSeed.ts's own header says the same) — not a new limitation this
  * introduces, just the first place that format needs to be named explicitly rather than implied.
+ * It is also BLOCKED, not merely unfinished: the contract's intended source for the real value is
+ * wokay's book metadata (`contentType` on the catalogue/OPDS record), and this app has no
+ * catalogue client at all, so there is nowhere to read it from. See B12/C3 in
+ * `src/shared/contracts/CONTRACT_ALIGNMENT.md`. When one lands, note that
+ * `ReadingSessionRequest.format` selects an ASSET format, which wokay distinguishes from the
+ * book's own `contentType` — one book can carry a PDF asset beside an EPUB one.
  */
 export async function getBookBase64(bookId: BookId): Promise<string> {
   const startedAt = now();

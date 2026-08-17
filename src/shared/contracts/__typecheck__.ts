@@ -37,6 +37,8 @@ import type {
   Loan,
   ReadingSessionResponse,
   FlambeauErrorCode,
+  EncryptionDescriptor,
+  AccessTier,
 } from '@/shared/contracts';
 
 // --- ContentError is a real enum (value import must work) ------------------
@@ -200,3 +202,22 @@ createDefaultAccessibilityPrefs() satisfies AccessibilityPrefs;
 'NO_ACTIVE_LOAN' satisfies FlambeauErrorCode;
 'DEVICE_LIMIT_REACHED' satisfies FlambeauErrorCode;
 'TOKEN_EXPIRED' satisfies FlambeauErrorCode;
+
+// --- EncryptionDescriptor.keyId is OPTIONAL, matching wokay's schema ---------
+// Same "a null field is omitted, not sent as null" convention as SignedUrl
+// above. keyFingerprint stays required — it is the anti-key-substitution check
+// (CONTRACT_ALIGNMENT.md B3/C7), not an optional hint.
+({
+  algorithm: 'AES-256-GCM',
+  layout: 'nonce(12) || ciphertext || tag(16)',
+  wrappedBek: 'BASE64',
+  wrapAlgorithm: 'RSA-OAEP-256',
+  keyFingerprint: 'sha256:deadbeef',
+}) satisfies EncryptionDescriptor;
+
+// --- AccessTier carries no values of its own; it is LicenceModel ------------
+// It used to spell the three tiers 'OA' | 'Subscribed' | 'Elite' — a FOURTH
+// vocabulary for values that already had three (B9). Pins the collapse.
+'SUBSCRIPTION' satisfies AccessTier;
+// @ts-expect-error the old spelling is gone — nothing may reintroduce it
+'Subscribed' satisfies AccessTier;
