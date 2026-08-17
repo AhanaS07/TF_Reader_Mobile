@@ -4,13 +4,29 @@
 `src/model/fixtures/OPDS-samples/`.** That folder holds the three responses wokay
 confirmed on 11 Aug as "whatever is in the samples is latest"; team1_README calls
 them _the contract_, and dropping a hand-written file in beside them would make a
-guess look like a frozen sample. None of these four is confirmed by anyone.
+guess look like a frozen sample. The data in these four is still invented; what is
+no longer invented is their shape (see below).
 
-The search endpoint is **R3c** and arrives in Week 4. Until then these stand in for
-it, and two things in them are explicitly unverified:
+The search endpoint is **R3c** and the server arrives in Week 4, but the shape is no
+longer a guess: `searchCatalogue` is published and marked `FROZEN` in
+`docs/contracts/wokay-api.yaml`, and every file here is now checked against its
+examples by `src/model/contracts/fixtureConformance.test.ts`.
 
-- **`browseInstead`** — the key name comes from the B1 spec, not from a response.
-  `normalizeSearchFeed` accepts `navigation` as well for exactly that reason.
+What that changed, on 17 Aug:
+
+- **`navigation`, not `browseInstead`.** The contract's own wording is that a
+  zero-result search "returns a valid feed containing a `navigation` entry back to
+  the catalogue", so that is the key these fixtures now use — previously they used
+  `browseInstead`, which is the B1 spec's name for our *normalised* field and was
+  never a wire key. `normalizeSearchFeed` still accepts both, so nothing downstream
+  changed; the fixture simply stopped claiming a shape the server will not send.
+- **The browse target is `groups/all`**, the one reserved `groupId`. It used to be
+  three targets at `groups/ebooks`, `groups/audiobooks` and `groups/open-access` —
+  ids the contract's `groupId` enum does not permit and that name content types,
+  which `AGENTS.md` `L-5` rules out.
+
+Still unverified:
+
 - **`next` as a whole href** — a search response's paging scheme has never been
   seen. The client follows the value verbatim, so a cursor would work unchanged.
 

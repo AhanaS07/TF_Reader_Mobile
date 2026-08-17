@@ -10,22 +10,10 @@
       "type": "application/opds+json"
     }
   ],
-  "browseInstead": [
+  "navigation": [
     {
-      "title": "eBooks",
-      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/ebooks",
-      "type": "application/opds+json",
-      "rel": "subsection"
-    },
-    {
-      "title": "Audiobooks",
-      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/audiobooks",
-      "type": "application/opds+json",
-      "rel": "subsection"
-    },
-    {
-      "title": "Open access",
-      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/open-access",
+      "title": "Browse the full catalogue",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/all",
       "type": "application/opds+json",
       "rel": "subsection"
     }
