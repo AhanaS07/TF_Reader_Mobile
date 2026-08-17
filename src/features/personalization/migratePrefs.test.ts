@@ -1,9 +1,14 @@
 // migratePrefs.test.ts — read-time migration of the deprecated 'highContrast'
 // Theme variant onto accessibility.display.highContrast.
 
-import { migrateSharedPrefs, HIGH_CONTRAST_BASE_THEME } from '@/features/personalization/migratePrefs';
+// Migration promoted to @/shared/contracts (prefs-row.ts) so both Personalization and
+// Sync consume one implementation. Test moved with it.
 import type { SharedPrefs } from '@/shared/contracts';
-import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
+import {
+  migrateSharedPrefs,
+  HIGH_CONTRAST_BASE_THEME,
+  DEFAULT_ACCESSIBILITY_PREFS,
+} from '@/shared/contracts';
 
 const base: SharedPrefs = {
   id: 'p1',
