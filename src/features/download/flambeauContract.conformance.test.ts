@@ -233,15 +233,14 @@ describe('error-code conformance — FlambeauErrorCode vs. the documented contra
   });
 });
 
-// ── D: mapped-code behavior for a representative, currently-untested documented code ─────────
+// ── D: mapped-code behavior for representative documented codes ──────────────────────────────
 // downloadManager.test.ts already covers NO_ENTITLEMENT (loans) and DOWNLOAD_NOT_PERMITTED
-// (reading-sessions) end to end. This adds the reading-session error path's generic fallback for
-// a documented code that is NOT in SESSION_ERROR_CODE_MAP today — pinning TODAY's behavior
-// (generic SESSION_FETCH_FAILED with the real code preserved as `cause`) so B10's recommendation
-// to "promote" UNAUTHENTICATED/TOKEN_EXPIRED to their own DownloadError members shows up here as a
+// (reading-sessions) end to end. This section covers the other half of B10: codes that WERE
+// promoted (pin the new dedicated member), and a code that deliberately was NOT (pin that the
+// generic fallback + preserved `cause` still works) — so a future promotion shows up here as a
 // test that needs deliberately updating, not one that silently keeps passing either way.
-describe('documented-but-unmapped code — current fallback behavior (pin for B10)', () => {
-  it('TOKEN_EXPIRED currently falls back to generic SESSION_FETCH_FAILED, with the real code preserved as cause', async () => {
+describe('promoted vs. still-generic error codes (B10)', () => {
+  it('TOKEN_EXPIRED is promoted to its own DownloadError member, not the generic fallback', async () => {
     const { publicKey } = await generateDeviceKeypair();
     global.fetch = jest.fn().mockResolvedValue(
       new Response(
@@ -264,8 +263,28 @@ describe('documented-but-unmapped code — current fallback behavior (pin for B1
         wantSearchIndex: false,
       }),
     ).rejects.toMatchObject({
-      code: DownloadError.SESSION_FETCH_FAILED,
+      code: DownloadError.TOKEN_EXPIRED,
       cause: { code: 'TOKEN_EXPIRED' },
+    });
+  });
+
+  it('LOAN_NOT_ACTIVE (deliberately not promoted) still falls back to generic LOAN_FAILED, with the real code preserved as cause', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          status: 409,
+          code: 'LOAN_NOT_ACTIVE',
+          message: 'loan is not active',
+          path: '/api/v1/loans',
+        }),
+        { status: 409 },
+      ),
+    );
+
+    await expect(borrowLoan('book-1')).rejects.toMatchObject({
+      code: DownloadError.LOAN_FAILED,
+      cause: { code: 'LOAN_NOT_ACTIVE' },
     });
   });
 });

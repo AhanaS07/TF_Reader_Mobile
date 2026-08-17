@@ -34,9 +34,9 @@
 //
 // CHECKSUM: the real `ReadingSessionResponse` carries no checksum field at all — GCM's own
 // authentication tag (checked at decrypt time) is the integrity guarantee, not a separate SHA-256
-// (see `flambeau-contract-comparison.md` §3). `verifyChecksum`/`bytesToHex` stay defined and
-// EXPORTED below (not deleted, not orphaned-and-unused) for a caller that ever gets a checksum
-// from a future response shape, but nothing here calls them today.
+// (see this directory's `API_CONTRACT_NOTES.md`, `B_ok4`). `verifyChecksum`/`bytesToHex` stay
+// defined and EXPORTED below (not deleted, not orphaned-and-unused) for a caller that ever gets a
+// checksum from a future response shape, but nothing here calls them today.
 //
 // `cipherLength`/`originalLength` now arrive directly on `content` (`SignedUrl`) instead of being
 // derived — `computeOriginalLength` is kept and used as a defense-in-depth CROSS-CHECK against
@@ -167,6 +167,7 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
 
   const { publicKey } = await generateDeviceKeypair();
   const devicePublicKey = publicKeyToRawBase64(publicKey);
+  const deviceKeyFingerprint = await publicKeyFingerprint(publicKey);
 
   const session = await openReadingSession(bookId, {
     format,
@@ -174,6 +175,21 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
     devicePublicKey,
     wantSearchIndex: true,
   });
+
+  // Anti-key-substitution check (API_CONTRACT_NOTES.md C7/B3), moved HERE rather than left solely
+  // to contentStore.ts's `assertLicenceMatchesPackage()`: `session.encryption.keyFingerprint` is
+  // available the instant the session response arrives, so comparing now fails in milliseconds
+  // instead of after `fetchEncryptedAsset` has pulled up to 25MB. Also surfaces as a typed
+  // `DownloadFailure` at this layer instead of a `ContentFailure` bubbling up from Encryption.
+  // contentStore's own check still runs too — kept as defense in depth for any caller that
+  // reaches `store()` directly (e.g. `devContentSeed.ts`), not made redundant by this.
+  if (session.encryption && session.encryption.keyFingerprint !== deviceKeyFingerprint) {
+    throw new DownloadFailure(
+      DownloadError.KEY_SUBSTITUTION,
+      bookId,
+      new Error("encryption.keyFingerprint does not match this device's own key"),
+    );
+  }
 
   const bytes = await fetchEncryptedAsset(bookId, session.content.url);
 
@@ -252,7 +268,7 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   const licence: SignedLicence = {
     licenceId: session.sessionId,
     itemId: bookId,
-    keyFingerprint: await publicKeyFingerprint(publicKey),
+    keyFingerprint: deviceKeyFingerprint, // computed once, above, before the early substitution check
     expiresAt: loan.dueAt ?? OPEN_ACCESS_LICENCE_EXPIRES_AT,
     canPersist: loan.canPersist,
     rights: { print: false },

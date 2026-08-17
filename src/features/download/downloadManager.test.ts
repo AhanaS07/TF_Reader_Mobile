@@ -21,7 +21,6 @@ import { generateDeviceKeypair, wrapBek, publicKeyFingerprint } from '../encrypt
 import { DownloadError } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
-import { ContentError } from '@/shared/contracts';
 import type { FlambeauError, Loan, ReadingSessionResponse } from '@/shared/contracts';
 
 // A plain OPEN_ACCESS loan — canPersist:true (open access always persists; there's no key
@@ -270,12 +269,20 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
         keyFingerprint: 'sha256:not-this-devices-key-at-all',
       },
     });
-    global.fetch = mockFetchFor(loan, session, encryptedBytes);
+    const fetchMock = mockFetchFor(loan, session, encryptedBytes);
+    global.fetch = fetchMock;
 
+    // C7/B3 follow-up: this check now happens in downloadManager.ts, right after the session
+    // response and BEFORE fetchEncryptedAsset — see this directory's API_CONTRACT_NOTES.md.
+    // KEY_SUBSTITUTION, not ContentError.LICENCE_INVALID (contentStore.ts's own check is defense
+    // in depth for direct callers, but the real download path never reaches it — proven below by
+    // asserting the asset URL was never even requested).
     await expect(downloadBook(bookId)).rejects.toMatchObject({
-      code: ContentError.LICENCE_INVALID,
+      code: DownloadError.KEY_SUBSTITUTION,
     });
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+    const requestedUrls = fetchMock.mock.calls.map((call) => call[0]);
+    expect(requestedUrls).not.toContain(session.content.url);
   });
 });
 

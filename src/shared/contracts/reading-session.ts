@@ -24,7 +24,10 @@
 // otherwise), except open access. No capability in this repo owns "borrow" UI yet (CAP-4, if it
 // exists, is outside CAP-7's scope) — `downloadManager.ts` calls `borrowLoan()` itself, silently,
 // as the first step of a download. That is a pragmatic stand-in, not a claim that Download now
-// owns the borrow UX; flagged as such in `flambeau-contract-comparison.md`.
+// owns the borrow UX; tracked as B5 in `CONTRACT_ALIGNMENT.md` (this directory). Note the other
+// half of possession is still missing entirely: nothing in this repo ever calls
+// `POST /api/v1/loans/{id}/return`, so every ELITE copy this client takes stays taken until the
+// server's own sweep closes it.
 //
 // `licence: SignedLicence` DOES NOT EXIST ON THE REAL RESPONSE — content-provider.ts's frozen
 // `EncryptedPackage`/`ContentStore.store()` require one (with `expiresAt`/`canPersist`/`rights`/
@@ -32,11 +35,17 @@
 // anything shaped like it. `downloadManager.ts` synthesizes one locally from `Loan.canPersist` +
 // `Loan.dueAt` (the actual multi-week offline-reopen window) — NOT from `ReadingSessionResponse
 // .expiresAt` (only ~5 minutes, meant for the signed URL/grant, not for gating an offline reopen
-// weeks later). Conflating those two `expiresAt`s was flagged explicitly in
-// `flambeau-contract-comparison.md` §3 as a real divergence; this is where that gets resolved.
+// weeks later). Keeping those two `expiresAt`s apart is the subtlest thing in the two published
+// contracts and this is where it gets resolved — conflating them would expire every offline book
+// five minutes after download.
 // `signature` has no real-backend counterpart at all (RS256 licence signing isn't part of this
 // spec) — synthesized as an empty/unverified placeholder, matching `contentStore.ts`'s own
 // already-documented, pre-existing gap (RS256 verification was never implemented, real or mock).
+// That placeholder is not a small gap: it means `ContentError.LICENCE_INVALID` can never fire for
+// a signature, and `content-provider.ts`'s frozen claim that the signature is "verified before
+// expiry is trusted" is false in practice. Whether a signed licence exists in this system AT ALL
+// is an open cohort question — B4 in `CONTRACT_ALIGNMENT.md` (this directory). Do not build
+// anything new on `signature`; read that entry first.
 
 import type { BookId, ContentFormat } from '../types/primitives';
 import type { EncryptionDescriptor } from './content-provider';
@@ -54,12 +63,18 @@ export interface ReadingSessionRequest {
   itemId: BookId;
   format: ReadingFormat;
   intent: ReadingIntent;
-  /** Base64 of RAW key bytes — NOT a PEM, NOT a JWK. See deviceKeypair.ts's
-   * `publicKeyToRawBase64()`, added alongside this file for exactly this wire shape. */
+  /** Base64 SPKI DER — the body of a PEM public key with the armour and newlines stripped, which
+   * for RSA-2048 is exactly 392 characters. NOT a PEM, NOT a JWK, and NOT the bare
+   * modulus/exponent that flambeau's own looser wording ("base64 of raw bytes") suggests; wokay's
+   * schema is the precise one and `deviceKeypair.ts`'s `publicKeyToRawBase64()` matches it. The
+   * two specs word this differently — A6 in `CONTRACT_ALIGNMENT.md` — but only the wording is in
+   * dispute, so do not "fix" the encoding to satisfy flambeau's prose. */
   devicePublicKey: string;
-  /** wokay's schema states `Default=true`; flambeau's own rendered schema states no default.
-   * Moot either way — this client always sends the field explicitly (matches the OLD
-   * content-licence.ts client's same stated behavior — see that file's `index` comment). */
+  /** Optional; wokay's schema states **`Default=true`** ("set false to skip signing an index URL,
+   * saves a signature when the caller only wants to stream"), and flambeau's states no default at
+   * all — A8 in `CONTRACT_ALIGNMENT.md`. Behaviour here does not depend on either: this client
+   * always sends the field explicitly (`true` for a download, `false` for the per-open re-check),
+   * so the two specs can disagree without changing what we get. */
   wantSearchIndex?: boolean;
 }
 
@@ -180,6 +195,21 @@ export interface ReturnResponse {
  * book limit). `downloadManager.ts`/`readingSessionClient.ts` map a subset of THESE onto specific
  * NEW `DownloadError` members (see errors.ts's additions) rather than replacing anything — every
  * pre-existing `DownloadError` member is untouched.
+ *
+ * THIS UNION TAKES A SIDE IN AN UNRESOLVED DISPUTE, and must be revisited when the Contracts Gate
+ * rules — A1 in `CONTRACT_ALIGNMENT.md` (this directory). Both teams claim ONE shared
+ * `common/error/ErrorCode` enum and publish different member lists: wokay excludes `TOKEN_EXPIRED`
+ * and `INSTITUTION_INACTIVE` on a stated non-disclosure rationale, flambeau requires both, and
+ * five more (`NO_COPIES_AVAILABLE`, `NO_ACTIVE_LOAN`, `LOAN_NOT_ACTIVE`, `DEVICE_LIMIT_REACHED`,
+ * `OFFER_EXPIRED`) are flambeau's own and unratified. This union follows flambeau, because
+ * flambeau is the surface these two endpoints live on. Consequence: an exhaustive `switch` over
+ * this type is wrong against wokay's published enum, so do not write one that assumes
+ * completeness.
+ *
+ * `INVALID_DEVICE_PUBLIC_KEY` is in NEITHER contract (B10) — wokay's prose says a short key "is
+ * rejected" but names no code for it. Kept for now rather than dropped, because deleting a member
+ * this app never raises itself is a no-op locally and the ratification list above has to be settled
+ * as one question, not member by member. Nothing may start branching on it before then.
  */
 export type FlambeauErrorCode =
   | 'VALIDATION_FAILED'
