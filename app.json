@@ -29,7 +29,8 @@
         }
       ],
       "react-native-quick-crypto",
-      "expo-sqlite"
+      "expo-sqlite",
+      "./plugins/withAndroidTtsQueries"
     ]
   }
 }
