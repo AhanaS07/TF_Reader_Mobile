@@ -27,7 +27,7 @@ import type { SearchFeed } from '@model/types';
 import { assertPublication } from '@model/validate';
 
 import type { CatalogueSearchPipeline, SearchRequest } from './pipeline';
-import { expandSearchLink, searchParams } from './searchLink';
+import { SEARCH_PARAM, expandSearchLink, searchParams } from './searchLink';
 
 import audioFixture from './fixtures/search-audio.json';
 import browseInsteadFixture from './fixtures/search-browse-instead.json';
@@ -65,6 +65,27 @@ const SCENARIOS: readonly Scenario[] = [
   { when: { query: 'climate', contentType: 'AUDIO' }, feed: audioFixture },
 ];
 
+// Which parameters are free text a human typed, and are therefore compared
+// case-insensitively.
+//
+// WHY THIS IS NOT PEDANTRY. A real search endpoint does not care whether the
+// reader capitalised, so a stub that did would turn an ordinary typing habit into
+// a zero-result response that is INDISTINGUISHABLE FROM AN EMPTY CATALOGUE — the
+// reader sees "No publications found", concludes the fixtures are empty, and there
+// is nothing on screen to suggest the only problem was a capital letter. That is
+// the silent-failure class this file's header says the stub exists to surface
+// early, so it must not be the stub that introduces one.
+//
+// Machine-valued parameters are still compared VERBATIM. `contentType` is a wire
+// enum ('AUDIO', never 'audio') and `page` is a cursor value copied out of a
+// server-issued href; folding their case would hide a genuine mismatch between
+// what the client sent and what the server declared.
+const FREE_TEXT_PARAMS: ReadonlySet<string> = new Set([SEARCH_PARAM.query]);
+
+function comparable(name: string, value: string): string {
+  return FREE_TEXT_PARAMS.has(name) ? value.toLowerCase() : value;
+}
+
 function pickFeed(params: Readonly<Record<string, string>>): unknown {
   let matched: unknown;
   let matchedKeys = -1;
@@ -72,7 +93,18 @@ function pickFeed(params: Readonly<Record<string, string>>): unknown {
   for (const scenario of SCENARIOS) {
     const keys = Object.keys(scenario.when);
     if (keys.length <= matchedKeys) continue;
-    if (!keys.every((key) => params[key] === scenario.when[key])) continue;
+    // `undefined` is checked explicitly rather than folded into the comparison:
+    // a parameter the request never sent must not match a scenario that names it.
+    if (
+      !keys.every((key) => {
+        const actual = params[key];
+        return (
+          actual !== undefined && comparable(key, actual) === comparable(key, scenario.when[key])
+        );
+      })
+    ) {
+      continue;
+    }
 
     matched = scenario.feed;
     matchedKeys = keys.length;

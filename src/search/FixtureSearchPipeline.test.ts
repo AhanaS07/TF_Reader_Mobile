@@ -67,6 +67,35 @@ describe('a query with results', () => {
       'item_42',
     ]);
   });
+
+  // A capital letter must not be the difference between two results and an empty
+  // catalogue. The failure this guards is silent: the screen renders its
+  // zero-result state correctly, so nothing on it hints that the only problem was
+  // the shift key.
+  it.each(['Climate', 'CLIMATE', 'CliMate'])('matches %s regardless of case', async (query) => {
+    const feed = await pipeline().search({ institutionId: INSTITUTION, query, filters: {} });
+
+    expect(feed.publications.map((publication) => publication.id)).toEqual([
+      'item_env',
+      'item_42',
+    ]);
+  });
+
+  // The other half of the same rule: machine values are NOT case-folded, so a
+  // lowercased enum stays a mismatch rather than being quietly accepted.
+  it('does not case-fold a machine-valued parameter', async () => {
+    const feed = await pipeline().search({
+      institutionId: INSTITUTION,
+      query: 'climate',
+      // 'audio' is not the wire value; the audio scenario must not match.
+      filters: { contentType: 'audio' as never },
+    });
+
+    expect(feed.publications.map((publication) => publication.id)).toEqual([
+      'item_env',
+      'item_42',
+    ]);
+  });
 });
 
 // The stub answers a DIFFERENT request rather than narrowing the previous
