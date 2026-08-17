@@ -29,6 +29,10 @@ You have more of a contract than the directory suggests:
 - **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract,
   plus `fakeReaderTextProvider.ts`, which serves canned sentences with **synthetic CFIs that resolve
   against no book** so you can build a TTS session before the real provider exists.
+- **`WEBVIEW_A11Y_FINDINGS.md`** (this directory) — consolidated desk research on WebView/epub.js
+  screen-reader accessibility (VoiceOver/TalkBack), including the architecture split between native
+  RN and the Reader WebView and the risk register that governs it. **`WEBVIEW_A11Y_SPIKE.md`** is
+  the on-device spike instrument it depends on — not yet run.
 
 **On the fake:** it is scaffolding and it is meant to be substituted, not extended. Its test file
 pins properties of the *seam*, not of the fake, so it's the checklist the real provider must satisfy
