@@ -99,9 +99,15 @@ rejects every encrypted download).
 | `src/features/reader/`                                  | Ahana        |
 | `src/features/download/`, `src/features/encryption/`    | Abhinav      |
 | `src/features/sync/`                                    | Karthik      |
-| `src/features/personalization/`, `src/features/search/` | Vaishnavi    |
+| `src/features/personalization/`, `src/features/search/` (in-book search only) | Vaishnavi    |
 | `src/features/accessibility/`                           | Hruthik      |
 | `src/shared/`, `samples/`                               | Ahana (lead) |
+
+`src/features/search/` is **in-book full-text** search over a decrypted per-book index — it touches
+neither external contract. **Catalogue/discovery search** (wokay's OPDS feeds, institution picker,
+`items:batch`) is a *different* capability that shares the word "search" and is currently
+**unowned** — finding `C3` in `CONTRACT_ALIGNMENT.md`. This row does not cover it; do not assume the
+OPDS client falls to Vaishnavi because it says "search."
 
 Editing outside Reader needs the owner looped in. Prefer a test that documents the defect plus a
 local workaround, and say clearly that the real fix needs sign-off.

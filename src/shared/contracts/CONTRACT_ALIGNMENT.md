@@ -75,7 +75,7 @@ because the app has already picked a side on two of them.
 | `A7` | `Encryption.keyId` optionality; truncated example hides `keyFingerprint` | ✅ **our side aligned** — `keyId` relaxed to optional in `content-provider.ts` | flambeau to publish the full example |
 | `A8` | `wantSearchIndex` default — wokay says `true`, flambeau says nothing | ✅ **comment corrected**; behaviour never depended on it (we always send it explicitly) | flambeau to state it |
 | `A9` | Does borrowing `OPEN_ACCESS` write a loan? flambeau's table and prose disagree | 💬 `downloadManager.ts` borrows unconditionally and reads `canPersist`/`dueAt` off the result — works under the prose reading, breaks under the table reading | flambeau |
-| `A10` | `/api/v1/loans/changes` or `/api/v1/changes`? | 💬 **decide before `B6` is built**, not after | flambeau |
+| `A10` | `/api/v1/loans/changes` or `/api/v1/changes`? | 💬 **still undecided.** `B6`'s Sync half shipped anyway, with the path isolated in one constant (`LOAN_CHANGES_PATH`, `syncConfig.ts`) so the move is a one-line change rather than a search-and-replace. Deciding is still cheaper than not | flambeau |
 
 ### Register B — contracts vs. this app
 
@@ -86,7 +86,7 @@ because the app has already picked a side on two of them.
 | `B3` | 🔴 `keyFingerprint` never compared to the device key | ✅ **closed by `84f2476`** — but see `C7` above | Abhinav | `encryption/` |
 | `B4` | 🔴 `SignedLicence` exists in no contract; synthesized with an empty signature | ❌ **contract comment corrected so it no longer claims a guarantee we don't have**; the type itself still needs a Gate decision | Ahana + Abhinav | this file's §B4 below |
 | `B5` | 🟠 Loans borrowed, never returned; no holds/library/availability | ❌ | CAP-4 boundary | `download/` |
-| `B6` | 🟠 Change feed unimplemented — the designed revocation channel | ❌ | Abhinav/Karthik | `download/`, `sync/` |
+| `B6` | 🟠 Change feed unimplemented — the designed revocation channel | 🟡 **Sync half implemented**: `sync/loanChanges.ts` + `sync/offlineLock.ts` consume the feed, persist a cursor, and emit `content.lock`/`content.unlock`. Encryption's subscriber (destroy the BEK on `reason: 'revoked'`) is **not** written — that half is Abhinav's | Abhinav/Karthik | `download/`, `sync/` |
 | `B7` | 🟠 Per-open check fails open; safe only once `B6` lands | 🟡 **hardened and widened** by `84f2476` (keychain failures now fail open too, correctly) — the accepted-risk record still does not exist | Abhinav | `download/` |
 | `B8` | 🟠 `POST /device/register-key` doesn't exist; flambeau rejects the concept | ❌ | Abhinav + Ahana (barrel) | `download/` |
 | `B9` | 🟡 `AccessTier` was a fourth tier spelling | ✅ **now an alias for `LicenceModel`** (`tier.ts`). Full deletion is still a Gate item | Ahana | done here |

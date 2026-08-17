@@ -273,7 +273,11 @@ describe('SharedPrefs merge', () => {
     await personalizationStore.update({ theme: 'highContrast' });
 
     const prefs = await readSharedPrefs();
-    expect(prefs.theme).not.toBe('highContrast');
+    // Base theme under the boost must be 'light' (classic high contrast is dark-on-light;
+    // ratified 2026-08-17). Asserting the exact value, not just "not highContrast", is the point:
+    // the merge and Personalization's migratePrefs.ts had silently diverged (dark vs light)
+    // precisely because this test never pinned the base. It must match HIGH_CONTRAST_BASE_THEME.
+    expect(prefs.theme).toBe('light');
     expect(prefs.accessibility.display.highContrast).toBe(true);
   });
 
