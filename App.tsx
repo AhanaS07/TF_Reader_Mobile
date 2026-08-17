@@ -29,11 +29,37 @@
 // getByText('TF Reader'), and temporary wiring must not force an edit to a test
 // that is doing its job. The reader mounts underneath it.
 // ────────────────────────────────────────────────────────────────────────────
+import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { DEV_SAMPLE_BOOK_ID } from '@/features/reader/devContentSeed';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
+
+// ─── SCRATCH: manual TTS verification harness — NOT COMMITTED, revert before diff ──
+import { createFakeReaderTextProvider } from '@/features/reader/tts/fakeReaderTextProvider';
+import { TtsControls } from '@/features/accessibility/tts/TtsControls';
+import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
+
+function TtsHarness() {
+  const [provider] = useState(() => createFakeReaderTextProvider({ latencyMs: 150 }));
+  const session = useTtsSession(provider);
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ padding: 16 }}>
+        <Text style={{ fontSize: 13, color: '#555' }}>status: {session.status}</Text>
+        <Text style={{ fontSize: 13, color: '#555' }}>
+          sentence: {session.currentSentence?.text ?? '(none)'}
+        </Text>
+        {session.errorMessage !== null && (
+          <Text style={{ fontSize: 13, color: '#a00' }}>error: {session.errorMessage}</Text>
+        )}
+      </View>
+      <TtsControls session={session} />
+    </View>
+  );
+}
+// ─── END SCRATCH ────────────────────────────────────────────────────────────
 
 export default function App() {
   return (
@@ -47,7 +73,8 @@ export default function App() {
           stand-in fixture because there is no library/navigation yet to select a
           real book. When RootNavigator lands, the route supplies this instead.
         */}
-        <ReaderScreen bookId={DEV_SAMPLE_BOOK_ID} />
+        <TtsHarness />
+        {false && <ReaderScreen bookId={DEV_SAMPLE_BOOK_ID} />}
       </SafeAreaView>
     </SafeAreaProvider>
   );
