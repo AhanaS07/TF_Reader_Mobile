@@ -30,6 +30,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
+import { closeBook } from '@/features/encryption/contentProvider';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -226,6 +227,7 @@ describe('the bounded wait on the byte path', () => {
 describe('routing ContentFormat to a renderer', () => {
   afterEach(() => {
     jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
   });
 
   it('loads the EPUB shell and sends openEpub for an EPUB book', async () => {
@@ -265,6 +267,94 @@ describe('routing ContentFormat to a renderer', () => {
     await reportReady();
 
     expect(jest.mocked(getBookBase64)).toHaveBeenCalledWith('test-book', 'PDF');
+  });
+
+  it('re-resolves the shell and the open command when the book switches format', async () => {
+    // What App.tsx's dev picker does, and what RootNavigator will do with real books:
+    // change ONLY the bookId. Nothing hands the reader a format, so this is also the
+    // proof that runtime format switching needs no routing change — it falls out of
+    // resolving the format per book.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen key="book-epub" bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenLastCalledWith('EPUB');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+
+    // KEYED, exactly as App.tsx and any navigator must do — ReaderScreen's prop doc
+    // requires it, so a test that rerendered without a key would be exercising a usage
+    // the component does not support and would pass for the wrong reason.
+    await act(async () => {
+      await view.rerender(<ReaderScreen key="book-pdf" bookId="book-pdf" />);
+    });
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenLastCalledWith('PDF');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
+    );
+
+    // The outgoing book's decrypted bytes must be released. Without this the reader
+    // leaks a whole book per switch, which is exactly what closeBook exists to stop.
+    expect(jest.mocked(closeBook)).toHaveBeenCalledWith('book-epub');
+  });
+
+  it('does not send the previous format’s open command after a switch', async () => {
+    // The stale-state failure this guards: if `format` survived the bookId change,
+    // handleReady would send openEpub into the PDF shell, which defines only openPdf
+    // and would answer NOT_READY — a confusing way to find a routing bug.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen key="book-epub" bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    __injectJavaScript.mockClear();
+
+    // KEYED, exactly as App.tsx and any navigator must do — ReaderScreen's prop doc
+    // requires it, so a test that rerendered without a key would be exercising a usage
+    // the component does not support and would pass for the wrong reason.
+    await act(async () => {
+      await view.rerender(<ReaderScreen key="book-pdf" bookId="book-pdf" />);
+    });
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    const sent = __injectJavaScript.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(sent).toContain('window.TFReader.openPdf');
+    expect(sent).not.toContain('window.TFReader.openEpub');
+  });
+
+  it('never opens the previous renderer even when the caller forgets the key', async () => {
+    // The prop doc REQUIRES callers to key on bookId, and both switch tests above do.
+    // This one deliberately does NOT, because "the caller forgot" must fail safe rather
+    // than silently opening the wrong renderer: the resolved format/shell pair is tagged
+    // with its bookId, so a mismatched tag reads as "not resolved yet" instead of as the
+    // previous book's answer. Without that tag this test sends openEpub into a PDF shell.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // Make the new book's resolution never settle, so the ONLY thing that could be
+    // rendered is whatever survived from the previous book.
+    jest.mocked(prepareBook).mockReturnValue(new Promise<ContentFormat>(() => {}));
+    __injectJavaScript.mockClear();
+
+    await act(async () => {
+      await view.rerender(<ReaderScreen bookId="book-pdf" />);
+    });
+
+    // Stale shell is gone rather than reused, so there is nothing to be ready.
+    expect(screen.queryByTestId('reader-webview')).toBeNull();
+    expect(__injectJavaScript).not.toHaveBeenCalled();
   });
 
   it('refuses AUDIO with its own code and never mounts a WebView', async () => {

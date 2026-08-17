@@ -99,14 +99,92 @@ const DEV_FORMAT: ContentFormat = process.env.EXPO_PUBLIC_READER_FORMAT === 'PDF
  * the PDF it would mean `getFormat()` reporting EPUB for a book you asked to be a PDF, and the
  * reader dutifully loading the epub.js shell for it.
  */
-export const DEV_SAMPLE_BOOK_ID: BookId = FIXTURE_PATH
-  ? 'dev-fixture-epub'
-  : DEV_FORMAT === 'PDF'
-    ? 'dev-sample-pdf'
-    : 'dev-sample-epub';
+export const DEV_SAMPLE_EPUB_BOOK_ID: BookId = 'dev-sample-epub';
+export const DEV_SAMPLE_PDF_BOOK_ID: BookId = 'dev-sample-pdf';
+const DEV_FIXTURE_EPUB_BOOK_ID: BookId = 'dev-fixture-epub';
 
-async function sampleBookBytes(): Promise<Uint8Array> {
-  if (FIXTURE_PATH) {
+/**
+ * The book App.tsx opens on launch, when nothing has been picked yet.
+ *
+ * `EXPO_PUBLIC_READER_FORMAT=PDF` still selects the PDF one, so the env var remains
+ * the way to launch straight into the pdf.js path. The in-app picker can then switch
+ * without a rebuild — see the fixture table below for why that works.
+ */
+export const DEV_SAMPLE_BOOK_ID: BookId = FIXTURE_PATH
+  ? DEV_FIXTURE_EPUB_BOOK_ID
+  : DEV_FORMAT === 'PDF'
+    ? DEV_SAMPLE_PDF_BOOK_ID
+    : DEV_SAMPLE_EPUB_BOOK_ID;
+
+interface DevFixture {
+  format: ContentFormat;
+  mimeType: string;
+  /** null ⇒ read from FIXTURE_PATH instead of a bundled asset. */
+  assetModule: number | null;
+  name: string;
+  /** The bundled search index only matches ONE book — see the note in buildPackage. */
+  attachIndex: boolean;
+}
+
+/**
+ * EVERYTHING FIXTURE-SPECIFIC, KEYED BY bookId — and the keying is the point.
+ *
+ * This used to read a module-level `DEV_FORMAT` derived from an env var, which meant
+ * the format was fixed for the whole bundle and could only change with a restart. It
+ * is now a property of WHICH BOOK you asked for, which is both what production does
+ * (the format arrives with the downloaded package) and what lets the reader switch
+ * formats at runtime with no change to the routing logic: `ensureSeeded(bookId)`
+ * stores the right format, `getFormat(bookId)` reads it back, and the reader picks its
+ * shell from that. The env var now only chooses the DEFAULT book, not the capability.
+ */
+const DEV_FIXTURES: Readonly<Record<string, DevFixture>> = {
+  [DEV_SAMPLE_EPUB_BOOK_ID]: {
+    format: 'EPUB',
+    mimeType: EPUB_MIME_TYPE,
+    assetModule: SAMPLE_EPUB_MODULE,
+    name: 'sample-plaintext.epub',
+    attachIndex: true,
+  },
+  [DEV_SAMPLE_PDF_BOOK_ID]: {
+    format: 'PDF',
+    mimeType: PDF_MIME_TYPE,
+    assetModule: SAMPLE_PDF_MODULE,
+    name: 'sample-plaintext.pdf',
+    // Search's extractor is EPUB-only and the bundled index addresses the sample
+    // EPUB's spine, so attaching it here would make queryBookIndex throw.
+    attachIndex: false,
+  },
+  [DEV_FIXTURE_EPUB_BOOK_ID]: {
+    format: 'EPUB',
+    mimeType: EPUB_MIME_TYPE,
+    assetModule: null,
+    name: 'the EXPO_PUBLIC_READER_FIXTURE_PATH book',
+    // A different EPUB under a different bookId: the index's CFIs address the wrong book.
+    attachIndex: false,
+  },
+};
+
+function fixtureFor(bookId: BookId): DevFixture {
+  const fixture = DEV_FIXTURES[bookId];
+  if (!fixture) {
+    throw new Error(
+      `devContentSeed has no fixture for bookId "${bookId}". This file only stands in for ` +
+        `Download's real pass, so it can only seed the ids it knows: ` +
+        `${Object.keys(DEV_FIXTURES).join(', ')}.`,
+    );
+  }
+  return fixture;
+}
+
+async function sampleBookBytes(bookId: BookId): Promise<Uint8Array> {
+  const { assetModule, name } = fixtureFor(bookId);
+
+  if (assetModule === null) {
+    if (!FIXTURE_PATH) {
+      throw new Error(
+        `bookId "${bookId}" reads from EXPO_PUBLIC_READER_FIXTURE_PATH, which is not set.`,
+      );
+    }
     const fixture = new File(FIXTURE_PATH);
     if (!fixture.exists) {
       throw new Error(
@@ -118,10 +196,7 @@ async function sampleBookBytes(): Promise<Uint8Array> {
     return fixture.bytesSync();
   }
 
-  const name = DEV_FORMAT === 'PDF' ? 'sample-plaintext.pdf' : 'sample-plaintext.epub';
-  const asset = Asset.fromModule(
-    DEV_FORMAT === 'PDF' ? SAMPLE_PDF_MODULE : SAMPLE_EPUB_MODULE,
-  );
+  const asset = Asset.fromModule(assetModule);
 
   // Not a network call for a bundled asset, but required: without it `localUri`
   // is null in dev, the classic "works in release, blank in dev" split.
@@ -143,6 +218,8 @@ async function sampleBookBytes(): Promise<Uint8Array> {
  * getBook() exercise a real unwrapBek + tag-verified decrypt.
  */
 async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<EncryptedPackage> {
+  const fixture = fixtureFor(bookId);
+
   // Idempotent: reuses the stored keypair rather than orphaning BEKs already
   // wrapped to the old public key.
   const { publicKey } = await generateDeviceKeypair();
@@ -166,11 +243,13 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
     is built from the sample EPUB (its CFIs address that book's spine), and Search's
     extractor is EPUB-only. So a PDF search returns [] — which is honest, and is
     already what every seeded book did before this index existed.
+
+    Which books get one is declared per fixture (`attachIndex`) rather than decided by
+    an `if` here, so adding a fixture cannot silently inherit the wrong index.
   */
-  const index =
-    FIXTURE_PATH || DEV_FORMAT === 'PDF'
-      ? undefined
-      : (await encrypt(utf8Encode(JSON.stringify(SAMPLE_SEARCH_INDEX)), bek)).content;
+  const index = fixture.attachIndex
+    ? (await encrypt(utf8Encode(JSON.stringify(SAMPLE_SEARCH_INDEX)), bek)).content
+    : undefined;
   // Deliberately the SAME function the real download path uses (downloadManager.ts), not a local
   // sha256 of the PEM text. Both fields below get this one value, so a hand-rolled digest would
   // also satisfy contentStore's licence/encryption fingerprint check — and would mean the one
@@ -201,7 +280,7 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
     // guess — which is the point: this path now rehearses the same routing a downloaded
     // book will use. What it is NOT is a solution to finding B12: this value is only as
     // true as the seed, and a real book still gets whatever `downloadBook()` was passed.
-    format: DEV_FORMAT,
+    format: fixture.format,
     content: payload.content, // nonce(12) || ciphertext || tag(16)
     index,
     encryption: {
@@ -215,7 +294,7 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
     licence,
     cipherLength: payload.cipherLength,
     originalLength: payload.originalLength,
-    mimeType: DEV_FORMAT === 'PDF' ? PDF_MIME_TYPE : EPUB_MIME_TYPE,
+    mimeType: fixture.mimeType,
   };
 }
 
@@ -284,6 +363,6 @@ export async function ensureSeeded(bookId: BookId): Promise<void> {
   }
 
   await contentStore.destroy(bookId);
-  await contentStore.store(await buildPackage(bookId, await sampleBookBytes()));
+  await contentStore.store(await buildPackage(bookId, await sampleBookBytes(bookId)));
   seedMarker(bookId).write(String(SEED_VERSION));
 }

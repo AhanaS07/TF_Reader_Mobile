@@ -132,18 +132,50 @@ interface ReaderScreenProps {
    * REQUIRED, deliberately: while it was optional the teardown effect below hit
    * an early return and never ran, so the "wipe on close" guarantee was dead
    * code. Making it required is what keeps that from silently regressing.
+   *
+   * >>> CALLERS MUST KEY THIS COMPONENT ON bookId: <ReaderScreen key={id} bookId={id} /> <<<
+   * EVERY piece of state below belongs to one book — the resolved format, the shell URI,
+   * the command sender, the TOC, the error banner. There is nothing worth carrying from
+   * one book to the next, and carrying it is actively wrong: a stale `format` would send
+   * `openEpub` to a PDF shell (which defines only `openPdf`, so it answers NOT_READY),
+   * and a stale `toc` would list the previous book's chapters under the new one's
+   * Contents button. Remounting resets all of it in one move, which is why this is a key
+   * rather than a pile of resets in the effect below — React forbids those anyway
+   * (`react-hooks/set-state-in-effect`), and it is the wrong idiom for "reset on prop
+   * change". A navigator gives each route its own instance and satisfies this for free;
+   * App.tsx's temporary dev picker has to do it by hand.
    */
   bookId: BookId;
 }
 
 export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
-  const [htmlUri, setHtmlUri] = useState<string | null>(null);
+  /**
+   * The book's format and its matching shell — TAGGED WITH THE bookId THEY BELONG TO,
+   * and set as ONE value so they can never disagree.
+   *
+   * Two reasons for the shape. First, atomicity: `format` picks the open command and
+   * `htmlUri` picks the shell that implements it, so a render where one had updated and
+   * the other had not would send `openEpub` to a PDF shell — which defines only
+   * `openPdf` and answers NOT_READY.
+   *
+   * Second, the tag makes a stale value IMPOSSIBLE TO READ rather than merely unlikely.
+   * Callers are told to key this component on bookId (see the prop doc), but a caller
+   * that forgets would otherwise keep the previous book's renderer and open the wrong
+   * one silently. Comparing the tag below costs nothing and turns that into a
+   * guaranteed miss instead. Resetting in an effect would be the other way to do it,
+   * and it is both the wrong idiom for "reset on prop change" and forbidden by
+   * `react-hooks/set-state-in-effect`.
+   */
+  const [resolved, setResolved] = useState<{
+    bookId: BookId;
+    format: ContentFormat;
+    htmlUri: string;
+  } | null>(null);
 
-  // Which renderer this book needs. Drives BOTH the shell that gets loaded and the
-  // open command that gets sent, so the two can never disagree — a PDF shell asked
-  // to openEpub would answer NOT_READY, which is a confusing way to learn about a
-  // routing bug.
-  const [format, setFormat] = useState<ContentFormat | null>(null);
+  const current = resolved?.bookId === bookId ? resolved : null;
+  const format = current?.format ?? null;
+  const htmlUri = current?.htmlUri ?? null;
+
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [showToc, setShowToc] = useState(false);
@@ -254,12 +286,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
     void (async () => {
       try {
-        const resolved = await prepareBook(bookId);
+        const bookFormat = await prepareBook(bookId);
         if (cancelled) return;
-        setFormat(resolved);
 
-        const uri = await getReaderHtmlUri(resolved);
-        if (!cancelled) setHtmlUri(uri);
+        const uri = await getReaderHtmlUri(bookFormat);
+        if (cancelled) return;
+
+        // ONE setState, after BOTH are known — see the note on `resolved` above for why
+        // a half-updated pair is the bug worth designing out.
+        setResolved({ bookId, format: bookFormat, htmlUri: uri });
       } catch (cause) {
         if (cancelled) return;
 
@@ -526,8 +561,18 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       </View>
 
       <View style={styles.viewer}>
+        {/*
+          ReaderWebView is KEYED ON THE SHELL URI, so a different shell is a different
+          component instance rather than the same one told to navigate. ReaderWebView
+          holds `isReady` and arms the READY_TIMEOUT once; reusing it across a shell
+          swap would leave it believing the bridge is already up, so the new document's
+          `ready` would arrive at a component that had stopped waiting for it — and
+          nothing would ever send the open command. Remounting is also what tears down
+          the old document holding decrypted content.
+        */}
         {htmlUri !== null && (
           <ReaderWebView
+            key={htmlUri}
             sourceUri={htmlUri}
             onMessage={handleMessage}
             onHostError={raiseError}
