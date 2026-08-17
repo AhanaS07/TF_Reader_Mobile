@@ -9,20 +9,33 @@
 // Semantics (from the design note):
 //   • The term is tokenized with the SAME rules as the index (text.ts).
 //   • Single token -> every posting for that word, in reading order.
-//   • Multi-word -> AND of tokens within one addressing UNIT (page for PDF,
-//     chapter for EPUB): return postings of the query words that live in a unit
-//     containing ALL query tokens. No phrase/adjacency matching in the prototype.
+//   • Multi-word -> PHRASE match: the query words must appear SIDE BY SIDE, in
+//     order, within one text node (EPUB) / page (PDF). The hit is emitted at the
+//     phrase's FIRST word, so Reader seeks to the start of the phrase. Words that
+//     merely co-occur do NOT match: "finding chapter" does not match the text
+//     "finding a chapter" because they are not adjacent. (This replaces the
+//     earlier AND-within-a-unit rule, which returned every posting of every token
+//     in any unit holding them all.)
 
-import type { BookSearchIndex, Locator, Posting, SearchHit } from '@/shared/contracts';
+import type { BookSearchIndex, Posting, SearchHit } from '@/shared/contracts';
 import { termTokens } from './text';
 
 /**
- * The addressing unit a posting belongs to, per the AND rule: page for PDF,
- * chapter for EPUB. Stringified so it keys a Set/Map uniformly.
+ * A posting's position as the (text-node/page, char-offset) pair phrase matching
+ * needs. EPUB: the CFI's node path and its terminal `:offset`. PDF: the page and
+ * `locator.offset`. Null when there is no offset to compare — a PDF posting
+ * without one cannot be adjacency-checked, so it can never be part of a phrase.
  */
-function unitKey(posting: Posting): string {
-  const loc: Locator = posting.locator;
-  return loc.type === 'PDF' ? `p:${loc.page}` : `c:${posting.chapterId}`;
+function postingPosition(posting: Posting): { node: string; offset: number } | null {
+  const loc = posting.locator;
+  if (loc.type === 'PDF') {
+    return loc.offset == null ? null : { node: `p:${loc.page}`, offset: loc.offset };
+  }
+  // A point CFI is `epubcfi(<path>:<charOffset>)`. The terminal char offset is the
+  // only ':' (the spine `!` and `[id]` assertions carry none), so split on the last.
+  const m = /^(.*):(\d+)\)?$/.exec(loc.cfi);
+  if (!m) return { node: loc.cfi, offset: 0 };
+  return { node: m[1], offset: Number(m[2]) };
 }
 
 /**
@@ -78,41 +91,68 @@ function toHit(bookId: string, posting: Posting): SearchHit {
  * yield `[]`.
  */
 export function queryIndex(index: BookSearchIndex, term: string): SearchHit[] {
+  // Ordered, NOT deduped: a phrase needs word order and can repeat a word
+  // ("the the"), unlike the old AND rule which only cared about presence.
   const tokens = termTokens(term);
   if (tokens.length === 0) return [];
 
-  // Postings per query token (dedup tokens so a repeated word isn't over-counted).
-  const uniqueTokens = [...new Set(tokens)];
-  const perToken = uniqueTokens.map((t) => index.index[t] ?? []);
+  const perToken = tokens.map((t) => index.index[t] ?? []);
 
-  // Any token missing entirely -> the AND can never be satisfied.
+  // Any token missing entirely -> the phrase can never occur.
   if (perToken.some((postings) => postings.length === 0)) return [];
 
   let matches: Posting[];
-  if (perToken.length === 1) {
+  if (tokens.length === 1) {
     matches = perToken[0];
   } else {
-    // Units that contain EVERY query token.
-    const unitsPerToken = perToken.map((postings) => new Set(postings.map(unitKey)));
-    const commonUnits = unitsPerToken.reduce((acc, units) => {
-      const next = new Set<string>();
-      for (const u of acc) if (units.has(u)) next.add(u);
-      return next;
-    });
-    if (commonUnits.size === 0) return [];
+    // A following word may sit at most this many separator chars past the previous
+    // word's end. 1 is a single space; 2 also allows "a, b" or a double space. A gap
+    // of 3+ has room for another word between them (a word is >=1 char with a
+    // separator each side), so it is no longer "side by side".
+    const MAX_SEP_GAP = 2;
 
-    // Return the query words' postings that live in a qualifying unit. Dedup by
-    // identity so a word appearing once isn't emitted twice.
-    const seen = new Set<Posting>();
-    matches = [];
-    for (const postings of perToken) {
+    // Index each token's occurrences by node -> offset -> posting, so extending a
+    // candidate phrase by one word is an O(1) lookup rather than a scan.
+    const byNodeOffset = perToken.map((postings) => {
+      const nodes = new Map<string, Map<number, Posting>>();
       for (const p of postings) {
-        if (commonUnits.has(unitKey(p)) && !seen.has(p)) {
-          seen.add(p);
-          matches.push(p);
-        }
+        const pos = postingPosition(p);
+        if (!pos) continue;
+        let offsets = nodes.get(pos.node);
+        if (!offsets) nodes.set(pos.node, (offsets = new Map()));
+        offsets.set(pos.offset, p);
       }
+      return nodes;
+    });
+
+    // A phrase hit is a first-word occurrence from which every later token can be
+    // reached, each adjacent to the one before, in the same node. Emit the first
+    // word so Reader seeks to the phrase start.
+    matches = [];
+    for (const first of perToken[0]) {
+      const start = postingPosition(first);
+      if (!start) continue;
+      let offset = start.offset;
+      let complete = true;
+      for (let i = 1; i < tokens.length; i++) {
+        const prevEnd = offset + tokens[i - 1].length;
+        const offsets = byNodeOffset[i].get(start.node);
+        let nextOffset = -1;
+        for (let gap = 1; gap <= MAX_SEP_GAP; gap++) {
+          if (offsets?.has(prevEnd + gap)) {
+            nextOffset = prevEnd + gap;
+            break;
+          }
+        }
+        if (nextOffset < 0) {
+          complete = false;
+          break;
+        }
+        offset = nextOffset;
+      }
+      if (complete) matches.push(first);
     }
+    if (matches.length === 0) return [];
   }
 
   return [...matches].sort(readingOrder).map((p) => toHit(index.bookId, p));
