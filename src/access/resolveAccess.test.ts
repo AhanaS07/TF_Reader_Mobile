@@ -243,6 +243,60 @@ describe('resolveAccess', () => {
       expect(result.offerExpiresAt).toBe('2026-08-17T10:30:00Z');
     });
 
+    // An expiry without a reference instant is only measurable against the device
+    // clock, which is the one clock the countdown may not use. The two travel
+    // together or the rule on `offerExpiresAt` cannot be kept.
+    it('3 · carries the server clock alongside the expiry, not just the expiry', () => {
+      const result = resolve({
+        item: elite(),
+        hold: aHold('offered', {
+          offerExpiresAt: '2026-08-17T10:30:00Z',
+          serverTime: '2026-08-17T10:00:00Z',
+        }),
+      });
+      expect(result.serverTime).toBe('2026-08-17T10:00:00Z');
+    });
+
+    // Absent rather than explicitly undefined, so a result stays deep-equal to the
+    // obvious literal — the same rule the other three optional fields follow.
+    it('3 · omits the server clock entirely when the hold carries none', () => {
+      const result = resolve({ item: elite(), hold: aHold('offered') });
+      expect('serverTime' in result).toBe(false);
+    });
+
+    // The server clock rides with the OFFER and nothing else. flambeau mark it
+    // required on every hold response, so a queued hold has one to leak — and
+    // `AccessResult.serverTime` promises it appears only when state is 'offered'.
+    // Without the gate the constructor copies it across and quietly breaks that
+    // promise, which is a comment going stale rather than a screen going wrong:
+    // there is no countdown in the queued state to render it against.
+    it('2 · withholds the server clock from a queued reader, who has no countdown', () => {
+      const result = resolve({
+        item: elite(),
+        hold: aHold('queued', { position: 4, serverTime: '2026-08-17T10:00:00Z' }),
+      });
+      expect(result.state).toBe('queued');
+      expect('serverTime' in result).toBe(false);
+      // The position still travels — the gate is on the clock alone, not on the
+      // whole hold.
+      expect(result.queuePosition).toBe(4);
+    });
+
+    // A missed offer is not restored to its old place, so the reader is back to
+    // asking from scratch — the same button as never having asked.
+    it('3 · a lapsed offer resolves to Grant access, not back to queued', () => {
+      const result = resolve({ item: elite(), hold: aHold('expired') });
+      expect(result.state).toBe('requires_grant');
+      expect(result.actions).toEqual(['grantAccess']);
+    });
+
+    // The reader lost their place, so there is no position to report. Reporting the
+    // one they used to have would be worse than reporting none.
+    it('3 · a lapsed offer carries no queue position', () => {
+      const result = resolve({ item: elite(), hold: aHold('expired', { position: 1 }) });
+      expect('queuePosition' in result).toBe(false);
+    });
+
     // Both routes to an offer must be indistinguishable, because one component
     // serves both. An offer straight back from the tap and one that arrived by
     // notification differ only in when they happened.

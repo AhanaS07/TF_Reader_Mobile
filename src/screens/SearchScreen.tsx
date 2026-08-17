@@ -15,11 +15,11 @@
 // they remember from chapter nine, get nothing, and reasonably decide the app is
 // broken.
 //
-// NO ACCESS BADGE, for the reason CatalogueScreen already documents:
-// `ContentCard`'s `badge` slot takes already-resolved UI, and
-// `src/access/resolveAccess` does not exist yet. Deriving one from
-// `publication.acquisition` here is exactly the Design Spec §5.1 violation the
-// slot exists to prevent.
+// NO ACCESS BADGE, for the reason CatalogueScreen already documents — but note
+// that `resolveAccess` is no longer that reason: it landed and is on main, and
+// only the wiring is outstanding. `ContentCard`'s `badge` slot takes
+// already-resolved UI, and deriving one from `publication.acquisition` here is
+// still exactly the Design Spec §5.1 violation the slot exists to prevent.
 //
 // THE EMPTY / ERROR TREATMENTS ARE INLINE AND TEMPORARY. Khushi's `EmptyState`
 // (K1) owns this copy. Building a second one here would break the rule the spec

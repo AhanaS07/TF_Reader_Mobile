@@ -14,11 +14,15 @@
 // `institutionId` comes from the institution store, falling back to inst_7f3
 // until one is selected. The picker above the category row changes it.
 //
-// NO ACCESS BADGE YET. `ContentCard`'s `badge` slot takes already-resolved UI
-// (Design Spec §5.1 — the UI must never calculate access rights), and
-// `src/access/resolveAccess` does not exist yet. Reaching into
-// `publication.acquisition` here to fake one would be exactly the violation that
-// rule exists to prevent, so the slot is left empty until resolveAccess lands.
+// NO ACCESS BADGE YET, AND `resolveAccess` IS NO LONGER THE REASON — it landed
+// and is on main. `ContentCard`'s `badge` slot takes already-resolved UI (Design
+// Spec §5.1 — the UI must never calculate access rights), and reaching into
+// `publication.acquisition` here to fake one is still exactly the violation that
+// rule exists to prevent. What is left is the wiring, and nothing blocks it:
+// `resolveAccess` takes `session: null` with no loan and no hold and resolves
+// Open Access, Subscription and Elite-with-nothing-held correctly, which is
+// precisely so a list can be wired before the session store exists. Call it per
+// row and pass the result to the slot; do not derive a badge here.
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';

@@ -185,7 +185,24 @@ export interface Publication {
   description?: string;
   numberOfPages?: number;
   // Derived from the acquisition link's mime type, not from metadata.
-  format: ContentFormat;
+  //
+  // OPTIONAL, AND ONLY FOR SUBSCRIBE TITLES — 17 Aug. A `subscribe` link leads to
+  // a page explaining how to get access, not to a file, so it carries no
+  // `indirectAcquisition` and there is no type to read. Before this these
+  // publications were rejected as malformed at the adapter boundary, which meant
+  // `resolveAccess`'s subscribe case was correct and unreachable: the only titles
+  // that could produce it never got past normalize.
+  //
+  // ABSENCE MEANS "METADATA, NO FILE" AND NOTHING ELSE. It is not "unknown" and it
+  // is not a default to fill in. Every other rel still throws when the type is
+  // missing, because a borrowable title we cannot name a format for is a broken
+  // feed and would surface later as a row that opens nothing.
+  //
+  // A CALLER THAT NEEDS A FORMAT SHOULD ASK FOR THE ACTION FIRST. There is no
+  // Read or Download button on a subscribe title — `resolveAccess` returns
+  // `requires_subscription` with `['subscribe']` — so no code path that opens a
+  // file can reach a publication with no format.
+  format?: ContentFormat;
   // Widest supplied image; the narrowest becomes thumbnailUrl. Both optional —
   // a publication with no cover renders a placeholder, it is not an error.
   coverUrl?: string;
@@ -337,7 +354,19 @@ export const ACCESS_STATES = [
 ] as const;
 export type AccessState = (typeof ACCESS_STATES)[number];
 
-// wokay's enumerated failure reasons. ErrorState copy is keyed on these.
+// BOTH BACKENDS' enumerated failure reasons, not just wokay's — the comment here
+// used to say wokay and the list was short by nine as a result. ErrorState copy is
+// keyed on these, and that copy is Moktik's D14 rather than this file's business:
+// what lives here is only the vocabulary.
+//
+// KEYED ON `code`, NEVER ON HTTP STATUS. The two contracts already disagree once —
+// `DOWNLOAD_NOT_PERMITTED` is 403 in wokay's document and 422 in flambeau's — and
+// keying on the code costs us nothing when they do.
+//
+// WHAT IS DELIBERATELY ABSENT: wokay's `CODE_TAKEN` and `STALE_VERSION`. Both are
+// admin-surface codes from the publisher and collection endpoints, which team1
+// never calls, and a code we cannot receive is one nobody should be writing copy
+// for.
 export const ERROR_CODES = [
   'UNAUTHENTICATED',
   'TOKEN_EXPIRED',
@@ -349,6 +378,31 @@ export const ERROR_CODES = [
   'DOWNLOAD_NOT_PERMITTED',
   'INVALID_DEVICE_PUBLIC_KEY',
   'NOT_FOUND',
+  // ── the licence calls ──────────────────────────────────────────────────────
+  //
+  // FIVE OF THESE ARE NEW WITH flambeau's CONTRACT and still need ratifying at
+  // the Contracts Gate: NO_COPIES_AVAILABLE, NO_ACTIVE_LOAN, LOAN_NOT_ACTIVE,
+  // DEVICE_LIMIT_REACHED, OFFER_EXPIRED. They go in now because the offer store
+  // has to key on one of them this week, and a code absent from the union is a
+  // code no error state can name.
+  //
+  // `OFFER_EXPIRED` IS AN ORDINARY REPLY, NOT AN ERROR STATE. flambeau are
+  // explicit: "the ordinary failure, not an exceptional one" — offers lapse on a
+  // schedule and the app is often a few seconds behind. It needs its own sentence
+  // saying the window closed AND that the reader is now at the back of the queue,
+  // because that second half is the part they will not guess.
+  'NO_COPIES_AVAILABLE',
+  'NO_ACTIVE_LOAN',
+  'LOAN_NOT_ACTIVE',
+  'DEVICE_LIMIT_REACHED',
+  'OFFER_EXPIRED',
+  // ── in both contracts, missing from ours ───────────────────────────────────
+  'VALIDATION_FAILED',
+  'FORBIDDEN_SCOPE',
+  'INSTITUTION_INACTIVE',
+  // wokay's `items:batch` refusing more than 100 ids. Prayas's get-many-books
+  // call, which is Week 3 — but the code is receivable and costs one line.
+  'TOO_MANY_IDS',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -402,6 +456,24 @@ export interface Session {
 // there is no fourth `'unknown'` value — a resolve that cannot be trusted is the
 // ActionBar's `error` state, not a licence state.
 export interface Loan {
+  // flambeau's id for this loan, and the ONLY thing that can revoke it:
+  // `POST /api/v1/loans/{loanId}/return` takes it as a path parameter, on an
+  // endpoint marked FROZEN. There is no item-keyed return.
+  //
+  // THIS QUALIFIES `LicenceRef`'s "deliberately not a loan id" below. That
+  // reasoning is right about which calls are *addressed* by the triple — borrow
+  // and open-a-reading-session are — but return is not one of them, so refusing
+  // to carry the id is what makes a Revoke button unfireable. Carried here, on
+  // the loan itself, rather than threaded through components.
+  //
+  // OPTIONAL BECAUSE `state: 'none'` MEANS ABSENCE. flambeau never sends a loan
+  // with no id; `'none'` is our own sentinel for "nothing held", and nothing
+  // held has no id to name. The invariant that matters is narrower: whenever
+  // `state` is `'active'`, this is present, because that is the only state whose
+  // resolve offers `revokeLicence`. A discriminated union would say so to the
+  // compiler; it would also rewrite every fixture, so it is a candidate for
+  // later rather than a thing to do while unblocking Task 1.
+  loanId?: string;
   itemId: string;
   state: 'none' | 'active' | 'expired';
   expiresAt?: number;
@@ -425,8 +497,41 @@ export interface Loan {
 // these three values comes back, so the seat count is never needed to pick a
 // button. See `Availability` below.
 export interface Hold {
+  // flambeau's id for this hold, and what Accept and Reject are addressed to:
+  // `POST /api/v1/holds/{holdId}/accept` takes it as a path parameter. Same
+  // argument as `Loan.loanId` above, and optional for the same reason — a
+  // `state: 'none'` hold is absence and names nothing. Present whenever `state`
+  // is `'queued'` or `'offered'`.
+  //
+  // NOTE THE STABILITY DIFFERENCE: the hold endpoints are `x-stability: DRAFT`
+  // where the loan ones are FROZEN, so this field rests on a shape flambeau may
+  // still change. Worth a heads-up to them rather than a guard here.
+  holdId?: string;
+  // flambeau's id for the OFFER, which is not the same identity as the hold.
+  //
+  // WHY BOTH. `holdId` is stable from the moment a reader joins the queue and
+  // survives queued → offered → lapsed, so it cannot tell two successive offers
+  // apart. The rule that the offer store must not let a second offer silently
+  // replace a first one is therefore unenforceable on `holdId` alone: the same
+  // hold legitimately produces offer after offer. This is what makes "is this the
+  // offer I am already holding?" answerable.
+  //
+  // NOT WHAT ACCEPT AND REJECT ARE ADDRESSED TO — those take `holdId` in the
+  // path. This is for identity, not for calls. Present only while state is
+  // 'offered'.
+  offerId?: string;
   itemId: string;
-  state: 'none' | 'queued' | 'offered';
+  // 'expired' IS A REAL STATE AND NOT A TIDY-UP. An offer that lapses does not
+  // return the reader to their old place — flambeau: "the hold is gone rather
+  // than restored to its old position: a reader who missed their turn rejoins at
+  // the back". So a lapsed offer is behaviourally the same as never having asked,
+  // which is why it resolves to `requires_grant` and not to `queued`. It is kept
+  // distinct from 'none' anyway, because the two are the same ACTION and a very
+  // different thing to say to the reader, and only the store can tell them apart.
+  //
+  // NOTHING DERIVES THIS FROM A CLOCK INSIDE resolveAccess. See `isOfferLapsed`
+  // in src/access — the resolve stays pure and is handed the answer.
+  state: 'none' | 'queued' | 'offered' | 'expired';
   // The reader's place, 1-based. Present when state is 'queued' — it is the whole
   // of what a waiting reader is shown. Absent when 'offered', because their turn
   // has arrived and a position is no longer a fact about them.
@@ -439,6 +544,19 @@ export interface Hold {
   // device's, because a device clock that is wrong turns a live offer into an
   // expired one on screen. Present when state is 'offered'.
   offerExpiresAt?: string;
+  // The server's clock as at the response that carried this hold, ISO-8601.
+  //
+  // THE OTHER HALF OF `offerExpiresAt`, and without it that field's rule cannot
+  // be honoured. An absolute expiry on its own only yields a countdown when
+  // something subtracts a now from it, and the only now available to a component
+  // is `Date.now()` — the device clock the comment above forbids. flambeau send
+  // this on every loan and hold response and mark it required; we were dropping
+  // it at this boundary, so the rule was unfollowable rather than unfollowed.
+  //
+  // NOT A CLOCK, AND IT GOES STALE. It is the instant the response was written,
+  // so a countdown driven off it must add the elapsed time since the response
+  // arrived. That belongs in the offer store, which knows when it fetched.
+  serverTime?: string;
 }
 
 // The three things that identify one reader's relationship to one title, which is
@@ -540,6 +658,16 @@ export interface AccessResult {
   // When the offer stops standing, ISO-8601 and absolute. Present only when state
   // is `offered`. Rendered against the server's clock, never the device's.
   offerExpiresAt?: string;
+  // The server's clock as at the response the offer came from, ISO-8601, copied
+  // out of the `Hold` alongside `offerExpiresAt`. Present only when state is
+  // `offered`.
+  //
+  // HERE BECAUSE THE LINE ABOVE PROMISES IT. "Rendered against the server's
+  // clock" is not something a component can do while the only now it can reach
+  // is its own; shipping the expiry without the reference instant is what turns
+  // that rule into a `Date.now()` call. See `Hold.serverTime` for why it is a
+  // stale instant rather than a clock.
+  serverTime?: string;
 }
 
 // wokay's error envelope, on every non-2xx. `code` is what ErrorState renders
