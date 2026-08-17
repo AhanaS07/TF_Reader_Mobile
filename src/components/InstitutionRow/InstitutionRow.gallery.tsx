@@ -9,16 +9,20 @@ const WITH_CREST: Institution = {
   id: 'inst_7f3',
   name: 'Imperial College London',
   country: 'United Kingdom',
-  crestUrl: 'https://cdn.tf/crests/inst_7f3.png',
-  authType: 'saml',
+  code: 'ICL',
+  city: 'London',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+  branding: { logoUrl: 'https://cdn.tf/crests/inst_7f3.png' },
 };
 
-// inst_c88 has no crestUrl in the fixture — exercises the initials fallback.
+// inst_c88 has no branding in the fixture — exercises the initials fallback.
 const NO_CREST: Institution = {
   id: 'inst_c88',
   name: 'Kwame Nkrumah University of Science and Technology',
   country: 'Ghana',
-  authType: 'oidc',
+  code: 'KNUST',
+  city: 'Kumasi',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_c88/catalogue',
 };
 
 // inst_09c has the longest name in the fixture — exercises 2-line truncation.
@@ -26,7 +30,9 @@ const LONG_NAME: Institution = {
   id: 'inst_09c',
   name: 'The Royal Netherlands Institute for Southeast Asian and Caribbean Studies',
   country: 'Netherlands',
-  authType: 'email',
+  code: 'KITLV',
+  city: 'Leiden',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_09c/catalogue',
 };
 
 export default function InstitutionRowGallery() {
