@@ -243,6 +243,27 @@ describe('resolveAccess', () => {
       expect(result.offerExpiresAt).toBe('2026-08-17T10:30:00Z');
     });
 
+    // An expiry without a reference instant is only measurable against the device
+    // clock, which is the one clock the countdown may not use. The two travel
+    // together or the rule on `offerExpiresAt` cannot be kept.
+    it('3 · carries the server clock alongside the expiry, not just the expiry', () => {
+      const result = resolve({
+        item: elite(),
+        hold: aHold('offered', {
+          offerExpiresAt: '2026-08-17T10:30:00Z',
+          serverTime: '2026-08-17T10:00:00Z',
+        }),
+      });
+      expect(result.serverTime).toBe('2026-08-17T10:00:00Z');
+    });
+
+    // Absent rather than explicitly undefined, so a result stays deep-equal to the
+    // obvious literal — the same rule the other three optional fields follow.
+    it('3 · omits the server clock entirely when the hold carries none', () => {
+      const result = resolve({ item: elite(), hold: aHold('offered') });
+      expect('serverTime' in result).toBe(false);
+    });
+
     // Both routes to an offer must be indistinguishable, because one component
     // serves both. An offer straight back from the tap and one that arrived by
     // notification differ only in when they happened.

@@ -402,6 +402,24 @@ export interface Session {
 // there is no fourth `'unknown'` value — a resolve that cannot be trusted is the
 // ActionBar's `error` state, not a licence state.
 export interface Loan {
+  // flambeau's id for this loan, and the ONLY thing that can revoke it:
+  // `POST /api/v1/loans/{loanId}/return` takes it as a path parameter, on an
+  // endpoint marked FROZEN. There is no item-keyed return.
+  //
+  // THIS QUALIFIES `LicenceRef`'s "deliberately not a loan id" below. That
+  // reasoning is right about which calls are *addressed* by the triple — borrow
+  // and open-a-reading-session are — but return is not one of them, so refusing
+  // to carry the id is what makes a Revoke button unfireable. Carried here, on
+  // the loan itself, rather than threaded through components.
+  //
+  // OPTIONAL BECAUSE `state: 'none'` MEANS ABSENCE. flambeau never sends a loan
+  // with no id; `'none'` is our own sentinel for "nothing held", and nothing
+  // held has no id to name. The invariant that matters is narrower: whenever
+  // `state` is `'active'`, this is present, because that is the only state whose
+  // resolve offers `revokeLicence`. A discriminated union would say so to the
+  // compiler; it would also rewrite every fixture, so it is a candidate for
+  // later rather than a thing to do while unblocking Task 1.
+  loanId?: string;
   itemId: string;
   state: 'none' | 'active' | 'expired';
   expiresAt?: number;
@@ -425,6 +443,16 @@ export interface Loan {
 // these three values comes back, so the seat count is never needed to pick a
 // button. See `Availability` below.
 export interface Hold {
+  // flambeau's id for this hold, and what Accept and Reject are addressed to:
+  // `POST /api/v1/holds/{holdId}/accept` takes it as a path parameter. Same
+  // argument as `Loan.loanId` above, and optional for the same reason — a
+  // `state: 'none'` hold is absence and names nothing. Present whenever `state`
+  // is `'queued'` or `'offered'`.
+  //
+  // NOTE THE STABILITY DIFFERENCE: the hold endpoints are `x-stability: DRAFT`
+  // where the loan ones are FROZEN, so this field rests on a shape flambeau may
+  // still change. Worth a heads-up to them rather than a guard here.
+  holdId?: string;
   itemId: string;
   state: 'none' | 'queued' | 'offered';
   // The reader's place, 1-based. Present when state is 'queued' — it is the whole
@@ -439,6 +467,19 @@ export interface Hold {
   // device's, because a device clock that is wrong turns a live offer into an
   // expired one on screen. Present when state is 'offered'.
   offerExpiresAt?: string;
+  // The server's clock as at the response that carried this hold, ISO-8601.
+  //
+  // THE OTHER HALF OF `offerExpiresAt`, and without it that field's rule cannot
+  // be honoured. An absolute expiry on its own only yields a countdown when
+  // something subtracts a now from it, and the only now available to a component
+  // is `Date.now()` — the device clock the comment above forbids. flambeau send
+  // this on every loan and hold response and mark it required; we were dropping
+  // it at this boundary, so the rule was unfollowable rather than unfollowed.
+  //
+  // NOT A CLOCK, AND IT GOES STALE. It is the instant the response was written,
+  // so a countdown driven off it must add the elapsed time since the response
+  // arrived. That belongs in the offer store, which knows when it fetched.
+  serverTime?: string;
 }
 
 // The three things that identify one reader's relationship to one title, which is
@@ -540,6 +581,16 @@ export interface AccessResult {
   // When the offer stops standing, ISO-8601 and absolute. Present only when state
   // is `offered`. Rendered against the server's clock, never the device's.
   offerExpiresAt?: string;
+  // The server's clock as at the response the offer came from, ISO-8601, copied
+  // out of the `Hold` alongside `offerExpiresAt`. Present only when state is
+  // `offered`.
+  //
+  // HERE BECAUSE THE LINE ABOVE PROMISES IT. "Rendered against the server's
+  // clock" is not something a component can do while the only now it can reach
+  // is its own; shipping the expiry without the reference instant is what turns
+  // that rule into a `Date.now()` call. See `Hold.serverTime` for why it is a
+  // stale instant rather than a clock.
+  serverTime?: string;
 }
 
 // wokay's error envelope, on every non-2xx. `code` is what ErrorState renders

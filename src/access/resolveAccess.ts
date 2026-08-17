@@ -251,6 +251,10 @@ function result(
     ...(hold?.position !== undefined ? { queuePosition: hold.position } : {}),
     ...(hold?.queueLength !== undefined ? { queueLength: hold.queueLength } : {}),
     ...(hold?.offerExpiresAt !== undefined ? { offerExpiresAt: hold.offerExpiresAt } : {}),
+    // Copied out beside `offerExpiresAt` and for its sake — an absolute expiry
+    // with no reference instant can only be measured against the device clock,
+    // which is the one thing the offer countdown may not do.
+    ...(hold?.serverTime !== undefined ? { serverTime: hold.serverTime } : {}),
   };
 }
 

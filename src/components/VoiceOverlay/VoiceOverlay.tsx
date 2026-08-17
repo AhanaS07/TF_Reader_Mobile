@@ -13,10 +13,13 @@
 // finished transcript with nowhere to go but discard. Both are optional, so a
 // caller that only wants cancel still gets exactly the spec's contract.
 //
-// The two buttons are local Pressables, not a shared component, because
-// `ActionButton` (Akriti, Day 3) does not exist yet. They are a part used by one
-// component, which CONVENTIONS §1 puts beside it — but when ActionButton lands,
-// these should become it rather than becoming a second button vocabulary.
+// The two buttons are local Pressables, not a shared component, and the reason
+// has expired: `ActionButton` has landed (`src/components/ActionButton`). They
+// are a part used by one component, which CONVENTIONS §1 puts beside it — but
+// the note below was always "when ActionButton lands, these should become it
+// rather than a second button vocabulary", and it has. Search and Clear are not
+// in `ACTION_IDS` and should not be added to it — that union is access actions
+// only — so this is a swap to `ActionButton`'s presentation, not a new action.
 import { useEffect, useState } from 'react';
 import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
