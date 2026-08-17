@@ -12,10 +12,10 @@
 // told — which dimensions exist, which are on, and how many values each holds all
 // belong to the pipeline (CONVENTIONS §3).
 //
-// Q-12 (open): with no `accessTier` field on any surface we consume, it is
-// unsettled whether access state is a filter dimension at all. Nothing here names
-// a dimension, so the answer either way is a change to the caller's list, not to
-// this file — which is what "wired but empty, not crashed" requires.
+// Q-12 (resolved): wokay's contract confirms `accessTier` as a real filter
+// parameter. Nothing here names a dimension — that decision belongs to the
+// caller's list (see `ACCESS_TIER_FILTER_CONFIRMED` in `searchLink.ts`) — which
+// is what let the answer land as a change to the caller, not to this file.
 import { Pressable, StyleSheet, Text } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 

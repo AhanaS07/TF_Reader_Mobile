@@ -96,6 +96,18 @@ export type ActionId = (typeof ACTION_IDS)[number];
 export const ACCESS_TIERS = ['OPEN_ACCESS', 'SUBSCRIPTION', 'ELITE'] as const;
 export type AccessTier = (typeof ACCESS_TIERS)[number];
 
+// The one sort vocabulary in the system (wokay-api.yaml `SortOrder`). Applies to
+// `?sort=` on the "all" shelf only — a curated shelf ignores it, the operator's
+// hand-picked order being the order. Not used by catalogue search: the search
+// endpoint's own parameter list has no `sort`.
+export const SORT_ORDERS = [
+  'publishedAt.desc',
+  'publishedAt.asc',
+  'title.asc',
+  'title.desc',
+] as const;
+export type SortOrder = (typeof SORT_ORDERS)[number];
+
 // The subset of the OPDS `encrypted` block the catalogue legitimately knows.
 //
 // DELIBERATELY NARROW. `EncryptionDescriptor` in shared/contracts carries

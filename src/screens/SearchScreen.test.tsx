@@ -278,10 +278,9 @@ describe('filters are part of the request', () => {
   });
 });
 
-// Q-12: with no tier field on any surface we consume, whether `?accessTier=` is a
-// valid parameter is unanswered. The dimension is shown and disabled rather than
-// hidden — dropping it would make the filter set look complete when it is not.
-describe('access tier is shown and disabled while Q-12 is open', () => {
+// Q-12 resolved: wokay's contract confirms `accessTier` as a real filter
+// parameter, so the dimension is enabled and a selected tier is sent.
+describe('access tier is enabled now that Q-12 is resolved', () => {
   it('renders a chip per tier', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
@@ -291,25 +290,25 @@ describe('access tier is shown and disabled while Q-12 is open', () => {
     expect(screen.getByLabelText('Elite')).toBeTruthy();
   });
 
-  it('announces every tier chip as disabled', async () => {
+  it('announces every tier chip as enabled', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
     for (const label of ['Open access', 'Subscription', 'Elite']) {
       expect(screen.getByLabelText(label).props.accessibilityState).toMatchObject({
-        disabled: true,
+        disabled: false,
       });
     }
   });
 
-  it('says why, rather than leaving a greyed control unexplained', async () => {
+  it('shows no "awaiting confirmation" note', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
-    expect(screen.getByTestId('search-tier-note')).toBeTruthy();
+    expect(screen.queryByTestId('search-tier-note')).toBeNull();
   });
 
-  it('sends no tier parameter when a tier chip is pressed', async () => {
+  it('starts a new search carrying the tier when a tier chip is pressed', async () => {
     const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
     setSearchPipeline(pipeline);
     await render(<SearchScreen />);
@@ -319,7 +318,8 @@ describe('access tier is shown and disabled while Q-12 is open', () => {
 
     await fireEvent.press(screen.getByLabelText('Elite'));
 
-    expect(pipeline.searchCalls).toHaveLength(1);
+    await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
+    expect(pipeline.searchCalls[1]?.filters).toEqual({ accessTier: 'ELITE' });
   });
 });
 

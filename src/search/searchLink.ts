@@ -27,26 +27,17 @@ const EXPRESSION = /\{([^{}]*)\}/g;
 
 // Whether '?accessTier=' is a parameter the search endpoint accepts.
 //
-// FALSE BECAUSE THE REPOSITORY CANNOT ANSWER IT, NOT BECAUSE THE ANSWER IS NO.
-// The evidence, all of it:
-//   • Q-D closed 11 Aug — "there is no `accessTier` field and there will not be
-//     one"; the tier is DERIVED from the acquisition link's licenceModel
-//     (team1_README). So there is no field for a server to filter on.
-//   • Q-12 is the follow-up and is still OPEN, verbatim: "with no tier field, is
-//     `?accessTier=` still a valid filter parameter, or are the filter chips
-//     content-type only? → ask wokay" (team1_README).
-//   • Both frozen fixtures declare '{?query}' and nothing else. No variable list
-//     mentions a tier, and no facet document exists to enumerate one.
-//   • `Acquisition.accessTier` survives in types.ts and normalize.ts reads it,
-//     but ZERO fixtures carry the field — team1_README records it as one of two
-//     fields that "turned out not to exist at all".
+// RESOLVED. wokay's frozen contract (wokay-api.yaml) declares `AccessTierFilter`
+// (-> `accessTier`, one of `OPEN_ACCESS | SUBSCRIPTION | ELITE`) as a query
+// parameter on both `getGroupFeed` and `searchCatalogue` — the same enum
+// `Acquisition.licenceModel` already carries in every fixture. Q-12 asked
+// whether the parameter existed at all with no tier field on a book; the answer
+// is that the server derives it same as we do and still accepts it as a filter.
 //
-// TODO(Q-12): wokay to confirm. Flip this to true and the tier chips enable and
-// the parameter starts being sent — one constant, no other edit. Until then the
-// tier is modelled, rendered as a disabled dimension, and NOT sent: inventing a
-// parameter the server may reject outright is the one outcome worse than a
-// greyed-out chip.
-export const ACCESS_TIER_FILTER_CONFIRMED = false;
+// Left as a named constant rather than inlined `true`, per the original design:
+// one flag, no other edit, so a future regression in either direction is a
+// one-line diff away from being found.
+export const ACCESS_TIER_FILTER_CONFIRMED = true;
 
 // ─── Parameters ──────────────────────────────────────────────────────────────
 
@@ -80,7 +71,7 @@ export function searchParams(query: string, filters: SearchFilters): SearchLinkP
     ...(filters.contentType !== undefined
       ? { [SEARCH_PARAM.contentType]: filters.contentType }
       : {}),
-    // Withheld while Q-12 is open — see ACCESS_TIER_FILTER_CONFIRMED above.
+    // Confirmed by contract — see ACCESS_TIER_FILTER_CONFIRMED above.
     ...(ACCESS_TIER_FILTER_CONFIRMED && filters.accessTier !== undefined
       ? { [SEARCH_PARAM.accessTier]: filters.accessTier }
       : {}),
