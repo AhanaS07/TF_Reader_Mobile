@@ -174,11 +174,9 @@ export default function SearchScreen() {
         ))}
       </ScrollView>
 
-      {/* Access tier. SHOWN AND DISABLED, not hidden — Q-12 is open (is
-          `?accessTier=` a valid parameter with no tier field?), so the dimension
-          is modelled and rendered but no parameter is sent. Dropping the row
-          would make the filter set look complete when it is not; sending a
-          guessed parameter would be worse. See ACCESS_TIER_FILTER_CONFIRMED. */}
+      {/* Access tier. Q-12 is resolved — wokay's contract confirms `accessTier`
+          as a real filter parameter, so the dimension is enabled and the chosen
+          tier is sent. See ACCESS_TIER_FILTER_CONFIRMED. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

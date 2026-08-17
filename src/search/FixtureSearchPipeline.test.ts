@@ -110,9 +110,12 @@ describe('a filter reaches the request, not the page', () => {
     expect(feed.totalItems).toBe(1);
   });
 
-  // Q-12: the tier is not sent, so a tier-only change cannot alter the response.
-  // When wokay confirm the parameter, this expectation changes deliberately.
-  it('does not vary by accessTier while Q-12 is open', async () => {
+  // Q-12 is resolved and `accessTier` is now sent (see searchLink.ts), but this
+  // stub is a lookup table (see SCENARIOS above), not a filter implementation —
+  // no scenario is keyed on `accessTier`, so a tier-only change still falls
+  // through to the same `{ query: 'climate' }` match. Add a scenario here the day
+  // a test actually needs the stub to vary by tier.
+  it('does not vary by accessTier — no fixture scenario keys on it yet', async () => {
     const plain = await pipeline().search({
       institutionId: INSTITUTION,
       query: 'climate',

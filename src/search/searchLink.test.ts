@@ -131,29 +131,27 @@ describe('searchParams — filters travel as query parameters', () => {
   });
 });
 
-// Q-12, narrowed by the pinned contract: wokay DO declare `?accessTier=` on the
-// search endpoint, so the parameter exists. What we still cannot do is send it —
-// the feed's own template declares only `{?query}`, and we expand what arrives
-// rather than inventing variables. So the open question is now "does the template
-// gain the variable", not "does the field exist".
-//
-// This test is the tripwire: flipping the constant will fail here, which is the
-// reminder to update the expectation deliberately rather than discovering the
-// parameter went live by accident.
-describe('accessTier is withheld while Q-12 is open', () => {
-  it('is not confirmed by anything in the repository', () => {
-    expect(ACCESS_TIER_FILTER_CONFIRMED).toBe(false);
+// Q-12, resolved: wokay-api.yaml declares `accessTier` as a query parameter on
+// `searchCatalogue`, so the parameter both exists and is sent. The search feed's
+// own template still declares only `{?query}` — that is fine, because
+// `expandSearchLink` appends any supplied parameter the template does not
+// declare (see the "appends supplied parameters" test above), which is exactly
+// how `contentType` already reaches the wire.
+describe('accessTier is confirmed', () => {
+  it('is confirmed by the frozen contract', () => {
+    expect(ACCESS_TIER_FILTER_CONFIRMED).toBe(true);
   });
 
-  it('does not send the parameter even when a tier is selected', () => {
+  it('sends the parameter when a tier is selected', () => {
     expect(searchParams('climate', { accessTier: 'OPEN_ACCESS' })).toEqual({
       query: 'climate',
+      accessTier: 'OPEN_ACCESS',
     });
   });
 
-  it('never reaches the URL', () => {
+  it('reaches the URL', () => {
     expect(
       expandSearchLink(TEMPLATE, searchParams('climate', { accessTier: 'ELITE' })),
-    ).not.toContain('accessTier');
+    ).toContain('accessTier=ELITE');
   });
 });

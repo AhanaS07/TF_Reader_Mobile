@@ -20,6 +20,7 @@ export {
   searchParams,
   type SearchLinkParams,
 } from './searchLink';
+export { BROWSE_PARAM, browseParams, type BrowseFilters } from './browseLink';
 export type { CatalogueSearchPipeline, SearchFilters, SearchRequest } from './pipeline';
 export {
   FixtureSearchPipeline,
