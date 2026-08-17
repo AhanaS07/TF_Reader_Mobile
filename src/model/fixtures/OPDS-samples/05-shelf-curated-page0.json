@@ -3,7 +3,8 @@
     "title": "New this month",
     "numberOfItems": 2,
     "itemsPerPage": 20,
-    "currentPage": 0
+    "currentPage": 0,
+    "modified": "2026-08-16T08:30:00Z"
   },
   "links": [
     {

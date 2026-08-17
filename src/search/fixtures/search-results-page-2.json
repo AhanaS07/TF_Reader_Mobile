@@ -2,7 +2,8 @@
   "metadata": {
     "title": "Search results",
     "numberOfItems": 3,
-    "itemsPerPage": 2
+    "itemsPerPage": 2,
+    "currentPage": 1
   },
   "links": [
     {
