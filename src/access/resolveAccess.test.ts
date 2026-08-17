@@ -264,6 +264,24 @@ describe('resolveAccess', () => {
       expect('serverTime' in result).toBe(false);
     });
 
+    // The server clock rides with the OFFER and nothing else. flambeau mark it
+    // required on every hold response, so a queued hold has one to leak — and
+    // `AccessResult.serverTime` promises it appears only when state is 'offered'.
+    // Without the gate the constructor copies it across and quietly breaks that
+    // promise, which is a comment going stale rather than a screen going wrong:
+    // there is no countdown in the queued state to render it against.
+    it('2 · withholds the server clock from a queued reader, who has no countdown', () => {
+      const result = resolve({
+        item: elite(),
+        hold: aHold('queued', { position: 4, serverTime: '2026-08-17T10:00:00Z' }),
+      });
+      expect(result.state).toBe('queued');
+      expect('serverTime' in result).toBe(false);
+      // The position still travels — the gate is on the clock alone, not on the
+      // whole hold.
+      expect(result.queuePosition).toBe(4);
+    });
+
     // A missed offer is not restored to its old place, so the reader is back to
     // asking from scratch — the same button as never having asked.
     it('3 · a lapsed offer resolves to Grant access, not back to queued', () => {

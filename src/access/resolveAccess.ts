@@ -291,7 +291,16 @@ function result(
     // Copied out beside `offerExpiresAt` and for its sake — an absolute expiry
     // with no reference instant can only be measured against the device clock,
     // which is the one thing the offer countdown may not do.
-    ...(hold?.serverTime !== undefined ? { serverTime: hold.serverTime } : {}),
+    //
+    // GATED ON THE STATE, unlike the three above, and it is the only one that has
+    // to be. flambeau mark `serverTime` required on every hold response, so a
+    // QUEUED hold carries one too — and copying it across unasked is exactly the
+    // "state given queue detail it has no use for" this constructor exists to
+    // prevent. The other three need no gate because the hold itself withholds
+    // them: `position` is absent when offered, `offerExpiresAt` when queued.
+    ...(state === 'offered' && hold?.serverTime !== undefined
+      ? { serverTime: hold.serverTime }
+      : {}),
   };
 }
 
