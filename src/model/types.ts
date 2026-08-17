@@ -42,25 +42,44 @@ export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess' | 'subscribe';
 // runtime values the type is derived from — one definition, not several kept in
 // sync by hand.
 //
-// L-3 IS CLOSED. Still six words, but not the same six as of the 12 Aug flow
-// change: `borrow` is gone and `revokeLicence` takes its place, `waitlist`
-// becomes `addToQueue`, `signin` becomes `signIn`. The reader no longer borrows
-// anything — the first tap generates a licence, every tap after it checks one,
-// and the reader is never shown the difference. Anything that still describes a
-// Borrow button is superseded, including the signed design specification.
+// EIGHT WORDS AS OF 16 AUG, and this is the first flow change that did not come
+// free. `addToQueue` is GONE and three arrive in its place: `grantAccess`,
+// `acceptOffer`, `rejectOffer`.
+//
+// The Elite flow it encodes: a reader holding nothing sees ONE button,
+// `grantAccess`, on every surface. Tapping it either returns the offer straight
+// away — nobody ahead of them — or puts them in the queue with a position and
+// delivers the same offer later as a notification. Both routes end at the same
+// `acceptOffer` / `rejectOffer` pair, which is the whole reason there is one
+// offer surface and not two.
+//
+// WHY `addToQueue` HAD TO GO, and it is not just a rename. A queue position is a
+// STATUS, not an action: a queued reader has nothing to do until their turn
+// comes, so there is no button. Keeping `addToQueue` would have meant either a
+// second button that does nothing or a Cancel dressed up as progress — one taps
+// to no effect, the other silently costs the reader their place. See
+// `ACCESS_STATES` below, where `queued` resolves to NO actions at all.
+//
+// A CONSEQUENCE FOR `ActionButtonState`: `grantAccess` needs no `doneLabel`. The
+// old `addToQueue` flipped to "Added to queue" in place because the button had to
+// represent its own aftermath. Here the aftermath is a different resolve
+// entirely — `requires_grant` becomes `queued` or `offered` — so the bar redraws
+// rather than the button relabelling. `done` may end up with no consumer at all.
 //
 // `subscribe` STAYS — decided 11 Aug. B2C is not cut. Tapping it resolves the
 // title to read + download, if the title falls inside the reader's licence.
 //
-// `download` IS NOT AN ELITE ACTION — decided 13 Aug. Elite is read-only: it
-// offers addToQueue, then read + revokeLicence once a licence is held, and no
-// path to an offline copy at any point. That rule lives in resolveAccess and
-// never in a component, which is exactly why `download` stays in this union —
-// Open Access and Subscription both still use it.
+// `download` IS NOT AN ELITE ACTION — decided 13 Aug, unchanged by the 16 Aug
+// flow change. Elite is read-only at every point in the sequence above: no
+// offline copy after Accept, and none once a licence is held. That rule lives in
+// resolveAccess and never in a component, which is exactly why `download` stays
+// in this union — Open Access and Subscription both still use it.
 export const ACTION_IDS = [
   'read',
   'download',
-  'addToQueue',
+  'grantAccess',
+  'acceptOffer',
+  'rejectOffer',
   'revokeLicence',
   'subscribe',
   'signIn',
@@ -265,27 +284,43 @@ export type WorkType = (typeof WORK_TYPES)[number];
 // OURS. A UI state, not a wokay field — one value per distinct thing the action
 // bar can render, so a state with no visible difference does not belong here.
 //
-// REBUILT for the 12 Aug flow change and the 13 Aug Elite decision. Two left:
+// REBUILT AGAIN for the 16 Aug Elite flow. Three states carry the Elite sequence
+// and they are in the order a reader meets them:
 //
-//   `requires_loan` — there is no borrow step left to require.
-//   `no_seats`      — Elite joins the queue whether or not a seat is free, so
-//                     the seat count no longer changes a single button.
-//                     `Availability` is still worth fetching for
-//                     `queuePosition`, but that is a message to display, not a
-//                     state that picks buttons.
+//   `requires_grant` — holding nothing, not queued. Resolves to `grantAccess`.
+//   `queued`         — in the queue, waiting, others ahead. Resolves to NO
+//                      actions; `queuePosition` on the result is what renders.
+//   `offered`        — a copy is being offered right now. Resolves to
+//                      `acceptOffer` + `rejectOffer`. Reached two ways — straight
+//                      back from the tap when nobody was ahead, or later by
+//                      notification — and IDENTICAL either way, which is what
+//                      lets one surface serve both.
 //
-// Two arrived, both Elite: `requires_queue` (no licence held — offer
-// addToQueue) and `queued` (waiting — the same button reads "Added to queue"
-// and cannot be tapped again).
+// `requires_queue` is gone: it named the button we no longer draw. `no_seats`
+// stays deleted, and the 16 Aug change did not bring it back — see `Availability`
+// below for why a seat count still decides nothing.
+//
+// `queued` IS THE UNUSUAL ONE, and it is deliberate: it is the only state that
+// resolves to an empty `actions` array while still being something to look at.
+// `not_entitled` also resolves empty but renders literally nothing. So the two
+// are distinguishable here even though `actions` cannot tell them apart — which
+// is precisely why `state` exists alongside `actions` rather than being derived
+// from it.
 //
 // `available` covers two shapes rather than one, because the difference is in
 // `actions` and not here: Open Access and Subscription resolve to
 // read + download, Elite-with-a-licence to read + revokeLicence.
+// `requires_subscription` is the `subscribe` rel's home — a title the caller
+// cannot obtain, which wokay hands over with a route to access rather than a file.
+// It is NOT `not_entitled`: one renders a Subscribe button and the other renders
+// nothing, and a state whose bar looks different is a state of its own.
 export const ACCESS_STATES = [
   'available',
   'requires_signin',
-  'requires_queue',
+  'requires_subscription',
+  'requires_grant',
   'queued',
+  'offered',
   'not_entitled',
 ] as const;
 export type AccessState = (typeof ACCESS_STATES)[number];
@@ -348,25 +383,94 @@ export interface Session {
 
 // Per-user, per-item, mutable. Never a property of the feed. Written for
 // SUBSCRIPTION and ELITE. Never for OPEN_ACCESS.
+//
+// AN INPUT TO resolveAccess, and on the two unlimited tiers it is the only one
+// that matters: held or not held. `state: 'none'` and a Loan that was never
+// fetched are the same answer as far as the resolve is concerned, which is why
+// there is no fourth `'unknown'` value — a resolve that cannot be trusted is the
+// ActionBar's `error` state, not a licence state.
 export interface Loan {
   itemId: string;
   state: 'none' | 'active' | 'expired';
   expiresAt?: number;
 }
 
-// Elite only, detail screen only. `GET /api/v1/availability?itemId=` on
+// The reader's place in the queue for one Elite title. Per-user, per-item, and
+// flambeau's data rather than ours — never a property of the feed.
+//
+// THE SECOND INPUT TO THE ELITE BRANCH, added 16 Aug. Loan-plus-hold is the whole
+// of the Elite decision, and this is the half that separates the three states a
+// reader without a copy can be in:
+//
+//   'none'    → nothing asked for yet          → grantAccess
+//   'queued'  → waiting, others ahead          → no actions, render `position`
+//   'offered' → a copy is theirs to take now   → acceptOffer + rejectOffer
+//
+// WHY THIS AND NOT A SEAT COUNT. It would be tempting to ask "are copies free?"
+// and branch on the answer. That is a second network call before anything can be
+// drawn, and it would make an Elite row resolve differently on a list than on a
+// detail screen. The empty-queue and busy-queue cases differ only in WHICH of
+// these three values comes back, so the seat count is never needed to pick a
+// button. See `Availability` below.
+export interface Hold {
+  itemId: string;
+  state: 'none' | 'queued' | 'offered';
+  // The reader's place, 1-based. Present when state is 'queued' — it is the whole
+  // of what a waiting reader is shown. Absent when 'offered', because their turn
+  // has arrived and a position is no longer a fact about them.
+  position?: number;
+  // How many are waiting in total, for context beside `position`. Informational:
+  // nothing in `actions` reads it.
+  queueLength?: number;
+  // When an offer stops standing. ISO-8601 as supplied, and ABSOLUTE rather than
+  // a duration — the countdown is rendered against the server's clock, never the
+  // device's, because a device clock that is wrong turns a live offer into an
+  // expired one on screen. Present when state is 'offered'.
+  offerExpiresAt?: string;
+}
+
+// The three things that identify one reader's relationship to one title, which is
+// what every licence-bearing call takes — DECIDED 16 Aug, and it is deliberately
+// not a loan id.
+//
+// WHY NOT A LOAN ID. Revoking needs to name the thing being handed back, and the
+// obvious candidate is the loan's own id. But that id only exists after a
+// borrow has succeeded, so a component holding an `AccessResult` would have to
+// carry it around and thread it through, and the one place it went missing would
+// be a Revoke button that cannot fire. This triple is knowable from the session
+// and the item at every point in the flow, including before anything is held.
+//
+// `institutionId` IS PART OF IDENTITY, not context. The same title resolves
+// differently for two institutions, so a call that omits it is ambiguous even
+// when it happens to work.
+export interface LicenceRef {
+  userId: string;
+  itemId: string;
+  institutionId: string;
+}
+
+// Elite only, detail screen only. `GET /api/v1/items/{itemId}/availability` on
 // flambeau — the app asks, wokay never do.
 //
-// IT NO LONGER DECIDES A BUTTON — 13 Aug. Elite queues whether or not a seat is
-// free, so `total` and `available` are informational and `queuePosition` is the
-// only field with a job: telling a queued reader where they stand. Nothing in
-// `actions` depends on this call, which means an Elite item resolves the same on
-// a list as on the detail screen.
+// STILL NOT AN INPUT TO resolveAccess — 13 Aug, and the 16 Aug flow change did not
+// reinstate it. Every field here is informational: something to print beside the
+// buttons, never something that picks one. That is what keeps an Elite row
+// resolving identically on a list and on a detail screen, and it is the reason a
+// list of forty cards costs zero extra requests.
+//
+// `queuePosition` USED TO LIVE HERE and has moved to `Hold.position`, which is
+// where it belongs: a position is a fact about one reader's hold, not about the
+// title's supply. Nothing should read a position from this shape.
 export interface Availability {
   itemId: string;
   total: number;
-  available: number;
-  queuePosition?: number;
+  // OPTIONAL, and absent is not zero. Absent means "we do not know" — an
+  // unlimited title has no number to report, and neither does one flambeau cannot
+  // account for. Zero means every copy is genuinely out. Collapsing the two
+  // renders "none free" over a title that is fine, so test for presence.
+  available?: number;
+  // How many are waiting. Absent for the same reasons as `available`.
+  queueLength?: number;
 }
 
 // REST pagination, used ONLY by the institutions endpoint — a different model
@@ -378,12 +482,52 @@ export interface PagedList<T> {
   total: number;
 }
 
-// The resolved badge + buttons for one publication.
+// The resolved badge + buttons for one publication — the single output of
+// `src/access/resolveAccess`, and the only access-shaped thing a component ever
+// receives.
+//
+// IT CARRIES ITS OWN IDENTITY, and the institution half is the point — 16 Aug.
+// The same publication resolves differently for two institutions, so a result
+// that names only the item is ambiguous. Anything that memoises a resolve keys on
+// BOTH ids; keying on `itemId` alone is how a reader who switches institution
+// keeps the buttons from the previous one.
+//
+// That is not a licence to store it. Resolved access lives nowhere and is
+// recomputed per render — a cached result is how a stale button outlives the
+// licence it was drawn from. The ids are here so that a key can be DERIVED
+// correctly wherever one is unavoidable, not to make caching it safe.
+//
+// EVERYTHING A COMPONENT NEEDS IS ON THIS OBJECT. `queuePosition` and
+// `offerExpiresAt` are copied out of the `Hold` rather than left there, so no
+// screen ever reads a hold, a loan or a `licenceModel` to work out what to show.
+// A component that reaches past this shape has moved access logic into the view
+// (Design Spec §5.1).
 export interface AccessResult {
+  // Which institution this resolve was performed for. Part of the identity, not
+  // context — see above.
+  //
+  // `null` IS A REAL VALUE, not missing data: it is the public open-access path,
+  // where the reader has chosen no institution at all. Explicitly nullable rather
+  // than optional so that anything deriving a cache key has to spell out the
+  // no-institution case instead of quietly falling back to keying on the item.
+  institutionId: string | null;
+  itemId: string;
   // A badge label. Not an input to `actions`.
   tier: AccessTier;
   state: AccessState;
+  // In the order they should be drawn. `[]` is a legitimate answer and appears in
+  // two distinct states: `not_entitled`, which renders nothing at all, and
+  // `queued`, which renders `queuePosition` and no buttons.
   actions: ActionId[];
+  // The reader's place in the queue, 1-based. Present only when state is
+  // `queued` — this is the whole of what a waiting reader is shown.
+  queuePosition?: number;
+  // How many are waiting in total, for context beside `queuePosition`. Optional
+  // because it is a nicety and the position is not.
+  queueLength?: number;
+  // When the offer stops standing, ISO-8601 and absolute. Present only when state
+  // is `offered`. Rendered against the server's clock, never the device's.
+  offerExpiresAt?: string;
 }
 
 // wokay's error envelope, on every non-2xx. `code` is what ErrorState renders

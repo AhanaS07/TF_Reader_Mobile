@@ -4,7 +4,7 @@
 //
 // IT IS HANDED A LIST AND LAYS IT OUT. It does not know which tier produced the
 // list, whether the reader is signed in, or whether a licence exists. Hand it
-// ['read', 'download'] and it draws two buttons; hand it ['addToQueue'] and it
+// ['read', 'download'] and it draws two buttons; hand it ['grantAccess'] and it
 // draws one; hand it [] and it draws nothing (CONVENTIONS §3).
 //
 // WHY THIS IS A COMPONENT AND NOT A <View style={{flexDirection:'row'}}>:
@@ -34,7 +34,12 @@ export interface ActionBarProps {
   state?: ActionBarState;
   /** The one action currently waiting on flambeau. Only one tap can be in flight. */
   pending?: ActionId;
-  /** The one action already spent — today only `addToQueue`, as "Added to queue". */
+  /**
+   * The one action already spent: rendered inert so it cannot fire twice. Since
+   * 16 Aug no action carries a spent LABEL, so this changes behaviour and not
+   * wording — its live use is an accepted offer, which must not be accepted again
+   * while the borrow is in flight.
+   */
   done?: ActionId;
   onAction: (action: ActionId) => void;
   /** Required in practice at state='error'; the retry is the only thing offered there. */

@@ -7,7 +7,7 @@ import { color, space, type } from '@theme/tokens';
 
 import ActionButton, { type ActionButtonState } from './ActionButton';
 
-// Iterates the contract rather than a list of six, so a seventh action appears
+// Iterates the contract rather than a list of eight, so a ninth action appears
 // here automatically — the same trick as AccessTierBadge.gallery.tsx.
 const STATES: ActionButtonState[] = ['idle', 'loading', 'done', 'skeleton'];
 
@@ -24,7 +24,7 @@ export default function ActionButtonGallery() {
         <View key={state} style={styles.group}>
           <Text style={styles.caption}>
             state={state}
-            {state === 'done' && ' — only addToQueue has a spent label; the rest fall back'}
+            {state === 'done' && ' — inert, and every label falls back; nothing has a spent form'}
             {state === 'skeleton' && ' — no labels, and the same height as a real button'}
           </Text>
           {ACTION_IDS.map((action) => (
@@ -55,7 +55,7 @@ export default function ActionButtonGallery() {
           Awkward content — the longest label in the narrowest realistic slot
         </Text>
         <View style={styles.narrow}>
-          <ActionButton action="addToQueue" onPress={() => setLastPressed('addToQueue (narrow)')} />
+          <ActionButton action="grantAccess" onPress={() => setLastPressed('grantAccess (narrow)')} />
         </View>
         <View style={styles.narrow}>
           <ActionButton action="revokeLicence" onPress={() => setLastPressed('revoke (narrow)')} />
