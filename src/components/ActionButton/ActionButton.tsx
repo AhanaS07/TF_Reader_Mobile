@@ -25,10 +25,19 @@ export type ActionEmphasis = 'filled' | 'outlined' | 'quiet';
 // The lifecycle axis, kept separate from `action` so there is no
 // `action="read-loading"` (CONVENTIONS §4).
 //
-// `done` is a spent action: tapped, accepted, and not to be tapped again. Only
-// `addToQueue` has a meaning for it today, which is why `doneLabel` is optional
-// rather than required — an action with no `doneLabel` falls back to its normal
-// label, so `done` degrades to "inert" rather than rendering a blank button.
+// `done` is a spent action: tapped, accepted, and not to be tapped again.
+//
+// NOTHING DEFINES A `doneLabel` AS OF 16 AUG, and that is a consequence of the
+// Elite flow change rather than an oversight. `addToQueue` was the only action
+// that ever had one — it flipped to "Added to queue" in place, because the button
+// had to stand in for its own aftermath. `grantAccess` does not: tapping it
+// changes the RESOLVE (`requires_grant` becomes `queued` or `offered`), so the
+// whole bar redraws and there is no spent button left to relabel.
+//
+// The mechanism stays because `done` still has a job — it renders a button inert,
+// which is what stops a second tap landing on an offer that has already become a
+// loan. It simply falls back to the normal label everywhere now, which is exactly
+// what `doneLabel` being optional was for.
 export type ActionButtonState = 'idle' | 'loading' | 'done' | 'skeleton';
 
 export interface ActionButtonProps {
@@ -40,14 +49,23 @@ export interface ActionButtonProps {
   onPress?: () => void;
 }
 
-// ONE TABLE, so a seventh action is a single compile error rather than four
-// gaps. Same shape as `TIERS` in AccessTierBadge.
+// ONE TABLE, so a ninth action is a single compile error rather than four gaps.
+// Same shape as `TIERS` in AccessTierBadge.
 //
 // Emphasis and icons are Akriti's call, 13 Aug — the eighteen design screens are
 // reference only and they disagree with each other (screen 05 gives Read a book
 // icon, screen 18 gives it none). `revokeLicence` is `quiet` because it is the
 // only action that takes something away from the reader: it should be findable
 // without competing with the button they came to press.
+//
+// WHY `rejectOffer` IS `outlined` AND NOT `quiet` — 16 Aug, and it is the one
+// judgement call in this table worth arguing with. Reject also takes something
+// away, so `quiet` looks right by analogy with `revokeLicence`. But `quiet` sends
+// it to its own line beneath the row (see ActionBar), and Accept / Reject are two
+// answers to one question: a reader offered a copy expects both choices at equal
+// standing, side by side. Revoke is a rare action you should not hit by accident;
+// Reject is one of exactly two expected replies. Different jobs, different weight.
+// Flipping it back is one word here and nothing else.
 const ACTIONS: Record<
   ActionId,
   {
@@ -61,12 +79,15 @@ const ACTIONS: Record<
 > = {
   read: { label: 'Read', icon: 'book-open-variant', emphasis: 'filled' },
   download: { label: 'Download', icon: 'download', emphasis: 'outlined' },
-  addToQueue: {
-    label: 'Add me to queue',
-    doneLabel: 'Added to queue',
-    icon: 'account-clock',
-    emphasis: 'outlined',
-  },
+  // The Elite entry point, and the only button a reader holding nothing sees. It
+  // says nothing about the queue — see index.html §Access for why a queue length
+  // shown before the reader has asked for anything is only a reason not to tap.
+  grantAccess: { label: 'Grant access', icon: 'key-outline', emphasis: 'filled' },
+  // The two answers to an offer. Reached either straight from the Grant access
+  // tap, when nobody was ahead, or later from a notification — identical both
+  // ways, which is the whole point of resolving them to one pair.
+  acceptOffer: { label: 'Accept', icon: 'check', emphasis: 'filled' },
+  rejectOffer: { label: 'Reject', icon: 'close', emphasis: 'outlined' },
   revokeLicence: { label: 'Revoke licence', icon: 'arrow-u-left-top', emphasis: 'quiet' },
   subscribe: { label: 'Subscribe', icon: 'lock-open-outline', emphasis: 'filled' },
   signIn: { label: 'Sign in', icon: 'login', emphasis: 'filled' },

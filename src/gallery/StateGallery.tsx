@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import ResolveAccessGallery from '@/access/resolveAccess.gallery';
 import AccessTierBadgeGallery from '@/components/AccessTierBadge/AccessTierBadge.gallery';
 import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
 import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
@@ -43,6 +44,9 @@ const SECTIONS = [
   'InstitutionDetailView',
   'ActionButton',
   'ActionBar',
+  // Not a component. It is here because the access RULES are the thing most worth
+  // reviewing by eye, and the only surface that shows them resolving.
+  'resolveAccess',
   'CategoryCard',
   'ContentCard',
   'SubjectChip',
@@ -96,6 +100,7 @@ export default function StateGallery() {
       {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
+      {section === 'resolveAccess' && <ResolveAccessGallery />}
       {section === 'CategoryCard' && <CategoryCardGallery />}
       {section === 'ContentCard' && <ContentCardGallery />}
       {section === 'SubjectChip' && <SubjectChipGallery />}
