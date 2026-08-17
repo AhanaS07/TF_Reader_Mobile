@@ -31,14 +31,12 @@ function unitKey(posting: Posting): string {
  * the `!` spine delimiter are ignored. Enough to order the point-CFIs the
  * extractor emits; NOT a general CFI comparator (no ranges, no ignoreClass).
  *
- * FLAGGED, pending Vaishnavi review: a range CFI (comma-separated parent,start,end, e.g. for a
- * future multi-word-highlight feature) used to fall through the regex below silently — every
- * digit from BOTH range endpoints got concatenated into one nonsense step array, sorting wrong
- * without ever throwing. extractor.ts never emits range CFIs today so this was unreachable, but
- * "unreachable today" and "silently wrong forever if that changes" is exactly the kind of trap
- * this comment used to just note rather than guard against. Throwing here converts a future
- * silent-sort bug into a loud one; it does not add range-CFI support, which is a real design
- * decision that isn't mine to make in this file.
+ * A range CFI (comma-separated parent,start,end) is rejected outright: without the guard its
+ * digits from both endpoints concatenate into one nonsense step array that sorts wrong and never
+ * complains. The extractor emits only point CFIs and search is not adding range support, so a
+ * range reaching here is a bug in the caller, not an input to handle — fail loudly. If a
+ * range-emitting feature ever lands (e.g. multi-word/highlight-spanning), this needs a real
+ * comparator, not a guard: compare the parent path, then the start offset.
  */
 function cfiSteps(cfi: string): number[] {
   if (cfi.includes(',')) {
