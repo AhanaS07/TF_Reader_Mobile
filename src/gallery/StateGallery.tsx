@@ -17,6 +17,7 @@ import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/Ins
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
 import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.gallery';
+import QueueNotificationGallery from '@/components/QueueNotification/QueueNotification.gallery';
 import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
 import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
@@ -51,6 +52,7 @@ const SECTIONS = [
   'ContentCard',
   'SubjectChip',
   'Tabs',
+  'QueueNotification',
 ] as const;
 
 type Section = (typeof SECTIONS)[number];
@@ -105,6 +107,7 @@ export default function StateGallery() {
       {section === 'ContentCard' && <ContentCardGallery />}
       {section === 'SubjectChip' && <SubjectChipGallery />}
       {section === 'Tabs' && <TabsGallery />}
+      {section === 'QueueNotification' && <QueueNotificationGallery />}
     </View>
   );
 }
