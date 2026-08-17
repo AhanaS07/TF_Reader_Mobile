@@ -78,7 +78,7 @@ good news for (a): the tracked backend's `/api/*` doesn't collide with either co
 
 ---
 
-## 3. `B6` 🟠 — flambeau's change feed needs cursor machinery you already have
+## 3. `B6` 🟡 — flambeau's change feed: Sync half DONE, Encryption half outstanding
 
 `GET /api/v1/loans/changes` is the contract's designed revocation channel. flambeau, in its own
 words:
@@ -102,6 +102,38 @@ assuming. Two things to know before either of you starts:
   reading offline indefinitely. Fail-open plus a change feed is a reasonable design; fail-open plus
   no change feed is a hole. The action on `ENTITLEMENT_REVOKED` is `ContentStore.destroy()`, which
   already exists and makes the ciphertext noise instantly, offline, regardless of size.
+
+### Status — Sync side implemented (this change)
+
+`loanChanges.ts` consumes the feed; `offlineLock.ts` applies it. The cursor lives in
+`sync_metadata` under `LAST_LOAN_CHANGES_CURSOR`, reusing the machinery this section pointed at.
+
+What it does: reads the feed on every sync run (after push and pull, outside their try/catch so a
+stuck payload cannot block it), writes the advisory `downloads.is_valid` column, and emits
+`content.lock` / `content.unlock` on the shared bus. Signals fire only on a real state change, so a
+repeated revocation is not re-announced.
+
+What it deliberately does NOT do:
+
+- **It does not gate reading.** Encryption remains the only gate. `is_valid` is advisory and exists
+  so the UI can explain a locked book; `downloadStore.isBookValid()` is named the same as before but
+  now means "what the last check said", not "the column the reader gates on".
+- **It does not destroy key material.** `reason: 'revoked'` is the privileged signal that asks
+  Encryption to. Nothing subscribes yet — **that half is Abhinav's** and until it lands a revocation
+  is recorded and announced but nothing acts on it.
+- **`ENTITLEMENT_EXPIRED` maps to `'expired'`, not `'revoked'`**, on purpose: Encryption already
+  sees expiry from the licence it holds, and destroying a BEK over it would force a needless
+  re-download.
+
+Fail-open is unchanged and is now pinned by tests: offline, a timeout, a 404, or an unparseable body
+emits nothing, changes no row, and does not advance the cursor. `B7`'s hole therefore narrows but
+does not close — a revoked book stays readable while the device stays offline, which still needs the
+Phase 6 anti-rollback high-water-mark.
+
+**Wire shape is a mirror, not a verified schema.** No tracked file reproduces a `ChangeEntry` JSON
+schema, so field names are inferred from flambeau's prose. Everything downstream tolerates a
+mismatch: an unrecognised `reason` is ignored rather than guessed at, and a malformed page reads as
+"no changes". Fixing the names later touches `loanChanges.ts` only.
 
 ---
 

@@ -9,6 +9,8 @@
 //   • ContentError          (enum, errors.ts)
 //   • ContentFailure        (class, errors.ts)
 //   • DEFAULT_PREFS         (const, prefs.ts)
+//   • OFFLINE_LOCK_EVENTS   (const, offline-lock.ts)
+//   • EVENT_CHANNELS        (const, event-bus.ts)
 // …and everything in accessibility.ts except its types:
 //   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX,
 //     REDUCE_MOTION_VALUES, TTS_HIGHLIGHT_MODE_VALUES   (consts)
@@ -30,9 +32,13 @@ export * from '../types/primitives';
 export * from './errors';
 export * from './content-provider';
 export * from './sync-record';
-// export * from './offline-lock'; // DEFERRED — offline-lock.ts is finalised
-// jointly with Sync (Karthik) + Encryption (Abhinav). Restore this line when the
-// file lands; the `content.lock` / `content.unlock` signals live there.
+
+// Offline lock + its carrier. Previously deferred pending the joint Sync (Karthik) +
+// Encryption (Abhinav) sign-off; that is now agreed, so both are live. The
+// `content.lock` / `content.unlock` signals live in offline-lock.ts and travel over the bus
+// declared in event-bus.ts — the instance is src/shared/eventBus.ts.
+export * from './offline-lock';
+export * from './event-bus';
 
 // Existing teammate contracts.
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"

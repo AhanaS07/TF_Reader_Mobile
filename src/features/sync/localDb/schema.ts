@@ -161,4 +161,20 @@ export const SYNC_KEYS = {
   /** Server timestamp of the last pull that was fully applied locally. */
   LAST_PULL_TOKEN: 'last_pull_token',
   LAST_PUSH_AT: 'last_push_at',
+  /**
+   * Opaque cursor into flambeau's loan change feed. Null until the feed has answered once.
+   *
+   * Stored rather than derived so a revocation is learned exactly once: the feed is
+   * incremental, and re-reading from the beginning would re-announce revocations the device has
+   * already acted on - which, since acting means destroying key material, is not harmless.
+   */
+  LAST_LOAN_CHANGES_CURSOR: 'last_loan_changes_cursor',
+  /**
+   * When the change feed last answered.
+   *
+   * This is what distinguishes "asked, and nothing is revoked" from "never asked" - the
+   * `downloads.is_valid` column reads as valid in both cases, and a UI that cannot tell them
+   * apart will claim an entitlement it has never confirmed.
+   */
+  LAST_ENTITLEMENT_CHECK_AT: 'last_entitlement_check_at',
 } as const;
