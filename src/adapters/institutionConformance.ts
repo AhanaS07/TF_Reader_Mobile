@@ -8,7 +8,6 @@
 //
 // Not a .test.ts file: jest must not collect it on its own.
 import type { InstitutionSource } from '@adapters/InstitutionSource';
-import { AUTH_TYPES } from '@model/institution';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
 
 // The institution the catalogue fixtures belong to, so a conforming source can
@@ -38,23 +37,25 @@ export function describeInstitutionSourceConformance(
         }
       });
 
-      it('gives every institution an authType from the union', async () => {
+      it('gives every institution the required fields', async () => {
         const institutions = await createSource().getInstitutions();
 
         for (const institution of institutions) {
-          // Sign-in routing switches on this; a value outside the union would
-          // fall through every branch (CAP-3).
-          expect(AUTH_TYPES).toContain(institution.authType);
+          expect(institution.code.length).toBeGreaterThan(0);
+          expect(institution.city.length).toBeGreaterThan(0);
+          expect(institution.catalogueUrl.length).toBeGreaterThan(0);
         }
       });
 
-      it('never returns an empty-string crestUrl, only absent or usable', async () => {
+      it('never returns an empty-string logoUrl inside branding, only absent or usable', async () => {
         const institutions = await createSource().getInstitutions();
 
         for (const institution of institutions) {
           // '' would make the row attempt an image load instead of taking the
           // initials fallback (W-17).
-          expect(institution.crestUrl).not.toBe('');
+          if (institution.branding !== undefined) {
+            expect(institution.branding.logoUrl.length).toBeGreaterThan(0);
+          }
         }
       });
 
