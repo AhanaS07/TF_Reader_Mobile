@@ -6,15 +6,19 @@ const WITH_CREST: Institution = {
   id: 'inst_7f3',
   name: 'Imperial College London',
   country: 'United Kingdom',
-  crestUrl: 'https://cdn.tf/crests/inst_7f3.png',
-  authType: 'saml',
+  code: 'ICL',
+  city: 'London',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+  branding: { logoUrl: 'https://cdn.tf/crests/inst_7f3.png' },
 };
 
 const NO_CREST: Institution = {
   id: 'inst_c88',
   name: 'Kwame Nkrumah University of Science and Technology',
   country: 'Ghana',
-  authType: 'oidc',
+  code: 'KNUST',
+  city: 'Kumasi',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_c88/catalogue',
 };
 
 describe('InstitutionRow content', () => {

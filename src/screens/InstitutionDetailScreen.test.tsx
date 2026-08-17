@@ -24,17 +24,21 @@ const IMPERIAL: Institution = {
   id: 'inst_7f3',
   name: 'Imperial College London',
   country: 'United Kingdom',
-  crestUrl: 'https://cdn.tf/crests/inst_7f3.png',
-  authType: 'saml',
+  code: 'ICL',
+  city: 'London',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+  branding: { logoUrl: 'https://cdn.tf/crests/inst_7f3.png' },
 };
 
-// Two of the eight fixture institutions carry no crest, so initials are the
+// Two of the eight fixture institutions carry no branding, so initials are the
 // common path for a quarter of the directory (W-17), not an edge case.
 const NO_CREST: Institution = {
   id: 'inst_9a1',
   name: 'Universidad de Buenos Aires',
   country: 'Argentina',
-  authType: 'saml',
+  code: 'UBA',
+  city: 'Buenos Aires',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_9a1/catalogue',
 };
 
 // Every method a real DataSource must have, so the fake typechecks as one. Only
@@ -111,7 +115,7 @@ describe('InstitutionDetailScreen with data', () => {
     expect(screen.queryByTestId('institution-detail-skeleton')).toBeNull();
   });
 
-  it('maps crestUrl onto logoUrl, so the crest renders', async () => {
+  it('maps branding.logoUrl so the logo renders', async () => {
     setCatalogueSource(fakeSource(async () => IMPERIAL));
     const { props } = makeProps();
 
