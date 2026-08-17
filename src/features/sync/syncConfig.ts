@@ -43,6 +43,28 @@ export const API_BASE_URL =
 /** Every CRUD collection lives under this prefix on the Mongo backend. */
 export const API_V1 = '/api/v1';
 
+/**
+ * flambeau's loan change feed - the contract's designed revocation channel (`B6`).
+ *
+ * A single constant on purpose. `A10` is unresolved: flambeau has itself proposed moving this to
+ * `GET /api/v1/changes`, because hold and entitlement events arriving on a loan-shaped path
+ * mislabels them, and the note says to decide before implementing "or it gets built twice". It
+ * is not decided, so the path is isolated here and the move is one line.
+ *
+ * Unlike the six CRUD collections this is not a syncable entity: there is no local loans table,
+ * nothing is ever pushed to it, and the device only ever reads it and records what it learned.
+ */
+export const LOAN_CHANGES_PATH = `${API_V1}/loans/changes`;
+
+/**
+ * How many feed pages one run will drain before stopping.
+ *
+ * The feed is incremental and the cursor persists, so stopping early is safe - the next run
+ * resumes exactly where this one stopped. The bound exists so a server that returns a cursor
+ * forever cannot spin the loop indefinitely on a single sync.
+ */
+export const MAX_LOAN_CHANGE_PAGES = 10;
+
 /** Point EXPO_PUBLIC_ASSET_URL at whatever serves the book - see ASSET_PORT. */
 export const ASSET_BASE_URL =
   process.env.EXPO_PUBLIC_ASSET_URL ?? `http://${resolveBackendHost()}:${ASSET_PORT}`;
