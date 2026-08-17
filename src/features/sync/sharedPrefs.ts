@@ -150,6 +150,13 @@ export function mergeSharedPrefs(
   // `theme: 'highContrast'` is deprecated in favour of the a11y flag, which is the single
   // source of truth for contrast. The contract asks for a read-time migration, and this merge
   // is the read - resolving it here means no consumer ever sees the deprecated variant.
+  //
+  // Base theme under the boost is 'light', NOT 'dark': classic high contrast is dark-on-light,
+  // and this was ratified light (2026-08-17). It must match Personalization's canonical intent
+  // in migratePrefs.ts (HIGH_CONTRAST_BASE_THEME = 'light'); the value is duplicated as a literal
+  // rather than imported because this module deliberately does not reach into another capability
+  // (see header). The real de-dup is promoting migrateSharedPrefs into @/shared/contracts so both
+  // sides call one function through the legitimate coupling - flagged, needs Karthik + Ahana.
   const storedTheme = asOneOf(personalization.theme, THEMES, DEFAULT_PREFS.theme);
   const migratedHighContrast = storedTheme === 'highContrast';
 
@@ -163,7 +170,7 @@ export function mergeSharedPrefs(
     isDeleted: toBool(personalization.is_deleted),
     synced:
       toBool(personalization.synced) && (accessibility ? toBool(accessibility.synced) : true),
-    theme: migratedHighContrast ? 'dark' : storedTheme,
+    theme: migratedHighContrast ? 'light' : storedTheme,
     font: {
       family: personalization.font_family,
       ...(personalization.custom_font_uri
