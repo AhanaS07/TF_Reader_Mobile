@@ -69,6 +69,19 @@ export function isOfferLapsed(hold: Hold | undefined, now: string): boolean {
 //
 // `holdId` STAYS. It is the identity of the hold across its whole life, and the
 // store needs it to reconcile against what flambeau says next.
+//
+// EXPECTS AN OFFERED HOLD, and `isOfferLapsed` is the gate rather than anything in
+// here. The two are meant to be used as a pair —
+// `if (isOfferLapsed(hold, now)) hold = lapseOffer(hold)` — and that predicate is
+// already false for every state that is not an offer, so a queued reader cannot
+// reach this function through the intended route.
+//
+// DELIBERATELY UNGUARDED, so the precondition is the caller's to keep. Handing
+// this a queued hold would strip a waiting reader's `position` and resolve them to
+// `requires_grant` — their place in the line gone from the screen. That is worth
+// catching, but a guard here would catch it by returning the hold untouched, which
+// makes a caller's mistake silent at exactly the moment it wants to be loud. The
+// gate belongs one function up, where it already is.
 export function lapseOffer(hold: Hold): Hold {
   const { offerId: _offerId, offerExpiresAt: _offerExpiresAt, position: _position, ...rest } = hold;
   return { ...rest, state: 'expired' };
