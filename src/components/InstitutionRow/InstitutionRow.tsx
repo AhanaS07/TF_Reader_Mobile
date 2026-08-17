@@ -41,9 +41,9 @@ export default function InstitutionRow({
       )}
 
       <View style={styles.inner}>
-        {institution.crestUrl !== undefined ? (
+        {institution.branding !== undefined ? (
           <Image
-            source={{ uri: institution.crestUrl }}
+            source={{ uri: institution.branding.logoUrl }}
             style={styles.crest}
             resizeMode="contain"
             accessibilityLabel={`${institution.name} logo`}

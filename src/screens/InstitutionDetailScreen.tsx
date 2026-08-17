@@ -177,10 +177,9 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
       <InstitutionDetailView
         name={institution.name}
         country={institution.country}
-        // The crestUrl -> logoUrl rename crosses here. Passed through untouched:
-        // normalizeInstitution already turns an empty string into undefined, and
-        // substituting a fallback would defeat the initials path (W-17).
-        logoUrl={institution.crestUrl}
+        // branding.logoUrl is absent when the institution has no logo — the
+        // initials path in InstitutionDetailView handles that case (W-17).
+        logoUrl={institution.branding?.logoUrl}
         onSelect={() => {
           // The whole object, not the id — the store persists it so the list
           // screen can draw its recently-used row on a cold start without a
