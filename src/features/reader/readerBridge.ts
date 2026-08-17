@@ -1,7 +1,10 @@
 // Owner: Reader (Ahana).
 //
-// The typed half of the RN <-> WebView bridge. Its counterpart is the plain-JS
-// IIFE at the bottom of src/features/reader/webview/reader.template.html.
+// The typed half of the RN <-> WebView bridge. Its counterparts are the plain-JS
+// IIFEs in src/features/reader/webview/reader-epub.template.html and
+// reader-pdf.template.html, plus the shared half both of them inline from
+// reader.bridge.html. THREE files, one contract — the drift guard in
+// readerBridge.test.ts reads all three and compares the union.
 //
 // >>> HAND-SYNC CONTRACT — READ BEFORE EDITING <<<
 // The WebView side is NOT typechecked — it lives in a .html file precisely to
@@ -23,10 +26,10 @@
 // opens this file.
 //
 // Accepted debt, not an oversight — but it compounds with surface area, so here
-// is the trigger rather than a vague "someday". Surface as of 2026-08-14:
+// is the trigger rather than a vague "someday". Surface as of 2026-08-17:
 //
 //   5 message types (ready, rendered, relocated, toc, error)
-//   4 commands      (open, next, prev, goTo)
+//   5 commands      (openEpub, openPdf, next, prev, goTo)
 //
 // Runtime assertions cover a tiny 1:1 surface cheaply. They stop being enough
 // when a mismatch can be SHAPE-level rather than NAME-level — parseReaderMessage
@@ -79,6 +82,23 @@
 // number local to this file, not a frozen contract. The NEXT field added to a TOC
 // entry fires trigger 1; say so then instead of re-arguing the boundary.
 //
+// PDF support (a second renderer, a second template) did NOT trip any either, and
+// this one is worth reading before assuming the obvious. Routing a FORMAT looks
+// exactly like trigger 3 — ContentFormat is frozen, in shared/types/primitives.ts —
+// and it would have been, had the format value crossed. It does not. The host reads
+// ContentFormat in typechecked TS and picks BETWEEN TWO COMMAND NAMES (openEpub /
+// openPdf); the bridge only ever sees a name that belongs to this file. That is the
+// same manoeuvre that kept `goTo` cheap: discriminate host-side, send a primitive.
+// Commands went 4 -> 5, which trigger 1 does not count (it counts MESSAGE cases and
+// fields per case, both unchanged). PDFJS_MISSING is one more code in an existing
+// list, not a new shape.
+//
+// What was deliberately NOT built, because it would have fired trigger 1: reporting
+// the PDF page in `relocated`. That is a fourth field on a case already at the
+// boundary. Nothing consumes a reading position yet, so the field would have bought
+// nothing and cost the conversion. When Progress needs it, adding it IS the
+// conversion — say so then instead of re-arguing it.
+//
 // EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
 // epub.js rendition). That is the first stage that trips a trigger, and it trips
 // two — nested multi-field payloads AND a frozen shared contract crossing the
@@ -112,7 +132,7 @@
  * `depth` rather than rendering a recursive structure. That is the point: a
  * recursive payload is the shape a hand-synced, untypechecked boundary is worst at.
  *
- * A MISSING `depth` PARSES AS 0 ON PURPOSE. `assets/reader/reader.html` is a
+ * A MISSING `depth` PARSES AS 0 ON PURPOSE. `assets/reader/reader-epub.html` is a
  * generated but tracked artifact, so a working tree can legitimately hold a
  * template older than this file; degrading to a flat list beats dropping every
  * entry, which is what a required field would do.
@@ -136,11 +156,19 @@ export const MAX_TOC_DEPTH = 6;
 
 /**
  * Error codes raised INSIDE the WebView. Exactly the strings passed to `fail()`
- * in reader.template.html — one entry per call site, no extras.
+ * across the two templates and the shared bridge fragment — one entry per call
+ * site, no extras.
+ *
+ * This is a UNION over three files, not a list from one. `EPUBJS_MISSING` and
+ * `JSZIP_MISSING` are raised only by the EPUB template, `PDFJS_MISSING` only by the
+ * PDF one, and the two `WEBVIEW_*` catch-alls only by the shared fragment. The drift
+ * guard reads all three and unions them before comparing, so a code raised in one
+ * template and absent from the other is correct rather than drift.
  */
 export const WEBVIEW_ERROR_CODES = [
   'EPUBJS_MISSING',
   'JSZIP_MISSING',
+  'PDFJS_MISSING',
   'OPEN_FAILED',
   'NAVIGATION_FAILED',
   'NOT_READY',
@@ -172,6 +200,12 @@ export const HOST_ERROR_CODES = [
   'WEBVIEW_LOAD_FAILED',
   'BRIDGE_PARSE_FAILED',
   'BLOCKED_NAVIGATION',
+  // The book's ContentFormat has no renderer here. Today that means AUDIO, which is
+  // a real member of the frozen enum and never encrypted — so it can reach this
+  // reader and must be refused with something better than a blank page. Raised
+  // BEFORE any WebView is mounted (ReaderScreen picks the template by format), which
+  // is why it is host-side: there is no WebView to raise it from.
+  'UNSUPPORTED_FORMAT',
 ] as const;
 
 export type WebViewErrorCode = (typeof WEBVIEW_ERROR_CODES)[number];
@@ -246,7 +280,8 @@ export type ReaderMessageTypesAreExhaustive = AssertNever<
  * site, so a rename is one edit and a mismatch is greppable.
  */
 export const READER_COMMANDS = {
-  open: 'open',
+  openEpub: 'openEpub',
+  openPdf: 'openPdf',
   next: 'next',
   prev: 'prev',
   goTo: 'goTo',
@@ -264,8 +299,23 @@ export const READER_COMMANDS = {
  * `.cfi` before sending. Passing the `Locator` union itself would put a frozen
  * contract inside untypechecked WebView JS — trigger 3, see WEBVIEW_BRIDGE.md.
  */
+/**
+ * WHY TWO OPEN COMMANDS RATHER THAN `open(base64, format)`.
+ *
+ * This is how `ContentFormat` is routed WITHOUT putting it on the bridge. Each
+ * template defines exactly one of these two methods — the EPUB one calls epub.js,
+ * the PDF one calls pdf.js — and the host chooses which to send from a typechecked
+ * `switch` on `ContentFormat`. So the discriminant is a command NAME, which is
+ * owned by this file, instead of a frozen enum value hand-copied into untypechecked
+ * WebView JS. That distinction is trigger 3 in WEBVIEW_BRIDGE.md, and it is the
+ * whole reason PDF support did not force the typechecked-WebView conversion.
+ *
+ * Do not "simplify" these into one command with a format argument. It reads tidier
+ * and it moves a frozen contract across the boundary.
+ */
 export type ReaderCommand =
-  | { type: 'open'; base64: string }
+  | { type: 'openEpub'; base64: string }
+  | { type: 'openPdf'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
   | { type: 'goTo'; target: string };
@@ -375,7 +425,7 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
 export function buildCommandScript(command: ReaderCommand): string {
   const method = READER_COMMANDS[command.type];
   const args: string =
-    command.type === 'open'
+    command.type === 'openEpub' || command.type === 'openPdf'
       ? JSON.stringify(command.base64)
       : command.type === 'goTo'
         ? JSON.stringify(command.target)

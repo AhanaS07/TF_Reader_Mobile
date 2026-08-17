@@ -20,13 +20,29 @@ import { Asset } from 'expo-asset';
 
 import { fromByteArray } from 'react-native-quick-base64';
 
-import { getBook } from '@/features/encryption/contentProvider';
+import { getBook, getFormat } from '@/features/encryption/contentProvider';
 import { verifyReadingAccess } from '@/features/download/readingSessionClient';
 import { ensureSeeded } from '@/features/reader/devContentSeed';
 import { logSpan, now } from '@/features/reader/readerTiming';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
-const READER_HTML_MODULE = require('../../../assets/reader/reader.html') as number;
+/**
+ * One generated shell per content format, keyed by `ContentFormat`.
+ *
+ * Both are `require()`d unconditionally at module load, which is deliberate: these
+ * are Metro asset HANDLES (small integers), not the files themselves, so naming both
+ * costs nothing at runtime and a conditional `require()` cannot be statically
+ * analysed by Metro and would not be bundled at all.
+ *
+ * AUDIO is absent on purpose rather than mapped to a placeholder. It is a real
+ * member of the frozen enum and never encrypted, so it can reach this reader — and
+ * `Partial` is what makes `formatFor()` below have to handle that instead of
+ * silently loading an EPUB shell for an audiobook.
+ */
+const READER_HTML_MODULES: Partial<Record<ContentFormat, number>> = {
+  EPUB: require('../../../assets/reader/reader-epub.html') as number,
+  PDF: require('../../../assets/reader/reader-pdf.html') as number,
+};
 
 /**
  * Resolve a bundled asset to a local file:// URI.
@@ -49,12 +65,68 @@ async function localUriFor(assetModule: number, label: string): Promise<string> 
 }
 
 /**
- * file:// URI of the generated reader.html. It is self-contained — zero
+ * file:// URI of the generated shell for this format. Each is self-contained — zero
  * sub-resource requests — which is what lets ReaderWebView lock navigation down
  * as hard as it does.
+ *
+ * Throws for a format with no shell (AUDIO). Callers map that to
+ * UNSUPPORTED_FORMAT; see ReaderScreen. Throwing rather than falling back to EPUB
+ * is the point — an audiobook silently handed to epub.js fails much later and much
+ * less legibly.
  */
-export async function getReaderHtmlUri(): Promise<string> {
-  return localUriFor(READER_HTML_MODULE, 'reader.html');
+export async function getReaderHtmlUri(format: ContentFormat): Promise<string> {
+  const assetModule = READER_HTML_MODULES[format];
+  if (assetModule === undefined) {
+    throw new UnsupportedFormatError(format);
+  }
+  return localUriFor(assetModule, `reader-${format.toLowerCase()}.html`);
+}
+
+/**
+ * Thrown when a book's format has no renderer in this app.
+ *
+ * Its own class rather than a bare Error so ReaderScreen can map it to
+ * UNSUPPORTED_FORMAT without string-matching a message — the same reason
+ * ContentFailure and DownloadFailure carry codes.
+ */
+export class UnsupportedFormatError extends Error {
+  readonly format: ContentFormat;
+
+  constructor(format: ContentFormat) {
+    super(`This reader has no renderer for ${format} content.`);
+    this.name = 'UnsupportedFormatError';
+    this.format = format;
+  }
+}
+
+/**
+ * Seed if needed, then report which format this book is — the value that decides
+ * which shell to load and which open command to send.
+ *
+ * ORDER IS A REAL DEPENDENCY, NOT A STYLE CHOICE. `getFormat` opens a ContentStore
+ * session, and `openSession` rejects with DECRYPTION_FAILED if nothing has been
+ * stored for this book yet — so the seed has to have run first. Keeping both calls
+ * here means the ordering lives in ONE place, and it is the same place that has to
+ * be unpicked when `devContentSeed.ts` goes away.
+ *
+ * `getFormat` is cheap even cold: `openSession` only reads the persisted metadata
+ * written by `store()`, it does not decrypt. So this can run before the WebView is
+ * mounted without paying for the book.
+ *
+ * `ensureSeeded` is TEMPORARY and goes away with devContentSeed.ts. It is also
+ * called again inside `getBookBase64`, which is not redundant work — it
+ * short-circuits on `isAvailableOffline()` plus a seed-version marker, so the second
+ * call is a fast no-op.
+ */
+export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
+  const seedStartedAt = now();
+  await ensureSeeded(bookId);
+  logSpan('seed', seedStartedAt);
+
+  const formatStartedAt = now();
+  const format = await getFormat(bookId);
+  logSpan('format', formatStartedAt, { format });
+  return format;
 }
 
 /**
@@ -108,23 +180,28 @@ export async function getReaderHtmlUri(): Promise<string> {
  * revocation, which is deliberately fatal to opening the book — same as any other error below,
  * caught by ReaderScreen's existing catch-and-raiseError.
  *
- * Hardcoded to `'EPUB'`: this Reader implementation is EPUB-only today (the WebView template is
- * epub.js-specific, and devContentSeed.ts's own header says the same) — not a new limitation this
- * introduces, just the first place that format needs to be named explicitly rather than implied.
- * It is also BLOCKED, not merely unfinished: the contract's intended source for the real value is
- * wokay's book metadata (`contentType` on the catalogue/OPDS record), and this app has no
- * catalogue client at all, so there is nowhere to read it from. See B12/C3 in
- * `src/shared/contracts/CONTRACT_ALIGNMENT.md`. When one lands, note that
- * `ReadingSessionRequest.format` selects an ASSET format, which wokay distinguishes from the
- * book's own `contentType` — one book can carry a PDF asset beside an EPUB one.
+ * `format` is now a PARAMETER rather than a hardcoded `'EPUB'`, supplied by `prepareBook` above
+ * from `SessionHandle.format`. That closes the Reader half of finding `B12`
+ * (`src/shared/contracts/CONTRACT_ALIGNMENT.md`) but NOT the finding itself: the value is only as
+ * true as whatever called `ContentStore.store()`, which today is the dev seed. The real source is
+ * wokay's book metadata (`contentType` on the catalogue/OPDS record) and there is still no
+ * catalogue client to read it from — `C3`, unowned. So a real book downloaded through
+ * `downloadBook()` gets whatever format that call was passed, which itself defaults to `'EPUB'`.
+ *
+ * When a catalogue client lands, note that `ReadingSessionRequest.format` selects an ASSET format,
+ * which wokay distinguishes from the book's own `contentType` — one book can carry a PDF asset
+ * beside an EPUB one, so these two must not be conflated into one lookup.
  */
-export async function getBookBase64(bookId: BookId): Promise<string> {
+export async function getBookBase64(bookId: BookId, format: ContentFormat): Promise<string> {
   const startedAt = now();
 
   const verifyStartedAt = now();
-  await verifyReadingAccess(bookId, 'EPUB');
+  await verifyReadingAccess(bookId, format);
   logSpan('verifyAccess', verifyStartedAt);
 
+  // Idempotent, and a fast no-op after prepareBook's call — see the note there.
+  // Kept rather than removed so this function still stands alone: it is the one
+  // place that guarantees bytes exist before getBook is asked for them.
   const seedStartedAt = now();
   await ensureSeeded(bookId);
   logSpan('seed', seedStartedAt);

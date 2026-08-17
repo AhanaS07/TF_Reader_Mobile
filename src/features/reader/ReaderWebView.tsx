@@ -1,7 +1,10 @@
 // Owner: Reader (Ahana).
 //
-// The WebView host. Loads the generated, self-contained assets/reader/reader.html
-// and speaks the readerBridge protocol to it. Knows nothing about where bytes
+// The WebView host. Loads a generated, self-contained reader shell
+// (assets/reader/reader-epub.html or reader-pdf.html, chosen by readerAssets from
+// the book's ContentFormat) and speaks the readerBridge protocol to it. FORMAT-
+// AGNOSTIC by design: it is handed a URI and never learns which renderer is inside,
+// which is why adding PDF needed no change here. Knows nothing about where bytes
 // come from (readerAssets.ts owns that) and renders no chrome (ReaderScreen does).
 //
 // >>> WHY THIS WEBVIEW IS LOCKED DOWN AS HARD AS IT IS <<<
@@ -35,7 +38,7 @@ import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/r
 const READY_TIMEOUT_MS = 10_000;
 
 export interface ReaderWebViewProps {
-  /** file:// URI of the generated reader.html, from getReaderHtmlUri(). */
+  /** file:// URI of the generated shell for this book's format, from getReaderHtmlUri(). */
   sourceUri: string;
   /** Every bridge message, already parsed and narrowed. */
   onMessage: (message: ReaderMessage) => void;
@@ -83,7 +86,7 @@ export function ReaderWebView({
       onHostErrorRef.current(
         'READY_TIMEOUT',
         `The reader did not report ready within ${READY_TIMEOUT_MS / 1000}s. ` +
-          `The bundled reader.html may be missing or failed to execute.`,
+          `The bundled reader shell may be missing or failed to execute.`,
       );
     }, READY_TIMEOUT_MS);
 
@@ -109,7 +112,7 @@ export function ReaderWebView({
 
       if (!message) {
         // Unparseable payload: almost always a drift between readerBridge.ts and
-        // the hand-synced JS in reader.template.html. Truncated so a huge payload
+        // the hand-synced JS in the WebView templates. Truncated so a huge payload
         // cannot blow up the error banner.
         onHostErrorRef.current(
           'BRIDGE_PARSE_FAILED',
@@ -132,7 +135,7 @@ export function ReaderWebView({
    * NAVIGATION ALLOW-LIST. Default is DENY.
    *
    * The only load this WebView should ever perform is the initial local
-   * reader.html. epub.js renders chapters into same-document iframes with blob:
+   * reader shell. epub.js renders chapters into same-document iframes with blob:
    * / about: URLs — it does not navigate the top-level document — so nothing
    * legitimate is refused here.
    *
@@ -204,7 +207,7 @@ export function ReaderWebView({
         allowFileAccess
         // DELIBERATELY OFF. These would let file:// content read other local
         // files and treat every file:// origin as same-origin — the classic
-        // Android WebView local-file exfiltration primitive. reader.html is
+        // Android WebView local-file exfiltration primitive. The shell is
         // self-contained and needs neither.
         allowFileAccessFromFileURLs={false}
         allowUniversalAccessFromFileURLs={false}

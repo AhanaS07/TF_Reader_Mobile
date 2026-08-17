@@ -66,8 +66,9 @@ CAP-7's table. Two different capabilities, one word.
 a large piece of work (feed parsing, pagination, institution state, cover art) and nothing about
 your existing index code carries over. If it doesn't, say so in writing, because it blocks:
 
-- `B12` — `format` is hardcoded `'EPUB'` at the read path, and the contract's intended source is
-  wokay's `contentType` on the catalogue record. There is nowhere to read it from.
+- `B12` — the read path no longer hardcodes `format` (2026-08-17: Reader routes it from
+  `SessionHandle.format`), but nothing can supply the TRUE value, because the contract's intended
+  source is wokay's `contentType` on the catalogue record and there is nowhere to read it from.
 - `B1` step 1 — signing in needs `GET /api/v1/institutions` to pick an institution first.
 - `hasSearchIndex`, `accessTier`, `totalCopies`, cover art — all catalogue-only fields.
 

@@ -30,17 +30,41 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
+import { closeBook } from '@/features/encryption/contentProvider';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
-import { getBookBase64 } from '@/features/reader/readerAssets';
+import {
+  getBookBase64,
+  getReaderHtmlUri,
+  prepareBook,
+  UnsupportedFormatError,
+} from '@/features/reader/readerAssets';
 import { buildCommandScript } from '@/features/reader/readerBridge';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
-import type { SearchHit } from '@/shared/contracts';
+import type { ContentFormat, SearchHit } from '@/shared/contracts';
 
-jest.mock('@/features/reader/readerAssets', () => ({
-  getReaderHtmlUri: jest.fn(() => Promise.resolve('file:///reader.html')),
-  getBookBase64: jest.fn(() => Promise.resolve('UEsDBA==')),
-}));
+/**
+ * The byte/asset seam. `prepareBook` decides the format, which decides BOTH the shell
+ * URI and the open command, so it is the one mock a format test has to move.
+ *
+ * `UnsupportedFormatError` is the real class, not a stub: ReaderScreen maps it to
+ * UNSUPPORTED_FORMAT with `instanceof`, so a stubbed one would never match and the
+ * AUDIO test would pass through the generic ASSET_LOAD_FAILED branch instead —
+ * green, and testing the wrong path.
+ */
+jest.mock('@/features/reader/readerAssets', () => {
+  const actual = jest.requireActual<typeof import('@/features/reader/readerAssets')>(
+    '@/features/reader/readerAssets',
+  );
+  return {
+    UnsupportedFormatError: actual.UnsupportedFormatError,
+    prepareBook: jest.fn(() => Promise.resolve('EPUB')),
+    getReaderHtmlUri: jest.fn((format: string) =>
+      Promise.resolve(`file:///reader-${format.toLowerCase()}.html`),
+    ),
+    getBookBase64: jest.fn(() => Promise.resolve('UEsDBA==')),
+  };
+});
 
 jest.mock('@/features/encryption/contentProvider', () => ({
   closeBook: jest.fn(() => Promise.resolve()),
@@ -197,6 +221,158 @@ describe('the bounded wait on the byte path', () => {
 
     expect(screen.getByText('CONTENT_LOAD_FAILED')).toBeTruthy();
     expect(screen.queryByText('CONTENT_LOAD_TIMEOUT')).toBeNull();
+  });
+});
+
+describe('routing ContentFormat to a renderer', () => {
+  afterEach(() => {
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+  });
+
+  it('loads the EPUB shell and sends openEpub for an EPUB book', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenCalledWith('EPUB');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+  });
+
+  it('loads the PDF shell and sends openPdf for a PDF book', async () => {
+    // The two halves have to move together. Loading the PDF shell but sending
+    // openEpub would answer NOT_READY — the shell defines only openPdf — which is a
+    // confusing way to discover a routing bug, so both are asserted here.
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+
+    await mountReader();
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenCalledWith('PDF');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
+    );
+
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+  });
+
+  it('passes the resolved format to the access check, not a hardcoded EPUB', async () => {
+    // readerAssets.ts:125 used to send a literal 'EPUB' to verifyReadingAccess. That
+    // is finding B12, and this is the assertion that keeps it closed on Reader's side.
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+
+    await mountReader();
+    await reportReady();
+
+    expect(jest.mocked(getBookBase64)).toHaveBeenCalledWith('test-book', 'PDF');
+  });
+
+  it('re-resolves the shell and the open command when the book switches format', async () => {
+    // What App.tsx's dev picker does, and what RootNavigator will do with real books:
+    // change ONLY the bookId. Nothing hands the reader a format, so this is also the
+    // proof that runtime format switching needs no routing change — it falls out of
+    // resolving the format per book.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen key="book-epub" bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenLastCalledWith('EPUB');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+
+    // KEYED, exactly as App.tsx and any navigator must do — ReaderScreen's prop doc
+    // requires it, so a test that rerendered without a key would be exercising a usage
+    // the component does not support and would pass for the wrong reason.
+    await act(async () => {
+      await view.rerender(<ReaderScreen key="book-pdf" bookId="book-pdf" />);
+    });
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    expect(jest.mocked(getReaderHtmlUri)).toHaveBeenLastCalledWith('PDF');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
+    );
+
+    // The outgoing book's decrypted bytes must be released. Without this the reader
+    // leaks a whole book per switch, which is exactly what closeBook exists to stop.
+    expect(jest.mocked(closeBook)).toHaveBeenCalledWith('book-epub');
+  });
+
+  it('does not send the previous format’s open command after a switch', async () => {
+    // The stale-state failure this guards: if `format` survived the bookId change,
+    // handleReady would send openEpub into the PDF shell, which defines only openPdf
+    // and would answer NOT_READY — a confusing way to find a routing bug.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen key="book-epub" bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    __injectJavaScript.mockClear();
+
+    // KEYED, exactly as App.tsx and any navigator must do — ReaderScreen's prop doc
+    // requires it, so a test that rerendered without a key would be exercising a usage
+    // the component does not support and would pass for the wrong reason.
+    await act(async () => {
+      await view.rerender(<ReaderScreen key="book-pdf" bookId="book-pdf" />);
+    });
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    const sent = __injectJavaScript.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(sent).toContain('window.TFReader.openPdf');
+    expect(sent).not.toContain('window.TFReader.openEpub');
+  });
+
+  it('never opens the previous renderer even when the caller forgets the key', async () => {
+    // The prop doc REQUIRES callers to key on bookId, and both switch tests above do.
+    // This one deliberately does NOT, because "the caller forgot" must fail safe rather
+    // than silently opening the wrong renderer: the resolved format/shell pair is tagged
+    // with its bookId, so a mismatched tag reads as "not resolved yet" instead of as the
+    // previous book's answer. Without that tag this test sends openEpub into a PDF shell.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    const view = await render(<ReaderScreen bookId="book-epub" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // Make the new book's resolution never settle, so the ONLY thing that could be
+    // rendered is whatever survived from the previous book.
+    jest.mocked(prepareBook).mockReturnValue(new Promise<ContentFormat>(() => {}));
+    __injectJavaScript.mockClear();
+
+    await act(async () => {
+      await view.rerender(<ReaderScreen bookId="book-pdf" />);
+    });
+
+    // Stale shell is gone rather than reused, so there is nothing to be ready.
+    expect(screen.queryByTestId('reader-webview')).toBeNull();
+    expect(__injectJavaScript).not.toHaveBeenCalled();
+  });
+
+  it('refuses AUDIO with its own code and never mounts a WebView', async () => {
+    // AUDIO is a real member of the frozen enum and is never encrypted, so it can
+    // reach this screen. There is no shell for it, and the important half of this is
+    // the SECOND assertion: silently loading the EPUB shell for an audiobook would
+    // fail much later, inside epub.js, as an unreadable error.
+    jest
+      .mocked(prepareBook)
+      .mockRejectedValue(new UnsupportedFormatError('AUDIO' as ContentFormat));
+
+    await render(<ReaderScreen bookId="test-book" />);
+
+    expect(await screen.findByText('UNSUPPORTED_FORMAT')).toBeTruthy();
+    expect(screen.queryByTestId('reader-webview')).toBeNull();
+    // NOT the asset code: the shells are fine, there just isn't one for this book,
+    // and telling the reader to run a build script would be a lie.
+    expect(screen.queryByText('ASSET_LOAD_FAILED')).toBeNull();
   });
 });
 
