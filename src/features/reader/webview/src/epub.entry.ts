@@ -238,7 +238,7 @@ const api: TFReaderApi<'openEpub'> = {
             // A CFI, not a page: this book is reflowable, so there is no stable page to report. That
             // is the whole reason ReaderPosition is discriminated by format rather than carrying both
             // shapes flat with one of them always null.
-            position: { format: 'EPUB', cfi: location?.start?.cfi ?? null },
+            position: { kind: 'cfi', cfi: location?.start?.cfi ?? null },
             atStart: !!location?.atStart,
             atEnd: !!location?.atEnd,
           });
@@ -276,16 +276,30 @@ const api: TFReaderApi<'openEpub'> = {
   },
 
   /**
-   * `target` is a spine href (TOC) or an EPUB CFI (Search hit). No branch here on purpose: epub.js's
-   * `spine.get()` checks `isCfiString()` before its href lookup, so `display()` already routes both
-   * correctly.
+   * Navigate to an EPUB target.
+   *
+   * NO BRANCH ON WHAT THE `href` IS, on purpose: it is a spine href (from a TOC row) or an EPUB CFI
+   * (from a Search hit), and epub.js's `spine.get()` checks `isCfiString()` before its href lookup, so
+   * `display()` already routes both correctly.
+   *
+   * THE FORMAT CHECK IS NEW, and it is what un-overloading the target bought. A PDF target reaching
+   * this shell should be impossible — one shell is loaded per book — but the value arrives over JSON
+   * from a book's own navigation document, so it is checked. Previously this was unexpressible: any
+   * string was a plausible href, so a page number would have been handed to `display()` and resolved
+   * to no spine item, failing later and less legibly.
    */
   goTo: (target) => {
     if (!rendition) {
       fail('NOT_READY', 'goTo() before a book was opened');
       return;
     }
-    rendition.display(target).catch((error: unknown) => {
+
+    if (target.kind !== 'href') {
+      fail('NAVIGATION_FAILED', `goTo: this shell renders EPUB, not ${target.kind}`);
+      return;
+    }
+
+    rendition.display(target.href).catch((error: unknown) => {
       fail('NAVIGATION_FAILED', error);
     });
   },

@@ -15,7 +15,11 @@
 // instead of a mock of `PDFDocumentProxy` — and pdf.entry.ts asserts at compile time that the real
 // proxy satisfies them, so the indirection cannot drift from the thing it stands in for.
 
-import { MAX_TOC_DEPTH, type ReaderTocItem } from '@/features/reader/readerBridge';
+import {
+  MAX_TOC_DEPTH,
+  type ReaderTarget,
+  type ReaderTocItem,
+} from '@/features/reader/readerBridge';
 
 /**
  * One node of pdf.js's `getOutline()` tree, as far as this code cares.
@@ -117,10 +121,10 @@ export async function outlineDestPage(
  * The `toc` payload for a document: the outline, flattened, with every destination already resolved
  * to a page number in `href`.
  *
- * `href` CARRIES A PAGE NUMBER HERE, not a spine href — the one place the PDF shell reuses an
- * EPUB-shaped field for a different meaning. What keeps it safe is that `pageFromTarget` below
- * VALIDATES on the way back in, and that only one shell is ever loaded per book so the two
- * vocabularies never coexist at runtime. See `ReaderTocItem` in readerBridge.ts.
+ * Each entry carries a `{format: 'PDF', page}` target, so a Contents row the host can render is one it
+ * can navigate to without the host knowing anything about PDF addressing. This used to be a page
+ * number stuffed into an EPUB-shaped `href` string; see `ReaderTarget` in readerBridge.ts for why that
+ * was chosen and why it stopped being the cheaper option.
  *
  * Resolves to [] for a document with no outline — which is most of them, and is why the host must
  * treat an empty Contents panel as normal rather than broken.
@@ -137,7 +141,7 @@ export async function buildOutlineToc(doc: OutlineDocument): Promise<ReaderTocIt
     for (let i = 0; i < flat.length; i++) {
       const page = pages[i];
       if (page === null) continue;
-      items.push({ label: flat[i].label, href: String(page), depth: flat[i].depth });
+      items.push({ label: flat[i].label, target: { kind: 'page', page }, depth: flat[i].depth });
     }
     return items;
   } catch {
@@ -153,20 +157,23 @@ export async function buildOutlineToc(doc: OutlineDocument): Promise<ReaderTocIt
 // needs and a test should be able to call.
 
 /**
- * A `goTo` target as a page number, or null when it is not one in this document.
+ * A `goTo` target as a page in THIS document, or null if it is not one.
  *
- * THE RANGE CHECK IS WHAT MAKES THE `href` OVERLOAD SAFE. A spine href sent to the PDF shell fails
- * `parseInt`, and a page number outside the document fails the bounds — either way the caller raises
- * NAVIGATION_FAILED rather than scrolling somewhere arbitrary.
+ * TWO REJECTIONS, AND BOTH MATTER FOR DIFFERENT REASONS.
  *
- * `parseInt` is deliberate rather than `Number`: it is what the bridge's own doc comment on
- * `ReaderTocItem.href` describes. Note it accepts a trailing-garbage form like `'12x'`; the bounds
- * check is what carries the safety, not the parse.
+ *  - The wrong FORMAT. `ReaderTarget` is discriminated, so an EPUB target reaching the PDF shell is
+ *    now a category error rather than a string that fails to parse. It should be impossible — one
+ *    shell is loaded per book — but the value arrives over JSON from a book's own navigation document,
+ *    so "should be impossible" is not a reason to skip the check.
+ *  - The wrong RANGE. `page` is already validated as a positive integer by `asTarget` host-side; the
+ *    upper bound can only be checked here, because only this shell knows the page count.
+ *
+ * Either way the caller raises NAVIGATION_FAILED rather than scrolling somewhere arbitrary.
  */
-export function pageFromTarget(target: string, pageCount: number): number | null {
-  const page = parseInt(target, 10);
-  if (!isFinite(page) || page < 1 || page > pageCount) return null;
-  return page;
+export function pageFromTarget(target: ReaderTarget, pageCount: number): number | null {
+  if (target.kind !== 'page') return null;
+  if (!Number.isInteger(target.page) || target.page < 1 || target.page > pageCount) return null;
+  return target.page;
 }
 
 /**

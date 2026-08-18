@@ -38,12 +38,16 @@ describe('flattenToc', () => {
       { label: 'Part Two', href: 'p2.xhtml', subitems: [] },
     ];
 
+    // NOTE THE ASYMMETRY, and it is the point of this change: the INPUT is epub.js's `NavItem`, which
+    // has a bare `href`, and the OUTPUT is a `ReaderTocItem` carrying a discriminated `ReaderTarget`.
+    // The conversion from one to the other happens here, once, in typechecked code — instead of the
+    // host receiving a string and having to know which vocabulary it was in.
     expect(flattenToc(nav, 0, [])).toEqual([
-      { label: 'Part One', href: 'p1.xhtml', depth: 0 },
-      { label: 'Chapter 1', href: 'c1.xhtml', depth: 1 },
-      { label: 'Section 1.1', href: 'c1.xhtml#s1', depth: 2 },
-      { label: 'Chapter 2', href: 'c2.xhtml', depth: 1 },
-      { label: 'Part Two', href: 'p2.xhtml', depth: 0 },
+      { label: 'Part One', target: { kind: 'href', href: 'p1.xhtml' }, depth: 0 },
+      { label: 'Chapter 1', target: { kind: 'href', href: 'c1.xhtml' }, depth: 1 },
+      { label: 'Section 1.1', target: { kind: 'href', href: 'c1.xhtml#s1' }, depth: 2 },
+      { label: 'Chapter 2', target: { kind: 'href', href: 'c2.xhtml' }, depth: 1 },
+      { label: 'Part Two', target: { kind: 'href', href: 'p2.xhtml' }, depth: 0 },
     ]);
   });
 
@@ -81,8 +85,8 @@ describe('flattenToc', () => {
     const nav = [{ href: 'a.xhtml' }, null, { label: 'B', href: 'b.xhtml' }] as NavItem[];
 
     expect(flattenToc(nav, 0, [])).toEqual([
-      { label: '', href: 'a.xhtml', depth: 0 },
-      { label: 'B', href: 'b.xhtml', depth: 0 },
+      { label: '', target: { kind: 'href', href: 'a.xhtml' }, depth: 0 },
+      { label: 'B', target: { kind: 'href', href: 'b.xhtml' }, depth: 0 },
     ]);
   });
 
@@ -95,9 +99,11 @@ describe('flattenToc', () => {
   it('keeps an entry with no href rather than dropping it', () => {
     const nav: NavItem[] = [{ label: 'Grouping heading', subitems: [{ label: 'C', href: 'c.xhtml' }] }];
 
+    // An absent href becomes an EPUB target with an empty href rather than no target at all. Dropping
+    // the row would silently reindent everything beneath it.
     expect(flattenToc(nav, 0, [])).toEqual([
-      { label: 'Grouping heading', href: '', depth: 0 },
-      { label: 'C', href: 'c.xhtml', depth: 1 },
+      { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+      { label: 'C', target: { kind: 'href', href: 'c.xhtml' }, depth: 1 },
     ]);
   });
 });

@@ -136,15 +136,15 @@ describe('outlineDestPage', () => {
 });
 
 describe('buildOutlineToc', () => {
-  it('produces ReaderTocItems whose href is the resolved page number as a string', async () => {
+  it('produces ReaderTocItems carrying a resolved PDF page target', async () => {
     const doc = fakeDoc({
       outline: [{ title: 'Opening', dest: ['r0'], items: [{ title: 'Middle', dest: ['r1'] }] }],
       pageRefs: { r0: 0, r1: 4 },
     });
 
     expect(await buildOutlineToc(doc)).toEqual([
-      { label: 'Opening', href: '1', depth: 0 },
-      { label: 'Middle', href: '5', depth: 1 },
+      { label: 'Opening', target: { kind: 'page', page: 1 }, depth: 0 },
+      { label: 'Middle', target: { kind: 'page', page: 5 }, depth: 1 },
     ]);
   });
 
@@ -175,26 +175,34 @@ describe('buildOutlineToc', () => {
 
 describe('pageFromTarget', () => {
   it('accepts a page inside the document', () => {
-    expect(pageFromTarget('1', 50)).toBe(1);
-    expect(pageFromTarget('50', 50)).toBe(50);
+    expect(pageFromTarget({ kind: 'page', page: 1 }, 50)).toBe(1);
+    expect(pageFromTarget({ kind: 'page', page: 50 }, 50)).toBe(50);
   });
 
-  // The range check is what makes the format-overloaded `href` safe: a spine href sent to the PDF
-  // shell must fail loudly rather than scroll somewhere arbitrary.
+  // THE WRONG FORMAT. Since the target became discriminated this is a category error rather than a
+  // string that happens not to parse — and it is the case that used to be unexpressible, because any
+  // string was a plausible page number to try.
   it.each([
-    ['a spine href', 'ch1.xhtml'],
-    ['a CFI', 'epubcfi(/6/4[chap01]!/4/2/2)'],
-    ['zero', '0'],
-    ['a negative page', '-3'],
-    ['past the last page', '51'],
-    ['empty', ''],
-    ['not a number at all', 'abc'],
-  ])('rejects %s', (_label, target) => {
+    ['a spine href', { kind: 'href', href: 'ch1.xhtml' }],
+    ['a CFI', { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' }],
+    ['an EPUB target whose href looks like a page', { kind: 'href', href: '12' }],
+  ] as const)('rejects %s', (_label, target) => {
     expect(pageFromTarget(target, 50)).toBeNull();
   });
 
+  // THE WRONG RANGE. Only this shell knows the page count, so the upper bound can only be checked
+  // here; the host validated `page` as a positive integer on the way in.
+  it.each([
+    ['zero', 0],
+    ['a negative page', -3],
+    ['past the last page', 51],
+    ['a fractional page', 1.5],
+  ])('rejects %s', (_label, page) => {
+    expect(pageFromTarget({ kind: 'page', page }, 50)).toBeNull();
+  });
+
   it('refuses every target when the document has no pages', () => {
-    expect(pageFromTarget('1', 0)).toBeNull();
+    expect(pageFromTarget({ kind: 'page', page: 1 }, 0)).toBeNull();
   });
 });
 

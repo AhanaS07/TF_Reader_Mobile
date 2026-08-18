@@ -3,10 +3,10 @@
 // THE PDF SHELL'S ENTRY POINT. Compiled by buildReaderHtml.ts (esbuild, one IIFE) and inlined into
 // assets/reader/reader-pdf.html. Its sibling is epub.entry.ts; the shared half is bridge.ts.
 //
-// TWO SHELLS RATHER THAN ONE BRANCHING FILE, for two reasons that are now both load-bearing: an EPUB
-// read should not carry ~1.4 MB of inlined pdf.js it can never call, AND one shell per book is what
-// keeps `toc.items[].href`'s two vocabularies (spine href vs page number) from ever coexisting at
-// runtime. A single combined shell would destroy the second property.
+// TWO SHELLS RATHER THAN ONE BRANCHING FILE, for two reasons that are both load-bearing: an EPUB read
+// should not carry ~1.4 MB of inlined pdf.js it can never call, AND one shell per book is why this
+// one only ever receives `{kind:'page'}` targets and can refuse an `href` outright. A single combined
+// shell would give up the second property.
 //
 // WHAT LIVES HERE vs IN pdfOutline.ts: this file reads the DOM and drives pdf.js, so it is not unit
 // tested. Everything that is arithmetic or tree-walking lives next door, where tests can call it.
@@ -174,7 +174,7 @@ async function renderPage(pageNumber: number): Promise<void> {
   // in next/prev below instead, which is why tapping Next on the last page is a no-op, not an error.
   post({
     type: 'relocated',
-    position: { format: 'PDF', page: currentPage, pageCount },
+    position: { kind: 'page', page: currentPage, pageCount },
     atStart: currentPage <= 1,
     atEnd: currentPage >= pageCount,
   });
@@ -268,11 +268,11 @@ const api: TFReaderApi<'openPdf'> = {
   },
 
   /**
-   * `target` is a page number as a bare string.
+   * Navigate to a PDF target.
    *
-   * It stays a bare string for the same reason the EPUB side's does: Search stores a `Locator` and
-   * the HOST unwraps it, so no frozen contract crosses. Validation is `pageFromTarget`, which is
-   * where the range check is tested.
+   * `pageFromTarget` rejects both the wrong format and a page outside this document — see its own note
+   * for why those are two different checks with two different owners. The message names which, because
+   * "not a page in this document" and "that is an EPUB target" send you to very different places.
    */
   goTo: (target) => {
     if (!pdfDoc) {
@@ -282,7 +282,12 @@ const api: TFReaderApi<'openPdf'> = {
 
     const page = pageFromTarget(target, pageCount);
     if (page === null) {
-      fail('NAVIGATION_FAILED', `goTo(${target}): not a page in this document`);
+      fail(
+        'NAVIGATION_FAILED',
+        target.kind === 'page'
+          ? `goTo: page ${target.page} is not in this ${pageCount}-page document`
+          : `goTo: this shell renders PDF, not ${target.kind}`,
+      );
       return;
     }
 

@@ -45,7 +45,11 @@ export function flattenToc(
   for (const item of items) {
     if (!item) continue;
 
-    into.push({ label: (item.label ?? '').trim(), href: item.href ?? '', depth });
+    into.push({
+      label: (item.label ?? '').trim(),
+      target: { kind: 'href', href: item.href ?? '' },
+      depth,
+    });
     flattenToc(item.subitems, Math.min(depth + 1, MAX_TOC_DEPTH), into);
   }
 

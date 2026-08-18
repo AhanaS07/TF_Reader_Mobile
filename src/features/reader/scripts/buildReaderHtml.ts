@@ -32,9 +32,9 @@
 //
 // WHY TWO ARTIFACTS AND NOT ONE BRANCHING FILE: pdf.js plus its worker is ~1.4MB
 // inlined. A single file would make every EPUB read carry a renderer it can never
-// call. It is also load-bearing for CORRECTNESS, not just size: one shell per book
-// is what keeps `toc.items[].href`'s two vocabularies (spine href vs page number)
-// from coexisting at runtime. The two entries share their bridge half by IMPORTING
+// call. It is also load-bearing for CORRECTNESS, not just size: one shell per book is
+// why each shell only ever receives targets in its own addressing scheme, and can
+// refuse the other outright. The two entries share their bridge half by IMPORTING
 // webview/src/bridge.ts, so there is one copy of post() / fail() /
 // base64ToArrayBuffer() and no hand-sync anywhere.
 //

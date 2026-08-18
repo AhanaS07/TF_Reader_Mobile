@@ -157,10 +157,57 @@ async function openContents(count: number): Promise<void> {
 function flatToc(count: number): ReaderTocItem[] {
   return Array.from({ length: count }, (_, i) => ({
     label: `Chapter ${i + 1}`,
-    href: `ch${i + 1}.xhtml`,
+    target: { kind: 'href', href: `ch${i + 1}.xhtml` },
     depth: 0,
   }));
 }
+
+/** A PDF Contents row, for the cases that used to be unrepresentable in one shared string. */
+function pdfToc(pages: number[]): ReaderTocItem[] {
+  return pages.map((page) => ({
+    label: `Page ${page}`,
+    target: { kind: 'page', page },
+    depth: 0,
+  }));
+}
+
+describe('a PDF Contents row', () => {
+  // THE CASE THAT USED TO BE UNREPRESENTABLE IN A SHARED STRING. A PDF outline row arrived as
+  // `href: '12'` and went back as the string '12', which the PDF shell parseInt'd. The host had to
+  // carry a value in a vocabulary it could not name. It now carries a `{kind:'page', page}` target end
+  // to end and never has to know what PDF addressing looks like.
+  it('navigates with the page target the shell sent, unmodified', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
+    await openContents(3);
+
+    await fireEvent.press(screen.getByText('Page 12'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
+    );
+  });
+
+  // A PDF outline repeats page numbers BY DESIGN — several sections legitimately open on the same
+  // page, and the sample fixture has exactly that. Rows must stay distinct anyway, which is why the
+  // React key is index-composed rather than target-derived.
+  it('lists every row when several sections open on the same page', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Section A', target: { kind: 'page', page: 2 }, depth: 0 },
+        { label: 'Section B', target: { kind: 'page', page: 2 }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+
+    expect(screen.getByText('Section A')).toBeTruthy();
+    expect(screen.getByText('Section B')).toBeTruthy();
+  });
+});
 
 describe('the page indicator', () => {
   // PDF-ONLY BY CONSTRUCTION, not by choice. `ReaderPosition` is discriminated by format, and an EPUB
@@ -180,7 +227,7 @@ describe('the page indicator', () => {
   it('reports the page and the page count for a PDF', async () => {
     await mountReader();
     await reportReady();
-    await relocateTo({ format: 'PDF', page: 4, pageCount: 50 });
+    await relocateTo({ kind: 'page', page: 4, pageCount: 50 });
 
     expect(screen.getByLabelText('Page 4 of 50')).toBeTruthy();
     expect(screen.getByText('4 / 50')).toBeTruthy();
@@ -189,8 +236,8 @@ describe('the page indicator', () => {
   it('follows the position as it moves', async () => {
     await mountReader();
     await reportReady();
-    await relocateTo({ format: 'PDF', page: 1, pageCount: 3 });
-    await relocateTo({ format: 'PDF', page: 3, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 1, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 3, pageCount: 3 });
 
     expect(screen.getByLabelText('Page 3 of 3')).toBeTruthy();
     expect(screen.queryByText('1 / 3')).toBeNull();
@@ -199,7 +246,7 @@ describe('the page indicator', () => {
   it('shows no indicator for an EPUB, which has no stable page', async () => {
     await mountReader();
     await reportReady();
-    await relocateTo({ format: 'EPUB', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' });
+    await relocateTo({ kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' });
 
     expect(screen.queryByLabelText(/^Page \d+ of \d+$/)).toBeNull();
   });
@@ -210,8 +257,8 @@ describe('the page indicator', () => {
   it('keeps the last good position when an impossible one arrives', async () => {
     await mountReader();
     await reportReady();
-    await relocateTo({ format: 'PDF', page: 2, pageCount: 3 });
-    await relocateTo({ format: 'PDF', page: 9, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 2, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 9, pageCount: 3 });
 
     expect(screen.getByLabelText('Page 2 of 3')).toBeTruthy();
   });
@@ -520,9 +567,9 @@ describe('ReaderScreen Contents panel', () => {
     await deliver({
       type: 'toc',
       items: [
-        { label: 'Part One', href: 'part1.xhtml', depth: 0 },
-        { label: 'Chapter 1', href: 'ch1.xhtml', depth: 1 },
-        { label: 'Section 1.1', href: 'ch1.xhtml#s1', depth: 2 },
+        { label: 'Part One', target: { kind: 'href', href: 'part1.xhtml' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+        { label: 'Section 1.1', target: { kind: 'href', href: 'ch1.xhtml#s1' }, depth: 2 },
       ],
     });
     await openContents(3);
@@ -774,7 +821,10 @@ describe('ReaderScreen in-book search', () => {
     await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
 
     expect(__injectJavaScript).toHaveBeenLastCalledWith(
-      buildCommandScript({ type: 'goTo', target: 'epubcfi(/6/2[ch1]!/4/4/1:2)' }),
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:2)' },
+      }),
     );
     // The panel DISMISSES on select — it covers the page, so staying open would hide
     // the text the jump just went to. The floating match bar is what remains.

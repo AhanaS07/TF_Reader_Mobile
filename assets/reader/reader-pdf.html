@@ -267,7 +267,7 @@ ${text}`;
       for (let i = 0; i < flat.length; i++) {
         const page = pages[i];
         if (page === null) continue;
-        items.push({ label: flat[i].label, href: String(page), depth: flat[i].depth });
+        items.push({ label: flat[i].label, target: { kind: "page", page }, depth: flat[i].depth });
       }
       return items;
     } catch {
@@ -275,9 +275,9 @@ ${text}`;
     }
   }
   function pageFromTarget(target, pageCount2) {
-    const page = parseInt(target, 10);
-    if (!isFinite(page) || page < 1 || page > pageCount2) return null;
-    return page;
+    if (target.kind !== "page") return null;
+    if (!Number.isInteger(target.page) || target.page < 1 || target.page > pageCount2) return null;
+    return target.page;
   }
   function fitScale(boxWidth, boxHeight, pageWidth, pageHeight) {
     if (boxWidth <= 0 || boxHeight <= 0 || pageWidth <= 0 || pageHeight <= 0) return 0;
@@ -343,7 +343,7 @@ ${text}`;
     currentPage = pageNumber;
     post({
       type: "relocated",
-      position: { format: "PDF", page: currentPage, pageCount },
+      position: { kind: "page", page: currentPage, pageCount },
       atStart: currentPage <= 1,
       atEnd: currentPage >= pageCount
     });
@@ -415,11 +415,11 @@ ${text}`;
       renderPageGuarded(currentPage - 1);
     },
     /**
-     * `target` is a page number as a bare string.
+     * Navigate to a PDF target.
      *
-     * It stays a bare string for the same reason the EPUB side's does: Search stores a `Locator` and
-     * the HOST unwraps it, so no frozen contract crosses. Validation is `pageFromTarget`, which is
-     * where the range check is tested.
+     * `pageFromTarget` rejects both the wrong format and a page outside this document — see its own note
+     * for why those are two different checks with two different owners. The message names which, because
+     * "not a page in this document" and "that is an EPUB target" send you to very different places.
      */
     goTo: (target) => {
       if (!pdfDoc) {
@@ -428,7 +428,10 @@ ${text}`;
       }
       const page = pageFromTarget(target, pageCount);
       if (page === null) {
-        fail("NAVIGATION_FAILED", `goTo(${target}): not a page in this document`);
+        fail(
+          "NAVIGATION_FAILED",
+          target.kind === "page" ? `goTo: page ${target.page} is not in this ${pageCount}-page document` : `goTo: this shell renders PDF, not ${target.kind}`
+        );
         return;
       }
       renderPageGuarded(page);

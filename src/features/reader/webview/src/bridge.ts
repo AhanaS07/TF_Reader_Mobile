@@ -27,6 +27,7 @@
 import type {
   ReaderCommand,
   ReaderMessage,
+  ReaderTarget,
   WebViewErrorCode,
 } from '@/features/reader/readerBridge';
 
@@ -162,7 +163,7 @@ export interface CommandArgs {
   openPdf: [base64: string];
   next: [];
   prev: [];
-  goTo: [target: string];
+  goTo: [target: ReaderTarget];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */

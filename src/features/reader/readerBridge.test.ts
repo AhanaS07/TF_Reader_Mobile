@@ -85,27 +85,32 @@ describe('parseReaderMessage', () => {
     expect(parseReaderMessage('{"type":"rendered"}')).toEqual({ type: 'rendered' });
     expect(
       parseReaderMessage(
-        '{"type":"relocated","position":{"format":"EPUB","cfi":"epubcfi(/6/4!/2)"},"atStart":true,"atEnd":false}',
+        '{"type":"relocated","position":{"kind":"cfi","cfi":"epubcfi(/6/4!/2)"},"atStart":true,"atEnd":false}',
       ),
     ).toEqual({
       type: 'relocated',
-      position: { format: 'EPUB', cfi: 'epubcfi(/6/4!/2)' },
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/2)' },
       atStart: true,
       atEnd: false,
     });
     expect(
       parseReaderMessage(
-        '{"type":"relocated","position":{"format":"PDF","page":4,"pageCount":50},"atStart":false,"atEnd":false}',
+        '{"type":"relocated","position":{"kind":"page","page":4,"pageCount":50},"atStart":false,"atEnd":false}',
       ),
     ).toEqual({
       type: 'relocated',
-      position: { format: 'PDF', page: 4, pageCount: 50 },
+      position: { kind: 'page', page: 4, pageCount: 50 },
       atStart: false,
       atEnd: false,
     });
     expect(
-      parseReaderMessage('{"type":"toc","items":[{"label":"One","href":"ch1.xhtml","depth":0}]}'),
-    ).toEqual({ type: 'toc', items: [{ label: 'One', href: 'ch1.xhtml', depth: 0 }] });
+      parseReaderMessage(
+        '{"type":"toc","items":[{"label":"One","target":{"kind":"href","href":"ch1.xhtml"},"depth":0}]}',
+      ),
+    ).toEqual({
+      type: 'toc',
+      items: [{ label: 'One', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 0 }],
+    });
     expect(parseReaderMessage('{"type":"error","code":"OPEN_FAILED","message":"boom"}')).toEqual({
       type: 'error',
       code: 'OPEN_FAILED',
@@ -123,16 +128,30 @@ describe('parseReaderMessage', () => {
 
   it('hardens malformed fields rather than trusting the payload', () => {
     // A wrong-typed cfi must not become a string-typed lie downstream.
-    expect(parseReaderMessage('{"type":"relocated","position":{"format":"EPUB","cfi":42}}')).toEqual({
+    expect(parseReaderMessage('{"type":"relocated","position":{"kind":"cfi","cfi":42}}')).toEqual({
       type: 'relocated',
-      position: { format: 'EPUB', cfi: null },
+      position: { kind: 'cfi', cfi: null },
       atStart: false,
       atEnd: false,
     });
-    // Non-conforming TOC entries are dropped, not passed through.
+    // Non-conforming TOC entries are dropped, not passed through — and since the target became
+    // discriminated that now includes a row whose TARGET is unusable, which the old shape could not
+    // detect: any string was a plausible href, so a malformed entry became a Contents row that could
+    // only ever raise NAVIGATION_FAILED when tapped.
     expect(
-      parseReaderMessage('{"type":"toc","items":[{"label":"ok","href":"a"},{"label":1},"junk"]}'),
-    ).toEqual({ type: 'toc', items: [{ label: 'ok', href: 'a', depth: 0 }] });
+      parseReaderMessage(
+        '{"type":"toc","items":[' +
+          '{"label":"ok","target":{"kind":"href","href":"a"}},' +
+          '{"label":1,"target":{"kind":"href","href":"b"}},' +
+          '{"label":"no target"},' +
+          '{"label":"bad format","target":{"format":"AUDIO"}},' +
+          '{"label":"page zero","target":{"kind":"page","page":0}},' +
+          '"junk"]}',
+      ),
+    ).toEqual({
+      type: 'toc',
+      items: [{ label: 'ok', target: { kind: 'href', href: 'a' }, depth: 0 }],
+    });
     expect(parseReaderMessage('{"type":"toc","items":"nope"}')).toEqual({ type: 'toc', items: [] });
     // An unknown code still yields a usable, typed error.
     expect(parseReaderMessage('{"type":"error","code":"WAT","message":"m"}')).toEqual({
@@ -148,8 +167,8 @@ describe('the reported position', () => {
     parseReaderMessage(`{"type":"relocated","position":${position},"atStart":false,"atEnd":false}`);
 
   it('accepts a PDF page inside its document', () => {
-    expect(relocated('{"format":"PDF","page":1,"pageCount":1}')).toMatchObject({
-      position: { format: 'PDF', page: 1, pageCount: 1 },
+    expect(relocated('{"kind":"page","page":1,"pageCount":1}')).toMatchObject({
+      position: { kind: 'page', page: 1, pageCount: 1 },
     });
   });
 
@@ -161,12 +180,12 @@ describe('the reported position', () => {
     ['a missing position', 'null'],
     ['an unknown format', '{"format":"AUDIO","page":1,"pageCount":2}'],
     ['no format at all', '{"page":1,"pageCount":2}'],
-    ['a page of zero', '{"format":"PDF","page":0,"pageCount":2}'],
-    ['a negative page', '{"format":"PDF","page":-1,"pageCount":2}'],
-    ['a fractional page', '{"format":"PDF","page":1.5,"pageCount":2}'],
-    ['a stringified page', '{"format":"PDF","page":"1","pageCount":2}'],
-    ['a missing pageCount', '{"format":"PDF","page":1}'],
-    ['a zero pageCount', '{"format":"PDF","page":1,"pageCount":0}'],
+    ['a page of zero', '{"kind":"page","page":0,"pageCount":2}'],
+    ['a negative page', '{"kind":"page","page":-1,"pageCount":2}'],
+    ['a fractional page', '{"kind":"page","page":1.5,"pageCount":2}'],
+    ['a stringified page', '{"kind":"page","page":"1","pageCount":2}'],
+    ['a missing pageCount', '{"kind":"page","page":1}'],
+    ['a zero pageCount', '{"kind":"page","page":1,"pageCount":0}'],
   ])('drops the whole message for %s', (_label, position) => {
     expect(relocated(position)).toBeNull();
   });
@@ -174,20 +193,23 @@ describe('the reported position', () => {
   // THE RELATION, which is the part worth having: both fields are individually valid here and jointly
   // impossible, and "page 7 of 3" is exactly what a rendering bug would produce.
   it('refuses a page past its own page count', () => {
-    expect(relocated('{"format":"PDF","page":7,"pageCount":3}')).toBeNull();
+    expect(relocated('{"kind":"page","page":7,"pageCount":3}')).toBeNull();
   });
 
   // An EPUB position is deliberately permissive by comparison: a null cfi is a real state (epub.js
   // reports a location before the first CFI resolves), and it costs nothing because nothing is
   // displayed from it.
   it('keeps an EPUB position whose cfi is absent', () => {
-    expect(relocated('{"format":"EPUB"}')).toMatchObject({
-      position: { format: 'EPUB', cfi: null },
+    expect(relocated('{"kind":"cfi"}')).toMatchObject({
+      position: { kind: 'cfi', cfi: null },
     });
   });
 });
 
 describe('TOC nesting depth', () => {
+  // Every entry below carries a valid `target` because a row without one is now DROPPED rather than
+  // kept — see the hardening test above. These cases are about `depth`, so the target is scaffolding
+  // and not the subject; leaving it out would make them all pass for the wrong reason (an empty list).
   function depthsOf(items: string): (number | undefined)[] {
     const message = parseReaderMessage(`{"type":"toc","items":${items}}`);
     if (message?.type !== 'toc') throw new Error('not a toc message');
@@ -196,7 +218,7 @@ describe('TOC nesting depth', () => {
 
   it('carries the depth the template flattened to', () => {
     expect(
-      depthsOf('[{"label":"Part","href":"a","depth":0},{"label":"Ch","href":"b","depth":1}]'),
+      depthsOf('[{"label":"Part","target":{"kind":"href","href":"a"},"depth":0},{"label":"Ch","target":{"kind":"href","href":"b"},"depth":1}]'),
     ).toEqual([0, 1]);
   });
 
@@ -204,7 +226,7 @@ describe('TOC nesting depth', () => {
     // assets/reader/reader-epub.html is generated but TRACKED, so a working tree can
     // hold a template older than this file. Degrading to a flat list is the
     // failure mode we want; dropping every entry is not.
-    expect(depthsOf('[{"label":"Ch","href":"b"}]')).toEqual([0]);
+    expect(depthsOf('[{"label":"Ch","target":{"kind":"href","href":"b"}}]')).toEqual([0]);
   });
 
   it('refuses a depth that is not a non-negative integer', () => {
@@ -212,17 +234,17 @@ describe('TOC nesting depth', () => {
     // number reaches a style calculation.
     expect(
       depthsOf(
-        '[{"label":"a","href":"a","depth":-1},' +
-          '{"label":"b","href":"b","depth":1.5},' +
-          '{"label":"c","href":"c","depth":"2"},' +
-          '{"label":"d","href":"d","depth":null}]',
+        '[{"label":"a","target":{"kind":"href","href":"a"},"depth":-1},' +
+          '{"label":"b","target":{"kind":"href","href":"b"},"depth":1.5},' +
+          '{"label":"c","target":{"kind":"href","href":"c"},"depth":"2"},' +
+          '{"label":"d","target":{"kind":"href","href":"d"},"depth":null}]',
       ),
     ).toEqual([0, 0, 0, 0]);
   });
 
   it('clamps an absurd depth to MAX_TOC_DEPTH rather than dropping the entry', () => {
     // Losing a chapter is worse than mis-indenting one.
-    expect(depthsOf('[{"label":"a","href":"a","depth":9001}]')).toEqual([MAX_TOC_DEPTH]);
+    expect(depthsOf('[{"label":"a","target":{"kind":"href","href":"a"},"depth":9001}]')).toEqual([MAX_TOC_DEPTH]);
   });
 });
 
@@ -233,21 +255,38 @@ describe('buildCommandScript', () => {
   });
 
   it('JSON-encodes arguments so book content cannot break out of the string', () => {
-    // A malicious/broken goTo target is content, and content is untrusted.
-    const script = buildCommandScript({ type: 'goTo', target: `a'); alert('xss` });
-    expect(script).toContain(String.raw`window.TFReader.goTo("a'); alert('xss")`);
-    expect(script).not.toContain(`goTo('a');`);
+    // A malicious/broken goTo target is content, and content is untrusted. The href is nested inside an
+    // object now, which changes nothing about the risk or the defence: JSON.stringify was always
+    // applied to the whole argument rather than to a string, which is why the target becoming a
+    // discriminated union needed no change here.
+    const script = buildCommandScript({
+      type: 'goTo',
+      target: { kind: 'href', href: `a'); alert('xss` },
+    });
+    expect(script).toContain(
+      String.raw`window.TFReader.goTo({"kind":"href","href":"a'); alert('xss"})`,
+    );
+    expect(script).not.toContain(`alert('xss')`);
   });
 
   it('carries an EPUB CFI target verbatim, not just a spine href', () => {
-    // Search mints CFIs at index-build time (search/extractor.ts) and the Reader
-    // resolves them through this same command — epub.js's spine.get() branches on
-    // isCfiString() before its href lookup. The brackets and parens of a real CFI
-    // must survive JSON encoding unmangled or the seek silently misses.
-    const cfi = 'epubcfi(/6/2[ch1]!/4/4/1:113)';
-    expect(buildCommandScript({ type: 'goTo', target: cfi })).toContain(
-      `window.TFReader.goTo(${JSON.stringify(cfi)})`,
+    // Search mints CFIs at index-build time (search/extractor.ts) and the Reader resolves them through
+    // this same command — epub.js's spine.get() branches on isCfiString() before its href lookup. The
+    // brackets and parens of a real CFI must survive JSON encoding unmangled or the seek silently
+    // misses.
+    const target = { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:113)' } as const;
+    expect(buildCommandScript({ type: 'goTo', target })).toContain(
+      `window.TFReader.goTo(${JSON.stringify(target)})`,
     );
+  });
+
+  it('carries a PDF page target as a number, not a stringified one', () => {
+    // THE OVERLOAD THIS REPLACED. A Contents row used to arrive as `href: '12'` and be sent back as the
+    // string '12', which the PDF shell parseInt'd. The number now survives end to end, so there is no
+    // round trip through a vocabulary the host had to guess at.
+    const script = buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } });
+    expect(script).toContain('window.TFReader.goTo({"kind":"page","page":12})');
+    expect(script).not.toContain('"page":"12"');
   });
 
   it('guards against a missing bridge and ends with a statement value', () => {
@@ -280,7 +319,7 @@ describe('buildCommandScript', () => {
       buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
       buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
       buildCommandScript({ type: 'next' }),
-      buildCommandScript({ type: 'goTo', target: '12' }),
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
         expect(script).not.toContain(`'${format}'`);
@@ -348,7 +387,7 @@ describe('what the compiler cannot check about the WebView half', () => {
     const MINIMUM: Record<(typeof READER_MESSAGE_TYPES)[number], Record<string, unknown>> = {
       ready: {},
       rendered: {},
-      relocated: { position: { format: 'EPUB' } },
+      relocated: { position: { kind: 'cfi' } },
       toc: {},
       error: {},
     };

@@ -48,42 +48,63 @@
 //      protocol change with a host-side half, not a change of how one file is produced.
 
 /**
- * One Contents entry, flattened — from epub.js `book.loaded.navigation` for an EPUB,
- * or from pdf.js `getOutline()` for a PDF.
+ * Somewhere in a book the reader can be asked to go, discriminated by format.
  *
- * >>> `href` CARRIES TWO VOCABULARIES, ONE PER FORMAT. <<<
- * EPUB: a spine href (`'ch1.xhtml'`), or a CFI. PDF: a 1-BASED PAGE NUMBER as a
- * decimal string (`'12'`). Both are handed straight back as `goTo.target`, and each
- * template knows only its own: the EPUB one passes it to `rendition.display()`, the
- * PDF one `parseInt`s it and range-checks it against the page count.
+ * >>> THIS REPLACED AN OVERLOADED STRING, AND THE OVERLOAD IS WORTH UNDERSTANDING. <<<
+ * `ReaderTocItem.href` used to be one `string` meaning a spine href for EPUB and a 1-based page
+ * number for PDF. That was chosen deliberately, back when a fourth field on the `toc` message meant
+ * paying for the typechecked-WebView conversion — a real cost for a Contents panel. The conversion has
+ * happened, so the cheaper option stopped being cheaper and this is the honest shape.
  *
- * A SECOND FIELD WOULD HAVE BEEN CLEANER AND IS NOT AVAILABLE. Adding, say, `page`
- * beside `href` takes this case to four fields and fires trigger 1 in
- * WEBVIEW_BRIDGE.md — the conversion, for a Contents panel. So the overload is the
- * deliberate cheaper option, and what keeps it honest is that the receiving side
- * VALIDATES rather than trusts: a page number sent to the EPUB shell resolves to no
- * spine item, and a spine href sent to the PDF shell fails `parseInt` and raises
- * NAVIGATION_FAILED. Neither silently scrolls somewhere arbitrary.
+ * THE EPUB VARIANT STILL ACCEPTS TWO THINGS, and that one is NOT an overload to remove: `href` is a
+ * spine href (from a TOC entry) or an EPUB CFI (from a Search hit), and epub.js discriminates them
+ * itself — `spine.get()` tests `isCfiString()` before its href lookup, so `rendition.display()` routes
+ * both through one call. One field, two forms, resolved by the library rather than by us.
  *
- * Because one shell is loaded per book, the two vocabularies never coexist at runtime
- * — which is the property that makes this survivable, and the property that would end
- * if a single template ever served both formats.
+ * IT TRAVELS IN BOTH DIRECTIONS: out on `toc`, back in on `goTo`. That is the point — the host no
+ * longer has to flatten a typed target into an ambiguous string to send it anywhere.
+ */
+export type ReaderTarget =
+  | { kind: 'href'; href: string }
+  | { kind: 'page'; page: number };
+
+/**
+ * >>> WHY `kind` AND NOT `format`. <<<
+ * The first draft of this type discriminated on `format: 'EPUB' | 'PDF'`, and
+ * `readerBridge.test.ts`'s "never puts a ContentFormat value into a command payload" caught it: the
+ * string `"PDF"` was suddenly on the wire. Relaxing that guard would have been the wrong fix.
  *
- * `depth` is the entry's nesting level in the book's navigation tree — 0 for a
- * top-level entry. The tree is flattened depth-first in the template (`flattenToc` in
- * the EPUB one, `collectOutline` in the PDF one) and arrives as a single ordered list, so the host indents by
- * `depth` rather than rendering a recursive structure. That is the point: a
- * recursive payload is the shape this boundary is worst at: it arrives as JSON, so every level has
- * to be re-validated by hand however well typed the sender is.
+ * The right fix is that a target is not discriminated by a book's format at all — it is discriminated
+ * by its ADDRESSING SCHEME. `href` addresses a spine item (or a CFI); `page` addresses a page number.
+ * Two schemes exist because two renderers exist, but the payload describes the scheme, and the reader
+ * branches on "is this a page?" rather than on "is this book a PDF?".
  *
- * A MISSING `depth` PARSES AS 0 ON PURPOSE. `assets/reader/reader-epub.html` is a
- * generated but tracked artifact, so a working tree can legitimately hold a
- * template older than this file; degrading to a flat list beats dropping every
- * entry, which is what a required field would do.
+ * Three things fall out of that, and they are why the rename is worth the words:
+ *  - `ContentFormat` stays entirely off the bridge, so the guard passes honestly.
+ *  - `ContentFormat` has a third member (`AUDIO`) with no addressing scheme here. A `format`
+ *    discriminant invited the question "where is the AUDIO case?"; a `kind` discriminant does not.
+ *  - Adding a fourth `ContentFormat` cannot silently change this union's meaning, because the two are
+ *    now unrelated by construction rather than by coincidence of spelling.
+ */
+
+/**
+ * One Contents entry, flattened — from epub.js `book.loaded.navigation` for an EPUB, or from pdf.js
+ * `getOutline()` for a PDF.
+ *
+ * `target` is handed straight back as `goTo`'s argument, so a row the host can render is a row it can
+ * navigate to. What makes that safe is that the receiving shell VALIDATES rather than trusts: this
+ * payload originates in a book's own navigation document, which is untrusted input, and each entry
+ * refuses a target belonging to the other format outright.
+ *
+ * `depth` is the entry's nesting level in the book's navigation tree — 0 for a top-level entry. The
+ * tree is flattened depth-first in the WebView (`flattenToc` in epubOutline.ts, `collectOutline` in
+ * pdfOutline.ts) and arrives as one ordered list, so the host indents by `depth` rather than rendering
+ * a recursive structure. A recursive payload is the shape this boundary is worst at: it arrives as
+ * JSON, so every level would have to be re-validated by hand.
  */
 export interface ReaderTocItem {
   label: string;
-  href: string;
+  target: ReaderTarget;
   depth: number;
 }
 
@@ -165,7 +186,7 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *               before injecting anything; injecting sooner races the IIFE.
  *   rendered  — first display() resolved; the book is on screen.
  *   relocated — the page changed (also fires for the first page). Carries a
- *               `ReaderPosition`: a CFI for EPUB, a page + page count for PDF.
+ *               `ReaderPosition`: a CFI from the EPUB shell, a page + page count from the PDF one.
  *   toc       — navigation resolved, as one depth-first flattened list (a book's
  *               nav document is a tree). Arrives AFTER rendered, not with it.
  *   error     — anything went wrong; always coded, never bare.
@@ -190,8 +211,12 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  * that arrives separately has to be correlated with a position that may already have moved.
  */
 export type ReaderPosition =
-  | { format: 'EPUB'; cfi: string | null }
-  | { format: 'PDF'; page: number; pageCount: number };
+  | { kind: 'cfi'; cfi: string | null }
+  | { kind: 'page'; page: number; pageCount: number };
+
+// Discriminated on `kind` for the same reason `ReaderTarget` is — see the note there. Read it as "the
+// position is a CFI" / "the position is a page", not as "the book is an EPUB".
+
 
 export type ReaderMessage =
   | { type: 'ready' }
@@ -286,7 +311,7 @@ export type ReaderCommand =
   | { type: 'openPdf'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
-  | { type: 'goTo'; target: string };
+  | { type: 'goTo'; target: ReaderTarget };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -304,13 +329,41 @@ function asTocDepth(value: unknown): number {
   return Math.min(value, MAX_TOC_DEPTH);
 }
 
+/**
+ * A `ReaderTarget` from an untrusted payload, or null if it is not one.
+ *
+ * A PDF page is checked as a positive integer. The upper bound is NOT checked here and cannot be — the
+ * host does not know the document's page count at parse time. The receiving shell does, and
+ * `pageFromTarget` in pdfOutline.ts range-checks there. Two checks, two different pieces of knowledge.
+ */
+function asTarget(value: unknown): ReaderTarget | null {
+  if (!isRecord(value)) return null;
+
+  if (value.kind === 'href') {
+    return typeof value.href === 'string' ? { kind: 'href', href: value.href } : null;
+  }
+
+  if (value.kind === 'page') {
+    return isPositiveInteger(value.page) ? { kind: 'page', page: value.page } : null;
+  }
+
+  return null;
+}
+
 function asTocItems(value: unknown): ReaderTocItem[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry): ReaderTocItem[] => {
     if (!isRecord(entry)) return [];
-    const { label, href, depth } = entry;
-    if (typeof label !== 'string' || typeof href !== 'string') return [];
-    return [{ label, href, depth: asTocDepth(depth) }];
+    const { label, target, depth } = entry;
+    if (typeof label !== 'string') return [];
+
+    // A row with an unusable target is DROPPED rather than kept as a dead row. The old shape could not
+    // make this distinction: any string was a plausible href, so a malformed entry became a Contents
+    // row that could only ever raise NAVIGATION_FAILED when tapped.
+    const parsed = asTarget(target);
+    if (parsed === null) return [];
+
+    return [{ label, target: parsed, depth: asTocDepth(depth) }];
   });
 }
 
@@ -329,15 +382,15 @@ function asTocItems(value: unknown): ReaderTocItem[] {
 function asPosition(value: unknown): ReaderPosition | null {
   if (!isRecord(value)) return null;
 
-  if (value.format === 'EPUB') {
-    return { format: 'EPUB', cfi: typeof value.cfi === 'string' ? value.cfi : null };
+  if (value.kind === 'cfi') {
+    return { kind: 'cfi', cfi: typeof value.cfi === 'string' ? value.cfi : null };
   }
 
-  if (value.format === 'PDF') {
+  if (value.kind === 'page') {
     const { page, pageCount } = value;
     if (!isPositiveInteger(page) || !isPositiveInteger(pageCount)) return null;
     if (page > pageCount) return null;
-    return { format: 'PDF', page, pageCount };
+    return { kind: 'page', page, pageCount };
   }
 
   return null;
@@ -436,7 +489,9 @@ export function buildCommandScript(command: ReaderCommand): string {
     command.type === 'openEpub' || command.type === 'openPdf'
       ? JSON.stringify(command.base64)
       : command.type === 'goTo'
-        ? JSON.stringify(command.target)
+        ? // An OBJECT now, not a bare string. JSON.stringify already handled this correctly — which is
+          // the whole reason the escaping rule below is stated as "every argument", not "every string".
+          JSON.stringify(command.target)
         : '';
 
   return `(function(){

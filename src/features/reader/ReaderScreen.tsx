@@ -28,7 +28,14 @@ import {
   prepareBook,
   UnsupportedFormatError,
 } from '@/features/reader/readerAssets';
-import type { ReaderCommand, ReaderErrorCode, ReaderMessage, ReaderPosition, ReaderTocItem } from '@/features/reader/readerBridge';
+import type {
+  ReaderCommand,
+  ReaderErrorCode,
+  ReaderMessage,
+  ReaderPosition,
+  ReaderTarget,
+  ReaderTocItem,
+} from '@/features/reader/readerBridge';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
@@ -481,11 +488,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     }
   }, []);
 
-  // `target` is a spine href or an EPUB CFI — see ReaderCommand in readerBridge.ts.
-  // A SearchHit carries a `Locator`; it is unwrapped to `locator.cfi` by cfiOf() in
-  // useBookSearch.ts rather than sent across the bridge as the union.
+  // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
+  // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
   const goTo = useCallback(
-    (target: string): void => {
+    (target: ReaderTarget): void => {
       setShowToc(false);
       send?.({ type: 'goTo', target });
     },
@@ -507,10 +513,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       const hit = search.hits[index];
       if (!hit) return;
       const cfi = cfiOf(hit);
-      if (cfi === null) return; // PDF hit: listed in the panel, but nowhere to send it
+      // PDF hit: listed in the panel, but not navigated to. NOTE THIS IS NO LONGER A BRIDGE
+      // LIMITATION — `ReaderTarget` can now carry `{format:'PDF', page}`, and `SearchHit.locator`
+      // already has a page for PDF, so this is two lines from working. It is left as-is deliberately:
+      // whether a PDF search result should jump to a page is Search's behaviour to decide (Vaishnavi),
+      // and `ReaderScreen.test.tsx` pins today's answer so changing it is a conscious act.
+      if (cfi === null) return;
       search.setActiveIndex(index);
       setShowSearch(false);
-      send?.({ type: 'goTo', target: cfi });
+      send?.({ type: 'goTo', target: { kind: 'href', href: cfi } });
     },
     [search, send],
   );
@@ -650,16 +661,17 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                 {toc.length === 0 ? (
                   <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
                 ) : (
-                  // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
+                  // Index-composed key, NOT the target alone. A real book's TOC repeats targets: the
                   // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
                   // producer emitted from citation text), which collided and raised React's
-                  // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
-                  // be identity here.
+                  // duplicate-key warning on device. Targets are not unique in the wild, so they
+                  // cannot be identity here — and a PDF outline repeats page numbers by design, since
+                  // several sections legitimately open on the same page.
                   toc.map((item, index) => (
                     <Pressable
-                      key={`${index}-${item.href}`}
+                      key={`${index}-${targetKey(item.target)}`}
                       onPress={() => {
-                        goTo(item.href);
+                        goTo(item.target);
                       }}
                       // Indent, do not inset the row: paddingLeft keeps the whole
                       // width tappable at every depth, where marginLeft would shrink
@@ -791,7 +803,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           page to show. Rendering nothing for EPUB is the honest outcome — a fabricated "page 3 of
           400" from a CFI would be a number that changes with the font size.
         */}
-        {position?.format === 'PDF' && (
+        {position?.kind === 'page' && (
           <Text accessibilityLabel={`Page ${position.page} of ${position.pageCount}`} style={styles.pageIndicator}>
             {position.page} / {position.pageCount}
           </Text>
@@ -808,6 +820,17 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       </View>
     </View>
   );
+}
+
+/**
+ * A target as a string, for React's key only.
+ *
+ * NOT for display and not for comparison: it exists because a key must be a string and `ReaderTarget`
+ * is an object. Composed with the `kind` so the two addressing schemes cannot collide — an href of
+ * `'12'` and page 12 are different rows.
+ */
+function targetKey(target: ReaderTarget): string {
+  return target.kind === 'page' ? `p${target.page}` : `h${target.href}`;
 }
 
 /**

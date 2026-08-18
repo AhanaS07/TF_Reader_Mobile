@@ -99,7 +99,7 @@ about behaviour changed.
 | `ready`     | —                                           |
 | `rendered`  | —                                           |
 | `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd` |
-| `toc`       | `items[]` (`{label, href, depth}`)          |
+| `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 
 `ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
@@ -122,14 +122,15 @@ wrong one.
 | `openPdf`  | `base64` | no     | PDF entry  |
 | `next`     | —        | no     | both       |
 | `prev`     | —        | no     | both       |
-| `goTo`     | `target` | no     | both       |
+| `goTo`     | `target` (`ReaderTarget`) | no | both |
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
 
 ## Three decisions about what crosses the boundary
 
-These survive the conversion because each is about the *payload*, not about how it is typed.
+The first two survive the conversion unchanged, because each is about the *payload* rather than about how
+it is typed. The third is the one the conversion let us improve, and it has now been done.
 
 ### 1. Two open commands, not `open(base64, format)`
 
@@ -147,27 +148,59 @@ Search stores a `Locator`; the host unwraps `.cfi` before sending (`cfiOf()` in 
 Before the conversion the argument was that a frozen contract must not be hand-copied into
 untypechecked JS. That specific risk is gone — but the reason stands and has changed shape: a
 discriminated union on this channel still arrives as JSON, so `parseReaderMessage` would have to
-validate every variant. `ReaderScreen.test.tsx`'s "sends goTo carrying a bare CFI string" is what keeps
-it honest.
+validate every variant. `ReaderScreen.test.tsx`'s CFI seek test is what keeps it honest — note the CFI now travels inside
+`{kind:'href'}` rather than as a bare argument, which changed nothing about the reasoning: the payload
+is still primitives, and still not `Locator`.
 
-### 3. `toc.items[].href` carries a page number for PDF — and the conversion is what makes this fixable
+### 3. Targets and positions are discriminated by ADDRESSING SCHEME, not by format
 
-One field, two meanings: a spine href (or CFI) for EPUB, a 1-based page number as a decimal string for
-PDF. It was chosen over a fourth `toc` field back when a fourth field meant paying for the conversion.
+`ReaderTocItem.target` and `relocated.position` both carry a discriminated union rather than a string
+whose meaning depends on which shell is loaded:
 
-Three things keep it safe:
+```
+ReaderTarget   = { kind: 'href'; href: string } | { kind: 'page'; page: number }
+ReaderPosition = { kind: 'cfi'; cfi: string | null } | { kind: 'page'; page: number; pageCount: number }
+```
 
-1. **The receiver validates.** `pageFromTarget()` in `pdfOutline.ts` does the parse and the bounds check
-   and raises `NAVIGATION_FAILED` otherwise — and it is now unit-tested against a spine href, a CFI,
-   zero, a negative, and past-the-last-page.
-2. **One shell per book**, so the two vocabularies never coexist at runtime. This is a property of the
-   two-entry split, which is therefore load-bearing for **correctness** and not only for artifact size.
-3. `readerTemplate.test.ts` and `pdfOutline.test.ts` pin the mechanics.
+**This replaced a real overload, un-done 2026-08-18.** `toc.items[].href` was one `string` meaning a
+spine href for EPUB and a 1-based page number for PDF. That was chosen deliberately, back when a fourth
+field on the `toc` message meant paying for the typechecked-WebView conversion — a real cost for a
+Contents panel. Once the conversion landed, the cheaper option stopped being cheaper.
 
-**This is the overload the conversion was always going to make removable**: a typed payload can carry a
-discriminated target instead of one string meaning two things. It is deliberately **not** bundled into
-the conversion, because it is a protocol change with a host-side half rather than a change of how one
-file is produced. Do it as its own change.
+**Why `kind` and not `format`, which is the interesting part.** The first draft discriminated on
+`format: 'EPUB' | 'PDF'`, and `readerBridge.test.ts`'s "never puts a `ContentFormat` value into a
+command payload" caught it — the string `"PDF"` was on the wire. Relaxing that guard would have been
+the wrong fix. The right one is that a target is not discriminated by a book's format at all: it is
+discriminated by how it addresses the book. Three things fall out:
+
+- `ContentFormat` stays entirely off the bridge, so the guard passes honestly rather than by exemption.
+- `ContentFormat` has a third member (`AUDIO`) with no addressing scheme here. A `format` discriminant
+  invited "where is the AUDIO case?"; a `kind` discriminant does not.
+- Adding a fourth `ContentFormat` cannot silently change these unions' meaning, because they are now
+  unrelated by construction rather than by coincidence of spelling.
+
+**The EPUB `href` still accepts two forms, and that one is NOT an overload to remove.** It is a spine
+href (TOC row) or an EPUB CFI (Search hit), and epub.js discriminates them itself — `spine.get()` tests
+`isCfiString()` before its href lookup, so `rendition.display()` routes both through one call. One
+field, two forms, resolved by the library rather than by us.
+
+**What each half validates, and why it is split that way:**
+
+| Check | Where | Why there |
+| ----- | ----- | --------- |
+| the shape is a known `kind` | host, `asTarget` | it arrives as JSON from a book's navigation document |
+| `page` is a positive integer | host, `asTarget` | cheap, and a bad row is dropped rather than rendered dead |
+| `page <= pageCount` | shell, `pageFromTarget` | only the shell knows the document's page count |
+| the scheme matches the renderer | shell, both entries | should be impossible — one shell per book — but the value is book-derived, so it is checked |
+
+That last row is what un-overloading bought beyond tidiness: an `href` reaching the PDF shell is now a
+category error with its own message, where before it was a string that failed `parseInt` and reported
+the same thing as an out-of-range page. A row whose target is unusable is also **dropped at parse
+time** now, instead of becoming a Contents row that could only ever raise `NAVIGATION_FAILED` when
+tapped.
+
+**One shell per book remains load-bearing** — it is why each entry can refuse the other scheme outright
+— so the two-entry split is still about correctness and not only about artifact size.
 
 ## Why the debt was taken, and how it ended
 
