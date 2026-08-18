@@ -137,6 +137,25 @@ export class ApiLicenceClient implements LicenceSource {
     target?: string,
     body?: unknown,
   ): Promise<unknown> {
+    // DELIBERATELY OUTSIDE THE DEADLINE AND OUTSIDE THE TRY — reviewed and kept, 18 Aug.
+    //
+    // The observation against it is fair: a `getToken` that rejects propagates as itself
+    // rather than as a `LicenceFailure`, which is what every other path here promises. The
+    // proposed remedy — route it through `transportFailure` — is worse than the problem.
+    // That returns TIMEOUT or NETWORK_UNAVAILABLE, and the latter is documented in
+    // `LicenceError` as "offline, DNS, unreachable host. Retryable." A session that could
+    // not be refreshed is none of those: the reader needs to sign in again, not retry, and
+    // telling them they look offline sends them to the wrong remedy.
+    //
+    // THERE IS NO CODE FOR "WE NEVER GOT AS FAR AS ASKING", and inventing one is an error
+    // taxonomy decision that lands in Moktik's D14 copy map. It has no consumer yet, so it
+    // is recorded rather than taken: if a session failure ever needs to be distinguishable
+    // here, add `SESSION_UNAVAILABLE` and map to that. Until then a token failure surfaces
+    // as itself, which is honest — it belongs to the session layer, not this one.
+    //
+    // The hang half is thinner still: today's provider is `async () => undefined` and
+    // cannot stall, and the real one will be a call to `GET /api/v1/auth/me` carrying its
+    // own deadline. Bounding a collaborator's function from in here would double-count that.
     const token = await this.getToken();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
