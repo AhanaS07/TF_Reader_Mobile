@@ -7,7 +7,7 @@
 // enqueues, an accept that succeeds on a dead offer, a reject that leaves the reader
 // still queued — none of those are visible in a single call's assertion.
 import { resolveAccess, type ResolveAccessInput } from '@/access';
-import { LicenceError, isLicenceFailure } from './LicenceSource';
+import { LicenceError, isLicenceFailure, type Library } from './LicenceSource';
 import { MockLicenceClient, type MockLicenceOptions } from './MockLicenceClient';
 import type { Acquisition } from '@model/types';
 
@@ -279,24 +279,38 @@ describe('the sequence, resolved', () => {
       ...over,
     }).actions;
 
+  // Turns whatever the mock currently holds into the resolver's inputs.
+  //
+  // THE POINT IS THAT THE INPUT IS DERIVED, NOT WRITTEN. An assertion built on a
+  // hand-written `{}` says "a reader with no hold gets Grant access", which is true no
+  // matter what the mock did — so it cannot test that a call removed anything. Reading
+  // the library first makes the mock's state the subject.
+  const fromLibrary = (library: Library): Partial<ResolveAccessInput> => ({
+    ...(library.loans[0] !== undefined ? { loan: library.loans[0] } : {}),
+    ...(library.holds[0] !== undefined ? { hold: library.holds[0] } : {}),
+  });
+
+  // Every step reads the library rather than passing the call's return value straight in.
+  // Both would pass here, but only this version notices if a call writes state that
+  // disagrees with what it handed back.
   it('walks Grant access → queued → offered → reading', async () => {
     const c = client();
 
     // Nothing held, nothing asked for.
-    expect(buttons({})).toEqual(['grantAccess']);
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual(['grantAccess']);
 
     // Grant access borrows first and is refused, so the queue is offered as a choice.
     expect(await failureCode(c.borrow(CONTENDED))).toBe('NO_COPIES_AVAILABLE');
-    const queued = await c.placeHold(CONTENDED);
-    expect(buttons({ hold: queued })).toEqual([]);
+    await c.placeHold(CONTENDED);
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual([]);
 
     // The offer arrives later, by a read rather than off the tap.
     const offered = c.promoteHold('item_42');
-    expect(buttons({ hold: offered })).toEqual(['acceptOffer', 'rejectOffer']);
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual(['acceptOffer', 'rejectOffer']);
 
     // Accepted, and Elite never gets a Download at any point.
-    const loan = await c.acceptOffer(offered.holdId as string);
-    expect(buttons({ loan })).toEqual(['read', 'revokeLicence']);
+    await c.acceptOffer(offered.holdId as string);
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual(['read', 'revokeLicence']);
   });
 
   // A missed offer puts the reader back where they started, not back in the queue.
@@ -304,8 +318,17 @@ describe('the sequence, resolved', () => {
     const c = client();
     await c.placeHold(CONTENDED);
     const stale = c.promoteHold('item_42', -1);
+
+    // Before: the reader is offered a copy, so there is something to lose.
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual(['acceptOffer', 'rejectOffer']);
+
     await failureCode(c.acceptOffer(stale.holdId as string));
-    // The hold is gone, so the resolve has nothing to go on but the tier.
-    expect(buttons({})).toEqual(['grantAccess']);
+
+    // After: the dead hold is gone from the library — that is the substantive claim, and
+    // it is asserted directly rather than inferred.
+    expect((await c.getLibrary()).holds).toEqual([]);
+    // And the resolve over that state is Grant access. Built from the library, so it fails
+    // if `acceptOffer` left the stale hold behind.
+    expect(buttons(fromLibrary(await c.getLibrary()))).toEqual(['grantAccess']);
   });
 });
