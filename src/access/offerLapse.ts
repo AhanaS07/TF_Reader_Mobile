@@ -14,6 +14,16 @@
 // what makes every case below testable without freezing time.
 import type { Hold } from '@model/types';
 
+// A hold that is actually offering a copy right now.
+//
+// EXISTS SO `lapseOffer` CANNOT BE MISCALLED. Handing that function a queued hold
+// would strip a waiting reader's `position` and resolve them to `requires_grant` —
+// their place in the line gone from the screen. A runtime guard would catch it by
+// returning the hold untouched, which makes the caller's mistake silent at exactly
+// the moment it wants to be loud. This makes it a compile error instead, which is
+// the same objection answered without the silence.
+export type OfferedHold = Hold & { state: 'offered' };
+
 // The offer window is SHORT: flambeau told us 15 minutes on 17 Aug. That figure
 // is NOT in their contract and NOT hardcoded here, and both of those are
 // deliberate.
@@ -70,19 +80,54 @@ export function isOfferLapsed(hold: Hold | undefined, now: string): boolean {
 // `holdId` STAYS. It is the identity of the hold across its whole life, and the
 // store needs it to reconcile against what flambeau says next.
 //
-// EXPECTS AN OFFERED HOLD, and `isOfferLapsed` is the gate rather than anything in
-// here. The two are meant to be used as a pair —
-// `if (isOfferLapsed(hold, now)) hold = lapseOffer(hold)` — and that predicate is
-// already false for every state that is not an offer, so a queued reader cannot
-// reach this function through the intended route.
+// TAKES AN `OfferedHold` AND NOT A `Hold`, which is the whole of the guard. There
+// is no runtime check here and there should not be one: a guard that returned the
+// hold untouched would swallow a caller's mistake at the moment it most wants to be
+// loud. The type refuses the call instead, before it runs.
 //
-// DELIBERATELY UNGUARDED, so the precondition is the caller's to keep. Handing
-// this a queued hold would strip a waiting reader's `position` and resolve them to
-// `requires_grant` — their place in the line gone from the screen. That is worth
-// catching, but a guard here would catch it by returning the hold untouched, which
-// makes a caller's mistake silent at exactly the moment it wants to be loud. The
-// gate belongs one function up, where it already is.
-export function lapseOffer(hold: Hold): Hold {
+// Most callers should reach for `applyLapse` below rather than this, and then the
+// narrowing is done for them.
+export function lapseOffer(hold: OfferedHold): Hold {
   const { offerId: _offerId, offerExpiresAt: _offerExpiresAt, position: _position, ...rest } = hold;
   return { ...rest, state: 'expired' };
+}
+
+// The pair as one step: lapse the hold if its window has closed, otherwise hand
+// back exactly what came in.
+//
+// THE ERGONOMIC PATH, and the one the offer store wants. `isOfferLapsed` and
+// `lapseOffer` are separately useful — a countdown wants the predicate without the
+// transform — but using them by hand means restating the `'offered'` check to get
+// past the type, and a caller who finds that annoying is a caller who reaches for a
+// cast. This does it once, here.
+//
+// PASSES EVERYTHING ELSE THROUGH UNTOUCHED, `undefined` included, so a caller can
+// run every hold it holds through this without asking what state each one is in.
+export function applyLapse(hold: Hold | undefined, now: string): Hold | undefined {
+  if (!isOffered(hold)) return hold;
+  return isOfferLapsed(hold, now) ? lapseOffer(hold) : hold;
+}
+
+// Narrows a hold to `OfferedHold`, and it has to be a written-out predicate rather
+// than an inline `hold?.state === 'offered'`.
+//
+// WHY THE INLINE CHECK DOES NOT WORK. `Hold` is one interface with a union-typed
+// `state`, not a discriminated union of four interfaces. Testing `hold.state`
+// narrows the STATE, not the HOLD — so after `if (hold?.state !== 'offered')`
+// TypeScript still types `hold` as `Hold` and refuses to pass it to `lapseOffer`.
+// This asserts the link between the two that the shape cannot express.
+//
+// AND THAT IS THE ARGUMENT FOR MAKING `Hold` A DISCRIMINATED UNION, which is a real
+// suggestion sitting on this PR. With one, this function would not need to exist and
+// `offerId` / `offerExpiresAt` / `serverTime` could be REQUIRED on the offered
+// variant instead of optional on all four — which is what they actually are. It is
+// deferred rather than dismissed: it rewrites every `Loan` and `Hold` fixture in the
+// suite, and that is not a thing to do in the same change as unblocking the calls.
+//
+// NOT A PREDICATE ON `isOfferLapsed` ITSELF, which would be unsound. That returns
+// false for a live offer as well as for a queued hold, so `false` cannot be taken to
+// mean "not offered" — and a predicate saying otherwise would narrow the else branch
+// to something wrong.
+export function isOffered(hold: Hold | undefined): hold is OfferedHold {
+  return hold?.state === 'offered';
 }
