@@ -16,26 +16,38 @@
 //     "finding a chapter" because they are not adjacent. (This replaces the
 //     earlier AND-within-a-unit rule, which returned every posting of every token
 //     in any unit holding them all.)
+//   • Adjacency is by TOKEN SEQUENCE (posting.seq), not character distance: word
+//     N is adjacent to word N+1 iff their seq values are consecutive in the same
+//     unit. The earlier char-offset rule (a small MAX_SEP_GAP over CFI/offset)
+//     silently lost a phrase whenever the source XHTML put >2 chars between two
+//     words — newline + indentation, routine in pretty-printed EPUBs — so the
+//     same phrase matched in one chapter and missed in the next. A pre-seq index
+//     (version < 2) has no seq, so it cannot phrase-match; single-word is fine.
 
 import type { BookSearchIndex, Posting, SearchHit } from '@/shared/contracts';
 import { termTokens } from './text';
 
 /**
- * A posting's position as the (text-node/page, char-offset) pair phrase matching
- * needs. EPUB: the CFI's node path and its terminal `:offset`. PDF: the page and
- * `locator.offset`. Null when there is no offset to compare — a PDF posting
- * without one cannot be adjacency-checked, so it can never be part of a phrase.
+ * A posting's position for phrase matching: the adjacency UNIT it lives in, and its token
+ * SEQUENCE within the book. The unit prevents a phrase from spanning two text nodes / pages
+ * (end of one block + start of the next are consecutive in seq but not a phrase); `seq` is
+ * what makes "side by side" whitespace-independent.
+ *
+ * EPUB unit = the CFI's node path (everything before the terminal `:offset`; the offset
+ * itself is no longer read for adjacency). PDF unit = the page. Null when the posting has
+ * no `seq` — a pre-seq index (version < 2), which therefore cannot phrase-match.
  */
-function postingPosition(posting: Posting): { node: string; offset: number } | null {
+function postingPosition(posting: Posting): { node: string; seq: number } | null {
+  if (posting.seq == null) return null;
   const loc = posting.locator;
   if (loc.type === 'PDF') {
-    return loc.offset == null ? null : { node: `p:${loc.page}`, offset: loc.offset };
+    return { node: `p:${loc.page}`, seq: posting.seq };
   }
-  // A point CFI is `epubcfi(<path>:<charOffset>)`. The terminal char offset is the
-  // only ':' (the spine `!` and `[id]` assertions carry none), so split on the last.
+  // The unit is the CFI's node path. A point CFI is `epubcfi(<path>:<charOffset>)`, and the
+  // terminal char offset is the only ':' (the spine `!` and `[id]` assertions carry none),
+  // so everything before the last ':' is the node.
   const m = /^(.*):(\d+)\)?$/.exec(loc.cfi);
-  if (!m) return { node: loc.cfi, offset: 0 };
-  return { node: m[1], offset: Number(m[2]) };
+  return { node: m ? m[1] : loc.cfi, seq: posting.seq };
 }
 
 /**
@@ -105,50 +117,35 @@ export function queryIndex(index: BookSearchIndex, term: string): SearchHit[] {
   if (tokens.length === 1) {
     matches = perToken[0];
   } else {
-    // A following word may sit at most this many separator chars past the previous
-    // word's end. 1 is a single space; 2 also allows "a, b" or a double space. A gap
-    // of 3+ has room for another word between them (a word is >=1 char with a
-    // separator each side), so it is no longer "side by side".
-    const MAX_SEP_GAP = 2;
-
-    // Index each token's occurrences by node -> offset -> posting, so extending a
-    // candidate phrase by one word is an O(1) lookup rather than a scan.
-    const byNodeOffset = perToken.map((postings) => {
+    // Index each token's occurrences by unit -> seq -> posting, so extending a candidate
+    // phrase by one word is an O(1) lookup rather than a scan. A posting with no seq
+    // (pre-v2 index) drops out here via postingPosition, so it can never form a phrase.
+    const byNodeSeq = perToken.map((postings) => {
       const nodes = new Map<string, Map<number, Posting>>();
       for (const p of postings) {
         const pos = postingPosition(p);
         if (!pos) continue;
-        let offsets = nodes.get(pos.node);
-        if (!offsets) nodes.set(pos.node, (offsets = new Map()));
-        offsets.set(pos.offset, p);
+        let seqs = nodes.get(pos.node);
+        if (!seqs) nodes.set(pos.node, (seqs = new Map()));
+        seqs.set(pos.seq, p);
       }
       return nodes;
     });
 
-    // A phrase hit is a first-word occurrence from which every later token can be
-    // reached, each adjacent to the one before, in the same node. Emit the first
-    // word so Reader seeks to the phrase start.
+    // A phrase hit is a first-word occurrence whose every later token sits at the NEXT
+    // token position (start.seq + i) in the SAME unit — adjacency by token sequence, not
+    // character distance, so whitespace/indentation in the source is irrelevant. Emit the
+    // first word so Reader seeks to the phrase start.
     matches = [];
     for (const first of perToken[0]) {
       const start = postingPosition(first);
       if (!start) continue;
-      let offset = start.offset;
       let complete = true;
       for (let i = 1; i < tokens.length; i++) {
-        const prevEnd = offset + tokens[i - 1].length;
-        const offsets = byNodeOffset[i].get(start.node);
-        let nextOffset = -1;
-        for (let gap = 1; gap <= MAX_SEP_GAP; gap++) {
-          if (offsets?.has(prevEnd + gap)) {
-            nextOffset = prevEnd + gap;
-            break;
-          }
-        }
-        if (nextOffset < 0) {
+        if (!byNodeSeq[i].get(start.node)?.has(start.seq + i)) {
           complete = false;
           break;
         }
-        offset = nextOffset;
       }
       if (complete) matches.push(first);
     }

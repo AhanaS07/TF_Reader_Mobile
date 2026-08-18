@@ -1,4 +1,5 @@
 // prefsStore.test.ts — the settings-facing prefs wrapper over Sync's persisted store.
+
 // Run: npm test    (or: npx jest src/features/personalization)
 //
 // This replaces the old InMemoryPrefsStore tests: the wrapper no longer holds state,
@@ -71,5 +72,58 @@ describe('prefsStore (settings-facing wrapper over the persisted store)', () => 
 
     // Persisted, not just returned.
     expect((await prefsStore.getPrefs()).theme).toBe('system');
+  });
+});
+
+// The live re-apply channel: the Reader subscribes here and re-applies on change, with no
+// event bus (Ahana's decision, 2026-08-18). Listeners are module-level, so every test
+// unsubscribes what it adds — a leaked listener would fire on the next test's beforeEach.
+describe('prefsStore.subscribe (live re-apply channel)', () => {
+  it('notifies with the fresh record after savePrefs', async () => {
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      await prefsStore.savePrefs({ theme: 'dark' });
+      expect(seen).toEqual(['dark']);
+    } finally {
+      off();
+    }
+  });
+
+  it('notifies with defaults after resetPrefs', async () => {
+    await prefsStore.savePrefs({ theme: 'dark' });
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      await prefsStore.resetPrefs();
+      expect(seen).toEqual(['system']);
+    } finally {
+      off();
+    }
+  });
+
+  it('stops notifying after unsubscribe', async () => {
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    await prefsStore.savePrefs({ theme: 'dark' });
+    off();
+    await prefsStore.savePrefs({ theme: 'sepia' });
+    expect(seen).toEqual(['dark']); // only the write before unsubscribe
+  });
+
+  it('a throwing subscriber neither fails the write nor starves the others', async () => {
+    const seen: string[] = [];
+    const offThrow = prefsStore.subscribe(() => {
+      throw new Error('boom');
+    });
+    const offGood = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      const saved = await prefsStore.savePrefs({ theme: 'dark' });
+      expect(saved.theme).toBe('dark'); // write still settled and returned
+      expect(seen).toEqual(['dark']); // sibling subscriber still ran
+    } finally {
+      offThrow();
+      offGood();
+    }
   });
 });
