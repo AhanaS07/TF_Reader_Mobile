@@ -27,6 +27,14 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: mockNavigate }),
 }));
 
+// `useNetworkStatus` talks to NetInfo, which has no meaningful answer under
+// Jest. Mocked per-test so the offline case can be driven directly — same
+// pattern as ItemDetailScreen.test.tsx.
+const mockUseNetworkStatus = jest.fn(() => true);
+jest.mock('@hooks/useNetworkStatus', () => ({
+  useNetworkStatus: () => mockUseNetworkStatus(),
+}));
+
 const FAKE_CATALOGUE: Catalogue = {
   title: 'Test Institution',
   navigation: [
@@ -98,6 +106,7 @@ function fakeSource(getHomeCatalogue: DataSource['getHomeCatalogue']): DataSourc
 afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
+  mockUseNetworkStatus.mockReturnValue(true);
 });
 
 describe('CatalogueScreen loading', () => {
@@ -274,5 +283,127 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
     // must show the shelf's own title, and both must be on screen at once.
     expect(screen.getByText('Criticism & theory, 1800–1899')).toBeTruthy();
   });
+});
 
+describe('CatalogueScreen renders whatever shelves arrive', () => {
+  function catalogueWithShelves(titles: string[]): Catalogue {
+    return {
+      ...FAKE_CATALOGUE,
+      shelves: titles.map((title, index) => ({
+        id: `shelf${index}`,
+        title,
+        publications: [FAKE_CATALOGUE.shelves[0].publications[0]],
+      })),
+    };
+  }
+
+  it('renders exactly the shelves the feed sent, no hardcoded count', async () => {
+    const titles = ['New this month', 'Criticism & theory', 'Audio picks'];
+    setCatalogueSource(fakeSource(async () => catalogueWithShelves(titles)));
+
+    await render(<CatalogueScreen />);
+
+    for (const title of titles) {
+      await waitFor(() => expect(screen.getByText(title)).toBeTruthy());
+    }
+  });
+
+  // Contract caps this at 3, but the render loop has no cap of its own — this
+  // just proves it wouldn't crash if that ever changed.
+  it('does not crash if more than three shelves arrive', async () => {
+    const titles = ['A', 'B', 'C', 'D', 'E'];
+    setCatalogueSource(fakeSource(async () => catalogueWithShelves(titles)));
+
+    await render(<CatalogueScreen />);
+
+    await waitFor(() => expect(screen.getByText('E')).toBeTruthy());
+  });
+
+  // Contract fact: a shelf with nothing in it is OMITTED from the feed
+  // entirely, never sent with an empty publications array. So a nav entry can
+  // exist with no matching shelf — the two lists are independent, and the
+  // screen must not assume they line up.
+  it('renders only the shelves that exist, even if navigation has more entries', async () => {
+    const catalogueWithGap: Catalogue = {
+      ...FAKE_CATALOGUE,
+      navigation: [
+        { title: 'Shelf One', href: 'https://x/groups/shelf-one', shelfId: 'shelf1' },
+        { title: 'Shelf Two', href: 'https://x/groups/shelf-two', shelfId: 'shelf2' },
+        { title: 'Shelf Three', href: 'https://x/groups/shelf-three', shelfId: 'shelf3' },
+        { title: 'Shelf Four', href: 'https://x/groups/shelf-four', shelfId: 'shelf4' },
+      ],
+      // Deliberately shelf1 and shelf3 only — shelf2 and shelf4 exist as nav
+      // cards above but have no section, so nothing could match them by
+      // coincidence of index or id.
+      shelves: [
+        {
+          id: 'shelf1',
+          // Deliberately different from the nav entry's title 'Shelf One' —
+          // same as the two names can differ (see the mismatch test above),
+          // and it keeps this text unambiguous for getByText.
+          title: 'One',
+          publications: [FAKE_CATALOGUE.shelves[0].publications[0]],
+        },
+        {
+          id: 'shelf3',
+          title: 'Three',
+          publications: [FAKE_CATALOGUE.shelves[1].publications[0]],
+        },
+      ],
+    };
+
+    setCatalogueSource(fakeSource(async () => catalogueWithGap));
+
+    await render(<CatalogueScreen />);
+
+    // The 2 real sections render.
+    await waitFor(() => expect(screen.getByText('One')).toBeTruthy());
+    expect(screen.getByText('Three')).toBeTruthy();
+
+    // The 2 gapped nav entries still show as cards up top — the missing
+    // shelf only means no section below, not a hidden card.
+    expect(screen.getByText('Shelf Two')).toBeTruthy();
+    expect(screen.getByText('Shelf Four')).toBeTruthy();
+  });
+});
+
+describe('CatalogueScreen offline', () => {
+  it('shows the offline banner over the loaded catalogue when the network is down', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen />);
+
+    // The banner is a notice, not a blocker — the catalogue underneath it
+    // must still be there (AGENTS.md: offline is degraded, not disabled).
+    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    expect(screen.getByText("You're offline")).toBeTruthy();
+  });
+
+  it('renders no offline banner while the network is up', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen />);
+
+    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    expect(screen.queryByText("You're offline")).toBeNull();
+  });
+});
+
+describe('CatalogueScreen with no curated shelves', () => {
+  // Zero shelves is legal (a brand-new institution) and different from zero
+  // navigation entries, which the contract's own minItems: 1 rules out.
+  it('renders EmptyState instead of silently showing nothing', async () => {
+    const noShelves: Catalogue = { ...FAKE_CATALOGUE, shelves: [] };
+    setCatalogueSource(fakeSource(async () => noShelves));
+
+    await render(<CatalogueScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Nothing to show here yet.')).toBeTruthy(),
+    );
+    // The category row is unaffected by an empty shelf list — the two are
+    // independent, same as the "missing shelf" case above.
+    expect(screen.getByText('eBooks')).toBeTruthy();
+  });
 });
