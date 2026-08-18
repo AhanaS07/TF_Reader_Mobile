@@ -104,18 +104,5 @@ export const PERSONALIZATION_REQUIRES_BOOK_ID = true;
 /** A validation failure is retried this many times before the op is parked as DEAD. */
 export const MAX_PUSH_RETRIES = 6;
 
-export const BOOK_FILE_URL = `${ASSET_BASE_URL}/api/books/${BOOK_ID}/file`;
-export const PDFJS_LIB_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.min.js`;
-export const PDFJS_WORKER_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.worker.min.js`;
-
-/** pdf.js needs these to draw the PDF base-14 fonts (Helvetica, Helvetica-Bold). */
-export const PDFJS_STANDARD_FONTS = [
-  'LiberationSans-Regular.ttf',
-  'LiberationSans-Bold.ttf',
-] as const;
-
-export const pdfjsFontUrl = (filename: string) =>
-  `${ASSET_BASE_URL}/api/assets/pdfjs/standard_fonts/${filename}`;
-
 /** How long a single network call may take before we treat the device as offline. */
 export const REQUEST_TIMEOUT_MS = 8000;
