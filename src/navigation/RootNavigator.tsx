@@ -1,9 +1,13 @@
 // P0-6 — App shell and navigation (Keshav, paired with Khushi on BottomTabBar)
+import { StyleSheet, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
 import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation/bottom-tabs';
+
+import { useInstitutionStore } from '@store/institutionStore';
+import { color } from '@theme/tokens';
 
 import { TopAppBar } from '../components/TopAppBar';
 import { BottomTabBar } from '../components/BottomTabBar';
@@ -18,6 +22,7 @@ import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
 import InstitutionListScreen from '../screens/InstitutionListScreen';
 import ItemDetailScreen from '../screens/ItemDetailScreen';
 import ShelfScreen from '../screens/ShelfScreen';
+import SignInScreen from '../screens/SignInScreen';
 
 import type {
   RootStackParamList,
@@ -27,6 +32,10 @@ import type {
   LibraryStackParamList,
   ProfileStackParamList,
 } from './types';
+
+const styles = StyleSheet.create({
+  splash: { flex: 1, backgroundColor: color.surface },
+});
 
 // ─── Navigator instances ──────────────────────────────────────────────────────
 
@@ -103,6 +112,11 @@ function CatalogueNavigator() {
         component={ShelfScreen}
         options={({ route }) => ({ title: route.params.title })}
       />
+      <CatalogueStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -168,6 +182,12 @@ function TabNavigator() {
 // ─── Root navigator (wraps tabs + Gallery modal) ──────────────────────────────
 
 export default function RootNavigator() {
+  const hasHydrated = useInstitutionStore((s) => s._hasHydrated);
+
+  if (!hasHydrated) {
+    return <View style={styles.splash} />;
+  }
+
   return (
     <RootStack.Navigator screenOptions={{ headerShown: false }}>
       <RootStack.Screen name="Main" component={TabNavigator} />

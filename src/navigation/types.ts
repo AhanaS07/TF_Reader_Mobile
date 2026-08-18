@@ -22,6 +22,9 @@ export type CatalogueStackParamList = {
   InstitutionList: undefined;
   InstitutionDetail: { institutionId: string };
   ItemDetail: { itemId: string };
+  // Screen 02 — sign-in sheet. Institution is read from institutionStore;
+  // no params needed because selection always precedes navigation here.
+  SignIn: undefined;
   // Shelf detail — Prayas wires CategoryCard.onPress to this route (C1).
   // title is passed so the AppHeader can display it without a network call.
   //
