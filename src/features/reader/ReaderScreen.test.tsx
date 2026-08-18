@@ -1026,7 +1026,13 @@ describe('ReaderScreen in-book search', () => {
     ).toMatchObject({ disabled: true });
   });
 
-  it('lists a PDF hit but never navigates to it', async () => {
+  // REPLACES "lists a PDF hit but never navigates to it", which pinned a dead row.
+  //
+  // That was never a decision about whether PDF results should be navigable — `cfiOf` unwrapped
+  // `locator.cfi`, which only an EPUB locator has, so a PDF hit had nowhere to be sent while `goTo`
+  // took a bare string. A discriminated `ReaderTarget` can carry a page, so `targetOf` sends one and
+  // the row stops being a dead end.
+  it('seeks to a PDF hit by page, not just an EPUB hit by CFI', async () => {
     const pdfHit: SearchHit = {
       bookId: 'test-book',
       chapterId: 'ch1',
@@ -1040,17 +1046,43 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('wolf');
 
-    // Listed, not filtered: dropping it would desynchronise the ordinals from
-    // "Match n of m", and an all-PDF result set would render as an empty list under a
-    // "no matches" heading.
+    // Still LISTED rather than filtered, for the reason it always was: dropping a hit would
+    // desynchronise the ordinals from "Match n of m".
     expect(screen.getByText('…a page-addressed hit…')).toBeTruthy();
-    expect(screen.getByText('Not available in this reader')).toBeTruthy();
+    // And no longer labelled unavailable, because it is not.
+    expect(screen.queryByText('Not available in this reader')).toBeNull();
 
-    // Stepping skips straight over it to the next EPUB hit.
+    await fireEvent.press(screen.getByText('…a page-addressed hit…'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 4 } }),
+    );
+  });
+
+  it('steps onto a PDF hit instead of skipping past it', async () => {
+    // The match bar used to step straight over every PDF hit while still counting it, so "Match 2 of
+    // 3" was unreachable — the ordinals described a list the arrows could not visit.
+    const pdfHit: SearchHit = {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'PDF', page: 7 },
+      snippet: '…the middle hit…',
+    };
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), pdfHit, epubHit(3)]);
+
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
     await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
-    expect(screen.getByText('Match 3 of 3')).toBeTruthy();
+
+    expect(screen.getByText('Match 2 of 3')).toBeTruthy();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 7 } }),
+    );
   });
 
   it('drops a stale response that lands after a newer search', async () => {

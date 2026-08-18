@@ -40,7 +40,7 @@ import type {
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
-import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
+import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
@@ -546,16 +546,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     (index: number): void => {
       const hit = search.hits[index];
       if (!hit) return;
-      const cfi = cfiOf(hit);
-      // PDF hit: listed in the panel, but not navigated to. NOTE THIS IS NO LONGER A BRIDGE
-      // LIMITATION — `ReaderTarget` can now carry `{format:'PDF', page}`, and `SearchHit.locator`
-      // already has a page for PDF, so this is two lines from working. It is left as-is deliberately:
-      // whether a PDF search result should jump to a page is Search's behaviour to decide (Vaishnavi),
-      // and `ReaderScreen.test.tsx` pins today's answer so changing it is a conscious act.
-      if (cfi === null) return;
+      // BOTH FORMATS SEEK NOW. A PDF hit used to be a dead row — listed, but tapping it did nothing —
+      // because the only way to address a location was a bare string, and a page number could not be
+      // told apart from a spine href in one. `targetOf` unwraps the frozen `Locator` into a
+      // discriminated `ReaderTarget`, which is the one place that unwrap happens.
+      const target = targetOf(hit);
+      if (target === null) return;
       search.setActiveIndex(index);
       setShowSearch(false);
-      send?.({ type: 'goTo', target: { kind: 'href', href: cfi } });
+      send?.({ type: 'goTo', target });
     },
     [search, send],
   );
@@ -573,7 +572,11 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           : search.activeIndex + delta;
 
       for (let i = from; i >= 0 && i < search.hits.length; i += delta) {
-        if (cfiOf(search.hits[i]) !== null) {
+        // Every hit is navigable in both formats now, so in practice this skips nothing — it used to
+        // skip every PDF hit, which made the match bar step straight past results it was counting.
+        // Kept rather than dropped: it is what stops a future locator shape with no renderer from
+        // being stepped onto and silently doing nothing.
+        if (targetOf(search.hits[i]) !== null) {
           selectHit(i);
           return;
         }

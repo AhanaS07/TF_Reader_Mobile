@@ -261,11 +261,20 @@ UI cannot be exercised on a device. `devContentSeed.ts` therefore encrypts a gen
 | # | Delete |
 | - | ------ |
 | 1 | `src/features/reader/scripts/buildSampleSearchIndex.ts` |
-| 2 | `assets/reader/sample-search-index.json` |
-| 3 | the `reader:build-sample-index` script in `package.json` |
-| 4 | the `index` attachment + its `FIXTURE_PATH` / `DEV_FORMAT` guard in `devContentSeed.ts` |
-| 5 | `src/features/reader/devSearchIndex.test.ts` (guards 2 against 4) |
-| 6 | this table |
+| 2 | `assets/reader/sample-search-index.json` (EPUB) |
+| 3 | `assets/reader/sample-pdf-search-index.json` (PDF) |
+| 4 | the `reader:build-sample-index` script in `package.json` |
+| 5 | the `searchIndex` attachments in `devContentSeed.ts` |
+| 6 | `src/features/reader/devSearchIndex.test.ts` (guards 2 and 3 against 5) |
+| 7 | this table |
+
+**There is one index PER FORMAT, and they are not interchangeable.** `queryBookIndex` throws when an
+index's `bookId` is not the book requested, so attaching the EPUB's index to a PDF book turns every
+search into an *error* rather than an empty list. That is why the PDF fixtures carried no index at all
+for a while, which made PDF search look unimplemented — it was not. Search's PDF extractor
+(`pdfSampleExtractor`, proven by `searchPdf.test.ts`) had been working the whole time; nothing fed it.
+`DevFixture.searchIndex` names the index rather than saying whether to attach one, so a new fixture
+cannot silently inherit the wrong book's.
 
 `SearchPanel.tsx`, `useBookSearch.ts` and the search wiring in `ReaderScreen.tsx` are **not** on
 that list — the UI is permanent and does not know the fixture exists. Removing all five must leave
