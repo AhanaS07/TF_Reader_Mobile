@@ -475,7 +475,25 @@ export interface Loan {
   // later rather than a thing to do while unblocking Task 1.
   loanId?: string;
   itemId: string;
-  state: 'none' | 'active' | 'expired';
+  // Maps flambeau's `LoanStatus` plus one value of our own.
+  //
+  //   'none'      no loan at all — OURS, not theirs. A loan that was never fetched
+  //               and a reader who holds nothing are the same answer to a resolve.
+  //   'active'    ACTIVE
+  //   'returned'  RETURNED — the reader closed it
+  //   'expired'   EXPIRED — the sweep closed it at its due date
+  //
+  // `'returned'` AND `'expired'` ARE BOTH OVER AND STILL NOT THE SAME, which is why
+  // there are two — 17 Aug. flambeau: "EXPIRED is a loan the sweep closed at its due
+  // date; RETURNED is one the reader closed. Both are over, and the app shows them
+  // differently." Collapsing them here would throw that away at the boundary and
+  // leave the Library screen unable to tell "you returned this" from "this ran out",
+  // which is the same mistake as dropping `serverTime`.
+  //
+  // NOTHING IN `resolveAccess` CHANGES. It tests `state === 'active'` and everything
+  // else falls through to the same place, so this is information kept for the screens
+  // rather than a new branch in the access table.
+  state: 'none' | 'active' | 'returned' | 'expired';
   expiresAt?: number;
 }
 
@@ -573,10 +591,35 @@ export interface Hold {
 // `institutionId` IS PART OF IDENTITY, not context. The same title resolves
 // differently for two institutions, so a call that omits it is ambiguous even
 // when it happens to work.
+// A CACHE KEY, NOT A REQUEST PAYLOAD — corrected 17 Aug. The comment above is about
+// identity, and it is right about that; what it got wrong is where this shape belongs.
+//
+// NOTHING SENDS THIS. flambeau's `BorrowRequest` and `HoldRequest` each declare exactly
+// one property, `itemId`, and `required: [itemId]`. There is no field to put a user or an
+// institution in, so passing them would not be redundant — it would be an unknown field.
+// Identity arrives as the authenticated principal off the token: "there is nothing here
+// for a caller to assert about itself."
+//
+// SO WHAT IS IT FOR. Keying anything that remembers a resolve. The same publication
+// resolves differently for two institutions, so a cache keyed on `itemId` alone hands a
+// reader who switched institution the buttons from the previous one. That is a real need
+// and this is the right shape for it — see `AccessResult`, which carries the same two ids
+// for the same reason.
+//
+// The calls take a `BookId`. Earlier drafts of the licence layer took this, on the
+// strength of the sentence in `resolveAccess.ts` about the four calls being "keyed by
+// `LicenceRef`" — which described the cache and got read as describing the wire.
 export interface LicenceRef {
   userId: string;
   itemId: string;
-  institutionId: string;
+  // OPTIONAL, because an individual subscriber has no institution — 17 Aug. flambeau omit
+  // it rather than sending null, and their reasoning is worth keeping: an individual
+  // "belongs to no institution, which is emphatically not 'every institution', and
+  // `institutionId: null` reads to a consumer as 'belongs to one whose id we lost'."
+  //
+  // `Session.institutionId` has been optional all along, so this was the half of the pair
+  // that could not describe a B2C reader. B2C is not cut — decided 11 Aug.
+  institutionId?: string;
 }
 
 // Elite only, detail screen only. `GET /api/v1/items/{itemId}/availability` on
