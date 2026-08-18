@@ -40,7 +40,7 @@ describe('PDF search prototype — inverted index over the sample PDF', () => {
   it('builds a BookSearchIndex in the frozen shape, tagged PDF', () => {
     expect(index.bookId).toBe(BOOK_ID);
     expect(index.format).toBe('PDF');
-    expect(index.version).toBe(1);
+    expect(index.version).toBe(2); // v2: postings carry seq (token-sequence adjacency)
     expect(Object.keys(index.index).length).toBeGreaterThan(0);
     expect(index.index.page?.length).toBeGreaterThan(2); // recurs on every page
   });
