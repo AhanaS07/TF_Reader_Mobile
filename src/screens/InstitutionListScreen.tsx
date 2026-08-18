@@ -12,11 +12,15 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { EmptyState } from '@components/EmptyState';
 import { ErrorState } from '@components/ErrorState';
 import { InstitutionRow } from '@components/InstitutionRow';
+import OfflineBanner from '@components/OfflineBanner';
 import { SearchInput } from '@components/SearchInput';
 import { Skeleton } from '@components/Skeleton';
 import type { Institution } from '@model/institution';
+import { CatalogueError, isCatalogueFailure } from '@model/errors';
+import { getCatalogueSource } from '@config/catalogue';
 import { searchInstitutions } from '../search/searchInstitutions';
 import { useInstitutionStore } from '@store/institutionStore';
+import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import type { CatalogueStackParamList } from '../navigation/types';
 import { color, space, type } from '@theme/tokens';
 
@@ -73,6 +77,16 @@ export default function InstitutionListScreen() {
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const recentlyUsedIds = useInstitutionStore((s) => s.recentlyUsedIds);
   const setSelectedInstitution = useInstitutionStore((s) => s.setSelectedInstitution);
+  const removeRecentlyUsedId = useInstitutionStore((s) => s.removeRecentlyUsedId);
+
+  // Institutions resolved directly by ID for the "Recently used" section.
+  // Needed because paging means a recently-used institution may not appear in
+  // the current page, and inactive institutions return NOT_FOUND and must be pruned.
+  const [resolvedRecents, setResolvedRecents] = useState<Institution[]>([]);
+  // Track which IDs we've already attempted so paginating doesn't re-trigger fetches.
+  const resolvedRef = useRef<Set<string>>(new Set());
+
+  const isOnline = useNetworkStatus();
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -98,6 +112,40 @@ export default function InstitutionListScreen() {
     };
   }, [query, fetchPage]);
 
+  // After the initial page loads, resolve any recently-used IDs not found in the
+  // current results. Institutions on later pages are fetched directly by ID.
+  // Inactive institutions (NOT_FOUND) are pruned from recentlyUsedIds so stale
+  // IDs don't accumulate across sessions. Network errors leave the ID intact —
+  // the user is offline and the institution may still exist.
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    const source = getCatalogueSource();
+
+    recentlyUsedIds.forEach((id) => {
+      if (resolvedRef.current.has(id)) return;
+      resolvedRef.current.add(id);
+
+      const alreadyLoaded = institutions.find((i) => i.id === id);
+      if (alreadyLoaded) {
+        if (!cancelled) setResolvedRecents((prev) => [...prev, alreadyLoaded]);
+        return;
+      }
+
+      source.getInstitution(id)
+        .then((institution) => {
+          if (!cancelled) setResolvedRecents((prev) => [...prev, institution]);
+        })
+        .catch((err) => {
+          if (!cancelled && isCatalogueFailure(err) && err.code === CatalogueError.NOT_FOUND) {
+            removeRecentlyUsedId(id);
+          }
+        });
+    });
+
+    return () => { cancelled = true; };
+  }, [loading, recentlyUsedIds, institutions, removeRecentlyUsedId]);
+
   const handleRetry = useCallback(() => {
     fetchPage(query, 0, true);
   }, [fetchPage, query]);
@@ -118,9 +166,9 @@ export default function InstitutionListScreen() {
   const pinnedInstitutions = useMemo(
     () =>
       recentlyUsedIds
-        .map((id) => institutions.find((i) => i.id === id))
+        .map((id) => resolvedRecents.find((r) => r.id === id))
         .filter((i): i is Institution => i !== undefined),
-    [recentlyUsedIds, institutions],
+    [recentlyUsedIds, resolvedRecents],
   );
 
   const mainInstitutions = useMemo(
@@ -146,6 +194,7 @@ export default function InstitutionListScreen() {
         {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
           <SkeletonRow key={i} />
         ))}
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -159,6 +208,7 @@ export default function InstitutionListScreen() {
           message="Couldn't load institutions. Check your connection and try again."
           onRetry={handleRetry}
         />
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -222,6 +272,7 @@ export default function InstitutionListScreen() {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       />
+      <OfflineBanner visible={!isOnline} />
     </View>
   );
 }
