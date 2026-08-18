@@ -229,6 +229,73 @@ describe('ItemDetailScreen with a book', () => {
   });
 });
 
+describe('ItemDetailScreen format, price and table of contents', () => {
+  it('renders the confirmed format as a display strip', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('format-strip')).toBeTruthy());
+    expect(screen.getByText('PDF')).toBeTruthy();
+  });
+
+  // Not `Tabs`, not `FilterChip` — there is exactly one value, so nothing
+  // here should behave like a control with more than one state to switch.
+  it('renders the format strip as non-interactive', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('format-strip')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'PDF' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'PDF' })).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
+  });
+
+  // A `subscribe` rel publication carries no file and therefore no format —
+  // see normalize.ts. The strip must simply not appear, not crash the screen.
+  it('renders no format strip, and does not crash, when the publication has none', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ format: undefined })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByTestId('format-strip')).toBeNull();
+  });
+
+  it('shows the price area as unavailable, with no invented amount', async () => {
+    setCatalogueSource(fakeSource(async () => aBook()));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Price unavailable')).toBeTruthy());
+    // Nothing that looks like an actual price (a currency symbol and digits)
+    // is ever built — there is no price field in either contract.
+    expect(screen.queryByText(/[$£€]\s?\d/)).toBeNull();
+  });
+
+  it('shows Table of Contents as unavailable, with no expand/collapse behaviour', async () => {
+    setCatalogueSource(fakeSource(async () => aBook()));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Table of Contents')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /table of contents/i })).toBeNull();
+  });
+
+  // Price and Table of Contents are the same boxed, muted treatment as
+  // citation and the type label on screen 04; the format strip is
+  // deliberately not — see `FormatStrip`'s header comment.
+  it('boxes price and table of contents the same way as citation, but not the format strip', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('format-strip')).toBeTruthy());
+    expect(screen.getAllByTestId('unavailable-tag')).toHaveLength(2);
+  });
+});
+
 describe('ItemDetailScreen with metadata missing', () => {
   it('renders the title and authors with every optional field absent, and does not crash', async () => {
     setCatalogueSource(
@@ -518,6 +585,7 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
       isbn: '9780367211745',
       numberOfPages: 212,
       publisher: 'Routledge',
+      format: 'PDF',
     });
 
     await render(renderArticleContent(detail, jest.fn()));
@@ -525,6 +593,11 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
     expect(screen.queryByText(/isbn/i)).toBeNull();
     expect(screen.queryByText(/pages/i)).toBeNull();
     expect(screen.queryByText(/publisher/i)).toBeNull();
+    // `format` joined `ItemDetail` for screen 05's display strip; the article
+    // branch must still never read it. Not asserting `queryByText('PDF')` is
+    // absent here — "PDF" legitimately appears as one of the five inert tab
+    // labels above, for an unrelated reason.
+    expect(screen.queryByTestId('format-strip')).toBeNull();
   });
 });
 
