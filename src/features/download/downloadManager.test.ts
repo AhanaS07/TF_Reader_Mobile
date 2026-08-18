@@ -18,6 +18,7 @@ import { USER_ID } from '../sync/syncConfig';
 import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
 import { encrypt } from '../encryption/aesGcm';
 import { generateDeviceKeypair, wrapBek, publicKeyFingerprint } from '../encryption/deviceKeypair';
+import { CHUNK_SIZE_BYTES } from './chunkedAssetFetcher';
 import { DownloadError } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
@@ -771,5 +772,137 @@ describe('downloadBook — book-limit race rollback', () => {
       bookId,
     });
     expect(destroySpy).toHaveBeenCalledWith(bookId);
+  });
+});
+
+// Every other describe block's `mockFetchFor` answers the content URL with a flat 200 — realistic
+// for a server with no Range support, but it never actually exercises chunkedAssetFetcher.ts's
+// chunking through the real downloadBook() pipeline, only its own unit tests
+// (chunkedAssetFetcher.test.ts) do that in isolation. This block wires a real Range-aware mock —
+// the same behavior confirmed live against the actual mock-backend (express.static) — so the full
+// pipeline (loan -> session -> chunked fetch -> store -> downloads row) is proven end to end too.
+describe('downloadBook — chunked asset fetch (real Range behavior)', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function mockFetchForChunked(
+    loan: Loan,
+    session: ReadingSessionResponse,
+    content: Uint8Array<ArrayBuffer>,
+  ): jest.Mock {
+    return jest.fn().mockImplementation(async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url === `${API_BASE_URL}/api/v1/loans`) {
+        return new Response(JSON.stringify(loan), { status: 200 });
+      }
+      if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
+        return new Response(JSON.stringify(session), { status: 200 });
+      }
+      if (url === session.content.url) {
+        const rangeHeader = init?.headers?.Range;
+        const match = rangeHeader ? /^bytes=(\d+)-(\d+)$/.exec(rangeHeader) : null;
+        if (!match) return new Response(content, { status: 200 });
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), content.length - 1);
+        return new Response(content.subarray(start, end + 1), {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${content.length}` },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+  }
+
+  it('downloads a book spanning multiple 1 MiB chunks, via real Range requests, and stores it correctly', async () => {
+    const bookId = 'chunked-download-multi';
+    const plaintext = new Uint8Array(Math.floor(CHUNK_SIZE_BYTES * 2.5)).map((_, i) => i % 256);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
+
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'SUBSCRIPTION',
+      canPersist: true,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint,
+      },
+    });
+    const fetchMock = mockFetchForChunked(loan, session, encryptedBytes);
+    global.fetch = fetchMock;
+
+    await expect(downloadBook(bookId)).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    // 3 real chunk requests against the content URL (2.5 chunks rounds up), not one big fetch.
+    const contentRequests = fetchMock.mock.calls.filter((call) => call[0] === session.content.url);
+    expect(contentRequests).toHaveLength(3);
+    expect(contentRequests[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+
+    // The 5-book-limit bookkeeping (downloadTable write, under the write lock) ran to completion
+    // too — chunking only changed how the bytes arrived, not the accounting around them.
+    const rows = await downloadTable.listActive(USER_ID, bookId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('COMPLETED');
+
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
+    await contentStore.close(bookId);
+  });
+
+  it('still enforces the RAM budget in the chunked path, rejecting before all chunks are fetched', async () => {
+    const bookId = 'chunked-too-large-e2e';
+    // Bigger than MAX_DECRYPTED_BYTES so the FIRST chunk's Content-Range total already exceeds
+    // the (encryption-adjusted) budget — the point being it must reject BEFORE fetching the rest.
+    const oversized = new Uint8Array(MAX_DECRYPTED_BYTES + CHUNK_SIZE_BYTES * 3);
+    // ELITE (not OPEN_ACCESS): downloadManager.ts only runs the 5-book-limit check when
+    // `loan.canPersist` is true, and this suite's `downloadTable` is real and un-reset across
+    // tests (see the book-limit-race describe block's own comment on the same trap) — by this
+    // point in the file it's already at cap from earlier tests. ELITE isolates the assertion to
+    // the budget check this test actually targets, instead of tripping BOOK_LIMIT_REACHED first.
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'ELITE',
+      canPersist: false,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, oversized, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: oversized.length,
+        originalLength: oversized.length,
+        mimeType: 'application/epub+zip',
+      },
+    });
+    const fetchMock = mockFetchForChunked(loan, session, oversized);
+    global.fetch = fetchMock;
+
+    await expect(downloadBook(bookId)).rejects.toMatchObject({
+      code: DownloadError.BOOK_TOO_LARGE,
+      bookId,
+    });
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+
+    const contentRequests = fetchMock.mock.calls.filter((call) => call[0] === session.content.url);
+    expect(contentRequests).toHaveLength(1); // rejected after the first chunk, never fetched chunks 2-4+
   });
 });

@@ -63,11 +63,15 @@ class File {
   create() {
     fs.writeFileSync(this._path(), Buffer.alloc(0), { flag: 'wx' });
   }
-  write(content) {
+  write(content, options) {
+    // `options.append` matches the real FileWriteOptions shape (File.types.d.ts) — added for
+    // chunkedAssetFetcher.ts, which appends each downloaded chunk rather than rewriting the
+    // whole partial file every time.
+    const flag = options && options.append ? 'a' : 'w';
     if (typeof content === 'string') {
-      fs.writeFileSync(this._path(), content, 'utf8');
+      fs.writeFileSync(this._path(), content, { encoding: 'utf8', flag });
     } else {
-      fs.writeFileSync(this._path(), Buffer.from(content));
+      fs.writeFileSync(this._path(), Buffer.from(content), { flag });
     }
   }
   textSync() {

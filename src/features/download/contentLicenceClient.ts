@@ -69,7 +69,7 @@ export async function fetchContentLicence(bookId: BookId): Promise<ContentLicenc
  *
  * Any other host is left completely alone — a real CDN url must not be rewritten.
  */
-function reachableAssetUrl(url: string): string {
+export function reachableAssetUrl(url: string): string {
   let parsed: URL;
   let base: URL;
   try {
