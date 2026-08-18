@@ -49,6 +49,18 @@
 // across DIFFERENT books. downloadTable already supports multiple books; the wrapper just wasn't
 // built for this case. See docs/superpowers/specs/2026-08-13-download-devicekey-skeleton-design.md.
 //
+// CHUNKED + RESUMABLE MAIN ASSET FETCH (added 2026-08-18): the main asset — the one that can
+// actually be tens of megabytes — now goes through `chunkedAssetFetcher.ts`'s
+// `fetchEncryptedAssetChunked` instead of the old single-`fetch()` `fetchEncryptedAsset`. Same
+// RAM budget (`MAX_DECRYPTED_BYTES`) enforced, just earlier: converted to a ciphertext-byte
+// ceiling and checked as soon as the total is known (first chunk, or immediately on a resume),
+// before downloading further, in addition to the original post-fetch `BOOK_TOO_LARGE` check kept
+// below as a backstop. The 5-book limit is untouched by this — it's checked before any fetch
+// starts and re-checked under the write lock at the end, exactly as before; chunking only changed
+// how the BYTES for one book arrive, not the accounting around it. `fetchEncryptedAsset` (plain,
+// non-chunked) stays the call for the search index below — much smaller, no resumability need.
+// See docs/superpowers/specs/2026-08-17-resumable-chunked-download-scoping.md for the design.
+//
 // SEARCH INDEX (added 2026-08-14, unchanged by the flambeau migration): `ReadingSessionResponse
 // .index` (reading-session.ts) carries an optional `{ url, encrypted, termCount }`. Fetched the
 // same way as the main asset and attached to `EncryptedPackage.index`, which contentStore.ts's
@@ -70,6 +82,7 @@ import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
 import { borrowLoan, openReadingSession, fetchEncryptedAsset } from './readingSessionClient';
+import { fetchEncryptedAssetChunked } from './chunkedAssetFetcher';
 import { DownloadError, DownloadFailure } from './errors';
 
 export const BOOK_LIMIT = 5;
@@ -191,7 +204,18 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
     );
   }
 
-  const bytes = await fetchEncryptedAsset(bookId, session.content.url);
+  // Moved up from below the fetch — needed here now to size the chunked fetch's own RAM-budget
+  // ceiling (maxCipherBytes) BEFORE requesting a single byte, not just to classify the response
+  // afterward. Meaning unchanged from its original spot: session.encryption != null.
+  const isEncrypted = session.encryption != null;
+
+  // Chunked + resumable (docs/superpowers/specs/2026-08-17-resumable-chunked-download-scoping.md):
+  // MAX_DECRYPTED_BYTES is a budget on the DECRYPTED size; the fetcher deals in ciphertext bytes,
+  // which are 28 bytes larger (nonce + tag) for encrypted content and identical for open access/
+  // audio. Converting here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely —
+  // it only ever sees "a byte budget", not why that number is what it is.
+  const maxCipherBytes = MAX_DECRYPTED_BYTES + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
+  const bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, { maxBytes: maxCipherBytes });
 
   // `content.originalLength`/`mimeType` are OPTIONAL on the real spec (reading-session.ts's own
   // header — "test for presence, not length"). Found in review: comparing a real number against
@@ -199,7 +223,6 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   // blamed a field the response never carried. Only cross-check when the server actually sent a
   // value; when it didn't, `computeOriginalLength` IS the value, not just a defense-in-depth
   // check against one.
-  const isEncrypted = session.encryption != null;
   // Whether this download NEEDS a licence at all — deliberately NOT the same test as `isEncrypted`
   // above. Both contracts agree audio is never encrypted regardless of tier ("Encryption is null
   // for open access and for all audio"), so `encryption == null` means "unencrypted", not "open
