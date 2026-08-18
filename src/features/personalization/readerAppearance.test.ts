@@ -33,7 +33,7 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
   };
 }
 
-const ENV: AppearanceEnv = { osColorScheme: 'light', osFontScale: 1.0 };
+const ENV: AppearanceEnv = { osColorScheme: 'light', osFontScale: 1.0, osReduceMotionEnabled: false };
 
 describe('resolveColorScheme', () => {
   it('passes concrete schemes through unchanged', () => {
@@ -126,6 +126,42 @@ describe('toReaderAppearance', () => {
       flow: 'paginated',
       spread: 'single',
       zoom: 1.0,
+      // a11y: DEFAULT display/text flags are false; reduceMotion 'system' + OS off -> false;
+      // announce.pageChanges defaults true.
+      reduceMotion: false,
+      highContrast: false,
+      boldText: false,
+      dyslexiaFont: false,
+      readableSpacing: false,
+      announcePageChanges: true,
+    });
+  });
+
+  it('resolves reduceMotion host-side (tri-state -> boolean), like system theme', () => {
+    const withMotion = (pref: 'system' | 'on' | 'off', osOn: boolean): boolean => {
+      const prefs = makePrefs();
+      prefs.accessibility.display.reduceMotion = pref;
+      return toReaderAppearance(prefs, { ...ENV, osReduceMotionEnabled: osOn }).reduceMotion;
+    };
+    expect(withMotion('system', true)).toBe(true);
+    expect(withMotion('system', false)).toBe(false);
+    expect(withMotion('on', false)).toBe(true); // explicit wins over OS
+    expect(withMotion('off', true)).toBe(false);
+  });
+
+  it('carries the a11y content flags through from accessibility prefs', () => {
+    const prefs = makePrefs();
+    prefs.accessibility.display.highContrast = true;
+    prefs.accessibility.display.boldText = true;
+    prefs.accessibility.text.dyslexiaFont = true;
+    prefs.accessibility.text.readableSpacing = true;
+    prefs.accessibility.announce.pageChanges = false;
+    expect(toReaderAppearance(prefs, ENV)).toMatchObject({
+      highContrast: true,
+      boldText: true,
+      dyslexiaFont: true,
+      readableSpacing: true,
+      announcePageChanges: false,
     });
   });
 
@@ -158,7 +194,8 @@ describe('toReaderAppearance', () => {
     // would mean a frozen contract shape survived into the bridge payload.
     const appearance = toReaderAppearance(makePrefs(), ENV);
     for (const value of Object.values(appearance)) {
-      expect(value === null || typeof value === 'string' || typeof value === 'number').toBe(true);
+      const t = typeof value;
+      expect(value === null || t === 'string' || t === 'number' || t === 'boolean').toBe(true);
     }
   });
 });

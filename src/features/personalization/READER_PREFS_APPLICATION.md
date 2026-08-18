@@ -1,8 +1,10 @@
 # Applying prefs to the reader — design + cross-team handoff
 
-**Owner:** Personalization (Vaishnavi) writes; **Reader (Ahana) applies.** · **Status:** design +
-Personalization's half built (`readerAppearance.ts`). Reader half and the live channel are blocked
-— see [Cross-team asks](#cross-team-asks).
+**Owner:** Personalization (Vaishnavi) writes; **Reader (Ahana) applies.** · **Status:** design
+signed off by Ahana (2026-08-18). Personalization's half built (`readerAppearance.ts` +
+`prefsStore.subscribe`). The Reader half (WebView conversion, then the apply command) is Ahana's —
+she is sizing the conversion and will give a date. All the design decisions this doc used to leave
+open are now settled — see the resolved notes in §8.
 
 This is the "prefs-application stage" that `WEBVIEW_BRIDGE.md` has forecast for weeks as the first
 stage that trips a bridge trigger. This doc is the design for it and the handoff to the two owners
@@ -68,10 +70,10 @@ them as arguments.
 
 ---
 
-## 3. Proposed bridge surface: one `applyAppearance` command
+## 3. Bridge surface: one `applyAppearance` command (DECIDED)
 
-**Recommendation: a single command carrying the whole `ReaderAppearance`, not five granular setters
-and not `applyPrefs(SharedPrefs)`.**
+**One command carrying the whole `ReaderAppearance`, not five granular setters and not
+`applyPrefs(SharedPrefs)`.** Ahana holds this: "one command and one resolve seam."
 
 ```
 applyAppearance(appearance: ReaderAppearance)   // RN -> WebView, fire-and-forget
@@ -89,15 +91,23 @@ Why one command:
 Why not `applyPrefs(SharedPrefs)`: that is trigger 3 by definition. `ReaderAppearance` is the
 flattened, de-frozen equivalent — see §1.
 
-**Where `ReaderAppearance`'s type lives is Ahana's call.** Two clean options, both fine:
+**One payload carries all three claimants.** The payload is not just Personalization's theme/font/
+typography/layout/zoom — it also carries the **resolved `reduceMotion`** and Hruthik's a11y content
+flags (`highContrast`, `boldText`, `dyslexiaFont`, `readableSpacing`, `announcePageChanges`). This is
+deliberate and is Ahana's call: those flags have no other channel into the WebView, and Hruthik's
+`WEBVIEW_A11Y_FINDINGS.md` §3.7 requires `announce.pageChanges` to arrive through exactly this
+composed-prefs path. There is no "applied on top" that is not a second command, so they ride here.
+`readerAppearance.ts` only resolves them to primitives; their apply-time meaning is Reader/Hruthik's
+(see §4).
 
-1. `readerBridge.ts` imports the type from `readerAppearance.ts` (a reader → personalization type
-   import; the _value_ resolution stays in personalization).
-2. `readerBridge.ts` declares a structurally-identical local type and Personalization's output flows
-   into it. A `satisfies` in a test pins the two together.
+**Type home (DECIDED — option 1):** `readerBridge.ts` **imports `ReaderAppearance` from
+`readerAppearance.ts`** (a reader → personalization type import; the value resolution stays in
+personalization). This is not trigger 3 — `ReaderAppearance` is a feature-local type, not a
+`src/shared/contracts/` one.
 
-Either keeps the frozen contract out of `reader/`. Neither is trigger 3, because `ReaderAppearance`
-is not a `src/shared/contracts/` type.
+**Defined in both templates, sent before `open*`.** Ahana: `applyAppearance` must be a method on the
+EPUB **and** PDF `window.TFReader`, and the host must send it before `openEpub`/`openPdf` — otherwise
+a PDF open raises `NOT_READY`, and `flow`/`spread` miss `renderTo()`.
 
 ---
 
@@ -105,7 +115,7 @@ is not a `src/shared/contracts/` type.
 
 | `ReaderAppearance` field | Applied in the template by |
 | --- | --- |
-| `fontSizePt` | Replaces `BASELINE_FONT_SIZE_PX` as the input to `readerMetrics()`. Viewport scaling + clamp stay the reader's — **but the 15–22px clamp must widen** or a large a11y multiplier is silently capped (see §8 open items). |
+| `fontSizePt` | Replaces `BASELINE_FONT_SIZE_PX` as the input to `readerMetrics()`. Viewport scaling + the clamp stay the reader's — Ahana clamps the **viewport factor (0.94–1.375)**, not the product, so the user's chosen pt is never capped (§8.2, resolved). |
 | `lineHeight` | Replaces `BASELINE_LINE_HEIGHT`. |
 | `marginPx` | Replaces `BASELINE_MARGIN_PX`. |
 | `letterSpacingPx` | New rule in `baselineCss` body: `letter-spacing: Npx` — **omit the rule when 0** (the template already documents "a rule setting a property to its own default only adds a declaration for a real book's CSS to lose to"). |
@@ -114,12 +124,15 @@ is not a `src/shared/contracts/` type.
 | `fontFamily` | New body rule in `baselineCss` when non-empty: `font-family: <fontFamily>, <fallback>`. Empty string = leave the book's own font (the baseline deliberately does not set font-family today). |
 | `customFontUri` | `@font-face` + use as the family. **Blocked on transport** — see §8; the WebView cannot fetch `file://`. |
 | `flow` | Sets `READER_FLOW`. `isPaginated()` already gates the line grid and column breaks, so this is the value that constant becomes. **Changing flow live needs a re-layout** — see §5. |
-| `spread` | `rendition.spread('none' \| 'auto')` — map `single`→`none`, `double`→`auto`. Today hard-coded `spread: 'none'`. |
-| `zoom` | PDF renderer (pdf.js scale) + images. Reflowable EPUB scales via `fontSizePt`, so the EPUB template may ignore it. Carried so one payload serves both renderers. |
+| `spread` | `rendition.spread(...)` — `single`→`'none'`, `double`→`'auto'` (Ahana). `'always'` is identical in epub.js; `minSpreadWidth` (800) gates it, so **`double` is inert on a phone** — the settings picker should be honest about that. Today hard-coded `spread: 'none'`. |
+| `zoom` | PDF renderer (pdf.js scale) + images; reflowable EPUB scales via `fontSizePt` so the EPUB template may ignore it. Carried so one payload serves both renderers. **Pinch-zoom inside the WebView is ruled out (Ahana)** — zoom changes arrive only through prefs. |
+| `reduceMotion` | Already **resolved to a boolean** host-side (tri-state × OS). Reader suppresses the page-turn animation when true (prefs.ts DECISION LOG #2, confirmed). |
+| `highContrast`, `boldText`, `dyslexiaFont`, `readableSpacing` | Hruthik's flags, carried as booleans. Apply-time meaning is **Reader/Hruthik's** — including `dyslexiaFont`'s precedence over `fontFamily`, and the contrast recipe. `readerAppearance.ts` only forwards them. |
+| `announcePageChanges` | `announce.pageChanges` (defaults true). Gates the WebView's `polite` page-change announcement — Hruthik `WEBVIEW_A11Y_FINDINGS.md` §3.7, which requires it through this composed-prefs path. |
 
-Contrast (`accessibility.display.highContrast`), bold text, dyslexia font and readable-spacing are
-**deliberately out of this payload** — they are Hruthik's, applied on top of whichever scheme this
-picks. `ReaderAppearance` reads a11y prefs only for the §6 font-scale composition, nothing else.
+fontFamily/customFontUri **sanitising before they enter CSS is Ahana's, at apply time** — this file
+keeps passing them through unresolved. The a11y flags above are carried, not interpreted here: their
+meaning is applied Reader/Hruthik-side, which is what "one command, one resolve seam" buys.
 
 ---
 
@@ -132,26 +145,23 @@ the third checkbox real.
 `toReaderAppearance(prefs, env)`, and sends `applyAppearance` alongside `openEpub`. (Today nothing
 reads prefs at open — this is new host wiring.)
 
-**B. On a prefs edit — the settings screen changed something.** Needs a signal from the store to the
-reader. Two candidate mechanisms, and **this is an open fork (event-bus.ts open question #1, Ahana):**
+**B. On a prefs edit — the settings screen changed something.** DECIDED (Ahana, no event bus,
+Karthik not on the critical path): **the Reader subscribes to `prefsStore.subscribe(...)`**. A
+`savePrefs`/`resetPrefs` notifies subscribers with the fresh record; the Reader re-resolves and
+re-sends `applyAppearance`. `savePrefs` also returns the fresh record, so the settings screen itself
+needs nothing extra. This is built — see §7. The `PrefsChangedEvent`/event-bus path is dropped: the
+prefs store is a singleton in one JS process, so a direct subscription is simpler than a bus and
+needs no second emitter.
 
-- _Event bus:_ subscribe to `EVENT_CHANNELS.PREFS_CHANGED`; on fire, re-read + re-resolve + re-send.
-  Clean, but **there is no bus runtime in the repo yet** — the channel is contract-only. Blocks this
-  path entirely until a runtime lands, _and_ until someone emits on it (Karthik, in
-  `writeSharedPrefs`).
-- _Re-read on focus:_ if settings is an overlay/route and the reader stays mounted, re-read prefs
-  when it regains focus. No bus needed. Ahana floated exactly this in event-bus.ts (#1): "Reader
-  could simply re-read on focus." Weaker (fires on any focus, not only a real change) but unblocked
-  today.
+> Scope note: only writes THROUGH `prefsStore` notify. A prefs row pulled from the server by Sync
+> does not pass through here; if that ever needs to drive a live re-apply, it must notify too. Called
+> out in `prefsStore.ts`.
 
-**Recommendation:** design the reader's re-apply as a plain `applyAppearance(toReaderAppearance(...))`
-call and drive it from whichever signal lands first — bus or focus. The resolver and the command
-don't care which. Don't block the whole stage on the bus.
-
-**C. On an OS appearance change — the user flipped system dark mode.** When `theme: 'system'`, the
-resolved scheme depends on `Appearance.getColorScheme()`, which can change while the book is open.
-Subscribe to `Appearance.addChangeListener` (and OS font-scale change) → re-resolve → re-send. This
-is **independent of B** and easy to forget: without it, `'system'` is only "system at open time".
+**C. On an OS change — the user flipped system dark mode, Dynamic Type, or Reduce Motion.** When
+`theme: 'system'`, `reduceMotion: 'system'`, or `respectOsFontScale` is on, the resolved values
+depend on the OS. Subscribe to `Appearance.addChangeListener` (colour scheme + font scale) and the
+platform reduce-motion signal → re-resolve → re-send. This is **independent of B** and easy to
+forget: without it, `'system'` is only "system at open time".
 
 **What the WebView does on re-apply.** `applyAppearance` rebuilds `currentCss` from the new values
 and re-runs the equivalent of `applyBaselineCss()` across loaded chapters, then — because font
@@ -163,78 +173,83 @@ one field that is more than a stylesheet swap.
 
 ---
 
-## 6. Who resolves `'system'` — the host, not the WebView
+## 6. Who resolves the OS-derived values — the host, not the WebView
 
-Resolved host-side (in `toReaderAppearance`, via `AppearanceEnv.osColorScheme`). The WebView is
-handed a concrete `light`/`dark`/`sepia` and never learns what "system" means. Rationale: a WebView
-that held `'system'` would also have to observe OS appearance changes — state RN already models,
-which is trigger 5. Keeping resolution host-side keeps the WebView stateless about appearance.
+Every OS-derived value resolves host-side in `toReaderAppearance`, via `AppearanceEnv`:
+`osColorScheme` resolves `theme: 'system'`, `osReduceMotionEnabled` resolves the tri-state
+`reduceMotion`, and `osFontScale` feeds the text-scale composition. The WebView is handed concrete
+values (`light`/`dark`/`sepia`, a boolean, a number) and never observes the OS itself — that would be
+state RN already models (trigger 5). Keeping resolution host-side keeps the WebView stateless about
+the device, and the Reader re-sends when any OS input changes (§5C).
 
 ---
 
 ## 7. What Personalization built (this half)
 
-`readerAppearance.ts` + `readerAppearance.test.ts` (17 tests, green; typecheck + lint clean):
+`readerAppearance.ts` + `readerAppearance.test.ts` and the `prefsStore` subscription (all green;
+typecheck + lint clean):
 
-- `ReaderAppearance` — the flat payload type.
+- `ReaderAppearance` — the flat payload type: theme (resolved) + font + typography + layout + zoom +
+  the resolved `reduceMotion` + Hruthik's a11y flags (`highContrast`/`boldText`/`dyslexiaFont`/
+  `readableSpacing`/`announcePageChanges`).
 - `resolveColorScheme` / `resolveTheme` / `THEME_PALETTES` — theme → concrete scheme + palette;
   `'system'` from the env; defensive `'highContrast'`.
 - `resolveFont` — `'system'`/blank → don't override; named family verbatim; `customFontUri` passthrough.
-- `composeFontSizePt` — the §6 composition, flagged proposed-pending-ratification, no clamp.
-- `toReaderAppearance(prefs, env)` — the single resolve-host-side seam.
+- `composeFontSizePt` — the ratified composition (`size × resolveFontScale`), points, no clamp.
+- `toReaderAppearance(prefs, env)` — the single resolve-host-side seam, incl. `resolveReduceMotion`.
+- `AppearanceEnv` — `osColorScheme`, `osFontScale`, `osReduceMotionEnabled`.
+- `prefsStore.subscribe(listener)` — the live-reapply channel; `savePrefs`/`resetPrefs` notify with
+  the fresh record (§5B). No event bus.
 
-No bridge, no `reader/` edits, no store changes.
-
----
-
-## 8. Open decisions to settle before/while Reader applies this
-
-1. **`typography.size` units** (prefs.ts DECISION LOG #4 / API_CONTRACT_NOTES §6). `composeFontSizePt`
-   assumes **points**. If units land as a scale factor, the multiply is wrong. Joint Ahana + Vaishnavi.
-2. **The font-size clamp.** `readerMetrics` clamps to 15–22px. That is right for a fixed baseline and
-   wrong once a user picks 24pt or sets a 2× a11y multiplier — it caps their choice. The clamp must
-   widen (or become relative to the chosen base) at this stage. Reader owns the number; flag it.
-3. **Custom font transport.** `customFontUri` is likely a `file://` path, which the WebView cannot
-   fetch (the whole reader is built to make _zero_ sub-resource requests — see the template header).
-   A real custom font has to arrive as **bytes** (base64 / `data:` URI in `@font-face`), same as the
-   book. This is a Personalization + Reader design item, deferred; the field is carried unresolved so
-   the decision lives in one place.
-4. **Live channel** (§5B) — event bus vs re-read-on-focus. event-bus.ts open question #1, Ahana's call.
-5. **`reduceMotion` → page-turn suppression** (prefs.ts DECISION LOG #2, Ahana). Default moved to
-   `'system'`; the reader must suppress the page-turn animation when the OS setting is on. Adjacent to
-   this stage; confirm.
+No bridge, no `reader/` edits.
 
 ---
 
-## Cross-team asks
+## 8. Decisions — all resolved except custom-font transport
 
-_Draft — Vaishnavi to send. Nothing below has been messaged to anyone._
+1. ~~**`typography.size` units.**~~ **RESOLVED (Ahana, 2026-08-18):** absolute **points**; composition
+   is `size × resolveFontScale(a11y.text, osFontScale)`, exactly `composeFontSizePt`. Closes prefs.ts
+   DECISION LOG #4 and API_CONTRACT_NOTES §6.
+2. ~~**The font-size clamp.**~~ **RESOLVED (Ahana):** clamp the **viewport factor (0.94–1.375)**, not
+   the product, so the user's chosen pt is never capped. Reader-side; nothing here changes.
+3. **Custom font transport — STILL OPEN (deferred, joint item).** `customFontUri` is likely a
+   `file://` path, which the WebView cannot fetch (the reader makes _zero_ sub-resource requests — see
+   the template header). A real custom font must arrive as **bytes** (base64 / `data:` URI in
+   `@font-face`), same as the book. Personalization + Reader design item; not a blocker. The field is
+   carried through unresolved so the decision lives in one place; Ahana sanitises fontFamily/
+   customFontUri at apply time regardless.
+4. ~~**Live channel.**~~ **RESOLVED (Ahana):** no event bus — the Reader subscribes to
+   `prefsStore.subscribe` (§5B, built). Karthik is off the critical path.
+5. ~~**`reduceMotion` → page-turn suppression.**~~ **RESOLVED (Ahana):** confirmed. `reduceMotion` is
+   in the payload (resolved boolean) and `osReduceMotionEnabled` is in `AppearanceEnv`.
 
-**→ Ahana (Reader).** The prefs-application stage is ready to start on Personalization's side
-(`readerAppearance.ts` resolves `SharedPrefs` → a flat `ReaderAppearance`). Two things are yours and
-block it:
+---
 
-1. **The WebView typechecked-build conversion.** Per `WEBVIEW_BRIDGE.md`, this is the first task of
-   this stage, not a follow-up — the prefs payload trips trigger 1. The five steps are in that doc's
-   "What convert means concretely".
-2. **The apply half:** add one fire-and-forget command `applyAppearance(ReaderAppearance)` and wire
-   it into the existing seam — `fontSizePt`/`lineHeight`/`marginPx` become `readerMetrics()` inputs
-   (replacing the `BASELINE_*` constants), and `fg`/`bg`/`link`/`fontFamily`/`letterSpacingPx` become
-   new `baselineCss` rules applied through `addStylesheetCss` (not `rendition.themes` — your own note
-   says why). Mapping table in §4; live re-apply in §5. `ReaderAppearance`'s type home is your call
-   (§3). Note: **flattening deliberately keeps trigger 3 clear** — no `src/shared/contracts/` type
-   crosses the bridge, only primitives.
-3. Confirm the two decisions that are yours-with-me: **`typography.size` units** (§6 proposal: points)
-   and the **font-size clamp** widening (§8.2). And **`reduceMotion` page-turn suppression** (§8.5).
+## Cross-team status
 
-**→ Karthik (Sync).** When an event-bus runtime lands, emit `PrefsChangedEvent` on
-`EVENT_CHANNELS.PREFS_CHANGED` from inside `writeSharedPrefs` — **single fire**, not also from the
-`prefsStore` wrapper (avoids a double-fire; the wrapper delegates to your seam). `source` tag:
-`'personalization'` for the personalization table, `'accessibility'` for the a11y one. This is what
-lets the reader re-apply on a settings edit (§5B) without polling.
+All the design questions are settled (Ahana signed off 2026-08-18); what remains is sequencing.
 
-**→ Whoever owns app bootstrap / the event-bus runtime (currently unassigned — event-bus.ts open
-question #2).** `event-bus.ts` is contract-only; there is no bus instance. The "re-render without
-reopening on a settings edit" path (§5B) is blocked on a runtime existing. Either someone builds the
-narrow bus, or we adopt the re-read-on-focus alternative (§5B, Ahana's event-bus.ts #1). This is a
-Gate/ownership question, not code I can write inside `personalization/`.
+**Ahana (Reader) — owns what's next.** The apply half is hers, in two steps, and she is sizing the
+first before it can be scheduled:
+
+1. **The WebView typechecked-build conversion.** Per `WEBVIEW_BRIDGE.md` this is the first task of the
+   stage (the payload trips trigger 1). Ahana notes it is now **more than the doc's "a morning"** —
+   two templates, the shared fragment, two tracked artifacts, the no-sub-resource property,
+   `assertScriptsParse`, and `readerTemplate.test.ts` currently lifting the pure region out as text.
+   She'll give a date before Day-2 is planned around it.
+2. **The apply half:** one fire-and-forget `applyAppearance(ReaderAppearance)`, defined on **both**
+   templates and sent **before** `open*` (§3), wired into the seam — `fontSizePt`/`lineHeight`/
+   `marginPx` → `readerMetrics()` inputs, `fg`/`bg`/`link`/`fontFamily`/`letterSpacingPx`/a11y flags →
+   `baselineCss` rules via `addStylesheetCss` (not `rendition.themes`). Mapping in §4. Ahana also owns:
+   the `marginPx` bound + `readerMetrics` rework, fontFamily/customFontUri sanitising at apply time,
+   and deriving flow/spread from `LayoutPrefs` by indexed access post-conversion.
+
+**Karthik (Sync) — dropped from the critical path.** No event bus; the live channel is
+`prefsStore.subscribe` (§5B). No `PrefsChangedEvent` emit is needed for this stage.
+
+**Hruthik (Accessibility) — satisfied.** `announce.pageChanges` and his display/text flags now ride
+the one composed payload (§3/§4), which is what `WEBVIEW_A11Y_FINDINGS.md` §3.7 requires. The flags'
+apply-time meaning is his, at apply time.
+
+**Still open (deferred, not blocking):** custom-font-as-bytes transport (§8.3), a joint
+Personalization + Reader design item.
