@@ -126,8 +126,21 @@ export async function decryptBook(
   decipher.setAuthTag(tag as unknown as Parameters<typeof decipher.setAuthTag>[0]);
   const plaintextPart = decipher.update(ciphertext);
   // Deliberately not wrapped in try/catch: final() rejects/throws on a bad tag (tamper/corruption
-  // detection), and that must propagate to the caller, not be swallowed here.
+  // detection), and that must propagate to the caller, not be swallowed here. MUST still be
+  // called even though its return value is (see below) normally unused — this is the call that
+  // actually verifies the GCM tag; skipping it would silently stop checking for tampering.
   const finalPart = decipher.final();
+
+  // GCM never pads: update() already emits the full plaintext in one shot, and final() exists
+  // here purely to trigger the tag check above — it has nothing left to emit. Every real run
+  // through this file takes this branch. The allocate-and-concat path below stays only as a
+  // defensive fallback for a cipher mode/implementation that ever DID split output across the
+  // two calls — skipping it here removes one whole book-sized copy (plaintext duplicated into a
+  // second buffer for no reason) from every decrypt, on top of the base64 hop this file's header
+  // already removed.
+  if (finalPart.length === 0) {
+    return plaintextPart;
+  }
 
   const plaintext = new Uint8Array(plaintextPart.length + finalPart.length);
   plaintext.set(plaintextPart, 0);

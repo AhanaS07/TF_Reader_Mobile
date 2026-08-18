@@ -444,6 +444,24 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
       );
     }
 
+    // Drop the redundant in-memory ciphertext (added 2026-08-18 — one of CLAUDE.md's "roughly six"
+    // full-size copies). `pkg` is the SAME object packageCache holds, so this mutates the cache
+    // entry in place. Safe ONLY for non-Elite: Subscription/OA ciphertext is safely on DISK
+    // (written by store(), above) and `loadPersisted()` reloads it on any future cold read after
+    // close() clears this cache entry — so nothing is lost. Every other reader of `pkg.content`
+    // in this file (assertLengthInvariant, the open-access copy and the decrypt() call just above)
+    // has already run by this point; a live session never re-enters this function once
+    // session.plaintext is set (see the early return at the top of decryptBook), so nothing reads
+    // this emptied field again for the rest of this session's life.
+    //
+    // ELITE IS EXCLUDED, not an oversight: isElite() packages never reach disk (store() returns
+    // before its writeFile calls), so the in-memory copy here is the ONLY copy — emptying it would
+    // make the book permanently undecryptable until a fresh store(), for no RAM saved (Elite's
+    // ciphertext was never going to be held twice in the first place).
+    if (!isElite(pkg)) {
+      pkg.content = new Uint8Array(0);
+    }
+
     session.plaintext = plaintext;
     return plaintext;
   };
