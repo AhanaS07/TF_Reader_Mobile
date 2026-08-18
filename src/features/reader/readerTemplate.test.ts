@@ -470,6 +470,64 @@ describe('the PDF template stays offline', () => {
   });
 });
 
+describe('the PDF template maps its outline into a toc', () => {
+  it('clamps nesting to the same MAX_TOC_DEPTH the host re-clamps to', () => {
+    // Both sides clamp, and the duplication is deliberate — see readerBridge.ts. If the
+    // template clamped deeper than the host, an entry could be indented off the screen.
+    const match = /var MAX_TOC_DEPTH = (\d+);/.exec(PDF_TEMPLATE);
+    if (!match) throw new Error('No MAX_TOC_DEPTH in the PDF template.');
+    expect(Number(match[1])).toBe(MAX_TOC_DEPTH);
+  });
+
+  it('recurses through pdf.js\'s child `items`, not just the top level', () => {
+    // The exact failure the EPUB template already had once: a well-formed `toc` message
+    // carrying only the top level of a book's outline. Invisible to the drift guard,
+    // because the message shape is perfect.
+    const flatten = /function collectOutline\(items, depth, into\) \{[\s\S]*?\n        \}/.exec(
+      PDF_TEMPLATE,
+    );
+    if (!flatten) throw new Error('Could not find collectOutline in the PDF template.');
+    expect(flatten[0]).toMatch(/collectOutline\(item\.items,/);
+    expect(flatten[0]).toMatch(/Math\.min\(depth \+ 1, MAX_TOC_DEPTH\)/);
+  });
+
+  it('drops outline entries that are external links rather than destinations', () => {
+    // An entry carrying `url` has no page to navigate to; shipping it would put a row in
+    // the Contents panel that can only ever raise NAVIGATION_FAILED.
+    const flatten = /function collectOutline\(items, depth, into\) \{[\s\S]*?\n        \}/.exec(
+      PDF_TEMPLATE,
+    );
+    if (!flatten) throw new Error('Could not find collectOutline in the PDF template.');
+    expect(flatten[0]).toMatch(/if \(!item\.url\)/);
+  });
+
+  it('converts a 0-based page index into the 1-based href goTo expects', () => {
+    // getPageIndex is 0-based; goTo range-checks 1..pageCount. Losing the +1 makes every
+    // Contents tap land one page early, and page 1 fail outright.
+    expect(PDF_TEMPLATE).toMatch(/getPageIndex\([\s\S]{0,80}?index \+ 1/);
+  });
+
+  it('still posts a toc message when the document has no outline', () => {
+    // The host enables its Contents button off this message. Silence would leave the
+    // panel permanently unavailable instead of legitimately empty — and most PDFs have
+    // no outline at all.
+    expect(PDF_TEMPLATE).toMatch(/return \[\];/);
+    expect(PDF_TEMPLATE).toMatch(/post\(\{ type: 'toc', items: items \}\)/);
+  });
+
+  it('validates a Contents href before navigating, because href is format-overloaded', () => {
+    // ReaderTocItem.href means a spine href for EPUB and a page number for PDF. Nothing
+    // in the type system can see that, so the receiving side must range-check rather
+    // than trust — otherwise a value from the wrong vocabulary scrolls somewhere
+    // arbitrary instead of failing loudly.
+    const goTo = /goTo: function \(target\) \{[\s\S]*?\n          \}/.exec(PDF_TEMPLATE);
+    if (!goTo) throw new Error('Could not find goTo in the PDF template.');
+    expect(goTo[0]).toMatch(/parseInt\(target, 10\)/);
+    expect(goTo[0]).toMatch(/page < 1 \|\| page > pageCount/);
+    expect(goTo[0]).toMatch(/NAVIGATION_FAILED/);
+  });
+});
+
 describe('both templates support the shared fragment', () => {
   it('each defines the #fallback element and .visible class showFallback() needs', () => {
     // showFallback() lives in reader.bridge.html and can only carry JS, so the CSS it
