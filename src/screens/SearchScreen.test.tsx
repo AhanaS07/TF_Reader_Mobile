@@ -14,6 +14,7 @@ import { setSearchPipeline } from '@config/search';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { NavLink, Publication, SearchFeed } from '@model/types';
 import type { CatalogueSearchPipeline, SearchRequest } from '@/search';
+import { useRecentSearchesStore } from '@store/recentSearchesStore';
 
 import SearchScreen from './SearchScreen';
 
@@ -96,6 +97,9 @@ async function submit(query: string) {
 afterEach(() => {
   setSearchPipeline(undefined);
   mockNavigate.mockClear();
+  // The recent-searches store is a module singleton — every submit() in this
+  // file writes to it, so it must not leak from one test into the next.
+  useRecentSearchesStore.getState().clear();
 });
 
 // ─── Metadata-only copy ──────────────────────────────────────────────────────
@@ -160,6 +164,70 @@ describe('query state', () => {
     await submit('climate');
 
     await waitFor(() => expect(screen.getAllByTestId('content-card-skeleton')).toHaveLength(3));
+  });
+});
+
+// ─── Recent searches ─────────────────────────────────────────────────────────
+// Client-side only (recentSearchesStore.ts) — nothing here goes near a pipeline.
+
+describe('recent searches', () => {
+  it('shows nothing before any search has been submitted', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    expect(screen.queryByTestId('search-recent')).toBeNull();
+  });
+
+  it('remembers a submitted query and offers it back', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+    await render(<SearchScreen />);
+
+    await submit('climate');
+    await fireEvent.press(screen.getByTestId('search-input-clear'));
+
+    await waitFor(() => expect(screen.getByTestId('search-recent')).toBeTruthy());
+    expect(screen.getByText('climate')).toBeTruthy();
+  });
+
+  it('re-runs a recent query when it is tapped', async () => {
+    const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await submit('climate');
+    await fireEvent.press(screen.getByTestId('search-input-clear'));
+    await waitFor(() => expect(screen.getByText('climate')).toBeTruthy());
+
+    await fireEvent.press(screen.getByText('climate'));
+
+    await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
+    expect(pipeline.searchCalls[1]).toMatchObject({ query: 'climate' });
+  });
+
+  it('hides the list again once a fresh query is being typed', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+    await render(<SearchScreen />);
+
+    await submit('climate');
+    await fireEvent.press(screen.getByTestId('search-input-clear'));
+    await waitFor(() => expect(screen.getByTestId('search-recent')).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByTestId('search-input-field'), 'open');
+
+    expect(screen.queryByTestId('search-recent')).toBeNull();
+  });
+
+  it('clears every remembered query', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+    await render(<SearchScreen />);
+
+    await submit('climate');
+    await fireEvent.press(screen.getByTestId('search-input-clear'));
+    await waitFor(() => expect(screen.getByTestId('search-recent-clear')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('search-recent-clear'));
+
+    expect(screen.queryByTestId('search-recent')).toBeNull();
   });
 });
 
@@ -335,7 +403,35 @@ describe('a zero-result response', () => {
     await submit('quantum basket weaving');
 
     await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
-    expect(screen.getByText('No publications found')).toBeTruthy();
+    expect(
+      screen.getByText('No articles or books match “quantum basket weaving”.'),
+    ).toBeTruthy();
+  });
+
+  it('shows the filter-narrowed message instead when a filter is active', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [] }))));
+    await render(<SearchScreen />);
+
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await submit('quantum basket weaving');
+
+    await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
+    expect(screen.getByText('Try adjusting your filters.')).toBeTruthy();
+  });
+
+  it('clearing filters from the empty state starts a new, unfiltered search', async () => {
+    const pipeline = stub(() => Promise.resolve(feed({ publications: [] })));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await submit('quantum basket weaving');
+    await waitFor(() => expect(screen.getByText('Clear filters')).toBeTruthy());
+
+    await fireEvent.press(screen.getByText('Clear filters'));
+
+    await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
+    expect(pipeline.searchCalls[1].filters).toEqual({});
   });
 
   it('does NOT render the error state', async () => {
@@ -530,7 +626,7 @@ describe('an actual failure', () => {
     await submit('climate');
 
     await waitFor(() =>
-      expect(screen.getByText('The search took too long to answer.')).toBeTruthy(),
+      expect(screen.getByText('This took too long to respond.')).toBeTruthy(),
     );
   });
 
@@ -556,8 +652,8 @@ describe('an actual failure', () => {
     await render(<SearchScreen />);
 
     await submit('climate');
-    await waitFor(() => expect(screen.getByTestId('search-retry')).toBeTruthy());
-    await fireEvent.press(screen.getByTestId('search-retry'));
+    await waitFor(() => expect(screen.getByLabelText('Retry')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Retry'));
 
     await waitFor(() => expect(screen.getByTestId('content-card')).toBeTruthy());
   });
