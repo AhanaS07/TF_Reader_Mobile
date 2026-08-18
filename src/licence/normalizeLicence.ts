@@ -58,12 +58,30 @@ function optNumber(value: unknown): number | undefined {
 // loud on purpose and this is exactly the case for it.
 function toExpiresAt(value: unknown): number | undefined {
   if (value === undefined) return undefined;
+  return Date.parse(reqTimestamp(value, 'dueAt'));
+}
+
+// An ISO-8601 instant, returned UNCHANGED so a caller can keep the string flambeau sent.
+//
+// SHARED BY `dueAt` AND `offer.expiresAt` because they were diverging, which was the bug.
+// `dueAt` was checked for parseability and the offer's expiry was not — it went through
+// `reqString`, so `expiresAt: 'soon'` passed and became an `offerExpiresAt` nothing could
+// measure. Two fields of the same kind with the same consequence, held to different
+// standards.
+//
+// WHY THIS MATTERS MORE FOR THE OFFER than for a due date. `isOfferLapsed` carries a
+// `Number.isNaN` guard that deliberately answers "not lapsed" for an expiry it cannot
+// read — the conservative direction, so a reader is never denied a copy on a guess. That
+// guard was load-bearing while garbage could reach it: an unparseable expiry meant an
+// offer that never lapsed on the device at all. Rejecting here makes it belt-and-braces
+// instead, which is the right layering — the boundary refuses nonsense, the predicate
+// stays conservative about what it is handed.
+function reqTimestamp(value: unknown, what: string): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw malformed(`dueAt is present but not an ISO string: ${JSON.stringify(value)}`);
+    throw malformed(`${what} is present but not an ISO string: ${JSON.stringify(value)}`);
   }
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) throw malformed(`unparseable dueAt: ${value}`);
-  return parsed;
+  if (Number.isNaN(Date.parse(value))) throw malformed(`unparseable ${what}: ${value}`);
+  return value;
 }
 
 // `LoanStatus` → `Loan.state`.
@@ -141,12 +159,9 @@ export function normalizeHold(value: unknown, serverTime?: string): Hold {
   if (state === 'offered' && offer === undefined) {
     throw malformed('hold is OFFERED but carries no offer block', optString(hold.holdId));
   }
-  // AND THE INVERSE, which was missing. The offer fields below were spread on the mere
-  // presence of an offer block while `serverTime` was gated on the state — so a QUEUED
-  // hold arriving with an offer block normalized to an expiry with NO reference clock,
-  // which is precisely the shape this file exists to prevent. Rejected rather than gated:
-  // a queued hold carrying an offer is a contradiction on flambeau's side, and silently
-  // dropping half of it would hide that rather than surface it.
+  // And the inverse: a queued hold carrying an offer block would normalize to an expiry
+  // with no reference clock. Rejected rather than gated — that shape is a contradiction on
+  // flambeau's side, and dropping half of it silently would hide it.
   if (state !== 'offered' && offer !== undefined) {
     throw malformed(
       `hold is ${state.toUpperCase()} but carries an offer block`,
@@ -186,7 +201,7 @@ export function normalizeHold(value: unknown, serverTime?: string): Hold {
     ...(queueLength !== undefined ? { queueLength } : {}),
     ...(offer !== undefined ? { offerId: reqString(offer.offerId, 'offerId') } : {}),
     ...(offer !== undefined
-      ? { offerExpiresAt: reqString(offer.expiresAt, 'offer expiresAt') }
+      ? { offerExpiresAt: reqTimestamp(offer.expiresAt, 'offer expiresAt') }
       : {}),
     // ONLY ON AN OFFER, matching what `AccessResult` promises. A queued reader has no
     // countdown, so a clock beside their position would be a field with nothing to

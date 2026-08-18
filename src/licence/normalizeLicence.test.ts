@@ -152,13 +152,33 @@ describe('normalizeHold', () => {
     expect(codeOf(() => normalizeHold(noOffer))).toBe(LicenceError.MALFORMED_RESPONSE);
   });
 
-  // The inverse, which used to slip through. The offer fields were copied on the mere
-  // presence of an offer block while the clock was gated on the state, so this shape
-  // produced an expiry with no reference instant — the exact leak the file prevents.
+  // The inverse: this shape would produce an expiry with no reference instant.
   it('throws when a QUEUED hold carries an offer block', () => {
     const contradictory = { ...QUEUED, offer: { offerId: 'offer_a90', expiresAt: '2026-08-13T10:30:00Z' } };
     expect(codeOf(() => normalizeHold(contradictory, '2026-08-13T10:00:00Z'))).toBe(
       LicenceError.MALFORMED_RESPONSE,
+    );
+  });
+
+  // Held to the same standard as `dueAt`, which they were not before: this went through
+  // `reqString`, so any non-empty string passed and became an expiry nothing could measure.
+  it.each([
+    ['a word', 'soon'],
+    ['a number', 1_755_432_000_000],
+    ['null', null],
+    ['an empty string', ''],
+  ])('throws when the offer expiry is %s rather than an instant', (_label, expiresAt) => {
+    const bad = { ...OFFERED, offer: { offerId: 'offer_a90', expiresAt } };
+    expect(codeOf(() => normalizeHold(bad, '2026-08-13T10:00:00Z'))).toBe(
+      LicenceError.MALFORMED_RESPONSE,
+    );
+  });
+
+  // Kept verbatim, not reformatted. It is server-issued and absolute, and the countdown
+  // measures it against `serverTime` — re-serialising it here would be our clock leaking in.
+  it('keeps a valid expiry exactly as sent', () => {
+    expect(normalizeHold(OFFERED, '2026-08-13T10:00:00Z').offerExpiresAt).toBe(
+      '2026-08-13T10:30:00Z',
     );
   });
 
