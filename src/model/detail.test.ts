@@ -66,6 +66,7 @@ describe('buildItemDetail copies the shared fields', () => {
       publisher: 'Routledge',
       isbn: '9780367211745',
       numberOfPages: 212,
+      format: 'PDF',
       description: 'A study of legal personhood.',
       access,
     });
@@ -123,6 +124,7 @@ describe('buildItemDetail with fields missing', () => {
       description: undefined,
       numberOfPages: undefined,
       coverUrl: undefined,
+      format: undefined,
     });
 
     const detail = buildItemDetail({
@@ -138,6 +140,7 @@ describe('buildItemDetail with fields missing', () => {
     expect(detail.description).toBeUndefined();
     expect(detail.numberOfPages).toBeUndefined();
     expect(detail.coverUrl).toBeUndefined();
+    expect(detail.format).toBeUndefined();
   });
 
   it('still carries the required fields when the optional ones are gone', () => {
@@ -179,6 +182,7 @@ describe('buildItemDetail stays narrow', () => {
         'authors',
         'coverUrl',
         'description',
+        'format',
         'id',
         'isbn',
         'numberOfPages',
@@ -191,10 +195,12 @@ describe('buildItemDetail stays narrow', () => {
     );
   });
 
-  // These four are on Publication and deliberately left off the shared model:
-  // `format` and `subjects` because neither detail mockup shows them, and
+  // These three are on Publication and deliberately left off the shared
+  // model: `subjects` because neither detail mockup shows it, and
   // `acquisition` and `language` because they belong to the adapter and to
-  // resolveAccess rather than to a screen.
+  // resolveAccess rather than to a screen. `format` USED to be on this list —
+  // screen 05's format display strip is a real caller now, so it moved to the
+  // model proper (see the top-level "carries every shared field" test).
   it('does not copy publication fields the detail screens do not show', () => {
     const keys = Object.keys(
       buildItemDetail({
@@ -204,7 +210,6 @@ describe('buildItemDetail stays narrow', () => {
       }),
     );
 
-    expect(keys).not.toContain('format');
     expect(keys).not.toContain('subjects');
     expect(keys).not.toContain('acquisition');
     expect(keys).not.toContain('language');
