@@ -22,7 +22,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
-import { getBookBase64, getReaderHtmlUri } from '@/features/reader/readerAssets';
+import {
+  getBookBase64,
+  getReaderHtmlUri,
+  prepareBook,
+  UnsupportedFormatError,
+} from '@/features/reader/readerAssets';
 import type {
   ReaderCommand,
   ReaderErrorCode,
@@ -34,7 +39,7 @@ import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
@@ -127,12 +132,50 @@ interface ReaderScreenProps {
    * REQUIRED, deliberately: while it was optional the teardown effect below hit
    * an early return and never ran, so the "wipe on close" guarantee was dead
    * code. Making it required is what keeps that from silently regressing.
+   *
+   * >>> CALLERS MUST KEY THIS COMPONENT ON bookId: <ReaderScreen key={id} bookId={id} /> <<<
+   * EVERY piece of state below belongs to one book — the resolved format, the shell URI,
+   * the command sender, the TOC, the error banner. There is nothing worth carrying from
+   * one book to the next, and carrying it is actively wrong: a stale `format` would send
+   * `openEpub` to a PDF shell (which defines only `openPdf`, so it answers NOT_READY),
+   * and a stale `toc` would list the previous book's chapters under the new one's
+   * Contents button. Remounting resets all of it in one move, which is why this is a key
+   * rather than a pile of resets in the effect below — React forbids those anyway
+   * (`react-hooks/set-state-in-effect`), and it is the wrong idiom for "reset on prop
+   * change". A navigator gives each route its own instance and satisfies this for free;
+   * App.tsx's temporary dev picker has to do it by hand.
    */
   bookId: BookId;
 }
 
 export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
-  const [htmlUri, setHtmlUri] = useState<string | null>(null);
+  /**
+   * The book's format and its matching shell — TAGGED WITH THE bookId THEY BELONG TO,
+   * and set as ONE value so they can never disagree.
+   *
+   * Two reasons for the shape. First, atomicity: `format` picks the open command and
+   * `htmlUri` picks the shell that implements it, so a render where one had updated and
+   * the other had not would send `openEpub` to a PDF shell — which defines only
+   * `openPdf` and answers NOT_READY.
+   *
+   * Second, the tag makes a stale value IMPOSSIBLE TO READ rather than merely unlikely.
+   * Callers are told to key this component on bookId (see the prop doc), but a caller
+   * that forgets would otherwise keep the previous book's renderer and open the wrong
+   * one silently. Comparing the tag below costs nothing and turns that into a
+   * guaranteed miss instead. Resetting in an effect would be the other way to do it,
+   * and it is both the wrong idiom for "reset on prop change" and forbidden by
+   * `react-hooks/set-state-in-effect`.
+   */
+  const [resolved, setResolved] = useState<{
+    bookId: BookId;
+    format: ContentFormat;
+    htmlUri: string;
+  } | null>(null);
+
+  const current = resolved?.bookId === bookId ? resolved : null;
+  const format = current?.format ?? null;
+  const htmlUri = current?.htmlUri ?? null;
+
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
   const [showToc, setShowToc] = useState(false);
@@ -221,7 +264,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     setError({ code, message });
   }, []);
 
-  // Resolve the bundled reader.html before mounting the WebView.
+  // Resolve the book's format and its matching shell before mounting the WebView.
   //
   // The `cancelled` flag is the standard unmount guard: without it, navigating
   // away mid-resolve sets state on an unmounted component. The `void` is now
@@ -230,28 +273,57 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // rejection is handled below" rather than "this promise was forgotten", and the
   // catch() is the only thing standing between an asset failure and a
   // permanently blank screen.
+  //
+  // FORMAT IS RESOLVED BEFORE THE WEBVIEW MOUNTS, and that ordering is forced by
+  // there being one shell per format: the URI cannot be chosen without knowing which
+  // renderer the book needs. The visible consequence is that a COLD seed now happens
+  // before first paint rather than alongside it, so the very first open after install
+  // shows the spinner slightly longer. The compensation is that READY_TIMEOUT's clock
+  // starts when the WebView actually starts loading, which is what it was always
+  // meant to measure.
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       try {
-        const uri = await getReaderHtmlUri();
-        if (!cancelled) setHtmlUri(uri);
+        const bookFormat = await prepareBook(bookId);
+        if (cancelled) return;
+
+        const uri = await getReaderHtmlUri(bookFormat);
+        if (cancelled) return;
+
+        // ONE setState, after BOTH are known — see the note on `resolved` above for why
+        // a half-updated pair is the bug worth designing out.
+        setResolved({ bookId, format: bookFormat, htmlUri: uri });
       } catch (cause) {
-        if (!cancelled) {
+        if (cancelled) return;
+
+        // A format with no renderer is not an asset failure — the asset is fine,
+        // there just isn't one for this book. Reported under its own code so the
+        // message can say something true instead of telling the reader to run a
+        // build script.
+        if (cause instanceof UnsupportedFormatError) {
           raiseError(
-            'ASSET_LOAD_FAILED',
-            `Could not resolve the bundled reader.html. Run \`npm run reader:build-html\`. ` +
-              `(${cause instanceof Error ? cause.message : String(cause)})`,
+            'UNSUPPORTED_FORMAT',
+            `This book is ${cause.format} content, which this reader cannot open yet. ` +
+              `EPUB and PDF are supported.`,
           );
+          return;
         }
+
+        raiseError(
+          'ASSET_LOAD_FAILED',
+          `Could not prepare this book for reading. If the reader shell failed to resolve, ` +
+            `run \`npm run reader:build-html\`. ` +
+            `(${cause instanceof Error ? cause.message : String(cause)})`,
+        );
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [raiseError]);
+  }, [bookId, raiseError]);
 
   // LIFECYCLE, not optional — contentProvider.ts states it outright: closeBook()
   // MUST run when the reader view for a book closes, or the whole decrypted book
@@ -294,10 +366,44 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
       void (async () => {
         try {
-          const base64 = await withOpenTimeout(getBookBase64(bookId));
+          // Cannot be null in practice: the WebView is only rendered once `format`
+          // is set (it is what chose the shell), and `ready` can only arrive from a
+          // rendered WebView. Checked rather than asserted because a non-null
+          // assertion here would be a promise the type system cannot keep.
+          if (format === null) {
+            raiseError('UNSUPPORTED_FORMAT', 'The reader became ready before its format was known.');
+            return;
+          }
+
+          const base64 = await withOpenTimeout(getBookBase64(bookId, format));
           openSentAtRef.current = now();
-          logEvent('open sent', { chars: base64.length });
-          sender({ type: 'open', base64 });
+          logEvent('open sent', { chars: base64.length, format });
+
+          // EXHAUSTIVE ON PURPOSE. This switch is the entire seam where
+          // ContentFormat becomes a bridge command, and the `never` default is what
+          // makes adding a fourth ContentFormat member a COMPILE error here rather
+          // than a book that silently opens in the wrong renderer. Do not replace it
+          // with an if/else or a lookup table that has a fallback.
+          switch (format) {
+            case 'EPUB':
+              sender({ type: 'openEpub', base64 });
+              break;
+            case 'PDF':
+              sender({ type: 'openPdf', base64 });
+              break;
+            case 'AUDIO':
+              // Unreachable: getReaderHtmlUri already refused this format, so no
+              // WebView exists to be ready. Handled anyway so the switch is total.
+              raiseError(
+                'UNSUPPORTED_FORMAT',
+                `This book is ${format} content, which this reader cannot open yet.`,
+              );
+              break;
+            default: {
+              const unhandled: never = format;
+              throw new Error(`Unhandled ContentFormat: ${String(unhandled)}`);
+            }
+          }
         } catch (cause) {
           if (cause instanceof OpenTimedOut) {
             raiseError(
@@ -331,7 +437,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         }
       })();
     },
-    [bookId, raiseError],
+    [bookId, format, raiseError],
   );
 
   const handleMessage = useCallback((message: ReaderMessage): void => {
@@ -455,8 +561,18 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       </View>
 
       <View style={styles.viewer}>
+        {/*
+          ReaderWebView is KEYED ON THE SHELL URI, so a different shell is a different
+          component instance rather than the same one told to navigate. ReaderWebView
+          holds `isReady` and arms the READY_TIMEOUT once; reusing it across a shell
+          swap would leave it believing the bridge is already up, so the new document's
+          `ready` would arrive at a component that had stopped waiting for it — and
+          nothing would ever send the open command. Remounting is also what tears down
+          the old document holding decrypted content.
+        */}
         {htmlUri !== null && (
           <ReaderWebView
+            key={htmlUri}
             sourceUri={htmlUri}
             onMessage={handleMessage}
             onHostError={raiseError}

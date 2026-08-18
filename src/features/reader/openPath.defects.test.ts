@@ -25,6 +25,11 @@ jest.mock('react-native-keychain', () => ({
   getGenericPassword: jest.fn(),
   setGenericPassword: jest.fn(),
   resetGenericPassword: jest.fn(),
+  // Real values, not stubbed — deviceKeypair.ts reads `Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_
+  // DEVICE_ONLY` while building the setGenericPassword options object, so an override mock missing
+  // this property throws a TypeError from THAT access, before setGenericPassword's own mocked
+  // return value is ever consulted — silently masking every test below behind the fail-open catch.
+  ACCESSIBLE: { WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'AccessibleWhenUnlockedThisDeviceOnly' },
 }));
 
 /* eslint-disable @typescript-eslint/no-require-imports */

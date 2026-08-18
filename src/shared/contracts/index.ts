@@ -17,6 +17,9 @@
 //   • createDefaultAccessibilityPrefs, isValidTtsRate,
 //     isValidReduceMotion, isValidTtsHighlightMode,
 //     resolveReduceMotion, migrateReduceMotion, resolveFontScale   (fns)
+// …and the prefs row adapter + migration (prefs-row.ts):
+//   • HIGH_CONTRAST_BASE_THEME   (const)
+//   • toPersonalizationRow, fromPersonalizationRow, migrateSharedPrefs   (fns)
 // Import those as VALUES:      import { ContentError, ContentFailure } from '@/shared/contracts';
 // A `import type { ContentError }` compiles but gives you NOTHING at runtime —
 // you can't `throw new ContentFailure(...)` or switch on the enum. Everything
@@ -42,6 +45,7 @@ export * from './event-bus';
 
 // Existing teammate contracts.
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"
+export * from './prefs-row'; // nested<->flat row adapter + highContrast migration (runtime)
 export * from './accessibility'; // composed into SharedPrefs.accessibility
 export * from './annotations';
 export * from './progress';

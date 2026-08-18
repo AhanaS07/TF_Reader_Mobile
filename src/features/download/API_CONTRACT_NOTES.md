@@ -325,7 +325,7 @@ best value-per-line on this list.
 | `A10` | flambeau: `/loans/changes` vs `/changes` | `B6` gets built twice |
 | `A9` | flambeau: does `OPEN_ACCESS` write a loan? | `downloadManager.ts` borrows unconditionally and reads `canPersist`/`dueAt` off the result — fine under the prose reading, broken under the table reading |
 | `B11` | wokay: is there a maximum ingest size? | `MAX_DECRYPTED_BYTES` is 25 MB and no contract bounds book size, so an operator can publish a 40 MB book this client can never open, with no signal at either end |
-| `C3` | nobody owns the catalogue client | `format` stays hardcoded `'EPUB'` (`B12`) |
+| `C3` | nobody owns the catalogue client | Reader now ROUTES `format` off the stored package (`B12`, Reader half closed), but nothing can tell it the true value — `downloadBook()`'s `format` parameter still defaults to `'EPUB'` with no caller supplying it |
 
 ---
 

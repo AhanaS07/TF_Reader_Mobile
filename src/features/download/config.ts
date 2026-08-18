@@ -9,10 +9,21 @@
 // Same LAN-host-resolution reasoning as sync/config.ts: Expo Go/dev-client runs on a physical
 // device or simulator, so "localhost" only resolves when the backend runs on the SAME machine
 // Metro's own dev server reports as its host.
+//
+// MOCK ↔ REAL FLAG (added per API_CONTRACT_NOTES.md B2's narrower half — the switch mechanism,
+// not the cross-capability base-URL unification, which stays undone; see that file). Flipping
+// EXPO_PUBLIC_USE_REAL_BACKEND does NOT mean the real backend is safe to point at today: `B1`
+// (no auth at all) means every real-backend call still 401s. This flag exists so that once `B1`
+// and `C6` close, switching is one env var, not a code edit — it is a structural readiness change,
+// not a claim of readiness.
 
 import Constants from 'expo-constants';
 
 const MOCK_BACKEND_PORT = 4000;
+// Both published contracts (wokay + flambeau) specify this exact value for everyone — see
+// API_CONTRACT_NOTES.md B2. Not configurable by port the way the mock is; a real deployment at a
+// different host is expected to be reached via EXPO_PUBLIC_REAL_BACKEND_URL instead.
+const REAL_BACKEND_PORT = 8080;
 
 function resolveBackendHost(): string {
   const hostUri =
@@ -28,5 +39,13 @@ function resolveBackendHost(): string {
 }
 
 /** Override by setting EXPO_PUBLIC_MOCK_BACKEND_URL, e.g. http://192.168.1.20:4000 */
-export const API_BASE_URL =
+const MOCK_BACKEND_URL =
   process.env.EXPO_PUBLIC_MOCK_BACKEND_URL ?? `http://${resolveBackendHost()}:${MOCK_BACKEND_PORT}`;
+
+/** Override by setting EXPO_PUBLIC_REAL_BACKEND_URL, e.g. http://192.168.1.20:8080 */
+const REAL_BACKEND_URL = process.env.EXPO_PUBLIC_REAL_BACKEND_URL ?? `http://localhost:${REAL_BACKEND_PORT}`;
+
+/** Defaults to the mock — false unless explicitly set. Flip with EXPO_PUBLIC_USE_REAL_BACKEND=true. */
+const USE_REAL_BACKEND = process.env.EXPO_PUBLIC_USE_REAL_BACKEND === 'true';
+
+export const API_BASE_URL = USE_REAL_BACKEND ? REAL_BACKEND_URL : MOCK_BACKEND_URL;

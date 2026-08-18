@@ -42,6 +42,12 @@ GoogleService-Info.plist
 BuildPlan.md
 mock-backend/
 
+# devContentSeed.ts's EXPO_PUBLIC_READER_FIXTURE_PATH measurement scaffolding — a real,
+# large EPUB. Never commit real content (see devContentSeed.ts's own header): this is the
+# Mac-side source copy pushed into the simulator/emulator container for testing, not the
+# on-device plaintext itself (that copy must be deleted from the container after use).
+assets/20mb_EPUB.epub
+
 
 docs
 samples

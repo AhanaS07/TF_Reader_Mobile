@@ -71,15 +71,28 @@ describe('EPUB search prototype — inverted index over the sample book', () => 
     }
   });
 
-  it('multi-word query ANDs tokens within a chapter unit', () => {
-    // "finding" only in ch3; "chapter" everywhere. AND -> only ch3.
-    const hits = queryIndex(index, 'finding chapter');
+  it('a multi-word query matches only words that are side by side (phrase)', () => {
+    // Every ch1 paragraph opens "Opening the book — ...", so the phrase is adjacent
+    // in ch1 and nowhere else. Each hit is emitted at the phrase's first word.
+    const hits = queryIndex(index, 'opening the book');
     expect(hits.length).toBeGreaterThan(0);
-    expect(new Set(hits.map((h) => h.chapterId))).toEqual(new Set(['ch3']));
+    expect(new Set(hits.map((h) => h.chapterId))).toEqual(new Set(['ch1']));
+    for (const hit of hits) expect(hit.snippet.toLowerCase()).toContain('opening the book');
   });
 
-  it('multi-word AND yields nothing when no single chapter holds all tokens', () => {
-    // "opening" only in ch1, "turning" only in ch2 — no common chapter.
+  it('co-occurrence in the same chapter is NOT enough — the words must be adjacent', () => {
+    // The text is "Finding a chapter": both words live in ch3, but "a" sits between
+    // them, so "finding chapter" is not a phrase and must return nothing. This is the
+    // behaviour change from the old AND-within-a-unit rule.
+    expect(queryIndex(index, 'finding chapter')).toEqual([]);
+  });
+
+  it('order matters — a reversed phrase does not match', () => {
+    expect(queryIndex(index, 'book the opening')).toEqual([]);
+  });
+
+  it('yields nothing when the words never sit together', () => {
+    // "opening" only in ch1, "turning" only in ch2 — never adjacent, never co-located.
     expect(queryIndex(index, 'opening turning')).toEqual([]);
   });
 

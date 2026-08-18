@@ -9,13 +9,14 @@
 // accessibility is intentionally dropped (it's Hruthik's separate table), so we
 // compare against the personalization slice, not the whole SharedPrefs.
 
+// Adapter promoted to @/shared/contracts (prefs-row.ts) so Sync can consume it too
+// without importing personalization/. Tests moved with it.
+import type { SharedPrefs, PersonalizationPrefs } from '@/shared/contracts';
 import {
   toPersonalizationRow,
   fromPersonalizationRow,
-  PersonalizationPrefs,
-} from '@/features/personalization/personalizationRow';
-import type { SharedPrefs } from '@/shared/contracts';
-import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
+  DEFAULT_ACCESSIBILITY_PREFS,
+} from '@/shared/contracts';
 
 // Deliberately NON-default values so a forgotten/misplaced field is visible.
 const original: SharedPrefs = {

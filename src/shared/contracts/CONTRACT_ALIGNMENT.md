@@ -92,7 +92,7 @@ because the app has already picked a side on two of them.
 | `B9` | 🟡 `AccessTier` was a fourth tier spelling | ✅ **now an alias for `LicenceModel`** (`tier.ts`). Full deletion is still a Gate item | Ahana | done here |
 | `B10` | 🟡 `INVALID_DEVICE_PUBLIC_KEY` in no contract; auth codes unmapped | 🟡 **documented** in `reading-session.ts`; the mapping work is open | Abhinav | `download/` |
 | `B11` | 🟡 25 MB client ceiling, no contract bound | ❌ | wokay question | `encryption/` |
-| `B12` | 🟡 `format` hardcoded `'EPUB'` | 🟡 **blocked on `C3`, now documented as blocked** at `readerAssets.ts` | blocked | Reader |
+| `B12` | 🟡 `format` hardcoded `'EPUB'` | 🟡 **Reader half CLOSED** — routed from `SessionHandle.format` via `getFormat()`; the *source* is still `C3` | partly done | Reader |
 | `B13` | 🟢 `reachableAssetUrl` port rewrite, hazardous after `B2` | ❌ | Abhinav | `download/` |
 | `B14` | 🟢 Wrong `wantSearchIndex` default in a comment | ✅ **fixed** | Ahana | done here |
 | `B15` | 🟢 Subscription audio would persist with no licence or expiry | ❌ | Abhinav | `download/` |
@@ -104,7 +104,7 @@ because the app has already picked a side on two of them.
 | --- | --- | --- | --- |
 | `C1` | Sync client claims unallocated `/api/v1/**` subtrees; tracked backend serves `/api/*` | ❌ | Karthik |
 | `C2` | No contract covers CAP-7's sync surface at all | ❌ | CAP-7 to publish one |
-| `C3` | No catalogue/discovery/institution client — **unowned**, blocks `B12` and step 1 of `B1` | ❌ | needs an owner |
+| `C3` | No catalogue/discovery/institution client — **unowned**, still the source half of `B12` and blocks step 1 of `B1` | ❌ | needs an owner |
 | `C4` | `items:batch` 100-id cap interacts with `GET /library`'s non-pagination | ❌ | whoever builds the shelf |
 | `C5` | `availability` endpoint has a documented consumer, no implementation | ❌ | flambeau |
 | `C6` | 🔴 **No contract says how the app receives its token after the SAML browser round trip** | 💬 **highest-value open question in the whole review** — `B1` cannot be built until it is answered | flambeau |

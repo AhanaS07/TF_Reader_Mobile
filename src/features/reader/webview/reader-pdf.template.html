@@ -1,0 +1,376 @@
+<!doctype html>
+<!--
+  src/features/reader/webview/reader-pdf.template.html
+
+  SOURCE TEMPLATE — not the file the app loads. `npm run reader:build-html`
+  (src/features/reader/scripts/buildReaderHtml.ts) inlines pdf.js, the pdf.js
+  worker and the shared bridge fragment into the @inject markers below and writes
+  the result to assets/reader/reader-pdf.html, which is what the WebView actually
+  loads. Edit THIS file, then re-run the build. Never hand-edit the generated one.
+
+  THIS IS THE PDF TEMPLATE. Its sibling is reader-epub.template.html, and the two
+  are separate files rather than one branching file so that an EPUB read does not
+  carry ~1.4MB of inlined pdf.js it can never call. What they SHARE — post(),
+  fail(), showFallback(), the catch-alls and base64ToArrayBuffer() — lives in
+  reader.bridge.html and is injected into both.
+
+  WHY THE LIBS ARE INLINED RATHER THAN <script src="./pdf.min.js">:
+  same reason as the EPUB template. Metro treats `.js` as a SOURCE extension, so a
+  `.js` file cannot be served as a sibling asset, and release Android renames
+  assets under file:///android_asset/. One self-contained file with zero
+  sub-resource requests is what lets ReaderWebView.tsx lock navigation down.
+
+  WHY THE SCRIPT LIVES IN .html AND NOT A .ts/.js MODULE:
+  tsconfig.json sets allowJs + checkJs with include: ["src", ...], so a .js file
+  in this folder would be typechecked against RN/Node lib assumptions it does not
+  share. The tradeoff is that this file is NOT typechecked and its message shapes
+  are kept in sync BY HAND with the ReaderMessage union in readerBridge.ts.
+  WEBVIEW_BRIDGE.md records when that arrangement ends.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>TF Reader</title>
+    <style>
+      /*
+        Same height chain as the EPUB template, for a different renderer but the
+        same reason: viewportSize() below measures #pdf-pages to pick a render
+        scale, and a zero-height container yields a zero-scale canvas — a blank
+        page with no error, which is an explicit non-acceptance criterion.
+      */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #ffffff;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      /*
+        HORIZONTAL safe-area insets only — identical rationale to the EPUB
+        template: env() reports the WINDOW inset, and App.tsx already wraps the
+        reader in a SafeAreaView with edges={['top','bottom']}, so adding vertical
+        insets here would inset twice.
+
+        display:flex + center is what keeps a page that does not fill the viewport
+        (a landscape page on a portrait phone) optically centred rather than
+        jammed into the top-left.
+      */
+      #pdf-pages {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      /*
+        The canvas is sized in DEVICE pixels by the render below and scaled down to
+        CSS pixels here. Without max-*: 100% a high-DPR canvas overflows its
+        container and the page appears cropped rather than fitted.
+      */
+      #pdf-canvas {
+        max-width: 100%;
+        max-height: 100%;
+        display: block;
+      }
+
+      /*
+        Last-resort visible failure state, driven by showFallback() in the shared
+        bridge fragment. DUPLICATED FROM THE EPUB TEMPLATE ON PURPOSE: it is CSS,
+        and the fragment can only carry JS. That duplication is a real coupling —
+        showFallback() silently does nothing if #fallback or .visible goes missing
+        here — so readerTemplate.test.ts asserts both selectors exist in BOTH
+        templates. Do not rename either without updating that guard.
+      */
+      #fallback {
+        display: none;
+        box-sizing: border-box;
+        padding: 24px;
+        font: 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #8a1c1c;
+        background: #fdf2f2;
+      }
+      #fallback.visible {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pdf-pages"><canvas id="pdf-canvas"></canvas></div>
+    <pre id="fallback"></pre>
+
+    <!-- @inject:pdfjs -->
+    <!--
+      THE WORKER IS INJECTED AS type="text/plain", NOT AS AN EXECUTABLE SCRIPT, AND
+      THAT IS THE WHOLE DESIGN. Read this before "simplifying" it.
+
+      pdf.js picks its execution mode by looking for an already-loaded worker
+      module: PDFWorker gates on `globalThis.pdfjsWorker?.WorkerMessageHandler`
+      (verified in node_modules/pdfjs-dist/build/pdf.min.js — the
+      `_mainThreadWorkerMessageHandler` getter). pdf.worker.min.js is UMD and its
+      header does `e.pdfjsWorker=t()`, so inlining it as a NORMAL <script> would
+      define that global and pdf.js would then skip the real worker entirely and
+      parse every page ON THE MAIN THREAD. For a book-sized PDF that is a frozen UI.
+
+      So: park the source as inert text, hand it to the browser as a Blob URL, and
+      let pdf.js spawn a real worker thread from it. `blob:` is already in
+      ReaderWebView.tsx's navigation allow-list and originWhitelist, so this needs
+      no lockdown change — and it keeps the zero-sub-resource-REQUEST property,
+      because a Blob URL is memory, not a fetch.
+
+      The two modes are mutually exclusive, not a primary plus a runtime fallback.
+      If blob workers ever prove unusable under file:// in WKWebView, the fallback
+      is a BUILD change — inject this as a plain <script> and delete the Blob
+      wiring below — and it costs main-thread parsing.
+    -->
+    <script type="text/plain" id="pdfjs-worker-src">
+      <!-- @inject:pdfjsworker -->
+    </script>
+
+    <script>
+      (function () {
+        'use strict';
+
+        var pdfDoc = null;
+        var currentPage = 0;
+        var pageCount = 0;
+
+        // Guards against overlapping renders. pdf.js rejects a second render() on a
+        // page whose first render is still running, and next/prev can easily
+        // outpace a render on a slow page — so a token is compared on completion
+        // and a stale result is discarded rather than painted over a newer one.
+        var renderToken = 0;
+
+        // The shared bridge half — post(), fail(), showFallback(), the window.onerror
+        // and unhandledrejection catch-alls, and base64ToArrayBuffer(). Injected FIRST
+        // so the catch-alls are registered before any pdf.js setup below can throw.
+        // Source: reader.bridge.html in this folder; shared with the EPUB template.
+        <!-- @inject:bridge -->
+
+        // ---- pdf.js wiring ---------------------------------------------------
+
+        /**
+         * Point pdf.js at a real worker thread built from the inlined source.
+         *
+         * See the long comment on the text/plain script above for why the source is
+         * parked as text instead of executed. Returns false (having already failed)
+         * rather than throwing, so the caller can stop before getDocument().
+         */
+        function wireWorker() {
+          var el = document.getElementById('pdfjs-worker-src');
+          if (!el || !el.textContent || !el.textContent.trim()) {
+            fail('PDFJS_MISSING', 'pdf.js worker source is empty — check the build-html inject step');
+            return false;
+          }
+
+          var blob = new Blob([el.textContent], { type: 'text/javascript' });
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+          return true;
+        }
+
+        /** Container size in CSS pixels. Mirrors the EPUB template's viewportSize(). */
+        function viewportSize() {
+          var el = document.getElementById('pdf-pages');
+          var width = (el && el.clientWidth) || window.innerWidth || 0;
+          var height = (el && el.clientHeight) || window.innerHeight || 0;
+          return { width: width, height: height };
+        }
+
+        /**
+         * Render one page, fitted to the container, and report the new position.
+         *
+         * SCALE IS COMPUTED, NOT FIXED. A PDF page has an intrinsic size in points;
+         * scale 1.0 is 72dpi and would render a letter page at 612px wide regardless
+         * of the device. Fitting to BOTH axes (min of the two ratios) is what keeps a
+         * landscape page inside a portrait viewport instead of cropping it.
+         *
+         * devicePixelRatio is applied to the CANVAS BUFFER only, with CSS holding the
+         * layout size — the standard sharp-canvas trick. Without it, text on a 3x
+         * screen renders at a third of the available resolution and looks soft in a
+         * way that reads as "the PDF is low quality".
+         */
+        function renderPage(pageNumber) {
+          if (!pdfDoc) return fail('NOT_READY', 'renderPage() before a document was opened');
+
+          var token = ++renderToken;
+
+          return pdfDoc
+            .getPage(pageNumber)
+            .then(function (page) {
+              if (token !== renderToken) return null;
+
+              var box = viewportSize();
+              var base = page.getViewport({ scale: 1 });
+              var fit = Math.min(box.width / base.width, box.height / base.height);
+              var dpr = window.devicePixelRatio || 1;
+              var viewport = page.getViewport({ scale: fit * dpr });
+
+              var canvas = document.getElementById('pdf-canvas');
+              canvas.width = Math.floor(viewport.width);
+              canvas.height = Math.floor(viewport.height);
+              canvas.style.width = Math.floor(base.width * fit) + 'px';
+              canvas.style.height = Math.floor(base.height * fit) + 'px';
+
+              return page.render({
+                canvasContext: canvas.getContext('2d'),
+                viewport: viewport,
+              }).promise;
+            })
+            .then(function () {
+              if (token !== renderToken) return;
+
+              currentPage = pageNumber;
+
+              // cfi is null for every PDF page: a CFI addresses an EPUB spine
+              // position and has no PDF meaning. The page NUMBER is deliberately not
+              // reported either — adding a field here would take this case to four
+              // and fire trigger 1 in WEBVIEW_BRIDGE.md, and nothing consumes a
+              // position yet (Progress is Personalization's stage).
+              //
+              // atStart/atEnd are reported because the message shape requires them, NOT
+              // because anything reads them: ReaderScreen disables Prev/Next on
+              // `send === null` only, so both stay enabled at the ends — same as the
+              // EPUB path today. Bounds are enforced HERE instead, in next/prev below,
+              // which is why tapping Next on the last page is a no-op rather than an
+              // error. If the host ever does gate its buttons on these, this is already
+              // the honest answer for a PDF.
+              post({
+                type: 'relocated',
+                cfi: null,
+                atStart: currentPage <= 1,
+                atEnd: currentPage >= pageCount,
+              });
+            });
+        }
+
+        // Rotation and split-view resizes change the fit scale, so the current page
+        // has to be re-rasterised or it stays at the old resolution, stretched by CSS.
+        // epub.js does its own resize handling; pdf.js does none, so this is ours.
+        window.addEventListener('resize', function () {
+          if (pdfDoc && currentPage) {
+            renderPage(currentPage).catch(function (error) {
+              fail('NAVIGATION_FAILED', error);
+            });
+          }
+        });
+
+        // ---- bridge: RN -> WebView -------------------------------------------
+        // RN calls these via injectJavaScript. Every one is wrapped so a failure
+        // surfaces as an 'error' message rather than a silent no-op.
+        window.TFReader = {
+          /**
+           * Open a whole document from base64-encoded PDF bytes and show page 1.
+           *
+           * NAMED openPdf, NOT open, and that is the whole of how format routing
+           * crosses this bridge. The host reads ContentFormat in typechecked TS and
+           * picks the command name; the format VALUE never travels. Putting
+           * ContentFormat itself in a payload would drop a frozen shared contract
+           * into untypechecked JS — trigger 3 in WEBVIEW_BRIDGE.md.
+           *
+           * >>> THE DECRYPTED-CONTENT HANDOFF. THIS IS LIVE. <<<
+           * The base64 handed in is a whole document already decrypted in RAM by
+           * ContentProvider.getBook(bookId). It never touched disk as plaintext and
+           * must not start here — nothing below may write, cache or postMessage
+           * these bytes back out.
+           */
+          openPdf: function (base64) {
+            try {
+              if (!wireWorker()) return;
+
+              // NO standardFontDataUrl AND NO cMapUrl, deliberately. Both are
+              // sub-resource FETCHES, which this document cannot make and
+              // ReaderWebView.tsx would refuse. useSystemFonts covers the base-14
+              // fonts from the OS instead. KNOWN LIMITATION, not an oversight: a PDF
+              // relying on non-embedded exotic fonts or CJK cmaps will render with
+              // substituted glyphs. Inlining the standard font data as data: URLs is
+              // the fix when that matters.
+              window.pdfjsLib
+                .getDocument({
+                  data: base64ToArrayBuffer(base64),
+                  useSystemFonts: true,
+                })
+                .promise.then(function (doc) {
+                  pdfDoc = doc;
+                  pageCount = doc.numPages;
+                  return renderPage(1);
+                })
+                .then(function () {
+                  post({ type: 'rendered' });
+
+                  // An EXPLICIT empty list, not silence. The host shows a Contents
+                  // panel and waits for this message; never sending it would leave the
+                  // panel in a permanent loading state. PDF outlines are not mapped
+                  // yet — doing so would overload ReaderTocItem.href to mean "spine
+                  // href OR page number" across an untypechecked boundary, which is
+                  // the shape drift WEBVIEW_BRIDGE.md says nothing protects.
+                  post({ type: 'toc', items: [] });
+                })
+                .catch(function (error) {
+                  fail('OPEN_FAILED', error);
+                });
+            } catch (error) {
+              fail('OPEN_FAILED', error);
+            }
+          },
+
+          next: function () {
+            if (!pdfDoc) return fail('NOT_READY', 'next() before a document was opened');
+            if (currentPage >= pageCount) return;
+            renderPage(currentPage + 1).catch(function (error) {
+              fail('NAVIGATION_FAILED', error);
+            });
+          },
+
+          prev: function () {
+            if (!pdfDoc) return fail('NOT_READY', 'prev() before a document was opened');
+            if (currentPage <= 1) return;
+            renderPage(currentPage - 1).catch(function (error) {
+              fail('NAVIGATION_FAILED', error);
+            });
+          },
+
+          /**
+           * `target` is a page number as a bare string.
+           *
+           * It stays a bare string for the same reason the EPUB side's does: Search
+           * stores a Locator and the HOST unwraps it, so no frozen contract crosses.
+           * Nothing sends a PDF goTo yet — there is no PDF search index — but the
+           * command exists on both templates because READER_COMMANDS is one union and
+           * the drift guard checks every method is defined.
+           */
+          goTo: function (target) {
+            if (!pdfDoc) return fail('NOT_READY', 'goTo() before a document was opened');
+
+            var page = parseInt(target, 10);
+            if (!isFinite(page) || page < 1 || page > pageCount) {
+              return fail('NAVIGATION_FAILED', 'goTo(' + String(target) + '): not a page in this document');
+            }
+
+            renderPage(page).catch(function (error) {
+              fail('NAVIGATION_FAILED', error);
+            });
+          },
+        };
+
+        // Announce last, once TFReader is fully defined. RN waits for this before
+        // injecting any command, so posting it earlier would open a window where
+        // RN can call a method that does not exist yet.
+        if (!window.pdfjsLib || typeof window.pdfjsLib.getDocument !== 'function') {
+          fail('PDFJS_MISSING', 'pdf.js did not load — check the build-html inject step');
+        } else {
+          post({ type: 'ready' });
+        }
+      })();
+    </script>
+  </body>
+</html>

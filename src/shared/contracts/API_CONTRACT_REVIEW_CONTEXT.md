@@ -1003,6 +1003,13 @@ of capability hint).
 
 ### B12 — 🟡 `format` is hardcoded `'EPUB'` at the read path, and there is no source for the real value
 
+> **RESOLVED IN PART, 2026-08-17 (PDF support).** The READ PATH no longer hardcodes it:
+> `readerAssets.ts` resolves the format from `SessionHandle.format` through Encryption's new
+> `getFormat(bookId)` and passes it to `verifyReadingAccess`, and Reader routes it to one of two
+> renderers. The SOURCE half is untouched and still `C3`: `downloadBook(bookId, format = 'EPUB')`
+> still defaults, no caller supplies a real value, and there is no catalogue client to ask. So the
+> evidence below still describes the producing side accurately — only the consuming side changed.
+
 `readerAssets.ts`'s `getBookBase64` calls `verifyReadingAccess(bookId, 'EPUB')`, and
 `downloadManager.downloadBook(bookId, format = 'EPUB')` defaults the same way. Both are honestly
 commented as EPUB-only-today limitations.
@@ -1200,7 +1207,7 @@ The one path where mobile and the contracts genuinely meet. Read `A7` before tru
 | Field | wokay `ContentGrantRequest` | flambeau `ReadingSessionRequest` | Mobile | Verdict |
 | --- | --- | --- | --- | --- |
 | `itemId` | required | required | `BookId` (`= string`) | ✅ |
-| `format` | required, `PDF\|EPUB\|AUDIO` (`AssetFormat`) | required | `ContentFormat`, hardcoded `'EPUB'` | ⚠️ `B12` |
+| `format` | required, `PDF\|EPUB\|AUDIO` (`AssetFormat`) | required | `ContentFormat`, from `SessionHandle.format` on the read path; still defaulted `'EPUB'` when downloading | ⚠️ `B12` |
 | `intent` | required, `STREAM\|DOWNLOAD` | required | derived from `loan.canPersist` | ✅ `B_ok3` |
 | `subject` | required (`userId` + nullable `institutionId`) | **not on the HTTP surface** — flambeau supplies it from the token | absent | ✅ correct: it comes from the token, which mobile does not yet have (`B1`) |
 | `devicePublicKey` | nullable; Base64 SPKI DER, 392 chars, RSA-2048 min | required; "base64 of raw bytes" | `publicKeyToRawBase64()`, 392 chars | ✅ `B_ok1`; wording conflict `A6` |
@@ -1380,7 +1387,7 @@ single addition here.**
 | `B9` | 🟡 | `AccessTier` is a fourth tier spelling, and dead code |
 | `B10` | 🟡 | `INVALID_DEVICE_PUBLIC_KEY` in no contract; auth codes unmapped |
 | `B11` | 🟡 | 25 MB client ceiling, no contract bound |
-| `B12` | 🟡 | `format` hardcoded `'EPUB'`; blocked on `C3` |
+| `B12` | 🟡 | `format` hardcoded `'EPUB'` — read path fixed 2026-08-17, source still blocked on `C3` |
 | `B13` | 🟢 | `reachableAssetUrl` port rewrite, hazardous after `B2` |
 | `B14` | 🟢 | Wrong `wantSearchIndex` default in a comment |
 | `B15` | 🟢 | Subscription audio would persist with no licence or expiry |
