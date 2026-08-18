@@ -115,8 +115,12 @@ describe('normalizeHold', () => {
     expect(hold.queueLength).toBe(11);
   });
 
+  // The clock is passed because an offered hold cannot arrive without one: on
+  // `GET /library` it sits beside the arrays and is threaded down, and on `POST /holds` it
+  // is `required` on the object itself. A bare call here would be testing a shape neither
+  // call path produces.
   it('flattens the offer block onto the hold', () => {
-    const hold = normalizeHold(OFFERED);
+    const hold = normalizeHold(OFFERED, '2026-08-13T10:00:00Z');
     expect(hold.state).toBe('offered');
     expect(hold.offerId).toBe('offer_a90');
     expect(hold.offerExpiresAt).toBe('2026-08-13T10:30:00Z');
@@ -126,7 +130,7 @@ describe('normalizeHold', () => {
   // absent when offered, because a position is no longer a fact about a reader whose
   // turn has arrived — copying it would print "1 in the queue" beside Accept.
   it('drops the position once the hold is offered', () => {
-    expect('position' in normalizeHold(OFFERED)).toBe(false);
+    expect('position' in normalizeHold(OFFERED, '2026-08-13T10:00:00Z')).toBe(false);
   });
 
   it('takes the server clock from the enclosing response', () => {
@@ -158,12 +162,30 @@ describe('normalizeHold', () => {
     );
   });
 
-  // Belt and braces on the same rule: whatever comes out, an expiry never travels without
-  // the clock it is measured against.
-  it('never yields an expiry without a server clock', () => {
+  // The rule stated on `Hold.serverTime`, tested where it can actually break.
+  //
+  // AN EARLIER VERSION OF THIS TEST WAS WORTHLESS: it called
+  // `normalizeHold(OFFERED, '...')`, supplying the clock as an argument, so `serverTime`
+  // was present by construction and the assertion could not fail. The case that leaks is
+  // an offered hold with no clock in the payload AND no argument — which is how
+  // `ApiLicenceClient.placeHold` calls it.
+  it('rejects an offered hold with no server clock, rather than yielding a dangling expiry', () => {
+    const { serverTime: _serverTime, ...noClock } = { ...OFFERED, serverTime: undefined };
+    expect(codeOf(() => normalizeHold(noClock))).toBe(LicenceError.MALFORMED_RESPONSE);
+  });
+
+  // Reachable only from a non-conformant server, since `serverTime` is required on their
+  // `Hold` — but so are `holdId` and `offerId`, and both of those are already checked.
+  it('takes the clock off the object when no argument is given', () => {
+    const withOwnClock = { ...OFFERED, serverTime: '2026-08-13T10:00:00Z' };
+    expect(normalizeHold(withOwnClock).serverTime).toBe('2026-08-13T10:00:00Z');
+  });
+
+  // And the positive case the old test was trying to make, stated so it can fail: whatever
+  // comes out of a successful normalize, the two travel together or not at all.
+  it('never yields an expiry without a clock beside it', () => {
     const hold = normalizeHold(OFFERED, '2026-08-13T10:00:00Z');
-    expect(hold.offerExpiresAt).toBeDefined();
-    expect(hold.serverTime).toBeDefined();
+    expect(hold.offerExpiresAt !== undefined).toBe(hold.serverTime !== undefined);
   });
 
   // Their enum has exactly two values. Ours has four, and the other two are ours alone:

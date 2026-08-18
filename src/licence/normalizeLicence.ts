@@ -153,6 +153,23 @@ export function normalizeHold(value: unknown, serverTime?: string): Hold {
       optString(hold.holdId),
     );
   }
+  // AN OFFER WITH NO CLOCK IS MALFORMED, and this is the guard that makes the rule stated
+  // on `serverTime` below actually true rather than aspirational. An absolute
+  // `offerExpiresAt` with no reference instant leaves a component nothing to measure
+  // against but `Date.now()` — the one clock the countdown may not use — so producing that
+  // pair is worse than refusing it.
+  //
+  // ONLY A NON-CONFORMANT SERVER GETS HERE: `serverTime` is `required` on flambeau's
+  // `Hold`, and the list responses carry it beside the array. But so is `holdId`, and so is
+  // `offerId` inside the offer block, and this file already throws when either is missing.
+  // Trusting a required field on one line and checking it on the next is the inconsistency,
+  // not the check.
+  if (state === 'offered' && clock === undefined) {
+    throw malformed(
+      'hold is OFFERED but carries no serverTime to measure its expiry against',
+      optString(hold.holdId),
+    );
+  }
 
   const position = optNumber(hold.position);
   const queueLength = optNumber(hold.queueLength);
