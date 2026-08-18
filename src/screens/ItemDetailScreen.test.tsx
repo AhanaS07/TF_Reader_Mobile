@@ -411,17 +411,102 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
     expect(screen.queryByText(/page range/i)).toBeNull();
   });
 
-  // None of these six things exist in either backend contract. Rendering any of
-  // them would be inventing data, which the board is explicit about not doing
-  // this week.
-  it('invents no DOI, citation, tab, price or table-of-contents data', async () => {
+  // DOI is a settled removal (never rendered, not even disabled) and the price
+  // pair / Table of Contents are screen 05's gaps, not screen 04's — none of
+  // the three belongs on this screen in any form.
+  it("renders no DOI, and none of screen 05's price or table-of-contents gaps", async () => {
     await render(renderArticleContent(anArticleDetail(), jest.fn()));
 
     expect(screen.queryByText(/doi/i)).toBeNull();
-    expect(screen.queryByText(/citation/i)).toBeNull();
-    expect(screen.queryByText(/figures|metrics|full article/i)).toBeNull();
     expect(screen.queryByText(/table of contents/i)).toBeNull();
     expect(screen.queryByText(/paperback|ebook price/i)).toBeNull();
+  });
+
+  // The board's subtask for this trio is "disabled", not "absent" — see the
+  // comment above `UnavailableTag` in ItemDetailScreen.tsx. Citation and the
+  // five tabs ARE now visible, just inert; these three tests are the reason
+  // the old blanket "renders nothing" assertion for them had to go.
+  describe('citation, tabs and type label — shown disabled, not invented or hidden', () => {
+    it('shows Download citation, disabled, with no citation data behind it', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      const citation = screen.getByText('Download citation');
+      expect(citation).toBeTruthy();
+      // Nothing that looks like an actual citation string (author list, year,
+      // journal name) is ever built — there is no data to build one from.
+      expect(screen.queryByText(/\(20\d{2}\)/)).toBeNull();
+    });
+
+    it('shows all five real tab labels, none of them functional', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(screen.getByText('Full Article')).toBeTruthy();
+      expect(screen.getByText('Figures & data')).toBeTruthy();
+      expect(screen.getByText('Citations')).toBeTruthy();
+      expect(screen.getByText('Metrics')).toBeTruthy();
+      expect(screen.getByText('PDF')).toBeTruthy();
+    });
+
+    // Proves this is not a relabelled instance of the real `Tabs` component —
+    // that component always renders an interactive `tablist`/`tab` role, and
+    // nothing here is meant to be switchable.
+    it('renders the tab row as inert, not as the real interactive Tabs component', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(screen.queryByRole('tablist')).toBeNull();
+      expect(screen.queryByRole('tab')).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: /full article|figures|citations|metrics|^pdf$/i }),
+      ).toBeNull();
+    });
+
+    // The mockup draws the tab row as plain text with a divider, not as chips.
+    // `unavailable-tag` is the boxed, bordered, opacity-dimmed wrapper citation
+    // and the type label use — if the five tab labels shared that treatment
+    // there would be seven of these on the screen, not two.
+    it('renders the tab labels without the boxed pill treatment citation and the type label use', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(screen.queryAllByTestId('unavailable-tag')).toHaveLength(2);
+    });
+
+    it('shows the real mockup string "Research article", muted rather than invented copy', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(screen.getByText('Research article')).toBeTruthy();
+    });
+
+    // Muted styling alone reaches a sighted reader; a screen reader needs the
+    // "not confirmed" fact said explicitly, since the visible text is the same
+    // real mockup string a confirmed classification would also show.
+    it('tells a screen reader the classification is not confirmed, without changing the visible text', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(
+        screen.getByLabelText('Research article — not confirmed by the current contract'),
+      ).toBeTruthy();
+    });
+
+    // The type tag is `accessibilityRole="text"`, not a button or a tab — it is
+    // looked at, not pressed, same as AccessTierBadge one line above it.
+    it('renders the type label as non-interactive', async () => {
+      await render(renderArticleContent(anArticleDetail(), jest.fn()));
+
+      expect(screen.queryByRole('button', { name: /research article/i })).toBeNull();
+      expect(screen.queryByRole('tab', { name: /research article/i })).toBeNull();
+    });
+
+    // These three are metadata gaps, not access gaps — they must appear the
+    // same way regardless of which tier or actions resolveAccess returned.
+    it('shows all three regardless of the resolved access state', async () => {
+      const detail = anArticleDetail({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) });
+
+      await render(renderArticleContent(detail, jest.fn()));
+
+      expect(screen.getByText('Download citation')).toBeTruthy();
+      expect(screen.getByText('Research article')).toBeTruthy();
+      expect(screen.getByText('PDF')).toBeTruthy();
+    });
   });
 
   // ISBN, page count and publisher are on `ItemDetail` — buildItemDetail copies

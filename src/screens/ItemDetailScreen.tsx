@@ -149,6 +149,88 @@ export function renderBookContent(
   );
 }
 
+// The five mockup tab labels, verbatim from index.html's "Screen 04 — four
+// elements" gap list. Real mockup names, not invented ones — only the CONTENT
+// behind four of them is missing. PDF is left inert alongside the rest; see the
+// comment on the tab row below for why it is not made the exception.
+const ARTICLE_TAB_LABELS = ['Full Article', 'Figures & data', 'Citations', 'Metrics', 'PDF'] as const;
+
+// A mockup element the current contract has no data for — shown, not hidden,
+// and honestly labelled as unavailable. Same principle FilterChip's own
+// `disabled` prop already documents for screen 12's rows: "Dropping it would
+// make the screen look complete when it is not... a greyed control that
+// announces itself as disabled is the honest version."
+//
+// KEPT LOCAL RATHER THAN PROMOTED TO `src/components/` (CONVENTIONS §7) —
+// nothing outside this screen needs it yet. If a second screen does, it earns
+// its own folder then.
+//
+// A PLAIN VIEW, NOT A PRESSABLE. Neither call site below has anything to do on
+// a tap — there is no citation to fetch, no more specific type to reveal — so a
+// disabled Pressable would promise an interaction that does not exist.
+// `AccessTierBadge` sets the same precedent one line above every call site: a
+// resolved value that is looked at, not pressed.
+function UnavailableTag({
+  label,
+  accessibilityLabel,
+}: {
+  label: string;
+  /**
+   * Overrides what a screen reader announces, for the one call site where the
+   * visible text alone would not say enough — the type tag is a real mockup
+   * string ("Research article") that this contract cannot confirm, and a
+   * sighted reader gets that from the muted styling but a screen reader needs
+   * it said explicitly. Defaults to the visible label, unchanged from before
+   * this prop existed.
+   */
+  accessibilityLabel?: string;
+}): ReactElement {
+  return (
+    <View
+      testID="unavailable-tag"
+      style={styles.unavailableTag}
+      accessibilityRole="text"
+      accessibilityLabel={accessibilityLabel ?? label}
+    >
+      <Text style={styles.unavailableTagLabel} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+// The five mockup tab labels, laid out as a plain, non-interactive row rather
+// than as chips — screen 04's actual mockup draws this as text with a divider
+// beneath it, not as pills, so this stays visually apart from `UnavailableTag`
+// even though the two exist for the same reason.
+//
+// NO ACTIVE TAB. The mockup shows "Full Article" active with a teal underline,
+// but that is true only when the other four genuinely lead somewhere. None of
+// the five does here, so marking one active would claim a working tab strip
+// with four broken siblings — the same half-measure the file already avoids by
+// not making PDF an exception.
+//
+// NOT THE SHARED `Tabs` COMPONENT. `Tabs` always renders `accessibilityRole=
+// "tablist"`/`"tab"` and a live `onChange`; both tell an assistive-tech user
+// these five switch to something, which none of them do. This stays a local,
+// inert row instead of the interactive component wearing a disabled coat of
+// paint (CONVENTIONS §7 — `Tabs` is not modified to grow a state it does not
+// otherwise need).
+function InertTabRow({ labels }: { labels: readonly string[] }): ReactElement {
+  return (
+    <View style={styles.tabRow}>
+      <View style={styles.tabRowLabels}>
+        {labels.map((label) => (
+          <Text key={label} style={styles.tabRowLabel} numberOfLines={1}>
+            {label}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.tabRowDivider} />
+    </View>
+  );
+}
+
 // Screen 04's presentation. The board's field list for this screen is
 // deliberately smaller than the book's — title, authors, published date, the
 // badge, the abstract and the actions — so publisher, ISBN, page count, cover
@@ -164,8 +246,9 @@ export function renderBookContent(
 // DOI IS NOT ONE OF THOSE GAPS. It is a settled removal, not an open question —
 // design still need telling, but the field is gone for good, so nothing here
 // renders even a blank line for it. Download citation, the five tabs and the
-// "Research article" label are the other three gaps, and none is invented
-// either.
+// content-type label ARE the other three gaps, and they render below as
+// `UnavailableTag`/`InertTabRow` — visible, muted, not invented — rather than
+// left absent.
 export function renderArticleContent(
   detail: ItemDetail,
   onAction: (action: ActionId) => void,
@@ -179,6 +262,30 @@ export function renderArticleContent(
       )}
 
       <AccessTierBadge tier={detail.access.tier} />
+
+      {/* The CONTENT type, not to be confused with the access tier badge
+          above — the two are unrelated axes. "Research article" is the real
+          mockup string (index.html: "Screen 04 — four elements"), kept rather
+          than paraphrased — the same "keep the real name, mark it disabled"
+          rule screen 12's unsupported filter rows already follow. wokay's
+          published `@type` enum only confirms Book and Audiobook (see the file
+          header), so the visible text is muted rather than live teal, and a
+          screen reader is told explicitly that the classification is not
+          confirmed — a sighted reader gets that from the styling alone, an
+          assistive-tech user needs it said. workType is NOT derived from
+          `@type` anywhere here; this label is display-only. */}
+      <UnavailableTag
+        label="Research article"
+        accessibilityLabel="Research article — not confirmed by the current contract"
+      />
+
+      {/* None of the five is made an exception, PDF included. A tab's whole
+          point is switching to what it names, and there is nothing behind the
+          other four to switch to — one live tab among four dead ones would
+          still be the half-measure this file is avoiding, and PDF's own file
+          is already Read/Download on the action bar below, not a second
+          entry point worth building. */}
+      <InertTabRow labels={ARTICLE_TAB_LABELS} />
 
       {detail.published !== undefined && (
         <Text style={styles.metaRow}>Published · {detail.published}</Text>
@@ -194,6 +301,11 @@ export function renderArticleContent(
           <Text style={styles.abstractText}>{detail.description}</Text>
         </View>
       )}
+
+      {/* "Download citation" — a real mockup action with no citation data
+          behind it (no endpoint, no format, nothing to build a file from).
+          Shown inert rather than removed, same rule as the tabs above. */}
+      <UnavailableTag label="Download citation" />
 
       <ActionBar actions={detail.access.actions} onAction={onAction} />
     </ScrollView>
@@ -370,5 +482,49 @@ const styles = StyleSheet.create({
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
+  },
+  // Muted and outlined rather than filled, mirroring FilterChip's own
+  // `chipDisabled: { opacity: 0.4 }` — the same "greyed control" language, not
+  // the component itself (a filter dimension and an unavailable mockup element
+  // are different things wearing a similar look).
+  unavailableTag: {
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.border,
+    backgroundColor: color.surface,
+    opacity: 0.5,
+  },
+  unavailableTagLabel: {
+    fontWeight: typeScale.smallLabel.weight,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.textSecondary,
+  },
+  // Plain text and a divider, matching the mockup's own tab strip shape —
+  // deliberately not chips. See the header comment on `InertTabRow`.
+  tabRow: {
+    alignSelf: 'stretch',
+  },
+  tabRowLabels: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.md,
+  },
+  // Secondary colour throughout, on every label — no active one, no teal, no
+  // underline. See `InertTabRow`'s header comment for why marking one active
+  // would overclaim.
+  tabRowLabel: {
+    fontWeight: typeScale.button.weight,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.textSecondary,
+  },
+  tabRowDivider: {
+    alignSelf: 'stretch',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: color.border,
+    marginTop: space.sm,
   },
 });
