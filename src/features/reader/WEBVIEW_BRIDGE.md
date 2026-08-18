@@ -3,7 +3,19 @@
 **Owner:** Reader (Ahana) · **Status:** accepted debt, now **called in** — prefs-application has
 been formally requested (2026-08-18) and signed off, so the conversion is the next Reader task
 rather than a forecast. TTS is the second claimant and needs the same conversion.
-**Last reviewed:** 2026-08-18, for the **prefs-application sign-off**. **The bridge was not
+**Last reviewed:** 2026-08-18, when the **PDF Contents panel** landed (outline → `toc`). **All five
+triggers re-run against the REVISED trigger 1 wording and NONE fired**: the `toc` payload is
+unchanged at three fields, `goTo` still takes one argument, no command was added, nothing needs a
+reply, `href` stays a bare `string`, the transport is untouched, and the WebView retains no outline
+state RN also holds. What it DID take is an overload this file had previously deferred —
+`toc.items[].href` now means a spine href for EPUB and a 1-based page number for PDF. That was
+chosen over a fourth `toc` field precisely because a fourth field fires trigger 1. Read the
+PDF-Contents bullet under [Stage forecast](#stage-forecast) before touching `toc` or `goTo`. Two
+consequences worth carrying: the **two-template split is now load-bearing for correctness**, not
+just artifact size (one shell per book is what keeps the two vocabularies from coexisting), and the
+overload is **something the conversion should delete** — a typed payload can carry a discriminated
+target instead of one string meaning two things. The verdict and the due date are unmoved.
+**Previously reviewed:** 2026-08-18, for the **prefs-application sign-off**. **The bridge was not
 touched** — no message type, no command, no template edit, neither artifact regenerated. What
 changed is that the predicted stage is now a real request with a real design behind it
 (`features/personalization/READER_PREFS_APPLICATION.md` + `readerAppearance.ts`, both landed), and
@@ -104,6 +116,14 @@ As of 2026-08-17. **Keep this table accurate — it is the input to the trigger 
 | `next`     | —        | no     | both           |
 | `prev`     | —        | no     | both           |
 | `goTo`     | `target` | no     | both           |
+
+`toc.items[].href` **carries a different vocabulary per format**: a spine href (or CFI) for
+EPUB, a 1-based page number as a decimal string for PDF. One field, two meanings — accepted
+instead of adding a `page` field, which would take the `toc` case past three and fire trigger 1.
+What keeps it safe is that each shell validates rather than trusts (the PDF one `parseInt`s and
+range-checks; see `ReaderTocItem` in `readerBridge.ts`), and that only one shell is ever loaded
+per book, so the two vocabularies never coexist at runtime. **That last property is what a
+single combined template would destroy.**
 
 `goTo.target` is a spine href **or** an EPUB CFI, as one bare `string`. It is deliberately not a
 `Locator`: Search stores the union, the host unwraps `.cfi`, and only the string crosses. Widening
@@ -261,6 +281,7 @@ Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not c
 | **Annotations** (`annotations.ts`)                                 | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                          | 🛑 hard deadline              |
 | **In-book search** (`search.ts`) ✅ bridge side done               | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**           | cheap — don't let it fool you |
 | **PDF support — pdf.js + `ContentFormat` routing** ✅ done          | Ahana                               | `open` → `openEpub`/`openPdf` (4 → 5 commands); `PDFJS_MISSING`; **no message change at all**     | **none — all five re-run**            | ⚠️ read the row note           |
+| **PDF Contents panel — outline → `toc`** ✅ done                    | Ahana                               | _nothing_ — reuses the `toc` message and `goTo` unchanged; `href` carries a page number            | **none — all five re-run**            | ⚠️ overloads `href`, see below  |
 | **TTS + word/sentence highlight** (`accessibility.ts`)             | **Ahana** builds, Hruthik consumes  | `requestSentence` + `setSpokenRange` commands, one `sentence` reply — see the row note below      | **1 and 2 — 5 designed out**         | 🛑 convert first              |
 
 Five things worth calling out, because all five contradict the obvious guess:
@@ -349,11 +370,31 @@ Five things worth calling out, because all five contradict the obvious guess:
   internally to implement `next`/`prev`, so adding the field later is small. **When Progress asks for
   it, adding it IS the conversion. Say so then instead of re-arguing the boundary.**
 
-  Also left out for the same reason: mapping the PDF outline into `toc`. That would overload
-  `ReaderTocItem.href` to mean "spine href **or** page number" across an untypechecked boundary,
-  which is precisely the shape drift this file says nothing protects. The PDF client posts
-  `toc {items: []}` instead — an explicit empty list rather than silence, because the host waits for
-  that message before enabling its Contents control.
+- **The PDF Contents panel took the overload the row above had deferred — knowingly, and with
+  guards instead of a type.** `pdf.js getOutline()` is flattened depth-first into the existing `toc`
+  message, and each entry's destination is resolved to a page number carried in **`href`**. All five
+  re-run: no new message type, no new command, no reply, `href` is still a bare `string` so no frozen
+  contract crosses, transport unchanged, and the WebView retains no outline state RN also holds.
+
+  The honest cost is that `ReaderTocItem.href` now means **two different things depending on which
+  shell is loaded**. The alternative was a `page` field beside it, which takes the `toc` case to four
+  and fires trigger 1 — the conversion, for a Contents panel. So the overload is the cheaper option
+  taken deliberately, and three things keep it from becoming silent drift:
+
+  1. **The receiver validates.** The PDF `goTo` does `parseInt` plus a range check against
+     `pageCount` and raises `NAVIGATION_FAILED` otherwise, so a value from the wrong vocabulary
+     fails loudly rather than scrolling somewhere arbitrary.
+  2. **One shell per book**, so the two vocabularies never coexist at runtime. This is the load-
+     bearing one, and it is a property of the two-template split — **a single combined template
+     would destroy it**, which is a reason beyond size to keep them apart.
+  3. **`readerTemplate.test.ts` pins the mechanics** a compiler cannot see: the recursion through
+     `item.items`, the depth clamp matching `MAX_TOC_DEPTH`, the `+1` that turns pdf.js's 0-based
+     `getPageIndex` into a 1-based `href`, that external-link entries are dropped, and that `goTo`
+     range-checks before navigating.
+
+  External-link outline entries (`url` instead of `dest`) are dropped rather than shipped: they have
+  no page to reach, and `ReaderWebView`'s allow-list would refuse the navigation anyway. Their
+  children are still walked.
 
 - **TTS was forecast to fire trigger 5 and the agreed design removes it — but 1 and 2 still fire,
   so the conversion is still first.** This row long read "high-frequency range events + highlight

@@ -264,6 +264,117 @@
           }
         });
 
+        // ---- table of contents -----------------------------------------------
+        // Deepest nesting the flattener will mark. Anything deeper is flattened ONTO
+        // the cap rather than dropped, exactly as the EPUB template does. Mirrored by
+        // MAX_TOC_DEPTH in readerBridge.ts, which re-clamps host-side because this
+        // payload originates in a document's own outline and is therefore untrusted.
+        // readerTemplate.test.ts pins this literal to the TS constant.
+        var MAX_TOC_DEPTH = 6;
+
+        /**
+         * A PDF outline entry's destination, as a 1-BASED PAGE NUMBER.
+         *
+         * Two indirections, and both are why this is async. A `dest` is either a NAMED
+         * destination (a string that has to be looked up) or an explicit array whose
+         * first element is a page REFERENCE — and turning a reference into an index
+         * needs pdfDoc.getPageIndex(). getPageIndex is 0-based; goTo and the page
+         * counter are both 1-based, so the +1 is load-bearing, not cosmetic.
+         *
+         * Resolves to null rather than rejecting for anything unusable, because a
+         * malformed entry in one book's outline must not lose the whole Contents panel.
+         */
+        function outlineDestPage(dest) {
+          if (!dest) return Promise.resolve(null);
+
+          var explicit = typeof dest === 'string' ? pdfDoc.getDestination(dest) : Promise.resolve(dest);
+
+          return explicit
+            .then(function (target) {
+              if (!target || !target.length) return null;
+              return pdfDoc.getPageIndex(target[0]).then(function (index) {
+                return index + 1;
+              });
+            })
+            .catch(function () {
+              return null;
+            });
+        }
+
+        /**
+         * Walk pdf.js's outline tree depth-first, exactly as flattenToc does for
+         * epub.js's `subitems` — the host indents by `depth` and cannot render a
+         * recursive payload, and a recursive shape is the worst case for a hand-synced
+         * untypechecked boundary.
+         *
+         * EXTERNAL LINKS ARE DROPPED. An outline entry may carry `url` instead of
+         * `dest` (a bookmark pointing at a website). Those have no page to go to, goTo
+         * would reject them, and ReaderWebView's allow-list would refuse the navigation
+         * anyway — so they are filtered here rather than shipped as rows that cannot
+         * work. Their CHILDREN are still walked: a linking parent does not disqualify
+         * the sections under it.
+         */
+        function collectOutline(items, depth, into) {
+          if (!items || !items.length) return into;
+
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (!item) continue;
+
+            if (!item.url) {
+              into.push({ label: (item.title || '').trim(), dest: item.dest, depth: depth });
+            }
+
+            collectOutline(item.items, Math.min(depth + 1, MAX_TOC_DEPTH), into);
+          }
+
+          return into;
+        }
+
+        /**
+         * The `toc` payload for this document: the outline, flattened, with every
+         * destination already resolved to a page number in `href`.
+         *
+         * `href` CARRIES A PAGE NUMBER HERE, not a spine href. That is the one place
+         * this template reuses an EPUB-shaped field for a different meaning, and it is
+         * deliberate — the alternative is a second field on the `toc` case, which would
+         * take it past three and fire trigger 1 in WEBVIEW_BRIDGE.md. What makes it
+         * safe is that goTo below VALIDATES: parseInt, then a range check against
+         * pageCount, so a value from the wrong vocabulary fails loudly instead of
+         * scrolling somewhere arbitrary.
+         *
+         * Resolves to [] for a document with no outline — which is most of them, and is
+         * why the host must treat an empty Contents panel as normal rather than broken.
+         */
+        function buildOutlineToc() {
+          return pdfDoc
+            .getOutline()
+            .then(function (outline) {
+              var flat = collectOutline(outline, 0, []);
+
+              // Destinations resolve concurrently: each is one or two round trips into
+              // the worker, and a 200-entry outline done serially is a visible stall
+              // before the Contents button becomes usable.
+              return Promise.all(
+                flat.map(function (entry) {
+                  return outlineDestPage(entry.dest);
+                }),
+              ).then(function (pages) {
+                var items = [];
+                for (var i = 0; i < flat.length; i++) {
+                  if (pages[i] === null) continue;
+                  items.push({ label: flat[i].label, href: String(pages[i]), depth: flat[i].depth });
+                }
+                return items;
+              });
+            })
+            .catch(function () {
+              // An unreadable outline is not a failed open. The book renders; Contents
+              // is simply empty, which is the same state a book without one produces.
+              return [];
+            });
+        }
+
         // ---- bridge: RN -> WebView -------------------------------------------
         // RN calls these via injectJavaScript. Every one is wrapped so a failure
         // surfaces as an 'error' message rather than a silent no-op.
@@ -306,14 +417,15 @@
                 })
                 .then(function () {
                   post({ type: 'rendered' });
-
-                  // An EXPLICIT empty list, not silence. The host shows a Contents
-                  // panel and waits for this message; never sending it would leave the
-                  // panel in a permanent loading state. PDF outlines are not mapped
-                  // yet — doing so would overload ReaderTocItem.href to mean "spine
-                  // href OR page number" across an untypechecked boundary, which is
-                  // the shape drift WEBVIEW_BRIDGE.md says nothing protects.
-                  post({ type: 'toc', items: [] });
+                  return buildOutlineToc();
+                })
+                .then(function (items) {
+                  // ALWAYS POSTED, even when empty. The host enables its Contents
+                  // button off this message, so staying silent would leave the panel
+                  // permanently unavailable rather than legitimately empty. Sent AFTER
+                  // `rendered` so the first page is on screen before the outline's
+                  // destination lookups run.
+                  post({ type: 'toc', items: items });
                 })
                 .catch(function (error) {
                   fail('OPEN_FAILED', error);

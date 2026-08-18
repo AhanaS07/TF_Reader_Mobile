@@ -143,11 +143,30 @@
 // and when it does, the conversion is the first task rather than a discovery.
 
 /**
- * One entry from epub.js `book.loaded.navigation`, flattened.
+ * One Contents entry, flattened — from epub.js `book.loaded.navigation` for an EPUB,
+ * or from pdf.js `getOutline()` for a PDF.
+ *
+ * >>> `href` CARRIES TWO VOCABULARIES, ONE PER FORMAT. <<<
+ * EPUB: a spine href (`'ch1.xhtml'`), or a CFI. PDF: a 1-BASED PAGE NUMBER as a
+ * decimal string (`'12'`). Both are handed straight back as `goTo.target`, and each
+ * template knows only its own: the EPUB one passes it to `rendition.display()`, the
+ * PDF one `parseInt`s it and range-checks it against the page count.
+ *
+ * A SECOND FIELD WOULD HAVE BEEN CLEANER AND IS NOT AVAILABLE. Adding, say, `page`
+ * beside `href` takes this case to four fields and fires trigger 1 in
+ * WEBVIEW_BRIDGE.md — the conversion, for a Contents panel. So the overload is the
+ * deliberate cheaper option, and what keeps it honest is that the receiving side
+ * VALIDATES rather than trusts: a page number sent to the EPUB shell resolves to no
+ * spine item, and a spine href sent to the PDF shell fails `parseInt` and raises
+ * NAVIGATION_FAILED. Neither silently scrolls somewhere arbitrary.
+ *
+ * Because one shell is loaded per book, the two vocabularies never coexist at runtime
+ * — which is the property that makes this survivable, and the property that would end
+ * if a single template ever served both formats.
  *
  * `depth` is the entry's nesting level in the book's navigation tree — 0 for a
- * top-level entry. The tree is flattened depth-first in the template (see
- * `flattenToc` there) and arrives as a single ordered list, so the host indents by
+ * top-level entry. The tree is flattened depth-first in the template (`flattenToc` in
+ * the EPUB one, `collectOutline` in the PDF one) and arrives as a single ordered list, so the host indents by
  * `depth` rather than rendering a recursive structure. That is the point: a
  * recursive payload is the shape a hand-synced, untypechecked boundary is worst at.
  *

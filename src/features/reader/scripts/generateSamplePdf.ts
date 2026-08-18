@@ -140,7 +140,18 @@ function buildPdf(): Buffer {
 
   const objects: string[] = [];
 
-  objects[CATALOG] = indirectObject(CATALOG, `<< /Type /Catalog /Pages ${PAGES} 0 R >>`);
+  // Outline objects live after the last content stream, so this holds for any
+  // PAGE_COUNT: ids 1..3 are fixed, 4..(3+2n) are the page/content pairs.
+  const OUTLINE_ROOT = contentObjectId(PAGE_COUNT - 1) + 1;
+
+  objects[CATALOG] = indirectObject(
+    CATALOG,
+    // /PageMode /UseOutlines is a hint to desktop viewers to show the sidebar. It has
+    // no effect on our reader — the outline reaches the host as a `toc` message — but
+    // it makes the fixture behave the same way in Preview, which is where anyone will
+    // sanity-check it by eye.
+    `<< /Type /Catalog /Pages ${PAGES} 0 R /Outlines ${OUTLINE_ROOT} 0 R /PageMode /UseOutlines >>`,
+  );
 
   const kids = Array.from({ length: PAGE_COUNT }, (_, i) => `${pageObjectId(i)} 0 R`).join(' ');
   objects[PAGES] = indirectObject(
@@ -175,6 +186,42 @@ function buildPdf(): Buffer {
       `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`,
     );
   }
+
+  // OUTLINE. Four entries over three pages, one of them NESTED, because the whole
+  // point of this fixture is exercising the Contents panel: a flat outline would not
+  // prove the depth-first flatten or the host's indent-by-depth. Two entries share
+  // page 2 deliberately — duplicate destinations are normal in real books and must not
+  // be deduplicated away.
+  //
+  // The linked-list shape (/First /Last /Next /Prev /Parent) is what the PDF spec
+  // requires; pdf.js walks it and hands us a tree, which the template then flattens
+  // back. Getting /Next wrong silently truncates the outline, so the assertion below
+  // checks the COUNT that comes back out.
+  const dest = (pageIndex: number): string => `[${pageObjectId(pageIndex)} 0 R /Fit]`;
+  const [ONE, TWO, TWO_CHILD, THREE] = [1, 2, 3, 4].map((n) => OUTLINE_ROOT + n);
+
+  objects[OUTLINE_ROOT] = indirectObject(
+    OUTLINE_ROOT,
+    // /Count is the number of VISIBLE descendants; positive means open.
+    `<< /Type /Outlines /First ${ONE} 0 R /Last ${THREE} 0 R /Count 4 >>`,
+  );
+  objects[ONE] = indirectObject(
+    ONE,
+    `<< /Title (Page 1 - Opening) /Parent ${OUTLINE_ROOT} 0 R /Next ${TWO} 0 R /Dest ${dest(0)} >>`,
+  );
+  objects[TWO] = indirectObject(
+    TWO,
+    `<< /Title (Page 2 - Middle) /Parent ${OUTLINE_ROOT} 0 R /Prev ${ONE} 0 R /Next ${THREE} 0 R ` +
+      `/First ${TWO_CHILD} 0 R /Last ${TWO_CHILD} 0 R /Count 1 /Dest ${dest(1)} >>`,
+  );
+  objects[TWO_CHILD] = indirectObject(
+    TWO_CHILD,
+    `<< /Title (Page 2 - a nested entry) /Parent ${TWO} 0 R /Dest ${dest(1)} >>`,
+  );
+  objects[THREE] = indirectObject(
+    THREE,
+    `<< /Title (Page 3 - End) /Parent ${OUTLINE_ROOT} 0 R /Prev ${TWO} 0 R /Dest ${dest(2)} >>`,
+  );
 
   // Assemble, recording each object's byte offset for the xref table. The header's
   // second line is a comment with high-bit bytes, which is what marks the file as
@@ -303,6 +350,34 @@ async function assertPdfJsCanReadIt(pdf: Buffer): Promise<void> {
     const text = content.items.map((item: { str?: string }) => item.str ?? '').join('');
     if (!text.includes(`page ${n} of ${PAGE_COUNT}`)) {
       throw new Error(`Page ${n} did not render its own page number. Extracted: ${text}`);
+    }
+  }
+
+  // THE OUTLINE, resolved the same way the template resolves it. This is the half a
+  // structural check cannot reach: /Next or /Parent wired wrong still produces a valid
+  // PDF, and pdf.js simply returns a shorter tree — so the fixture would silently stop
+  // exercising the Contents panel it exists to exercise.
+  const outline = await doc.getOutline();
+  if (!outline || outline.length !== 3) {
+    throw new Error(`Expected 3 top-level outline entries, got ${outline ? outline.length : 0}.`);
+  }
+  const nested = outline.filter((item: { items?: unknown[] }) => (item.items ?? []).length > 0);
+  if (nested.length !== 1) {
+    throw new Error(`Expected exactly 1 nested outline entry, got ${nested.length}.`);
+  }
+
+  // And that every destination resolves to a real page — the +1 the template applies to
+  // getPageIndex is exactly the kind of off-by-one worth pinning in a fixture.
+  const flat = [...outline, ...(nested[0].items as { title: string; dest: unknown }[])];
+  for (const entry of flat) {
+    const target =
+      typeof entry.dest === 'string' ? await doc.getDestination(entry.dest) : entry.dest;
+    if (!Array.isArray(target) || target.length === 0) {
+      throw new Error(`Outline entry "${entry.title}" has no resolvable destination.`);
+    }
+    const page = (await doc.getPageIndex(target[0])) + 1;
+    if (page < 1 || page > PAGE_COUNT) {
+      throw new Error(`Outline entry "${entry.title}" resolves to page ${page}, out of range.`);
     }
   }
 
