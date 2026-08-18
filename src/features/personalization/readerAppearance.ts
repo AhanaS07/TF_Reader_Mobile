@@ -24,26 +24,25 @@
 // file and readerBridge.ts. See READER_PREFS_APPLICATION.md.
 
 import type { FontPrefs, SharedPrefs, Theme } from '@/shared/contracts';
-import { resolveFontScale } from '@/shared/contracts';
+import { resolveFontScale, resolveReduceMotion } from '@/shared/contracts';
 
 /**
- * The three OS-level inputs prefs resolution needs but SharedPrefs cannot carry, because
- * they are device state, not stored preferences.
+ * The OS-level inputs prefs resolution needs but SharedPrefs cannot carry, because they
+ * are device state, not stored preferences.
  *
- * `osColorScheme` resolves `theme: 'system'` HOST-SIDE, so the WebView is handed a
- * concrete 'light'/'dark' and never has to know what "system" means. That is deliberate:
- * the WebView holding "system" would mean it also has to observe OS appearance changes,
- * which is state RN already models (trigger 5). Resolving here keeps the WebView stateless
- * about appearance — it just renders the colours it is given.
- *
- * `osFontScale` is the OS Dynamic Type scale (1.0 = no scaling), fed into the §6 text-
- * scale composition below.
+ * All three resolve their pref HOST-SIDE, so the WebView is handed concrete values and
+ * never has to observe the OS itself — that OS state is something RN already models
+ * (trigger 5). `osColorScheme` resolves `theme: 'system'`; `osFontScale` feeds the text-
+ * scale composition; `osReduceMotionEnabled` resolves the tri-state `reduceMotion`. The
+ * Reader re-resolves and re-sends when any of these change (see READER_PREFS_APPLICATION.md §5).
  */
 export interface AppearanceEnv {
   /** RN `Appearance.getColorScheme()`, coalesced to 'light' when the OS reports null. */
   osColorScheme: 'light' | 'dark';
   /** OS font-scale setting. 1.0 = none. */
   osFontScale: number;
+  /** OS "reduce motion" accessibility setting (iOS Reduce Motion / Android Remove animations). */
+  osReduceMotionEnabled: boolean;
 }
 
 /** The concrete colour scheme a theme resolves to — 'system' is already gone by here. */
@@ -107,9 +106,32 @@ export interface ReaderAppearance {
   /**
    * 1.0 = 100%. Meaningful for the PDF renderer (pdf.js scale) and images; a reflowable
    * EPUB scales through fontSizePt instead, so the EPUB renderer may ignore this. Carried
-   * through rather than dropped so the one payload serves both renderers.
+   * through rather than dropped so the one payload serves both renderers. Pinch-zoom
+   * inside the WebView is ruled out (Ahana) — zoom changes arrive only through prefs.
    */
   zoom: number;
+
+  // ---- accessibility (composed into this ONE payload) ----
+  //
+  // These are Hruthik's contract (accessibility.ts), carried here rather than sent as a
+  // second command: Ahana holds "one command, one resolve seam", and Hruthik's
+  // WEBVIEW_A11Y_FINDINGS.md §3.7 requires announce.pageChanges to reach the WebView
+  // through this same composed-prefs path — there is no "applied on top" that is not a
+  // second command. This file only RESOLVES them to primitives; their apply-time meaning
+  // (e.g. dyslexiaFont's precedence over fontFamily, the contrast recipe) is
+  // Reader/Hruthik's, at apply time.
+  /** display.reduceMotion, RESOLVED against the OS (tri-state -> boolean). Suppress page-turn animation when true. */
+  reduceMotion: boolean;
+  /** display.highContrast — the single source of truth for contrast, independent of colorScheme. */
+  highContrast: boolean;
+  /** display.boldText — heavier font weight throughout. */
+  boldText: boolean;
+  /** text.dyslexiaFont — OpenDyslexic; precedence over fontFamily is decided at apply time. */
+  dyslexiaFont: boolean;
+  /** text.readableSpacing — looser line/word spacing preset. */
+  readableSpacing: boolean;
+  /** announce.pageChanges — gate the WebView's polite page-change announcement (§3.7, defaults true). */
+  announcePageChanges: boolean;
 }
 
 /**
@@ -187,12 +209,10 @@ export function resolveFont(font: FontPrefs): { fontFamily: string; customFontUr
  * fontScaleMultiplier`, so this is that value multiplied by the pt base — additive to
  * today's a11y behaviour, not a reorder.
  *
- * >>> PROPOSED, PENDING RATIFICATION. <<< prefs.ts DECISION LOG #4 leaves typography.size's
- * units (pt vs scale factor) open, and treating `size` as pt is the proposal in §6, not a
- * settled contract. It is a joint Ahana + Vaishnavi call. Until it closes, the number this
- * returns is only correct if `size` is points; if the units land as a scale factor instead,
- * this multiply becomes the wrong operation and must change. No clamp here on purpose —
- * §6 gives the final min/max to the Reader.
+ * RATIFIED (Ahana, 2026-08-18, closing prefs.ts DECISION LOG #4 / API_CONTRACT_NOTES §6):
+ * `typography.size` is ABSOLUTE POINTS and the composition is exactly `size ×
+ * resolveFontScale(...)`. No clamp here on purpose — the Reader owns the final bound, and
+ * it clamps the VIEWPORT factor (0.94–1.375), not the product.
  */
 export function composeFontSizePt(
   typographySize: number,
@@ -212,6 +232,7 @@ export function composeFontSizePt(
 export function toReaderAppearance(prefs: SharedPrefs, env: AppearanceEnv): ReaderAppearance {
   const theme = resolveTheme(prefs.theme, env.osColorScheme);
   const font = resolveFont(prefs.font);
+  const { display, text, announce } = prefs.accessibility;
 
   return {
     colorScheme: theme.colorScheme,
@@ -222,7 +243,7 @@ export function toReaderAppearance(prefs: SharedPrefs, env: AppearanceEnv): Read
     fontFamily: font.fontFamily,
     customFontUri: font.customFontUri,
 
-    fontSizePt: composeFontSizePt(prefs.typography.size, prefs.accessibility.text, env.osFontScale),
+    fontSizePt: composeFontSizePt(prefs.typography.size, text, env.osFontScale),
     lineHeight: prefs.typography.lineHeight,
     letterSpacingPx: prefs.typography.spacing,
     marginPx: prefs.typography.margins,
@@ -231,5 +252,13 @@ export function toReaderAppearance(prefs: SharedPrefs, env: AppearanceEnv): Read
     spread: prefs.layout.spread,
 
     zoom: prefs.zoom.level,
+
+    // a11y — resolved to primitives here; meaning applied Reader/Hruthik-side.
+    reduceMotion: resolveReduceMotion(display.reduceMotion, env.osReduceMotionEnabled),
+    highContrast: display.highContrast,
+    boldText: display.boldText,
+    dyslexiaFont: text.dyslexiaFont,
+    readableSpacing: text.readableSpacing,
+    announcePageChanges: announce.pageChanges,
   };
 }
