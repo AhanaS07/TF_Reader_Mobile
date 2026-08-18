@@ -162,6 +162,130 @@ function flatToc(count: number): ReaderTocItem[] {
   }));
 }
 
+describe('the page indicator', () => {
+  // PDF-ONLY BY CONSTRUCTION, not by choice. `ReaderPosition` is discriminated by format, and an EPUB
+  // reports a CFI because a reflowable book has no stable page. Showing a number derived from a CFI
+  // would be a number that changes with the font size, which is worse than showing none.
+  async function relocateTo(position: unknown): Promise<void> {
+    await deliver({ type: 'relocated', position, atStart: false, atEnd: false });
+  }
+
+  it('shows nothing until a position arrives', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByLabelText(/^Page \d+ of \d+$/)).toBeNull();
+  });
+
+  it('reports the page and the page count for a PDF', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ format: 'PDF', page: 4, pageCount: 50 });
+
+    expect(screen.getByLabelText('Page 4 of 50')).toBeTruthy();
+    expect(screen.getByText('4 / 50')).toBeTruthy();
+  });
+
+  it('follows the position as it moves', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ format: 'PDF', page: 1, pageCount: 3 });
+    await relocateTo({ format: 'PDF', page: 3, pageCount: 3 });
+
+    expect(screen.getByLabelText('Page 3 of 3')).toBeTruthy();
+    expect(screen.queryByText('1 / 3')).toBeNull();
+  });
+
+  it('shows no indicator for an EPUB, which has no stable page', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ format: 'EPUB', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' });
+
+    expect(screen.queryByLabelText(/^Page \d+ of \d+$/)).toBeNull();
+  });
+
+  // The parser drops a position it cannot understand, so the message never reaches the screen. Pinned
+  // here as well as in readerBridge.test.ts because this is the consequence that matters: a stale but
+  // true indicator beats a confidently wrong one.
+  it('keeps the last good position when an impossible one arrives', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ format: 'PDF', page: 2, pageCount: 3 });
+    await relocateTo({ format: 'PDF', page: 9, pageCount: 3 });
+
+    expect(screen.getByLabelText('Page 2 of 3')).toBeTruthy();
+  });
+});
+
+describe('the outline timing probe', () => {
+  // WHY THIS IS TIMED AT ALL: on the PDF shell every outline destination is resolved through the
+  // pdf.js worker, so a large book's Contents can lag well behind `rendered`. That window is
+  // invisible from the outside — a page is on screen and the Contents button is simply still
+  // disabled — so it needs a number rather than an impression.
+  const original = process.env.EXPO_PUBLIC_READER_TIMING;
+  let logSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    if (original === undefined) {
+      delete process.env.EXPO_PUBLIC_READER_TIMING;
+    } else {
+      process.env.EXPO_PUBLIC_READER_TIMING = original;
+    }
+  });
+
+  function tfperfLines(): string[] {
+    return logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('[TFPERF]'));
+  }
+
+  it('reports how long the outline took, and how many entries it carried', async () => {
+    process.env.EXPO_PUBLIC_READER_TIMING = '1';
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: flatToc(22) });
+
+    // The count is the load-bearing extra: a slow outline and a huge outline are the same
+    // millisecond figure, and only one of them is a bug in this code.
+    expect(tfperfLines()).toContainEqual(expect.stringMatching(/^\[TFPERF\] open -> toc \d+ms/));
+    expect(tfperfLines()).toContainEqual(expect.stringContaining('items=22'));
+  });
+
+  // Off-by-default is a security property here, not a preference — these lines report payload sizes
+  // from a path holding decrypted licensed content. Same guarantee readerTiming.test.ts pins for the
+  // probes themselves, asserted once through a real open so a stray unconditional log would show up.
+  it('emits nothing at all when timing is not switched on', async () => {
+    delete process.env.EXPO_PUBLIC_READER_TIMING;
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: flatToc(3) });
+
+    expect(tfperfLines()).toEqual([]);
+  });
+
+  // An empty outline is the NORMAL case for a PDF, so the span must still land — otherwise the one
+  // book whose Contents is legitimately empty is also the one with no timing for it.
+  it('still reports the span for a book with no outline', async () => {
+    process.env.EXPO_PUBLIC_READER_TIMING = '1';
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: [] });
+
+    expect(tfperfLines()).toContainEqual(expect.stringContaining('items=0'));
+  });
+});
+
 describe('the bounded wait on the byte path', () => {
   // Fake timers, because the real bound is 20s and no test should take 20s. Set up
   // per-test rather than for the file: the panel tests above rely on real

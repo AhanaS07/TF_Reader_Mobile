@@ -1,37 +1,44 @@
 // Owner: Reader (Ahana).
 //
-// Two jobs:
-//   1. Normal unit coverage of parseReaderMessage / buildCommandScript.
-//   2. THE DRIFT GUARD (bottom of the file) — the reason this test matters more
-//      than its size suggests.
+// Unit coverage of parseReaderMessage / buildCommandScript, plus the two invariants that survived
+// the typechecked-WebView conversion.
 //
-// readerBridge.ts and the WebView halves are two descriptions of one protocol, and
-// the WebView side is deliberately outside tsc's view (plain JS inside .html files,
-// so allowJs/checkJs cannot reach it). ESLint cannot see it either — type-aware
-// linting now covers src/features/reader/, but only the .ts/.tsx in it, and a .html
-// is neither. So NOTHING in the toolchain can see that the sides agree. The drift
-// guard closes that by reading the WebView files as text and asserting, mechanically,
-// that every message type they post has a case in the TS union and every method RN
-// calls exists on window.TFReader.
+// >>> THE DRIFT GUARD IS GONE, AND ITS DELETION IS THE POINT. <<<
+// This file used to read the WebView halves as TEXT and assert, mechanically, that every message type
+// they posted had a case in the TS union and every method RN called existed on `window.TFReader`. It
+// had to, because those halves were plain JS inside .html files that neither tsc nor ESLint could
+// see.
 //
-// THE WEBVIEW SIDE IS NOW THREE FILES, NOT ONE, and the guard unions across them:
+// They are TypeScript now (webview/src/), and they IMPORT `ReaderMessage` and `ReaderCommand` from
+// readerBridge.ts. So each of those assertions became a type:
 //
-//   webview/reader-epub.template.html   epub.js renderer + openEpub
-//   webview/reader-pdf.template.html    pdf.js renderer + openPdf
-//   webview/reader.bridge.html          the shared half both inline (post/fail/…)
+//   posted types match the union        -> `post(message: ReaderMessage)` in webview/src/bridge.ts
+//   raised codes are declared           -> `fail(code: WebViewErrorCode, ...)`
+//   host-only codes never raised inside -> the same parameter type excludes them
+//   every command has a method          -> `TFReaderApi<Open>`, a mapped type over ReaderCommand
+//   each shell defines only its own open -> `TFReaderApi<'openEpub'>` vs `TFReaderApi<'openPdf'>`
+//   a method's ARGUMENTS match its command -> `CommandArgsMatchPayloads`, which the old guard could
+//                                             not see at all: it compared names, so a command growing
+//                                             a field while its method kept the old signature passed.
 //
-// Unioning is not a loosening. Each template legitimately raises codes the other
-// cannot (EPUBJS_MISSING vs PDFJS_MISSING) and defines only its own open command, so
-// a per-file equality assertion would be wrong. What must hold is that the union
-// equals the TS side exactly — nothing declared and unused, nothing used and
-// undeclared. Per-file expectations that DO still hold are asserted separately below.
+// Deleting a guard normally reads as a regression, so to be explicit: every one of those is now
+// checked more strictly and earlier, by `npm run typecheck` rather than by a regex that also depended
+// on both templates staying out of prettier's reach.
 //
-// This converts the "keep it in sync BY HAND" risk into a red test. If you add a
-// message to one side and not the other, this fails by name.
+// WHAT A TYPE STILL CANNOT SEE, and therefore stays below:
 //
-// Node's fs is used to read the template fixture. That is a test-time Node
-// dependency, not device code — the same latitude the encryption scripts have,
-// and the reason tsconfig carries "node" in `types`.
+//   1. The JSON round trip. `parseReaderMessage` receives an untyped string built from book content,
+//      so compile-time types prove nothing about it. This is the majority of the file and it did not
+//      change.
+//   2. `buildCommandScript`'s OUTPUT is a string of JavaScript. That a `ContentFormat` literal never
+//      appears in it is a property of generated text, not of a type.
+//   3. Codes DECLARED BUT NEVER RAISED. `fail`'s parameter type gives raised ⊆ declared; nothing
+//      gives the reverse, so `WEBVIEW_ERROR_CODES` could still grow a dead member.
+//   4. WHERE a code is raised. The catch-alls belong in the shared module, not duplicated into each
+//      entry — a placement rule, not a type.
+//
+// Node's fs is used to read the entry sources for 3 and 4. That is a test-time Node dependency, not
+// device code.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -46,66 +53,30 @@ import {
   parseReaderMessage,
 } from '@/features/reader/readerBridge';
 
-const webviewFile = (name: string): string =>
-  fs.readFileSync(path.join(__dirname, 'webview', name), 'utf8');
-
-const EPUB_TEMPLATE = webviewFile('reader-epub.template.html');
-const PDF_TEMPLATE = webviewFile('reader-pdf.template.html');
-const BRIDGE_FRAGMENT = webviewFile('reader.bridge.html');
+const webviewFile = (...parts: string[]): string =>
+  fs.readFileSync(path.join(__dirname, 'webview', ...parts), 'utf8');
 
 /**
- * Every file the WebView half is assembled from.
+ * The three files the WebView half is compiled from.
  *
- * The fragment is included because it raises the two catch-all codes and posts the
- * `error` message — leaving it out would report those as declared-but-unused and
- * fail the guard for the wrong reason.
+ * Read as text only for the two assertions above that are about text. Everything else about these
+ * files is checked by the compiler now.
  */
 const WEBVIEW_SOURCES: readonly { name: string; text: string }[] = [
-  { name: 'reader-epub.template.html', text: EPUB_TEMPLATE },
-  { name: 'reader-pdf.template.html', text: PDF_TEMPLATE },
-  { name: 'reader.bridge.html', text: BRIDGE_FRAGMENT },
+  { name: 'webview/src/bridge.ts', text: webviewFile('src', 'bridge.ts') },
+  { name: 'webview/src/epub.entry.ts', text: webviewFile('src', 'epub.entry.ts') },
+  { name: 'webview/src/pdf.entry.ts', text: webviewFile('src', 'pdf.entry.ts') },
 ];
 
 const sortedUnique = (values: string[]): string[] => [...new Set(values)].sort();
 
-/** Every distinct `post({ type: 'x' ... })` one WebView source can emit. */
-function messageTypesPostedBy(source: string): string[] {
-  return sortedUnique([...source.matchAll(/post\(\{\s*type:\s*'([a-zA-Z]+)'/g)].map((m) => m[1]));
-}
-
-/** Every `fail('CODE', ...)` call site in one WebView source. */
-function errorCodesRaisedBy(source: string): string[] {
-  return sortedUnique([...source.matchAll(/fail\(\s*'([A-Z_]+)'/g)].map((m) => m[1]));
-}
-
-/**
- * Method names defined on `window.TFReader` in one template.
- *
- * POSITION-ANCHORED, which is why both templates are in .prettierignore: the object
- * is found by an 8-space `};` and its methods by a 10-space `name: function`. If a
- * formatter re-indents a template, this returns an empty list and the failure reads
- * as "the bridge drifted" rather than "the file was reformatted".
- */
-function tfReaderMethodsIn(source: string, name: string): string[] {
-  const block = /window\.TFReader\s*=\s*\{([\s\S]*?)\n\s{8}\};/.exec(source);
-  if (!block) throw new Error(`Could not locate the window.TFReader object in ${name}.`);
-  return sortedUnique([...block[1].matchAll(/^\s{10}([a-zA-Z]+):\s*function/gm)].map((m) => m[1]));
-}
-
-/** Union across every WebView source — see the header on why this is a union. */
-function messageTypesPostedByWebView(): string[] {
-  return sortedUnique(WEBVIEW_SOURCES.flatMap((s) => messageTypesPostedBy(s.text)));
-}
-
+/** Every `fail('CODE', ...)` call site across the WebView sources. */
 function errorCodesRaisedByWebView(): string[] {
-  return sortedUnique(WEBVIEW_SOURCES.flatMap((s) => errorCodesRaisedBy(s.text)));
-}
-
-function tfReaderMethods(): string[] {
-  return sortedUnique([
-    ...tfReaderMethodsIn(EPUB_TEMPLATE, 'reader-epub.template.html'),
-    ...tfReaderMethodsIn(PDF_TEMPLATE, 'reader-pdf.template.html'),
-  ]);
+  return sortedUnique(
+    WEBVIEW_SOURCES.flatMap((source) => [
+      ...source.text.matchAll(/fail\(\s*'([A-Z_]+)'/g),
+    ]).map((m) => m[1]),
+  );
 }
 
 describe('parseReaderMessage', () => {
@@ -114,9 +85,24 @@ describe('parseReaderMessage', () => {
     expect(parseReaderMessage('{"type":"rendered"}')).toEqual({ type: 'rendered' });
     expect(
       parseReaderMessage(
-        '{"type":"relocated","cfi":"epubcfi(/6/4!/2)","atStart":true,"atEnd":false}',
+        '{"type":"relocated","position":{"format":"EPUB","cfi":"epubcfi(/6/4!/2)"},"atStart":true,"atEnd":false}',
       ),
-    ).toEqual({ type: 'relocated', cfi: 'epubcfi(/6/4!/2)', atStart: true, atEnd: false });
+    ).toEqual({
+      type: 'relocated',
+      position: { format: 'EPUB', cfi: 'epubcfi(/6/4!/2)' },
+      atStart: true,
+      atEnd: false,
+    });
+    expect(
+      parseReaderMessage(
+        '{"type":"relocated","position":{"format":"PDF","page":4,"pageCount":50},"atStart":false,"atEnd":false}',
+      ),
+    ).toEqual({
+      type: 'relocated',
+      position: { format: 'PDF', page: 4, pageCount: 50 },
+      atStart: false,
+      atEnd: false,
+    });
     expect(
       parseReaderMessage('{"type":"toc","items":[{"label":"One","href":"ch1.xhtml","depth":0}]}'),
     ).toEqual({ type: 'toc', items: [{ label: 'One', href: 'ch1.xhtml', depth: 0 }] });
@@ -137,9 +123,9 @@ describe('parseReaderMessage', () => {
 
   it('hardens malformed fields rather than trusting the payload', () => {
     // A wrong-typed cfi must not become a string-typed lie downstream.
-    expect(parseReaderMessage('{"type":"relocated","cfi":42}')).toEqual({
+    expect(parseReaderMessage('{"type":"relocated","position":{"format":"EPUB","cfi":42}}')).toEqual({
       type: 'relocated',
-      cfi: null,
+      position: { format: 'EPUB', cfi: null },
       atStart: false,
       atEnd: false,
     });
@@ -153,6 +139,50 @@ describe('parseReaderMessage', () => {
       type: 'error',
       code: 'WEBVIEW_SCRIPT_ERROR',
       message: 'm',
+    });
+  });
+});
+
+describe('the reported position', () => {
+  const relocated = (position: string): unknown =>
+    parseReaderMessage(`{"type":"relocated","position":${position},"atStart":false,"atEnd":false}`);
+
+  it('accepts a PDF page inside its document', () => {
+    expect(relocated('{"format":"PDF","page":1,"pageCount":1}')).toMatchObject({
+      position: { format: 'PDF', page: 1, pageCount: 1 },
+    });
+  });
+
+  // STRICTER THAN THE OTHER HARDENERS, and the whole block exists to pin that choice. A mis-indented
+  // Contents row is cosmetic, so asTocDepth collapses a bad value to 0. A position is shown to the
+  // user as a claim about where they are, so a nonsense value is DROPPED rather than smoothed into a
+  // plausible one — the message parses to null and the caller raises BRIDGE_PARSE_FAILED.
+  it.each([
+    ['a missing position', 'null'],
+    ['an unknown format', '{"format":"AUDIO","page":1,"pageCount":2}'],
+    ['no format at all', '{"page":1,"pageCount":2}'],
+    ['a page of zero', '{"format":"PDF","page":0,"pageCount":2}'],
+    ['a negative page', '{"format":"PDF","page":-1,"pageCount":2}'],
+    ['a fractional page', '{"format":"PDF","page":1.5,"pageCount":2}'],
+    ['a stringified page', '{"format":"PDF","page":"1","pageCount":2}'],
+    ['a missing pageCount', '{"format":"PDF","page":1}'],
+    ['a zero pageCount', '{"format":"PDF","page":1,"pageCount":0}'],
+  ])('drops the whole message for %s', (_label, position) => {
+    expect(relocated(position)).toBeNull();
+  });
+
+  // THE RELATION, which is the part worth having: both fields are individually valid here and jointly
+  // impossible, and "page 7 of 3" is exactly what a rendering bug would produce.
+  it('refuses a page past its own page count', () => {
+    expect(relocated('{"format":"PDF","page":7,"pageCount":3}')).toBeNull();
+  });
+
+  // An EPUB position is deliberately permissive by comparison: a null cfi is a real state (epub.js
+  // reports a location before the first CFI resolves), and it costs nothing because nothing is
+  // displayed from it.
+  it('keeps an EPUB position whose cfi is absent', () => {
+    expect(relocated('{"format":"EPUB"}')).toMatchObject({
+      position: { format: 'EPUB', cfi: null },
     });
   });
 });
@@ -262,83 +292,78 @@ describe('buildCommandScript', () => {
 
 // --- THE DRIFT GUARD ---------------------------------------------------------
 
-describe('readerBridge <-> the WebView templates stay in sync', () => {
-  it('every message type the WebView posts has a case in ReaderMessage', () => {
-    // READER_MESSAGE_TYPES, not a literal copy of the union. This used to be a
-    // hand-written array, which left one hand-synced list inside the guard whose
-    // whole job is removing them: a case added to ReaderMessage but to neither the
-    // template nor the literal failed nothing. readerBridge.ts now pins that array
-    // to the union at compile time, so both sides of this assertion are derived.
-    expect(messageTypesPostedByWebView()).toEqual([...READER_MESSAGE_TYPES].sort());
-  });
-
-  it('every message type in the union is parseable (no dead cases)', () => {
-    for (const type of messageTypesPostedByWebView()) {
-      expect(parseReaderMessage(JSON.stringify({ type }))).not.toBeNull();
-    }
-  });
-
-  it('every error code the WebView raises is declared in WEBVIEW_ERROR_CODES', () => {
+describe('what the compiler cannot check about the WebView half', () => {
+  it('declares no error code the WebView never actually raises', () => {
+    // THE DIRECTION TYPES DO NOT COVER. `fail(code: WebViewErrorCode, ...)` guarantees that every
+    // code raised is declared. Nothing guarantees the reverse, so WEBVIEW_ERROR_CODES could
+    // accumulate a member no shell can produce — which reads to the next person as a failure mode
+    // that exists and has to be handled.
     expect(errorCodesRaisedByWebView()).toEqual([...WEBVIEW_ERROR_CODES].sort());
   });
 
-  it('host-only error codes are never raised inside the WebView', () => {
-    // If one of these appears in a WebView source, the two error namespaces have been
-    // conflated and "where did this come from" stops being answerable.
-    for (const code of HOST_ERROR_CODES) {
-      expect(errorCodesRaisedByWebView()).not.toContain(code);
+  it('never raises a host-only code from inside the WebView', () => {
+    // Also covered by `fail`'s parameter type, and kept anyway because it is one line and states an
+    // ownership boundary the codes' own names do not: HOST_ERROR_CODES are synthesised by
+    // ReaderScreen for failures that happen before or outside the WebView.
+    expect(
+      errorCodesRaisedByWebView().filter((code) => (HOST_ERROR_CODES as readonly string[]).includes(code)),
+    ).toEqual([]);
+  });
+
+  it('raises the catch-all codes from the shared module, not from either entry', () => {
+    // A PLACEMENT rule, which no type expresses. window.onerror and unhandledrejection are
+    // registered once, in bridge.ts, and the entries call installErrorHandlers() first so the
+    // handlers exist before any renderer setup can throw. Duplicating them into an entry would mean
+    // one shell reporting a throw twice and the other not at all.
+    const CATCH_ALLS = ['WEBVIEW_SCRIPT_ERROR', 'WEBVIEW_UNHANDLED_REJECTION'];
+    const byName = new Map(WEBVIEW_SOURCES.map((s) => [s.name, s.text]));
+
+    for (const code of CATCH_ALLS) {
+      expect(byName.get('webview/src/bridge.ts')).toContain(`fail('${code}'`);
+      expect(byName.get('webview/src/epub.entry.ts')).not.toContain(`fail('${code}'`);
+      expect(byName.get('webview/src/pdf.entry.ts')).not.toContain(`fail('${code}'`);
     }
   });
 
-  it('every command maps to a real window.TFReader method', () => {
-    expect(tfReaderMethods()).toEqual([...Object.values(READER_COMMANDS)].sort());
-  });
-
-  // --- per-file expectations the union deliberately cannot make ---------------
-
-  it('each template defines exactly one open command, and it is its own format', () => {
-    // The point of two commands rather than open(base64, format): the renderer is
-    // chosen by WHICH METHOD EXISTS, so a template carrying both — or the wrong one —
-    // would silently make the host's format switch meaningless.
-    expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).toContain(READER_COMMANDS.openEpub);
-    expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).not.toContain(READER_COMMANDS.openPdf);
-
-    expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).toContain(READER_COMMANDS.openPdf);
-    expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).not.toContain(READER_COMMANDS.openEpub);
-  });
-
-  it('both templates implement every format-agnostic command', () => {
-    // next/prev/goTo are sent without the host knowing or caring which renderer is
-    // loaded, so a template missing one answers NOT_READY for a command the host
-    // believes is universal.
-    for (const command of [READER_COMMANDS.next, READER_COMMANDS.prev, READER_COMMANDS.goTo]) {
-      expect(tfReaderMethodsIn(EPUB_TEMPLATE, 'epub')).toContain(command);
-      expect(tfReaderMethodsIn(PDF_TEMPLATE, 'pdf')).toContain(command);
+  it('installs those handlers before anything that can throw', () => {
+    // Ordering, not presence. When this logic lived inline it sat two thirds of the way down the
+    // file and anything that threw above it was invisible — a blank page and a READY_TIMEOUT.
+    for (const source of WEBVIEW_SOURCES.filter((s) => s.name.endsWith('.entry.ts'))) {
+      const install = source.text.indexOf('installErrorHandlers()');
+      const publish = source.text.indexOf('publish(api)');
+      expect(install).toBeGreaterThan(-1);
+      expect(publish).toBeGreaterThan(install);
     }
   });
 
-  it('neither template redefines what the shared fragment provides', () => {
-    // The whole reason reader.bridge.html exists. A template that declared its own
-    // post() or fail() would shadow the shared one and drift silently — the guard
-    // above would still pass, because the codes and types would still match.
-    const shared = ['post', 'fail', 'showFallback', 'base64ToArrayBuffer'];
+  it('lets every message type in the union be parsed (no dead cases)', () => {
+    // A TS-side check: a type added to ReaderMessage but not to parseReaderMessage's switch returns
+    // null and surfaces as BRIDGE_PARSE_FAILED at runtime rather than failing a build.
+    //
+    // EACH TYPE NEEDS ITS MINIMUM VALID PAYLOAD, not a bare `{ type }`. This used to send the bare
+    // form, which worked only because every case tolerated an absent payload — and `relocated` now
+    // deliberately does not, because a position it cannot understand must not parse. The map is the
+    // better shape anyway: it documents what the minimum is, and `satisfies` makes forgetting to add
+    // an entry a compile error rather than a passing test over a shorter list.
+    const MINIMUM: Record<(typeof READER_MESSAGE_TYPES)[number], Record<string, unknown>> = {
+      ready: {},
+      rendered: {},
+      relocated: { position: { format: 'EPUB' } },
+      toc: {},
+      error: {},
+    };
 
-    // Collected rather than asserted one at a time so a failure names the file AND
-    // the function, instead of reporting that some regex did not match something.
-    const offenders = WEBVIEW_SOURCES.filter((s) => s.name !== 'reader.bridge.html').flatMap((s) =>
-      shared
-        .filter((fn) => new RegExp(`function\\s+${fn}\\s*\\(`).test(s.text))
-        .map((fn) => `${s.name} defines its own ${fn}()`),
-    );
-
-    expect(offenders).toEqual([]);
+    for (const type of READER_MESSAGE_TYPES) {
+      expect(parseReaderMessage(JSON.stringify({ type, ...MINIMUM[type] }))).not.toBeNull();
+    }
   });
 
-  it('the shared fragment is what raises the catch-all codes', () => {
-    // These are registered once, in the fragment, for both formats. A template
-    // raising them itself would mean the fragment was not inlined where expected.
-    expect(errorCodesRaisedBy(BRIDGE_FRAGMENT)).toEqual(
-      ['WEBVIEW_SCRIPT_ERROR', 'WEBVIEW_UNHANDLED_REJECTION'].sort(),
-    );
+  it('names every command as its own method name', () => {
+    // READER_COMMANDS maps a command name to the literal method name on window.TFReader. The mapping
+    // being the identity is what makes `TFReaderApi` able to be a mapped type over ReaderCommand at
+    // all, and what makes a mismatch greppable.
+    for (const [command, method] of Object.entries(READER_COMMANDS)) {
+      expect(method).toBe(command);
+    }
   });
 });

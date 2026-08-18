@@ -50,10 +50,32 @@ import type { BookId } from '@/shared/contracts';
  * reader never took a format: it reads it back from the stored package via
  * getFormat(bookId). Switching these ids is the same code path a real library uses.
  */
-const FIXTURES: readonly { label: string; bookId: BookId }[] = [
+const BUNDLED_FIXTURES: readonly { label: string; bookId: BookId }[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID },
 ];
+
+/**
+ * The bundled two, plus `active` when it is neither of them.
+ *
+ * THE EXTRA ROW IS NOT COSMETIC — it exists to stop a measurement run being silently
+ * invalidated. With `EXPO_PUBLIC_READER_FIXTURE_PATH` set, `DEV_SAMPLE_BOOK_ID` is a
+ * fixture id matching neither bundled row, so nothing renders as selected and one tap
+ * lands on a bundled 3 KB stand-in with no way back without a relaunch. That is the
+ * "measuring the 3.6 KB book and believing it was 20 MB" failure devContentSeed.ts's
+ * distinct-id note warns about, reached through the UI instead of through a shared id.
+ *
+ * EXPORTED, AND A PURE FUNCTION OF ITS ARGUMENT, only so it can be tested: the value it
+ * is called with comes from an env var read at module load, and reaching that through a
+ * re-required App would hand the renderer a second copy of React.
+ */
+export function devFixtureOptions(active: BookId): readonly { label: string; bookId: BookId }[] {
+  return BUNDLED_FIXTURES.some((fixture) => fixture.bookId === active)
+    ? BUNDLED_FIXTURES
+    : [{ label: 'Fixture', bookId: active }, ...BUNDLED_FIXTURES];
+}
+
+const FIXTURES = devFixtureOptions(DEV_SAMPLE_BOOK_ID);
 
 export default function App() {
   // TEMP, with the block above. Initialised from DEV_SAMPLE_BOOK_ID so

@@ -8,58 +8,64 @@ the rules that must survive across sessions.
 
 **`src/features/reader/WEBVIEW_BRIDGE.md` is the source of truth for the reader bridge.**
 
-The WebView half is deliberately **not typechecked**, so the contract between it and
-`readerBridge.ts` is hand-maintained. That doc records the current surface, the conditions that end
-the arrangement, and which upcoming stage trips them.
+**The WebView half is typechecked TypeScript, as of 2026-08-18.** It imports `ReaderMessage` and
+`ReaderCommand` from `readerBridge.ts`, so the two halves are one contract with two consumers rather
+than two hand-synced descriptions of one protocol. `npm run typecheck` is the drift guard now — the
+tests that used to read the templates as text are gone, and deleting them was the point.
 
-**The WebView half is THREE files**, one per content format plus a shared fragment:
+| File                                                    | Holds                                                              |
+| ------------------------------------------------------- | ------------------------------------------------------------------ |
+| `webview/src/bridge.ts`                                 | `post`/`fail`/`showFallback`/`base64ToArrayBuffer`, `TFReaderApi`   |
+| `webview/src/epub.entry.ts`                             | epub.js renderer, `openEpub`                                        |
+| `webview/src/pdf.entry.ts`                              | pdf.js renderer, `openPdf`, the worker wiring                       |
+| `webview/src/readerMetrics.ts`                          | typography arithmetic + the stylesheet — **pure, unit-tested**      |
+| `webview/src/epubOutline.ts`, `pdfOutline.ts`            | navigation/outline → `toc`, page + scale maths — **pure, unit-tested** |
+| `webview/reader-{epub,pdf}.template.html`               | **HTML and CSS only** — the DOM each entry queries                  |
 
-| File                                             | Holds                                                    |
-| ------------------------------------------------ | -------------------------------------------------------- |
-| `webview/reader-epub.template.html`              | epub.js renderer, `openEpub`, the typography machinery    |
-| `webview/reader-pdf.template.html`               | pdf.js renderer, `openPdf`, the worker wiring            |
-| `webview/reader.bridge.html`                     | `post`/`fail`/`showFallback`/`base64ToArrayBuffer` — injected into **both** |
+`buildReaderHtml.ts` compiles each entry with **esbuild** (one IIFE per format) and inlines it beside
+the libraries. `esbuild` is pinned **exactly** in `package.json` on purpose: CI regenerates both
+artifacts and `git diff --exit-code`s them, so output determinism is load-bearing. A flapping diff
+means the version drifted — do not "fix" it by loosening the CI check.
 
-`reader.bridge.html` is **raw JavaScript despite the `.html` extension** (it is spliced into both
-templates' IIFEs). Do not put HTML in it, and do not write a block-comment terminator inside a
-comment there — that shipped a broken reader once and is why `buildReaderHtml.ts` now parses
-everything it emits.
+**Keep DOM-reading code in the entries and everything else in the pure modules.** That split is what
+makes the outline flatteners, the line grid and the page/scale arithmetic testable by *calling* them.
+If you are about to write a loop with a `+1` in it inside an entry, it belongs next door.
 
-**Read the doc before** adding or changing any `ReaderMessage` type, any `READER_COMMANDS` entry,
-any `window.TFReader` method, or anything in a template or the fragment.
+**Read the doc before** adding or changing any `ReaderMessage` type, any `READER_COMMANDS` entry, any
+`window.TFReader` method, or anything in a template. **Then update it.** In the same change:
 
-**Then update it.** When the bridge changes, in the same change:
-
-1. Update **every** half — `readerBridge.ts` and whichever WebView files are affected. A change to
-   shared behaviour belongs in the fragment, not copied into both templates.
-2. Add the case to `parseReaderMessage()`.
-3. Run `npm run reader:build-html`. **Both** `assets/reader/reader-epub.html` and
-   `reader-pdf.html` are **generated but tracked** artifacts, and a fragment edit invalidates both —
-   editing a source without regenerating leaves them silently divergent.
+1. Change `readerBridge.ts` and let the compiler find the rest — a new message case or command fails
+   to compile in the WebView half until it is handled.
+2. Add the case to `parseReaderMessage()`. **`tsc` will not catch this one**: a missing case returns
+   `null` and surfaces as `BRIDGE_PARSE_FAILED` at runtime. `parseReaderMessage` is NOT redundant now
+   that types are shared — compile-time types do not survive the JSON hop, and the payload is built
+   from book content.
+3. Run `npm run reader:build-html`. **Both** `assets/reader/reader-epub.html` and `reader-pdf.html`
+   are **generated but tracked**, and a change to `bridge.ts` or a shared pure module invalidates
+   both.
 4. Update the **Current surface** table in `WEBVIEW_BRIDGE.md`.
-5. **Re-run the trigger test in that doc.** If a trigger now fires, converting the WebView JS to a
-   typechecked build _is the task_ — not a follow-up ticket. Say so explicitly.
+5. Run it on the simulator for anything that affects rendering. Unit tests cannot see a blank page.
 
-**Format routing does NOT cross this bridge, and must not start.** `ContentFormat` is frozen, so
-the host picks between `openEpub` and `openPdf` in typechecked TS and only the command *name*
-travels. Collapsing those into `open(base64, format)` reads tidier and fires trigger 3; a test in
-`readerBridge.test.ts` fails if a `ContentFormat` literal ever appears in a command script.
+**Format routing does NOT cross this bridge, and must not start.** `ContentFormat` is frozen, so the
+host picks between `openEpub` and `openPdf` in typechecked TS and only the command *name* travels.
+Each entry declares `TFReaderApi<'openEpub'>` or `TFReaderApi<'openPdf'>`, so defining the wrong one
+is a compile error; and a test in `readerBridge.test.ts` fails if a `ContentFormat` literal ever
+appears in a command script. Collapsing them into `open(base64, format)` reads tidier and puts a
+frozen enum value on the wire.
 
-Short version of the trigger, so it isn't skipped: >8 message types, any **payload** past ~3 fields
-in either direction (a command's args count as a message's fields do), a command needing a **reply**,
-or a **frozen `src/shared/contracts/` type crossing the bridge**. Flag it rather than quietly
-hand-syncing.
+**The trigger list is history, not a forecast — do not re-run it.** It existed to date the hand-sync
+debt, prefs-application called it in, and the conversion happened before that command was written.
+`WEBVIEW_BRIDGE.md` keeps the record of how that was decided, because a written expiry date whose
+ending nobody records is how the next person re-litigates it.
 
-**The trigger has now fired.** Prefs-application was requested by Personalization on 2026-08-18 and
-signed off, so the typechecked-WebView conversion is the next task in `reader/`, not a forecast — see
-"The prefs-application design, as signed off" in `WEBVIEW_BRIDGE.md` for the agreed surface: one
-`applyAppearance(ReaderAppearance)`, defined in **both** templates, sent **before** `open*`.
-Trigger 3 is designed out of it by resolving prefs host-side into a flat primitive-only payload
-(`features/personalization/readerAppearance.ts`); trigger 1 fires on the field count regardless.
-**Do not write that command before the conversion**, and do not let the payload split into a second
-`applyA11y` sibling — one command carries everything the WebView renders with, for all three
-claimants (Personalization's typography/theme, Reader's `reduceMotion`, Accessibility's
-`announce.pageChanges`).
+**Prefs-application is the next task in `reader/`, and it is no longer blocked.** See "The
+prefs-application design, as signed off" in `WEBVIEW_BRIDGE.md`: one `applyAppearance(ReaderAppearance)`,
+sent **before** `open*`, resolved host-side into a flat primitive-only payload
+(`features/personalization/readerAppearance.ts`). Adding it to `CommandArgs` now *requires* both
+entries to define it, so the "must be in both halves" trap is enforced rather than remembered. Do not
+let the payload split into a second `applyA11y` sibling — one command carries everything the WebView
+renders with, for all three claimants (Personalization's typography/theme, Reader's `reduceMotion`,
+Accessibility's `announce.pageChanges`).
 
 ## Generated and tracked artifacts
 
@@ -73,9 +79,10 @@ claimants (Personalization's typography/theme, Reader's `reduceMotion`, Accessib
 
 Never hand-edit any of them; regenerate and commit the result.
 
-The two HTML files come from one generator and share `reader.bridge.html`, so **one fragment edit
-invalidates both** — rebuild and commit both, or CI's "Reader HTML is freshly generated" step fails
-on whichever you forgot. Forgetting is a red build, not a silent stale ship.
+The two HTML files come from one generator and share `webview/src/bridge.ts` (plus the pure modules),
+so **one shared-module edit invalidates both** — rebuild and commit both, or CI's "Reader HTML is
+freshly generated" step fails on whichever you forgot. Forgetting is a red build, not a silent stale
+ship.
 
 `sample-plaintext.pdf` is checked the same way ("Sample PDF is freshly generated"), because unlike
 the EPUB it *is* byte-reproducible: `generateSamplePdf.ts` emits no `/CreationDate`, `/ModDate` or
@@ -163,6 +170,10 @@ on Reader's schedule. **To opt your directory in, add it to that block's `files`
 set and the `projectService` wiring are already there, so it is a one-line change. Do not enable
 it for someone else's directory on their behalf.
 
+`__mocks__/react-native-quick-crypto.js` gained `randomBytes` on 2026-08-18 so `ensureSeeded()` could
+be exercised under Jest. Test-only, additive, and a one-line passthrough to Node's `crypto` in keeping
+with that file's design — but it is a shared mock, so it is recorded here rather than only in git.
+
 ### Known open items — both are Abhinav's call
 
 This list used to have three. **The stale keychain-cached BEK is fixed:** `store()` now clears the
@@ -214,6 +225,15 @@ Caveat that must travel with these numbers: **simulator, dev build, and the simu
 jetsam.** ~1.0 GB combined would be a likely foreground kill on a 2 GB device. Real-device
 confirmation is still outstanding. Also still unmeasured: the post-`closeBook` drop, which needs
 `RootNavigator` before anything can unmount `ReaderScreen`.
+
+**Confirmed for PDF on 2026-08-18, and it makes this item's headline stronger rather than weaker.**
+The app-side cost is **8.66 MB of peak per MB of book, identical to three significant figures for
+both formats** — which is exactly what "peak tracks the number of copies, and the copies are
+Encryption's" predicts, now measured rather than argued. The renderers differ only inside the
+WebView (7.30×/MB for pdf.js against 11.21×/MB for epub.js), so **no renderer choice moves this
+item**; only removing copies does. Full tables, procedure and the four-process RSS correction —
+app+WebContent undercounts by ~263 MB, because `WebKit.GPU` and `WebKit.Networking` were never
+counted — are in `src/features/reader/READER_MEASUREMENTS.md`. Read that before re-measuring.
 
 ## Temporary scaffolding
 
@@ -269,6 +289,21 @@ one, so it has no shared-fixture entanglement and needs nobody looped in.
 | 1 | `src/features/reader/scripts/generateSamplePdf.ts` |
 | 2 | `assets/reader/sample-plaintext.pdf` + the `reader:build-sample-pdf` script and its CI step |
 | 3 | `DEV_FORMAT` / `EXPO_PUBLIC_READER_FORMAT` and the PDF branch in `devContentSeed.ts` |
+
+**The measurement fixture path goes with `devContentSeed.ts` as well — four more items**, added
+2026-08-18 when `EXPO_PUBLIC_READER_FIXTURE_PATH` was extended to PDF so the pdf.js path could be
+measured on a real book. It is the same scaffolding as the rest of that file and dies with it.
+
+| # | Delete |
+| - | ------ |
+| 1 | `DEV_FIXTURE_EPUB_BOOK_ID` / `DEV_FIXTURE_PDF_BOOK_ID` and their `DEV_FIXTURES` entries |
+| 2 | `src/features/reader/devFixturePath.test.ts` (it tests only the env-var crossing) |
+| 3 | `devFixtureOptions()` in `App.tsx`, with the rest of the temp picker |
+| 4 | whatever sits in `samples/fixtures/` — real content, gitignored, never committed |
+
+`READER_MEASUREMENTS.md` is **not** on that list. It records numbers and a procedure that outlive the
+fixture; what it needs then is a note saying how the books were loaded, not deletion. Neither is
+`readerTiming.ts` — the probes are permanent and off by default.
 
 `reader-pdf.template.html`, `pdfjs-dist` and the `openPdf` command are **not** on that list — PDF
 support is permanent. What goes is only the fixture that lets it be tested before a library screen

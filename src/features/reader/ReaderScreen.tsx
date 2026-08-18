@@ -28,12 +28,7 @@ import {
   prepareBook,
   UnsupportedFormatError,
 } from '@/features/reader/readerAssets';
-import type {
-  ReaderCommand,
-  ReaderErrorCode,
-  ReaderMessage,
-  ReaderTocItem,
-} from '@/features/reader/readerBridge';
+import type { ReaderCommand, ReaderErrorCode, ReaderMessage, ReaderPosition, ReaderTocItem } from '@/features/reader/readerBridge';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
@@ -178,6 +173,16 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
+
+  /**
+   * Where the reader is, as last reported.
+   *
+   * NOT PERSISTED HERE, deliberately. `progressStore.savePage()` / `savePosition()` exist on Sync's
+   * side and this is finally the value they need, but writing a progress record is Personalization's
+   * stage and its own decisions (when to write, how often, what wins on conflict). Surfacing it is
+   * Reader's half; storing it is not, and doing both here would prejudge those.
+   */
+  const [position, setPosition] = useState<ReaderPosition | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
@@ -452,11 +457,16 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         setIsRendered(true);
         break;
       case 'relocated':
-        // The CFI lands here. Nothing consumes it yet — persisting it belongs to
-        // Personalization's Progress record, whose open question is exactly that
-        // an integer offset cannot anchor a reflowable EPUB and a CFI can.
+        setPosition(message.position);
         break;
       case 'toc':
+        // TIMED, unlike the other post-open messages, because this is the one that can stall
+        // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
+        // still unavailable. The PDF shell resolves every outline destination through the worker
+        // (one or two round trips each), so a large book's outline is where that shows up.
+        if (openSentAtRef.current !== null) {
+          logSpan('open -> toc', openSentAtRef.current, { items: message.items.length });
+        }
         setToc(message.items);
         break;
       case 'error':
@@ -775,6 +785,18 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <Text style={styles.buttonText}>{showToc ? 'Close' : `Contents (${toc.length})`}</Text>
         </Pressable>
 
+        {/*
+          THE PAGE INDICATOR, and it is PDF-only by construction rather than by choice: `position` is
+          discriminated by format, and an EPUB reports a CFI because a reflowable book has no stable
+          page to show. Rendering nothing for EPUB is the honest outcome — a fabricated "page 3 of
+          400" from a CFI would be a number that changes with the font size.
+        */}
+        {position?.format === 'PDF' && (
+          <Text accessibilityLabel={`Page ${position.page} of ${position.pageCount}`} style={styles.pageIndicator}>
+            {position.page} / {position.pageCount}
+          </Text>
+        )}
+
         <Pressable
           accessibilityRole="button"
           disabled={send === null}
@@ -812,6 +834,13 @@ const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
 
 const styles = StyleSheet.create({
+  // Reads as a status line rather than a control: no border, no press affordance. Tabular figures so
+  // the row does not shift width as the page number gains a digit.
+  pageIndicator: {
+    fontSize: 13,
+    color: '#555555',
+    fontVariant: ['tabular-nums'],
+  },
   // flex:1 down to the WebView. See the note in ReaderWebView.tsx — epub.js
   // renders nothing at all into a zero-height container.
   container: { flex: 1, backgroundColor: '#ffffff' },

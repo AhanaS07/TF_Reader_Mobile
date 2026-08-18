@@ -67,8 +67,14 @@ const PDF_MIME_TYPE = 'application/pdf';
 const BEK_BYTES = 32;
 
 /**
- * Absolute path to a large EPUB pushed into the app container, used INSTEAD of the bundled 3.6 KB
- * asset when set. Measurement scaffolding for the whole-book work — unset in every normal run.
+ * Absolute path to a large book pushed into the app container, used INSTEAD of the bundled sample
+ * when set. Measurement scaffolding for the whole-book work — unset in every normal run.
+ *
+ * COMPOSES WITH DEV_FORMAT rather than overriding it: this picks the SOURCE (a container path
+ * instead of a bundled asset), DEV_FORMAT below picks the FORMAT. Both are honoured, so
+ * FIXTURE_PATH + EXPO_PUBLIC_READER_FORMAT=PDF measures a large PDF through pdf.js. Keeping the two
+ * axes separate is what makes a large-PDF run possible at all — the pdf.js path is otherwise only
+ * reachable with the 2.9 KB bundled fixture, which measures nothing.
  *
  * WHY A PATH AND NOT A BUNDLED ASSET: Metro resolves require() statically at bundle time, so a
  * gitignored 20 MB asset is a hard bundling error rather than a soft miss — a "guarded require" is
@@ -80,7 +86,7 @@ const BEK_BYTES = 32;
  * process.env lookup silently never gets inlined.
  *
  * >>> THIS PUTS PLAINTEXT IN THE APP CONTAINER BY CONSTRUCTION. <<< The file is an unencrypted
- * EPUB sitting on disk until it is deleted, which is exactly what a storage-leak sweep should flag.
+ * book sitting on disk until it is deleted, which is exactly what a storage-leak sweep should flag.
  * Delete it once the ciphertext is stored and BEFORE running any forensic sweep, or the sweep
  * either reports your own fixture as a leak or "passes" while real content sits in the container.
  */
@@ -95,8 +101,9 @@ const FIXTURE_PATH = process.env.EXPO_PUBLIC_READER_FIXTURE_PATH;
  * than seeding a book with a format nothing can open. AUDIO is deliberately unreachable here; the
  * reader refuses it with UNSUPPORTED_FORMAT and there is no audio fixture to seed.
  *
- * ORTHOGONAL TO FIXTURE_PATH, which is EPUB-only measurement scaffolding. If both are set,
- * FIXTURE_PATH wins and this is ignored — see DEV_SAMPLE_BOOK_ID below.
+ * ORTHOGONAL TO FIXTURE_PATH, and genuinely so: that variable chooses the SOURCE, this one chooses
+ * the FORMAT, and DEV_SAMPLE_BOOK_ID below crosses the two into one of four fixture ids. Setting
+ * both is the large-PDF measurement run.
  *
  * LITERAL MEMBER ACCESS, deliberately — same reason as FIXTURE_PATH above.
  */
@@ -112,16 +119,23 @@ const DEV_FORMAT: ContentFormat = process.env.EXPO_PUBLIC_READER_FORMAT === 'PDF
 export const DEV_SAMPLE_EPUB_BOOK_ID: BookId = 'dev-sample-epub';
 export const DEV_SAMPLE_PDF_BOOK_ID: BookId = 'dev-sample-pdf';
 const DEV_FIXTURE_EPUB_BOOK_ID: BookId = 'dev-fixture-epub';
+const DEV_FIXTURE_PDF_BOOK_ID: BookId = 'dev-fixture-pdf';
 
 /**
  * The book App.tsx opens on launch, when nothing has been picked yet.
  *
- * `EXPO_PUBLIC_READER_FORMAT=PDF` still selects the PDF one, so the env var remains
- * the way to launch straight into the pdf.js path. The in-app picker can then switch
- * without a rebuild — see the fixture table below for why that works.
+ * TWO INDEPENDENT AXES, CROSSED — source (FIXTURE_PATH or bundled) x format (DEV_FORMAT). All four
+ * combinations are reachable, and each lands on its own id so none of them can be served a package
+ * seeded for another; see the distinct-id note above for why that matters more than it looks.
+ *
+ * `EXPO_PUBLIC_READER_FORMAT=PDF` selects the pdf.js path either way, so it remains the way to launch
+ * straight into it. The in-app picker can then switch without a rebuild — see the fixture table below
+ * for why that works.
  */
 export const DEV_SAMPLE_BOOK_ID: BookId = FIXTURE_PATH
-  ? DEV_FIXTURE_EPUB_BOOK_ID
+  ? DEV_FORMAT === 'PDF'
+    ? DEV_FIXTURE_PDF_BOOK_ID
+    : DEV_FIXTURE_EPUB_BOOK_ID
   : DEV_FORMAT === 'PDF'
     ? DEV_SAMPLE_PDF_BOOK_ID
     : DEV_SAMPLE_EPUB_BOOK_ID;
@@ -168,8 +182,17 @@ const DEV_FIXTURES: Readonly<Record<string, DevFixture>> = {
     format: 'EPUB',
     mimeType: EPUB_MIME_TYPE,
     assetModule: null,
-    name: 'the EXPO_PUBLIC_READER_FIXTURE_PATH book',
+    name: 'the EXPO_PUBLIC_READER_FIXTURE_PATH book (EPUB)',
     // A different EPUB under a different bookId: the index's CFIs address the wrong book.
+    attachIndex: false,
+  },
+  [DEV_FIXTURE_PDF_BOOK_ID]: {
+    format: 'PDF',
+    mimeType: PDF_MIME_TYPE,
+    assetModule: null,
+    name: 'the EXPO_PUBLIC_READER_FIXTURE_PATH book (PDF)',
+    // Both reasons the bundled PDF gets no index apply here too: Search's extractor is EPUB-only,
+    // and the bundled index addresses the sample EPUB's spine rather than this book.
     attachIndex: false,
   },
 };
@@ -187,7 +210,7 @@ function fixtureFor(bookId: BookId): DevFixture {
 }
 
 async function sampleBookBytes(bookId: BookId): Promise<Uint8Array> {
-  const { assetModule, name } = fixtureFor(bookId);
+  const { assetModule, name, format } = fixtureFor(bookId);
 
   if (assetModule === null) {
     if (!FIXTURE_PATH) {
@@ -199,8 +222,9 @@ async function sampleBookBytes(bookId: BookId): Promise<Uint8Array> {
     if (!fixture.exists) {
       throw new Error(
         `EXPO_PUBLIC_READER_FIXTURE_PATH is set to "${FIXTURE_PATH}" but no file is there. ` +
-          `Push it into the container first, e.g. cp <book>.epub "$(xcrun simctl get_app_container ` +
-          `booted com.taylorandfrancis.tfreader.dev data)/Documents/dev-fixtures/".`
+          `Push it into the container first, e.g. cp <book> "$(xcrun simctl get_app_container ` +
+          `booted com.taylorandfrancis.tfreader.dev data)/Documents/dev-fixtures/". ` +
+          `The file must match EXPO_PUBLIC_READER_FORMAT, which selects ${format} here.`
       );
     }
     return fixture.bytesSync();

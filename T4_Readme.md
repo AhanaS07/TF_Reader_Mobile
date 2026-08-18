@@ -153,8 +153,8 @@ Beyond the repo-wide notes in the root README:
 ### Real-book device runs — `samples/fixtures/`
 
 Anything that has to be checked against a real book (rendering, TOC, memory, timings) uses a large
-EPUB kept at **`samples/fixtures/`** and loaded through `EXPO_PUBLIC_READER_FIXTURE_PATH`, which
-`devContentSeed.ts` reads instead of the 3.6 KB bundled sample:
+book kept at **`samples/fixtures/`** and loaded through `EXPO_PUBLIC_READER_FIXTURE_PATH`, which
+`devContentSeed.ts` reads instead of the bundled sample:
 
 ```
 EXPO_PUBLIC_READER_FIXTURE_PATH="$PWD/samples/fixtures/20mb_EPUB.epub" npx expo start --dev-client --clear
@@ -163,6 +163,13 @@ EXPO_PUBLIC_READER_FIXTURE_PATH="$PWD/samples/fixtures/20mb_EPUB.epub" npx expo 
 `--clear` is not optional: `EXPO_PUBLIC_*` values are inlined at transform time, so a warm Metro
 cache keeps serving the previous one. The bookId also changes with it (`dev-fixture-epub` rather
 than `dev-sample-epub`), which is what stops the two books sharing a stored package.
+
+**Add `EXPO_PUBLIC_READER_FORMAT=PDF` to reach pdf.js with a real book.** The two variables are
+independent axes — this one picks the source, that one picks the format — and the four combinations
+land on four distinct bookIds for the same package-sharing reason. Without it, a `.pdf` at this path
+would be seeded as an EPUB and handed to epub.js; `devFixturePath.test.ts` is what stops that
+regressing. The full measurement procedure, the run matrix and the numbers live in
+`src/features/reader/READER_MEASUREMENTS.md`.
 
 Two things to know, in order of how much trouble they cause:
 
