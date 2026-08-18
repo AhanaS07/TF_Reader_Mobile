@@ -406,8 +406,15 @@
               // position and has no PDF meaning. The page NUMBER is deliberately not
               // reported either — adding a field here would take this case to four
               // and fire trigger 1 in WEBVIEW_BRIDGE.md, and nothing consumes a
-              // position yet (Progress is Personalization's stage). atStart/atEnd are
-              // what the host's next/prev buttons actually need.
+              // position yet (Progress is Personalization's stage).
+              //
+              // atStart/atEnd are reported because the message shape requires them, NOT
+              // because anything reads them: ReaderScreen disables Prev/Next on
+              // `send === null` only, so both stay enabled at the ends — same as the
+              // EPUB path today. Bounds are enforced HERE instead, in next/prev below,
+              // which is why tapping Next on the last page is a no-op rather than an
+              // error. If the host ever does gate its buttons on these, this is already
+              // the honest answer for a PDF.
               post({
                 type: 'relocated',
                 cfi: null,

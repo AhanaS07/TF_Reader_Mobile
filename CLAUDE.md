@@ -45,9 +45,21 @@ the host picks between `openEpub` and `openPdf` in typechecked TS and only the c
 travels. Collapsing those into `open(base64, format)` reads tidier and fires trigger 3; a test in
 `readerBridge.test.ts` fails if a `ContentFormat` literal ever appears in a command script.
 
-Short version of the trigger, so it isn't skipped: >8 message types, any case past ~3 fields, a
-command needing a **reply**, or a **frozen `src/shared/contracts/` type crossing the bridge**.
-The prefs-application stage is expected to trip it. Flag it rather than quietly hand-syncing.
+Short version of the trigger, so it isn't skipped: >8 message types, any **payload** past ~3 fields
+in either direction (a command's args count as a message's fields do), a command needing a **reply**,
+or a **frozen `src/shared/contracts/` type crossing the bridge**. Flag it rather than quietly
+hand-syncing.
+
+**The trigger has now fired.** Prefs-application was requested by Personalization on 2026-08-18 and
+signed off, so the typechecked-WebView conversion is the next task in `reader/`, not a forecast — see
+"The prefs-application design, as signed off" in `WEBVIEW_BRIDGE.md` for the agreed surface: one
+`applyAppearance(ReaderAppearance)`, defined in **both** templates, sent **before** `open*`.
+Trigger 3 is designed out of it by resolving prefs host-side into a flat primitive-only payload
+(`features/personalization/readerAppearance.ts`); trigger 1 fires on the field count regardless.
+**Do not write that command before the conversion**, and do not let the payload split into a second
+`applyA11y` sibling — one command carries everything the WebView renders with, for all three
+claimants (Personalization's typography/theme, Reader's `reduceMotion`, Accessibility's
+`announce.pageChanges`).
 
 ## Generated and tracked artifacts
 

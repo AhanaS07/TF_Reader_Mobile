@@ -27,6 +27,19 @@
 // this file starts failing on every run and the honest fix is to remove it from CI,
 // not to loosen the check.
 //
+// >>> REGENERATING THIS DOES NOT UPDATE AN ALREADY-SEEDED SIMULATOR. <<<
+// `ensureSeeded()` short-circuits on `isAvailableOffline()` plus a seed-version marker,
+// so a device that has opened this book once keeps decrypting the OLD ciphertext and
+// your change appears to have done nothing. Verified the hard way: a layout fix here
+// rendered identically on device until the marker was cleared. To pick up new bytes:
+//
+//   DATA=$(xcrun simctl get_app_container booted com.taylorandfrancis.tfreader.dev data)
+//   rm -f "$DATA/Documents/dev-seed-dev-sample-pdf.version"
+//
+// then reload the app — `ensureSeeded` does destroy()-before-store(), so the stale
+// package is cleared for you. Bumping SEED_VERSION in devContentSeed.ts works too and
+// is the right move if the change ships to teammates, since it re-seeds every install.
+//
 // This script uses Node globals. Legitimate here for the same reason as its siblings:
 // it runs under Node, never on device.
 
@@ -71,20 +84,34 @@ function pageText(pageNumber: number): string[] {
  * a page that shows the bar but no text tells you the FONT resource is wrong rather
  * than that rendering failed altogether. That distinction is otherwise a guess.
  */
+/**
+ * Vertical layout, in PDF user space (origin bottom-left, so LARGER y is HIGHER).
+ *
+ * Derived from each other rather than hand-picked, because the first version picked
+ * both independently and the bar landed on top of the fourth line of text — visible
+ * only once it was rendered on a device. `TEXT_TOP_Y` is now defined as a gap below
+ * the bar, so the two cannot collide however many lines are added.
+ */
+const BAR_Y = PAGE_HEIGHT - 78;
+const BAR_HEIGHT = 18;
+const LINE_HEIGHT = 22;
+const TEXT_TOP_Y = BAR_Y - 34;
+
 function contentStream(pageNumber: number): string {
   const lines = pageText(pageNumber);
-  const startY = PAGE_HEIGHT - 96;
 
   const text = lines
-    .map((line, i) => (line === '' ? '' : `1 0 0 1 72 ${startY - i * 22} Tm (${line}) Tj`))
+    .map((line, i) => (line === '' ? '' : `1 0 0 1 72 ${TEXT_TOP_Y - i * LINE_HEIGHT} Tm (${line}) Tj`))
     .filter((op) => op !== '')
     .join('\n');
 
   return [
     // A bar whose width tracks the page number, so "did the page change" is legible
-    // at a glance and even without text.
+    // at a glance and even without text. Drawn with graphics operators rather than a
+    // font ON PURPOSE: a page showing the bar but no text says the FONT resource is
+    // wrong, rather than leaving "nothing rendered" as the only diagnosis.
     `0.83 0.18 0.18 rg`,
-    `72 ${PAGE_HEIGHT - 160} ${120 * pageNumber} 18 re f`,
+    `72 ${BAR_Y} ${120 * pageNumber} ${BAR_HEIGHT} re f`,
     `0 g`,
     `BT`,
     `/F1 13 Tf`,

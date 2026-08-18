@@ -1,8 +1,18 @@
 # Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
 
-**Owner:** Reader (Ahana) · **Status:** accepted debt — now due at whichever of prefs-application
-and TTS starts first, and TTS has a consumer building against it today
-**Last reviewed:** 2026-08-17, when PDF support landed. **All five triggers re-run and NONE fired**,
+**Owner:** Reader (Ahana) · **Status:** accepted debt, now **called in** — prefs-application has
+been formally requested (2026-08-18) and signed off, so the conversion is the next Reader task
+rather than a forecast. TTS is the second claimant and needs the same conversion.
+**Last reviewed:** 2026-08-18, for the **prefs-application sign-off**. **The bridge was not
+touched** — no message type, no command, no template edit, neither artifact regenerated. What
+changed is that the predicted stage is now a real request with a real design behind it
+(`features/personalization/READER_PREFS_APPLICATION.md` + `readerAppearance.ts`, both landed), and
+three decisions that blocked it are closed. Read
+[The prefs-application design, as signed off](#the-prefs-application-design-as-signed-off) before
+starting the conversion; it is the agreed shape of the thing the conversion is FOR. Trigger 1's
+wording changed in the same review — it was asymmetric and could be read as not counting command
+payloads at all (see the note under [The trigger](#the-trigger)). The verdict is unmoved.
+**Previously reviewed:** 2026-08-17, when PDF support landed. **All five triggers re-run and NONE fired**,
 but this is the largest change the bridge has absorbed without converting, so read the PDF row in
 [Stage forecast](#stage-forecast) before assuming it was free. Two things did change structurally:
 the WebView half is now **three files rather than one** (two templates plus a shared fragment), and
@@ -190,7 +200,17 @@ Treat that as the mildest possible preview of the failure mode.
 
 Convert to a typechecked WebView build when **any one** of these becomes true:
 
-1. The message union passes **~8 cases**, or **any single case grows past ~3 fields**.
+1. The message union passes **~8 cases**, or **any single payload grows past ~3 fields** — in
+   either direction. A command's arguments count exactly as a message's fields do.
+   > **Wording fixed 2026-08-18, during the prefs-application sign-off.** This used to read "any
+   > single _case_", and "case" only ever meant a `ReaderMessage` case — which is how the PDF row
+   > below can say "commands went 4 → 5, which this trigger does not count". Read literally, that
+   > left a 13-field _command_ firing nothing, while the same doc asserted prefs-application
+   > "trips 1 and 3". The intent was always shape complexity, and shape drift is not
+   > direction-sensitive: a command whose payload the host and the template disagree about fails
+   > exactly the same way a message does. Fixed so nobody argues the letter to skip the
+   > conversion. What is still deliberately uncounted is the NUMBER of commands — five
+   > fire-and-forget one-argument commands is not the thing that gets dangerous.
 2. A command needs a **response** (request/reply rather than fire-and-forget). This doubles the
    hand-synced surface per call and adds correlation ids, which are themselves a shape.
 3. Any bridge payload is **a type owned by a frozen contract in `src/shared/contracts/`**
@@ -217,6 +237,15 @@ compiler _and by `__typecheck__.ts`, the canary_ — and the WebView is the one 
 contracts that sits outside both. Hand-copying a frozen shape into untypechecked JS doesn't just
 risk drift; it silently removes that shape from the freeze's blast radius.
 
+**And it is the one trigger the conversion DISSOLVES rather than satisfies.** Triggers 1, 2 and 5
+describe surfaces that stay awkward however they are typed; trigger 3 exists _only_ because one
+consumer is invisible to `tsc`. Once the WebView is a typechecked entry point, importing a frozen
+contract into it is not a risk, it is the mechanism — `tsc` walks it like any other consumer. So
+after the conversion the right move inverts: values that are structurally a frozen contract's
+should be **derived from it** (`LayoutPrefs['flow']`, `LayoutPrefs['spread']`) rather than
+re-declared as local literals, because a re-declared union silently tolerates the contract growing
+a member and an indexed access does not. Do not carry the pre-conversion habit past the conversion.
+
 ## Stage forecast
 
 Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not certainty.
@@ -228,7 +257,7 @@ Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not c
 | **Contents panel fix — nested TOC + typographic baseline** ✅ done | Ahana                               | `toc` items gain `depth`; stylesheet, line grid and column breaks are all inside the WebView      | **none — 1 tested, AT the boundary** | ⚠️ next TOC field converts    |
 | **Navigation / library shell**                                     | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                                 | no action                     |
 | **Progress persistence** (`progress.ts`)                           | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                                 | no action                     |
-| **Prefs applied to the rendition** (`prefs.ts`)                    | Vaishnavi writes, **Ahana applies** | `setTheme`, `setFont`, `setTypography`, `setLayout`, `setZoom` — or one `applyPrefs(SharedPrefs)` | **1 and 3**                          | ⚠️ **convert here**           |
+| **Prefs applied to the rendition** (`prefs.ts`) ⬅ **requested 2026-08-18** | Vaishnavi writes, **Ahana applies** | one `applyAppearance(ReaderAppearance)` — flat and primitive-only, so **trigger 3 is designed out**; see the signed-off design below | **1 — 3 designed out, 2/4/5 clear** | 🛑 **convert here, now**      |
 | **Annotations** (`annotations.ts`)                                 | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                          | 🛑 hard deadline              |
 | **In-book search** (`search.ts`) ✅ bridge side done               | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**           | cheap — don't let it fool you |
 | **PDF support — pdf.js + `ContentFormat` routing** ✅ done          | Ahana                               | `open` → `openEpub`/`openPdf` (4 → 5 commands); `PDFJS_MISSING`; **no message change at all**     | **none — all five re-run**            | ⚠️ read the row note           |
@@ -347,7 +376,9 @@ Five things worth calling out, because all five contradict the obvious guess:
 ## The verdict
 
 **Convert at the start of the prefs-application stage — before writing the prefs commands, not
-after.**
+after.** As of 2026-08-18 that stage has been requested and its design signed off, so this is no
+longer a scheduling opinion: it is the next task. The agreed shape is in
+[The prefs-application design, as signed off](#the-prefs-application-design-as-signed-off).
 
 Rationale, in order of weight:
 
@@ -375,6 +406,131 @@ left**, and it is the first thing to do, not the thing discovered halfway throug
 **Do not convert before then.** At 5 messages and 4 fire-and-forget commands, a build step buys a
 compiler check over a surface you can verify by eye in thirty seconds, and costs a new toolchain
 stage that everyone on T4 has to understand. That trade is not worth it yet.
+
+## The prefs-application design, as signed off
+
+Requested by Personalization on 2026-08-18 and signed off the same day. Personalization's half is
+built and committed (`features/personalization/readerAppearance.ts`, `READER_PREFS_APPLICATION.md`);
+Reader's half is the conversion plus the apply. **Read this before starting the conversion** — it is
+what the conversion is for, and two of its consequences (who the payload's claimants are, and where
+the command has to be defined) change what "done" means.
+
+**The surface: one fire-and-forget command.**
+
+```
+applyAppearance(appearance)   // host -> WebView, no reply
+```
+
+`ReaderAppearance` is a flat, primitive-only, **bridge-local** shape — not a `src/shared/contracts/`
+type. The host resolves `SharedPrefs` into it in typechecked TS (`toReaderAppearance`) and only
+primitives cross. That is the third use of a manoeuvre this file already relies on twice: `goTo`
+unwraps `Locator` → `.cfi`, `openEpub`/`openPdf` route `ContentFormat` by command _name_, and prefs
+resolve to primitives. **Not** `applyPrefs(SharedPrefs)`, which is trigger 3 by definition, and
+**not** five granular setters — prefs are applied together, so N setters is N surfaces to hand-sync
+and N chances at a partial apply, for no gain.
+
+All five re-run against this design:
+
+| # | Trigger | Verdict |
+| - | ------- | ------- |
+| 1 | payload past ~3 fields | **FIRES** — twelve, and more once the a11y claimants below are counted. The conversion is the first task of this stage |
+| 2 | a command needs a reply | clear — fire-and-forget, and it must stay so; live re-apply is "re-send the whole payload" |
+| 3 | a frozen contract crosses | **designed out** by the flattening. It would have fired outright against `applyPrefs(SharedPrefs)` |
+| 4 | transport changes | clear — same base64-over-`injectJavaScript`, one more `JSON.stringify` |
+| 5 | WebView holds state RN also models | clear **conditionally** — see the `zoom` constraint below |
+
+Trigger 1 firing is not a formality to note and move past. It is the whole reason the conversion
+comes first, and it is what the wording fix under [The trigger](#the-trigger) protects.
+
+### Four things the design has to add, found while signing it off
+
+1. **`applyAppearance` must be defined in BOTH templates.** As proposed it lands in the EPUB one
+   only — and `buildCommandScript` guards on `typeof window.TFReader.applyAppearance === 'function'`,
+   so every PDF open would answer `NOT_READY` and show the user a coded error for a command that
+   simply is not there. The PDF half applies `bg` and `zoom` and ignores typography. Shared
+   behaviour goes in `reader.bridge.html`; per-format application stays per template.
+2. **It must be sent BEFORE `openEpub`/`openPdf`, not alongside.** `flow` and `spread` are
+   `renderTo()` options and `renderTo` runs _inside_ `openEpub`, so a payload arriving after it
+   renders the book in the wrong flow and needs a second re-layout to correct. Order: `ready` →
+   `applyAppearance` → `open*`. **Consequence: `BASELINE_FONT_SIZE_PX` / `_LINE_HEIGHT` /
+   `_MARGIN_PX` stay** as the pre-payload fallback — prefs are an async SQLite read, and a slow or
+   failed read must not paint at UA defaults. So the `DEFAULT_PREFS` pins in `readerTemplate.test.ts`
+   survive this stage rather than being deleted with the constants, which is the opposite of what
+   that test's own comment predicted; the comment is corrected there.
+3. **The payload has THREE claimants, and it stays ONE payload.** Personalization owns theme, font
+   and typography. Reader owns `reduceMotion` (below). Accessibility owns `announce.pageChanges` —
+   `WEBVIEW_A11Y_FINDINGS.md` §3.7 requires the WebView to read it "through the same composed-prefs
+   path", i.e. over this command — plus `highContrast`, bold text, dyslexia font and readable
+   spacing, which `READER_PREFS_APPLICATION.md` §4 currently sets aside as applied "on top". There
+   is no other channel for those to arrive by. **One command carries everything the WebView renders
+   with, already resolved**, because the alternative is an `applyA11y` sibling landing the week
+   after the conversion and reopening every question this section answers. The payload's _name_ is
+   Personalization's to choose; the "one command, one resolve seam" property is not negotiable.
+4. **`fontFamily` and `customFontUri` are user-supplied strings that end up in CSS text.**
+   `JSON.stringify` in `buildCommandScript` protects the injected _script_; it does nothing for the
+   stylesheet the template then builds by concatenation, inside a document holding decrypted
+   licensed content. They need a character allow-list and CSS quoting on arrival. Reader's to
+   implement — recorded because the existing escaping looks like it already covers this and does
+   not.
+
+### The font-size clamp: clamp the FACTOR, not the product
+
+`readerMetrics` currently computes `clamp(round(16 × width / 393), 15, 22)`. That is right for a
+fixed baseline and wrong the moment the base is a preference: at a 2× accessibility multiplier the
+user's chosen size is silently capped at 22px — and that user is precisely the one who cannot work
+around it. Widening the bounds only moves the cap. The fix is to clamp the **viewport factor**,
+which is what the clamp was ever about (device fit), and let the composed base through:
+
+```
+viewportFactor = clamp(width / 393, 0.94, 1.375)
+fontPx         = round(composedPt × viewportFactor)
+```
+
+Behaviour-preserving at base 16 — `0.94 × 16 → 15`, `1.375 × 16 → 22`, identical in between — so it
+is not a rendering change today. A wide absolute clamp stays underneath purely so a pathological
+value cannot break layout. Reader owns these numbers; they are recorded so they are not re-derived
+from scratch later.
+
+**`marginPx` needs a bound for the same reason.** `padBottom = height - padTop - lines × linePx`
+goes negative once the margin approaches half the viewport height, because `lines` is already
+floored to a minimum of 1. A prefs-driven margin can reach that; a hand-copied 16 could not.
+
+### The live channel, and the two smaller calls
+
+- **No event bus for prefs** (`event-bus.ts` open question #1, now answered there). Reader
+  subscribes to the prefs store instead: `prefsStore.savePrefs()` already returns the freshly
+  re-read record, so the change is known at its source and a module-level subscription beside the
+  store delivers it — no runtime to build, and none of that file's question-2 ownership problem.
+  `EVENT_CHANNELS.PREFS_CHANGED` stays in the contract: removing an exported key is a Contracts
+  Gate conversation and an unused channel costs nothing. The bus still earns its place for
+  `content.*`, where emitter and consumer must not import each other. Re-read-on-focus, the other
+  candidate, is out for a duller reason — there is no navigator to give Reader a focus event
+  (`App.tsx` still mounts `ReaderScreen` directly). **Sync is not a blocker for this stage.**
+- **`spread`: `single` → `'none'`, `double` → `'auto'`.** `'always'` would not have differed —
+  epub.js sets `_spread = (spread === "none") ? false : true` (`layout.js:84-88`) and then gates
+  two-up on `width >= minSpreadWidth`, default 800 (`layout.js:119-120`). So on any phone `double`
+  renders single-page whatever we send. That is the behaviour Reader wants; it does mean the
+  preference is inert on the device this is tested on, which is the settings UI's problem to be
+  honest about rather than the bridge's.
+- **`zoom` is carried, and it is the one field that can fire trigger 5 later.** The WebView may
+  hold the last payload only as a **write-only cache**, for recomputing on resize. The moment a
+  pinch-zoom gesture inside the WebView _mutates_ `zoom`, that is state RN also models and RN has
+  to own it — the same line the PDF renderer's `currentPage` sits on.
+
+### Decisions closed by this sign-off
+
+Both were open items blocking the stage. Both are answered in `src/shared/contracts/prefs.ts`'s
+DECISION LOG rather than here, so there is one home for them:
+
+- **#4 — `typography.size` is absolute points**, composed as
+  `size × resolveFontScale(a11y.text, osFontScale)`, with the viewport factor applied last (above).
+  `spacing` is ratified as px in the same breath.
+- **#2 — `reduceMotion` is honoured by Reader.** Free today, and worth saying precisely why: there
+  is **no animation anywhere in the reader** — no `transition`, `animation`, `@keyframes` or
+  `prefers-reduced-motion` in either template or `ReaderScreen.tsx`, and epub.js page turns are
+  instant `display()` calls. So suppression is currently vacuous and the real obligation falls on
+  whoever adds the first page-turn animation. `readerTemplate.test.ts` now pins it, which makes
+  that a red build rather than a promise in a doc nobody re-reads.
 
 ## What "convert" means concretely
 
@@ -426,3 +582,11 @@ Every time you add or change a message type or command:
 - `src/features/sync/sharedPrefs.ts` — `readSharedPrefs()`, the persisted `SharedPrefs` the prefs
   stage will apply. Not Reader's, and not called from Reader yet; listed so the conversion is not
   re-scheduled on the belief that prefs have nowhere to come from.
+- `src/features/personalization/READER_PREFS_APPLICATION.md` — Personalization's design for the
+  stage: the full field-by-field mapping table and the live-reapply flow. Vaishnavi's; read it
+  together with the sign-off section above, which amends it.
+- `src/features/personalization/readerAppearance.ts` — `toReaderAppearance()`, the host-side
+  resolve seam that keeps the frozen contract off the bridge. The payload this bridge will carry.
+- `src/features/accessibility/WEBVIEW_A11Y_FINDINGS.md` — §3.7 is the third claimant on that
+  payload: `announce.pageChanges` has to arrive over this command rather than be read inside the
+  WebView.

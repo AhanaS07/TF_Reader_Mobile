@@ -38,7 +38,11 @@
 // WebView build (tsc over a real .ts entry, bundled into the template by
 // buildReaderHtml.ts) when ANY of these becomes true:
 //
-//   - the message union passes ~8 cases, or any case grows past ~3 fields
+//   - the message union passes ~8 cases, or any single PAYLOAD grows past ~3
+//     fields, in EITHER direction — a command's arguments count exactly as a
+//     message's fields do (wording fixed 2026-08-18; it used to say "any case",
+//     which only ever meant a ReaderMessage case and left a 13-field command
+//     firing nothing). The NUMBER of commands is still deliberately uncounted
 //   - a command needs a RESPONSE (request/reply, not fire-and-forget) — that
 //     doubles the hand-synced surface per call and adds correlation ids
 //   - a bridge payload is a type owned by a FROZEN contract in src/shared/
@@ -99,11 +103,26 @@
 // nothing and cost the conversion. When Progress needs it, adding it IS the
 // conversion — say so then instead of re-arguing it.
 //
-// EXPECTED DUE DATE: the prefs-application stage (applying SharedPrefs to the
-// epub.js rendition). That is the first stage that trips a trigger, and it trips
-// two — nested multi-field payloads AND a frozen shared contract crossing the
-// boundary. Convert BEFORE writing those commands, not after: 4 flat commands is
-// a morning, 9 commands plus annotations' `Locator` union is a week.
+// DUE NOW, NOT FORECAST: prefs-application was requested on 2026-08-18 and the
+// design is signed off, so the conversion is the next task in this folder. Read
+// "The prefs-application design, as signed off" in WEBVIEW_BRIDGE.md before
+// starting it. The short version, because it changes what lands here:
+//
+//   - ONE fire-and-forget command, applyAppearance(appearance), carrying a flat
+//     primitive-only ReaderAppearance (features/personalization/
+//     readerAppearance.ts). NOT applyPrefs(SharedPrefs) — that is trigger 3 by
+//     definition — and NOT five setters.
+//   - So trigger 3 is DESIGNED OUT, the same way goTo's and openEpub/openPdf's
+//     were: resolve host-side, send primitives. Trigger 1 still fires on the
+//     field count, which is why the conversion is still first.
+//   - It must be defined in BOTH templates. Only the EPUB one needs typography,
+//     but buildCommandScript guards on the method existing, so a PDF open would
+//     otherwise answer NOT_READY for a command that simply is not there.
+//   - It must be sent BEFORE openEpub/openPdf: flow and spread are renderTo()
+//     options, and renderTo runs inside openEpub.
+//   - fontFamily/customFontUri are user-supplied strings that end up in CSS
+//     text. JSON.stringify below protects the injected SCRIPT, not the
+//     stylesheet the template concatenates. They need sanitising on arrival.
 //
 // SECOND CANDIDATE, AS OF 2026-08-16: TTS. The Reader -> TTS seam is agreed (see
 // TTS_PROVIDER.md in this folder) and Accessibility is building against it now.

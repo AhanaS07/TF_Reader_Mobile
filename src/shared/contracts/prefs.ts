@@ -43,10 +43,23 @@ export interface FontPrefs {
 }
 
 export interface TypographyPrefs {
-  size: number; // units not yet agreed (pt vs scale factor)
+  // ABSOLUTE POINTS, not a scale factor — ratified 2026-08-18, DECISION LOG #4. The
+  // user's chosen base size; the two accessibility scale knobs multiply it rather
+  // than duplicating it.
+  size: number;
   lineHeight: number; // multiplier, e.g. 1.5
-  spacing: number; // letter/word spacing → themes.override
-  margins: number; // page margin
+  // Letter/word spacing, in px. 0 = none, and a consumer should OMIT the rule at 0
+  // rather than emit `letter-spacing: 0` for a book's own CSS to lose to.
+  //
+  // NOT via `themes.override`, which this comment used to say. epub.js's Themes
+  // cannot carry the reader's stylesheet at all — Themes.inject() reads `rules` and
+  // `url` and never `serialized`, so a CSS-text theme is silently skipped for every
+  // chapter loaded after the call. Reader applies typography through
+  // Contents.addStylesheetCss + a hooks.content handler instead
+  // (reader-epub.template.html, baselineCss). Corrected because the wrong mechanism
+  // in a frozen contract's comment is what an applier reads first.
+  spacing: number;
+  margins: number; // page margin, in px
 }
 
 export interface LayoutPrefs {
@@ -105,7 +118,8 @@ export const DEFAULT_PREFS: Omit<
 //   * reduceMotion is a tri-state ('system' | 'on' | 'off'), not a boolean.
 //   * All 18 Day-1 accessibility fields fold into this record (+ dev_T4's
 //     screenReaderHints). No second accessibility store, no second endpoint.
-//   Both live in accessibility.ts. The knock-on effects below are NOT settled.
+//   Both live in accessibility.ts. Its knock-on effects are the log below; #2 and #4
+//   closed on 2026-08-18, #3 and #5 are still open.
 
 // RESOLVED:
 //
@@ -126,25 +140,55 @@ export const DEFAULT_PREFS: Omit<
 //    Recorded as the explicit choice this item asked for rather than a side effect.
 //    (Day-1 sync questions Q1/Q4.)
 //
-// STILL OPEN:
+// 2. [Ahana] SETTLED 2026-08-18 — CONFIRMED. reduceMotion's default moves false ->
+//    'system', reduced motion is honoured out of the box, and Reader owns suppressing
+//    the page-turn animation when it resolves true. Resolved HOST-SIDE via
+//    resolveReduceMotion(pref, osReduceMotionEnabled) and delivered to the WebView as a
+//    plain boolean on the prefs payload — same reason 'system' themes resolve host-side:
+//    OS state is RN's to observe, and a WebView observing it would be state RN also
+//    models (WEBVIEW_BRIDGE.md trigger 5).
 //
-// 2. [Ahana] reduceMotion default moves false -> 'system', so reduced motion is
-//    now honoured out of the box and Reader must suppress the page-turn
-//    animation for users whose OS setting is on. Confirm.
+//    Worth recording what confirming it actually costs today: NOTHING, because the
+//    reader has no animation to suppress. There is no `transition`, `animation`,
+//    `@keyframes` or `prefers-reduced-motion` in either WebView template or
+//    ReaderScreen.tsx, and epub.js page turns are instant display() calls. So this is
+//    not a feature to build but a constraint on whoever adds the first page-turn
+//    animation, which is exactly the kind of obligation that evaporates when the person
+//    who agreed to it moves on. readerTemplate.test.ts pins it: an unguarded transition
+//    or animation in a template fails a build. Confirmed rather than deferred BECAUSE
+//    it is free — deferring a free 'yes' is how a default ships unhonoured.
+//
+// 4. [Ahana + Vaishnavi] SETTLED 2026-08-18 — typography.size is ABSOLUTE POINTS, and
+//    the three knobs compose base-then-OS-then-user:
+//
+//      effectivePt = typography.size                          // chosen base, in pt
+//                  × (respectOsFontScale ? osFontScale : 1.0) // OS Dynamic Type
+//                  × fontScaleMultiplier                      // extra a11y multiplier
+//
+//    i.e. exactly resolveFontScale() (accessibility.ts) multiplied by the pt base —
+//    additive to today's behaviour, not a reorder — implemented in
+//    features/personalization/readerAppearance.ts (composeFontSizePt). Points because
+//    DEFAULT_PREFS already commits size: 16, which is only sensible as 16pt, and because
+//    a `size` that was a multiplier would duplicate fontScaleMultiplier and leave the
+//    user's base size unrepresentable. resolveFontScale continues to EXCLUDE size on
+//    purpose: composition belongs to the consumer, not to this freeze.
+//
+//    Reader owns the final device fit, and the shape of it is the non-obvious half:
+//    it clamps the VIEWPORT FACTOR, not the product. Clamping the product (what
+//    readerMetrics did while the base was a hand-copied constant) silently caps a large
+//    accessibility multiplier at the fixed maximum, which is precisely the user who
+//    cannot work around it. See WEBVIEW_BRIDGE.md, "The font-size clamp".
+//
+//    Proposal + rationale: features/personalization/API_CONTRACT_NOTES.md §6.
+//    (Sync's note that the local `personalization` table once defaulted these to scale
+//    factors is moot — its schema and mappers already moved onto DEFAULT_PREFS.)
+//
+// STILL OPEN:
 //
 // 3. [Vaishnavi] Theme 'highContrast' is deprecated in favour of
 //    accessibility.display.highContrast. Needs a read-time migration
 //    (theme === 'highContrast' -> theme: 'dark' | 'light' + highContrast: true)
 //    and removal from the theme picker.
-//
-// 4. [Ahana + Vaishnavi] Three knobs now scale text: typography.size,
-//    text.respectOsFontScale, text.fontScaleMultiplier. Agree the composition
-//    order and the units question already flagged on typography.size.
-//    NOTE (Sync): the local `personalization` table defaulted these to SCALE FACTORS
-//    (1.0 / 1.0 / 0.0) while DEFAULT_PREFS says points (16 / 1.5 / 16). Sync has moved its
-//    schema and mappers onto DEFAULT_PREFS, so the contradiction is gone and DEFAULT_PREFS is
-//    now the only committed answer — but this item stays open, because agreeing the units is
-//    yours to close, not Sync's to close by picking one.
 //
 // 5. [Accessibility] TtsHighlightMode's union beyond 'sentence' is inferred,
 //    not specified. Nothing reads it until word/sentence sync leaves the

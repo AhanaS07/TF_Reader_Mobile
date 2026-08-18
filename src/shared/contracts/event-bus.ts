@@ -163,11 +163,25 @@ export interface EventBus {
    OPEN QUESTIONS
    ──────────────────────────────────────────────────────────────── */
 
-// 1. [Ahana] Is a bus wanted here at all, or should Reader subscribe to stores directly (a
-//    zustand/observable pattern) and skip this layer? The bus earns its place for `content.*`,
-//    where the emitter and consumer must not import each other. It is much less obviously right
-//    for `prefs.changed`, where Reader could simply re-read on focus. Happy to cut the sync.*
-//    and prefs.* channels entirely and keep this to the offline-lock signals.
+// 1. [Ahana] ANSWERED 2026-08-18 — Reader does NOT want the bus for prefs, and the channel
+//    STAYS anyway. Asked because the bus plainly earns its place for `content.*`, where emitter
+//    and consumer must not import each other, and much less obviously for `prefs.changed`.
+//    Answered when Personalization's prefs-application design (features/personalization/
+//    READER_PREFS_APPLICATION.md §5B) turned out to be BLOCKED on it: that doc lists "no bus
+//    runtime exists" as one of the two things stopping a settings edit from re-rendering the
+//    open book.
+//
+//    Reader subscribes to the prefs store instead. `prefsStore.savePrefs()` already returns the
+//    freshly re-read record, so the change is known at its source and a module-level subscription
+//    beside the store delivers it — no runtime to build, and none of question 2's ownership
+//    problem. The alternative floated here, re-read-on-focus, is dead for a duller reason: there
+//    is no navigator to give Reader a focus event (App.tsx still mounts ReaderScreen directly).
+//
+//    NOT cutting the prefs.* / sync.* channels, despite this being the answer that would justify
+//    it: removing an exported key from EVENT_CHANNELS is a Contracts Gate conversation, an unused
+//    channel costs nothing at runtime, and Reader declining to consume a channel is not evidence
+//    that nothing else should. This closes the QUESTION, not the channel — the point was to
+//    unblock a stage that had been told to wait for a bus, and waiting is what is cancelled.
 //
 // 2. [Whoever owns app bootstrap] Where does the single instance live, and who creates it? A
 //    module-level singleton is simplest but is awkward to reset between tests — the same problem
