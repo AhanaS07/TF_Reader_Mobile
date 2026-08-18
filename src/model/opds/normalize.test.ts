@@ -256,25 +256,56 @@ describe('normalizeShelf', () => {
     ]);
   });
 
-  it('treats a missing publications key as an empty shelf, not a broken one', 
-    () => {
-      const emptyShelf = {
-        metadata: { 
-          title: "All titles",
-          numberOfItems: 0
-        },
-        links: [
-          {
-            rel: 'self',
-            href: 'https://api.tf/opds/v1/institutions/inst_zzz/groups/all',
-            type: 'application/opds+json',
-          },
-        ],
-      };
-      const shelf = normalizeShelf(emptyShelf);
-      expect(shelf.publications).toEqual([]);
-    }
-  )
+  // The contract does not require `publications` on a publication feed, and
+  // getGroupFeed says `all` never 404s — worst case it is a feed carrying only
+  // a self link and a way back to the catalogue. So an absent array is the
+  // zero-result case, not a malformed feed.
+  const emptyAllShelf = {
+    metadata: {
+      title: 'All titles',
+      numberOfItems: 0,
+    },
+    links: [
+      {
+        rel: 'self',
+        href: 'https://api.tf/opds/v1/institutions/inst_zzz/groups/all',
+        type: 'application/opds+json',
+      },
+    ],
+    navigation: [
+      {
+        title: 'Browse the full catalogue',
+        href: 'https://api.tf/opds/v1/institutions/inst_zzz/catalogue',
+        type: 'application/opds+json',
+        rel: 'subsection',
+      },
+    ],
+  };
+
+  it('treats a missing publications key as an empty shelf, not a broken one', () => {
+    const shelf = normalizeShelf(emptyAllShelf);
+
+    expect(shelf.publications).toEqual([]);
+  });
+
+  // `navigation` on a publication feed is documented as "Empty result only. A
+  // way back to the catalogue." Dropping it would leave Week 3's empty state
+  // with nothing to offer the reader.
+  it('keeps the way back to the catalogue a zero-result feed carries', () => {
+    const shelf = normalizeShelf(emptyAllShelf);
+
+    expect(shelf.browseInstead).toEqual([
+      {
+        title: 'Browse the full catalogue',
+        href: 'https://api.tf/opds/v1/institutions/inst_zzz/catalogue',
+        shelfId: 'catalogue',
+      },
+    ]);
+  });
+
+  it('offers no way back on a shelf that actually has results', () => {
+    expect(shelf.browseInstead).toBeUndefined();
+  });
 });
 
 describe('normalizePublication', () => {

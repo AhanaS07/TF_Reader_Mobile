@@ -267,11 +267,20 @@ export function normalizeShelf(doc: unknown): Shelf {
   return {
     id: idFromHref(reqString(self.href, 'shelf self href')),
     title: reqString(metadata.title, 'shelf title'),
-    publications: shelf.publications === undefined ? [] : asArray(shelf.publications, 'shelf publications').map(normalizePublication),
+    // Absent is the zero-result case, not a malformed feed: the contract does
+    // not require `publications`, and getGroupFeed says `all` never 404s.
+    publications:
+      shelf.publications === undefined
+        ? []
+        : asArray(shelf.publications, 'shelf publications').map(normalizePublication),
     ...(totalItems !== undefined ? { totalItems } : {}),
     ...(itemsPerPage !== undefined ? { itemsPerPage } : {}),
     ...(next !== undefined
       ? { nextPage: pageFromHref(reqString(next.href, 'next href')) }
+      : {}),
+    // Only ever sent on an empty result — "a way back to the catalogue".
+    ...(shelf.navigation !== undefined
+      ? { browseInstead: asArray(shelf.navigation, 'shelf navigation').map(toNavLink) }
       : {}),
   };
 }
