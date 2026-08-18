@@ -100,8 +100,16 @@ function templateModule(): TemplateModule {
 describe('the template baseline mirrors DEFAULT_PREFS.typography', () => {
   // If one of these fails, the fix is to change the TEMPLATE, not this test and
   // not prefs.ts — src/shared/contracts/ is the Week-1 freeze and the template is
-  // the copy. (And if the values are meant to diverge, the real answer is that
-  // prefs-application has arrived; see WEBVIEW_BRIDGE.md.)
+  // the copy.
+  //
+  // THESE PINS SURVIVE PREFS-APPLICATION — they do not get deleted with it. This
+  // comment used to say the answer to a divergence was that prefs-application had
+  // arrived; the signed-off design (2026-08-18, WEBVIEW_BRIDGE.md) makes that wrong.
+  // Prefs are an async SQLite read and `applyAppearance` is injected AFTER `ready`,
+  // so the constants stay as the fallback the first paint uses when the read is slow
+  // or fails — which is the case where they matter most, and the case where a UA-
+  // default flash would be the visible bug. A fallback that has drifted from
+  // DEFAULT_PREFS is a worse fallback, so it keeps needing this test.
   it('font size', () => {
     expect(baselineConstant('BASELINE_FONT_SIZE_PX')).toBe(DEFAULT_PREFS.typography.size);
   });
@@ -494,5 +502,40 @@ describe('both templates support the shared fragment', () => {
       if (!iife) throw new Error('Could not find the template IIFE.');
       expect(iife[0]).toMatch(/@inject:bridge/);
     }
+  });
+});
+
+describe('reduceMotion has nothing to suppress, and must not quietly acquire one', () => {
+  // WHY THIS TEST EXISTS. prefs.ts DECISION LOG #2 was confirmed on 2026-08-18: the
+  // reduceMotion default moved to 'system', so Reader honours the OS setting and must
+  // suppress the page-turn animation when it resolves true. Confirming it cost nothing,
+  // because there IS no page-turn animation — epub.js turns pages with an instant
+  // display() call and neither template styles a transition. So the agreement is not a
+  // feature anyone is about to build; it is an obligation on whoever adds the first
+  // animation, months from now, having never read that decision log.
+  //
+  // That is the kind of promise a comment cannot keep. This test converts it into a red
+  // build: the moment a template grows an animated declaration, someone has to come here
+  // and deal with reduceMotion deliberately.
+  //
+  // WHEN YOU ADD A DELIBERATE, GATED ANIMATION: do not delete this test. Change it to
+  // assert the gate — that the declaration is reachable only when the resolved
+  // reduceMotion boolean on the appearance payload is false. An animation the reader can
+  // turn off is fine; an animation nobody checked is what this catches.
+  const ANIMATED_DECLARATION = [
+    // Property position, not prose: `transition:` / `animation:` and their longhands,
+    // plus @keyframes. Matching the bare words would fail on a comment mentioning them,
+    // which is how a guard trains people to delete it.
+    /(?:^|[;{\s])(?:transition|animation)(?:-[a-z-]+)?\s*:/,
+    /@keyframes/,
+    /@-webkit-keyframes/,
+  ];
+
+  it.each([
+    ['reader-epub.template.html', () => TEMPLATE],
+    ['reader-pdf.template.html', () => PDF_TEMPLATE],
+  ])('%s declares no animation', (_name, source) => {
+    const found = ANIMATED_DECLARATION.filter((re) => re.test(source()));
+    expect(found).toEqual([]);
   });
 });
