@@ -24,6 +24,13 @@ does not restate it.
 Accessibility does not send bridge commands, does not read `book.spine`, and does not construct or
 parse a CFI. Reader does not read `AccessibilityPrefs` and does not decide when to speak.
 
+**The one boolean that does cross, and how.** Reader decides whether and where the TTS controls
+appear, which means it needs `accessibility.tts.enabled` — and the rule above says it cannot go and
+read it. So Accessibility exports it as a primitive: `useTtsEnabled()` in
+`features/accessibility/tts/useTtsEnabled.ts`. Reader calls that and never imports a prefs shape.
+This is also the *only* gate on TTS being available: `useTtsSession`'s `play()` deliberately does
+not re-check `enabled`, on the grounds that mounting the controls is already the decision.
+
 `ReaderTextProvider` has **no `dispose`**. Lifetime belongs to whoever owns the book —
 `ReaderScreen`, in the effect that calls `closeBook` — and a consumer that could tear the provider
 down could tear it down while another consumer was using it. Teardown travels one way, through
