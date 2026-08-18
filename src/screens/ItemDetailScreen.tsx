@@ -1,13 +1,22 @@
-// Screen 05 — book detail. Reused by both CatalogueStack and SearchStack, which
-// is why the route type below stays the minimal shape both stacks agree on
-// rather than either stack's own NativeStackScreenProps.
+// Screen 05 (book) and Screen 04 (article) — one screen, two presentations,
+// both built on the shared `ItemDetail` model. Reused by both CatalogueStack
+// and SearchStack, which is why the route type below stays the minimal shape
+// both stacks agree on rather than either stack's own NativeStackScreenProps.
 //
-// WORK TYPE IS HARDCODED, NOT DERIVED. Screens 04 and 05 are meant to differ only
-// by which fields they show — both are built on the shared `ItemDetail` model —
-// but nothing in the feed says which one a title needs yet: wokay's published
-// `@type` enum only confirms Book and Audiobook, so there is no article/journal
-// value to branch on. Until that lands, this screen always builds a book. Screen
-// 04 is a separate task and will pass 'article' the same explicit way.
+// WORK TYPE IS HARDCODED, NOT DERIVED. Nothing in the feed says whether a title
+// is a book or an article yet: wokay's published `@type` enum only confirms
+// Book and Audiobook, so there is no article/journal value to read. The fetch
+// below always builds a book (`BOOK_WORK_TYPE`) because that is the only work
+// type any real fixture or endpoint can currently produce — passing 'article'
+// from there would be inventing data, not reading it.
+//
+// THE ARTICLE PRESENTATION EXISTS AND IS UNREACHABLE FROM TODAY'S FETCH, AND
+// THAT IS FINE. Same shape as `resolveAccess`'s "no acquisition link" branch:
+// kept and tested directly rather than treated as a claim about code that does
+// not exist. `renderArticleContent` below is exported so a test can hand it a
+// hand-built `ItemDetail` with `workType: 'article'` — see
+// ItemDetailScreen.test.tsx. The moment `@type` grows a real value, the only
+// line that changes is the one call to `buildItemDetail` in `fetchItem`.
 //
 // ACCESS IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place access
 // logic may live (CONVENTIONS §3) — this screen calls it once, with `session:
@@ -20,7 +29,7 @@
 // independent of them. Same shape as InstitutionDetailScreen: a skeleton while
 // the fetch is in flight, ErrorState on rejection, the content once resolved. No
 // ActivityIndicator — skeletons replace spinners.
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { resolveAccess } from '@access/resolveAccess';
@@ -29,6 +38,7 @@ import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ErrorState, type ErrorStateVariant } from '@components/ErrorState';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
+import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
@@ -43,7 +53,13 @@ interface ItemDetailRouteProps {
 
 // Explicit and typed, so this line breaks to a compile error rather than a typo
 // if 'book' is ever removed from the work-type vocabulary.
-const BOOK_WORK_TYPE: WorkType = 'book';
+export const BOOK_WORK_TYPE: WorkType = 'book';
+
+// Screen 04's work type. Not yet passed to `buildItemDetail` anywhere in this
+// file — see the header comment. Declared and exported beside `BOOK_WORK_TYPE`
+// so a test can build an article `ItemDetail` from the same constant this file
+// would use, rather than a second hand-typed 'article' string that could drift.
+export const ARTICLE_WORK_TYPE: WorkType = 'article';
 
 // Same fallback CatalogueScreen uses: the one institution the mock fixtures
 // serve, until CAP-3 selection has actually run.
@@ -76,6 +92,112 @@ function describeFailure(err: unknown): { variant: ErrorStateVariant; message: s
   }
 
   return { variant: 'not_ready', message: GENERIC_MESSAGE };
+}
+
+// Screen 05's presentation. Exported for the same reason `renderArticleContent`
+// below is — a test can render it directly from a hand-built `ItemDetail`
+// without going through the fetch — not because anything outside this file is
+// meant to import it.
+export function renderBookContent(
+  detail: ItemDetail,
+  onAction: (action: ActionId) => void,
+): ReactElement {
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      {detail.coverUrl !== undefined && (
+        <Image
+          source={{ uri: detail.coverUrl }}
+          style={styles.cover}
+          resizeMode="contain"
+          accessibilityLabel={`${detail.title} cover`}
+        />
+      )}
+
+      <Text style={styles.title}>{detail.title}</Text>
+
+      {detail.subtitle !== undefined && <Text style={styles.subtitle}>{detail.subtitle}</Text>}
+
+      {detail.authors.length > 0 && (
+        <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
+      )}
+
+      <AccessTierBadge tier={detail.access.tier} />
+
+      {/* Publisher, published date, ISBN and page count are each shown only
+          when the feed actually supplied them — "render whatever fields are
+          present; leave gaps blank rather than blocking" applies here exactly
+          as it does in `renderArticleContent` below. */}
+      <View style={styles.metaBlock}>
+        {detail.publisher !== undefined && (
+          <Text style={styles.metaRow}>Publisher · {detail.publisher}</Text>
+        )}
+        {detail.published !== undefined && (
+          <Text style={styles.metaRow}>Published · {detail.published}</Text>
+        )}
+        {detail.isbn !== undefined && <Text style={styles.metaRow}>ISBN · {detail.isbn}</Text>}
+        {detail.numberOfPages !== undefined && (
+          <Text style={styles.metaRow}>{detail.numberOfPages} pages</Text>
+        )}
+      </View>
+
+      {detail.description !== undefined && (
+        <Text style={styles.description}>{detail.description}</Text>
+      )}
+
+      <ActionBar actions={detail.access.actions} onAction={onAction} />
+    </ScrollView>
+  );
+}
+
+// Screen 04's presentation. The board's field list for this screen is
+// deliberately smaller than the book's — title, authors, published date, the
+// badge, the abstract and the actions — so publisher, ISBN, page count, cover
+// and subtitle are not read here even though `ItemDetail` carries them: they
+// are book fields the article mockup never asked for.
+//
+// NO PAGE RANGE. The board lists it as a screen 04 field, but `Publication` has
+// no field for it and neither backend contract mentions one, so there is
+// nothing to read. Left absent rather than invented — this is one of the four
+// screen 04 gaps index.html already tracks under "mockup elements with no data
+// behind them"; this file does not re-decide it, just leaves the space out.
+//
+// DOI IS NOT ONE OF THOSE GAPS. It is a settled removal, not an open question —
+// design still need telling, but the field is gone for good, so nothing here
+// renders even a blank line for it. Download citation, the five tabs and the
+// "Research article" label are the other three gaps, and none is invented
+// either.
+export function renderArticleContent(
+  detail: ItemDetail,
+  onAction: (action: ActionId) => void,
+): ReactElement {
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      <Text style={styles.title}>{detail.title}</Text>
+
+      {detail.authors.length > 0 && (
+        <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
+      )}
+
+      <AccessTierBadge tier={detail.access.tier} />
+
+      {detail.published !== undefined && (
+        <Text style={styles.metaRow}>Published · {detail.published}</Text>
+      )}
+
+      {/* The abstract is `ItemDetail.description` under the label this screen
+          uses for it. Absent entirely — no heading, no empty block — when the
+          feed did not supply one, same "leave gaps blank" rule as everywhere
+          else on this screen. */}
+      {detail.description !== undefined && (
+        <View style={styles.abstractBlock}>
+          <SectionHeader title="Abstract" />
+          <Text style={styles.abstractText}>{detail.description}</Text>
+        </View>
+      )}
+
+      <ActionBar actions={detail.access.actions} onAction={onAction} />
+    </ScrollView>
+  );
 }
 
 export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
@@ -150,51 +272,13 @@ export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
       </View>
     );
   } else {
-    body = (
-      <ScrollView contentContainerStyle={styles.content}>
-        {detail.coverUrl !== undefined && (
-          <Image
-            source={{ uri: detail.coverUrl }}
-            style={styles.cover}
-            resizeMode="contain"
-            accessibilityLabel={`${detail.title} cover`}
-          />
-        )}
-
-        <Text style={styles.title}>{detail.title}</Text>
-
-        {detail.subtitle !== undefined && <Text style={styles.subtitle}>{detail.subtitle}</Text>}
-
-        {detail.authors.length > 0 && (
-          <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
-        )}
-
-        <AccessTierBadge tier={detail.access.tier} />
-
-        {/* Publisher, published date, ISBN and page count are each shown only
-            when the feed actually supplied them — "render whatever fields are
-            present; leave gaps blank rather than blocking" applies here exactly
-            as it does on screen 04. */}
-        <View style={styles.metaBlock}>
-          {detail.publisher !== undefined && (
-            <Text style={styles.metaRow}>Publisher · {detail.publisher}</Text>
-          )}
-          {detail.published !== undefined && (
-            <Text style={styles.metaRow}>Published · {detail.published}</Text>
-          )}
-          {detail.isbn !== undefined && <Text style={styles.metaRow}>ISBN · {detail.isbn}</Text>}
-          {detail.numberOfPages !== undefined && (
-            <Text style={styles.metaRow}>{detail.numberOfPages} pages</Text>
-          )}
-        </View>
-
-        {detail.description !== undefined && (
-          <Text style={styles.description}>{detail.description}</Text>
-        )}
-
-        <ActionBar actions={detail.access.actions} onAction={handleAction} />
-      </ScrollView>
-    );
+    // The only place workType is read for presentation. Today this is always
+    // 'book' — see the header comment — but the branch is real and the article
+    // side is exercised directly in tests rather than left unwritten.
+    body =
+      detail.workType === 'article'
+        ? renderArticleContent(detail, handleAction)
+        : renderBookContent(detail, handleAction);
   }
 
   return (
@@ -273,5 +357,18 @@ const styles = StyleSheet.create({
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
     marginTop: space.sm,
+  },
+  abstractBlock: {
+    alignSelf: 'stretch',
+    gap: space.xs,
+    marginTop: space.sm,
+  },
+  // No marginTop of its own: abstractBlock's own gap already spaces it under
+  // the SectionHeader, and description's margin would double it up.
+  abstractText: {
+    fontWeight: typeScale.body.weight,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textPrimary,
   },
 });
