@@ -56,10 +56,15 @@ import type {
 } from '@react-navigation/native-stack';
 
 import { ContentCard } from '../components/ContentCard';
+import { ErrorState } from '@components/ErrorState';
+import { FilterSortSheet } from '@components/FilterSortSheet';
 import { getCatalogueSource } from '../config/catalogue';
-import type { Publication, Shelf } from '../model/types';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
+import type { Publication, Shelf, SortOrder } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
-import { color, space, type as typeScale } from '../theme/tokens';
+import type { BrowseFilters } from '@search/browseLink';
+import { color, radius, space, type as typeScale } from '../theme/tokens';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'Shelf'>;
 
@@ -92,37 +97,96 @@ export default function ShelfScreen({ route }: Props) {
   const [nextPage, setNextPage] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
   const [moreStatus, setMoreStatus] = useState<MoreStatus>('idle');
+
+  // Screen 12 — filter & sort. APPLIED is what the last request actually used
+  // (carried forward into loadMore's follow-up pages); DRAFT is what the sheet
+  // shows while the reader is still choosing. They only agree the moment the
+  // sheet opens and the moment Apply/Clear All commits — see openSheet below.
+  const [appliedFilters, setAppliedFilters] = useState<BrowseFilters>({});
+  const [appliedSort, setAppliedSort] = useState<SortOrder | undefined>(undefined);
+  const [draftFilters, setDraftFilters] = useState<BrowseFilters>({});
+  const [draftSort, setDraftSort] = useState<SortOrder | undefined>(undefined);
+  const [sheetVisible, setSheetVisible] = useState(false);
+  // Sort is honoured only on 'all' (browseLink.ts) — the sheet still renders
+  // the row, greyed, rather than hiding it on every other shelf.
+  const sortDisabled = shelfId !== 'all';
 
   // No synchronous setState here — only inside the async continuations. A
   // setState reachable directly from an effect body triggers a lint error
   // ("cascading renders"); `loading`/`failed` are also already at these exact
   // values on mount, so resetting them here would be redundant anyway. Retry
-  // is the one path that truly needs to reset them, and it runs from a press
-  // handler, not an effect — see below.
-  const loadFirstPage = useCallback(() => {
-    getCatalogueSource()
-      .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId)
-      // Page omitted, not passed as 0: the adapter forwards it to the server as
-      // a query param only when present, so the server applies its own default.
-      .then((page) => {
-        setShelf(page);
-        setPublications(page.publications);
-        setNextPage(page.nextPage);
-      })
-      .catch(() => setFailed(true))
-      .finally(() => setLoading(false));
-  }, [shelfId]);
+  // and a filter Apply/Clear All are the paths that truly need to reset them,
+  // and they run from a press handler, not an effect — see below.
+  const fetchPage = useCallback(
+    (filters: BrowseFilters, sort: SortOrder | undefined) => {
+      getCatalogueSource()
+        // Page omitted, not passed as 0: the adapter forwards it to the server
+        // as a query param only when present, so the server applies its own
+        // default.
+        .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId, undefined, { ...filters, sort })
+        .then((page) => {
+          setShelf(page);
+          setPublications(page.publications);
+          setNextPage(page.nextPage);
+        })
+        .catch((err: unknown) => {
+          setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+          setFailed(true);
+        })
+        .finally(() => setLoading(false));
+    },
+    [shelfId],
+  );
 
   useEffect(() => {
-    loadFirstPage();
-  }, [loadFirstPage]);
+    fetchPage(appliedFilters, appliedSort);
+    // Only on mount (or a shelfId change, which never happens on a live
+    // screen — see the file header). appliedFilters/appliedSort changes are
+    // driven by applyFilters/clearAllFilters below, which fetch directly
+    // rather than through this effect, the same reasoning `retry` already
+    // documents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchPage]);
 
   const retry = useCallback(() => {
     setLoading(true);
     setFailed(false);
-    loadFirstPage();
-  }, [loadFirstPage]);
+    fetchPage(appliedFilters, appliedSort);
+  }, [fetchPage, appliedFilters, appliedSort]);
+
+  const openSheet = useCallback(() => {
+    // The sheet always opens showing what is actually applied, never a stale
+    // draft left over from a previous open-then-dismiss.
+    setDraftFilters(appliedFilters);
+    setDraftSort(appliedSort);
+    setSheetVisible(true);
+  }, [appliedFilters, appliedSort]);
+
+  const applyFilters = useCallback(() => {
+    setSheetVisible(false);
+    setLoading(true);
+    setFailed(false);
+    setPublications([]);
+    setNextPage(undefined);
+    setAppliedFilters(draftFilters);
+    setAppliedSort(draftSort);
+    fetchPage(draftFilters, draftSort);
+  }, [draftFilters, draftSort, fetchPage]);
+
+  const clearAllFilters = useCallback(() => {
+    setDraftFilters({});
+    setDraftSort(undefined);
+    setSheetVisible(false);
+    setLoading(true);
+    setFailed(false);
+    setPublications([]);
+    setNextPage(undefined);
+    setAppliedFilters({});
+    setAppliedSort(undefined);
+    fetchPage({}, undefined);
+  }, [fetchPage]);
 
   const loadMore = useCallback(() => {
     // A guard, not an assertion: the button is hidden when there is no next page
@@ -133,7 +197,12 @@ export default function ShelfScreen({ route }: Props) {
 
     setMoreStatus('loading');
     getCatalogueSource()
-      .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId, nextPage)
+      // The same filters/sort the current page was fetched with — a further
+      // page of the same request, never a fresh, unfiltered one.
+      .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId, nextPage, {
+        ...appliedFilters,
+        sort: appliedSort,
+      })
       .then((page) => {
         // Appended, never replaced — earlier pages staying on screen is the
         // whole point. Deduped by id because overlapping pages are a real
@@ -149,15 +218,16 @@ export default function ShelfScreen({ route }: Props) {
       // Deliberately does NOT set `failed`: the rows already on screen stay,
       // and the inline label below turns into a retry.
       .catch(() => setMoreStatus('failed'));
-  }, [nextPage, moreStatus, shelfId]);
+  }, [nextPage, moreStatus, shelfId, appliedFilters, appliedSort]);
 
   if (failed) {
     return (
       <View style={styles.center}>
-        <Text style={styles.message}>Couldn&apos;t load this shelf.</Text>
-        <Pressable onPress={retry} accessibilityRole="button" accessibilityLabel="Retry">
-          <Text style={styles.retry}>Retry</Text>
-        </Pressable>
+        <ErrorState
+          variant={errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode)}
+          message={errorCode === undefined ? "Couldn't load this shelf." : CATALOGUE_ERROR_COPY[errorCode]}
+          onRetry={retry}
+        />
       </View>
     );
   }
@@ -170,13 +240,24 @@ export default function ShelfScreen({ route }: Props) {
         : 'Load more';
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      {loading ? (
-        Array.from({ length: SKELETON_COUNT }, (_, index) => (
-          <ContentCard key={index} state="loading" title="" />
-        ))
-      ) : (
-        <View style={styles.section}>
+    <View style={styles.screen}>
+      <Pressable
+        testID="shelf-filter-button"
+        onPress={openSheet}
+        style={styles.filterButton}
+        accessibilityRole="button"
+        accessibilityLabel="Filter and sort"
+      >
+        <Text style={styles.filterButtonLabel}>Filter & Sort</Text>
+      </Pressable>
+
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        {loading ? (
+          Array.from({ length: SKELETON_COUNT }, (_, index) => (
+            <ContentCard key={index} state="loading" title="" />
+          ))
+        ) : (
+          <View style={styles.section}>
           {/* No heading here — the app bar already shows this shelf's name, set
               by RootNavigator from route.params.title. */}
           <View style={styles.list}>
@@ -223,8 +304,27 @@ export default function ShelfScreen({ route }: Props) {
             </Pressable>
           )}
         </View>
-      )}
-    </ScrollView>
+        )}
+      </ScrollView>
+
+      <FilterSortSheet
+        visible={sheetVisible}
+        onDismiss={() => setSheetVisible(false)}
+        contentType={draftFilters.contentType}
+        onSelectContentType={(contentType) =>
+          setDraftFilters((previous) => ({ ...previous, contentType }))
+        }
+        accessTier={draftFilters.accessTier}
+        onSelectAccessTier={(accessTier) =>
+          setDraftFilters((previous) => ({ ...previous, accessTier }))
+        }
+        sort={draftSort}
+        onSelectSort={setDraftSort}
+        sortDisabled={sortDisabled}
+        onApply={applyFilters}
+        onClearAll={clearAllFilters}
+      />
+    </View>
   );
 }
 
@@ -237,24 +337,28 @@ const styles = StyleSheet.create({
     padding: space.md,
     gap: space.lg,
   },
+  filterButton: {
+    alignSelf: 'flex-start',
+    marginHorizontal: space.md,
+    marginTop: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.border,
+  },
+  filterButtonLabel: {
+    fontWeight: typeScale.button.weight,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.textPrimary,
+  },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
     backgroundColor: color.surface,
-  },
-  message: {
-    fontWeight: typeScale.body.weight,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textSecondary,
-  },
-  retry: {
-    fontWeight: typeScale.button.weight,
-    fontSize: typeScale.button.size,
-    lineHeight: typeScale.button.lineHeight,
-    color: color.primary,
   },
   section: {
     gap: space.sm,

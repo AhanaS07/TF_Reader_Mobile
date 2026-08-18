@@ -30,8 +30,11 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
+import { ErrorState } from '@components/ErrorState';
 import { SectionHeader } from '../components/SectionHeader';
 import { getCatalogueSource } from '../config/catalogue';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import { useInstitutionStore } from '@store/institutionStore';
@@ -53,6 +56,10 @@ export default function CatalogueScreen() {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  // Undefined covers both "no failure" and "failed with something that was not
+  // a CatalogueFailure" — the fallback copy below handles the second case, the
+  // same way SearchScreen's own errorCode does.
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const institutionId = selectedInstitution?.id ?? 'inst_7f3';
@@ -67,7 +74,10 @@ export default function CatalogueScreen() {
     getCatalogueSource()
       .getHomeCatalogue(institutionId)
       .then(setCatalogue)
-      .catch(() => setFailed(true))
+      .catch((err: unknown) => {
+        setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+        setFailed(true);
+      })
       .finally(() => setLoading(false));
   }, [institutionId]);
 
@@ -84,10 +94,11 @@ export default function CatalogueScreen() {
   if (failed) {
     return (
       <View style={styles.center}>
-        <Text style={styles.message}>Couldn&apos;t load the catalogue.</Text>
-        <Pressable onPress={retry} accessibilityRole="button" accessibilityLabel="Retry">
-          <Text style={styles.retry}>Retry</Text>
-        </Pressable>
+        <ErrorState
+          variant={errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode)}
+          message={errorCode === undefined ? "Couldn't load the catalogue." : CATALOGUE_ERROR_COPY[errorCode]}
+          onRetry={retry}
+        />
       </View>
     );
   }
@@ -205,18 +216,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: space.sm,
     backgroundColor: color.surface,
-  },
-  message: {
-    fontWeight: typeScale.body.weight,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textSecondary,
-  },
-  retry: {
-    fontWeight: typeScale.button.weight,
-    fontSize: typeScale.button.size,
-    lineHeight: typeScale.button.lineHeight,
-    color: color.primary,
   },
   categoryStrip: {
     gap: space.md,

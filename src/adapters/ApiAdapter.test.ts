@@ -237,6 +237,82 @@ describe('ApiAdapter URL construction', () => {
     ).rejects.toMatchObject({ code: CatalogueError.NOT_FOUND });
     expect(requested[0]).not.toContain('../');
   });
+
+  // Screen 12's filter/sort dimensions, built through the shared query helper
+  // (browseParams) rather than spelled out in the adapter.
+  it('sends contentType and accessTier as query parameters', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      contentType: 'AUDIO',
+      accessTier: 'OPEN_ACCESS',
+    });
+
+    const { searchParams } = new URL(requested[0]);
+    expect(searchParams.get('contentType')).toBe('AUDIO');
+    expect(searchParams.get('accessTier')).toBe('OPEN_ACCESS');
+  });
+
+  it('sends sort for the all shelf', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, 'all', undefined, { sort: 'title.asc' });
+
+    expect(new URL(requested[0]).searchParams.get('sort')).toBe('title.asc');
+  });
+
+  // browseLink.ts's own contract: sort is dropped for anything but 'all',
+  // because a curated shelf's own order is the order.
+  it('drops sort for a curated shelf', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      sort: 'title.asc',
+    }).catch(() => {});
+    await adapter
+      .getShelf(KNOWN_INSTITUTION, 'shelf_1', undefined, { sort: 'title.asc' })
+      .catch(() => {});
+
+    expect(new URL(requested[requested.length - 1]).searchParams.has('sort')).toBe(false);
+  });
+
+  it('combines page with a filter in the same request', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return ok(allTitlesPage0Fixture);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 2, { contentType: 'EPUB' });
+
+    const { searchParams } = new URL(requested[0]);
+    expect(searchParams.get('page')).toBe('2');
+    expect(searchParams.get('contentType')).toBe('EPUB');
+  });
 });
 
 describe('ApiAdapter failure mapping', () => {
@@ -313,5 +389,114 @@ describe('ApiAdapter failure mapping', () => {
     await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
       code: CatalogueError.MALFORMED_FEED,
     });
+  });
+});
+
+// Home-feed ETag caching (getHomeCatalogue only — see the file header for why
+// this method and not the others).
+describe('ApiAdapter home-feed ETag caching', () => {
+  function okWithEtag(body: unknown, etag: string): FetchResponse {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      headers: { get: (name) => (name === 'ETag' ? etag : null) },
+    };
+  }
+
+  function notModified(): FetchResponse {
+    return {
+      ok: false,
+      status: 304,
+      json: async () => {
+        throw new Error('304 has no body — a caller reading it is the bug this test catches');
+      },
+    };
+  }
+
+  it('sends no If-None-Match on the first request', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return okWithEtag(homeCatalogueFixture, 'W/"v1"');
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+
+  it('sends the ETag it was given as If-None-Match on the next request', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    let call = 0;
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        call += 1;
+        return call === 1 ? okWithEtag(homeCatalogueFixture, 'W/"v1"') : notModified();
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[1]?.headers).toEqual({ 'If-None-Match': 'W/"v1"' });
+  });
+
+  it('serves the cached catalogue on a 304 without reading a body', async () => {
+    let call = 0;
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => {
+        call += 1;
+        return call === 1 ? okWithEtag(homeCatalogueFixture, 'W/"v1"') : notModified();
+      },
+    });
+
+    const first = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    // notModified()'s json() throws if ever called — resolving here proves the
+    // 304 path never tried to read a (nonexistent) body, i.e. the download
+    // was actually skipped, not just the cache silently re-served.
+    const second = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(second).toEqual(first);
+  });
+
+  it('does not cache, and sends no If-None-Match, when the server sends no ETag', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return ok(homeCatalogueFixture);
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[1]?.headers).toBeUndefined();
+  });
+
+  it('caches per institution, not globally', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return okWithEtag(newInstitutionCatalogueFixture, 'W/"other"');
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue('inst_a21');
+
+    // The second institution has never been fetched before, so it must not
+    // carry the first institution's ETag.
+    expect(requestInits[1]?.headers).toBeUndefined();
   });
 });
