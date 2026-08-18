@@ -14,6 +14,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -190,6 +191,14 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    * Reader's half; storing it is not, and doing both here would prejudge those.
    */
   const [position, setPosition] = useState<ReaderPosition | null>(null);
+
+  /**
+   * The page-jump field: null when closed, the typed text when open.
+   *
+   * A STRING, not a number, and deliberately: the field has to be able to hold '' while the user
+   * clears it and '1' on the way to '12', neither of which is a page. Parsing happens on submit.
+   */
+  const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
@@ -499,6 +508,31 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   );
 
   /**
+   * Jump to a typed page, or refuse without navigating.
+   *
+   * >>> VALIDATED HERE RATHER THAN IN THE SHELL, AND THAT IS THE WHOLE POINT OF CARRYING pageCount. <<<
+   * The shell range-checks too and raises NAVIGATION_FAILED, but that surfaces as the reader's error
+   * banner — the right response to a corrupt book and a wildly disproportionate one to a typo. Knowing
+   * the bound host-side means the UI can simply decline, and can show the range up front.
+   *
+   * Only reachable when the position is a page, so an EPUB can never get here — there is no stable page
+   * to jump to in a reflowable book.
+   */
+  const submitPageJump = useCallback((): void => {
+    if (position?.kind !== 'page' || pageJump === null) return;
+
+    const page = Number(pageJump.trim());
+    if (!Number.isInteger(page) || page < 1 || page > position.pageCount) {
+      // Left OPEN on a bad value rather than closed: the typed text stays visible so it can be
+      // corrected, which is the difference between a rejection and losing your input.
+      return;
+    }
+
+    setPageJump(null);
+    send?.({ type: 'goTo', target: { kind: 'page', page } });
+  }, [pageJump, position, send]);
+
+  /**
    * Seek to a search hit and dismiss the results, leaving the match bar behind.
    *
    * Dismissing is the point: the panel covers the page, so staying open would hide the
@@ -798,16 +832,53 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         </Pressable>
 
         {/*
-          THE PAGE INDICATOR, and it is PDF-only by construction rather than by choice: `position` is
-          discriminated by format, and an EPUB reports a CFI because a reflowable book has no stable
-          page to show. Rendering nothing for EPUB is the honest outcome — a fabricated "page 3 of
-          400" from a CFI would be a number that changes with the font size.
+          THE PAGE INDICATOR, DOUBLING AS THE PAGE-JUMP AFFORDANCE. PDF-only by construction rather
+          than by choice: `position` is discriminated by addressing scheme, and a reflowable book
+          reports a CFI because it has no stable page. Rendering nothing for a CFI is the honest
+          outcome — a fabricated "page 3 of 400" would be a number that changes with the font size.
+
+          THE INDICATOR *IS* THE CONTROL, rather than a fourth item in this row. The row is already
+          three buttons wide on a phone, and "tap where the page number is to change the page" needs no
+          explaining. It also means the affordance appears exactly when it is usable, because both it
+          and the number come from the same message.
+
+          NOTE WHAT THIS IS NOT: a table of contents. A PDF with no outline has no contents, and
+          Contents stays correctly disabled for it — most PDFs in the wild are that. This is the
+          navigation such a book can actually offer.
         */}
-        {position?.kind === 'page' && (
-          <Text accessibilityLabel={`Page ${position.page} of ${position.pageCount}`} style={styles.pageIndicator}>
-            {position.page} / {position.pageCount}
-          </Text>
-        )}
+        {position?.kind === 'page' &&
+          (pageJump === null ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Page ${position.page} of ${position.pageCount}. Go to a page.`}
+              onPress={() => setPageJump('')}
+              testID="reader-page-indicator"
+            >
+              <Text style={styles.pageIndicator}>
+                {position.page} / {position.pageCount}
+              </Text>
+            </Pressable>
+          ) : (
+            <TextInput
+              testID="reader-page-jump"
+              // The placeholder carries the RANGE, which is the whole benefit of the host knowing
+              // pageCount: the bound is visible before you type rather than discovered by being
+              // refused. A placeholder is not a reliable accessible name on Android, so the label is
+              // explicit as well.
+              accessibilityLabel={`Go to page, 1 to ${position.pageCount}`}
+              placeholder={`1–${position.pageCount}`}
+              placeholderTextColor="#8a8a8a"
+              style={styles.pageJump}
+              value={pageJump}
+              onChangeText={setPageJump}
+              onSubmitEditing={submitPageJump}
+              onBlur={() => setPageJump(null)}
+              keyboardType="number-pad"
+              returnKeyType="go"
+              autoFocus
+              maxLength={String(position.pageCount).length}
+            />
+          ))}
 
         <Pressable
           accessibilityRole="button"
@@ -862,6 +933,19 @@ const styles = StyleSheet.create({
   pageIndicator: {
     fontSize: 13,
     color: '#555555',
+    fontVariant: ['tabular-nums'],
+  },
+  // Sized to the widest page number it can hold rather than to its content, so opening the field does
+  // not reflow the controls row underneath the user's finger.
+  pageJump: {
+    minWidth: 54,
+    fontSize: 13,
+    color: '#111111',
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#555555',
+    textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
   // flex:1 down to the WebView. See the note in ReaderWebView.tsx — epub.js

@@ -221,7 +221,7 @@ describe('the page indicator', () => {
     await mountReader();
     await reportReady();
 
-    expect(screen.queryByLabelText(/^Page \d+ of \d+$/)).toBeNull();
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
   });
 
   it('reports the page and the page count for a PDF', async () => {
@@ -229,7 +229,7 @@ describe('the page indicator', () => {
     await reportReady();
     await relocateTo({ kind: 'page', page: 4, pageCount: 50 });
 
-    expect(screen.getByLabelText('Page 4 of 50')).toBeTruthy();
+    expect(screen.getByLabelText('Page 4 of 50. Go to a page.')).toBeTruthy();
     expect(screen.getByText('4 / 50')).toBeTruthy();
   });
 
@@ -239,7 +239,7 @@ describe('the page indicator', () => {
     await relocateTo({ kind: 'page', page: 1, pageCount: 3 });
     await relocateTo({ kind: 'page', page: 3, pageCount: 3 });
 
-    expect(screen.getByLabelText('Page 3 of 3')).toBeTruthy();
+    expect(screen.getByLabelText('Page 3 of 3. Go to a page.')).toBeTruthy();
     expect(screen.queryByText('1 / 3')).toBeNull();
   });
 
@@ -248,19 +248,142 @@ describe('the page indicator', () => {
     await reportReady();
     await relocateTo({ kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' });
 
-    expect(screen.queryByLabelText(/^Page \d+ of \d+$/)).toBeNull();
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
   });
 
-  // The parser drops a position it cannot understand, so the message never reaches the screen. Pinned
-  // here as well as in readerBridge.test.ts because this is the consequence that matters: a stale but
-  // true indicator beats a confidently wrong one.
-  it('keeps the last good position when an impossible one arrives', async () => {
+  // AN IMPOSSIBLE POSITION IS REFUSED LOUDLY, NOT SMOOTHED OVER — and that is deliberate, so it is
+  // worth saying why the harsher option is the right one here.
+  //
+  // "page 9 of 3" cannot come from book content. `pageCount` is `doc.numPages` and `currentPage` only
+  // moves through next/prev/goTo, all of which bound it. So a position like this means OUR OWN SHELL is
+  // broken, and a shell that miscounts pages is not one whose other messages should be trusted either.
+  // errors.ts requires that class of thing fail loudly rather than degrade.
+  //
+  // Contrast the TOC hardeners, which drop one bad row and keep the panel: a mis-indented Contents entry
+  // really can come from a malformed book, and losing a chapter is worse than mis-indenting one.
+  it('refuses an impossible position rather than displaying it', async () => {
     await mountReader();
     await reportReady();
     await relocateTo({ kind: 'page', page: 2, pageCount: 3 });
     await relocateTo({ kind: 'page', page: 9, pageCount: 3 });
 
-    expect(screen.getByLabelText('Page 2 of 3')).toBeTruthy();
+    expect(screen.getByText('BRIDGE_PARSE_FAILED')).toBeTruthy();
+  });
+});
+
+describe('the page jump', () => {
+  // WHAT THIS IS FOR: a PDF with no outline has no Contents to offer — and most PDFs in the wild are
+  // that, including the 15 MB measurement fixture. Contents stays correctly disabled for them; this is
+  // the navigation such a book CAN offer, and it is only possible because `pageCount` now reaches the
+  // host.
+  async function atPage(page: number, pageCount: number): Promise<void> {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page, pageCount },
+      atStart: false,
+      atEnd: false,
+    });
+  }
+
+  async function openJump(): Promise<void> {
+    await fireEvent.press(screen.getByTestId('reader-page-indicator'));
+  }
+
+  async function type(text: string): Promise<void> {
+    await fireEvent.changeText(screen.getByTestId('reader-page-jump'), text);
+  }
+
+  async function submit(): Promise<void> {
+    await fireEvent(screen.getByTestId('reader-page-jump'), 'submitEditing');
+  }
+
+  it('opens from the page indicator', async () => {
+    await atPage(3, 50);
+
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+    await openJump();
+
+    expect(screen.getByTestId('reader-page-jump')).toBeTruthy();
+    // The RANGE is on the field, which is the point of the host knowing pageCount: the bound is
+    // visible before you type rather than discovered by being refused.
+    expect(screen.getByPlaceholderText('1–50')).toBeTruthy();
+  });
+
+  it('sends a page target for a page inside the document', async () => {
+    await atPage(3, 50);
+    await openJump();
+    await type('42');
+    await submit();
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 42 } }),
+    );
+    // Closes on success, so the row goes back to reporting where you are.
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+  });
+
+  it.each([
+    ['past the last page', '51'],
+    ['zero', '0'],
+    ['a negative', '-4'],
+    ['a fraction', '2.5'],
+    ['not a number', 'abc'],
+    ['empty', ''],
+  ])('declines %s without navigating, and keeps the field open', async (_label, text) => {
+    await atPage(3, 50);
+    const before = __injectJavaScript.mock.calls.length;
+    await openJump();
+    await type(text);
+    await submit();
+
+    // NOT an error banner. The shell would range-check too and raise NAVIGATION_FAILED, which is the
+    // right response to a corrupt book and a wildly disproportionate one to a typo — so the host
+    // declines silently instead.
+    expect(__injectJavaScript.mock.calls.length).toBe(before);
+    expect(screen.queryByTestId('reader-error')).toBeNull();
+    // Left open with the text intact: a rejection should not also lose what you typed.
+    expect(screen.getByTestId('reader-page-jump')).toBeTruthy();
+  });
+
+  it('accepts the first and last page exactly', async () => {
+    await atPage(3, 50);
+    await openJump();
+    await type('1');
+    await submit();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 1 } }),
+    );
+
+    await openJump();
+    await type('50');
+    await submit();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 50 } }),
+    );
+  });
+
+  // A reflowable book has no stable page, so there is nothing to jump to and no indicator to open.
+  it('is unreachable for an EPUB', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+  });
+
+  it('is unreachable before any position has arrived', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
   });
 });
 
