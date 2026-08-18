@@ -106,6 +106,30 @@ describe('placeHold', () => {
     expect(second.holdId).toBe(first.holdId);
     expect(second.position).toBe(first.position);
   });
+
+  // A lapsed offer is not "already in the queue". Handing the dead hold back would give
+  // the reader an expiry in the past and no position — and `acceptOffer` already treats
+  // that same hold as gone, so the two would disagree about one state.
+  it('mints a fresh queued hold when the previous offer has lapsed', async () => {
+    const c = client();
+    const first = await c.placeHold(CONTENDED);
+    c.promoteHold('item_42', -1);
+
+    const rejoined = await c.placeHold(CONTENDED);
+    expect(rejoined.state).toBe('queued');
+    expect(rejoined.holdId).not.toBe(first.holdId);
+    expect(rejoined.offerExpiresAt).toBeUndefined();
+    expect(rejoined.position).toBeDefined();
+  });
+
+  // A live offer, by contrast, is still the reader's turn. Placing a hold must not throw
+  // it away.
+  it('hands back a live offer rather than replacing it', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    const offered = c.promoteHold('item_42');
+    expect((await c.placeHold(CONTENDED)).offerId).toBe(offered.offerId);
+  });
 });
 
 describe('the offer', () => {
@@ -133,6 +157,34 @@ describe('the offer', () => {
     const c = client();
     await c.placeHold(CONTENDED);
     expect(c.promoteHold('item_42').position).toBeUndefined();
+  });
+
+  // The rule `offerId` was added to make enforceable, enforced here. A mock that let a
+  // second offer overwrite a live first one would teach the app the rule does not matter.
+  it('refuses to replace a live offer with a second one', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    c.promoteHold('item_42');
+    expect(() => c.promoteHold('item_42')).toThrow(/already has a live offer/);
+  });
+
+  // Promoting again after a lapse is a real transition, not a violation: the window
+  // closed, the reader rejoined, their turn came round.
+  it('allows a fresh offer once the previous one has lapsed and been rejoined', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    c.promoteHold('item_42', -1);
+    await c.placeHold(CONTENDED);
+    expect(c.promoteHold('item_42').state).toBe('offered');
+  });
+
+  // The counter is per instance now, so two clients cannot move each other's cursor.
+  it('keeps its id sequence to itself', async () => {
+    const a = client();
+    const b = client();
+    await a.placeHold(CONTENDED);
+    await a.placeHold('item_other');
+    expect((await b.placeHold(CONTENDED)).holdId).toBe('hold_1');
   });
 
   it('accepts into an active loan', async () => {

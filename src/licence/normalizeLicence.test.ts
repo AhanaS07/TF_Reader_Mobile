@@ -85,6 +85,19 @@ describe('normalizeLoan', () => {
     );
   });
 
+  // Absence is reserved for open access, which genuinely never expires. Borrowing it for
+  // "we could not read this" would give an Elite loan an unlimited-looking one.
+  it.each([
+    ['epoch milliseconds', 1_755_432_000_000],
+    ['null', null],
+    ['an object', { at: '2026-08-15' }],
+    ['an empty string', ''],
+  ])('throws when dueAt is present as %s rather than reading as absent', (_label, dueAt) => {
+    expect(codeOf(() => normalizeLoan({ ...LOAN, dueAt }))).toBe(
+      LicenceError.MALFORMED_RESPONSE,
+    );
+  });
+
   // A loan with no id cannot be returned, and finding that out at the Revoke tap is
   // worse than finding it out here.
   it('throws when the loan has no id', () => {
@@ -133,6 +146,24 @@ describe('normalizeHold', () => {
   it('throws when a hold claims OFFERED but carries no offer', () => {
     const { offer: _offer, ...noOffer } = OFFERED;
     expect(codeOf(() => normalizeHold(noOffer))).toBe(LicenceError.MALFORMED_RESPONSE);
+  });
+
+  // The inverse, which used to slip through. The offer fields were copied on the mere
+  // presence of an offer block while the clock was gated on the state, so this shape
+  // produced an expiry with no reference instant — the exact leak the file prevents.
+  it('throws when a QUEUED hold carries an offer block', () => {
+    const contradictory = { ...QUEUED, offer: { offerId: 'offer_a90', expiresAt: '2026-08-13T10:30:00Z' } };
+    expect(codeOf(() => normalizeHold(contradictory, '2026-08-13T10:00:00Z'))).toBe(
+      LicenceError.MALFORMED_RESPONSE,
+    );
+  });
+
+  // Belt and braces on the same rule: whatever comes out, an expiry never travels without
+  // the clock it is measured against.
+  it('never yields an expiry without a server clock', () => {
+    const hold = normalizeHold(OFFERED, '2026-08-13T10:00:00Z');
+    expect(hold.offerExpiresAt).toBeDefined();
+    expect(hold.serverTime).toBeDefined();
   });
 
   // Their enum has exactly two values. Ours has four, and the other two are ours alone:

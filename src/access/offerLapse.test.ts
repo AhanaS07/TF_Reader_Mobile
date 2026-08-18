@@ -113,14 +113,16 @@ describe('lapseOffer', () => {
     expect(lapseOffer(anOfferedHold()).state).toBe('expired');
   });
 
-  // Each of these is a fact about an offer that no longer exists. A lapsed hold
-  // that still carries an expiry is the shape that lets a countdown keep running
-  // against a dead offer.
-  it('drops the offer id, the expiry and the position', () => {
-    const lapsed = lapseOffer(anOfferedHold({ position: 1 }));
+  // Each of these is a fact about an offer, or about a queue this reader is no longer
+  // in. A lapsed hold that still carries an expiry is the shape that lets a countdown
+  // keep running against a dead offer; one that still carries a queue length reports
+  // on a line the reader has left.
+  it('drops the offer id, the expiry, the position and the queue length', () => {
+    const lapsed = lapseOffer(anOfferedHold({ position: 1, queueLength: 7 }));
     expect('offerId' in lapsed).toBe(false);
     expect('offerExpiresAt' in lapsed).toBe(false);
     expect('position' in lapsed).toBe(false);
+    expect('queueLength' in lapsed).toBe(false);
   });
 
   it('keeps the hold id, which is the identity across the whole life of the hold', () => {

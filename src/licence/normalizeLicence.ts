@@ -50,11 +50,19 @@ function optNumber(value: unknown): number | undefined {
 // ABSENT IS LEGITIMATE: open access never expires and the contract omits `dueAt` for
 // it entirely. An unparseable date is NOT legitimate and throws — a loan with a due
 // date we cannot read would render a countdown to nowhere.
+// A PRESENT-BUT-WRONG-TYPED `dueAt` THROWS rather than reading as absent. This used to
+// route through `optString`, so a `dueAt` arriving as epoch milliseconds — or as null, or
+// as an object — came back `undefined` and rendered as "never expires". Absence is
+// reserved for open access, which genuinely never expires, so borrowing it for "we could
+// not read this" would hand an Elite loan an unlimited-looking one. MALFORMED_RESPONSE is
+// loud on purpose and this is exactly the case for it.
 function toExpiresAt(value: unknown): number | undefined {
-  const raw = optString(value);
-  if (raw === undefined) return undefined;
-  const parsed = Date.parse(raw);
-  if (Number.isNaN(parsed)) throw malformed(`unparseable dueAt: ${raw}`);
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw malformed(`dueAt is present but not an ISO string: ${JSON.stringify(value)}`);
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) throw malformed(`unparseable dueAt: ${value}`);
   return parsed;
 }
 
@@ -132,6 +140,18 @@ export function normalizeHold(value: unknown, serverTime?: string): Hold {
   const offer = hold.offer === undefined ? undefined : asRecord(hold.offer, 'offer');
   if (state === 'offered' && offer === undefined) {
     throw malformed('hold is OFFERED but carries no offer block', optString(hold.holdId));
+  }
+  // AND THE INVERSE, which was missing. The offer fields below were spread on the mere
+  // presence of an offer block while `serverTime` was gated on the state — so a QUEUED
+  // hold arriving with an offer block normalized to an expiry with NO reference clock,
+  // which is precisely the shape this file exists to prevent. Rejected rather than gated:
+  // a queued hold carrying an offer is a contradiction on flambeau's side, and silently
+  // dropping half of it would hide that rather than surface it.
+  if (state !== 'offered' && offer !== undefined) {
+    throw malformed(
+      `hold is ${state.toUpperCase()} but carries an offer block`,
+      optString(hold.holdId),
+    );
   }
 
   const position = optNumber(hold.position);

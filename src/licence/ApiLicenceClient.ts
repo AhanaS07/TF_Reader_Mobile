@@ -141,46 +141,75 @@ export class ApiLicenceClient implements LicenceSource {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    let response: LicenceResponse;
+    // THE DEADLINE COVERS THE BODY TOO, and the `finally` is out here rather than around
+    // the fetch alone for exactly that reason. `fetch` settles when the response HEAD
+    // arrives, so a server that sends headers and then stalls the body would leave
+    // `response.json()` pending forever with the timer already cleared — a hang with no
+    // TIMEOUT and nothing for the caller to catch.
     try {
-      response = await this.fetch(`${this.baseUrl}${path}`, {
-        method,
-        headers: {
-          // Sent when we have one and omitted when we do not, rather than sent empty.
-          // An `Authorization: Bearer undefined` reads as a malformed token and comes
-          // back as a different error than the honest "no token" 401.
-          ...(token !== undefined ? { Authorization: `Bearer ${token}` } : {}),
-          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        signal: controller.signal,
-      });
-    } catch (cause) {
-      // An abort is our own deadline firing, and it wants different copy from a dead
-      // connection — a slow server is worth retrying differently from no network.
-      const aborted = cause instanceof Error && cause.name === 'AbortError';
-      throw new LicenceFailure(aborted ? LicenceError.TIMEOUT : LicenceError.NETWORK_UNAVAILABLE, {
-        ...(target !== undefined ? { target } : {}),
-        cause,
-      });
+      let response: LicenceResponse;
+      try {
+        response = await this.fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers: {
+            // Sent when we have one and omitted when we do not, rather than sent empty.
+            // An `Authorization: Bearer undefined` reads as a malformed token and comes
+            // back as a different error than the honest "no token" 401.
+            ...(token !== undefined ? { Authorization: `Bearer ${token}` } : {}),
+            ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: controller.signal,
+        });
+      } catch (cause) {
+        throw this.transportFailure(controller, target, cause);
+      }
+
+      if (!response.ok) throw await this.refusal(response, target);
+
+      // 204 on a successful cancel, and DELETE has no body to parse. Reading one would
+      // throw on the empty string and turn a success into a MALFORMED_RESPONSE.
+      if (response.status === 204) return undefined;
+
+      try {
+        return await response.json();
+      } catch (cause) {
+        // An abort HERE is the deadline firing mid-body, not a malformed payload. Same
+        // classifier as the fetch above, so a stalled body reports as TIMEOUT rather than
+        // as a parsing complaint about bytes that never arrived.
+        if (controller.signal.aborted) throw this.transportFailure(controller, target, cause);
+        throw new LicenceFailure(LicenceError.MALFORMED_RESPONSE, {
+          ...(target !== undefined ? { target } : {}),
+          cause,
+        });
+      }
     } finally {
       clearTimeout(timer);
     }
+  }
 
-    if (!response.ok) throw await this.refusal(response, target);
-
-    // 204 on a successful cancel, and DELETE has no body to parse. Reading one would
-    // throw on the empty string and turn a success into a MALFORMED_RESPONSE.
-    if (response.status === 204) return undefined;
-
-    try {
-      return await response.json();
-    } catch (cause) {
-      throw new LicenceFailure(LicenceError.MALFORMED_RESPONSE, {
-        ...(target !== undefined ? { target } : {}),
-        cause,
-      });
-    }
+  // Whether a thrown transport error was our own deadline or a dead connection.
+  //
+  // READS `signal.aborted` RATHER THAN INSPECTING THE THROWN VALUE. An aborted fetch
+  // rejects with a `DOMException` — or with the signal's `reason`, depending on the engine
+  // — and Hermes does not guarantee that value is an `Error` instance at all. The old test
+  // (`cause instanceof Error && cause.name === 'AbortError'`) therefore failed open on
+  // exactly the runtime the app ships on, and a fired deadline reported as
+  // NETWORK_UNAVAILABLE. The signal is owned by the calling method and cannot be spoofed
+  // by whatever came out of `fetch`.
+  //
+  // THE DISTINCTION IS USER-VISIBLE, which is why it is worth a method: a slow server and
+  // no connection carry different copy and different retry behaviour.
+  private transportFailure(
+    controller: AbortController,
+    target: string | undefined,
+    cause: unknown,
+  ): LicenceFailure {
+    const code = controller.signal.aborted ? LicenceError.TIMEOUT : LicenceError.NETWORK_UNAVAILABLE;
+    return new LicenceFailure(code, {
+      ...(target !== undefined ? { target } : {}),
+      cause,
+    });
   }
 
   // Turns a non-2xx into a REFUSED carrying flambeau's own `code`.

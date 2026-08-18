@@ -71,11 +71,19 @@ export function isOfferLapsed(hold: Hold | undefined, now: string): boolean {
 
 // The hold as the offer store should hold it once the window has closed.
 //
-// RETURNS A NEW HOLD, and drops `offerId`, `offerExpiresAt` and `position` with
-// it. Every one of those is a fact about an offer that no longer exists, and a
-// lapsed hold carrying an expiry is exactly the shape that lets a countdown keep
-// rendering against a dead offer. `position` goes too: the reader did not keep
-// their place, so reporting the one they had would be worse than reporting none.
+// RETURNS A NEW HOLD, and drops `offerId`, `offerExpiresAt`, `position` and
+// `queueLength` with it. Every one of those is a fact about an offer or a queue that
+// no longer holds this reader, and a lapsed hold carrying an expiry is exactly the
+// shape that lets a countdown keep rendering against a dead offer.
+//
+// `position` AND `queueLength` GO TOGETHER. The reader did not keep their place, so
+// reporting the one they had would be worse than reporting none — and the length is
+// only ever context for a position. Kept without it, "7 people waiting" is a fact
+// about a queue this reader is no longer in.
+//
+// NOTE THE ASYMMETRY WITH PROMOTION: `queueLength` is correct to keep on an OFFERED
+// hold, because flambeau send it on one. It is only meaningless here, where the hold
+// itself has stopped existing on their side.
 //
 // `holdId` STAYS. It is the identity of the hold across its whole life, and the
 // store needs it to reconcile against what flambeau says next.
@@ -88,7 +96,13 @@ export function isOfferLapsed(hold: Hold | undefined, now: string): boolean {
 // Most callers should reach for `applyLapse` below rather than this, and then the
 // narrowing is done for them.
 export function lapseOffer(hold: OfferedHold): Hold {
-  const { offerId: _offerId, offerExpiresAt: _offerExpiresAt, position: _position, ...rest } = hold;
+  const {
+    offerId: _offerId,
+    offerExpiresAt: _offerExpiresAt,
+    position: _position,
+    queueLength: _queueLength,
+    ...rest
+  } = hold;
   return { ...rest, state: 'expired' };
 }
 

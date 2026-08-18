@@ -43,23 +43,31 @@ export interface MockLicenceOptions {
 
 const DEFAULT_LOAN_DAYS = 14;
 
-let sequence = 0;
-// Ids look like flambeau's so a log or a screenshot from the mock reads the same as one
-// from the real thing. A counter rather than randomness: a demo that produces the same
-// ids twice is one you can compare two runs of.
-const nextId = (prefix: string): string => `${prefix}_${(++sequence).toString(36)}`;
-
 export class MockLicenceClient implements LicenceSource {
   private readonly loans = new Map<string, Loan>();
   private readonly holds = new Map<string, Hold>();
   private readonly contended: Set<string>;
   private readonly now: () => Date;
   private readonly loanDays: number;
+  // PER INSTANCE, not module scope, and both halves of that matter. As a module counter
+  // it meant minting an id on one client moved another client's `cursor` — and
+  // `resetLicenceSource`, whose whole job is keeping one test's state out of the next,
+  // could drop the client but not the counter, so ids and cursors carried across tests.
+  //
+  // A counter rather than randomness stays right: a demo that produces the same ids twice
+  // is one you can compare two runs of. That only holds per instance.
+  private sequence = 0;
 
   constructor(options: MockLicenceOptions = {}) {
     this.contended = new Set(options.contendedItems ?? []);
     this.now = options.now ?? (() => new Date());
     this.loanDays = options.loanDays ?? DEFAULT_LOAN_DAYS;
+  }
+
+  // Ids look like flambeau's, so a log or a screenshot from the mock reads the same as one
+  // from the real thing.
+  private nextId(prefix: string): string {
+    return `${prefix}_${(++this.sequence).toString(36)}`;
   }
 
   async borrow(itemId: BookId): Promise<Loan> {
@@ -81,7 +89,7 @@ export class MockLicenceClient implements LicenceSource {
     }
 
     const loan: Loan = {
-      loanId: nextId('loan'),
+      loanId: this.nextId('loan'),
       itemId: itemId,
       state: 'active',
       expiresAt: this.now().getTime() + this.loanDays * 24 * 60 * 60 * 1000,
@@ -116,14 +124,24 @@ export class MockLicenceClient implements LicenceSource {
     // Idempotent: a reader already in the queue gets their existing hold with the
     // position unchanged. Re-joining must not send somebody to the back of a queue
     // they were already in.
+    //
+    // A LAPSED OFFER IS NOT "ALREADY IN THE QUEUE", and missing that was a real bug.
+    // This used to return any hold whose state was queued or offered, without asking
+    // whether the offer window had closed — so a reader who missed their turn got the
+    // dead offer handed back, `offerExpiresAt` already in the past and no new position.
+    // Meanwhile `acceptOffer` treated that same hold as gone and deleted it, so the two
+    // methods disagreed about one state. The doctrine settles it: a lapsed offer means
+    // the hold is gone and the reader rejoins at the back, so this mints a fresh one.
     const existing = this.holds.get(itemId);
-    if (existing?.state === 'queued' || existing?.state === 'offered') return existing;
+    const stillLive =
+      existing?.state === 'queued' || (existing?.state === 'offered' && !this.hasLapsed(existing));
+    if (stillLive && existing !== undefined) return existing;
 
     // Always QUEUED, never OFFERED — there is no response shape in which placing a
     // hold hands back an offer, however free the copies are. `promoteHold` is the only
     // route to an offer.
     const hold: Hold = {
-      holdId: nextId('hold'),
+      holdId: this.nextId('hold'),
       itemId: itemId,
       state: 'queued',
       position: 3,
@@ -151,7 +169,7 @@ export class MockLicenceClient implements LicenceSource {
     // Hands back exactly what borrowing would. The copy was already leased in this
     // reader's name during the offer window, so this only writes the loan.
     const loan: Loan = {
-      loanId: nextId('loan'),
+      loanId: this.nextId('loan'),
       itemId: hold.itemId,
       state: 'active',
       expiresAt: this.now().getTime() + this.loanDays * 24 * 60 * 60 * 1000,
@@ -182,7 +200,7 @@ export class MockLicenceClient implements LicenceSource {
       holds: [...this.holds.values()].filter(
         (hold) => hold.state === 'queued' || hold.state === 'offered',
       ),
-      cursor: String(sequence),
+      cursor: String(this.sequence),
       serverTime,
     };
   }
@@ -212,12 +230,26 @@ export class MockLicenceClient implements LicenceSource {
     if (hold === undefined) {
       throw new Error(`MockLicenceClient: no hold on ${itemId} to promote`);
     }
+    // REFUSES TO REPLACE A LIVE OFFER, and the rule is not this file's invention: the
+    // note on `Hold.offerId` says the offer store must not let a second offer silently
+    // replace a first, and that `offerId` exists so the rule is enforceable. This used to
+    // mint a new id and a new window straight over a standing offer — so the mock broke
+    // the one rule the field was added for, and the app is built against the mock.
+    //
+    // A LAPSED OFFER MAY BE PROMOTED AGAIN, because that is a real transition: the window
+    // closed, the reader rejoined, their turn came round. Only a live one is refused.
+    if (hold.state === 'offered' && !this.hasLapsed(hold)) {
+      throw new Error(
+        `MockLicenceClient: ${itemId} already has a live offer (${hold.offerId ?? 'no id'}). ` +
+          'A second offer must not silently replace it — accept, cancel, or let it lapse first.',
+      );
+    }
     const at = this.now();
     const offered: Hold = {
-      holdId: hold.holdId ?? nextId('hold'),
+      holdId: hold.holdId ?? this.nextId('hold'),
       itemId,
       state: 'offered',
-      offerId: nextId('offer'),
+      offerId: this.nextId('offer'),
       offerExpiresAt: new Date(at.getTime() + windowMinutes * 60 * 1000).toISOString(),
       serverTime: at.toISOString(),
       ...(hold.queueLength !== undefined ? { queueLength: hold.queueLength } : {}),

@@ -42,14 +42,39 @@ const spy = (reply: Partial<LicenceResponse> & { throws?: unknown }) => {
 // `null` means "no token", not `undefined`. Passing `undefined` to a parameter with a
 // default triggers the default, so a test asking for the tokenless case would silently
 // get the token — which is exactly what this helper got wrong first time round.
-const client = (fetch: LicenceFetch, token: string | null = 'tok_abc') =>
+const client = (fetch: LicenceFetch, token: string | null = 'tok_abc', timeoutMs?: number) =>
   new ApiLicenceClient({
     // A trailing slash on purpose: the constructor strips it, and a double slash in a
     // path is the kind of thing that works against one server and 404s on the next.
     baseUrl: 'https://flambeau.test/',
     getToken: async () => token ?? undefined,
     fetch,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   });
+
+// A server that accepts the connection and then says nothing, until our own deadline
+// aborts it.
+//
+// REJECTS WITH A PLAIN OBJECT, NOT AN `Error`, on purpose. A real aborted fetch rejects
+// with a `DOMException`, or with the signal's `reason`, and Hermes does not guarantee
+// either is an `Error` instance. Any classifier that inspects the thrown value fails here;
+// one that reads `signal.aborted` does not. The previous version of this test fabricated
+// an `Error` with `name = 'AbortError'`, which is the one shape the old code got right.
+const stallsForever = (): LicenceFetch => (_url, init) =>
+  new Promise((_resolve, reject) => {
+    init.signal?.addEventListener('abort', () => reject({ name: 'AbortError' }));
+  });
+
+// Worse than the above: headers arrive, then the body never does. `fetch` has already
+// settled, so only a deadline that outlives it can catch this.
+const headersThenStalls = (): LicenceFetch => async (_url, init) => ({
+  ok: true,
+  status: 200,
+  json: () =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject({ name: 'AbortError' }));
+    }),
+});
 
 const failure = async (run: Promise<unknown>) => {
   try {
@@ -198,12 +223,19 @@ describe('the replies', () => {
   });
 
   // Our own deadline firing, kept apart from no-network because a slow server wants
-  // different copy and different retry behaviour.
-  it('maps an abort to TIMEOUT', async () => {
-    const abort = new Error('aborted');
-    abort.name = 'AbortError';
-    const { fetch } = spy({ throws: abort });
-    expect((await failure(client(fetch).borrow(ITEM)))?.code).toBe(LicenceError.TIMEOUT);
+  // different copy and different retry behaviour. Driven by a real abort rather than a
+  // fabricated error value — see `stallsForever` for why that distinction has teeth.
+  it('maps a stalled connection to TIMEOUT, whatever the rejection value is', async () => {
+    const error = await failure(client(stallsForever(), 'tok_abc', 5).borrow(ITEM));
+    expect(error?.code).toBe(LicenceError.TIMEOUT);
+  });
+
+  // The deadline has to outlive `fetch`, which settles on the response head. Without
+  // that, a server sending headers and then nothing leaves the caller waiting forever
+  // with no failure at all — so this test hangs rather than fails if it regresses.
+  it('times out a body that never arrives, not just a head that never arrives', async () => {
+    const error = await failure(client(headersThenStalls(), 'tok_abc', 5).borrow(ITEM));
+    expect(error?.code).toBe(LicenceError.TIMEOUT);
   });
 });
 

@@ -3,9 +3,10 @@
 //
 // Same principle as config/catalogue.ts, and separate from it on purpose: the catalogue
 // is wokay's and the licence calls are flambeau's, and the two backends will not become
-// real on the same day. flambeau have built two of six; wokay's catalogue endpoints
-// arrive Week 3 at the earliest. One switch for both would force a choice nobody wants
-// to make — real licences against fixture books, or the reverse.
+// real on the same day. flambeau have built no licence endpoint at all — the two they
+// have are both authentication — and wokay's catalogue endpoints arrive Week 3 at the
+// earliest. One switch for both would force a choice nobody wants to make: real licences
+// against fixture books, or the reverse.
 //
 // No `if (__DEV__)` and no `useMock` anywhere above this file.
 import { ApiLicenceClient, MockLicenceClient, type LicenceSource } from '@/licence';
@@ -45,10 +46,14 @@ export function resolveLicenceSourceKind(raw: string | undefined): LicenceSource
 }
 
 export interface LicenceSourceDeps {
-  // Where the bearer token comes from. Defaults to "no token", which is honest rather
-  // than convenient: the session store is Keshav's and unbuilt, so until it lands the
-  // real client should send no Authorization header and take flambeau's 401 — not send
-  // a fabricated one and get a subtler failure.
+  // Where the bearer token comes from.
+  //
+  // SUPPLYING THIS LATE IS THE NORMAL CASE, not an edge one, which is why it is read
+  // through `setLicenceToken` below rather than captured at construction. The session
+  // store is Keshav's and unbuilt, so the first thing to ask for a licence source —
+  // a gallery screen, a preload, anything at module scope — will have no token to give.
+  // Capturing "no token" at that moment used to pin the client to it for the whole
+  // process, and every later caller passing a real one was silently dropped.
   getToken?: () => Promise<string | undefined>;
   // Items with no free copies, so `borrow` refuses and the queue becomes reachable.
   // Mock only, ignored for `api`. Without one of these the Elite sequence cannot be
@@ -58,38 +63,95 @@ export interface LicenceSourceDeps {
 
 let cached: LicenceSource | undefined;
 
+// The current token provider, held here rather than inside the client.
+//
+// THE CLIENT GETS A STABLE CLOSURE THAT DELEGATES TO THIS, so replacing the provider
+// takes effect on the next request rather than needing a new client. That is what makes
+// the ordering above harmless: an instance built before sign-in starts sending an
+// Authorization header the moment the session store calls `setLicenceToken`.
+//
+// Defaults to no token, which stays the honest answer until then — flambeau's 401 for a
+// missing token is clearer than their response to a fabricated one.
+let tokenProvider: () => Promise<string | undefined> = async () => undefined;
+
+/**
+ * Points the licence client at a source of bearer tokens.
+ *
+ * Call this from the session store once it can mint one. Safe to call before or after
+ * `getLicenceSource`, and safe to call again when the session changes.
+ */
+export function setLicenceToken(provider: () => Promise<string | undefined>): void {
+  tokenProvider = provider;
+}
+
+// What the cached instance was built from, so a later caller asking for something
+// different is told rather than ignored.
+let cachedContendedItems: string | undefined;
+
 /**
  * The app's licence source. One instance, because `MockLicenceClient` holds state — a
  * second one would forget the loan the first just wrote, and the Elite sequence would
  * come apart between two screens.
+ *
+ * THROWS RATHER THAN IGNORING A CONFLICTING `contendedItems`. Returning the cached
+ * instance and quietly discarding what the caller asked for is how a second screen ends
+ * up demonstrating a different flow from the first and nobody can see why. `getToken`
+ * needs no such guard because it is no longer captured — see `setLicenceToken`.
  */
 export function getLicenceSource(deps: LicenceSourceDeps = {}): LicenceSource {
-  if (cached !== undefined) return cached;
+  // Accepted whenever it is offered, including on a call that then returns the cache.
+  // A caller with a token has one whether or not it happens to be the first caller.
+  if (deps.getToken !== undefined) setLicenceToken(deps.getToken);
+
+  const wanted = deps.contendedItems === undefined ? undefined : JSON.stringify(deps.contendedItems);
+
+  if (cached !== undefined) {
+    if (wanted !== undefined && cachedContendedItems !== wanted) {
+      throw new Error(
+        'getLicenceSource: the licence source already exists with different ' +
+          `contendedItems (${cachedContendedItems ?? 'default'} vs ${wanted}). ` +
+          'Call resetLicenceSource() first, or ask for it once at startup.',
+      );
+    }
+    return cached;
+  }
 
   const kind = resolveLicenceSourceKind(process.env.EXPO_PUBLIC_LICENCE_SOURCE);
 
   if (kind === 'mock') {
-    cached = new MockLicenceClient({
-      // A default so the flow is demonstrable out of the box. Overridable, and it has
-      // to line up with an ELITE title in the catalogue fixtures to be reachable.
-      contendedItems: deps.contendedItems ?? ['item_42'],
-    });
+    // A default so the flow is demonstrable out of the box. Overridable, and it has to
+    // line up with an ELITE title in the catalogue fixtures to be reachable.
+    const contendedItems = deps.contendedItems ?? ['item_42'];
+    cachedContendedItems = JSON.stringify(contendedItems);
+    cached = new MockLicenceClient({ contendedItems });
     return cached;
   }
 
-  const baseUrl = process.env.EXPO_PUBLIC_FLAMBEAU_BASE_URL;
-  if (baseUrl === undefined || baseUrl.trim() === '') {
+  const raw = process.env.EXPO_PUBLIC_FLAMBEAU_BASE_URL;
+  if (raw === undefined || raw.trim() === '') {
     throw new Error(`${BASE_URL_VAR} must be set when ${ENV_VAR} is 'api'.`);
   }
+  // TRIMMED HERE, not only tested for emptiness. The guard above already tolerates
+  // surrounding whitespace, and the client strips trailing slashes but not spaces — so
+  // an env var of " https://flambeau.tf " used to pass and then put whitespace in every
+  // request URL.
+  const baseUrl = raw.trim();
 
+  cachedContendedItems = wanted;
   cached = new ApiLicenceClient({
     baseUrl,
-    getToken: deps.getToken ?? (async () => undefined),
+    // Delegates rather than captures, so a provider set later is honoured.
+    getToken: () => tokenProvider(),
   });
   return cached;
 }
 
-/** Drops the cached instance. Tests only — it is how one test's loans stay out of the next. */
+/**
+ * Drops the cached instance and the token provider. Tests only — it is how one test's
+ * loans, and one test's token, stay out of the next.
+ */
 export function resetLicenceSource(): void {
   cached = undefined;
+  cachedContendedItems = undefined;
+  tokenProvider = async () => undefined;
 }
