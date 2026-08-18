@@ -15,7 +15,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import type { Catalogue } from '@model/types';
+import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 
+import { normalizeCatalogue } from '@/model/opds/normalize';
 import CatalogueScreen from './CatalogueScreen';
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
@@ -252,4 +254,25 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
     await waitFor(() => expect(screen.getByText('New this term')).toBeTruthy());
     expect(screen.queryByText('All titles')).toBeNull();
   });
+
+  it('renders the real home-catalogue fixture correctly', async () => {
+    setCatalogueSource(fakeSource(async () => normalizeCatalogue(homeCatalogueFixture)));
+
+    await render(<CatalogueScreen />);
+
+    await waitFor(() => expect(screen.getByText('All titles')).toBeTruthy());
+    const rendered = screen.getAllByTestId('category-card-title').map((node) => node.props.children);
+    expect(rendered).toEqual([
+      'All titles',
+      'New this month',
+      'Nineteenth-century literary criticism',
+      'Audio picks',
+    ]);
+
+    // shelf_2's nav entry and its own shelf feed disagree on the title on
+    // purpose — the card above must show the nav label, the section below it
+    // must show the shelf's own title, and both must be on screen at once.
+    expect(screen.getByText('Criticism & theory, 1800–1899')).toBeTruthy();
+  });
+
 });

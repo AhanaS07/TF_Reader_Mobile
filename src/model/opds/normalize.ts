@@ -267,7 +267,7 @@ export function normalizeShelf(doc: unknown): Shelf {
   return {
     id: idFromHref(reqString(self.href, 'shelf self href')),
     title: reqString(metadata.title, 'shelf title'),
-    publications: asArray(shelf.publications, 'shelf publications').map(normalizePublication),
+    publications: shelf.publications === undefined ? [] : asArray(shelf.publications, 'shelf publications').map(normalizePublication),
     ...(totalItems !== undefined ? { totalItems } : {}),
     ...(itemsPerPage !== undefined ? { itemsPerPage } : {}),
     ...(next !== undefined
