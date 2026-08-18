@@ -255,6 +255,26 @@ describe('normalizeShelf', () => {
       'item_soc',
     ]);
   });
+
+  it('treats a missing publications key as an empty shelf, not a broken one', 
+    () => {
+      const emptyShelf = {
+        metadata: { 
+          title: "All titles",
+          numberOfItems: 0
+        },
+        links: [
+          {
+            rel: 'self',
+            href: 'https://api.tf/opds/v1/institutions/inst_zzz/groups/all',
+            type: 'application/opds+json',
+          },
+        ],
+      };
+      const shelf = normalizeShelf(emptyShelf);
+      expect(shelf.publications).toEqual([]);
+    }
+  )
 });
 
 describe('normalizePublication', () => {
