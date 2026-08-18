@@ -136,10 +136,15 @@ function toAccessTier(properties: Json): AccessTier {
 // empty array rather than indexing blind, because a blank format would surface
 // later as a row that cannot be opened.
 //
-// NOT HANDLED YET: a `subscribe` link has no indirectAcquisition at all (rels.ts),
-// because it leads to a page rather than a file. Such a publication is currently
-// rejected as malformed here. It only appears on the public discovery routes, and
-// giving it a home means letting Publication represent "metadata, no file".
+// SUBSCRIBE LINKS DO NOT COME HERE — 17 Aug, and that is the whole of how the gap
+// closed. A `subscribe` link leads to a page rather than a file, so it carries no
+// `indirectAcquisition` and there is no type for this function to find. Rather
+// than teach it to return nothing, the caller does not ask: see the `format` line
+// in `normalizePublication`, which now omits the field for that one rel.
+//
+// SO THIS STAYS STRICT, deliberately. Every other rel promises a file, and a
+// borrowable title whose type we cannot read is a broken feed — throwing here is
+// what stops it surfacing later as a row that opens nothing.
 function toFileType(link: Json): string {
   const properties = asRecord(link.properties, 'acquisition properties');
   const entries = asArray(properties.indirectAcquisition, 'indirectAcquisition');
@@ -203,6 +208,10 @@ export function normalizePublication(doc: unknown): Publication {
     ? optString(asRecord(metadata.publisher, 'publisher').name)
     : undefined;
 
+  // Normalized once, before the object, because `format` below has to branch on
+  // its `actionId`. It used to be built inline in the return.
+  const acquisition = toAcquisition(acquisitionLink);
+
   return {
     id: idFromHref(reqString(self.href, 'publication self href')),
     ...(toIsbn(metadata.identifier) !== undefined
@@ -227,9 +236,17 @@ export function normalizePublication(doc: unknown): Publication {
     ...(optNumber(metadata.numberOfPages) !== undefined
       ? { numberOfPages: optNumber(metadata.numberOfPages) as number }
       : {}),
-    format: toContentFormat(toFileType(acquisitionLink)),
+    // OMITTED FOR `subscribe` AND FOR NOTHING ELSE. That rel leads to a page
+    // rather than a file and carries no `indirectAcquisition`, so there is no type
+    // to read; every other rel promises a file and still throws without one. The
+    // rel is read from the already-normalized `acquisition` rather than off the
+    // raw link, so this test and `resolveAccess`'s subscribe case cannot drift
+    // apart — they are both keyed on `actionId`.
+    ...(acquisition.actionId === 'subscribe'
+      ? {}
+      : { format: toContentFormat(toFileType(acquisitionLink)) }),
     ...toImages(publication.images),
-    acquisition: toAcquisition(acquisitionLink),
+    acquisition,
   };
 }
 

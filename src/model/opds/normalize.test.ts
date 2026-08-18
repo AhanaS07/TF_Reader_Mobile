@@ -409,15 +409,14 @@ describe('normalizePublication rejects a broken indirectAcquisition', () => {
   }
 });
 
-// A KNOWN GAP, tested so it is visible rather than discovered. rels.ts maps the
-// `subscribe` rel now, but a subscribe link carries no `indirectAcquisition` —
-// it leads to a page explaining how to get access, not to a file — so the
-// publication is still rejected here. It only appears on the public discovery
-// routes, which no fixture uses yet.
+// THE GAP THAT USED TO BE HERE IS CLOSED — 17 Aug. This block previously asserted
+// that a subscribe publication was rejected, and said to replace it with the real
+// behaviour once the gap closed. This is that replacement.
 //
-// WHEN THIS TEST STARTS FAILING, the gap has been closed: delete it and assert
-// the real behaviour instead.
-it('still cannot normalize a subscribe publication, which has no file at all', () => {
+// Why it mattered: `resolveAccess` has handled the `subscribe` rel since it
+// landed, but the only titles that can produce that case were being thrown out
+// here, so the branch was correct and unreachable.
+describe('a subscribe publication, which has no file at all', () => {
   const subscribeOnly = {
     metadata: { title: 'Rights for Robots' },
     links: [
@@ -431,12 +430,61 @@ it('still cannot normalize a subscribe publication, which has no file at all', (
         href: 'https://api.tf/api/v1/institutions',
         type: 'application/json',
         title: 'Available through your institution',
-        properties: { licenceModel: 'ELITE', availability: { state: 'unavailable' } },
+        properties: {
+          licenceModel: 'ELITE',
+          availability: { state: 'unavailable' },
+          hasSearchIndex: false,
+          canPersist: false,
+        },
       },
     ],
   };
 
-  expect(() => normalizePublication(subscribeOnly)).toThrow(
+  it('normalizes rather than throwing', () => {
+    expect(() => normalizePublication(subscribeOnly)).not.toThrow();
+  });
+
+  it('carries the metadata it does have', () => {
+    expect(normalizePublication(subscribeOnly).title).toBe('Rights for Robots');
+  });
+
+  // Absent, not a default and not a sentinel. There is no file, so there is no
+  // type — and a filled-in format is how a Read button gets drawn over nothing.
+  it('omits format entirely', () => {
+    expect('format' in normalizePublication(subscribeOnly)).toBe(false);
+  });
+
+  it('keeps the rel, which is what resolveAccess keys the subscribe case on', () => {
+    expect(normalizePublication(subscribeOnly).acquisition.actionId).toBe('subscribe');
+  });
+});
+
+// The other half of the rule, and the more important half: absence is tolerated
+// for `subscribe` ALONE. A borrowable title we cannot name a format for is a
+// broken feed, and accepting it would surface later as a row that opens nothing.
+it('still rejects a borrow publication with no indirectAcquisition', () => {
+  const borrowNoFile = {
+    metadata: { title: 'Jazz Perspectives' },
+    links: [
+      {
+        rel: 'self',
+        href: 'https://api.tf/opds/v1/public/publications/item_43',
+        type: 'application/opds-publication+json',
+      },
+      {
+        rel: 'http://opds-spec.org/acquisition/borrow',
+        href: 'https://api.tf/api/v1/loans',
+        type: 'application/json',
+        properties: {
+          licenceModel: 'ELITE',
+          hasSearchIndex: false,
+          canPersist: false,
+        },
+      },
+    ],
+  };
+
+  expect(() => normalizePublication(borrowNoFile)).toThrow(
     expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),
   );
 });

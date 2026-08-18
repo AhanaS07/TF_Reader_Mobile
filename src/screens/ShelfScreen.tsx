@@ -35,11 +35,12 @@
 // Replace this constant with whatever CAP-3 hands the screen; nothing else here
 // should need to change.
 //
-// NO ACCESS BADGE YET. `ContentCard`'s `badge` slot takes already-resolved UI
-// (Design Spec §5.1 — the UI must never calculate access rights), and
-// `src/access/resolveAccess` does not exist yet. Reaching into
-// `publication.acquisition` here to fake one would be exactly the violation that
-// rule exists to prevent, so the slot is left empty until resolveAccess lands.
+// NO ACCESS BADGE YET, AND `resolveAccess` IS NO LONGER THE REASON — it landed
+// and is on main. `ContentCard`'s `badge` slot takes already-resolved UI (Design
+// Spec §5.1 — the UI must never calculate access rights), and reaching into
+// `publication.acquisition` here to fake one is still exactly the violation that
+// rule exists to prevent. What is left is the wiring, and nothing blocks it —
+// see the same note in `CatalogueScreen`.
 //
 // 'ebooks' IS THE ONLY SHELF THAT PAGES on mock data today: it is the one with
 // both a page-0 and a page-1 fixture. 'audiobooks' and 'open-access' have no

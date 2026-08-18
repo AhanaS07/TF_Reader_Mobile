@@ -19,3 +19,9 @@ export {
   type ResolvableItem,
   type ResolveAccessInput,
 } from './resolveAccess';
+
+// The offer clock, and it does not breach the rule above. `isOfferLapsed` decides
+// nothing about buttons — it answers one question about time that `resolveAccess`
+// is forbidden from asking, and hands the answer back as a `Hold` state the
+// resolve already knows how to read. The button vocabulary stays in one file.
+export { isOfferLapsed, lapseOffer, OFFER_WINDOW_MINUTES_UNDOCUMENTED } from './offerLapse';
