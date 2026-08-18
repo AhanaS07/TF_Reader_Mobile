@@ -15,7 +15,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
-    "test:ci": "jest --ci --passWithNoTests"
+    "test:ci": "jest --ci --passWithNoTests",
+    "test:integration": "EXPO_PUBLIC_API_URL=http://localhost:8080 EXPO_PUBLIC_USER_ID=test-integration-user EXPO_PUBLIC_BOOK_ID=test-integration-book jest --testPathPattern='\\.integration\\.test\\.ts$' --testPathIgnorePatterns='/node_modules/'"
   },
   "jest": {
     "preset": "jest-expo",
@@ -24,7 +25,11 @@
     ],
     "moduleNameMapper": {
       "\\.epub$": "<rootDir>/jest.assetStub.js"
-    }
+    },
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "\\.integration\\.test\\.ts$"
+    ]
   },
   "expo": {
     "doctor": {
