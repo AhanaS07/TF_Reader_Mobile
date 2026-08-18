@@ -16,7 +16,11 @@ import type { BookSearchIndex, BuildIndex, IndexEntry, SearchIndex } from '@/sha
 import type { Extractor } from './extractor';
 
 // Index-format version, for future rebuilds/migrations (BookSearchIndex.version).
-const INDEX_VERSION = 1;
+// Bumped 1 -> 2 when postings gained `seq` (token-sequence adjacency; see Posting.seq in
+// search.ts). A v2 index phrase-matches correctly; a v1 index has no seq and degrades to
+// single-word-only. The bump is the migration signal — nothing rejects a v1 index, it just
+// cannot phrase-match until rebuilt.
+const INDEX_VERSION = 2;
 
 /**
  * PURE core: group flat entries by normalized word into the inverted index.

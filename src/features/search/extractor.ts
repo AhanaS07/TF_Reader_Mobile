@@ -259,6 +259,12 @@ export function createEpubExtractor(epubPath: string): Extractor {
       }
 
       if (entries.length === 0) throw new Error(`EPUB ${epubPath} yielded no entries`);
+      // Token sequence in book reading order (spine order, then document order within a
+      // chapter — the order entries were pushed). Phrase adjacency keys off this, not char
+      // offsets, so it survives whitespace/indentation in the source XHTML. See Posting.seq.
+      entries.forEach((entry, i) => {
+        entry.seq = i;
+      });
       return { format: 'EPUB', entries };
     },
   };
@@ -343,6 +349,11 @@ export function createPdfExtractor(pdfPath: string): Extractor {
         }
 
         if (entries.length === 0) throw new Error(`PDF ${pdfPath} yielded no entries`);
+        // Token sequence in reading order (page by page, then order within a page). Phrase
+        // adjacency keys off this rather than the char offset. See Posting.seq.
+        entries.forEach((entry, i) => {
+          entry.seq = i;
+        });
         return { format: 'PDF', entries };
       } finally {
         // Release the worker/document regardless of outcome — a thrown "no entries"
