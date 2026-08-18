@@ -1,5 +1,6 @@
 // Route param types for the entire navigation tree — P0-6 (Keshav)
 // Keep in sync with RootNavigator.tsx. If a param changes here, update the navigator.
+import type { NavigatorScreenParams } from '@react-navigation/native';
 
 /** Root stack wraps the tab navigator + the dev Gallery modal. */
 export type RootStackParamList = {
@@ -9,7 +10,9 @@ export type RootStackParamList = {
 
 /** Four bottom tabs. */
 export type RootTabParamList = {
-  Catalogue: undefined;
+  // NavigatorScreenParams allows cross-tab navigation with a nested screen target,
+  // e.g. navigation.navigate('Catalogue', { screen: 'InstitutionList' }) from Profile.
+  Catalogue: NavigatorScreenParams<CatalogueStackParamList> | undefined;
   Search: undefined;
   Library: undefined;
   Profile: undefined;
