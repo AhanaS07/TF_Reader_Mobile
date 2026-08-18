@@ -24,16 +24,21 @@
 // wrapBekForDevice) — the same way a real backend would — so unwrapBek() here is doing real work,
 // not skipped.
 //
-// This is the ONE test in the repo that exercises a REAL, structurally-valid PDF end to end:
-// mock-backend/fixtures/genFixtures.js encrypts `assets/test-15mb.pdf` (repo root) into
-// sample.pdf.enc, ~15 MiB, so this also proves chunkedAssetFetcher.ts's 1 MiB chunking loop
-// against a real multi-chunk transfer, not the single-chunk placeholder buffers every unit test
-// uses. If `assets/test-15mb.pdf` is ever replaced, re-run genFixtures.js before this test.
+// This is the ONE place in the repo that exercises REAL, structurally-valid PDF and EPUB files
+// end to end: mock-backend/fixtures/genFixtures.js encrypts `assets/test-15mb.pdf` (~15 MiB) into
+// sample.pdf.enc and `assets/20mb_EPUB.epub` (~20 MiB) into sample.epub.enc, so both cases below
+// also prove chunkedAssetFetcher.ts's 1 MiB chunking loop against a real multi-chunk transfer, not
+// the single-chunk placeholder buffers every unit test uses. If either source file is ever
+// replaced, re-run genFixtures.js before this test.
+//
+// Each case also asserts getFormat() — the value ReaderScreen reads to decide which WebView shell
+// (epub.js vs pdf.js) to load and which of openEpub/openPdf to send — actually comes back as the
+// format downloadBook() was called with, not just that decrypt succeeded.
 import * as http from 'node:http';
 import * as https from 'node:https';
 
 import { downloadBook } from './downloadManager';
-import { getBook, closeBook } from '../encryption/contentProvider';
+import { getBook, getFormat, closeBook } from '../encryption/contentProvider';
 import { contentStore } from '../encryption/contentStore';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { USER_ID } from '../sync/syncConfig';
@@ -104,10 +109,13 @@ jest.setTimeout(60000);
 // own "borrow is idempotent" comment. Distinct from any other test's book id so a stray leftover
 // download row from a different suite can never make this one see BOOK_LIMIT_REACHED.
 const PDF_BOOK_ID = 'integration-test-pdf-15mb';
+const EPUB_BOOK_ID = 'integration-test-epub-20mb';
 
 afterAll(async () => {
   await closeBook(PDF_BOOK_ID);
   await contentStore.destroy(PDF_BOOK_ID);
+  await closeBook(EPUB_BOOK_ID);
+  await contentStore.destroy(EPUB_BOOK_ID);
 });
 
 describe('downloadBook (real mock-backend, real PDF)', () => {
@@ -120,6 +128,10 @@ describe('downloadBook (real mock-backend, real PDF)', () => {
     expect(row).toBeDefined();
     expect(row?.status).toBe('COMPLETED');
 
+    // Proves getFormat() — what ReaderScreen reads to pick the pdf.js shell and send openPdf —
+    // reports back the format this book was actually downloaded as.
+    expect(await getFormat(PDF_BOOK_ID)).toBe('PDF');
+
     // Proves the whole chain — chunked fetch, RSA-OAEP unwrap, AES-256-GCM decrypt with tag
     // verification — produced back the EXACT original plaintext, not just "some bytes".
     const bytes = await getBook(PDF_BOOK_ID);
@@ -130,5 +142,32 @@ describe('downloadBook (real mock-backend, real PDF)', () => {
     // right-length garbage.
     const header = Buffer.from(bytes.slice(0, 5)).toString('ascii');
     expect(header).toBe('%PDF-');
+  });
+});
+
+describe('downloadBook (real mock-backend, real EPUB)', () => {
+  it('downloads, decrypts and stores the real 20MB test EPUB', async () => {
+    await downloadBook(EPUB_BOOK_ID, 'EPUB');
+
+    // Proves the download actually persisted, not just resolved without throwing.
+    const rows = await downloadTable.listActive(USER_ID);
+    const row = rows.find((r) => r.book_id === EPUB_BOOK_ID);
+    expect(row).toBeDefined();
+    expect(row?.status).toBe('COMPLETED');
+
+    // Proves getFormat() — what ReaderScreen reads to pick the epub.js shell and send openEpub —
+    // reports back the format this book was actually downloaded as.
+    expect(await getFormat(EPUB_BOOK_ID)).toBe('EPUB');
+
+    // Proves the whole chain — chunked fetch, RSA-OAEP unwrap, AES-256-GCM decrypt with tag
+    // verification — produced back the EXACT original plaintext, not just "some bytes".
+    const bytes = await getBook(EPUB_BOOK_ID);
+    expect(bytes.length).toBe(20951889); // assets/20mb_EPUB.epub's real size
+
+    // An EPUB is a ZIP container — starts with the local-file-header magic `PK\x03\x04` —
+    // confirms this is genuinely the source file after a full encrypt-by-the-mock/decrypt-by-the
+    // -app round trip, not coincidentally right-length garbage.
+    const header = Buffer.from(bytes.slice(0, 4));
+    expect(header.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
   });
 });
