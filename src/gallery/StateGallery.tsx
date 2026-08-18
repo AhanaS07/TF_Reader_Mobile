@@ -13,6 +13,7 @@ import ContentCardGallery from '@/components/ContentCard/ContentCard.gallery';
 import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
 import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
 import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
+import FilterSortSheetGallery from '@/components/FilterSortSheet/FilterSortSheet.gallery';
 import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
@@ -38,6 +39,7 @@ const SECTIONS = [
   'SearchInput',
   'AccessTierBadge',
   'FilterChip',
+  'FilterSortSheet',
   'InstitutionRow',
   'ListRow',
   'SectionHeader',
@@ -95,6 +97,7 @@ export default function StateGallery() {
       {section === 'SearchInput' && <SearchInputGallery />}
       {section === 'AccessTierBadge' && <AccessTierBadgeGallery />}
       {section === 'FilterChip' && <FilterChipGallery />}
+      {section === 'FilterSortSheet' && <FilterSortSheetGallery />}
       {section === 'InstitutionRow' && <InstitutionRowGallery />}
       {section === 'ListRow' && <ListRowGallery />}
       {section === 'SectionHeader' && <SectionHeaderGallery />}

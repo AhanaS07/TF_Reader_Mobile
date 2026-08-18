@@ -9,7 +9,20 @@
 // Both implementations are held to `conformance.ts`. If a method's contract
 // changes, change it here and the suite will fail for both until they agree.
 import type { BookId } from '@/shared/types/primitives';
-import type { Catalogue, Publication, Shelf } from '@model/types';
+import type { Catalogue, Publication, Shelf, SortOrder } from '@model/types';
+import type { BrowseFilters } from '@search/browseLink';
+
+// Everything a shelf request can narrow or order by, beyond page — an OPTIONAL
+// fourth argument so every existing call site (which passes none of this)
+// keeps compiling unchanged. Reuses `BrowseFilters` rather than redeclaring
+// contentType/accessTier, so this seam and `browseParams` (src/search/browseLink.ts)
+// cannot drift about which two dimensions a browse request carries.
+export interface ShelfQuery extends BrowseFilters {
+  // Accepted for every shelf, but only honoured on 'all' — see browseParams's
+  // own comment. A curated shelf's adapter implementation is free to ignore it
+  // rather than reject it: sending it is a no-op, not an error.
+  sort?: SortOrder;
+}
 
 export interface CatalogueSource {
   // The institution's home screen: which sections exist, plus preview shelves.
@@ -24,10 +37,12 @@ export interface CatalogueSource {
 
   // One shelf/section as a paginated listing. `page` is a zero-based index, not a
   // URL: paging is the adapter's problem, so no caller ever builds an href.
-  // Omitting it means the first page.
+  // Omitting it means the first page. `query` carries the filter/sort dimensions
+  // screen 12 exposes — omitted entirely, it is "no constraint", matching the
+  // shelf's own default order.
   //
   // Rejects CatalogueFailure(NOT_FOUND) if the institution or shelf is unknown.
-  getShelf(institutionId: string, shelfId: string, page?: number): Promise<Shelf>;
+  getShelf(institutionId: string, shelfId: string, page?: number, query?: ShelfQuery): Promise<Shelf>;
 
   // Full detail for one publication — richer than the summary the shelf carried
   // (subtitle, description, page count, larger imagery).

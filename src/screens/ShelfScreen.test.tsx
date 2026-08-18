@@ -311,3 +311,105 @@ describe('ShelfScreen pagination', () => {
     expect(getShelf).toHaveBeenCalledTimes(2);
   });
 });
+
+// Screen 12 — the filter & sort sheet.
+describe('ShelfScreen filter & sort', () => {
+  it('requests no filters or sort on first load', async () => {
+    const getShelf = jest.fn<ReturnType<DataSource['getShelf']>, Parameters<DataSource['getShelf']>>(
+      async () => FAKE_SHELF,
+    );
+    setCatalogueSource(fakeSource(getShelf));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalled());
+    expect(getShelf.mock.calls[0][3]).toEqual({
+      contentType: undefined,
+      accessTier: undefined,
+      sort: undefined,
+    });
+  });
+
+  it('greys the sort row and explains why on a shelf other than all', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_SHELF));
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    fireEvent.press(screen.getByLabelText('Filter and sort'));
+
+    await waitFor(() => expect(screen.getByLabelText('Newest')).toBeTruthy());
+    expect(screen.getByTestId('filter-sort-sheet-sort-note')).toBeTruthy();
+    expect(screen.getByLabelText('Newest').props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+  });
+
+  it('re-fetches with the chosen content type once Apply Filters is pressed', async () => {
+    const getShelf = jest.fn<ReturnType<DataSource['getShelf']>, Parameters<DataSource['getShelf']>>(
+      async () => FAKE_SHELF,
+    );
+    setCatalogueSource(fakeSource(getShelf));
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Filter and sort'));
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await fireEvent.press(screen.getByTestId('filter-sort-sheet-apply'));
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(2));
+    expect(getShelf.mock.calls[1][3]).toMatchObject({ contentType: 'AUDIO' });
+    // Pressing Apply closes the sheet (BottomSheet animates its exit, hence waitFor).
+    await waitFor(() => expect(screen.queryByTestId('filter-sort-sheet-apply')).toBeNull());
+  });
+
+  it('carries the applied filter into a subsequent Load more request', async () => {
+    const getShelf = jest.fn<ReturnType<DataSource['getShelf']>, Parameters<DataSource['getShelf']>>(
+      async (_institutionId, _shelfId, page) => (page === undefined ? PAGE_0 : PAGE_1),
+    );
+    setCatalogueSource(fakeSource(getShelf));
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Filter and sort'));
+    await waitFor(() => expect(screen.getByLabelText('PDF')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('PDF'));
+    await fireEvent.press(screen.getByTestId('filter-sort-sheet-apply'));
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeTruthy());
+    await fireEvent.press(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(3));
+    expect(getShelf.mock.calls[2][2]).toBe(1);
+    expect(getShelf.mock.calls[2][3]).toMatchObject({ contentType: 'PDF' });
+  });
+
+  it('resets to no filters when Clear All is pressed', async () => {
+    const getShelf = jest.fn<ReturnType<DataSource['getShelf']>, Parameters<DataSource['getShelf']>>(
+      async () => FAKE_SHELF,
+    );
+    setCatalogueSource(fakeSource(getShelf));
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Filter and sort'));
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await fireEvent.press(screen.getByTestId('filter-sort-sheet-apply'));
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByLabelText('Filter and sort')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Filter and sort'));
+    await waitFor(() => expect(screen.getByTestId('filter-sort-sheet-clear')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('filter-sort-sheet-clear'));
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(3));
+    expect(getShelf.mock.calls[2][3]).toEqual({
+      contentType: undefined,
+      accessTier: undefined,
+      sort: undefined,
+    });
+  });
+});
