@@ -1,25 +1,63 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
+import { EmptyState } from '@components/EmptyState';
+import { ErrorState } from '@components/ErrorState';
 import { InstitutionRow } from '@components/InstitutionRow';
 import { SearchInput } from '@components/SearchInput';
+import { Skeleton } from '@components/Skeleton';
 import type { Institution } from '@model/institution';
 import { searchInstitutions } from '../search/searchInstitutions';
 import { useInstitutionStore } from '@store/institutionStore';
 import type { CatalogueStackParamList } from '../navigation/types';
 import { color, space, type } from '@theme/tokens';
 
+// Matches InstitutionRow's CREST_SIZE — skeleton circle must fill the same space.
+const CREST_SIZE = space.xl + space.md;
+// Approximate widths for the two text lines in an InstitutionRow.
+const NAME_SKEL_WIDTH = space.xl * 5;
+const COUNTRY_SKEL_WIDTH = space.xl * 2;
+const SKELETON_ROW_COUNT = 6;
+const PAGINATION_SKEL_COUNT = 2;
+
+function SkeletonRow() {
+  return (
+    <View style={skeletonRowStyles.row}>
+      <Skeleton variant="block" width={CREST_SIZE} height={CREST_SIZE} />
+      <View style={skeletonRowStyles.lines}>
+        <Skeleton variant="text" width={NAME_SKEL_WIDTH} height={type.body.lineHeight} />
+        <Skeleton variant="text" width={COUNTRY_SKEL_WIDTH} height={type.meta.lineHeight} />
+      </View>
+    </View>
+  );
+}
+
+const skeletonRowStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  lines: {
+    flex: 1,
+    gap: space.xs,
+  },
+});
+
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'InstitutionList'>;
 
 const DEBOUNCE_MS = 300;
+const PAGE_SIZE = 20;
 
 export default function InstitutionListScreen() {
   const navigation = useNavigation<Nav>();
@@ -27,7 +65,10 @@ export default function InstitutionListScreen() {
   const [query, setQuery] = useState('');
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [fetchError, setFetchError] = useState(false);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const recentlyUsedIds = useInstitutionStore((s) => s.recentlyUsedIds);
@@ -35,23 +76,36 @@ export default function InstitutionListScreen() {
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchInstitutions = useCallback((q: string) => {
-    setLoading(true);
+  const fetchPage = useCallback((q: string, pageNum: number, replace: boolean) => {
+    if (replace) { setLoading(true); } else { setLoadingMore(true); }
     setFetchError(false);
-    searchInstitutions(q.length > 0 ? { q } : undefined)
-      .then(setInstitutions)
+    searchInstitutions({ ...(q.length > 0 ? { q } : {}), page: pageNum, size: PAGE_SIZE })
+      .then((results) => {
+        setInstitutions((prev) => replace ? results : [...prev, ...results]);
+        setHasMore(results.length === PAGE_SIZE);
+        setPage(pageNum);
+      })
       .catch(() => setFetchError(true))
-      .finally(() => setLoading(false));
+      .finally(() => { setLoading(false); setLoadingMore(false); });
   }, []);
 
   useEffect(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     const delay = query.length === 0 ? 0 : DEBOUNCE_MS;
-    timerRef.current = setTimeout(() => fetchInstitutions(query), delay);
+    timerRef.current = setTimeout(() => fetchPage(query, 0, true), delay);
     return () => {
       if (timerRef.current !== null) clearTimeout(timerRef.current);
     };
-  }, [query, fetchInstitutions]);
+  }, [query, fetchPage]);
+
+  const handleRetry = useCallback(() => {
+    fetchPage(query, 0, true);
+  }, [fetchPage, query]);
+
+  const handleLoadMore = useCallback(() => {
+    if (!hasMore || loadingMore || loading) return;
+    fetchPage(query, page + 1, false);
+  }, [hasMore, loadingMore, loading, query, page, fetchPage]);
 
   const handleSelect = useCallback(
     (institution: Institution) => {
@@ -89,9 +143,9 @@ export default function InstitutionListScreen() {
     return (
       <View style={styles.screen}>
         {searchBar}
-        <View style={styles.center}>
-          <ActivityIndicator color={color.primary} />
-        </View>
+        {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
+          <SkeletonRow key={i} />
+        ))}
       </View>
     );
   }
@@ -100,9 +154,11 @@ export default function InstitutionListScreen() {
     return (
       <View style={styles.screen}>
         {searchBar}
-        <View style={styles.center}>
-          <Text style={styles.statusText}>Couldn&apos;t load institutions.</Text>
-        </View>
+        <ErrorState
+          variant="network"
+          message="Couldn't load institutions. Check your connection and try again."
+          onRetry={handleRetry}
+        />
       </View>
     );
   }
@@ -132,10 +188,19 @@ export default function InstitutionListScreen() {
 
   const listEmpty =
     !loading && pinnedInstitutions.length === 0 ? (
-      <View style={styles.center}>
-        <Text style={styles.statusText}>No institutions match your search.</Text>
-      </View>
+      <EmptyState
+        variant={query.length > 0 ? 'no_query_results' : 'no_content'}
+        query={query.length > 0 ? query : undefined}
+      />
     ) : null;
+
+  const listFooter = loadingMore ? (
+    <View style={styles.footer}>
+      {Array.from({ length: PAGINATION_SKEL_COUNT }).map((_, i) => (
+        <SkeletonRow key={i} />
+      ))}
+    </View>
+  ) : null;
 
   return (
     <View style={styles.screen}>
@@ -151,6 +216,9 @@ export default function InstitutionListScreen() {
         )}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
+        ListFooterComponent={listFooter}
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.3}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       />
@@ -177,17 +245,8 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
     backgroundColor: color.surface,
   },
-  center: {
-    flex: 1,
+  footer: {
+    paddingVertical: space.md,
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: space.lg,
-  },
-  statusText: {
-    fontWeight: type.body.weight,
-    fontSize: type.body.size,
-    lineHeight: type.body.lineHeight,
-    color: color.textSecondary,
-    textAlign: 'center',
   },
 });
