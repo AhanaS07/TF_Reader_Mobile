@@ -21,27 +21,31 @@
 // already-resolved UI, and deriving one from `publication.acquisition` here is
 // still exactly the Design Spec §5.1 violation the slot exists to prevent.
 //
-// THE EMPTY / ERROR TREATMENTS ARE INLINE AND TEMPORARY. Khushi's `EmptyState`
-// (K1) owns this copy. Building a second one here would break the rule the spec
-// calls most likely to fail quietly — a feature may not introduce a component —
-// so this is screen-local text, to be deleted when EmptyState lands.
-import { useMemo, useState } from 'react';
+// EMPTY AND ERROR RENDER THROUGH THE SHARED COMPONENTS. Khushi's `EmptyState`
+// (K1) and `ErrorState` own this copy and this layout now that both exist —
+// this screen supplies only the variant and the already-resolved message, per
+// CONVENTIONS §3. Only the load-more failure stays inline: it is a row beneath
+// results already on screen, not a screen-level takeover either component models.
+import { useCallback, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
+import { EmptyState } from '@components/EmptyState';
+import { ErrorState } from '@components/ErrorState';
 import { FilterChip } from '@components/FilterChip';
 import { SearchInput } from '@components/SearchInput';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
-import { CatalogueError } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import { ACCESS_TIERS, type AccessTier } from '@model/types';
 import type { SearchStatus } from '@/search';
 import { ACCESS_TIER_FILTER_CONFIRMED, useCatalogueSearch } from '@/search';
 import type { ContentFormat } from '@/shared/types/primitives';
 import type { SearchStackParamList } from '@navigation/types';
+import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, radius, space, type } from '@theme/tokens';
 
 type Nav = NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>;
@@ -82,16 +86,6 @@ const ACCESS_TIER_LABELS: Record<AccessTier, string> = {
   ELITE: 'Elite',
 };
 
-// Copy per failure code, keyed on wokay's own vocabulary rather than on an HTTP
-// status, so a reader never sees a number. A map rather than a switch: adding a
-// code makes the compiler name this line.
-const ERROR_COPY: Record<CatalogueError, string> = {
-  [CatalogueError.NOT_FOUND]: 'This catalogue cannot be searched.',
-  [CatalogueError.NETWORK_UNAVAILABLE]: 'You appear to be offline.',
-  [CatalogueError.MALFORMED_FEED]: 'The catalogue sent something we could not read.',
-  [CatalogueError.TIMEOUT]: 'The search took too long to answer.',
-};
-
 // Browse-instead cards cycle the accents so three targets do not read as one
 // block of colour. Cycled by INDEX, never chosen from the title — types.ts is
 // explicit that navigation is data, not code, and no shelf may be named in a
@@ -111,11 +105,31 @@ export default function SearchScreen() {
     pipeline,
   });
 
+  // Client-side only — see recentSearchesStore.ts for why this is not a wokay
+  // capability. Recorded on submit, never on every keystroke: a draft is not
+  // a search until it is actually one.
+  const recentQueries = useRecentSearchesStore((s) => s.queries);
+  const addRecentQuery = useRecentSearchesStore((s) => s.addQuery);
+  const clearRecentQueries = useRecentSearchesStore((s) => s.clear);
+  const onSubmit = useCallback(() => {
+    addRecentQuery(search.draft);
+    search.onSubmit();
+  }, [addRecentQuery, search]);
+  const onSelectRecentQuery = useCallback(
+    (query: string) => {
+      search.onChangeQuery(query);
+      search.onSubmit();
+    },
+    [search],
+  );
+
   // The overlay is a pure view; nothing here records audio. See the mic handler.
   const [voiceState, setVoiceState] = useState<VoiceOverlayState | null>(null);
 
   const state: SearchStatus = search.state;
   const hasResults = search.publications.length > 0;
+  const hasActiveFilter =
+    search.filters.contentType !== undefined || search.filters.accessTier !== undefined;
   // A failure with results already on screen is a failed NEXT PAGE — the reader
   // keeps what they were reading and gets a retry where the page would have been.
   const pageFailed = state === 'error' && hasResults;
@@ -127,7 +141,7 @@ export default function SearchScreen() {
           value={search.draft}
           placeholder={PLACEHOLDER}
           onChangeText={search.onChangeQuery}
-          onSubmit={search.onSubmit}
+          onSubmit={onSubmit}
           onClear={search.onClear}
           // Screen 09 is catalogue search, so the mic belongs here. Screen 06
           // (institution search) passes nothing and gets no mic.
@@ -207,6 +221,37 @@ export default function SearchScreen() {
           </Text>
         )}
 
+        {/* Recent searches — client-side only (recentSearchesStore.ts).
+            Shown only before a fresh query is typed: once a reader has
+            started their own, a list of old ones is clutter, not help. */}
+        {state === 'idle' && search.draft.trim().length === 0 && recentQueries.length > 0 && (
+          <View testID="search-recent" style={styles.recent}>
+            <View style={styles.recentHeader}>
+              <Text style={styles.recentHeading}>Recent searches</Text>
+              <Pressable
+                testID="search-recent-clear"
+                onPress={clearRecentQueries}
+                accessibilityRole="button"
+                accessibilityLabel="Clear recent searches"
+              >
+                <Text style={styles.action}>Clear</Text>
+              </Pressable>
+            </View>
+            {recentQueries.map((query) => (
+              <Pressable
+                key={query}
+                testID="search-recent-item"
+                onPress={() => onSelectRecentQuery(query)}
+                style={styles.recentRow}
+                accessibilityRole="button"
+                accessibilityLabel={`Search again for ${query}`}
+              >
+                <Text style={styles.recentRowLabel}>{query}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
         {state === 'loading' &&
           Array.from({ length: SKELETON_COUNT }, (_, index) => (
             <ContentCard key={index} state="loading" title="" />
@@ -215,32 +260,37 @@ export default function SearchScreen() {
         {/* THE ERROR STATE, and only for an actual failure. A response that
             arrived and contained nothing never reaches this branch. */}
         {state === 'error' && !hasResults && (
-          <View testID="search-error" style={styles.panel}>
-            <Text style={styles.message}>
-              {search.errorCode === undefined
-                ? 'The search could not be completed.'
-                : ERROR_COPY[search.errorCode]}
-            </Text>
-            <Pressable
-              testID="search-retry"
-              onPress={search.onRetry}
-              accessibilityRole="button"
-              accessibilityLabel="Retry search"
-            >
-              <Text style={styles.action}>Retry</Text>
-            </Pressable>
+          <View testID="search-error">
+            <ErrorState
+              variant={
+                search.errorCode === undefined ? 'not_ready' : catalogueErrorVariant(search.errorCode)
+              }
+              message={
+                search.errorCode === undefined
+                  ? 'The search could not be completed.'
+                  : CATALOGUE_ERROR_COPY[search.errorCode]
+              }
+              onRetry={search.onRetry}
+            />
           </View>
         )}
 
         {/* THE ZERO-RESULT STATE. A successful response with nothing in it —
             including one that carried no `publications` key at all and only
-            browse targets. Not an error, and it must never render as one. */}
+            browse targets. Not an error, and it must never render as one.
+            A filter narrows the same query to nothing, which reads as a
+            different fact than the query itself matching nothing — hence the
+            two EmptyState variants rather than one generic message. */}
         {state === 'empty' && (
           <View testID="search-empty" style={styles.panel}>
-            <Text style={styles.emptyTitle}>No publications found</Text>
-            <Text style={styles.message}>
-              Nothing in this catalogue matches “{search.query}”.
-            </Text>
+            <EmptyState
+              variant={hasActiveFilter ? 'no_filter_results' : 'no_query_results'}
+              query={search.query}
+              onClearFilters={() => {
+                search.onSelectContentType(undefined);
+                search.onSelectAccessTier(undefined);
+              }}
+            />
 
             {search.browseInstead.length > 0 && (
               <View testID="search-browse-instead" style={styles.browse}>
@@ -298,7 +348,7 @@ export default function SearchScreen() {
             <Text style={styles.message}>
               {search.errorCode === undefined
                 ? 'More results could not be loaded.'
-                : ERROR_COPY[search.errorCode]}
+                : CATALOGUE_ERROR_COPY[search.errorCode]}
             </Text>
             <Pressable
               testID="search-retry-page"
@@ -356,6 +406,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.md,
   },
+  recent: {
+    gap: space.xs,
+  },
+  recentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.xs,
+  },
+  recentHeading: {
+    fontWeight: type.sectionHeader.weight,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  recentRow: {
+    paddingVertical: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: color.border,
+  },
+  recentRowLabel: {
+    fontWeight: type.body.weight,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textPrimary,
+  },
   note: {
     fontWeight: type.meta.weight,
     fontSize: type.meta.size,
@@ -375,12 +451,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: space.sm,
     paddingVertical: space.lg,
-  },
-  emptyTitle: {
-    fontWeight: type.sectionHeader.weight,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
-    color: color.textPrimary,
   },
   browse: {
     alignSelf: 'stretch',

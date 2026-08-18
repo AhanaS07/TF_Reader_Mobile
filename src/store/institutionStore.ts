@@ -24,6 +24,9 @@ interface InstitutionState {
 
   setSelectedInstitution: (institution: Institution) => void;
   clearSelectedInstitution: () => void;
+  // Remove a single ID from recentlyUsedIds — used by InstitutionListScreen to
+  // prune IDs that resolve to CatalogueFailure(NOT_FOUND) (institution inactive).
+  removeRecentlyUsedId: (id: string) => void;
   // Called internally by onRehydrateStorage — not for screens to call directly.
   setHasHydrated: (value: boolean) => void;
 }
@@ -46,6 +49,11 @@ export const useInstitutionStore = create<InstitutionState>()(
         })),
 
       clearSelectedInstitution: () => set({ selectedInstitution: null }),
+
+      removeRecentlyUsedId: (id) =>
+        set((state) => ({
+          recentlyUsedIds: state.recentlyUsedIds.filter((rid) => rid !== id),
+        })),
 
       setHasHydrated: (value) => set({ _hasHydrated: value }),
     }),
