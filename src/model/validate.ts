@@ -51,12 +51,17 @@ export function assertPublication(publication: Publication): void {
   // ELITE is the copy-limited tier, and the count is the point of it: without one
   // there is nothing for resolveAccess to compare against.
   //
-  // STRICTER THAN THE CONTRACT, knowingly. `copies` is not required, and on the
-  // public discovery routes an ELITE title arrives with `availability` and no
-  // copies at all. Those routes cannot be normalized yet for other reasons (see
-  // toFileType), so nothing hits this today — but it is the first thing to revisit
-  // when they can be.
-  if (acquisition.licenceModel === 'ELITE' && acquisition.copiesTotal === undefined) {
+  // EXCEPT `subscribe`, same as `hasSearchIndex`/`canPersist` in normalize.ts and
+  // for the same reason: a subscribe link leads to a page, not to the loan
+  // endpoint, so there is no free-copy count to report. Every subscribe example
+  // in the contract omits `copies` regardless of tier — this used to be
+  // unreachable because normalize.ts rejected these publications outright; now
+  // that it does not, this is the second of the two places that rule had to move.
+  if (
+    acquisition.licenceModel === 'ELITE' &&
+    acquisition.copiesTotal === undefined &&
+    acquisition.actionId !== 'subscribe'
+  ) {
     throw invalid(id, 'ELITE licence has no copiesTotal');
   }
 }

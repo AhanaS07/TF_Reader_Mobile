@@ -289,9 +289,11 @@ export class MockAdapter implements DataSource {
   // serving an institution's Elite or Subscription title here would answer a
   // question this endpoint is not allowed to answer. The real route
   // (/opds/v1/public/publications) does return locked titles too, for the
-  // discovery-search path, but that path is not built and those payloads cannot
-  // be normalized yet anyway — a `subscribe` link carries no indirectAcquisition
-  // for toFileType to read.
+  // discovery-search path, which is not built.
+  //
+  // Those payloads DO normalize now — a `subscribe` link's missing format,
+  // hasSearchIndex and canPersist are all handled. What is still missing is a
+  // fixture and a route to serve it from, not parser support.
   private publicPublicationsById(): Map<BookId, Publication> {
     const publications = new Map<BookId, Publication>();
     for (const page of this.publicPages()) {

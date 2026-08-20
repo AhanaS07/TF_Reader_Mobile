@@ -150,9 +150,19 @@ export interface Acquisition {
   // missing `encrypted` block is a meaningful value rather than absent data.
   encryption: CatalogueEncryption | null;
   // Whether a bundled search index ships with the book. Always false for AUDIO.
-  hasSearchIndex: boolean;
+  //
+  // OPTIONAL FOR THE SAME REASON `format` IS, and only for `subscribe`: both
+  // describe a file, and a subscribe link leads to a page. `OpdsLinkProperties`
+  // in wokay-api.yaml requires `licenceModel` alone, and the contract's own
+  // subscribe examples carry only that plus `availability` — so demanding this
+  // one rejected every real subscribe title at the boundary.
+  hasSearchIndex?: boolean;
   // Whether the book may be written to device storage. false ⇒ memory-only.
-  canPersist: boolean;
+  //
+  // Absent for `subscribe` — see `hasSearchIndex`. Absence reads as "no
+  // download", which is what `resolveAccess` already does with a falsy value,
+  // and is correct: there is no file to persist.
+  canPersist?: boolean;
   // STILL OPEN (CLAUDE.md Q-D), but narrower than it was: wokay do publish an
   // `accessTier` on their `/api/v1/catalogue/**` fetch surfaces, carrying the
   // same three values as `licenceModel` above. What is unsettled is whether we
