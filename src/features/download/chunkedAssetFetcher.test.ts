@@ -261,3 +261,143 @@ describe('fetchEncryptedAssetChunked — maxBytes budget (RAM guard)', () => {
     expect(resumeFetch).not.toHaveBeenCalled();
   });
 });
+
+describe('fetchEncryptedAssetChunked — edge cases', () => {
+  it('resumes after simulated app kill by reading persisted partial state from disk', async () => {
+    const bookId = 'app-kill-resume';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.8)); // 3 chunks
+
+    // First download attempt: succeeds for 2 chunks, then fails (simulating app crash)
+    let firstAttemptCallCount = 0;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      firstAttemptCallCount++;
+      if (firstAttemptCallCount === 3) {
+        throw new Error('Simulated app crash mid-download');
+      }
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = firstFetch;
+
+    // First attempt fails after 2 chunks (2 successful requests, 3rd fails)
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toMatchObject({
+      code: DownloadError.ASSET_FETCH_FAILED,
+    });
+
+    // Simulate app kill/restart: call again with same bookId
+    // Partial manifest should be read from disk, proving resume works after "app kill"
+    const restartFetch = rangeServerFetch(asset);
+    global.fetch = restartFetch;
+
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    // Resume from chunk 2 (bytes 2*1MiB onwards), not chunk 0 — proves partial state survived
+    const rangeCalls = restartFetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    expect(rangeCalls.length).toBeGreaterThan(0);
+    // First range request on restart should be for chunk 2 (after 2 successful chunks)
+    expect(rangeCalls[0][1].headers.Range).toMatch(/^bytes=2097152-/); // 2 * CHUNK_SIZE_BYTES
+  });
+
+  it('handles partial manifest corruption gracefully by treating it as missing', async () => {
+    const bookId = 'corrupted-manifest';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
+
+    // Write a corrupted manifest (not valid JSON)
+    const { File, Directory, Paths } = require('expo-file-system');
+    const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
+    if (!partialDir.exists) partialDir.create({ intermediates: true });
+    const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
+    if (manifestFile.exists) manifestFile.delete();
+    manifestFile.create();
+    manifestFile.write('{ invalid json ');
+
+    // Try to download — should treat corrupted manifest as missing and start fresh
+    const fetchMock = rangeServerFetch(asset);
+    global.fetch = fetchMock;
+
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    // First request should be for chunk 0 (started fresh, not resumed)
+    const rangeCalls = fetchMock.mock.calls.filter((call) => call[1]?.headers?.Range);
+    expect(rangeCalls[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+  });
+
+  it('handles server dropping Range support mid-stream by treating 200 as complete file', async () => {
+    const bookId = 'range-dropped-mid-stream';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
+
+    let callCount = 0;
+    const switchingFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      callCount++;
+      const rangeHeader = init?.headers?.Range;
+
+      // First 2 chunks work with Range (206)
+      if (rangeHeader && callCount <= 2) {
+        const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+        if (!match) return new Response(null, { status: 400 });
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), asset.length - 1);
+        return new Response(asset.subarray(start, end + 1), {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+        });
+      }
+
+      // 3rd attempt: server drops Range support, returns full asset as 200
+      if (rangeHeader && callCount === 3) {
+        // Server stopped supporting Range, returns entire asset with 200
+        return new Response(asset, { status: 200 });
+      }
+
+      // Non-Range requests always return full asset
+      if (!rangeHeader) {
+        return new Response(asset, { status: 200 });
+      }
+
+      return new Response(null, { status: 400 });
+    });
+    global.fetch = switchingFetch;
+
+    // This should succeed — when 206->200 happens, client treats it as full file and stops
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    // 2 successful Range requests, then 1 request that returns 200 (full asset)
+    expect(switchingFetch.mock.calls.length).toBe(3);
+  });
+
+  it('cleans up mismatched partial state (file without manifest or vice versa)', async () => {
+    const bookId = 'mismatched-partial';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
+
+    // Simulate corrupted partial state: partial file exists but manifest doesn't
+    const { File, Directory, Paths } = require('expo-file-system');
+    const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
+    if (!partialDir.exists) partialDir.create({ intermediates: true });
+    const contentFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.bin`);
+    if (contentFile.exists) contentFile.delete();
+    contentFile.create();
+    contentFile.write(asset.subarray(0, CHUNK_SIZE_BYTES)); // Write 1 chunk but no manifest
+
+    // Try to download — should detect mismatch and start fresh
+    const fetchMock = rangeServerFetch(asset);
+    global.fetch = fetchMock;
+
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    // Started fresh due to mismatched state
+    const rangeCalls = fetchMock.mock.calls.filter((call) => call[1]?.headers?.Range);
+    expect(rangeCalls[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+  });
+});
