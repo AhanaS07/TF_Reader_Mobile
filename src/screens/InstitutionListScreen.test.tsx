@@ -1,5 +1,5 @@
 // src/screens/InstitutionListScreen.test.tsx
-// C8: the offline institution cache. Four behaviours under test:
+// C8: the offline institution cache. Behaviours under test:
 //   1. A successful page-0 unfiltered fetch writes the cache.
 //   2. When offline and the cache is populated, the list renders from it without
 //      calling the network.
@@ -7,14 +7,19 @@
 //      to serve, so an error is still the honest state).
 //   4. When a mid-flight fetch fails and the cache is populated, the screen
 //      falls back to the cache rather than showing an error.
+//   5. Bug: a previous fetchError is cleared before the offline check, so going
+//      offline with a populated cache shows the cache — not the old error screen.
+//   6. Bug: a network error on getInstitution does not prune the recently-used
+//      ID (only NOT_FOUND prunes); the ID can be retried after reconnecting.
 //
 // useNetworkStatus is mocked at the module level so individual tests can flip
 // the online/offline flag without touching NetInfo. The data source goes in via
 // setCatalogueSource, following the same pattern as InstitutionDetailScreen.test.tsx.
-import { render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
+import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { Institution } from '@model/institution';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
@@ -135,6 +140,70 @@ describe('InstitutionListScreen offline cache — mid-flight fallback', () => {
 
     await waitFor(() =>
       expect(screen.getByText(/couldn.?t load institutions/i)).toBeTruthy(),
+    );
+  });
+});
+
+describe('InstitutionListScreen offline cache — bug regressions', () => {
+  // Bug: setFetchError(false) was inside the online branch, so a previous error
+  // was never cleared when going offline with a populated cache — the ErrorState
+  // stayed up instead of giving way to the cache.
+  //
+  // Sequence: offline with no cache → fetchError=true shown. Cache then arrives
+  // in the store (e.g. AsyncStorage hydrates). Pressing Retry re-runs fetchPage
+  // — fix ensures setFetchError(false) runs at the top, before the offline
+  // branch checks the cache, so the error clears and the cache is displayed.
+  it('clears a previous fetch error and shows the cache on retry', async () => {
+    mockIsOnline.mockReturnValue(false); // offline, no cache
+    setCatalogueSource(fakeSource(jest.fn()));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.?t load institutions/i)).toBeTruthy(),
+    );
+
+    // Cache arrives — flush effects so cachedRef picks up the new value.
+    await act(async () => {
+      useInstitutionStore.setState({ cachedInstitutions: [IMPERIAL] });
+    });
+
+    // Retry re-runs fetchPage; fix ensures setFetchError(false) fires first.
+    fireEvent.press(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+    expect(screen.queryByText(/couldn.?t load institutions/i)).toBeNull();
+  });
+
+  // Bug: resolvedRef marked IDs before the fetch, so a network error permanently
+  // suppressed the ID for the rest of the session. Only NOT_FOUND should prune.
+  it('does not prune a recently-used ID after a network error — only NOT_FOUND prunes', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ recentlyUsedIds: ['inst_7f3'] });
+    setCatalogueSource(fakeSource(
+      async () => [],
+      async () => { throw new Error('network error'); },
+    ));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+
+    expect(useInstitutionStore.getState().recentlyUsedIds).toEqual(['inst_7f3']);
+  });
+
+  it('prunes a recently-used ID that the server says no longer exists (NOT_FOUND)', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ recentlyUsedIds: ['inst_gone'] });
+    setCatalogueSource(fakeSource(
+      async () => [],
+      async () => { throw new CatalogueFailure(CatalogueError.NOT_FOUND, 'inst_gone'); },
+    ));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() =>
+      expect(useInstitutionStore.getState().recentlyUsedIds).toEqual([]),
     );
   });
 });
