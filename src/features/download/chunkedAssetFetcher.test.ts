@@ -401,3 +401,281 @@ describe('fetchEncryptedAssetChunked — edge cases', () => {
     expect(rangeCalls[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
   });
 });
+
+describe('fetchEncryptedAssetChunked — extended resumable path tests', () => {
+  it('resumes with correct range when file has partial chunks already written', async () => {
+    const bookId = 'resume-partial-chunks';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 4.5)); // 5 chunks
+
+    // First attempt: write 3 full chunks, then fail
+    let firstCallCount = 0;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      firstCallCount++;
+      if (firstCallCount === 4) throw new Error('Connection failed');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = firstFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Resume: should request from 3MiB onwards (after 3 successful chunks)
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    const rangeCalls = resumeFetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    // First call should be for chunk 3 (starting at 3MiB)
+    expect(rangeCalls[0][1].headers.Range).toMatch(/^bytes=3145728-/);
+  });
+
+  it('resumes correctly when partial file byte count matches manifest', async () => {
+    const bookId = 'resume-byte-match';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 3.2)); // 4 chunks
+
+    // Create consistent partial state (2 chunks downloaded)
+    let callCount = 0;
+    const initialFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      callCount++;
+      if (callCount === 3) throw new Error('Connection dropped');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = initialFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Verify manifest records correct state
+    const { File, Directory, Paths } = require('expo-file-system');
+    const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
+    const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
+    const manifest = JSON.parse(manifestFile.textSync());
+    expect(manifest.bytesReceived).toBe(CHUNK_SIZE_BYTES * 2);
+    expect(manifest.expectedLength).toBe(asset.length);
+
+    // Resume and verify it picks up exactly from bytesReceived
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    const rangeCalls = resumeFetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    // Should request from bytesReceived onwards
+    expect(rangeCalls[0][1].headers.Range).toBe(`bytes=${CHUNK_SIZE_BYTES * 2}-${CHUNK_SIZE_BYTES * 3 - 1}`);
+  });
+
+  it('handles resume when expected length differs from initial attempt (server consistency)', async () => {
+    const bookId = 'resume-consistent-length';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
+
+    // First attempt: get total size
+    let firstCall = false;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      if (!firstCall) {
+        firstCall = true;
+        const rangeHeader = init?.headers?.Range;
+        if (!rangeHeader) return new Response(asset, { status: 200 });
+        const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+        if (!match) return new Response(null, { status: 400 });
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), asset.length - 1);
+        return new Response(asset.subarray(start, end + 1), {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+        });
+      }
+      throw new Error('Network timeout');
+    });
+    global.fetch = firstFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Resume: server still reports same total length
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+  });
+
+  it('reports progress correctly across resume boundary', async () => {
+    const bookId = 'resume-progress-boundary';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 3.3)); // 4 chunks
+
+    // First: download 2 chunks then fail
+    let firstCallCount = 0;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      firstCallCount++;
+      if (firstCallCount === 3) throw new Error('Network error');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = firstFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Resume: verify progress starts from bytesReceived immediately
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const onProgress = jest.fn();
+    await fetchEncryptedAssetChunked(bookId, ASSET_URL, { onProgress });
+
+    // First onProgress call should be the resumed baseline (2 chunks = 2MiB)
+    expect(onProgress).toHaveBeenNthCalledWith(1, CHUNK_SIZE_BYTES * 2, asset.length);
+    // Final call should be at 100%
+    expect(onProgress).toHaveBeenLastCalledWith(asset.length, asset.length);
+  });
+
+  it('succeeds when resuming with only one final chunk remaining', async () => {
+    const bookId = 'resume-final-chunk';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 1.3)); // 2 chunks (1 full, 1 partial)
+
+    // First: get first chunk, then fail
+    let callCount = 0;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      callCount++;
+      if (callCount === 2) throw new Error('Connection lost');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = firstFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Resume: only final chunk needed
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    const rangeCalls = resumeFetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    // Should request only the final partial chunk
+    expect(rangeCalls).toHaveLength(1);
+    expect(rangeCalls[0][1].headers.Range).toMatch(/^bytes=1048576-/);
+  });
+
+  it('handles multiple sequential failures and resumes with each retry', async () => {
+    const bookId = 'multi-retry-resume';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 4)); // 4 chunks
+
+    // Attempt 1: get 1 chunk then fail
+    let attempt1Count = 0;
+    const attempt1Fetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      attempt1Count++;
+      if (attempt1Count === 2) throw new Error('Attempt 1 fail');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = attempt1Fetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Attempt 2: resume, get 1 more chunk, then fail
+    let attempt2Count = 0;
+    const attempt2Fetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      attempt2Count++;
+      if (attempt2Count === 2) throw new Error('Attempt 2 fail');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = attempt2Fetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Attempt 3: resume from 2 chunks and complete
+    const attempt3Fetch = rangeServerFetch(asset);
+    global.fetch = attempt3Fetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    const rangeCalls = attempt3Fetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    // First request should be for chunk 2 (after 2 successful chunks)
+    expect(rangeCalls[0][1].headers.Range).toMatch(/^bytes=2097152-/);
+  });
+
+  it('cleans up and restarts when manifest becomes invalid during resume', async () => {
+    const bookId = 'resume-manifest-invalidate';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
+
+    // First attempt: download 1 chunk
+    let callCount = 0;
+    const firstFetch = jest.fn().mockImplementation(async (_url: string, init: { headers?: Record<string, string> }) => {
+      callCount++;
+      if (callCount === 2) throw new Error('Connection lost');
+      const rangeHeader = init?.headers?.Range;
+      if (!rangeHeader) return new Response(asset, { status: 200 });
+      const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (!match) return new Response(null, { status: 400 });
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = firstFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Corrupt the manifest before resume
+    const { File, Directory, Paths } = require('expo-file-system');
+    const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
+    const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
+    if (manifestFile.exists) {
+      manifestFile.delete();
+      manifestFile.create();
+      manifestFile.write('invalid json');
+    }
+
+    // Resume: should detect bad manifest and start fresh from chunk 0
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const result = await fetchEncryptedAssetChunked(bookId, ASSET_URL);
+
+    expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
+    const rangeCalls = resumeFetch.mock.calls.filter((call) => call[1]?.headers?.Range);
+    // Should start from chunk 0 due to corrupted manifest
+    expect(rangeCalls[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+  });
+});
