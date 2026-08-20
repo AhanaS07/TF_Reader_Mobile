@@ -21,7 +21,9 @@ import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import { buildItemDetail } from '@model/detail';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
+import type { Institution } from '@model/institution';
 import type { Acquisition, Publication } from '@model/types';
+import { useInstitutionStore } from '@store/institutionStore';
 
 import ItemDetailScreen, {
   ARTICLE_WORK_TYPE,
@@ -98,16 +100,23 @@ function anArticleDetail(over: Partial<Publication> = {}) {
   return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
 }
 
-// Every method a real DataSource must have, so the fake typechecks as one. Only
-// `getPublication` is exercised; the rest reject, which turns an unexpected
-// dependency into a loud failure instead of a silent one — same idiom as
-// CatalogueScreen.test.tsx and InstitutionDetailScreen.test.tsx.
+// Every method a real DataSource must have, so the fake typechecks as one. The
+// methods no test here calls reject, which turns an unexpected dependency into a
+// loud failure instead of a silent one — same idiom as CatalogueScreen.test.tsx
+// and InstitutionDetailScreen.test.tsx.
+//
+// BOTH detail methods are served by the one stub: which of them the screen calls
+// depends on whether an institution is selected, and almost every test below
+// cares about the rendering rather than the route. The two that DO care pin it
+// directly — see 'ItemDetailScreen endpoint choice'.
 function fakeSource(getPublication: DataSource['getPublication']): DataSource {
   const unused = () => Promise.reject(new Error('not stubbed for this test'));
   return {
     getHomeCatalogue: unused,
     getShelf: unused,
     getPublication,
+    getPublicFeed: unused,
+    getPublicPublication: (bookId) => getPublication('', bookId),
     getInstitutions: unused,
     getInstitution: unused,
   };
@@ -122,10 +131,65 @@ const routeProps = {
   navigation: { navigate: mockNavigate },
 };
 
+const INSTITUTION: Institution = {
+  id: 'inst_a21',
+  name: 'Second Institution',
+  country: 'GB',
+  code: 'SEC',
+  city: 'Leeds',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_a21/catalogue',
+};
+
 afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
   mockNavigate.mockClear();
+  useInstitutionStore.setState({ selectedInstitution: null });
+});
+
+// A1. A reader who has picked no institution reached this screen from the public
+// catalogue, so the detail must come from the public endpoint too. Falling back
+// to some default institution's copy would answer a question nobody asked — and
+// could show a Read button for a licence this reader does not hold.
+describe('ItemDetailScreen endpoint choice', () => {
+  function recordingSource(calls: string[]): DataSource {
+    const unused = () => Promise.reject(new Error('not stubbed for this test'));
+    return {
+      getHomeCatalogue: unused,
+      getShelf: unused,
+      getPublication: async (institutionId) => {
+        calls.push(`institution:${institutionId}`);
+        return aBook();
+      },
+      getPublicFeed: unused,
+      getPublicPublication: async () => {
+        calls.push('public');
+        return aBook();
+      },
+      getInstitutions: unused,
+      getInstitution: unused,
+    };
+  }
+
+  it('asks the public endpoint when no institution is selected', async () => {
+    const calls: string[] = [];
+    useInstitutionStore.setState({ selectedInstitution: null });
+    setCatalogueSource(recordingSource(calls));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(calls).toEqual(['public']));
+  });
+
+  it('asks the institution endpoint once one is selected', async () => {
+    const calls: string[] = [];
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    setCatalogueSource(recordingSource(calls));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(calls).toEqual([`institution:${INSTITUTION.id}`]));
+  });
 });
 
 describe('ItemDetailScreen loading', () => {

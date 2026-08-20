@@ -11,6 +11,18 @@ hand-written Week 1 samples.
 | `05-shelf-curated-page0.json` | `shelf_1`, one page |
 | `06-shelf-curated-alt-page0.json` | `shelf_2`, one page |
 | `07-publication-detail.json` | `item_42` as a standalone document |
+| `08-public-catalogue-page0.json` / `09-public-catalogue-page1.json` | `/opds/v1/public/catalogue`, across two pages |
+
+## The public feed has no shelves, and that is the point
+
+`08`/`09` back A1 — the catalogue a reader sees before choosing an institution. Shelves are
+configured per institution, so a reader without one has none: it is a single flat list, and
+these are the only fixtures here with no `groups` concept at all.
+
+Every title in them is `OPEN_ACCESS`, which the contract requires of this feed — browsing
+shows what you can read right now. Discovery search (`/opds/v1/public/search`) returns
+locked titles too, and is deliberately **not** fixtured: those payloads carry a `subscribe`
+link with no `indirectAcquisition`, which `normalize.ts` cannot parse yet.
 
 ## The shelves are not a fixed set
 

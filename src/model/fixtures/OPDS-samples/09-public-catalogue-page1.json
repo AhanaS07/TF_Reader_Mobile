@@ -1,0 +1,139 @@
+{
+  "metadata": {
+    "title": "Open access titles",
+    "numberOfItems": 5,
+    "itemsPerPage": 3,
+    "currentPage": 1,
+    "modified": "2026-08-19T09:00:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/public/catalogue?page=1",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "previous",
+      "href": "https://api.tf/opds/v1/public/catalogue?page=0",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/public/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search everything we publish"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9780429340123",
+        "title": "Public Health Data in Low-Bandwidth Settings",
+        "author": [
+          {
+            "name": "Marisol Cruz"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2022-07-04",
+        "subject": [
+          {
+            "name": "Public Health"
+          },
+          {
+            "name": "Data Science"
+          }
+        ],
+        "numberOfPages": 186
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/public/publications/item_oa4",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://flambeau.tf/api/v1/content/item_oa4/access",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "application/pdf"
+              }
+            ],
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_oa4.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:tf:catalogue:item_oa5",
+        "title": "A Very Long Administrator-Typed Title About Comparative Constitutional Reform in Post-Colonial Federations",
+        "author": [
+          {
+            "name": "N. Ravindranath"
+          }
+        ],
+        "publisher": {
+          "name": "Taylor & Francis"
+        },
+        "language": "en",
+        "published": "2020-10-16",
+        "subject": [
+          {
+            "name": "Law"
+          }
+        ],
+        "numberOfPages": 402
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/public/publications/item_oa5",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://flambeau.tf/api/v1/content/item_oa5/access",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "application/epub+zip"
+              }
+            ],
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_oa5.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    }
+  ]
+}

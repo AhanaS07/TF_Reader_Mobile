@@ -63,6 +63,8 @@ function fakeSource(
     getHomeCatalogue: unused,
     getShelf: unused,
     getPublication: unused,
+    getPublicFeed: unused,
+    getPublicPublication: unused,
     getInstitutions,
     getInstitution: getInstitution ?? unused,
   };

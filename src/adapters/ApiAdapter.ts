@@ -172,6 +172,38 @@ export class ApiAdapter implements DataSource {
     return publication;
   }
 
+  // A1 — GET /opds/v1/public/catalogue. The one catalogue path in this file that
+  // is NOT a guess: the contract declares it `x-stability: FROZEN` with
+  // `security: []`, so both the path and the absence of a token are pinned.
+  //
+  // No institution in the path and no auth header, which is the feature rather
+  // than an omission. Not ETag-cached either: `Cache-Control: public, max-age=300`
+  // is the contract's answer for this feed, and a second caching strategy beside
+  // the home feed's would be two things to reason about for no gain.
+  async getPublicFeed(page?: number): Promise<Shelf> {
+    const base = `${this.baseUrl}/public/catalogue`;
+    // Omitted entirely when absent, so the server applies its own default rather
+    // than being told "page 0".
+    const url = page === undefined ? base : `${base}?page=${page}`;
+
+    const body = await this.getJson(url, 'public catalogue');
+
+    const feed = normalizeShelf(body);
+    feed.publications.forEach(assertPublication);
+    return feed;
+  }
+
+  async getPublicPublication(bookId: BookId): Promise<Publication> {
+    const body = await this.getJson(
+      `${this.baseUrl}/public/publications/${encodeURIComponent(bookId)}`,
+      bookId,
+    );
+
+    const publication = normalizePublication(body);
+    assertPublication(publication);
+    return publication;
+  }
+
   // ENDPOINT IS A GUESS, and a weaker one than the catalogue paths above: those
   // were derived from self-hrefs inside wokay's fixtures, whereas institutions
   // are a shape we invented, so nothing upstream has confirmed either the path or

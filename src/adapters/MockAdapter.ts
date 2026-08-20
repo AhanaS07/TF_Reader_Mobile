@@ -25,6 +25,8 @@ import allTitlesPage1Fixture from '@model/fixtures/OPDS-samples/04-shelf-all-pag
 import curatedShelfFixture from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
 import curatedShelfAltFixture from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/07-publication-detail.json';
+import publicCataloguePage0Fixture from '@model/fixtures/OPDS-samples/08-public-catalogue-page0.json';
+import publicCataloguePage1Fixture from '@model/fixtures/OPDS-samples/09-public-catalogue-page1.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
 // Strip combining diacritical marks so "Zurich" matches "Zürich".
@@ -117,6 +119,40 @@ export class MockAdapter implements DataSource {
     this.assertKnownInstitution(institutionId);
 
     const publication = this.publicationsById().get(bookId);
+    if (publication === undefined) {
+      throw new CatalogueFailure(CatalogueError.NOT_FOUND, bookId);
+    }
+
+    assertPublication(publication);
+    return publication;
+  }
+
+  // A1. No institution argument and no assertKnownInstitution call — the whole
+  // point of this feed is that there is no institution to check.
+  async getPublicFeed(page?: number): Promise<Shelf> {
+    await this.simulate('public catalogue');
+
+    const pages = this.publicPages();
+    // Page omitted means the first one, matching ApiAdapter, which sends no
+    // `page` param at all in that case and lets the server pick its default.
+    const feed = pages[page ?? 0];
+
+    // Past the last page of fixture data: an empty final page rather than
+    // NOT_FOUND, for the same reason getShelf does it — running off the end of a
+    // listing is normal paging, not a missing feed.
+    if (feed === undefined) {
+      const { nextPage: _nextPage, ...lastPage } = pages[pages.length - 1];
+      return { ...lastPage, publications: [] };
+    }
+
+    feed.publications.forEach(assertPublication);
+    return feed;
+  }
+
+  async getPublicPublication(bookId: BookId): Promise<Publication> {
+    await this.simulate(bookId);
+
+    const publication = this.publicPublicationsById().get(bookId);
     if (publication === undefined) {
       throw new CatalogueFailure(CatalogueError.NOT_FOUND, bookId);
     }
@@ -233,6 +269,37 @@ export class MockAdapter implements DataSource {
     pages.set(curatedAlt.id, [curatedAlt]);
 
     return pages;
+  }
+
+  // The public feed's pages in order — index 0 is page 0.
+  //
+  // Rebuilt per call for the same reason as pagesByShelfId: a shared instance
+  // handing out the same mutable arrays would let one screen's edit surface in
+  // another.
+  private publicPages(): Shelf[] {
+    return [
+      normalizeShelf(publicCataloguePage0Fixture),
+      normalizeShelf(publicCataloguePage1Fixture),
+    ];
+  }
+
+  // Only what the PUBLIC feed lists — deliberately not publicationsById().
+  //
+  // An anonymous reader can open an open access title and nothing else, so
+  // serving an institution's Elite or Subscription title here would answer a
+  // question this endpoint is not allowed to answer. The real route
+  // (/opds/v1/public/publications) does return locked titles too, for the
+  // discovery-search path, but that path is not built and those payloads cannot
+  // be normalized yet anyway — a `subscribe` link carries no indirectAcquisition
+  // for toFileType to read.
+  private publicPublicationsById(): Map<BookId, Publication> {
+    const publications = new Map<BookId, Publication>();
+    for (const page of this.publicPages()) {
+      for (const publication of page.publications) {
+        publications.set(publication.id, publication);
+      }
+    }
+    return publications;
   }
 
   // Every publication the fixtures mention, detail feed preferred over summary.

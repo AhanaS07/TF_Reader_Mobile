@@ -39,7 +39,11 @@ export type CatalogueStackParamList = {
   // `title` is the NAV ENTRY's label, not the shelf feed's own title: the two
   // legitimately differ (the "Open access" nav entry points at a shelf the feed
   // titles "Free to read"), and only the nav label is known at push time.
-  Shelf: { shelfId: string; title: string };
+  //
+  // `institutionId` is a param rather than something ShelfScreen reads from the
+  // store, so a caller cannot reach the screen without naming an institution.
+  // A shelf only exists inside one institution's catalogue.
+  Shelf: { shelfId: string; title: string; institutionId: string };
 };
 
 /** Search nested stack — shares ItemDetail shape. */

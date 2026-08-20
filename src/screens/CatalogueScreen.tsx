@@ -11,23 +11,26 @@
 // filter: it pushes ShelfDetail (ShelfScreen), which fetches that shelf's own
 // full, paginated listing via getShelf(). See ShelfScreen.tsx.
 //
-// `institutionId` comes from the institution store, falling back to inst_7f3
-// until one is selected. The picker above the category row changes it.
+// THE INSTITUTION ARRIVES AS A PROP, and there is no fallback id any more.
+// CatalogueHomeScreen owns the choice: a reader without an institution gets
+// PublicCatalogueScreen instead of this one, so by the time this renders there
+// is always a real institution. The old `?? 'inst_7f3'` quietly served one
+// institution's catalogue to a reader who had picked none — the bug A1 fixes.
+// The picker above the category row still navigates to the list to change it.
 //
-// NO ACCESS BADGE YET, AND `resolveAccess` IS NO LONGER THE REASON — it landed
-// and is on main. `ContentCard`'s `badge` slot takes already-resolved UI (Design
-// Spec §5.1 — the UI must never calculate access rights), and reaching into
-// `publication.acquisition` here to fake one is still exactly the violation that
-// rule exists to prevent. What is left is the wiring, and nothing blocks it:
-// `resolveAccess` takes `session: null` with no loan and no hold and resolves
-// Open Access, Subscription and Elite-with-nothing-held correctly, which is
-// precisely so a list can be wired before the session store exists. Call it per
-// row and pass the result to the slot; do not derive a badge here.
+// THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
+// passes only the resulting `.tier` into ContentCard's slot — reading
+// `publication.acquisition.licenceModel` in this file would be the Design Spec
+// §5.1 violation ("the UI must never calculate access rights"). `session: null`
+// with no loan and no hold is correct for a list: it resolves Open Access,
+// Subscription and Elite-with-nothing-held from feed data alone.
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
+import { resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
@@ -37,7 +40,7 @@ import { type CatalogueError, isCatalogueFailure } from '@model/errors';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
-import { useInstitutionStore } from '@store/institutionStore';
+import type { Institution } from '@model/institution';
 import { color, space, type as typeScale } from '../theme/tokens';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import OfflineBanner from '@/components/OfflineBanner';
@@ -53,7 +56,11 @@ const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'success', 'subscription',
 // Arbitrary — there is no data yet to size it from.
 const SKELETON_COUNT = 3;
 
-export default function CatalogueScreen() {
+export interface CatalogueScreenProps {
+  institution: Institution;
+}
+
+export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   const navigation = useNavigation<Nav>();
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,8 +72,7 @@ export default function CatalogueScreen() {
 
   const isOnline = useNetworkStatus();
 
-  const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
-  const institutionId = selectedInstitution?.id ?? 'inst_7f3';
+  const institutionId = institution.id;
 
   let body: ReactNode;
   // No synchronous setState here — only inside the async continuations. A
@@ -117,7 +123,7 @@ export default function CatalogueScreen() {
         accessibilityLabel="Change institution"
       >
         <Text style={styles.institutionName} numberOfLines={1}>
-          {selectedInstitution?.name ?? 'Select institution'}
+          {institution.name}
         </Text>
         <Text style={styles.institutionChange}>Change</Text>
       </Pressable>
@@ -139,11 +145,14 @@ export default function CatalogueScreen() {
                   title={entry.title}
                   accent={ACCENTS[index % ACCENTS.length]}
                   // `title` rides along so the pushed screen's app bar can name
-                  // the shelf immediately, before its feed has loaded.
+                  // the shelf immediately, before its feed has loaded, and
+                  // `institutionId` so the listing is fetched for the same
+                  // institution whose catalogue advertised this entry.
                   onPress={() =>
                     navigation.navigate('Shelf', {
                       shelfId: entry.shelfId,
                       title: entry.title,
+                      institutionId,
                     })
                   }
                 />
@@ -169,6 +178,13 @@ export default function CatalogueScreen() {
                     title={publication.title}
                     publisher={publication.publisher}
                     imageUrl={publication.coverUrl}
+                    badge={
+                      <AccessTierBadge
+                        tier={
+                          resolveAccess({ item: publication, institutionId, session: null }).tier
+                        }
+                      />
+                    }
                     onPress={() =>
                       navigation.navigate('ItemDetail', { itemId: publication.id })
                     }

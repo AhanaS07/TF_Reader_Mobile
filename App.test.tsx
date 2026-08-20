@@ -35,9 +35,14 @@ describe('toolchain', () => {
   // "getByText is not a function", because you destructured a Promise.
   it('renders the app root', async () => {
     // App now mounts the full navigator. 'Taylor & Francis' is the title
-    // rendered by TopAppBar on the Catalogue home screen — unique in the tree.
-    const { getByText } = await render(<App />);
-    expect(getByText('Taylor & Francis')).toBeTruthy();
+    // TopAppBar renders on the Catalogue home screen.
+    //
+    // getAllByText, not getByText: with no institution selected the home route
+    // is the public catalogue, and a publisher in that feed is legitimately
+    // called 'Taylor & Francis' too. Matching more than once is correct here —
+    // this is a toolchain smoke test, and the claim is that the tree rendered.
+    const { getAllByText } = await render(<App />);
+    expect(getAllByText('Taylor & Francis').length).toBeGreaterThan(0);
   });
 
   it('resolves the @/ alias to a runtime value', () => {

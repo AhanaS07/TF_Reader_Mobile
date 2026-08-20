@@ -42,12 +42,34 @@ function publication(id: string, title: string): Shelf['publications'][number] {
   };
 }
 
+// An open access title, for the badge tests: `publication` above is always
+// SUBSCRIPTION, and a shelf of one tier cannot show that rows are badged
+// individually rather than all from the first one.
+function openAccessPublication(id: string, title: string): Shelf['publications'][number] {
+  const base = publication(id, title);
+  return {
+    ...base,
+    acquisition: { ...base.acquisition, actionId: 'openAccess', licenceModel: 'OPEN_ACCESS' },
+  };
+}
+
 // A single-page shelf: no `next` link in the feed, so no `nextPage` and no
 // "Load more".
 const FAKE_SHELF: Shelf = {
   id: 'ebooks',
   title: 'eBooks',
   publications: [publication('item_42', 'Rights for Robots')],
+};
+
+// Two tiers on one shelf, like fixture 03 (ELITE + SUBSCRIPTION) and 04
+// (ELITE + OPEN_ACCESS).
+const MIXED_TIER_SHELF: Shelf = {
+  id: 'all',
+  title: 'All titles',
+  publications: [
+    publication('item_42', 'Rights for Robots'),
+    openAccessPublication('item_ab6', 'Ethnographies of Waiting'),
+  ],
 };
 
 // A shelf spread over two pages, shaped like 02-shelf-group.json: 3 items in
@@ -82,6 +104,8 @@ function fakeSource(getShelf: DataSource['getShelf']): DataSource {
     getHomeCatalogue: unused,
     getShelf,
     getPublication: unused,
+    getPublicFeed: unused,
+    getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution: unused,
   };
@@ -102,15 +126,20 @@ function pagedSource(pages: Shelf[]) {
   return getShelf;
 }
 
-// Route prop ShelfScreen actually reads (`route.params.shelfId`). `title` is in
+// Route props ShelfScreen reads (`shelfId` and `institutionId`). `title` is in
 // the param list because RootNavigator uses it for the app bar, so it is supplied
 // here for type parity even though the screen itself never reads it.
 // `navigation` is never read from props — the screen gets it from the
 // `useNavigation` mock above — so it is cast rather than fully constructed.
 type ShelfProps = { route: { params: CatalogueStackParamList['Shelf'] } };
-const routeProps = {
-  route: { params: { shelfId: 'ebooks', title: 'eBooks' } },
-} as unknown as Parameters<typeof ShelfScreen>[0] & ShelfProps;
+function propsFor(params: CatalogueStackParamList['Shelf']) {
+  return { route: { params } } as unknown as Parameters<typeof ShelfScreen>[0] & ShelfProps;
+}
+const routeProps = propsFor({
+  shelfId: 'ebooks',
+  title: 'eBooks',
+  institutionId: 'inst_7f3',
+});
 
 afterEach(() => {
   setCatalogueSource(undefined);
@@ -136,9 +165,28 @@ describe('ShelfScreen with data', () => {
     await render(<ShelfScreen {...routeProps} />);
 
     await waitFor(() => expect(getShelf).toHaveBeenCalled());
-    // Second argument is the shelfId — first is the (currently hardcoded)
-    // institution id, which is not this test's concern.
+    // Second argument is the shelfId — the first is the institution, asserted
+    // in its own test below.
     expect(getShelf.mock.calls[0][1]).toBe('ebooks');
+  });
+
+  // A reader at one institution must never be served another's shelf. The id
+  // here is deliberately NOT the fixture default 'inst_7f3', because the bug
+  // this pins was a hardcoded constant that matched that default exactly and so
+  // looked correct from every test that used it. The load-more call is asserted
+  // too: the paging path built its own request and could pass a different id
+  // from the first page's without anything on screen looking wrong.
+  it('sends the route’s institution id on the first page and on load more', async () => {
+    const getShelf = pagedSource([PAGE_0, PAGE_1]);
+
+    await render(<ShelfScreen {...propsFor({ ...routeProps.route.params, institutionId: 'inst_a21' })} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(getShelf).toHaveBeenCalledTimes(2));
+    expect(getShelf.mock.calls[0][0]).toBe('inst_a21');
+    expect(getShelf.mock.calls[1][0]).toBe('inst_a21');
   });
 
   // The shelf's NAME is not asserted here: RootNavigator puts it in the app bar
@@ -161,6 +209,42 @@ describe('ShelfScreen with data', () => {
     fireEvent.press(screen.getByRole('button', { name: 'Rights for Robots' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+// A3 — every row carries its access tier, resolved per row rather than once for
+// the shelf. Both labels are asserted because a single-tier shelf cannot tell
+// the two apart.
+describe('ShelfScreen access-tier badges', () => {
+  it('gives every publication row a badge', async () => {
+    setCatalogueSource(fakeSource(async () => MIXED_TIER_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.getAllByTestId('content-card-badge')).toHaveLength(2);
+  });
+
+  it('labels a subscription title and an open access title differently', async () => {
+    setCatalogueSource(fakeSource(async () => MIXED_TIER_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Subscription')).toBeTruthy());
+    expect(screen.getByText('Open Access')).toBeTruthy();
+  });
+
+  it('badges the rows a later page brings in too', async () => {
+    pagedSource([PAGE_0, PAGE_1]);
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeTruthy());
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(screen.getByText('An Introduction to Statistics')).toBeTruthy());
+    // Two rows from page 0, one from page 1.
+    expect(screen.getAllByTestId('content-card-badge')).toHaveLength(3);
   });
 });
 

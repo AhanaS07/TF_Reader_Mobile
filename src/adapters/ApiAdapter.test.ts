@@ -23,6 +23,8 @@ import allTitlesPage1Fixture from '@model/fixtures/OPDS-samples/04-shelf-all-pag
 import curatedShelfFixture from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
 import curatedShelfAltFixture from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
 import publicationDetailFixture from '@model/fixtures/OPDS-samples/07-publication-detail.json';
+import publicCataloguePage0Fixture from '@model/fixtures/OPDS-samples/08-public-catalogue-page0.json';
+import publicCataloguePage1Fixture from '@model/fixtures/OPDS-samples/09-public-catalogue-page1.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
 const BASE_URL = 'https://api.tf/opds/v1';
@@ -66,10 +68,39 @@ for (const pages of [
   SHELF_PAGES.set(idFromHref(selfHrefOf(pages[0])), pages);
 }
 
+const PUBLIC_PAGES = [publicCataloguePage0Fixture, publicCataloguePage1Fixture];
+
+// Every publication the public feed lists, keyed by the id in its own self href.
+const PUBLIC_PUBLICATIONS = new Map<string, unknown>();
+for (const page of PUBLIC_PAGES) {
+  for (const publication of page.publications) {
+    PUBLIC_PUBLICATIONS.set(idFromHref(selfHrefOf(publication)), publication);
+  }
+}
+
 // Serves the fixtures at the paths the real OPDS API is expected to expose,
 // derived from the self-hrefs inside the fixtures themselves.
 const serveFixtures: FetchLike = async (url) => {
   const { pathname, searchParams } = new URL(url);
+
+  // The public routes come FIRST: '/public' would otherwise match the
+  // `/institutions/([^/]+)` patterns below if those paths ever loosen, and a
+  // public request quietly answered by an institution fixture is exactly the
+  // bug this whole card exists to prevent.
+  if (pathname === '/opds/v1/public/catalogue') {
+    // Paged on the query string, exactly as the adapter builds it — serving page
+    // 0 for every request would let the adapter drop the param entirely and
+    // nothing here would notice.
+    const page = searchParams.get('page');
+    const body = PUBLIC_PAGES[page === null ? 0 : Number(page)];
+    return body === undefined ? notFound() : ok(body);
+  }
+
+  const publicPublication = /^\/opds\/v1\/public\/publications\/([^/]+)$/.exec(pathname);
+  if (publicPublication) {
+    const body = PUBLIC_PUBLICATIONS.get(decodeURIComponent(publicPublication[1]));
+    return body === undefined ? notFound() : ok(body);
+  }
 
   const catalogue = /^\/opds\/v1\/institutions\/([^/]+)\/catalogue$/.exec(pathname);
   if (catalogue) {
