@@ -6,9 +6,9 @@
 // cipher/decipher — not fakes. This works because react-native-quick-crypto's own docs describe it
 // as "loosely matching Node.js `crypto`" — every function used here (generateKeyPairSync,
 // publicEncrypt, privateDecrypt, createPrivateKey, createPublicKey, createHash, createCipheriv,
-// createDecipheriv, randomBytes, constants.RSA_PKCS1_OAEP_PADDING) exists on Node's real `crypto`
-// with the same signature, so this mock is a direct passthrough rather than a hand-rolled
-// reimplementation.
+// createDecipheriv and constants.RSA_PKCS1_OAEP_PADDING from deviceKeypair.ts and aesGcm.ts, plus
+// randomBytes from devContentSeed.ts) exists on Node's real `crypto` with the same signature, so
+// this mock is a direct passthrough rather than a hand-rolled reimplementation.
 //
 // What this proves: deviceKeypair.ts's and aesGcm.ts's own logic (idempotent keypair reuse,
 // wrap/unwrap shape, nonce/tag assembly, error propagation) is correct, exercised through real
@@ -27,6 +27,8 @@ module.exports = {
   createHash: crypto.createHash,
   createCipheriv: crypto.createCipheriv,
   createDecipheriv: crypto.createDecipheriv,
+  // devContentSeed.ts's BEK. Returns a Buffer, which is a Uint8Array — the shape the caller's
+  // Uint8Array.from() expects, so no adaptation is needed for this one either.
   randomBytes: crypto.randomBytes,
   constants: crypto.constants,
 };

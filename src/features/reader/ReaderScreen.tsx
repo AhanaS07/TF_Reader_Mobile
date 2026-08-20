@@ -14,6 +14,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -32,12 +33,14 @@ import type {
   ReaderCommand,
   ReaderErrorCode,
   ReaderMessage,
+  ReaderPosition,
+  ReaderTarget,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
-import { cfiOf, useBookSearch } from '@/features/reader/useBookSearch';
+import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
@@ -178,6 +181,24 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
   const [send, setSend] = useState<((command: ReaderCommand) => void) | null>(null);
   const [toc, setToc] = useState<ReaderTocItem[]>([]);
+
+  /**
+   * Where the reader is, as last reported.
+   *
+   * NOT PERSISTED HERE, deliberately. `progressStore.savePage()` / `savePosition()` exist on Sync's
+   * side and this is finally the value they need, but writing a progress record is Personalization's
+   * stage and its own decisions (when to write, how often, what wins on conflict). Surfacing it is
+   * Reader's half; storing it is not, and doing both here would prejudge those.
+   */
+  const [position, setPosition] = useState<ReaderPosition | null>(null);
+
+  /**
+   * The page-jump field: null when closed, the typed text when open.
+   *
+   * A STRING, not a number, and deliberately: the field has to be able to hold '' while the user
+   * clears it and '1' on the way to '12', neither of which is a page. Parsing happens on submit.
+   */
+  const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
@@ -452,11 +473,16 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         setIsRendered(true);
         break;
       case 'relocated':
-        // The CFI lands here. Nothing consumes it yet — persisting it belongs to
-        // Personalization's Progress record, whose open question is exactly that
-        // an integer offset cannot anchor a reflowable EPUB and a CFI can.
+        setPosition(message.position);
         break;
       case 'toc':
+        // TIMED, unlike the other post-open messages, because this is the one that can stall
+        // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
+        // still unavailable. The PDF shell resolves every outline destination through the worker
+        // (one or two round trips each), so a large book's outline is where that shows up.
+        if (openSentAtRef.current !== null) {
+          logSpan('open -> toc', openSentAtRef.current, { items: message.items.length });
+        }
         setToc(message.items);
         break;
       case 'error':
@@ -471,16 +497,40 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     }
   }, []);
 
-  // `target` is a spine href or an EPUB CFI — see ReaderCommand in readerBridge.ts.
-  // A SearchHit carries a `Locator`; it is unwrapped to `locator.cfi` by cfiOf() in
-  // useBookSearch.ts rather than sent across the bridge as the union.
+  // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
+  // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
   const goTo = useCallback(
-    (target: string): void => {
+    (target: ReaderTarget): void => {
       setShowToc(false);
       send?.({ type: 'goTo', target });
     },
     [send],
   );
+
+  /**
+   * Jump to a typed page, or refuse without navigating.
+   *
+   * >>> VALIDATED HERE RATHER THAN IN THE SHELL, AND THAT IS THE WHOLE POINT OF CARRYING pageCount. <<<
+   * The shell range-checks too and raises NAVIGATION_FAILED, but that surfaces as the reader's error
+   * banner — the right response to a corrupt book and a wildly disproportionate one to a typo. Knowing
+   * the bound host-side means the UI can simply decline, and can show the range up front.
+   *
+   * Only reachable when the position is a page, so an EPUB can never get here — there is no stable page
+   * to jump to in a reflowable book.
+   */
+  const submitPageJump = useCallback((): void => {
+    if (position?.kind !== 'page' || pageJump === null) return;
+
+    const page = Number(pageJump.trim());
+    if (!Number.isInteger(page) || page < 1 || page > position.pageCount) {
+      // Left OPEN on a bad value rather than closed: the typed text stays visible so it can be
+      // corrected, which is the difference between a rejection and losing your input.
+      return;
+    }
+
+    setPageJump(null);
+    send?.({ type: 'goTo', target: { kind: 'page', page } });
+  }, [pageJump, position, send]);
 
   /**
    * Seek to a search hit and dismiss the results, leaving the match bar behind.
@@ -496,11 +546,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     (index: number): void => {
       const hit = search.hits[index];
       if (!hit) return;
-      const cfi = cfiOf(hit);
-      if (cfi === null) return; // PDF hit: listed in the panel, but nowhere to send it
+      // BOTH FORMATS SEEK NOW. A PDF hit used to be a dead row — listed, but tapping it did nothing —
+      // because the only way to address a location was a bare string, and a page number could not be
+      // told apart from a spine href in one. `targetOf` unwraps the frozen `Locator` into a
+      // discriminated `ReaderTarget`, which is the one place that unwrap happens.
+      const target = targetOf(hit);
+      if (target === null) return;
       search.setActiveIndex(index);
       setShowSearch(false);
-      send?.({ type: 'goTo', target: cfi });
+      send?.({ type: 'goTo', target });
     },
     [search, send],
   );
@@ -518,7 +572,11 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           : search.activeIndex + delta;
 
       for (let i = from; i >= 0 && i < search.hits.length; i += delta) {
-        if (cfiOf(search.hits[i]) !== null) {
+        // Every hit is navigable in both formats now, so in practice this skips nothing — it used to
+        // skip every PDF hit, which made the match bar step straight past results it was counting.
+        // Kept rather than dropped: it is what stops a future locator shape with no renderer from
+        // being stepped onto and silently doing nothing.
+        if (targetOf(search.hits[i]) !== null) {
           selectHit(i);
           return;
         }
@@ -640,16 +698,17 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                 {toc.length === 0 ? (
                   <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
                 ) : (
-                  // Index-composed key, NOT `item.href` alone. A real book's TOC repeats hrefs: the
+                  // Index-composed key, NOT the target alone. A real book's TOC repeats targets: the
                   // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the
                   // producer emitted from citation text), which collided and raised React's
-                  // duplicate-key warning on device. hrefs are not unique in the wild, so they cannot
-                  // be identity here.
+                  // duplicate-key warning on device. Targets are not unique in the wild, so they
+                  // cannot be identity here — and a PDF outline repeats page numbers by design, since
+                  // several sections legitimately open on the same page.
                   toc.map((item, index) => (
                     <Pressable
-                      key={`${index}-${item.href}`}
+                      key={`${index}-${targetKey(item.target)}`}
                       onPress={() => {
-                        goTo(item.href);
+                        goTo(item.target);
                       }}
                       // Indent, do not inset the row: paddingLeft keeps the whole
                       // width tappable at every depth, where marginLeft would shrink
@@ -775,6 +834,55 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <Text style={styles.buttonText}>{showToc ? 'Close' : `Contents (${toc.length})`}</Text>
         </Pressable>
 
+        {/*
+          THE PAGE INDICATOR, DOUBLING AS THE PAGE-JUMP AFFORDANCE. PDF-only by construction rather
+          than by choice: `position` is discriminated by addressing scheme, and a reflowable book
+          reports a CFI because it has no stable page. Rendering nothing for a CFI is the honest
+          outcome — a fabricated "page 3 of 400" would be a number that changes with the font size.
+
+          THE INDICATOR *IS* THE CONTROL, rather than a fourth item in this row. The row is already
+          three buttons wide on a phone, and "tap where the page number is to change the page" needs no
+          explaining. It also means the affordance appears exactly when it is usable, because both it
+          and the number come from the same message.
+
+          NOTE WHAT THIS IS NOT: a table of contents. A PDF with no outline has no contents, and
+          Contents stays correctly disabled for it — most PDFs in the wild are that. This is the
+          navigation such a book can actually offer.
+        */}
+        {position?.kind === 'page' &&
+          (pageJump === null ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Page ${position.page} of ${position.pageCount}. Go to a page.`}
+              onPress={() => setPageJump('')}
+              testID="reader-page-indicator"
+            >
+              <Text style={styles.pageIndicator}>
+                {position.page} / {position.pageCount}
+              </Text>
+            </Pressable>
+          ) : (
+            <TextInput
+              testID="reader-page-jump"
+              // The placeholder carries the RANGE, which is the whole benefit of the host knowing
+              // pageCount: the bound is visible before you type rather than discovered by being
+              // refused. A placeholder is not a reliable accessible name on Android, so the label is
+              // explicit as well.
+              accessibilityLabel={`Go to page, 1 to ${position.pageCount}`}
+              placeholder={`1–${position.pageCount}`}
+              placeholderTextColor="#8a8a8a"
+              style={styles.pageJump}
+              value={pageJump}
+              onChangeText={setPageJump}
+              onSubmitEditing={submitPageJump}
+              onBlur={() => setPageJump(null)}
+              keyboardType="number-pad"
+              returnKeyType="go"
+              autoFocus
+              maxLength={String(position.pageCount).length}
+            />
+          ))}
+
         <Pressable
           accessibilityRole="button"
           disabled={send === null}
@@ -786,6 +894,17 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       </View>
     </View>
   );
+}
+
+/**
+ * A target as a string, for React's key only.
+ *
+ * NOT for display and not for comparison: it exists because a key must be a string and `ReaderTarget`
+ * is an object. Composed with the `kind` so the two addressing schemes cannot collide — an href of
+ * `'12'` and page 12 are different rows.
+ */
+function targetKey(target: ReaderTarget): string {
+  return target.kind === 'page' ? `p${target.page}` : `h${target.href}`;
 }
 
 /**
@@ -812,6 +931,26 @@ const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
 
 const styles = StyleSheet.create({
+  // Reads as a status line rather than a control: no border, no press affordance. Tabular figures so
+  // the row does not shift width as the page number gains a digit.
+  pageIndicator: {
+    fontSize: 13,
+    color: '#555555',
+    fontVariant: ['tabular-nums'],
+  },
+  // Sized to the widest page number it can hold rather than to its content, so opening the field does
+  // not reflow the controls row underneath the user's finger.
+  pageJump: {
+    minWidth: 54,
+    fontSize: 13,
+    color: '#111111',
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#555555',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
   // flex:1 down to the WebView. See the note in ReaderWebView.tsx — epub.js
   // renders nothing at all into a zero-height container.
   container: { flex: 1, backgroundColor: '#ffffff' },

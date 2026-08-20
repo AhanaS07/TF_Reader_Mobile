@@ -152,17 +152,35 @@ Beyond the repo-wide notes in the root README:
 
 ### Real-book device runs — `samples/fixtures/`
 
-Anything that has to be checked against a real book (rendering, TOC, memory, timings) uses a large
-EPUB kept at **`samples/fixtures/`** and loaded through `EXPO_PUBLIC_READER_FIXTURE_PATH`, which
-`devContentSeed.ts` reads instead of the 3.6 KB bundled sample:
+Anything that has to be checked against a real book (rendering, TOC, memory, timings) uses the large
+books kept at **`samples/fixtures/`**, loaded through one env var per format, which
+`devContentSeed.ts` reads instead of the bundled samples:
 
 ```
-EXPO_PUBLIC_READER_FIXTURE_PATH="$PWD/samples/fixtures/20mb_EPUB.epub" npx expo start --dev-client --clear
+EXPO_PUBLIC_READER_FIXTURE_EPUB="$PWD/samples/fixtures/20mb_EPUB.epub" \
+EXPO_PUBLIC_READER_FIXTURE_PDF="$PWD/samples/fixtures/15mb_PDF.pdf" \
+npx expo start --dev-client --clear
 ```
+
+That gives the picker in `App.tsx` **four tabs**: `EPUB` and `PDF` (the bundled ~3 KB stand-ins) and
+`Big EPUB` and `Big PDF` (these two). All four are reachable without a restart, which is the point —
+a feature can be rolled out against a real book and checked against the stand-in side by side. The
+two large tabs are shown even when nothing has been pushed for them; tapping one then raises an
+error naming the variable to set, because a tab that appears only once an env var is set cannot be
+told apart from a feature that was never built.
 
 `--clear` is not optional: `EXPO_PUBLIC_*` values are inlined at transform time, so a warm Metro
-cache keeps serving the previous one. The bookId also changes with it (`dev-fixture-epub` rather
-than `dev-sample-epub`), which is what stops the two books sharing a stored package.
+cache keeps serving the previous one. Each fixture also has its own bookId (`dev-fixture-epub`,
+`dev-fixture-pdf`) distinct from the bundled ones, which is what stops any two books sharing a
+stored package — `ensureSeeded()` short-circuits on `isAvailableOffline()`, so a shared id would
+serve whichever was stored first.
+
+**`EXPO_PUBLIC_READER_FORMAT=PDF` now only picks which book opens on launch**, not which ones exist;
+it selects the PDF side of whichever pair is available. Pointing a fixture var at the wrong-format
+file still seeds it under the wrong format — `devFixturePath.test.ts` is what stops that regressing.
+`EXPO_PUBLIC_READER_FIXTURE_PATH` (one shared path, scoped to `EXPO_PUBLIC_READER_FORMAT`) still
+works for older recorded runs. The full measurement procedure, the run matrix and the numbers live in
+`src/features/reader/READER_MEASUREMENTS.md`.
 
 Two things to know, in order of how much trouble they cause:
 

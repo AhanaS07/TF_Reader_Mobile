@@ -1,460 +1,254 @@
-# Reader ⇄ WebView bridge — the hand-sync contract, and when to end it
+# Reader ⇄ WebView bridge — one contract, two consumers
 
-**Owner:** Reader (Ahana) · **Status:** accepted debt, now **called in** — prefs-application has
-been formally requested (2026-08-18) and signed off, so the conversion is the next Reader task
-rather than a forecast. TTS is the second claimant and needs the same conversion.
-**Last reviewed:** 2026-08-18, when the **PDF Contents panel** landed (outline → `toc`). **All five
-triggers re-run against the REVISED trigger 1 wording and NONE fired**: the `toc` payload is
-unchanged at three fields, `goTo` still takes one argument, no command was added, nothing needs a
-reply, `href` stays a bare `string`, the transport is untouched, and the WebView retains no outline
-state RN also holds. What it DID take is an overload this file had previously deferred —
-`toc.items[].href` now means a spine href for EPUB and a 1-based page number for PDF. That was
-chosen over a fourth `toc` field precisely because a fourth field fires trigger 1. Read the
-PDF-Contents bullet under [Stage forecast](#stage-forecast) before touching `toc` or `goTo`. Two
-consequences worth carrying: the **two-template split is now load-bearing for correctness**, not
-just artifact size (one shell per book is what keeps the two vocabularies from coexisting), and the
-overload is **something the conversion should delete** — a typed payload can carry a discriminated
-target instead of one string meaning two things. The verdict and the due date are unmoved.
-**Previously reviewed:** 2026-08-18, for the **prefs-application sign-off**. **The bridge was not
-touched** — no message type, no command, no template edit, neither artifact regenerated. What
-changed is that the predicted stage is now a real request with a real design behind it
-(`features/personalization/READER_PREFS_APPLICATION.md` + `readerAppearance.ts`, both landed), and
-three decisions that blocked it are closed. Read
-[The prefs-application design, as signed off](#the-prefs-application-design-as-signed-off) before
-starting the conversion; it is the agreed shape of the thing the conversion is FOR. Trigger 1's
-wording changed in the same review — it was asymmetric and could be read as not counting command
-payloads at all (see the note under [The trigger](#the-trigger)). The verdict is unmoved.
-**Previously reviewed:** 2026-08-17, when PDF support landed. **All five triggers re-run and NONE fired**,
-but this is the largest change the bridge has absorbed without converting, so read the PDF row in
-[Stage forecast](#stage-forecast) before assuming it was free. Two things did change structurally:
-the WebView half is now **three files rather than one** (two templates plus a shared fragment), and
-there are **two generated artifacts**. The surface grew by one command — see
-[Two templates, one bridge](#two-templates-one-bridge). The due date is unmoved.
-**Previously reviewed:** 2026-08-16, when the Reader → TTS seam was agreed (`TTS_PROVIDER.md`). **The
-bridge was not touched** — no message type, no command, no template edit, no regenerated
-`reader.html`; the interface and its fake are RN-side only. What changed is the forecast: the TTS
-row's design is now settled, trigger 5 is designed out of it, and triggers 1 and 2 fire harder than
-the row previously claimed. See the TTS bullet under [Stage forecast](#stage-forecast). The
-practical effect is that this file no longer has one predicted converting stage but two, either of
-which can go first.
-**Previously reviewed:** 2026-08-16, when the in-book search UI landed — **all five triggers re-run and
-NONE fired**; the bridge was not touched at all (see the In-book search row in
-[Stage forecast](#stage-forecast)). The state of trigger 1 is unchanged from the review below.
-Same review confirmed the prefs row's **second** blocker is gone: prefs now have a real persisted
-source (`readSharedPrefs()`), so the bridge is the only thing left standing between here and
-prefs-application. Status was left at "not yet due", meaning nobody had asked rather than that it
-couldn't be done — which is exactly what the review above changed.
+**Owner:** Reader (Ahana) · **Status:** **converted 2026-08-18.** The WebView half is typechecked
+TypeScript that imports its types from `readerBridge.ts`. The hand-sync contract this file existed to
+manage, and the trigger list it existed to enforce, are both **over** — kept below as the record of
+how the decision was made, not as a forecast.
 
-**Before that:** 2026-08-14, after the Contents-panel fix flattened epub.js's nested `subitems`
-into the `toc` message — **all five triggers re-run and NONE fired**, but trigger 1 is now _at_ its
-field boundary rather than comfortably inside it, because this was the first change to grow a
-payload **shape** rather than a name (see the TOC row in [Stage forecast](#stage-forecast)). The
-conversion is still due at prefs-application.
-
-This file exists because the WebView half of the reader bridge is **not typechecked**, that is a
-deliberate choice, and a deliberate choice with a cost needs a written expiry date. Everything
-here is about one question: _at which stage of the reader's development does the hand-sync
-contract stop being cheap, and what do we do then?_
-
-If you are about to add a message type or a command, read [Before you touch the
-bridge](#before-you-touch-the-bridge) at the bottom first.
+**What this file is for now:** the decisions that are still load-bearing about *what crosses the
+boundary*, the prefs-application design that the conversion was for, and the short history of why the
+debt was taken and when it was called in.
 
 ---
 
 ## The two halves
 
-| Half                 | File                                                    | Typechecked?        |
-| -------------------- | ------------------------------------------------------- | ------------------- |
-| Host (React Native)  | `src/features/reader/readerBridge.ts`                   | yes — `tsc`, strict |
-| WebView — EPUB       | `src/features/reader/webview/reader-epub.template.html` | **no**              |
-| WebView — PDF        | `src/features/reader/webview/reader-pdf.template.html`  | **no**              |
-| WebView — shared     | `src/features/reader/webview/reader.bridge.html`        | **no**              |
+| Half                | File                                                    | Typechecked?        |
+| ------------------- | ------------------------------------------------------- | ------------------- |
+| Host (React Native) | `src/features/reader/readerBridge.ts`                   | yes — `tsc`, strict |
+| WebView — shared    | `webview/src/bridge.ts`                                 | **yes**             |
+| WebView — EPUB      | `webview/src/epub.entry.ts`                             | **yes**             |
+| WebView — PDF       | `webview/src/pdf.entry.ts`                              | **yes**             |
+| WebView — pure      | `webview/src/{readerMetrics,epubOutline,pdfOutline}.ts` | **yes**             |
 
-The WebView side is plain ES5-ish JS inside `.html` files _precisely_ so `tsc` cannot see it
-(`tsconfig` sets `allowJs` + `checkJs` over `src/`, so a `.js` file there would be typechecked and
-would fail — it references browser globals and epub.js/pdf.js internals that RN's types don't
-model). `reader.bridge.html` is the same trick one level down: it is raw JavaScript despite the
-extension, because it is spliced into both templates' IIFEs.
+`buildReaderHtml.ts` compiles each entry with **esbuild** (one IIFE per format), inlines it alongside
+JSZip + epub.js or pdf.js + its worker, and emits two tracked artifacts:
+`assets/reader/reader-epub.html` and `reader-pdf.html`. Regenerate both with
+`npm run reader:build-html`. CI rebuilds and `git diff --exit-code`s them, so forgetting is a red build
+rather than a stale ship.
 
-`buildReaderHtml.ts` inlines JSZip + epub.js into one template and pdf.js + its worker into the
-other, plus the shared fragment into both, and emits **two** tracked, generated artifacts:
-`assets/reader/reader-epub.html` and `assets/reader/reader-pdf.html`. Regenerate both with
-`npm run reader:build-html` after editing **either template or the fragment** — a fragment edit
-invalidates both. CI's "Reader HTML is freshly generated" step rebuilds and `git diff --exit-code`s
-both files, so forgetting is a red build rather than a stale ship.
+The templates are now **HTML and CSS only** — the DOM each entry queries, plus the PDF shell's inert
+`text/plain` worker block. That is the one thing a `.ts` file cannot carry, and it is why
+`readerTemplate.test.ts` still asserts those selectors exist.
 
-Note what that step does and does not cover: it proves the artifacts match their sources, _not_ that
-the sources match `readerBridge.ts` — the drift guard in `readerBridge.test.ts` is what does that
-(see [What protects it today](#what-protects-it-today--and-what-doesnt)).
+### What the conversion bought, concretely
 
-`buildReaderHtml.ts` also **parses every script it emits** (`assertScriptsParse`, via Node's `vm`).
-That is not belt-and-braces: the first two-artifact build shipped a syntactically broken IIFE in
-_both_ files, because the fragment's header described its own comment syntax and thereby closed the
-comment early. Every marker was substituted, every fingerprint present, every size plausible. On a
-device it would have presented as a blank page and a `READY_TIMEOUT` ten seconds later.
+Each of these was a test that read the WebView half as text. All are now types:
+
+| Was a regex over `.html`                        | Is now                                                                              |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| posted message types match `ReaderMessage`      | `post(message: ReaderMessage)`                                                      |
+| raised codes are declared                       | `fail(code: WebViewErrorCode, …)`                                                    |
+| host-only codes never raised inside the WebView | the same parameter type excludes them                                               |
+| every command has a `window.TFReader` method    | `TFReaderApi<Open>`, a mapped type over `ReaderCommand`                              |
+| each shell defines only its own `open*`         | `TFReaderApi<'openEpub'>` vs `TFReaderApi<'openPdf'>`                                |
+| — *(nothing could check this)*                  | `CommandArgsMatchPayloads` — a method's **arguments** against its command's payload |
+
+That last row is the one worth noticing. The old guard compared *names*, so a command growing a field
+while its method kept the old signature passed silently. Adding a field is now a compile error that
+names the command.
+
+**Two things the conversion did NOT change, and both are deliberate:**
+
+1. **`parseReaderMessage()` stays.** Compile-time types do not survive the JSON round trip through
+   `postMessage`, and the host still receives a string built from a book's own navigation document —
+   untrusted input. Types are not a substitute for the parser. A refactor that "simplifies" it into a
+   cast is the change this bridge most needs to refuse.
+2. **Scope.** esbuild's `format: 'iife'` keeps everything in the entry module-local except what it
+   explicitly assigns to `window`. That preserves *structurally* what the old "inject the fragment raw,
+   inside the IIFE" rule preserved by convention — and it matters because this document holds decrypted
+   book content.
+
+### What it also found
+
+Both were real defects invisible while the code was untypechecked, and both are the argument for having
+done it:
+
+- **epub.js's shipped type for `addStylesheetCss` is wrong.** `contents.d.ts:33` declares
+  `Promise<boolean>`; the implementation returns a plain boolean synchronously (`contents.js:769-775`).
+  Trusting it made type-aware lint demand a `void` on a non-promise. Narrowed once, in
+  `epub.entry.ts`, with the reason recorded there.
+- **`OutlineNode.url` is `string | null`, not `string | undefined`.** pdf.js sets it to null for a page
+  destination. The runtime check (`!item.url`) was always right; the *type* was wrong, and the
+  compile-time assertion that `PDFDocumentProxy` satisfies `OutlineDocument` rejected it.
+
+### Verified on device, both formats
+
+2026-08-18, iPhone 17 Pro simulator, dev build, after the conversion — a rewrite of the entire WebView
+half cannot be signed off by unit tests:
+
+| Format | Book           | `open -> rendered` | `open -> toc`      | Errors |
+| ------ | -------------- | ------------------ | ------------------ | ------ |
+| PDF    | 14.66 MB, 50pp | 277 ms             | 282 ms (`items=0`)  | none   |
+| EPUB   | 19.98 MB       | 365 ms             | 365 ms (`items=22`) | none   |
+
+Both are ~11–13% above the pre-conversion figures (249 ms and 322 ms). Small in absolute terms and
+plausibly run-to-run variance on a dev build served over Metro, but the direction was consistent across
+both formats, so it is recorded rather than rounded away. If it matters, the candidates are esbuild
+downlevelling `async`/`await` for `target: safari15` and the `.then`-chain-to-`await` rewrite. Nothing
+about behaviour changed.
+
+---
 
 ## Current surface
 
-As of 2026-08-17. **Keep this table accurate — it is the input to the trigger test below.**
+**WebView → host** (`ReaderMessage`)
 
-**WebView → host** (`ReaderMessage`, one case per `post({ type: ... })` in the template)
+| Type        | Payload fields                              |
+| ----------- | ------------------------------------------- |
+| `ready`     | —                                           |
+| `rendered`  | —                                           |
+| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd` |
+| `toc`       | `items[]` (`{label, target, depth}`)        |
+| `error`     | `code`, `message`                           |
 
-| Type        | Payload fields                     | Count |
-| ----------- | ---------------------------------- | ----- |
-| `ready`     | —                                  | 0     |
-| `rendered`  | —                                  | 0     |
-| `relocated` | `cfi`, `atStart`, `atEnd`          | 3     |
-| `toc`       | `items[]` (`{label, href, depth}`) | 1     |
-| `error`     | `code`, `message`                  | 2     |
+`ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
+`{format:'PDF', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
+a spine offset and has no PDF meaning; a page number has no reflowable meaning — so carrying both flat
+would mean one of them is always `null` and the reader has to know which. That is the same "one field,
+two meanings" arrangement `toc.items[].href` still has, and this is the first place it was undone.
 
-**Host → WebView** (`READER_COMMANDS` keys ↔ `window.TFReader` method names)
+`parseReaderMessage` validates a PDF position as two positive integers with `page <= pageCount`, and
+**drops the whole message** if it cannot (rather than substituting a default, as the TOC hardeners do).
+The relation is the part worth having: each field can be individually valid and jointly impossible, and
+"page 7 of 3" is exactly what a rendering bug produces. A stale-but-true indicator beats a confidently
+wrong one.
 
-| Command    | Args     | Reply? | Defined in     |
-| ---------- | -------- | ------ | -------------- |
-| `openEpub` | `base64` | no     | EPUB template  |
-| `openPdf`  | `base64` | no     | PDF template   |
-| `next`     | —        | no     | both           |
-| `prev`     | —        | no     | both           |
-| `goTo`     | `target` | no     | both           |
+**Host → WebView** (`READER_COMMANDS` ↔ `window.TFReader` method names)
 
-`toc.items[].href` **carries a different vocabulary per format**: a spine href (or CFI) for
-EPUB, a 1-based page number as a decimal string for PDF. One field, two meanings — accepted
-instead of adding a `page` field, which would take the `toc` case past three and fire trigger 1.
-What keeps it safe is that each shell validates rather than trusts (the PDF one `parseInt`s and
-range-checks; see `ReaderTocItem` in `readerBridge.ts`), and that only one shell is ever loaded
-per book, so the two vocabularies never coexist at runtime. **That last property is what a
-single combined template would destroy.**
+| Command    | Args     | Reply? | Defined in |
+| ---------- | -------- | ------ | ---------- |
+| `openEpub` | `base64` | no     | EPUB entry |
+| `openPdf`  | `base64` | no     | PDF entry  |
+| `next`     | —        | no     | both       |
+| `prev`     | —        | no     | both       |
+| `goTo`     | `target` (`ReaderTarget`) | no | both |
 
-`goTo.target` is a spine href **or** an EPUB CFI, as one bare `string`. It is deliberately not a
-`Locator`: Search stores the union, the host unwraps `.cfi`, and only the string crosses. Widening
-it to the union would fire trigger 3 for no runtime gain, since epub.js's `spine.get()` already
-discriminates the two forms itself via `isCfiString()`.
+**This table is now documentation rather than an input to a decision.** Keep it accurate for the next
+reader, but nothing is gated on its counts any more.
 
-**5 message types, 5 commands, max 3 fields per case, zero request/reply.** That is the whole
-contract. It is small enough to hold in your head, which is the only reason this is safe.
+## Three decisions about what crosses the boundary
 
-## Two templates, one bridge
+The first two survive the conversion unchanged, because each is about the *payload* rather than about how
+it is typed. The third is the one the conversion let us improve, and it has now been done.
 
-PDF support could have been one template branching on a format, or two templates. It is two, so an
-EPUB read does not carry ~1.4 MB of inlined pdf.js it can never call. The consequence that matters
-here is that the bridge now has **three source files**, and the obvious naive split — copy the
-shared JS into both templates — would have doubled the hand-synced surface on a boundary whose only
-safety argument is that it is small. So the shared half lives once, in `reader.bridge.html`, and is
-injected into both.
+### 1. Two open commands, not `open(base64, format)`
 
-Two properties of that fragment are load-bearing:
+`ContentFormat` is frozen (`shared/types/primitives.ts`). It never crosses: the host reads it in
+typechecked TS and picks **between two command names**, each entry defining exactly one.
+Post-conversion that is enforced by `TFReaderApi<'openEpub'>` vs `TFReaderApi<'openPdf'>` rather than by
+a per-file grep, and `readerBridge.test.ts` still asserts no `ContentFormat` literal appears in any
+generated command script.
 
-- **It is injected _raw_, inside each template's existing `<script>` and IIFE.** Its functions stay
-  IIFE-locals rather than becoming globals in a document that holds decrypted book content. A
-  separate `<script>` tag would be a separate scope and would force a global to bridge them.
-- **Its indentation is _not_ semantic**, unlike the templates'. `buildReaderHtml.ts` re-indents it to
-  its marker's depth. The one position-anchored regex in `readerBridge.test.ts` targets
-  `window.TFReader`, which stays in the templates because its methods differ per format.
+Do not "simplify" this into one command with a format argument.
 
-**How format crosses the bridge — and why it does not.** `ContentFormat` is frozen
-(`shared/types/primitives.ts`), so putting its value in a payload would be trigger 3 outright. It
-never crosses. The host reads it in typechecked TS and picks **between two command names**; each
-template defines exactly one of them. The discriminant is therefore a `READER_COMMANDS` key, owned
-by `readerBridge.ts`, not a frozen enum hand-copied into untypechecked JS. This is the same
-manoeuvre that kept `goTo` cheap: discriminate host-side, send a primitive.
+### 2. `goTo.target` stays a bare string
 
-Do not "simplify" this to `open(base64, format)`. It reads tidier and it converts the bridge.
-`readerBridge.test.ts` asserts no `ContentFormat` literal appears in any generated command script,
-so the simplification fails a test rather than passing review.
+Search stores a `Locator`; the host unwraps `.cfi` before sending (`cfiOf()` in `useBookSearch.ts`).
+Before the conversion the argument was that a frozen contract must not be hand-copied into
+untypechecked JS. That specific risk is gone — but the reason stands and has changed shape: a
+discriminated union on this channel still arrives as JSON, so `parseReaderMessage` would have to
+validate every variant. `ReaderScreen.test.tsx`'s CFI seek test is what keeps it honest — note the CFI now travels inside
+`{kind:'href'}` rather than as a bare argument, which changed nothing about the reasoning: the payload
+is still primitives, and still not `Locator`.
 
-**What the drift guard does differently now.** It reads all three files and compares the **union**
-against the TS side. Unioning is not a loosening — each template legitimately raises codes the other
-cannot (`EPUBJS_MISSING`/`JSZIP_MISSING` vs `PDFJS_MISSING`) and defines only its own `open*`. The
-per-file expectations that _do_ still hold are asserted separately: each template defines exactly one
-open command and it is its own; both implement `next`/`prev`/`goTo`; neither redefines what the
-fragment provides.
+### 3. Targets and positions are discriminated by ADDRESSING SCHEME, not by format
 
-`toc.items[].depth` is the nesting level in the book's navigation tree, 0 for a top-level entry.
-The tree is flattened depth-first **in the template** and crosses as one ordered flat list, because
-a recursive payload is the shape hand-sync is worst at — the host indents by `depth` instead. Both
-sides clamp it to `MAX_TOC_DEPTH` (6): the template as it flattens, and `parseReaderMessage` again
-because the value originates in a book's own navigation document. A **missing** `depth` parses as 0
-rather than rejecting the entry, so a working tree holding a stale generated `reader-epub.html`
-degrades to today's flat list instead of an empty Contents panel. **Counting the TOC entry as 3 fields, this
-case is now at trigger 1's boundary — the next field added to it converts.**
+`ReaderTocItem.target` and `relocated.position` both carry a discriminated union rather than a string
+whose meaning depends on which shell is loaded:
 
-## What protects it today — and what doesn't
+```
+ReaderTarget   = { kind: 'href'; href: string } | { kind: 'page'; page: number }
+ReaderPosition = { kind: 'cfi'; cfi: string | null } | { kind: 'page'; page: number; pageCount: number }
+```
 
-**Protected: name drift, at runtime.** `parseReaderMessage()` rejects any `type` outside the union,
-and the injected command script checks `typeof window.TFReader.<method> === 'function'` before
-calling. So renaming one side without the other produces a loud, coded error
-(`BRIDGE_PARSE_FAILED`, `NOT_READY`) instead of silence. Cheap, and genuinely sufficient at this
-size.
+**This replaced a real overload, un-done 2026-08-18.** `toc.items[].href` was one `string` meaning a
+spine href for EPUB and a 1-based page number for PDF. That was chosen deliberately, back when a fourth
+field on the `toc` message meant paying for the typechecked-WebView conversion — a real cost for a
+Contents panel. Once the conversion landed, the cheaper option stopped being cheaper.
 
-**Protected: name drift, at build time.** The drift guard in `readerBridge.test.ts` reads the
-template as text and asserts that the message types it posts, the `fail()` codes it raises, and the
-`window.TFReader` methods it defines each match their TS counterpart exactly. Both sides of those
-assertions are derived, not transcribed: `READER_MESSAGE_TYPES` (pinned to the `ReaderMessage`
-union by a `satisfies` plus an `Exclude`-based exhaustiveness proof), `WEBVIEW_ERROR_CODES`,
-`HOST_ERROR_CODES`, and `Object.values(READER_COMMANDS)`. Adding a case to the union without
-listing it fails `tsc`; listing it without teaching the template fails jest. So a rename is a red
-build, not a runtime error a user has to hit first.
+**Why `kind` and not `format`, which is the interesting part.** The first draft discriminated on
+`format: 'EPUB' | 'PDF'`, and `readerBridge.test.ts`'s "never puts a `ContentFormat` value into a
+command payload" caught it — the string `"PDF"` was on the wire. Relaxing that guard would have been
+the wrong fix. The right one is that a target is not discriminated by a book's format at all: it is
+discriminated by how it addresses the book. Three things fall out:
 
-**NOT protected: shape drift.** `parseReaderMessage()` can tell you `type` is one of five strings.
-It cannot tell you the template stopped sending a field that a case needs, started sending a
-differently-shaped object, or that a payload type owned by _another team's frozen contract_
-changed underneath it. Today every case has ≤3 flat primitive fields, so there is almost no shape
-to get wrong. **That is the property that expires**, and the triggers below are all restatements
-of "shape now matters".
+- `ContentFormat` stays entirely off the bridge, so the guard passes honestly rather than by exemption.
+- `ContentFormat` has a third member (`AUDIO`) with no addressing scheme here. A `format` discriminant
+  invited "where is the AUDIO case?"; a `kind` discriminant does not.
+- Adding a fourth `ContentFormat` cannot silently change these unions' meaning, because they are now
+  unrelated by construction rather than by coincidence of spelling.
 
-**Partly protected, as of the TOC flatten: template-side payload construction.** The `toc` message
-is the one place the template _shapes_ a payload rather than forwarding a primitive, and the failure
-it can produce is invisible to everything above — a perfectly well-formed `toc` message carrying
-only the top level of a nested navigation tree. `readerTemplate.test.ts` covers that specific class
-by reading the template as text: it asserts the flatten recurses through `subitems`, that the depth
-cap matches `MAX_TOC_DEPTH`, and that the three typographic constants copied out of `DEFAULT_PREFS`
-still equal it. That is a **guard per known trap, not a type system** — it does not generalise, and
-each new one has to be written by hand. Which is the argument for the conversion, not against it.
+**The EPUB `href` still accepts two forms, and that one is NOT an overload to remove.** It is a spine
+href (TOC row) or an EPUB CFI (Search hit), and epub.js discriminates them itself — `spine.get()` tests
+`isCfiString()` before its href lookup, so `rendition.display()` routes both through one call. One
+field, two forms, resolved by the library rather than by us.
 
-**Also not protected: prose.** The template's comments went stale within one day of the Day-3
-wiring — it still claimed "No crypto anywhere in this baseline" while receiving decrypted
-licensed content. Fixed 2026-08-12. Nothing points a tool at that file, so nothing caught it.
-Treat that as the mildest possible preview of the failure mode.
+**What each half validates, and why it is split that way:**
 
-## The trigger
+| Check | Where | Why there |
+| ----- | ----- | --------- |
+| the shape is a known `kind` | host, `asTarget` | it arrives as JSON from a book's navigation document |
+| `page` is a positive integer | host, `asTarget` | cheap, and a bad row is dropped rather than rendered dead |
+| `page <= pageCount` | shell, `pageFromTarget` | only the shell knows the document's page count |
+| the scheme matches the renderer | shell, both entries | should be impossible — one shell per book — but the value is book-derived, so it is checked |
 
-Convert to a typechecked WebView build when **any one** of these becomes true:
+That last row is what un-overloading bought beyond tidiness: an `href` reaching the PDF shell is now a
+category error with its own message, where before it was a string that failed `parseInt` and reported
+the same thing as an out-of-range page. A row whose target is unusable is also **dropped at parse
+time** now, instead of becoming a Contents row that could only ever raise `NAVIGATION_FAILED` when
+tapped.
 
-1. The message union passes **~8 cases**, or **any single payload grows past ~3 fields** — in
-   either direction. A command's arguments count exactly as a message's fields do.
-   > **Wording fixed 2026-08-18, during the prefs-application sign-off.** This used to read "any
-   > single _case_", and "case" only ever meant a `ReaderMessage` case — which is how the PDF row
-   > below can say "commands went 4 → 5, which this trigger does not count". Read literally, that
-   > left a 13-field _command_ firing nothing, while the same doc asserted prefs-application
-   > "trips 1 and 3". The intent was always shape complexity, and shape drift is not
-   > direction-sensitive: a command whose payload the host and the template disagree about fails
-   > exactly the same way a message does. Fixed so nobody argues the letter to skip the
-   > conversion. What is still deliberately uncounted is the NUMBER of commands — five
-   > fire-and-forget one-argument commands is not the thing that gets dangerous.
-2. A command needs a **response** (request/reply rather than fire-and-forget). This doubles the
-   hand-synced surface per call and adds correlation ids, which are themselves a shape.
-3. Any bridge payload is **a type owned by a frozen contract in `src/shared/contracts/`**
-   (`Locator`, `SharedPrefs`, `SearchHit`, …) rather than a primitive local to the bridge.
-   This is the sharpest one — see below.
-4. The transport stops being base64-over-`injectJavaScript` (see `getBookBase64` in
-   `readerAssets.ts`). A new transport means re-agreeing the whole payload shape anyway, which is
-   the cheapest possible moment to acquire a compiler.
-   > **Re-run 2026-08-13 against a real 20 MB book: DID NOT FIRE.** The transport is still
-   > base64-over-`injectJavaScript` and is staying, because measurement showed it is not the
-   > bottleneck (~330 ms, ~5% of a warm open). Swapping the base64 _implementation_ on each side —
-   > `react-native-quick-base64` host-side, `Uint8Array.fromBase64` in the template — changes no
-   > command, no payload shape and no message type, so it is not a new transport. See the Day 4 row
-   > in [Stage forecast](#stage-forecast). **Chunking would still fire this** (and trigger 5), so if
-   > a future book size forces a sequenced `openBegin`/`openChunk`/`openEnd` protocol, the
-   > conversion is the task and comes first.
-5. Anything inside the WebView starts holding **state that RN also models**.
+**One shell per book remains load-bearing** — it is why each entry can refuse the other scheme outright
+— so the two-entry split is still about correctness and not only about artifact size.
 
-### Why trigger 3 is the sharp one
+## Why the debt was taken, and how it ended
 
-When Vaishnavi changes `TypographyPrefs`, `tsc` walks every TypeScript consumer and fails the
-build. It walks straight past the WebView templates. The frozen contracts are enforced by the
-compiler _and by `__typecheck__.ts`, the canary_ — and the WebView is the one consumer of those
-contracts that sits outside both. Hand-copying a frozen shape into untypechecked JS doesn't just
-risk drift; it silently removes that shape from the freeze's blast radius.
+Kept short, and kept at all because a decision with a written expiry date that nobody records the ending
+of is how the next person re-litigates it.
 
-**And it is the one trigger the conversion DISSOLVES rather than satisfies.** Triggers 1, 2 and 5
-describe surfaces that stay awkward however they are typed; trigger 3 exists _only_ because one
-consumer is invisible to `tsc`. Once the WebView is a typechecked entry point, importing a frozen
-contract into it is not a risk, it is the mechanism — `tsc` walks it like any other consumer. So
-after the conversion the right move inverts: values that are structurally a frozen contract's
-should be **derived from it** (`LayoutPrefs['flow']`, `LayoutPrefs['spread']`) rather than
-re-declared as local literals, because a re-declared union silently tolerates the contract growing
-a member and an indexed access does not. Do not carry the pre-conversion habit past the conversion.
+The WebView half was untypechecked from the start, deliberately: at 5 message types and 4
+fire-and-forget one-argument commands, a build step bought a compiler check over a surface you could
+verify by eye in thirty seconds, and cost a toolchain stage every one of five people had to understand.
+The bet was that the surface would stay small, and that a written trigger list would stop "small"
+becoming a story we told ourselves.
 
-## Stage forecast
+The list was five conditions: the union passing ~8 cases or any payload passing ~3 fields; a command
+needing a reply; a frozen contract crossing as a payload; the transport ceasing to be
+base64-over-`injectJavaScript`; or the WebView holding state RN also models. It was re-run at every
+stage, and the record is worth two conclusions:
 
-Which upcoming CAP-7 work actually trips this. Ordered by likely sequence, not certainty.
+- **Two stages that looked certain to fire it did not, and measurement is why.** Day 4 (the 20 MB
+  whole-book transport) was asserted *in comments, twice* not to scale; it measured at ~330 ms, about 5%
+  of a warm open, so the transport stayed and only the codec changed behind an unchanged
+  `open(base64)`. PDF support — a second renderer, a second template, a second artifact — cleared all
+  five, because format is routed by command *name*.
+- **One field was left out on purpose to avoid firing it**, and that was honest rather than a dodge:
+  reporting the PDF page in `relocated`. Nothing consumed a reading position, so the field bought
+  nothing and cost the conversion.
 
-| Stage                                                              | Owner                               | What it adds to the bridge                                                                        | Triggers                             | Verdict                       |
-| ------------------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ | ----------------------------- |
-| **Day 3 — whole-book decrypt** ✅ done                             | Ahana                               | _nothing_ — reused `open` unchanged                                                               | none                                 | debt stayed cheap             |
-| **Day 4 — 20 MB whole-book transport** ✅ done                     | Ahana                               | _nothing_ — `open(base64)` unchanged; both codecs swapped BEHIND it                               | **none — 4 tested, not hit**         | ⚠️ was the predicted trigger  |
-| **Contents panel fix — nested TOC + typographic baseline** ✅ done | Ahana                               | `toc` items gain `depth`; stylesheet, line grid and column breaks are all inside the WebView      | **none — 1 tested, AT the boundary** | ⚠️ next TOC field converts    |
-| **Navigation / library shell**                                     | feature teams                       | nothing — `RootNavigator` supplies `bookId`, host-side only                                       | none                                 | no action                     |
-| **Progress persistence** (`progress.ts`)                           | Personalization                     | nothing new inbound — `relocated.cfi` already arrives; host just stores it                        | none                                 | no action                     |
-| **Prefs applied to the rendition** (`prefs.ts`) ⬅ **requested 2026-08-18** | Vaishnavi writes, **Ahana applies** | one `applyAppearance(ReaderAppearance)` — flat and primitive-only, so **trigger 3 is designed out**; see the signed-off design below | **1 — 3 designed out, 2/4/5 clear** | 🛑 **convert here, now**      |
-| **Annotations** (`annotations.ts`)                                 | Personalization                     | `selected` message carrying `Locator` start+end; `applyHighlights` / `removeHighlight` commands   | **1, 2, 3**                          | 🛑 hard deadline              |
-| **In-book search** (`search.ts`) ✅ bridge side done               | Vaishnavi                           | _nothing_ — the index is queried in RN memory; navigating to a `SearchHit` reuses `goTo`          | **none — tested, not hit**           | cheap — don't let it fool you |
-| **PDF support — pdf.js + `ContentFormat` routing** ✅ done          | Ahana                               | `open` → `openEpub`/`openPdf` (4 → 5 commands); `PDFJS_MISSING`; **no message change at all**     | **none — all five re-run**            | ⚠️ read the row note           |
-| **PDF Contents panel — outline → `toc`** ✅ done                    | Ahana                               | _nothing_ — reuses the `toc` message and `goTo` unchanged; `href` carries a page number            | **none — all five re-run**            | ⚠️ overloads `href`, see below  |
-| **TTS + word/sentence highlight** (`accessibility.ts`)             | **Ahana** builds, Hruthik consumes  | `requestSentence` + `setSpokenRange` commands, one `sentence` reply — see the row note below      | **1 and 2 — 5 designed out**         | 🛑 convert first              |
+What ended it was **prefs-application**: one `applyAppearance(ReaderAppearance)` carrying twelve flat
+primitive fields. Trigger 3 was designed out by resolving host-side; trigger 1 fired on the field count
+regardless. Requested and signed off 2026-08-18, converted the same day, before the command was
+written — which is what the verdict had always said to do, and the reason converting was a morning
+rather than a week.
 
-Five things worth calling out, because all five contradict the obvious guess:
+**The `relocated` page field was added the same day, 2026-08-18.** It was pre-committed here as
+"adding it IS the conversion", so this is the pre-commitment being honoured rather than re-argued: the
+conversion happened first, then the field became an ordinary change — a discriminated `ReaderPosition`,
+a validator, and a page indicator in `ReaderScreen`.
 
-- **A typographic baseline looks like prefs-application and is not.** Applying
-  `rendition.themes.default(...)` is one of the exact `rendition.*` calls this file names as the
-  converting stage — but the theme is built inside the WebView from three local constants and
-  crosses nothing. No command, no message type, no `SharedPrefs`. The same distinction as Search:
-  what converts is prefs **arriving from RN**, not the epub.js call they eventually drive. What it
-  did cost is worth naming honestly, though — three values are now hand-copied out of a frozen
-  contract (`DEFAULT_PREFS.typography`) into untypechecked JS. That is trigger 3's _smell_ without
-  being trigger 3, since no frozen type crosses the bridge, and it is only survivable because
-  `readerTemplate.test.ts` pins the copies to the contract. It is also the clearest preview yet of
-  why prefs converts: the second those numbers start arriving over the bridge, a test that greps for
-  literals cannot help.
-
-  What that stage inherits, though, is a single seam rather than a rewrite. The template now holds
-  the flow in one constant (`READER_FLOW`) and derives everything flow-specific — the line grid, the
-  authored-page-break translation — from `isPaginated()`. `LayoutPrefs.flow` becomes the value that
-  sets that constant, and `TypographyPrefs` becomes the argument to `readerMetrics()`, which is
-  already a pure function of its inputs. So prefs-application is a conversion of how this file is
-  BUILT, not a redesign of what it does.
-
-- **Day 3 was the predicted trigger and it didn't fire.** The reviewer expected the
-  decrypted-buffer handoff, new error codes and TOC payloads to grow the bridge. In the event the
-  handoff reused `open` with an unchanged signature, TOC already existed, and the one new code
-  (`CONTENT_LOAD_FAILED`) is host-side and never crosses the bridge. Not blocking on it was
-  correct.
-- **Day 4 was going to fire trigger 4, and measurement is why it didn't.** This row was not in the
-  forecast at all — the table assumed prefs-application would be first. The 20 MB work looked
-  certain to trip trigger 4, because `readerAssets.ts` and this file both _asserted in comments_
-  that base64-over-`injectJavaScript` "does not scale" to a 20 MB book. **Both comments were
-  predictions, and both were wrong.** Tested before changing anything: a 27,962,028-char payload
-  (the exact base64 length of a 20 MB book) crossed `injectJavaScript` into WKWebView in **305 ms**,
-  and the real book renders in **~330 ms**, about **5%** of a warm open. The remaining ~93% is
-  Encryption's base64 round-trip inside `getBook`, which never touches the bridge.
-  So the fix was to swap the codec on each side **behind an unchanged `open(base64)`** — no command,
-  no payload shape, no message type altered. **Trigger 4 was checked and did not fire.** The
-  conversion stays due at prefs-application, exactly as this file already said.
-  Recorded because a trigger that was _tested_ and held is evidence; a trigger nobody re-ran is
-  just an assumption with a date on it.
-- **Search looks like a bridge feature and mostly isn't.** `search.ts` builds the index
-  server-side and decrypts it into RAM alongside the book, so querying happens in RN. Only
-  _seeking_ touches the WebView, and `goTo` already covers it. Don't schedule the conversion
-  around search.
-
-  > **Re-run 2026-08-14, when `goTo` was widened to take a CFI: DID NOT FIRE.** This row was
-  > conditional on `goTo` accepting a CFI; it now does. The condition was met by renaming the arg
-  > `href` → `target` and carrying a bare `string`, so no command was added, none needs a reply,
-  > and no frozen contract crosses. Trigger 3 is the one to watch here and it turns entirely on the
-  > unwrap: the host converts `SearchHit.locator` → `.cfi` before sending. Hand the `Locator` union
-  > to the bridge instead and this row becomes a conversion. The capability needed no new epub.js
-  > surface — `rendition.display()` already resolved CFIs.
-  >
-  > **Re-run 2026-08-16, when the search UI landed: DID NOT FIRE.** The unwrap this row was
-  > conditional on is now real code rather than an intention — `cfiOf()` in `useBookSearch.ts` is
-  > the single place `locator.type` is read, and it returns a bare `string`. All five re-checked:
-  > no command added (still 4), none needs a reply, no frozen contract crosses, transport
-  > unchanged, and hits/active-index/query all live in RN — the WebView holds nothing new. The
-  > surface table above is unchanged and `reader.html` was not regenerated because the template was
-  > not touched.
-  >
-  > What makes this durable rather than a promise is the test: `ReaderScreen.test.tsx`'s "sends
-  > goTo carrying a bare CFI string" asserts the injected script equals
-  > `buildCommandScript({ type: 'goTo', target: '<cfi>' })`. Widening the bridge to carry the
-  > `Locator` union now fails that test instead of quietly succeeding.
-
-- **PDF support looks like it must have converted this, and it did not — but only because one field
-  was left out on purpose.** A whole second renderer, a second template and a second generated
-  artifact landed without firing anything. All five, re-run 2026-08-17:
-
-  | # | Trigger | Verdict |
-  | - | ------- | ------- |
-  | 1 | union past ~8 cases, or a case past ~3 fields | **clear** — `ReaderMessage` is byte-for-byte unchanged. Commands went 4 → 5, which this trigger does not count |
-  | 2 | a command needs a reply | **clear** — all five stay fire-and-forget |
-  | 3 | a frozen contract crosses | **clear** — format is a command NAME, never a value; see [Two templates, one bridge](#two-templates-one-bridge) |
-  | 4 | transport changes | **clear** — base64-over-`injectJavaScript`, both formats, shared codec |
-  | 5 | WebView holds state RN also models | **clear, and this is the closest one** — the PDF client holds `currentPage`, but RN receives only `atStart`/`atEnd`, so it models "can I move", not the position |
-
-  **What was left out, and why it is the whole reason this row is not a conversion:** reporting the
-  PDF **page** in `relocated`. That is a fourth field on a case already _at_ trigger 1's boundary, so
-  it fires trigger 1 outright. It was dropped rather than argued about, on the grounds that nothing
-  consumes a reading position yet — `ReaderScreen` reads `relocated.cfi` and stores it nowhere, and
-  the position record is Personalization's Progress stage. So the field would have bought nothing and
-  cost the conversion. It costs nothing to defer either: the PDF client already tracks `currentPage`
-  internally to implement `next`/`prev`, so adding the field later is small. **When Progress asks for
-  it, adding it IS the conversion. Say so then instead of re-arguing the boundary.**
-
-- **The PDF Contents panel took the overload the row above had deferred — knowingly, and with
-  guards instead of a type.** `pdf.js getOutline()` is flattened depth-first into the existing `toc`
-  message, and each entry's destination is resolved to a page number carried in **`href`**. All five
-  re-run: no new message type, no new command, no reply, `href` is still a bare `string` so no frozen
-  contract crosses, transport unchanged, and the WebView retains no outline state RN also holds.
-
-  The honest cost is that `ReaderTocItem.href` now means **two different things depending on which
-  shell is loaded**. The alternative was a `page` field beside it, which takes the `toc` case to four
-  and fires trigger 1 — the conversion, for a Contents panel. So the overload is the cheaper option
-  taken deliberately, and three things keep it from becoming silent drift:
-
-  1. **The receiver validates.** The PDF `goTo` does `parseInt` plus a range check against
-     `pageCount` and raises `NAVIGATION_FAILED` otherwise, so a value from the wrong vocabulary
-     fails loudly rather than scrolling somewhere arbitrary.
-  2. **One shell per book**, so the two vocabularies never coexist at runtime. This is the load-
-     bearing one, and it is a property of the two-template split — **a single combined template
-     would destroy it**, which is a reason beyond size to keep them apart.
-  3. **`readerTemplate.test.ts` pins the mechanics** a compiler cannot see: the recursion through
-     `item.items`, the depth clamp matching `MAX_TOC_DEPTH`, the `+1` that turns pdf.js's 0-based
-     `getPageIndex` into a 1-based `href`, that external-link entries are dropped, and that `goTo`
-     range-checks before navigating.
-
-  External-link outline entries (`url` instead of `dest`) are dropped rather than shipped: they have
-  no page to reach, and `ReaderWebView`'s allow-list would refuse the navigation anyway. Their
-  children are still walked.
-
-- **TTS was forecast to fire trigger 5 and the agreed design removes it — but 1 and 2 still fire,
-  so the conversion is still first.** This row long read "high-frequency range events + highlight
-  driving", which assumed a cursor: the WebView tracking which sentence is being spoken while RN
-  tracked it too. The seam agreed on 2026-08-16 (`TTS_PROVIDER.md`) is **stateless per request** —
-  every `requestSentence` carries its own anchor CFI, so the WebView holds no TTS position for RN
-  to duplicate. That is worth having deliberately rather than by luck: with no cursor there is
-  nothing to reset, so cancelling an in-flight request and starving one across `closeBook` are the
-  same mechanism, and the data-minimisation guarantee (no sentence delivered after teardown) does
-  not depend on the two sides agreeing about where the reader is.
-
-  What it does **not** buy is a cheaper bridge. `requestSentence` needs a **reply** — trigger 2,
-  outright, the first request/reply on this bridge — and the `sentence` payload carries seven
-  fields, past trigger 1's boundary twice over. So the verdict below is unchanged in substance and
-  sharper in scope: **whichever of prefs-application and TTS lands first pays for the conversion,
-  and neither can be built without it.** Nothing in this change touched the bridge — no message
-  type, no command, no template edit, and `reader.html` was not regenerated. The interface and its
-  fake are RN-side only, which is precisely why Accessibility is not blocked on any of this.
-
-## The verdict
-
-**Convert at the start of the prefs-application stage — before writing the prefs commands, not
-after.** As of 2026-08-18 that stage has been requested and its design signed off, so this is no
-longer a scheduling opinion: it is the next task. The agreed shape is in
-[The prefs-application design, as signed off](#the-prefs-application-design-as-signed-off).
-
-Rationale, in order of weight:
-
-1. **It is the first stage that trips a trigger**, and it trips two (nested multi-field payloads,
-   and a frozen shared contract crossing the boundary).
-2. **Converting 4 flat commands is a morning. Converting 9 commands plus a `Locator` discriminated
-   union is a week.** The cost of the conversion grows with exactly the thing that makes it
-   necessary, so "later" is strictly more expensive, never less.
-3. **Annotations is the hard deadline, and it follows immediately.** `Locator` is a discriminated
-   union (`EPUB`/`PDF`) crossing the bridge in both directions. Hand-syncing a discriminated union
-   into untypechecked JS is the case where runtime name-checking gives the _most_ false
-   confidence: the `type` field validates fine while the variant's payload is wrong.
-4. Prefs is a natural rewrite of the template's rendition setup anyway (`flow`, `spread`, themes
-   are all `rendition.*` calls), so the file is already open.
-
-**What is no longer a reason to wait: the source.** This stage used to have two blockers, and the
-other one was upstream — `InMemoryPrefsStore` reset on every launch, so there was no durable
-`SharedPrefs` to apply and no way to tell a bug from a restart. Sync closed that:
-`features/sync/sharedPrefs.ts`'s `readSharedPrefs()` reads the `personalization` and `accessibility`
-rows off SQLite and merges them into one contract-shaped record, falling back to `DEFAULT_PREFS`
-when a row is missing. Reader does not call it yet — there is no prefs command to feed. So the
-sequencing is now unambiguous rather than merely recommended: **the bridge is the whole of what is
-left**, and it is the first thing to do, not the thing discovered halfway through.
-
-**Do not convert before then.** At 5 messages and 4 fire-and-forget commands, a build step buys a
-compiler check over a surface you can verify by eye in thirty seconds, and costs a new toolchain
-stage that everyone on T4 has to understand. That trade is not worth it yet.
+**It is surfaced, not persisted.** `progressStore.savePage()` / `savePosition()` exist on Sync's side
+and this is finally the value they need, but writing a progress record is Personalization's stage and
+carries its own decisions (when to write, how often, what wins on conflict). Reader's half is reporting
+the position; storing it is not, and doing both here would prejudge those. **Karthik / Vaishnavi: the
+value is available now.**
 
 ## The prefs-application design, as signed off
 
-Requested by Personalization on 2026-08-18 and signed off the same day. Personalization's half is
-built and committed (`features/personalization/readerAppearance.ts`, `READER_PREFS_APPLICATION.md`);
-Reader's half is the conversion plus the apply. **Read this before starting the conversion** — it is
-what the conversion is for, and two of its consequences (who the payload's claimants are, and where
-the command has to be defined) change what "done" means.
+Requested by Personalization on 2026-08-18 and signed off the same day. Personalization's half is built
+and committed (`features/personalization/readerAppearance.ts`, `READER_PREFS_APPLICATION.md`); Reader's
+half is the apply, and the conversion it was blocked behind is done.
 
 **The surface: one fire-and-forget command.**
 
@@ -463,171 +257,123 @@ applyAppearance(appearance)   // host -> WebView, no reply
 ```
 
 `ReaderAppearance` is a flat, primitive-only, **bridge-local** shape — not a `src/shared/contracts/`
-type. The host resolves `SharedPrefs` into it in typechecked TS (`toReaderAppearance`) and only
-primitives cross. That is the third use of a manoeuvre this file already relies on twice: `goTo`
-unwraps `Locator` → `.cfi`, `openEpub`/`openPdf` route `ContentFormat` by command _name_, and prefs
-resolve to primitives. **Not** `applyPrefs(SharedPrefs)`, which is trigger 3 by definition, and
-**not** five granular setters — prefs are applied together, so N setters is N surfaces to hand-sync
-and N chances at a partial apply, for no gain.
+type. The host resolves `SharedPrefs` into it in typechecked TS (`toReaderAppearance`). **Not**
+`applyPrefs(SharedPrefs)`, and **not** five granular setters — prefs are applied together, so N setters
+is N surfaces and N chances at a partial apply, for no gain.
 
-All five re-run against this design:
-
-| # | Trigger | Verdict |
-| - | ------- | ------- |
-| 1 | payload past ~3 fields | **FIRES** — twelve, and more once the a11y claimants below are counted. The conversion is the first task of this stage |
-| 2 | a command needs a reply | clear — fire-and-forget, and it must stay so; live re-apply is "re-send the whole payload" |
-| 3 | a frozen contract crosses | **designed out** by the flattening. It would have fired outright against `applyPrefs(SharedPrefs)` |
-| 4 | transport changes | clear — same base64-over-`injectJavaScript`, one more `JSON.stringify` |
-| 5 | WebView holds state RN also models | clear **conditionally** — see the `zoom` constraint below |
-
-Trigger 1 firing is not a formality to note and move past. It is the whole reason the conversion
-comes first, and it is what the wording fix under [The trigger](#the-trigger) protects.
+Post-conversion, note what changed about the *reason* for flattening. It is no longer that a frozen
+contract must be kept out of untypechecked JS — the WebView is a `tsc` consumer now, and importing a
+frozen contract there is the mechanism rather than the risk. It is that everything on this channel
+arrives as JSON and has to be validated on receipt, and a flat primitive payload is the shape that is
+cheapest to validate. Same design, different justification; do not let the old wording justify a
+`SharedPrefs` payload now that the old objection has lapsed.
 
 ### Four things the design has to add, found while signing it off
 
-1. **`applyAppearance` must be defined in BOTH templates.** As proposed it lands in the EPUB one
-   only — and `buildCommandScript` guards on `typeof window.TFReader.applyAppearance === 'function'`,
-   so every PDF open would answer `NOT_READY` and show the user a coded error for a command that
-   simply is not there. The PDF half applies `bg` and `zoom` and ignores typography. Shared
-   behaviour goes in `reader.bridge.html`; per-format application stays per template.
-2. **It must be sent BEFORE `openEpub`/`openPdf`, not alongside.** `flow` and `spread` are
-   `renderTo()` options and `renderTo` runs _inside_ `openEpub`, so a payload arriving after it
-   renders the book in the wrong flow and needs a second re-layout to correct. Order: `ready` →
-   `applyAppearance` → `open*`. **Consequence: `BASELINE_FONT_SIZE_PX` / `_LINE_HEIGHT` /
-   `_MARGIN_PX` stay** as the pre-payload fallback — prefs are an async SQLite read, and a slow or
-   failed read must not paint at UA defaults. So the `DEFAULT_PREFS` pins in `readerTemplate.test.ts`
-   survive this stage rather than being deleted with the constants, which is the opposite of what
-   that test's own comment predicted; the comment is corrected there.
-3. **The payload has THREE claimants, and it stays ONE payload.** Personalization owns theme, font
-   and typography. Reader owns `reduceMotion` (below). Accessibility owns `announce.pageChanges` —
-   `WEBVIEW_A11Y_FINDINGS.md` §3.7 requires the WebView to read it "through the same composed-prefs
-   path", i.e. over this command — plus `highContrast`, bold text, dyslexia font and readable
-   spacing, which `READER_PREFS_APPLICATION.md` §4 currently sets aside as applied "on top". There
-   is no other channel for those to arrive by. **One command carries everything the WebView renders
-   with, already resolved**, because the alternative is an `applyA11y` sibling landing the week
-   after the conversion and reopening every question this section answers. The payload's _name_ is
-   Personalization's to choose; the "one command, one resolve seam" property is not negotiable.
+1. **`applyAppearance` must be defined in BOTH entries.** `buildCommandScript` guards on
+   `typeof window.TFReader.applyAppearance === 'function'`, so a PDF open would otherwise answer
+   `NOT_READY` for a command that simply is not there. The PDF half applies `bg` and `zoom` and ignores
+   typography. **This is now enforced rather than remembered**: adding it to `CommandArgs` makes both
+   `TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` require it, so a missing half fails to
+   compile.
+2. **It must be sent BEFORE `openEpub`/`openPdf`, not alongside.** `flow` and `spread` are `renderTo()`
+   options and `renderTo` runs *inside* `openEpub`, so a payload arriving after it renders in the wrong
+   flow and needs a second re-layout. Order: `ready` → `applyAppearance` → `open*`.
+   **Consequence: the `DEFAULT_PREFS`-derived baseline stays** as the pre-payload fallback — prefs are
+   an async SQLite read, and a slow or failed read must not paint at UA defaults. Those values are now
+   *imported* from the contract in `readerMetrics.ts` rather than hand-copied, so the old pins became
+   behavioural assertions instead of literal comparisons.
+3. **The payload has THREE claimants, and it stays ONE payload.** Personalization owns theme, font and
+   typography. Reader owns `reduceMotion`. Accessibility owns `announce.pageChanges`
+   (`WEBVIEW_A11Y_FINDINGS.md` §3.7 requires it to arrive "through the same composed-prefs path"), plus
+   `highContrast`, bold text, dyslexia font and readable spacing. There is no other channel for those.
+   The payload's *name* is Personalization's to choose; the "one command, one resolve seam" property is
+   not negotiable.
 4. **`fontFamily` and `customFontUri` are user-supplied strings that end up in CSS text.**
-   `JSON.stringify` in `buildCommandScript` protects the injected _script_; it does nothing for the
-   stylesheet the template then builds by concatenation, inside a document holding decrypted
-   licensed content. They need a character allow-list and CSS quoting on arrival. Reader's to
-   implement — recorded because the existing escaping looks like it already covers this and does
-   not.
+   `JSON.stringify` in `buildCommandScript` protects the injected *script*; it does nothing for the
+   stylesheet the entry then builds by concatenation, inside a document holding decrypted licensed
+   content. They need a character allow-list and CSS quoting on arrival. Reader's to implement.
 
 ### The font-size clamp: clamp the FACTOR, not the product
 
-`readerMetrics` currently computes `clamp(round(16 × width / 393), 15, 22)`. That is right for a
-fixed baseline and wrong the moment the base is a preference: at a 2× accessibility multiplier the
-user's chosen size is silently capped at 22px — and that user is precisely the one who cannot work
-around it. Widening the bounds only moves the cap. The fix is to clamp the **viewport factor**,
-which is what the clamp was ever about (device fit), and let the composed base through:
+`readerMetrics` computes `clamp(round(16 × width / 393), 15, 22)`. Right for a fixed baseline, wrong the
+moment the base is a preference: at a 2× accessibility multiplier the user's chosen size is silently
+capped at 22px — and that user is precisely the one who cannot work around it. Widening the bounds only
+moves the cap. Clamp the **viewport factor**, which is what the clamp was ever about:
 
 ```
 viewportFactor = clamp(width / 393, 0.94, 1.375)
 fontPx         = round(composedPt × viewportFactor)
 ```
 
-Behaviour-preserving at base 16 — `0.94 × 16 → 15`, `1.375 × 16 → 22`, identical in between — so it
-is not a rendering change today. A wide absolute clamp stays underneath purely so a pathological
-value cannot break layout. Reader owns these numbers; they are recorded so they are not re-derived
-from scratch later.
+Behaviour-preserving at base 16 — `0.94 × 16 → 15`, `1.375 × 16 → 22`, identical in between — so it is
+not a rendering change today. A wide absolute clamp stays underneath purely so a pathological value
+cannot break layout.
 
-**`marginPx` needs a bound for the same reason.** `padBottom = height - padTop - lines × linePx`
-goes negative once the margin approaches half the viewport height, because `lines` is already
-floored to a minimum of 1. A prefs-driven margin can reach that; a hand-copied 16 could not.
+**`marginPx` needs a bound for the same reason.** `padBottom = height - padTop - lines × linePx` goes
+negative once the margin approaches half the viewport height, because `lines` is already floored to a
+minimum of 1. A prefs-driven margin can reach that; a hand-copied 16 could not.
 
 ### The live channel, and the two smaller calls
 
-- **No event bus for prefs** (`event-bus.ts` open question #1, now answered there). Reader
-  subscribes to the prefs store instead: `prefsStore.savePrefs()` already returns the freshly
-  re-read record, so the change is known at its source and a module-level subscription beside the
-  store delivers it — no runtime to build, and none of that file's question-2 ownership problem.
-  `EVENT_CHANNELS.PREFS_CHANGED` stays in the contract: removing an exported key is a Contracts
-  Gate conversation and an unused channel costs nothing. The bus still earns its place for
-  `content.*`, where emitter and consumer must not import each other. Re-read-on-focus, the other
-  candidate, is out for a duller reason — there is no navigator to give Reader a focus event
-  (`App.tsx` still mounts `ReaderScreen` directly). **Sync is not a blocker for this stage.**
-- **`spread`: `single` → `'none'`, `double` → `'auto'`.** `'always'` would not have differed —
-  epub.js sets `_spread = (spread === "none") ? false : true` (`layout.js:84-88`) and then gates
-  two-up on `width >= minSpreadWidth`, default 800 (`layout.js:119-120`). So on any phone `double`
-  renders single-page whatever we send. That is the behaviour Reader wants; it does mean the
-  preference is inert on the device this is tested on, which is the settings UI's problem to be
-  honest about rather than the bridge's.
-- **`zoom` is carried, and it is the one field that can fire trigger 5 later.** The WebView may
-  hold the last payload only as a **write-only cache**, for recomputing on resize. The moment a
-  pinch-zoom gesture inside the WebView _mutates_ `zoom`, that is state RN also models and RN has
-  to own it — the same line the PDF renderer's `currentPage` sits on.
+- **No event bus for prefs** (`event-bus.ts` open question #1, answered there). Reader subscribes to the
+  prefs store instead: `prefsStore.savePrefs()` already returns the freshly re-read record, so a
+  module-level subscription beside the store delivers it. `EVENT_CHANNELS.PREFS_CHANGED` stays in the
+  contract — removing an exported key is a Contracts Gate conversation and an unused channel costs
+  nothing. Re-read-on-focus is out for a duller reason: there is no navigator to give Reader a focus
+  event. **Sync is not a blocker.**
+- **`spread`: `single` → `'none'`, `double` → `'auto'`.** `'always'` would not have differed — epub.js
+  sets `_spread = (spread === "none") ? false : true` (`layout.js:84-88`) then gates two-up on
+  `width >= minSpreadWidth`, default 800 (`layout.js:119-120`). So on any phone `double` renders
+  single-page whatever we send. That is the behaviour Reader wants; it does mean the preference is inert
+  on the device this is tested on, which is the settings UI's problem to be honest about.
+- **`zoom` is carried, and the WebView may hold the last payload only as a write-only cache**, for
+  recomputing on resize. The moment a pinch-zoom gesture inside the WebView *mutates* it, that is state
+  RN also models and RN has to own it — the same line the PDF renderer's `currentPage` sits on.
 
 ### Decisions closed by this sign-off
 
-Both were open items blocking the stage. Both are answered in `src/shared/contracts/prefs.ts`'s
-DECISION LOG rather than here, so there is one home for them:
+Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than here:
 
 - **#4 — `typography.size` is absolute points**, composed as
-  `size × resolveFontScale(a11y.text, osFontScale)`, with the viewport factor applied last (above).
-  `spacing` is ratified as px in the same breath.
-- **#2 — `reduceMotion` is honoured by Reader.** Free today, and worth saying precisely why: there
-  is **no animation anywhere in the reader** — no `transition`, `animation`, `@keyframes` or
-  `prefers-reduced-motion` in either template or `ReaderScreen.tsx`, and epub.js page turns are
-  instant `display()` calls. So suppression is currently vacuous and the real obligation falls on
-  whoever adds the first page-turn animation. `readerTemplate.test.ts` now pins it, which makes
-  that a red build rather than a promise in a doc nobody re-reads.
+  `size × resolveFontScale(a11y.text, osFontScale)`, viewport factor applied last. `spacing` ratified
+  as px in the same breath.
+- **#2 — `reduceMotion` is honoured by Reader.** Free today, and worth saying precisely why: there is
+  **no animation anywhere in the reader**. So suppression is currently vacuous and the real obligation
+  falls on whoever adds the first page-turn animation. `readerTemplate.test.ts` pins that across both
+  templates **and both entries** now — before the conversion an animation could only have come from
+  CSS; a `.ts` entry can add one imperatively.
 
-## What "convert" means concretely
+## Before you change the bridge
 
-Not a rewrite of the reader — a change to how one file is produced:
-
-1. Move the IIFEs out of the two templates into real `.ts` entry points under
-   `src/features/reader/webview/` — one per format, over a shared module that replaces
-   `reader.bridge.html`,
-   a real `.ts` file with DOM libs enabled and epub.js types (or a hand-written `.d.ts` shim for
-   the handful of epub.js surfaces used).
-2. Have it **import the shared types** — `ReaderMessage`, `ReaderCommand`, `ReaderTocItem` — from
-   `readerBridge.ts`. That single import is the entire point: the two halves stop being two
-   descriptions of one contract and become one contract.
-3. Extend `buildReaderHtml.ts` to compile/bundle that entry and inline the output, alongside the
-   JSZip and epub.js inlining it already does. Keep the "no sub-resource requests" property —
-   `ReaderWebView.tsx`'s navigation lockdown depends on it.
-4. Keep `parseReaderMessage()` exactly as it is. Compile-time types do not survive the JSON
-   round-trip through `postMessage`; the runtime validation is still the only thing standing
-   between untrusted book content and the host. **Types are not a substitute for the parser.**
-5. Delete the `>>> REVISIT <<<` block in `readerBridge.ts` and this file's trigger section, and
-   replace them with a note saying it's done.
-
-## Before you touch the bridge
-
-Every time you add or change a message type or command:
-
-- [ ] Update **every** half — `readerBridge.ts` plus whichever of the two templates and the shared
-      fragment are affected. Shared behaviour belongs in the fragment, not copied into both.
-- [ ] Add the case to `parseReaderMessage()`; a new type without a `case` returns `null` and
-      surfaces as `BRIDGE_PARSE_FAILED`.
-- [ ] Run `npm run reader:build-html` — `assets/reader/reader-epub.html` AND `reader-pdf.html` are
-      generated **and tracked**, and a fragment edit invalidates both. CI fails if you skip this, but
-      it fails on _your_ PR; running it locally is still faster.
-- [ ] Update the [Current surface](#current-surface) table above.
-- [ ] **Re-run the trigger test.** If any trigger now fires, converting is the task — not a
-      follow-up ticket. Say so in the PR.
-- [ ] Check the template's prose is still true. Nothing lints it; it has gone stale before.
+- [ ] Change `readerBridge.ts` and let the compiler find the rest. A new `ReaderMessage` case fails to
+      compile in the WebView half until it is handled; a new command fails until both entries define it.
+- [ ] Add the case to `parseReaderMessage()`. **`tsc` will not tell you about this one** — a missing
+      case returns `null` and surfaces as `BRIDGE_PARSE_FAILED` at runtime, which is exactly the class
+      of thing types cannot cover here.
+- [ ] Run `npm run reader:build-html`. Both artifacts are generated **and tracked**, and a change to
+      `bridge.ts` or a shared pure module invalidates both. CI fails if you skip it, but on *your* PR.
+- [ ] Update the [Current surface](#current-surface) table.
+- [ ] Run all three: `npm test && npm run typecheck && npm run lint`. `typecheck` is now the drift
+      guard, so treating it as optional is treating the bridge contract as optional.
+- [ ] For anything that changes rendering, **run it on the simulator**. The conversion's own device
+      check is above; unit tests cannot see a blank page.
 
 ## Related
 
-- `src/features/reader/readerBridge.ts` — the typed half; carries the same trigger list inline.
-- `src/features/reader/readerTemplate.test.ts` — the non-protocol template guards: the
-  `DEFAULT_PREFS` constants copied into the theme, the TOC flatten, and the `'100%'` rendition
-  dimensions that epub.js's resize handling depends on being non-numeric.
-- `src/features/reader/scripts/buildReaderHtml.ts` — the generator that would host the build step.
-- `src/features/reader/ReaderWebView.tsx` — the navigation lockdown that contains decrypted
-  content; load-bearing since Day 3.
-- `src/features/reader/readerAssets.ts` — the base64 transport constraint (trigger 4).
-- `src/features/sync/sharedPrefs.ts` — `readSharedPrefs()`, the persisted `SharedPrefs` the prefs
-  stage will apply. Not Reader's, and not called from Reader yet; listed so the conversion is not
-  re-scheduled on the belief that prefs have nowhere to come from.
-- `src/features/personalization/READER_PREFS_APPLICATION.md` — Personalization's design for the
-  stage: the full field-by-field mapping table and the live-reapply flow. Vaishnavi's; read it
-  together with the sign-off section above, which amends it.
-- `src/features/personalization/readerAppearance.ts` — `toReaderAppearance()`, the host-side
-  resolve seam that keeps the frozen contract off the bridge. The payload this bridge will carry.
-- `src/features/accessibility/WEBVIEW_A11Y_FINDINGS.md` — §3.7 is the third claimant on that
-  payload: `announce.pageChanges` has to arrive over this command rather than be read inside the
-  WebView.
+- `src/features/reader/readerBridge.ts` — the typed contract both halves import.
+- `src/features/reader/webview/src/` — the WebView half. `bridge.ts` is the shared module; the two
+  `*.entry.ts` files are the per-format shells; `readerMetrics.ts`, `epubOutline.ts` and `pdfOutline.ts`
+  are pure and unit-tested.
+- `src/features/reader/scripts/buildReaderHtml.ts` — the generator, and the esbuild step. Carries the
+  entry-bundle size ceiling that stops a library being value-imported into a shell that already inlines
+  it.
+- `src/features/reader/readerTemplate.test.ts` — what is left that a compiler cannot see: call order,
+  value-type requirements, the PDF shell's offline choices, and the DOM/CSS the entries query.
+- `src/features/reader/READER_MEASUREMENTS.md` — the transport and memory numbers, per format.
+- `src/features/reader/ReaderWebView.tsx` — the navigation lockdown that contains decrypted content.
+- `src/features/sync/sharedPrefs.ts` — `readSharedPrefs()`, the persisted `SharedPrefs` the prefs stage
+  will apply.
+- `src/features/personalization/READER_PREFS_APPLICATION.md` — Personalization's field-by-field mapping
+  and the live-reapply flow. Read it together with the sign-off section above, which amends it.
+- `src/features/accessibility/WEBVIEW_A11Y_FINDINGS.md` — §3.7 is the third claimant on that payload.
