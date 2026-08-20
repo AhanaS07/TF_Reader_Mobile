@@ -10,13 +10,16 @@
 //
 // `await render(...)` is required — RTL 14's render is async. See
 // ContentCard.test.tsx for why forgetting it fails silently.
+import { StyleSheet } from 'react-native';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
+import { forgetFeedOffsets, rememberedFeedOffset } from '@hooks/useFeedScrollMemory';
 import type { Institution } from '@model/institution';
 import type { Catalogue } from '@model/types';
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
+import { color } from '@theme/tokens';
 
 import { normalizeCatalogue } from '@/model/opds/normalize';
 import CatalogueScreen from './CatalogueScreen';
@@ -121,6 +124,27 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
   mockUseNetworkStatus.mockReturnValue(true);
+  // Module state, so it would otherwise carry into the next test.
+  forgetFeedOffsets();
+});
+
+// A7 — the screen's half of the contract: the offset is recorded against THIS
+// institution, so signing out and back in returns the reader where they were
+// and a different institution starts fresh. The restoring itself is
+// useFeedScrollMemory.test.tsx's job; this pins the wiring and the key.
+describe('CatalogueScreen scroll position', () => {
+  it('records the reader’s place under its own institution’s key', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    await fireEvent.scroll(screen.getByTestId('catalogue-feed'), {
+      nativeEvent: { contentOffset: { y: 512 }, contentSize: { height: 3000, width: 400 } },
+    });
+
+    expect(rememberedFeedOffset(OTHER_INSTITUTION.id)).toBe(512);
+  });
 });
 
 // CatalogueScreen is only ever rendered for a reader who HAS an institution —
@@ -172,7 +196,13 @@ describe('CatalogueScreen with data', () => {
     await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
-    expect(screen.getByText('Audiobooks')).toBeTruthy();
+    // The COUNT and the order, read out of the tree — not one getByText per
+    // title. Checking presence a title at a time is what this test used to do,
+    // and it passes just as happily on a duplicated card or a reordered row,
+    // which is most of what "one card per entry" is claiming.
+    const titles = screen.getAllByTestId('category-card-title').map((node) => node.props.children);
+
+    expect(titles).toEqual(['eBooks', 'Audiobooks']);
   });
 
   // The mockup's "Recently published" blocks are the home-catalogue's own
@@ -185,9 +215,62 @@ describe('CatalogueScreen with data', () => {
     await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('New this term')).toBeTruthy());
-    expect(screen.getByText('Rights for Robots')).toBeTruthy();
-    expect(screen.getByText('Free to read')).toBeTruthy();
-    expect(screen.getByText('Ethnographies of Waiting')).toBeTruthy();
+    // Headings and rows together, in tree order, so the GROUPING is asserted and
+    // not just the presence of four strings. Four separate getByText calls pass
+    // even if every publication rendered under the first heading — which is the
+    // one thing "each with its own publications" is actually claiming.
+    const rendered = screen
+      .getAllByTestId(/^(section-header-title|content-card-title)$/)
+      .map((node) => node.props.children);
+
+    expect(rendered).toEqual([
+      'New this term',
+      'Rights for Robots',
+      'Free to read',
+      'Ethnographies of Waiting',
+    ]);
+  });
+
+  // The same claim with a shelf that holds more than one title, because a
+  // one-publication-per-shelf fixture cannot tell "grouped correctly" from
+  // "flattened and happened to line up".
+  it('keeps each shelf’s publications under that shelf’s own heading', async () => {
+    const twoThenOne: Catalogue = {
+      ...FAKE_CATALOGUE,
+      shelves: [
+        {
+          id: 'shelf_1',
+          title: 'New this month',
+          publications: [
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_1', title: 'First' },
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_2', title: 'Second' },
+          ],
+        },
+        {
+          id: 'shelf_2',
+          title: 'Audio picks',
+          publications: [
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_3', title: 'Third' },
+          ],
+        },
+      ],
+    };
+    setCatalogueSource(fakeSource(async () => twoThenOne));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('First')).toBeTruthy());
+    const rendered = screen
+      .getAllByTestId(/^(section-header-title|content-card-title)$/)
+      .map((node) => node.props.children);
+
+    expect(rendered).toEqual([
+      'New this month',
+      'First',
+      'Second',
+      'Audio picks',
+      'Third',
+    ]);
   });
 
   // The Shelf route exists in the navigator, so a category card sends the user
@@ -235,6 +318,22 @@ describe('CatalogueScreen access-tier badges', () => {
     await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
     // Two shelves, one publication each.
     expect(screen.getAllByTestId('content-card-badge')).toHaveLength(2);
+  });
+
+  // A3 lists four things on the card: title, publisher, file format, badge. The
+  // format is read off the publication the feed sent, never guessed from the id
+  // or the tier — the two fixture shelves deliberately carry different ones.
+  it('gives every row its own file format', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    const formats = screen
+      .getAllByTestId('content-card-format')
+      .map((node) => node.props.children);
+
+    expect(formats).toEqual(['PDF', 'EPUB']);
   });
 
   it('labels a subscription title and an open access title differently', async () => {
@@ -313,12 +412,63 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
     expect(rendered).toEqual(titles);
   });
 
+  // Accents cycle by POSITION, never by shelf identity (see the ACCENTS comment
+  // in CatalogueScreen.tsx) — there are 5 tokens and this feed sends 7 entries,
+  // so the 6th and 7th cards must wrap back to the 1st and 2nd token rather than
+  // reuse the 5th or throw past the end of the array.
+  it('cycles accent colors by position and wraps once entries outnumber accent tokens', async () => {
+    const titles = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+    setCatalogueSource(fakeSource(async () => catalogueWithNavigation(titles)));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('A')).toBeTruthy());
+
+    const backgrounds = screen
+      .getAllByTestId('category-card')
+      .map((node) => StyleSheet.flatten(node.props.style).backgroundColor);
+
+    expect(backgrounds).toEqual([
+      color.primary,
+      color.navy,
+      color.success,
+      color.subscription,
+      color.elite,
+      color.primary,
+      color.navy,
+    ]);
+  });
+
+  // "Renders" alone only proves the text is somewhere in the tree — a card
+  // stuck showing its own skeleton, or a screen that fell into its ErrorState
+  // branch with the title as a coincidental substring, would still pass that.
+  // "Not treating it as special" is a claim about the CARD'S OWN state, not
+  // just its text, so this checks the state directly.
   it('renders a single row without treating it as special', async () => {
     setCatalogueSource(fakeSource(async () => catalogueWithNavigation(['All titles'])));
 
     await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('All titles')).toBeTruthy());
+    expect(screen.queryByTestId('category-card-skeleton')).toBeNull();
+    expect(screen.queryByText(/couldn.?t load/i)).toBeNull();
+    expect(screen.getAllByTestId('category-card-title')).toHaveLength(1);
+  });
+
+  // A5/screen 01: "long titles an administrator actually typed" is one of the
+  // dynamic cases the category row has to survive, alongside none/one/many.
+  // CategoryCard.test.tsx already proves the COMPONENT truncates a long title;
+  // this proves the same thing survives the trip through real feed data rather
+  // than a hand-written CategoryCard prop.
+  it('truncates an administrator-length long title instead of breaking the strip', async () => {
+    const longTitle =
+      'Nineteenth and twentieth century sociological theory and its discontents in comparative context';
+    setCatalogueSource(fakeSource(async () => catalogueWithNavigation([longTitle])));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText(longTitle)).toBeTruthy());
+    expect(screen.getByTestId('category-card-title').props.numberOfLines).toBeGreaterThan(0);
   });
 
   // Not reachable from a real feed — the contract requires at least one entry —

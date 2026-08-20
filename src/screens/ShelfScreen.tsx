@@ -36,8 +36,9 @@
 //
 // THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
 // passes only the resulting `.tier` into ContentCard's slot — see the same note
-// in `CatalogueScreen`. `session: null` with no loan and no hold is correct for
-// a list row: it resolves the tier from feed data alone.
+// in `CatalogueScreen`. The session comes from `handToggledSession` and is
+// never null here, for the same reason `institutionId` never is: a shelf is
+// only ever reached from a signed-in reader's own catalogue.
 //
 // 'all' IS THE ONLY SHELF THAT PAGES on mock data today: it is the one with both
 // a page-0 and a page-1 fixture (03 and 04). 'shelf_1' and 'shelf_2' have
@@ -53,6 +54,7 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 
+import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '../components/ContentCard';
@@ -265,9 +267,16 @@ export default function ShelfScreen({ route }: Props) {
                 title={publication.title}
                 publisher={publication.publisher}
                 imageUrl={publication.coverUrl}
+                format={publication.format}
                 badge={
                   <AccessTierBadge
-                    tier={resolveAccess({ item: publication, institutionId, session: null }).tier}
+                    tier={
+                      resolveAccess({
+                        item: publication,
+                        institutionId,
+                        session: handToggledSession(institutionId),
+                      }).tier
+                    }
                   />
                 }
                 onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}

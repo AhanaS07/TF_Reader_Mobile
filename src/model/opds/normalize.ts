@@ -157,20 +157,36 @@ function toAcquisition(link: Json): Acquisition {
   const properties = link.properties === undefined ? {} : asRecord(link.properties, 'properties');
   const copies = properties.copies === undefined ? undefined : asRecord(properties.copies, 'copies');
 
-  return {
-    actionId: toActionId(reqString(link.rel, 'acquisition rel')),
+  const actionId = toActionId(reqString(link.rel, 'acquisition rel'));
+
+  const acquisition: Acquisition = {
+    actionId,
     href: reqString(link.href, 'acquisition href'),
     licenceModel: toAccessTier(properties),
     ...(copies !== undefined && optNumber(copies.total) !== undefined
       ? { copiesTotal: optNumber(copies.total) as number }
       : {}),
     encryption: toEncryption(properties),
-    hasSearchIndex: reqBoolean(properties.hasSearchIndex, 'hasSearchIndex'),
-    canPersist: reqBoolean(properties.canPersist, 'canPersist'),
     ...(optString(properties.accessTier) !== undefined
       ? { accessTier: optString(properties.accessTier) as string }
       : {}),
   };
+
+  // BOTH OF THESE DESCRIBE A FILE, so they are absent for `subscribe` and
+  // required for everything else — the same split, and the same reason, as
+  // `format` in normalizePublication. `OpdsLinkProperties` requires
+  // `licenceModel` alone; the contract's subscribe examples send only that and
+  // `availability`, so reading these unconditionally rejected every real
+  // subscribe title as MALFORMED_FEED before resolveAccess could see it.
+  //
+  // Keyed on the normalized `actionId` rather than the raw rel, so this and the
+  // `format` rule cannot drift apart.
+  if (actionId !== 'subscribe') {
+    acquisition.hasSearchIndex = reqBoolean(properties.hasSearchIndex, 'hasSearchIndex');
+    acquisition.canPersist = reqBoolean(properties.canPersist, 'canPersist');
+  }
+
+  return acquisition;
 }
 
 // Widest image is the cover; the narrowest is the thumbnail, but only when the

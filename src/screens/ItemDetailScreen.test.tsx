@@ -300,6 +300,38 @@ describe('ItemDetailScreen with a book', () => {
     expect(screen.queryByText('Read')).toBeNull();
   });
 
+  // A7 — the other half of the promise: signing in is supposed to unlock
+  // different buttons, not just a different set of books. Subscription rather
+  // than Elite, so the contrast is the clean two-state one resolveAccess
+  // documents (§6) — Elite's nothing-held case resolves to Grant access, not
+  // Read, which is a second real distinction and not this test's point.
+  it('resolves a Subscription title to Read once an institution is selected, instead of Sign in', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+    expect(screen.queryByText('Sign in')).toBeNull();
+  });
+
+  // The Elite case, since it takes a different (and equally real) button —
+  // "requires_grant" rather than "available" — and both must be reachable now
+  // that session is no longer permanently null.
+  it('resolves an Elite title to Grant access once an institution is selected, instead of Sign in', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+    expect(screen.queryByText('Sign in')).toBeNull();
+  });
+
   it('opens AccessGate with the item id, title and authors when Sign in is tapped', async () => {
     setCatalogueSource(
       fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),

@@ -64,6 +64,24 @@ describe('ContentCard content', () => {
     expect(screen.getByTestId('content-card-placeholder')).toBeTruthy();
   });
 
+  // A3 — the row carries title, publisher, FILE FORMAT and access badge. The
+  // format was the one of those four never wired: there was no prop to pass it
+  // to, so the card could not have shown it even with the data in hand.
+  it('renders the file format it is given', async () => {
+    await render(<ContentCard title="Rights for Robots" format="PDF" />);
+
+    expect(screen.getByTestId('content-card-format')).toBeTruthy();
+    expect(screen.getByText('PDF')).toBeTruthy();
+  });
+
+  // A `subscribe` title has no file at all, so `format` is absent rather than
+  // unknown — a format line there would label something that does not exist.
+  it('omits the format line when the publication has no file', async () => {
+    await render(<ContentCard title="Rights for Robots" />);
+
+    expect(screen.queryByTestId('content-card-format')).toBeNull();
+  });
+
   it('keeps a long title to a fixed number of lines rather than pushing the row open', async () => {
     await render(
       <ContentCard

@@ -31,6 +31,7 @@ import { type CatalogueError, isCatalogueFailure } from '@model/errors';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Publication } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
+import { PUBLIC_FEED, useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { color, space, type as typeScale } from '../theme/tokens';
 
@@ -63,6 +64,11 @@ export default function PublicCatalogueScreen() {
   const [moreStatus, setMoreStatus] = useState<MoreStatus>('idle');
 
   const isOnline = useNetworkStatus();
+
+  // A7 — signing in swaps this screen for CatalogueScreen, so the reader's place
+  // in this list has to be kept outside it. Signing back out returns them here,
+  // where they were, rather than at the top.
+  const { scrollRef, onScroll, onContentSizeChange } = useFeedScrollMemory(PUBLIC_FEED);
 
   // No synchronous setState in the effect body — that trips the cascading-renders
   // lint rule, and `loading`/`failed` already hold these values on mount. Retry
@@ -138,7 +144,15 @@ export default function PublicCatalogueScreen() {
     <View style={styles.screen}>
       <OfflineBanner visible={!isOnline} />
 
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <ScrollView
+        testID="public-catalogue-feed"
+        ref={scrollRef}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={onContentSizeChange}
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+      >
         {loading &&
           Array.from({ length: SKELETON_COUNT }, (_, index) => (
             <ContentCard key={index} state="loading" title="" />
@@ -154,6 +168,7 @@ export default function PublicCatalogueScreen() {
             title={publication.title}
             publisher={publication.publisher}
             imageUrl={publication.coverUrl}
+            format={publication.format}
             badge={
               <AccessTierBadge
                 tier={resolveAccess({ item: publication, institutionId: null, session: null }).tier}

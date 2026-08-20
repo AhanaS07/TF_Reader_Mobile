@@ -9,6 +9,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
+import {
+  PUBLIC_FEED,
+  forgetFeedOffsets,
+  rememberedFeedOffset,
+} from '@hooks/useFeedScrollMemory';
 import type { Publication, Shelf } from '@model/types';
 
 import PublicCatalogueScreen from './PublicCatalogueScreen';
@@ -80,6 +85,8 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
   mockUseNetworkStatus.mockReturnValue(true);
+  // Module state, so it would otherwise carry into the next test.
+  forgetFeedOffsets();
 });
 
 describe('PublicCatalogueScreen loading', () => {
@@ -228,6 +235,43 @@ describe('PublicCatalogueScreen offline', () => {
   });
 });
 
+// A7 — the screen's half of the contract: the offset is recorded under the
+// PUBLIC feed's own key, so signing in and back out returns the reader here
+// rather than to the top. What it does with that offset is
+// useFeedScrollMemory.test.tsx's job; this pins the wiring and the key.
+describe('PublicCatalogueScreen scroll position', () => {
+  it('records the reader’s place under the public feed’s key', async () => {
+    setCatalogueSource(fakeSource(async () => FIRST_PAGE));
+
+    await render(<PublicCatalogueScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Coastal Wetlands of the Bay of Bengal')).toBeTruthy(),
+    );
+    await fireEvent.scroll(screen.getByTestId('public-catalogue-feed'), {
+      nativeEvent: { contentOffset: { y: 275 }, contentSize: { height: 2000, width: 400 } },
+    });
+
+    expect(rememberedFeedOffset(PUBLIC_FEED)).toBe(275);
+  });
+});
+
+// A3 — the card's fourth field, alongside title, publisher and badge.
+describe('PublicCatalogueScreen file format', () => {
+  it('gives every row its file format', async () => {
+    setCatalogueSource(fakeSource(async () => FIRST_PAGE));
+
+    await render(<PublicCatalogueScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Coastal Wetlands of the Bay of Bengal')).toBeTruthy(),
+    );
+    expect(screen.getAllByTestId('content-card-format')).toHaveLength(
+      FIRST_PAGE.publications.length,
+    );
+  });
+});
+
 describe('PublicCatalogueScreen paging', () => {
   function pagedSource(): DataSource {
     return fakeSource(async (page?: number) => (page === undefined ? FIRST_PAGE : SECOND_PAGE));
@@ -311,6 +355,36 @@ describe('PublicCatalogueScreen paging', () => {
 
     await waitFor(() => expect(screen.getByText(/couldn.?t load more/i)).toBeTruthy());
     expect(screen.getByText('Coastal Wetlands of the Bay of Bengal')).toBeTruthy();
+  });
+
+  // Overlapping pages are a real server behaviour, not a hypothetical — a row
+  // the server sends again must not become a second row (and a second React
+  // key) on screen.
+  it('drops a row the later page repeats instead of showing it twice', async () => {
+    const overlappingSecondPage: Shelf = {
+      id: 'catalogue',
+      title: 'Open access titles',
+      totalItems: 3,
+      publications: [
+        openAccessTitle('item_oa2', 'Teaching Mathematics in Multilingual Classrooms'),
+        openAccessTitle('item_oa3', 'Listening to Cities'),
+      ],
+    };
+    setCatalogueSource(
+      fakeSource(async (page?: number) => (page === undefined ? FIRST_PAGE : overlappingSecondPage)),
+    );
+
+    await render(<PublicCatalogueScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Coastal Wetlands of the Bay of Bengal')).toBeTruthy(),
+    );
+    await fireEvent.press(screen.getByRole('button', { name: /load more/i }));
+
+    await waitFor(() => expect(screen.getByText('Listening to Cities')).toBeTruthy());
+    expect(
+      screen.getAllByText('Teaching Mathematics in Multilingual Classrooms'),
+    ).toHaveLength(1);
   });
 });
 

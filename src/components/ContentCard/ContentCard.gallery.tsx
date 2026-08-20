@@ -22,6 +22,40 @@ export default function ContentCardGallery() {
         />
       </View>
 
+      <Text style={styles.label}>with file format — all four A3 fields at once</Text>
+      <View style={styles.row}>
+        <ContentCard
+          title="Rights for Robots"
+          publisher="Routledge"
+          imageUrl="https://picsum.photos/204"
+          format="PDF"
+          badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+          onPress={() => {}}
+        />
+      </View>
+
+      <Text style={styles.label}>AUDIO format, no cover</Text>
+      <View style={styles.row}>
+        <ContentCard
+          title="Jazz Perspectives"
+          publisher="Taylor &amp; Francis"
+          format="AUDIO"
+          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          onPress={() => {}}
+        />
+      </View>
+
+      <Text style={styles.label}>no format — a subscribe title, which has no file</Text>
+      <View style={styles.row}>
+        <ContentCard
+          title="Listening to Cities"
+          publisher="Routledge"
+          imageUrl="https://picsum.photos/205"
+          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          onPress={() => {}}
+        />
+      </View>
+
       <Text style={styles.label}>no imageUrl — placeholder well</Text>
       <View style={styles.row}>
         <ContentCard

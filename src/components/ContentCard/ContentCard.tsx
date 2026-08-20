@@ -34,6 +34,11 @@ export interface ContentCardProps {
   // Cover art. Absent renders a placeholder rather than failing: no fixture
   // publication carries a `thumbnailUrl`, so this is the common path today.
   imageUrl?: string;
+  // The book's own file type, already derived — 'PDF', 'EPUB' or 'AUDIO'. A
+  // plain string, not a ContentFormat, for the same reason `badge` is a node:
+  // this file imports nothing from @model, so it cannot reach past what it is
+  // handed. Optional because a `subscribe` title has no file to name.
+  format?: string;
   // Already-resolved access UI. Never derived here — see the file header.
   badge?: ReactNode;
   state?: ContentCardState;
@@ -46,6 +51,7 @@ export default function ContentCard({
   title,
   publisher,
   imageUrl,
+  format,
   badge,
   state = 'idle',
   onPress,
@@ -100,6 +106,11 @@ export default function ContentCard({
             {publisher !== undefined && (
               <Text testID="content-card-publisher" style={styles.publisher} numberOfLines={2}>
                 {publisher}
+              </Text>
+            )}
+            {format !== undefined && (
+              <Text testID="content-card-format" style={styles.format} numberOfLines={1}>
+                {format}
               </Text>
             )}
             {badge !== undefined && (
@@ -165,6 +176,14 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
   },
   publisher: {
+    fontWeight: type.meta.weight,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+  },
+  // Its own line under the publisher rather than joined onto it, so neither has
+  // to know whether the other is present.
+  format: {
     fontWeight: type.meta.weight,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
