@@ -20,6 +20,14 @@ import { ContentError } from '@/shared/contracts';
 
 import App from './App';
 
+// CatalogueScreen (the app's default route) now calls useNetworkStatus for
+// real, which talks to NetInfo — a library with no meaningful behaviour under
+// Jest. Mocked here for the same reason ItemDetailScreen.test.tsx mocks it:
+// this is a toolchain smoke test, not a network-state test.
+jest.mock('@hooks/useNetworkStatus', () => ({
+  useNetworkStatus: () => true,
+}));
+
 describe('toolchain', () => {
   // NOTE FOR EVERY COMPONENT TEST IN THIS REPO: `render` is ASYNC in
   // @testing-library/react-native v14 — it returns a Promise, not a

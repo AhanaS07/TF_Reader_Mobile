@@ -312,6 +312,45 @@ describe('ShelfScreen pagination', () => {
   });
 });
 
+// `all` never 404s, so a shelf with nothing in it arrives as a SUCCESS with no
+// publications — not a rejection. The screen has to read that as empty rather
+// than broken. Rendering the empty state itself is Khushi's Week 3 work; what
+// is pinned here is that the parse survives and the error path stays shut.
+describe('ShelfScreen with a zero-result shelf', () => {
+  const EMPTY_SHELF: Shelf = {
+    id: 'all',
+    title: 'All titles',
+    totalItems: 0,
+    publications: [],
+    browseInstead: [
+      {
+        title: 'Browse the full catalogue',
+        href: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+        shelfId: 'catalogue',
+      },
+    ],
+  };
+
+  it('does not show the error state for a shelf that legitimately has nothing', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText(/showing 0 of 0/i)).toBeTruthy());
+    expect(screen.queryByText(/couldn.?t load/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+
+  it('offers no Load more, since an empty feed carries no next link', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText(/showing 0 of 0/i)).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+  });
+});
+
 // Screen 12 — the filter & sort sheet.
 describe('ShelfScreen filter & sort', () => {
   it('requests no filters or sort on first load', async () => {

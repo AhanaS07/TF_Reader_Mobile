@@ -245,6 +245,13 @@ export interface Shelf {
   // is the last page. A number rather than the raw href so callers page by
   // index and never hand-build a URL.
   nextPage?: number;
+  // Where to send a reader when this shelf came back with nothing. The contract
+  // does not require `publications`, and `all` never 404s — worst case it is a
+  // feed carrying only a self link and a `navigation` entry back to the
+  // catalogue, which is what this holds. Absent on any shelf that has results.
+  //
+  // Same name and shape as SearchFeed.browseInstead: one concept, one word.
+  browseInstead?: NavLink[];
 }
 
 // The institution's home catalogue: what tabs exist, plus preview shelves.

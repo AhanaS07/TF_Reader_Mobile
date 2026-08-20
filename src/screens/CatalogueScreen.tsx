@@ -23,11 +23,11 @@
 // Open Access, Subscription and Elite-with-nothing-held correctly, which is
 // precisely so a list can be wired before the session store exists. Call it per
 // row and pass the result to the slot; do not derive a badge here.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-
+import EmptyState from '@/components/EmptyState';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
@@ -39,6 +39,8 @@ import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import { useInstitutionStore } from '@store/institutionStore';
 import { color, space, type as typeScale } from '../theme/tokens';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import OfflineBanner from '@/components/OfflineBanner';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
@@ -61,9 +63,12 @@ export default function CatalogueScreen() {
   // same way SearchScreen's own errorCode does.
   const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
 
+  const isOnline = useNetworkStatus();
+
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const institutionId = selectedInstitution?.id ?? 'inst_7f3';
 
+  let body: ReactNode;
   // No synchronous setState here — only inside the async continuations. A
   // setState reachable directly from an effect body triggers a lint error
   // ("cascading renders"); `loading`/`failed` are also already at these exact
@@ -92,7 +97,7 @@ export default function CatalogueScreen() {
   }, [fetchCatalogue]);
 
   if (failed) {
-    return (
+    body = (
       <View style={styles.center}>
         <ErrorState
           variant={errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode)}
@@ -102,9 +107,9 @@ export default function CatalogueScreen() {
       </View>
     );
   }
-
-  return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+  else{
+    body = (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Pressable
         style={styles.institutionPicker}
         onPress={() => navigation.navigate('InstitutionList')}
@@ -150,7 +155,7 @@ export default function CatalogueScreen() {
         ? Array.from({ length: SKELETON_COUNT }, (_, index) => (
             <ContentCard key={index} state="loading" title="" />
           ))
-        : catalogue?.shelves.map((shelf) => (
+        :catalogue?.shelves.length !== 0 ? catalogue?.shelves.map((shelf) => (
             <View key={shelf.id} style={styles.section}>
               {/* No `actionLabel`: these are the home-catalogue's own preview
                   shelves, not one of the tappable navigation categories above,
@@ -171,8 +176,18 @@ export default function CatalogueScreen() {
                 ))}
               </View>
             </View>
-          ))}
+          )) : (
+            <EmptyState variant="no_content"/>
+          )}
     </ScrollView>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      <OfflineBanner visible={!isOnline} />
+      {body}
+    </View>
   );
 }
 
