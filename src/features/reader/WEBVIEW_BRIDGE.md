@@ -116,13 +116,21 @@ wrong one.
 
 **Host → WebView** (`READER_COMMANDS` ↔ `window.TFReader` method names)
 
-| Command    | Args     | Reply? | Defined in |
-| ---------- | -------- | ------ | ---------- |
-| `openEpub` | `base64` | no     | EPUB entry |
-| `openPdf`  | `base64` | no     | PDF entry  |
-| `next`     | —        | no     | both       |
-| `prev`     | —        | no     | both       |
-| `goTo`     | `target` (`ReaderTarget`) | no | both |
+| Command          | Args                          | Reply? | Defined in |
+| ---------------- | ----------------------------- | ------ | ---------- |
+| `openEpub`       | `base64`                      | no     | EPUB entry |
+| `openPdf`        | `base64`                      | no     | PDF entry  |
+| `next`           | —                              | no     | both       |
+| `prev`           | —                              | no     | both       |
+| `goTo`           | `target` (`ReaderTarget`)      | no     | both       |
+| `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
+
+`applyAppearance` is implemented — the design in "The prefs-application design, as signed off" below
+is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced host-side, in
+`ReaderScreen.tsx`'s `handleReady`); EPUB applies theme/typography/flow/spread through the same
+`addStylesheetCss` path as the baseline, PDF applies only `bg`/`zoom`. `customFontUri` still carries
+through unresolved — the bytes-transport question in §8.3 of `READER_PREFS_APPLICATION.md` remains
+open and out of scope here.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.

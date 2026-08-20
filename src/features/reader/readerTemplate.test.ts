@@ -37,9 +37,12 @@ import * as path from 'path';
 
 import {
   baselineCss,
+  columnOverrideCss,
   isForcedBreak,
+  isMultiColumnCount,
   isPaginated,
   readerMetrics,
+  sanitizeFontFamily,
 } from '@/features/reader/webview/src/readerMetrics';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 
@@ -239,6 +242,54 @@ describe("the book's own page breaks are honoured", () => {
   });
 });
 
+describe("an authored multi-column layout doesn't fight our own page columns", () => {
+  it('treats "auto" and one column as no author columns', () => {
+    // 'auto' is the computed value when nothing set column-count, and a book that explicitly asks
+    // for one column is not nesting a second column context — nothing to detect either way.
+    for (const value of ['auto', '1', '', 'inherit']) {
+      expect(isMultiColumnCount(value)).toBe(false);
+    }
+  });
+
+  it('recognises two or more authored columns', () => {
+    for (const value of ['2', '3', '10']) {
+      expect(isMultiColumnCount(value)).toBe(true);
+    }
+  });
+
+  it('forces every element back to one column, not just the body', () => {
+    // The book can put the rule on any wrapper, not only the root — same reasoning
+    // applyAuthoredBreaks gives for reading computed values instead of guessing a selector.
+    const css = columnOverrideCss();
+
+    expect(css).toMatch(/body,\s*body \*\s*\{[^}]*column-count:\s*1\s*!important/);
+    expect(css).toMatch(/-webkit-column-count:\s*1\s*!important/);
+  });
+
+  it('detects authored columns from the computed value, on the body or a candidate element', () => {
+    expect(EPUB_ENTRY).toMatch(/win\.getComputedStyle\(doc\.body\)\.columnCount/);
+    expect(EPUB_ENTRY).toMatch(
+      /isMultiColumnCount\(win\.getComputedStyle\(nodes\[i\] as HTMLElement\)\.columnCount\)/,
+    );
+  });
+
+  it('only overrides columns when this chapter actually authors them', () => {
+    // The override must be conditional — appending it unconditionally would mean every chapter of
+    // every book pays for a rule it never needed, and would force column-count: 1 on legitimately
+    // authored two-column content this reader has no opinion about outside paginated flow.
+    expect(EPUB_ENTRY).toMatch(
+      /isPaginated\(\) && hasAuthoredColumns\(doc\)\s*\n\s*\? `\$\{currentCss\}\\n\$\{columnOverrideCss\(\)\}`\s*\n\s*: currentCss/,
+    );
+  });
+
+  it('re-checks per chapter document, not once per book', () => {
+    // A front-matter page can be plain while a later chapter (e.g. a glossary) authors columns —
+    // detection has to run against each chapter's own document.
+    expect(EPUB_ENTRY).toMatch(/function hasAuthoredColumns\(doc: Document \| null \| undefined\)/);
+    expect(EPUB_ENTRY).toMatch(/insertStylesheet\(contents, finalCssFor\(contents\.document\)\)/);
+  });
+});
+
 describe('type scales with the screen', () => {
   // Narrow phone through to a landscape tablet.
   const WIDTHS = [320, 375, 393, 430, 744, 1024];
@@ -261,6 +312,114 @@ describe('type scales with the screen', () => {
     // of which anyone wants to read a book at.
     expect(readerMetrics(240, 700).fontPx).toBe(15);
     expect(readerMetrics(1366, 700).fontPx).toBe(22);
+  });
+});
+
+describe('prefs-driven typography clamps the viewport FACTOR, not the product', () => {
+  // THE REGRESSION THIS GUARDS: a prior version clamped the scaled px result to [15, 22], which
+  // silently re-capped exactly the accessibility user this exists for. A large `fontSizePt` (from
+  // composeFontSizePt's deliberately unclamped a11y multiplier) must still scale past the old
+  // ceiling on a narrow phone.
+
+  it('does not cap a large fontSizePt at the old 22px ceiling', () => {
+    const m = readerMetrics(393, 700, { fontSizePt: 40, lineHeight: 1.5, marginPx: 16 });
+    // At the reference width the viewport factor is 1, so this is a direct pass-through —
+    // proof that the OLD absolute clamp (max 22) is gone, not just moved.
+    expect(m.fontPx).toBe(40);
+  });
+
+  it('still scales a large fontSizePt down on a narrow phone, by the same factor as the default', () => {
+    const defaultFontPx = readerMetrics(240, 700).fontPx; // uses DEFAULT_PREFS' 16pt
+    const scaledFontPx = readerMetrics(240, 700, {
+      fontSizePt: 32,
+      lineHeight: 1.5,
+      marginPx: 16,
+    }).fontPx;
+    // Double the input, roughly double the output — the viewport factor is the same regardless of
+    // fontSizePt, so this is linear.
+    expect(scaledFontPx).toBe(defaultFontPx * 2);
+  });
+
+  it('still refuses a pathological fontSizePt rather than laying out an unbounded page', () => {
+    // The absolute guard is a pathological-value backstop, not a design bound — it must not fire for
+    // any legitimate accessibility size, but a corrupt stored value (or a defect upstream) must not
+    // reach the line-grid arithmetic unchecked either.
+    expect(readerMetrics(393, 700, { fontSizePt: 100_000, lineHeight: 1.5, marginPx: 16 }).fontPx)
+      .toBeLessThan(1000);
+    expect(readerMetrics(393, 700, { fontSizePt: -50, lineHeight: 1.5, marginPx: 16 }).fontPx)
+      .toBeGreaterThan(0);
+  });
+
+  it('never lets an adversarial marginPx drive padBottom negative', () => {
+    for (const height of [240, 480, 700, 1024]) {
+      for (const marginPx of [0, 16, 500, 100_000]) {
+        const m = readerMetrics(393, height, { fontSizePt: 16, lineHeight: 1.5, marginPx });
+        expect(m.padBottom).toBeGreaterThanOrEqual(0);
+        expect(m.padTop).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+});
+
+describe('baselineCss carries the prefs-application theme/typography overrides', () => {
+  const m = readerMetrics(393, 700);
+
+  it('omits color, link and letter-spacing rules when no appearance is given', () => {
+    // The default (no second argument) must stay a no-op against today's look — nothing here should
+    // regress a book that never sees an `applyAppearance`.
+    const css = baselineCss(m);
+    expect(css).not.toMatch(/color:/);
+    expect(css).not.toMatch(/^a \{/m);
+    expect(css).not.toMatch(/letter-spacing:/);
+    expect(css).not.toMatch(/font-family:/);
+  });
+
+  it('emits background, text color and link color when given a theme', () => {
+    const css = baselineCss(m, { fg: '#e6e6e6', bg: '#121212', link: '#6ea8fe' });
+    expect(css).toMatch(/background: #121212 !important/);
+    expect(css).toMatch(/color: #e6e6e6 !important/);
+    expect(css).toMatch(/a \{ color: #6ea8fe !important; \}/);
+  });
+
+  it('omits letter-spacing at 0, matching the "do not restate the default" convention', () => {
+    expect(baselineCss(m, { letterSpacingPx: 0 })).not.toMatch(/letter-spacing:/);
+    expect(baselineCss(m, { letterSpacingPx: 2 })).toMatch(/letter-spacing: 2px !important/);
+  });
+
+  it('sets font-family only when a non-empty, already-sanitised value is given', () => {
+    expect(baselineCss(m, { fontFamily: '' })).not.toMatch(/font-family:/);
+    expect(baselineCss(m, { fontFamily: 'Georgia' })).toMatch(
+      /font-family: Georgia, sans-serif !important/,
+    );
+  });
+});
+
+describe('sanitizeFontFamily — the allow-list standing between a preference and CSS text', () => {
+  it('passes through a plain family name unquoted', () => {
+    expect(sanitizeFontFamily('Georgia')).toBe('Georgia');
+  });
+
+  it('quotes a multi-word family name, per CSS quoting rules', () => {
+    expect(sanitizeFontFamily('Times New Roman')).toBe('"Times New Roman"');
+  });
+
+  it('quotes each name in a comma-separated list independently', () => {
+    expect(sanitizeFontFamily('Times New Roman, Georgia, serif')).toBe(
+      '"Times New Roman", Georgia, serif',
+    );
+  });
+
+  it('treats empty or whitespace-only input as "do not override"', () => {
+    expect(sanitizeFontFamily('')).toBe('');
+    expect(sanitizeFontFamily('   ')).toBe('');
+  });
+
+  it('refuses anything outside the allow-list rather than passing it through', () => {
+    // A stylesheet-injection attempt: closing the font-family declaration and the rule, then opening
+    // a new one. If any of this survived into baselineCss's template string, it would be live CSS.
+    expect(sanitizeFontFamily(`"; } body { background: url(evil) `)).toBe('');
+    expect(sanitizeFontFamily('Georgia<script>')).toBe('');
+    expect(sanitizeFontFamily("Georgia'; alert(1)")).toBe('');
   });
 });
 

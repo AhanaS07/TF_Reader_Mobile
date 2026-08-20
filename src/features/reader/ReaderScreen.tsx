@@ -22,6 +22,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { prefsStore } from '@/features/personalization/prefsStore';
+import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -40,6 +42,7 @@ import type {
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId, ContentFormat } from '@/shared/contracts';
@@ -302,6 +305,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     setError({ code, message });
   }, []);
 
+  /**
+   * The OS half of `applyAppearance`'s inputs (color scheme, font scale, reduce motion).
+   *
+   * REF, NOT READ DIRECTLY, from `handleReady`'s closure: `handleReady` is memoised on
+   * `[bookId, format, raiseError]` (see below) precisely so it does not change identity on every
+   * appearance-env tick — `ReaderWebView` only reads its latest `onReady` via its own ref (see the
+   * note there), so a stale env in the CLOSURE would matter even though a stale PROP would not.
+   * Kept current by an effect with no dependency array, same pattern as `ReaderWebView`'s own
+   * `onReadyRef`.
+   */
+  const appearanceEnv = useAppearanceEnv();
+  const appearanceEnvRef = useRef(appearanceEnv);
+  useEffect(() => {
+    appearanceEnvRef.current = appearanceEnv;
+  });
+
+  /**
+   * Resolve the current prefs against `env` and send `applyAppearance` — the one seam both the
+   * open-time send (trigger A) and the live re-apply effects below (triggers B/C) go through, so
+   * "read prefs, resolve, send" is not duplicated three times.
+   *
+   * Best-effort: a failed prefs read must not block opening the book. The WebView already paints at
+   * its DEFAULT_PREFS-derived baseline with no `applyAppearance` at all, which is exactly the
+   * fallback this failure leaves it at.
+   */
+  const applyAppearanceWith = useCallback(
+    async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
+      try {
+        const prefs = await prefsStore.getPrefs();
+        sender({ type: 'applyAppearance', appearance: toReaderAppearance(prefs, env) });
+      } catch {
+        // Best-effort — see the note above.
+      }
+    },
+    [],
+  );
+
   // Resolve the book's format and its matching shell before mounting the WebView.
   //
   // The `cancelled` flag is the standard unmount guard: without it, navigating
@@ -413,6 +453,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             return;
           }
 
+          // BEFORE the open command, not alongside it: PDF answers NOT_READY to anything sent
+          // before open*, and EPUB's flow/spread only take effect if set before renderTo(). Awaited
+          // (not fired-and-forgotten) so the order is guaranteed rather than merely likely — see
+          // WEBVIEW_BRIDGE.md's "prefs-application design, as signed off".
+          await applyAppearanceWith(sender);
+
           const base64 = await withOpenTimeout(getBookBase64(bookId, format));
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length, format });
@@ -475,8 +521,37 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         }
       })();
     },
-    [bookId, format, raiseError],
+    [bookId, format, raiseError, applyAppearanceWith],
   );
+
+  /**
+   * Trigger B (READER_PREFS_APPLICATION.md §5): a local prefs edit. `prefsStore.subscribe` hands
+   * back the FRESH `SharedPrefs` record directly, so there is no `getPrefs()` round trip here —
+   * unlike `applyAppearanceWith`, which reads it because trigger A/C have no record handed to them.
+   *
+   * `send === null` is checked inside the listener rather than skipped by not subscribing: `send`
+   * transitions null -> non-null exactly once (see its own state comment), and the effect should
+   * stay subscribed across that transition rather than resubscribing — same reasoning as the queued
+   * search-seek effect below, which is keyed on `[send]` for the same class of problem.
+   */
+  useEffect(() => {
+    return prefsStore.subscribe((freshPrefs) => {
+      if (send === null) return;
+      send({ type: 'applyAppearance', appearance: toReaderAppearance(freshPrefs, appearanceEnvRef.current) });
+    });
+  }, [send]);
+
+  /**
+   * Trigger C (READER_PREFS_APPLICATION.md §5): an OS-level change (system dark mode, Dynamic Type,
+   * Reduce Motion) — `useAppearanceEnv` re-renders this component with a new `env` whenever one of
+   * those fires, and this effect is what turns that into a re-resolve-and-resend. Skipped while
+   * `send` is null: trigger A already sends the FIRST appearance once `send` exists, so there is
+   * nothing to re-apply until then.
+   */
+  useEffect(() => {
+    if (send === null) return;
+    void applyAppearanceWith(send, appearanceEnv);
+  }, [send, appearanceEnv, applyAppearanceWith]);
 
   const handleMessage = useCallback((message: ReaderMessage): void => {
     switch (message.type) {

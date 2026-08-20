@@ -30,6 +30,7 @@ import type {
   ReaderTarget,
   WebViewErrorCode,
 } from '@/features/reader/readerBridge';
+import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 
 type ReaderCommandName = ReaderCommand['type'];
 
@@ -164,6 +165,7 @@ export interface CommandArgs {
   next: [];
   prev: [];
   goTo: [target: ReaderTarget];
+  applyAppearance: [appearance: ReaderAppearance];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */
