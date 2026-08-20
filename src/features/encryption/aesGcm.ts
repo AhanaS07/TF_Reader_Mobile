@@ -1,64 +1,43 @@
 // Owner: Encryption (Abhinav).
 //
-// Whole-file AES-256-GCM via the REAL native module `react-native-aes-gcm-crypto` — this is
-// production code meant to run on-device (we're building against expo-dev-client, which
-// supports real native modules, unlike Expo Go), not a Node stand-in. See cipherLayout.ts for
-// the `content` byte layout (nonce | ciphertext | tag) this module produces and consumes.
+// Whole-file AES-256-GCM via `react-native-quick-crypto` (Nitro/JSI) — REPLACES the previous
+// `react-native-aes-gcm-crypto`-backed version (see cipherLayout.ts for the `content` byte layout
+// this module produces/consumes: nonce | ciphertext | tag).
 //
-// CONFIRMED 2026-08-11 by actually bundling through Metro (temporarily wired into App.tsx,
-// requested the real bundle, reverted): the previous Node-`crypto`-backed version of this file
-// failed with "Unable to resolve module crypto" — Metro doesn't polyfill it. This version
-// bundles clean. What's still unverified (no simulator/device in this environment): the actual
-// native AES-GCM execution at runtime. See src/features/encryption/aesGcm.test.ts, which
-// exercises this file's real code against a Jest manual mock of the native module
-// (__mocks__/react-native-aes-gcm-crypto.js, Node-crypto-backed) — that proves the adapter
-// logic (base64/hex conversion, nonce/ciphertext/tag assembly) is correct; it does not prove
-// the native module's own AES-GCM implementation is correct, which is Metro's/the library's
-// job, not ours.
+// WHY THIS SWAP (2026-08-18) — the double base64 hop was the remaining lever on peak memory, not
+// a rounding difference: `react-native-aes-gcm-crypto`'s native API is STRING-ONLY (base64 in,
+// base64 out), so every encrypt/decrypt materialised the WHOLE plaintext/ciphertext as a base64
+// STRING on top of the Uint8Array it came from — twice, once per direction. Swapping the base64
+// CODEC itself (2026-08-14, `react-native-quick-base64`) made that hop ~100x faster but did not
+// remove it: the peak-memory measurement in the repo's own notes stayed flat across both codec
+// swaps ("time fell by ~30x, the peak did not move" — CLAUDE.md's known-open-items table) because
+// the hop was never about time, it was about materialising an extra full-size copy at all.
+// `react-native-quick-crypto` is already a dependency (deviceKeypair.ts's RSA-OAEP), and its
+// `createCipheriv`/`createDecipheriv` take/return `Buffer`/`Uint8Array` directly (confirmed by
+// reading the installed package's own generated type defs, cipher.d.ts: `update(data: Buffer):
+// Buffer`, `getAuthTag(): Buffer`, `setAuthTag(tag: Buffer)`) — no string intermediate at all, so
+// this removes the copy rather than speeding it up.
 //
-// Native API (react-native-aes-gcm-crypto, confirmed by reading its installed type defs):
-//   encrypt(plainText: string, inBinary: boolean, key: string): Promise<{iv, tag, content}>
-//   decrypt(ciphertext: string, key: string, iv: string, tag: string, isBinary: boolean): Promise<string>
-// `key`/`content`/decrypted-output are base64; `iv`/`tag` are HEX (confirmed against the
-// package's own README example, cross-checked byte lengths: 12-byte iv = 24 hex chars, 16-byte
-// tag = 32 hex chars). This module's job is entirely the adapter between that shape and our
-// concatenated nonce|ciphertext|tag CipherPayload.content layout.
-//
-// No Buffer: this file runs in the RN JS runtime, which doesn't have Node's Buffer without a
-// polyfill (unlike the Node-only scripts under scripts/, which still use Buffer deliberately —
-// see their own headers). base64 codec is the shared, cross-checked one in ./base64.ts; hex
-// codec (needed only here, for iv/tag) is portable Uint8Array arithmetic below.
-//
-// CONFIRMED on-device 2026-08-11: this file's encrypt/decrypt round-trip actually works at
-// runtime (not just "compiles") — logged RUNTIME_TEST: aesGcm roundTripOk= true from a real
-// iOS Simulator run. keyStorage.ts's ORIGINAL Buffer-based version failed at the same time with
-// "Property 'Buffer' doesn't exist" — which is exactly why this file never used Buffer to begin
-// with, and why keyStorage.ts was fixed to use ./base64.ts too.
+// HONEST LIMITATION, not glossed over — same caveat every native-module swap in this codebase
+// carries: this has been exercised through the Jest manual mock (__mocks__/react-native-quick-
+// crypto.js, real Node `crypto` underneath — genuine AES-256-GCM math, not a fake) and proves the
+// ADAPTER logic here (nonce generation, assembly, tag split, error propagation) is correct. It
+// does NOT by itself prove the peak-memory number actually drops on a real device — that needs
+// the same on-device RUNTIME_TEST + memory-profiler pass the original `react-native-aes-gcm-
+// crypto` swap got (CLAUDE.md's known-open-items table), which this change has not yet had.
+// `react-native-aes-gcm-crypto` stays an installed dependency (other files' comments and the
+// patch-package patch still reference it) — nothing else in this repo imports it after this
+// change, but removing the dependency itself is a separate, uneventful cleanup, not bundled here.
 
-import AesGcmCrypto from 'react-native-aes-gcm-crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'react-native-quick-crypto';
 import { CipherPayload, NONCE_BYTES, GCM_TAG_BYTES, assertCipherLayout } from './cipherLayout';
-import { bytesToBase64, base64ToBytes } from './base64';
 
 const KEY_BYTES = 32; // AES-256
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return out;
-}
+const ALGORITHM = 'aes-256-gcm';
 
 /**
- * Encrypts `plaintext` with AES-256-GCM under `key` via the native module, producing a
- * CipherPayload whose `content` is laid out as nonce (12B) || ciphertext (originalLength B) ||
- * GCM tag (16B), per cipherLayout.ts.
+ * Encrypts `plaintext` with AES-256-GCM under `key`, producing a CipherPayload whose `content` is
+ * laid out as nonce (12B) || ciphertext (originalLength B) || GCM tag (16B), per cipherLayout.ts.
  *
  * @param plaintext - raw bytes to encrypt (e.g. a whole book file's contents)
  * @param key - 256-bit (32 byte) AES key
@@ -68,23 +47,25 @@ export async function encrypt(plaintext: Uint8Array, key: Uint8Array): Promise<C
     throw new Error(`encrypt: key must be ${KEY_BYTES} bytes (AES-256), got ${key.length}`);
   }
 
-  const { iv, tag, content } = await AesGcmCrypto.encrypt(bytesToBase64(plaintext), true, bytesToBase64(key));
+  const nonce = randomBytes(NONCE_BYTES);
+  const cipher = createCipheriv(ALGORITHM, key, nonce, { authTagLength: GCM_TAG_BYTES });
+  const ciphertextPart = cipher.update(plaintext);
+  const finalPart = cipher.final();
+  const tag = cipher.getAuthTag();
 
-  const nonce = hexToBytes(iv);
-  const ciphertext = base64ToBytes(content);
-  const tagBytes = hexToBytes(tag);
-
-  if (nonce.length !== NONCE_BYTES) {
-    throw new Error(`encrypt: native module returned a ${nonce.length}-byte iv, expected ${NONCE_BYTES}`);
-  }
-  if (tagBytes.length !== GCM_TAG_BYTES) {
-    throw new Error(`encrypt: native module returned a ${tagBytes.length}-byte tag, expected ${GCM_TAG_BYTES}`);
+  if (tag.length !== GCM_TAG_BYTES) {
+    throw new Error(`encrypt: cipher returned a ${tag.length}-byte tag, expected ${GCM_TAG_BYTES}`);
   }
 
-  const assembled = new Uint8Array(nonce.length + ciphertext.length + tagBytes.length);
-  assembled.set(nonce, 0);
-  assembled.set(ciphertext, nonce.length);
-  assembled.set(tagBytes, nonce.length + ciphertext.length);
+  const assembled = new Uint8Array(nonce.length + ciphertextPart.length + finalPart.length + tag.length);
+  let offset = 0;
+  assembled.set(nonce, offset);
+  offset += nonce.length;
+  assembled.set(ciphertextPart, offset);
+  offset += ciphertextPart.length;
+  assembled.set(finalPart, offset);
+  offset += finalPart.length;
+  assembled.set(tag, offset);
 
   const payload: CipherPayload = {
     content: assembled,
@@ -99,17 +80,17 @@ export async function encrypt(plaintext: Uint8Array, key: Uint8Array): Promise<C
 }
 
 /**
- * The decrypt PRIMITIVE — three raw arguments in, plaintext out, GCM tag verified by the
- * native module. This is the building block `decrypt(payload, key)` below (and eventually
- * Ahana's `ContentStore.decryptBook`) is built on.
+ * The decrypt PRIMITIVE — three raw arguments in, plaintext out, GCM tag verified during
+ * `final()`. This is the building block `decrypt(payload, key)` below is built on.
  *
  * `ciphertextWithTag` convention: ciphertext with the 16-byte GCM tag appended at the end —
- * matches WebCrypto's `crypto.subtle.decrypt('AES-GCM', ...)` convention. This function does
- * the split into native's separate ciphertext/tag arguments, so callers don't have to.
+ * matches WebCrypto's `crypto.subtle.decrypt('AES-GCM', ...)` convention. This function does the
+ * split into the cipher's separate ciphertext/tag arguments, so callers don't have to.
  *
- * Throws if the GCM authentication tag fails to verify (rejects, since this is now async) —
- * i.e. `ciphertextWithTag` was corrupted/tampered, or `nonce`/`key` don't match. That failure
- * is intentionally NOT caught/swallowed here; callers must see it (fail-closed).
+ * Throws if the GCM authentication tag fails to verify (`final()` throws synchronously on a bad
+ * tag — caught by nothing here, so it propagates) — i.e. `ciphertextWithTag` was corrupted/
+ * tampered, or `nonce`/`key` don't match. That failure is intentionally NOT caught/swallowed here;
+ * callers must see it (fail-closed).
  *
  * @param ciphertextWithTag - ciphertext bytes with the 16-byte GCM tag appended at the end
  * @param nonce - 12-byte GCM nonce/IV used for the original encryption
@@ -135,24 +116,43 @@ export async function decryptBook(
   const tag = ciphertextWithTag.subarray(ciphertextWithTag.length - GCM_TAG_BYTES);
   const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - GCM_TAG_BYTES);
 
-  // decrypt() rejects if the auth tag doesn't verify (tamper/corruption detection). Deliberately
-  // not wrapped in try/catch: that rejection must propagate to the caller.
-  const decryptedBase64 = await AesGcmCrypto.decrypt(
-    bytesToBase64(ciphertext),
-    bytesToBase64(key),
-    bytesToHex(nonce),
-    bytesToHex(tag),
-    true // isBinary: return decrypted data as base64, since our plaintext is arbitrary bytes
-  );
+  const decipher = createDecipheriv(ALGORITHM, key, nonce, { authTagLength: GCM_TAG_BYTES });
+  // setAuthTag's declared param type is react-native-quick-crypto's OWN Buffer
+  // (@craftzdog/react-native-buffer), not the ambient Node one @types/node puts in scope here —
+  // the two are structurally different, so a direct `as Buffer` fails. Deriving the cast target
+  // from the method's own signature (rather than importing their Buffer type just for this one
+  // line) works regardless of which concrete Buffer implementation is on the other side; `tag` is
+  // a real Uint8Array at runtime either way, which is all setAuthTag actually needs.
+  decipher.setAuthTag(tag as unknown as Parameters<typeof decipher.setAuthTag>[0]);
+  const plaintextPart = decipher.update(ciphertext);
+  // Deliberately not wrapped in try/catch: final() rejects/throws on a bad tag (tamper/corruption
+  // detection), and that must propagate to the caller, not be swallowed here. MUST still be
+  // called even though its return value is (see below) normally unused — this is the call that
+  // actually verifies the GCM tag; skipping it would silently stop checking for tampering.
+  const finalPart = decipher.final();
 
-  return base64ToBytes(decryptedBase64);
+  // GCM never pads: update() already emits the full plaintext in one shot, and final() exists
+  // here purely to trigger the tag check above — it has nothing left to emit. Every real run
+  // through this file takes this branch. The allocate-and-concat path below stays only as a
+  // defensive fallback for a cipher mode/implementation that ever DID split output across the
+  // two calls — skipping it here removes one whole book-sized copy (plaintext duplicated into a
+  // second buffer for no reason) from every decrypt, on top of the base64 hop this file's header
+  // already removed.
+  if (finalPart.length === 0) {
+    return plaintextPart;
+  }
+
+  const plaintext = new Uint8Array(plaintextPart.length + finalPart.length);
+  plaintext.set(plaintextPart, 0);
+  plaintext.set(finalPart, plaintextPart.length);
+  return plaintext;
 }
 
 /**
- * Decrypts a CipherPayload produced by `encrypt` (or anything conforming to the same layout)
- * back into plaintext bytes. Thin wrapper over `decryptBook` — splits `payload.content` into
- * the nonce prefix and the ciphertext+tag remainder, after checking the structural layout
- * invariant (`assertCipherLayout`) that a type system alone can't enforce.
+ * Decrypts a CipherPayload produced by `encrypt` (or anything conforming to the same layout) back
+ * into plaintext bytes. Thin wrapper over `decryptBook` — splits `payload.content` into the nonce
+ * prefix and the ciphertext+tag remainder, after checking the structural layout invariant
+ * (`assertCipherLayout`) that a type system alone can't enforce.
  *
  * @param payload - CipherPayload to decrypt
  * @param key - 256-bit (32 byte) AES key used for the original encryption

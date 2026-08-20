@@ -5,10 +5,21 @@
 //   import { ContentProvider, SharedPrefs, Bookmark } from '@/shared/contracts';
 //
 // RUNTIME vs TYPE — read before importing:
-// This layer is type-only EXCEPT two real runtime members that emit JS:
-//   • ContentError   (enum, errors.ts)
-//   • ContentFailure (class, errors.ts)
-//   • DEFAULT_PREFS  (const, prefs.ts)
+// This layer is type-only EXCEPT these real runtime members that emit JS:
+//   • ContentError          (enum, errors.ts)
+//   • ContentFailure        (class, errors.ts)
+//   • DEFAULT_PREFS         (const, prefs.ts)
+//   • OFFLINE_LOCK_EVENTS   (const, offline-lock.ts)
+//   • EVENT_CHANNELS        (const, event-bus.ts)
+// …and everything in accessibility.ts except its types:
+//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX,
+//     REDUCE_MOTION_VALUES, TTS_HIGHLIGHT_MODE_VALUES   (consts)
+//   • createDefaultAccessibilityPrefs, isValidTtsRate,
+//     isValidReduceMotion, isValidTtsHighlightMode,
+//     resolveReduceMotion, migrateReduceMotion, resolveFontScale   (fns)
+// …and the prefs row adapter + migration (prefs-row.ts):
+//   • HIGH_CONTRAST_BASE_THEME   (const)
+//   • toPersonalizationRow, fromPersonalizationRow, migrateSharedPrefs   (fns)
 // Import those as VALUES:      import { ContentError, ContentFailure } from '@/shared/contracts';
 // A `import type { ContentError }` compiles but gives you NOTHING at runtime —
 // you can't `throw new ContentFailure(...)` or switch on the enum. Everything
@@ -24,12 +35,18 @@ export * from '../types/primitives';
 export * from './errors';
 export * from './content-provider';
 export * from './sync-record';
-// export * from './offline-lock'; // DEFERRED — offline-lock.ts is finalised
-// jointly with Sync (Karthik) + Encryption (Abhinav). Restore this line when the
-// file lands; the `content.lock` / `content.unlock` signals live there.
+
+// Offline lock + its carrier. Previously deferred pending the joint Sync (Karthik) +
+// Encryption (Abhinav) sign-off; that is now agreed, so both are live. The
+// `content.lock` / `content.unlock` signals live in offline-lock.ts and travel over the bus
+// declared in event-bus.ts — the instance is src/shared/eventBus.ts.
+export * from './offline-lock';
+export * from './event-bus';
 
 // Existing teammate contracts.
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"
+export * from './prefs-row'; // nested<->flat row adapter + highContrast migration (runtime)
+export * from './accessibility'; // composed into SharedPrefs.accessibility
 export * from './annotations';
 export * from './progress';
 export * from './search';
@@ -46,3 +63,9 @@ export * from './search';
 export * from './tier';
 export * from './device-key';
 export * from './content-licence';
+
+// reading-session.ts (2026-08-14): the REAL flambeau contract (Loans + Reading sessions),
+// replacing content-licence.ts as the primary flow. FROZEN on flambeau's side (every endpoint
+// modeled here carries `x-stability: FROZEN`) — unlike content-licence.ts/device-key.ts above,
+// this one's field names are not a guess.
+export * from './reading-session';

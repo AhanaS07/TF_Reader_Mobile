@@ -85,6 +85,13 @@ work). Both need config-plugin entries in `app.json` plus a fresh `npx expo preb
 ships no Expo config plugin, the answer is a small local plugin — **not** a hand edit under
 `android/` or `ios/`, which CNG discards on the next prebuild.
 
+**`expo-linear-gradient` (added 2026-08-14, Reader) is also native**, and this is the part that
+costs someone an afternoon if it is not said out loud: pulling this branch and running `npm install`
+is **not enough**. The dev client you already have on your simulator was compiled without
+`ExpoLinearGradient`, so the reader throws "Cannot find native module" at import until you rebuild
+with `npx expo run:ios`. It needs no `app.json` plugin entry — autolinking picks it up — so the
+rebuild is the entire cost. It renders the Contents list's edge fades (`ReaderScreen.tsx`).
+
 ### OPEN RISK: `react-native-aes-gcm-crypto` and the New Architecture
 
 **`expo-doctor` is configured to skip this package.** The exclusion lives in `package.json`
@@ -142,6 +149,35 @@ Beyond the repo-wide notes in the root README:
 
 - Encrypted fixtures live in `samples/`. Never commit real content — encrypted or not.
 - `AUDIO` paths need no decryption and no index; assert that rather than assuming it.
+
+### Real-book device runs — `samples/fixtures/`
+
+Anything that has to be checked against a real book (rendering, TOC, memory, timings) uses a large
+EPUB kept at **`samples/fixtures/`** and loaded through `EXPO_PUBLIC_READER_FIXTURE_PATH`, which
+`devContentSeed.ts` reads instead of the 3.6 KB bundled sample:
+
+```
+EXPO_PUBLIC_READER_FIXTURE_PATH="$PWD/samples/fixtures/20mb_EPUB.epub" npx expo start --dev-client --clear
+```
+
+`--clear` is not optional: `EXPO_PUBLIC_*` values are inlined at transform time, so a warm Metro
+cache keeps serving the previous one. The bookId also changes with it (`dev-fixture-epub` rather
+than `dev-sample-epub`), which is what stops the two books sharing a stored package.
+
+Two things to know, in order of how much trouble they cause:
+
+- **`samples/` is gitignored in full** (`.gitignore:47`), which is the only reason a real book may
+  sit there at all. Confirm with `git check-ignore -v <path>` rather than assuming — the rule is a
+  bare `samples`, so moving the directory silently un-ignores it.
+- **It is PLAINTEXT on disk, by construction.** That is exactly what a storage-leak sweep should
+  flag, so it does not belong in the app container: on a simulator the path is read straight from
+  the repo and only ciphertext reaches the container. If you ever `simctl push` a copy in, delete it
+  before sweeping.
+
+The bundled sample is still the right fixture for most work. It is worth knowing what it cannot
+show: it ships no CSS (so it cannot tell you whether a book's own stylesheet wins over the reader's
+baseline), and its TOC is 3 flat entries (so it exercises neither nesting nor a list long enough to
+scroll).
 
 ## Deferred
 

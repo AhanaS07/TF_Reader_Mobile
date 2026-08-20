@@ -27,20 +27,47 @@ export interface EncryptionDescriptor {
   layout: 'nonce(12) || ciphertext || tag(16)';
   wrappedBek: string; // base64, RSA-OAEP-256 to the DEVICE public key
   wrapAlgorithm: 'RSA-OAEP-256';
-  keyId: string; // e.g. "master-v1"
+  /** OPTIONAL on wokay's published schema — "which master key wrapped it; exists so a second one
+   * can be added later" — and relaxed here to match, on the same "a null field is omitted rather
+   * than sent as null, test for presence" convention that `SignedUrl`/`IndexUrl` already follow
+   * (reading-session.ts). Required here was a type lie: a real grant that omits it would have
+   * carried `undefined` behind a `string`. Nothing in this repo READS it — `contentStore.ts`
+   * deliberately keys BEK-change detection off `wrappedBek`, not `keyId`/`keyFingerprint` — so
+   * relaxing it is inert today. Keep it that way: it names a SERVER key, not the device key, and
+   * is not an identity to branch on. */
+  keyId?: string; // e.g. "master-v1"
   keyFingerprint: string; // "sha256:..." of the device public key we sent
 }
 
-// licence.json, added by flambeau and stored beside the ciphertext (source-of-
-// truth Flow B step 8). Signature is REQUIRED and verified before expiry is
-// trusted. PROVISIONAL — Licence owned by flambeau; mirror only what we verify.
+// A DEVICE-SIDE licence record. No endpoint in either published contract returns anything shaped
+// like this: wokay's `ContentGrant` has exactly `content` / `index` / `encryption`, and flambeau's
+// `ReadingSessionResponse` adds only session fields. `downloadManager.ts` therefore SYNTHESIZES
+// one per download, from `Loan.canPersist` + `Loan.dueAt`, so that `ContentStore.store()` has the
+// Subscription-vs-Elite signal it is built around.
+//
+// Consequently `signature` is a placeholder (`value: ''`) and is verified nowhere — the earlier
+// claim here that it is "REQUIRED and verified before expiry is trusted" described a design that
+// was never built and that neither contract carries. `rights` has no contract source either.
+// EXPIRY IS THE ONLY FIELD DOING REAL WORK, and it does it correctly (see `expiresAt` below).
+//
+// Whether this type should exist at all — renamed to something honest and moved out of
+// shared/contracts/, since a device-side record is not an inter-team wire contract — is an open
+// cohort question: B4 in `CONTRACT_ALIGNMENT.md` (this directory). It is a Week-1 frozen file, so
+// that is a Gate conversation, not a quiet edit. Read that entry before adding a field here.
 export interface SignedLicence {
   licenceId: string;
   // INVARIANT: itemId names the SAME book as the EncryptedPackage.bookId it
   // ships with (backend calls it itemId, the reader calls it bookId — see
   // primitives.ts). The store MUST reject if licence.itemId !== pkg.bookId.
   itemId: string;
-  keyFingerprint: string; // must equal EncryptionDescriptor.keyFingerprint
+  /** MUST equal `EncryptionDescriptor.keyFingerprint`, and that equality is a SECURITY CONTROL,
+   * not bookkeeping: this side is derived locally from the device's own public key
+   * (`deviceKeypair.ts`'s `publicKeyFingerprint()`), the other side is the server's claim about
+   * which key it wrapped the BEK for, so comparing them is what proves nobody in the chain
+   * substituted a key. `contentStore.ts` enforces it in `assertLicenceMatchesPackage()`.
+   * Assigning this from `session.encryption.keyFingerprint` would make the comparison a value
+   * against itself and silently delete the guarantee — it used to, and that was the bug. */
+  keyFingerprint: string;
   expiresAt: string; // ISO-8601 UTC (wire), NOT Timestamp
   canPersist: boolean; // false ⇒ Elite, memory-only, no keystore write
   rights: { print: boolean };

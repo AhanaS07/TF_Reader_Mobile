@@ -26,7 +26,7 @@ export function assertCipherLayout(payload: CipherPayload): void {
   if (content.length !== cipherLength || cipherLength !== expected) {
     throw new Error(
       `Cipher layout mismatch: content.length=${content.length}, cipherLength=${cipherLength}, ` +
-        `expected 12 + originalLength(${originalLength}) + 16 = ${expected}`
+        `expected 12 + originalLength(${originalLength}) + 16 = ${expected}`,
     );
   }
 }

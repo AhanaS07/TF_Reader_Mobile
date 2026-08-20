@@ -19,6 +19,7 @@
     "plugins": [
       "expo-dev-client",
       "expo-font",
+      "expo-asset",
       [
         "expo-build-properties",
         {
@@ -26,7 +27,10 @@
             "minSdkVersion": 26
           }
         }
-      ]
+      ],
+      "react-native-quick-crypto",
+      "expo-sqlite",
+      "./plugins/withAndroidTtsQueries"
     ]
   }
 }
