@@ -24,4 +24,11 @@ export {
 // nothing about buttons — it answers one question about time that `resolveAccess`
 // is forbidden from asking, and hands the answer back as a `Hold` state the
 // resolve already knows how to read. The button vocabulary stays in one file.
-export { isOfferLapsed, lapseOffer, OFFER_WINDOW_MINUTES_UNDOCUMENTED } from './offerLapse';
+export {
+  applyLapse,
+  isOffered,
+  isOfferLapsed,
+  lapseOffer,
+  type OfferedHold,
+  OFFER_WINDOW_MINUTES_UNDOCUMENTED,
+} from './offerLapse';

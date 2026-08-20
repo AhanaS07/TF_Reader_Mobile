@@ -12,6 +12,7 @@
 import type { BookId } from '@/shared/types/primitives';
 import type { Catalogue, Publication, Shelf } from '@model/types';
 import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
+import type { ShelfQuery } from '@adapters/CatalogueSource';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
 import { type Institution, normalizeInstitutionList } from '@model/institution';
@@ -70,7 +71,18 @@ export class MockAdapter implements DataSource {
     return catalogue;
   }
 
-  async getShelf(institutionId: string, shelfId: string, page?: number): Promise<Shelf> {
+  // `query` (contentType/accessTier/sort) is accepted, per the CatalogueSource
+  // contract, but not applied: none of the fixtures have a filtered or sorted
+  // variant to serve, so honouring it here would mean silently inventing
+  // narrowed data ApiAdapter has no way to match. Screen 12 still exercises the
+  // whole round trip against this adapter — request in, one unfiltered page
+  // back — same as any other capability the fixtures do not yet model.
+  async getShelf(
+    institutionId: string,
+    shelfId: string,
+    page?: number,
+    _query?: ShelfQuery,
+  ): Promise<Shelf> {
     await this.simulate(shelfId);
     this.assertKnownInstitution(institutionId);
 

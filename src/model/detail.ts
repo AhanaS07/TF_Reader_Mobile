@@ -14,7 +14,7 @@
 // data is `normalizePublication`'s job and deciding access is `resolveAccess`'s;
 // this sits after both and invents nothing (CONVENTIONS §3 — the UI never
 // computes access rights).
-import type { BookId } from '@/shared/types/primitives';
+import type { BookId, ContentFormat } from '@/shared/types/primitives';
 import type { AccessResult, Publication, WorkType } from '@model/types';
 
 export interface ItemDetail {
@@ -42,6 +42,10 @@ export interface ItemDetail {
   publisher?: string;
   isbn?: string;
   numberOfPages?: number;
+  // The one confirmed format ('PDF' | 'EPUB' | 'AUDIO') — a publication has
+  // exactly one, so this is display data, not a choice. Absent only when
+  // normalize.ts could not derive one (a `subscribe` rel carries no file).
+  format?: ContentFormat;
   // The abstract on screen 04, the blurb on screen 05 — one field, two labels.
   description?: string;
 
@@ -83,6 +87,7 @@ export function buildItemDetail({
     publisher: publication.publisher,
     isbn: publication.isbn,
     numberOfPages: publication.numberOfPages,
+    format: publication.format,
     description: publication.description,
     access,
   };

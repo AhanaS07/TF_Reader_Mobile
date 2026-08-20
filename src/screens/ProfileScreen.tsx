@@ -1,19 +1,69 @@
-import { useNavigation, type NavigationProp } from '@react-navigation/native';
+import { useCallback } from 'react';
+import { useNavigation, type NavigationProp, type CompositeNavigationProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { View, Text, StyleSheet } from 'react-native';
 
 import { ListRow } from '@components/ListRow';
-import type { RootStackParamList } from '@navigation/types';
+import { useInstitutionStore } from '@store/institutionStore';
+import type { RootStackParamList, RootTabParamList } from '@navigation/types';
 import { color, space, type } from '@theme/tokens';
 
+// CompositeNavigationProp lets this screen navigate to both the root stack
+// (Gallery) and to nested screens in sibling tabs (InstitutionList in Catalogue).
+type Nav = CompositeNavigationProp<
+  BottomTabNavigationProp<RootTabParamList, 'Profile'>,
+  NavigationProp<RootStackParamList>
+>;
+
 export default function ProfileScreen() {
-  // Typed against the ROOT stack, not the Profile stack: 'Gallery' is a sibling
-  // of the whole tab navigator, and React Navigation resolves an unknown route
-  // name by walking up the tree.
-  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
+  const navigation = useNavigation<Nav>();
+
+  const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
+  const clearSelectedInstitution = useInstitutionStore((s) => s.clearSelectedInstitution);
+
+  const handleChangeInstitution = useCallback(() => {
+    // InstitutionList lives in the Catalogue stack. React Navigation resolves
+    // cross-tab routes by switching to the owning tab first, then pushing the screen.
+    navigation.navigate('Catalogue', { screen: 'InstitutionList' });
+  }, [navigation]);
+
+  const handleSignOut = useCallback(() => {
+    clearSelectedInstitution();
+  }, [clearSelectedInstitution]);
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Profile</Text>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>Institution</Text>
+        {selectedInstitution !== null ? (
+          <>
+            <ListRow
+              title="Selected institution"
+              variant="value"
+              valueText={selectedInstitution.name}
+              onPress={handleChangeInstitution}
+            />
+            <ListRow
+              title="Change institution"
+              variant="chevron"
+              onPress={handleChangeInstitution}
+            />
+            <ListRow
+              title="Sign out"
+              variant="destructive"
+              onPress={handleSignOut}
+            />
+          </>
+        ) : (
+          <ListRow
+            title="Select institution"
+            subtitle="Required to access your library"
+            variant="chevron"
+            onPress={handleChangeInstitution}
+          />
+        )}
+      </View>
 
       {/* THE ONLY WAY INTO THE GALLERY, and deliberately the only one.
 
@@ -49,20 +99,20 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
     backgroundColor: color.surface,
   },
-  title: {
-    fontWeight: type.sectionHeader.weight,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
+  section: {
+    marginTop: space.lg,
+  },
+  sectionLabel: {
+    fontWeight: type.smallLabel.weight,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,
+    paddingHorizontal: space.md,
+    paddingBottom: space.xs,
   },
   dev: {
-    // Spans the screen so the row reads as a settings row rather than as a
-    // floating button in the middle of a centred stub.
-    alignSelf: 'stretch',
     marginTop: space.xl,
   },
   devLabel: {

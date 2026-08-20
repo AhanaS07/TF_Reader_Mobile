@@ -32,6 +32,7 @@
 import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import type { ContentFormat } from '@/shared/types/primitives';
 import { resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
@@ -121,6 +122,21 @@ export function renderBookContent(
         <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
       )}
 
+      {/* The one confirmed format, shown once as a plain strip — the contract
+          says every title has exactly one, so there is nothing to switch
+          between (index.html: "it becomes a single-format display strip
+          rather than a control"). Absent only when normalize.ts could not
+          derive one (a `subscribe` rel carries no file), same "leave gaps
+          blank" rule as everything else here. */}
+      {detail.format !== undefined && <FormatStrip format={detail.format} />}
+
+      {/* The mockup fuses a price pair into the same control as the format
+          toggle, but price is a separate, unconfirmed fact — neither contract
+          has a price field, and printing a number would misrepresent real
+          commerce data rather than merely omit it. Shown, muted, not
+          invented, same rule as citation and the type label on screen 04. */}
+      <UnavailableTag label="Price unavailable" />
+
       <AccessTierBadge tier={detail.access.tier} />
 
       {/* Publisher, published date, ISBN and page count are each shown only
@@ -144,8 +160,38 @@ export function renderBookContent(
         <Text style={styles.description}>{detail.description}</Text>
       )}
 
+      {/* "Table of Contents" — a real mockup row with no data behind it; no
+          endpoint returns a chapter list. No chevron and no Pressable: the
+          mockup's chevron promises an expand interaction that does not exist,
+          the same half-measure the article branch's tab row already avoids
+          for its own four dead tabs. */}
+      <UnavailableTag label="Table of Contents" />
+
       <ActionBar actions={detail.access.actions} onAction={onAction} />
     </ScrollView>
+  );
+}
+
+// The one confirmed format, shown as a plain strip rather than a control —
+// index.html: "the contract confirms one format per title, so there is
+// nothing to select between... it becomes a single-format display strip
+// rather than a control."
+//
+// NOT `Tabs` OR `FilterChip`. Both exist to switch or toggle between several
+// values; there is exactly one value here, so a control built to manage many
+// would be answering a question this screen does not have. No `Pressable`,
+// no `onPress`, no active/inactive pair — `AccessTierBadge` is the same shape
+// one line below every call site: a resolved value that is looked at.
+//
+// NOT MUTED LIKE `UnavailableTag`. This is real, confirmed data — the
+// contract states it plainly — so it reads at full opacity in the primary
+// text colour, visually distinct from the "we don't have this yet" tags
+// beside it.
+function FormatStrip({ format }: { format: ContentFormat }): ReactElement {
+  return (
+    <View testID="format-strip" style={styles.formatStrip} accessibilityRole="text">
+      <Text style={styles.formatStripLabel}>{format}</Text>
+    </View>
   );
 }
 
@@ -481,6 +527,23 @@ const styles = StyleSheet.create({
     fontWeight: typeScale.body.weight,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
+    color: color.textPrimary,
+  },
+  // Same box shape as `unavailableTag`, deliberately, so the two read as
+  // siblings — but full opacity and primary-coloured text, because this one
+  // is confirmed data rather than a gap.
+  formatStrip: {
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.border,
+    backgroundColor: color.surface,
+  },
+  formatStripLabel: {
+    fontWeight: typeScale.smallLabel.weight,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textPrimary,
   },
   // Muted and outlined rather than filled, mirroring FilterChip's own
