@@ -23,6 +23,7 @@ import InstitutionListScreen from '../screens/InstitutionListScreen';
 import ItemDetailScreen from '../screens/ItemDetailScreen';
 import ShelfScreen from '../screens/ShelfScreen';
 import SignInScreen from '../screens/SignInScreen';
+import AccessGateScreen from '../screens/AccessGateScreen';
 
 import type {
   RootStackParamList,
@@ -117,6 +118,11 @@ function CatalogueNavigator() {
         component={SignInScreen}
         options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
       />
+      <CatalogueStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -133,6 +139,11 @@ function SearchNavigator() {
         name="ItemDetail"
         component={ItemDetailScreen}
         options={{ title: 'Item Detail' }}
+      />
+      <SearchStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
       />
     </SearchStack.Navigator>
   );

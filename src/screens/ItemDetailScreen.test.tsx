@@ -113,11 +113,19 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
   };
 }
 
-const routeProps = { route: { params: { itemId: 'item_42' } } };
+// Shared across every test below except the ones that specifically assert on
+// navigation — those read `mockNavigate` directly rather than needing their
+// own `navigation` object.
+const mockNavigate = jest.fn();
+const routeProps = {
+  route: { params: { itemId: 'item_42' } },
+  navigation: { navigate: mockNavigate },
+};
 
 afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
+  mockNavigate.mockClear();
 });
 
 describe('ItemDetailScreen loading', () => {
@@ -226,6 +234,41 @@ describe('ItemDetailScreen with a book', () => {
 
     await waitFor(() => expect(screen.getByText('Sign in')).toBeTruthy());
     expect(screen.queryByText('Read')).toBeNull();
+  });
+
+  it('opens AccessGate with the item id, title and authors when Sign in is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Sign in')).toBeTruthy());
+    fireEvent.press(screen.getByText('Sign in'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('AccessGate', {
+      itemId: 'item_42',
+      title: 'Rights for Robots',
+      authors: 'Joshua C. Gellers',
+    });
+  });
+
+  // Screen 03 is reachable from exactly one action. Every other resolved
+  // action must still be untouched by this change. One press, not two — two
+  // `fireEvent.press` calls in a single test open overlapping `act()` scopes
+  // and corrupt every render after it in the file (same trap noted in
+  // QueueNotification.test.tsx).
+  it('still no-ops for actions other than signIn', async () => {
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+    fireEvent.press(screen.getByText('Read'));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
 
@@ -341,7 +384,11 @@ describe('ItemDetailScreen errors', () => {
       }),
     );
 
-    await render(<ItemDetailScreen {...{ route: { params: { itemId: 'item_missing' } } }} />);
+    await render(
+      <ItemDetailScreen
+        {...{ route: { params: { itemId: 'item_missing' } }, navigation: { navigate: mockNavigate } }}
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText(/couldn.?t find this title/i)).toBeTruthy());
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
