@@ -14,8 +14,11 @@
 // item, then hands off to whichever of SignIn or InstitutionList the reader
 // needs next. "Personal account" is shown, per the mockup, but disabled —
 // index.html: "screen 03's second option is reopened rather than settled."
-// There is no endpoint, no destination and no contract for it, so nothing
-// here invents one; it is visible and inert until that question closes.
+// B2C as a concept was answered 13 Aug (retained; `subscribe` resolves an
+// entitled reader like a Subscription) — but that answers the resolveAccess
+// layer, not where this button goes. Screen 13 (email sign-in) is
+// flambeau's and still reopened, so there is no destination or contract to
+// wire here yet.
 //
 // NO AUTHENTICATION HAPPENS IN THIS FILE. This screen decides where the
 // reader goes next and what to remember on the way; SignInScreen (and,
@@ -86,6 +89,12 @@ export default function AccessGateScreen({ route, navigation }: Props) {
       navigation.goBack();
       navigation.navigate('Catalogue', { screen: 'SignIn' });
     } else {
+      // No auto-continue after InstitutionList — deliberate. Selecting an
+      // institution calls goBack() there, returning the reader to this
+      // screen with a selection now made; tapping "Through my institution"
+      // a second time takes the branch above. No callback/param/event
+      // invented for a one-tap saving the existing back-stack already
+      // provides for free.
       navigation.navigate('Catalogue', { screen: 'InstitutionList' });
     }
   }, [remember, itemId, selectedInstitution, navigation]);
