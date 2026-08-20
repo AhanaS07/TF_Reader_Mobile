@@ -10,12 +10,14 @@
 // token comes back (deep link vs polling authTxnId) is Question 5 — unanswered
 // as of Week 2. Replace the stub in handleSignIn once flambeau publishes the
 // handoff contract.
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import ErrorState from '@components/ErrorState';
+import OfflineBanner from '@components/OfflineBanner';
 import { useInstitutionStore } from '@store/institutionStore';
-import { usePendingIntentStore } from '@store/pendingIntentStore';
+import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
 import type { CatalogueStackParamList } from '../navigation/types';
 
@@ -23,34 +25,36 @@ type Props = NativeStackScreenProps<CatalogueStackParamList, 'SignIn'>;
 
 export default function SignInScreen({ navigation }: Props) {
   const institution = useInstitutionStore((s) => s.selectedInstitution);
-  const takeIntent = usePendingIntentStore((s) => s.take);
+  const isOnline = useNetworkStatus();
+
+  const [submitting, setSubmitting] = useState(false);
+  const [signInError, setSignInError] = useState(false);
 
   const handleDismiss = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
 
-  const handleSignIn = useCallback(() => {
-    if (!institution) return;
-
-    // STUB — replace when flambeau publishes the sign-in handoff contract.
-    // What goes here:
-    //   1. Call flambeau.beginSamlSignIn({ institutionId: institution.id, idpHint: institution.signIn?.idpHint })
-    //      `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
-    //   2. Wire the token return path (deep link / polling authTxnId — Question 5)
-    //
-    // The line below is NOT step 3 done early — there is still no real token
-    // and no real session. It replays whatever the stub already treats as
-    // "signed in" (this same tap), so a stored intent stops being silently
-    // dropped in the meantime. When flambeau's contract lands and this stub
-    // is replaced by a real async handoff, this call moves into the actual
-    // token-received branch; the replay logic itself does not change.
-    const intent = takeIntent();
-    if (intent !== null) {
-      navigation.navigate('ItemDetail', { itemId: intent.itemId });
-    } else {
+  const handleSignIn = useCallback(async () => {
+    if (!institution || submitting || !isOnline) return;
+    setSignInError(false);
+    setSubmitting(true);
+    try {
+      // STUB — replace when flambeau publishes the sign-in handoff contract.
+      // What goes here:
+      //   1. Call flambeau.beginSamlSignIn({ institutionId: institution.id, idpHint: institution.signIn?.idpHint })
+      //      `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
+      //   2. Wire the token return path (deep link / polling authTxnId — Question 5)
+      //   3. On token received: replay pendingIntentStore.take() if present
       navigation.goBack();
+    } catch {
+      setSubmitting(false);
+      setSignInError(true);
     }
-  }, [institution, navigation, takeIntent]);
+  }, [institution, submitting, isOnline, navigation]);
+
+  const handleRetry = useCallback(() => {
+    handleSignIn();
+  }, [handleSignIn]);
 
   // Guard: institution must be selected before this sheet is navigated to.
   // If the store is empty (shouldn't happen in normal flow), go back silently.
@@ -60,12 +64,17 @@ export default function SignInScreen({ navigation }: Props) {
 
   if (!institution) return null;
 
+  const signInDisabled = submitting || !isOnline;
+
   return (
     <View style={styles.overlay}>
       <View style={styles.backdrop} />
       <Pressable style={StyleSheet.absoluteFill} onPress={handleDismiss} accessibilityLabel="Dismiss" />
-      {/* Stop taps on the sheet itself from bubbling up to the dismiss pressable. */}
-      <Pressable style={styles.sheet} onPress={() => {}}>
+      {/* Stop taps on the sheet from reaching the absoluteFill dismiss pressable.
+          View + onStartShouldSetResponder claims the touch without wrapping children
+          in an accessibility container (a default-accessible Pressable would group
+          all children into one unit, hiding inner buttons from assistive technology). */}
+      <View style={styles.sheet} onStartShouldSetResponder={() => true}>
         <View style={styles.handleArea}>
           <View style={styles.handle} />
         </View>
@@ -73,20 +82,37 @@ export default function SignInScreen({ navigation }: Props) {
         <View style={styles.body}>
           <Text style={styles.heading}>Sign in</Text>
 
-          <View style={styles.institutionBlock}>
-            <Text style={styles.institutionName}>{institution.name}</Text>
-            <Text style={styles.institutionMeta}>
-              {institution.city} · {institution.country}
-            </Text>
-          </View>
+          {signInError ? (
+            <ErrorState
+              variant="not_ready"
+              message="Sign-in could not be started. Please try again."
+              onRetry={handleRetry}
+            />
+          ) : (
+            <>
+              <View style={styles.institutionBlock}>
+                <Text style={styles.institutionName}>{institution.name}</Text>
+                <Text style={styles.institutionMeta}>
+                  {institution.city} · {institution.country}
+                </Text>
+              </View>
 
-          <Pressable
-            style={({ pressed }) => [styles.primaryButton, pressed && styles.primaryButtonPressed]}
-            onPress={handleSignIn}
-            accessibilityRole="button"
-          >
-            <Text style={styles.primaryLabel}>Sign in with institution</Text>
-          </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  pressed && !signInDisabled && styles.primaryButtonPressed,
+                  signInDisabled && styles.primaryButtonDisabled,
+                ]}
+                onPress={handleSignIn}
+                disabled={signInDisabled}
+                accessibilityRole="button"
+                accessibilityLabel="Sign in with institution"
+                accessibilityState={{ disabled: signInDisabled }}
+              >
+                <Text style={styles.primaryLabel}>Sign in with institution</Text>
+              </Pressable>
+            </>
+          )}
 
           <Pressable
             style={styles.cancelButton}
@@ -96,7 +122,8 @@ export default function SignInScreen({ navigation }: Props) {
             <Text style={styles.cancelLabel}>Cancel</Text>
           </Pressable>
         </View>
-      </Pressable>
+      </View>
+      <OfflineBanner visible={!isOnline} />
     </View>
   );
 }
@@ -166,6 +193,9 @@ const styles = StyleSheet.create({
   },
   primaryButtonPressed: {
     opacity: 0.85,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.4,
   },
   primaryLabel: {
     fontWeight: typeScale.button.weight,
