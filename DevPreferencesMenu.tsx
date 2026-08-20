@@ -13,18 +13,26 @@
 //
 // TOGGLE SEMANTICS: re-pressing the ALREADY-ACTIVE option reverts that field to DEFAULT_PREFS,
 // rather than leaving it stuck once set — exactly the "click again to undo" behaviour asked for.
-// Each patch replaces its whole top-level prefs group (typography, etc.), matching PrefsPatch's own
-// "merges at the top level" contract (prefsStore.ts) — so turning "Big text" off restores the WHOLE
-// default typography group, not just its size field, in case a future toggle here ever touches a
-// sibling field.
+// Each patch replaces its whole top-level prefs group (typography/layout/etc.), matching
+// PrefsPatch's own "merges at the top level" contract (PREFS_API_FOR_FRONTEND.md's "one rule that
+// bites") — a flow toggle spreads the CURRENT layout group and overrides only `flow`, so it cannot
+// clobber a `spread` the user already set, and vice versa.
+//
+// LAYOUT AND ZOOM ARE ALREADY APPLIED BY THE READER — this file adds no new reader-side behaviour.
+// `flow`/`spread` (epub.entry.ts's `currentFlow`/`mapSpread`) and `zoom` (pdf.entry.ts's
+// `currentZoom`) were part of `applyAppearance` from the first cut of this feature; what was missing
+// was a way to CHANGE them without hand-editing SQLite, which is what the two new sections below are
+// for. `PREFS_API_FOR_FRONTEND.md` (Personalization, 2026-08-20) is a field catalogue for a real
+// settings screen — it documents these fields, it does not introduce them.
 
-import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { LayoutChangeEvent } from 'react-native';
 
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
-import type { SharedPrefs, Theme } from '@/shared/contracts';
+import type { LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
 
 const BIG_TEXT_SIZE = 28;
 
@@ -52,6 +60,132 @@ function toggleBigText(prefs: SharedPrefs): PrefsPatch {
   };
 }
 
+const FLOW_OPTIONS: readonly { label: string; flow: LayoutPrefs['flow'] }[] = [
+  { label: 'Paginated', flow: 'paginated' },
+  { label: 'Scrolled', flow: 'scrolled-doc' },
+];
+
+const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[] = [
+  { label: 'Single', spread: 'single' },
+  { label: 'Double', spread: 'double' },
+];
+
+/** Spreads the CURRENT layout group so changing `flow` can never silently reset `spread` (or the
+ * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about. */
+function toggleFlow(current: SharedPrefs, flow: LayoutPrefs['flow']): PrefsPatch {
+  return {
+    layout: {
+      ...current.layout,
+      flow: current.layout.flow === flow ? DEFAULT_PREFS.layout.flow : flow,
+    },
+  };
+}
+
+function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): PrefsPatch {
+  return {
+    layout: {
+      ...current.layout,
+      spread: current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread,
+    },
+  };
+}
+
+/**
+ * Zoom bounds for the slider only — `ZoomPrefs.level` itself carries no documented range
+ * (prefs.ts:70-72 just says "1.0 = 100%"). 50%–300% covers a PDF's useful reading range without
+ * inviting a value so extreme `fit * dpr * zoom` (pdf.entry.ts) produces a degenerate canvas.
+ */
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3.0;
+const ZOOM_STEP = 0.1;
+const ZOOM_THUMB_SIZE = 20;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** Rounds to the nearest step and away from float noise (e.g. 1.7000000000000002). */
+function snapToZoomStep(value: number): number {
+  return Math.round(clamp(value, ZOOM_MIN, ZOOM_MAX) / ZOOM_STEP) * ZOOM_STEP;
+}
+
+/**
+ * A minimal drag slider, in RN core only (View/Pressable/PanResponder) — deliberately not a new
+ * dependency for a TEMP dev widget. Visual position updates continuously while dragging (so the
+ * marker tracks the finger and the number reads live); the actual `prefsStore.savePrefs` commit
+ * fires only on release, so a drag does not flood the WebView with a re-render per pixel of finger
+ * movement.
+ */
+function ZoomSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  // Closes over `trackWidth`/`value` directly (plain render-scope variables, not refs) rather than
+  // the ref-sync-in-an-effect idiom used elsewhere in this codebase (e.g. ReaderScreen's
+  // appearanceEnvRef) — the newer react-hooks/refs lint rule flags a ref read reachable from a
+  // value constructed during render, which PanResponder.create's callbacks would be. Recreating
+  // this per `[trackWidth, value]` change is cheap and, since neither changes mid-drag (trackWidth
+  // only changes on layout/rotation, and `value` only changes when THIS component's own onCommit
+  // below fires, i.e. after a drag ends), the PanResponder's identity is stable for the lifetime of
+  // any single gesture — recreating it mid-touch is what would risk dropping the gesture, not this.
+  const valueFromX = useCallback((x: number): number => {
+    if (trackWidth <= 0) return value;
+    const ratio = clamp(x / trackWidth, 0, 1);
+    return snapToZoomStep(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
+  }, [trackWidth, value]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio = (clamp(displayValue, ZOOM_MIN, ZOOM_MAX) - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN);
+  const thumbLeft = ratio * trackWidth - ZOOM_THUMB_SIZE / 2;
+
+  return (
+    <View>
+      <Text style={styles.zoomValue}>{Math.round(displayValue * 100)}%</Text>
+      <View
+        style={styles.zoomTrack}
+        onLayout={handleTrackLayout}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        <View
+          style={[styles.zoomThumb, { left: clamp(thumbLeft, -ZOOM_THUMB_SIZE / 2, trackWidth - ZOOM_THUMB_SIZE / 2) }]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export function DevPreferencesMenu(): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
@@ -73,6 +207,14 @@ export function DevPreferencesMenu(): React.JSX.Element {
       cancelled = true;
       unsubscribe();
     };
+  }, []);
+
+  // Stable across every render of THIS component (empty deps — `zoom.level` is a single-field
+  // group, so there is nothing to spread from current prefs), which is what lets ZoomSlider's own
+  // PanResponder stay identical for the lifetime of a drag even if a prefs notification lands and
+  // re-renders this menu mid-gesture.
+  const commitZoom = useCallback((level: number) => {
+    void prefsStore.savePrefs({ zoom: { level } });
   }, []);
 
   return (
@@ -127,6 +269,53 @@ export function DevPreferencesMenu(): React.JSX.Element {
               </Text>
             </Pressable>
           </View>
+
+          <Text style={styles.sectionLabel}>Layout</Text>
+          <View style={styles.row}>
+            {FLOW_OPTIONS.map(({ label, flow }) => {
+              const active = prefs.layout.flow === flow;
+              return (
+                <Pressable
+                  key={flow}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`Flow: ${label}${active ? ', selected' : ''}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs(toggleFlow(prefs, flow));
+                  }}
+                  style={[styles.toggle, active && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.row}>
+            {SPREAD_OPTIONS.map(({ label, spread }) => {
+              const active = prefs.layout.spread === spread;
+              return (
+                <Pressable
+                  key={spread}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`Spread: ${label}${active ? ', selected' : ''}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs(toggleSpread(prefs, spread));
+                  }}
+                  style={[styles.toggle, active && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={styles.sectionLabel}>Zoom</Text>
+          <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
         </View>
       )}
     </View>
@@ -153,7 +342,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 48,
     right: 0,
-    minWidth: 200,
+    minWidth: 220,
     backgroundColor: '#ffffff',
     borderRadius: 12,
     borderWidth: 1,
@@ -187,4 +376,45 @@ const styles = StyleSheet.create({
   toggleActive: { backgroundColor: '#111111', borderColor: '#111111' },
   toggleLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
   toggleLabelActive: { color: '#ffffff' },
+
+  // The slider. A plain 6px track with a filled portion behind a round thumb — deliberately not
+  // trying to look like either platform's native slider, since this is a dev tool, not UI the app
+  // ships with.
+  zoomValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#111111',
+    marginBottom: 8,
+    fontVariant: ['tabular-nums'],
+  },
+  zoomTrack: {
+    height: 28,
+    justifyContent: 'center',
+    // Padding, not margin, on the touch target — panHandlers are on THIS view, so the full 28px
+    // height (not just the 6px visual track) is draggable, which is what makes the thumb catchable.
+  },
+  zoomTrackBase: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#e2e2e2',
+  },
+  zoomTrackFill: {
+    position: 'absolute',
+    left: 0,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#111111',
+  },
+  zoomThumb: {
+    position: 'absolute',
+    width: ZOOM_THUMB_SIZE,
+    height: ZOOM_THUMB_SIZE,
+    borderRadius: ZOOM_THUMB_SIZE / 2,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#111111',
+  },
 });
