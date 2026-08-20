@@ -300,6 +300,12 @@ ${text}`;
       fail("PDFJS_MISSING", "pdf.js worker source is empty \u2014 check the build-html inject step");
       return false;
     }
+    if (/Android/.test(navigator.userAgent)) {
+      const script = document.createElement("script");
+      script.textContent = el.textContent;
+      document.head.appendChild(script);
+      return true;
+    }
     const blob = new Blob([el.textContent], { type: "text/javascript" });
     pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
     return true;

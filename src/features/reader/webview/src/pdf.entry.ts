@@ -39,7 +39,7 @@ import {
 /**
  * The pdf.js surface this shell uses, as it appears on `window`.
  *
- * Only the two members actually touched are named. `getDocument`'s parameter type is spelled out
+ * Only the members actually touched are named. `getDocument`'s parameter type is spelled out
  * rather than imported because pdf.js's own `DocumentInitParameters` is far wider than what a shell
  * with no network access may pass — see the deliberate omissions in `openPdf`.
  */
@@ -91,6 +91,9 @@ function lib(): PdfJsLib | null {
  * frozen UI. `blob:` is already in ReaderWebView.tsx's allow-list, and a Blob URL is memory rather
  * than a fetch, so this keeps the zero-sub-resource-requests property.
  *
+ * ANDROID IS THE ONE PLACE THIS INTENT DOESN'T HOLD — see the Android branch below for why the
+ * real worker never actually starts there, and main-thread parsing is accepted instead.
+ *
  * Returns false having already failed, rather than throwing, so the caller can stop before
  * getDocument().
  */
@@ -99,6 +102,33 @@ function wireWorker(pdfjs: PdfJsLib): boolean {
   if (!el?.textContent?.trim()) {
     fail('PDFJS_MISSING', 'pdf.js worker source is empty — check the build-html inject step');
     return false;
+  }
+
+  // ANDROID ONLY: run the SAME worker source as a normal script instead of handing it to a real
+  // Worker via a blob URL.
+  //
+  // This page is loaded via `file://`, which Chromium gives an opaque ("null") origin. pdf.js's
+  // PDFWorker._initialize() checks isSameOrigin(window.location.href, workerSrc) before spawning a
+  // real worker; a null-origin page always fails that check, so pdf.js wraps the blob above in a
+  // SECOND blob that does `importScripts("<the first blob>")` and hands that to `new Worker()`.
+  // Android's WebView refuses to load a blob: URL from inside a worker whose own script also came
+  // from a null-origin blob ("Not allowed to load local resource") — iOS's WKWebView does not have
+  // this restriction. The failure surfaces as an uncaught global error this bridge reports as
+  // WEBVIEW_SCRIPT_ERROR, even though pdf.js recovers a moment later via its own fake-worker
+  // fallback — so the document still opens, just behind a false-alarm error banner.
+  //
+  // Executing the worker source as a plain <script> defines `globalThis.pdfjsWorker` directly (the
+  // same UMD global this comment's opening paragraph names) BEFORE getDocument() ever runs.
+  // PDFWorker._initialize() probes for exactly that global first, ahead of any Worker/blob logic —
+  // finding it already set skips the doomed real-worker attempt entirely and goes straight to the
+  // same main-thread fallback that was already silently recovering every time, minus the failed
+  // attempt and its false-alarm error. No Worker, no Blob, no importScripts — none of the pieces
+  // Android's restriction above applies to are used on this path at all.
+  if (/Android/.test(navigator.userAgent)) {
+    const script = document.createElement('script');
+    script.textContent = el.textContent;
+    document.head.appendChild(script);
+    return true;
   }
 
   const blob = new Blob([el.textContent], { type: 'text/javascript' });
