@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { TtsSession } from './useTtsSession';
+import { PITCH_LADDER } from './ttsPitch';
 import { RATE_LADDER } from './ttsRate';
 import { VoicePicker } from './VoicePicker';
 
@@ -85,8 +86,8 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
         </Pressable>
       </View>
 
-      <Text style={styles.rateLabel}>Speed</Text>
-      <View style={styles.rateRow}>
+      <Text style={styles.sectionLabel}>Speed</Text>
+      <View style={styles.chipRow} testID="tts-speed-row">
         {RATE_LADDER.map((rate) => {
           const selected = session.prefs.rate === rate;
           return (
@@ -94,11 +95,26 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
               accessibilityRole="button"
               key={rate}
               onPress={() => session.setRate(rate)}
-              style={[styles.rateChip, selected && styles.rateChipSelected]}
+              style={[styles.chip, selected && styles.chipSelected]}
             >
-              <Text style={[styles.rateChipText, selected && styles.rateChipTextSelected]}>
-                {rate}x
-              </Text>
+              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{rate}x</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={styles.sectionLabel}>Pitch</Text>
+      <View style={styles.chipRow} testID="tts-pitch-row">
+        {PITCH_LADDER.map((pitch) => {
+          const selected = session.prefs.pitch === pitch;
+          return (
+            <Pressable
+              accessibilityRole="button"
+              key={pitch}
+              onPress={() => session.setPitch(pitch)}
+              style={[styles.chip, selected && styles.chipSelected]}
+            >
+              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{pitch}x</Text>
             </Pressable>
           );
         })}
@@ -136,15 +152,15 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { opacity: 0.4 },
   buttonText: { fontSize: 14, fontWeight: '600', color: '#111111' },
-  rateLabel: { fontSize: 12, color: '#777777', marginTop: 10, marginBottom: 4 },
-  rateRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  rateChip: {
+  sectionLabel: { fontSize: 12, color: '#777777', marginTop: 10, marginBottom: 4 },
+  chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  chip: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
     backgroundColor: '#f2f2f2',
   },
-  rateChipSelected: { backgroundColor: '#111111' },
-  rateChipText: { fontSize: 13, color: '#111111', fontWeight: '600' },
-  rateChipTextSelected: { color: '#ffffff' },
+  chipSelected: { backgroundColor: '#111111' },
+  chipText: { fontSize: 13, color: '#111111', fontWeight: '600' },
+  chipTextSelected: { color: '#ffffff' },
 });
