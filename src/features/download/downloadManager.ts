@@ -82,7 +82,7 @@ import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
 import { borrowLoan, openReadingSession, fetchEncryptedAsset } from './readingSessionClient';
-import { fetchEncryptedAssetChunked } from './chunkedAssetFetcher';
+import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
 import { DownloadError, DownloadFailure } from './errors';
 
 export const BOOK_LIMIT = 5;
@@ -225,10 +225,28 @@ export async function downloadBook(
   // audio. Converting here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely —
   // it only ever sees "a byte budget", not why that number is what it is.
   const maxCipherBytes = MAX_DECRYPTED_BYTES + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
-  const bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, {
-    maxBytes: maxCipherBytes,
-    onProgress: options.onProgress,
-  });
+  let bytes: Uint8Array;
+  try {
+    bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, {
+      maxBytes: maxCipherBytes,
+      onProgress: options.onProgress,
+    });
+  } catch (cause) {
+    // Fail-closed: clean up any partial download state on mid-transfer abort/timeout.
+    // This ensures incomplete ciphertext doesn't linger on disk, which would either:
+    // - prevent the book from being downloaded again (resumption with a bad manifest)
+    // - unnecessarily consume storage and persist stale data
+    // The 60s ASSET_FETCH_TIMEOUT_MS is already the timeout per chunk; this cleanup is sync/instant.
+    try {
+      discardPartialDownload(bookId);
+    } catch (cleanupCause) {
+      console.warn(
+        `downloadManager: rollback discardPartialDownload(${bookId}) failed during asset fetch cleanup`,
+        cleanupCause,
+      );
+    }
+    throw cause;
+  }
 
   // `content.originalLength`/`mimeType` are OPTIONAL on the real spec (reading-session.ts's own
   // header — "test for presence, not length"). Found in review: comparing a real number against

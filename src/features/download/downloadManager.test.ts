@@ -958,22 +958,25 @@ describe('downloadBook — chunked asset fetch (real Range behavior)', () => {
     expect(firstAttemptError).toBeInstanceOf(DownloadFailure);
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
 
-    // Second attempt: resumes from the 2 chunks already on disk (chunkedAssetFetcher.ts's own
-    // partial-download state), fetches only the remainder, and must reassemble to the exact same
-    // ciphertext bytes as the real encrypt() call produced above.
+    // Second attempt: fails with fail-closed cleanup of partial files (new behavior), so it restarts
+    // from chunk 0 rather than resuming from chunk 2. This is intentional — the fail-closed approach
+    // (CLAUDE.md section on "Fail-closed + clean rollback on a mid-transfer abort") prioritizes
+    // safety over efficiency: a mid-transfer failure may have corrupted the partial state, so
+    // starting fresh is safer than trusting a partial manifest. Resumption is still possible when
+    // the CALLER explicitly invokes discardPartialDownload() first (see chunkedAssetFetcher.test.ts),
+    // but downloadBook itself cleans up on any error.
     const resumeFetch = mockFetchForChunked(loan, session, encryptedBytes);
     global.fetch = resumeFetch;
 
     await expect(downloadBook(bookId)).resolves.toBeUndefined();
     expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
 
-    // Only the remaining chunk(s) were re-requested against the content URL — proves this
-    // resumed rather than re-fetching the whole 3.3-MiB asset from byte 0.
-    const resumedContentRequests = resumeFetch.mock.calls.filter((call) => call[0] === session.content.url);
-    expect(resumedContentRequests.length).toBeLessThan(4);
-    expect(resumedContentRequests[0][1].headers.Range).toBe(
-      `bytes=${CHUNK_SIZE_BYTES * 2}-${CHUNK_SIZE_BYTES * 3 - 1}`,
-    );
+    // Restart from chunk 0, not resume from chunk 2 — all chunks re-requested due to cleanup.
+    const restartedContentRequests = resumeFetch.mock.calls.filter((call) => call[0] === session.content.url);
+    expect(restartedContentRequests.length).toBe(4); // 4 chunks for a 3.3-chunk asset, all fetched fresh
+    expect(restartedContentRequests[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+    // This proves cleanup happened: if resume had worked, the first request would be for chunk 2,
+    // not chunk 0.
 
     // THE ACTUAL CLAIM: decryptBook() calls decipher.final() (aesGcm.ts), which throws on a bad
     // GCM tag. Reaching this assertion at all — with the correct plaintext back out — is the
@@ -1064,5 +1067,125 @@ describe('downloadBook — chunked asset fetch (real Range behavior)', () => {
 
     const contentRequests = fetchMock.mock.calls.filter((call) => call[0] === session.content.url);
     expect(contentRequests).toHaveLength(1); // rejected after the first chunk, never fetched chunks 2-4+
+  });
+});
+
+describe('downloadBook — fail-closed cleanup on asset fetch failure', () => {
+  it('discards partial downloads on mid-transfer abort/timeout, before re-throwing', async () => {
+    const bookId = 'mid-transfer-abort';
+    const plaintext = new Uint8Array(Math.floor(CHUNK_SIZE_BYTES * 3.2)).map((_, i) => i % 256);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
+
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'SUBSCRIPTION',
+      canPersist: true,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint,
+      },
+    });
+
+    // Simulate mid-transfer abort: first chunk succeeds, second chunk fails (e.g., timeout).
+    let contentCallCount = 0;
+    const abortingFetch = jest.fn().mockImplementation(async (url: string, init?: { headers?: Record<string, string> }) => {
+      // Handle loan and session requests normally
+      if (url === `${API_BASE_URL}/api/v1/loans`) {
+        return new Response(JSON.stringify(loan), { status: 200 });
+      }
+      if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
+        return new Response(JSON.stringify(session), { status: 200 });
+      }
+      // Simulate mid-transfer abort on the asset fetch: first chunk succeeds, second fails
+      if (url === session.content.url) {
+        contentCallCount++;
+        if (contentCallCount === 2) {
+          // Simulate a timeout/abort after the first chunk arrived
+          throw new Error('Network timeout during chunk 2 (simulated abort)');
+        }
+        const rangeHeader = init?.headers?.Range;
+        if (!rangeHeader) {
+          return new Response(encryptedBytes, { status: 200 });
+        }
+        const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+        if (!match) {
+          return new Response(null, { status: 400 });
+        }
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), encryptedBytes.length - 1);
+        const slice = encryptedBytes.subarray(start, end + 1);
+        return new Response(slice, {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${encryptedBytes.length}` },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    global.fetch = abortingFetch;
+
+    // downloadBook should reject with the asset fetch error
+    await expect(downloadBook(bookId, 'EPUB')).rejects.toMatchObject({
+      code: DownloadError.ASSET_FETCH_FAILED,
+    });
+
+    // Verify the book was NOT persisted
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+
+    // Verify no partial download files remain — a second attempt should start fresh from chunk 0
+    let successfulContentCount = 0;
+    const retryFetch = jest.fn().mockImplementation(async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url === `${API_BASE_URL}/api/v1/loans`) {
+        return new Response(JSON.stringify(loan), { status: 200 });
+      }
+      if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
+        return new Response(JSON.stringify(session), { status: 200 });
+      }
+      if (url === session.content.url) {
+        successfulContentCount++;
+        const rangeHeader = init?.headers?.Range;
+        if (!rangeHeader) {
+          return new Response(encryptedBytes, { status: 200 });
+        }
+        const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+        if (!match) {
+          return new Response(null, { status: 400 });
+        }
+        const start = Number(match[1]);
+        const end = Math.min(Number(match[2]), encryptedBytes.length - 1);
+        const slice = encryptedBytes.subarray(start, end + 1);
+        return new Response(slice, {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${encryptedBytes.length}` },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    global.fetch = retryFetch;
+
+    // Re-attempt should succeed and start from 0 (not resume from chunk 2)
+    await downloadBook(bookId, 'EPUB');
+    expect(successfulContentCount).toBeGreaterThanOrEqual(4); // all chunks fetched from start, ~4 chunks total
+    // First content request should be for chunk 0, not chunk 2 (resuming) — this proves cleanup worked
+    const contentRequests = retryFetch.mock.calls.filter((call) => call[0] === session.content.url);
+    expect(contentRequests[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
   });
 });
