@@ -19,7 +19,7 @@ import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryp
 import { encrypt } from '../encryption/aesGcm';
 import { generateDeviceKeypair, wrapBek, publicKeyFingerprint } from '../encryption/deviceKeypair';
 import { CHUNK_SIZE_BYTES } from './chunkedAssetFetcher';
-import { DownloadError } from './errors';
+import { DownloadError, DownloadFailure } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
 import type { FlambeauError, Loan, ReadingSessionResponse } from '@/shared/contracts';
@@ -789,7 +789,7 @@ describe('downloadBook — chunked asset fetch (real Range behavior)', () => {
   // downloadTable between describe blocks — without this, the second persisting test here would
   // push a distinct book over BOOK_LIMIT (5), tripped by earlier describe blocks' own persisted
   // books, exactly the trap the search-index-delivery block's own comment already describes.
-  const chunkedBookIds = ['chunked-download-multi', 'chunked-download-progress'];
+  const chunkedBookIds = ['chunked-download-multi', 'chunked-download-progress', 'chunked-download-resume'];
   afterEach(async () => {
     global.fetch = originalFetch;
     for (const bookId of chunkedBookIds) {
@@ -876,6 +876,109 @@ describe('downloadBook — chunked asset fetch (real Range behavior)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('COMPLETED');
 
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
+    await contentStore.close(bookId);
+  });
+
+  // Whole-file AES-GCM means ONE tag covers the ENTIRE ciphertext (cipherLayout.ts) — there is no
+  // per-chunk verification. Chunking (and resuming) only changes how the bytes for that one
+  // ciphertext arrive; decryptBook()'s tag check (aesGcm.ts) cannot tell a resumed reassembly from
+  // a single whole-file fetch UNLESS the reassembly is byte-wrong, in which case it throws
+  // INTEGRITY_FAILED exactly as whole-file corruption already does — no new error path needed
+  // (this file's own header comment). This test is the one place that combines the two real
+  // pieces that are each tested separately elsewhere: chunkedAssetFetcher.test.ts proves a resumed
+  // fetch is byte-identical to a non-resumed one (via Buffer equality against random bytes, no
+  // crypto involved), and the test above proves a real GCM payload survives a non-interrupted
+  // chunked fetch. Neither proves the tag still validates when those two are combined — a resumed
+  // reassembly is the one path most likely to introduce a byte-boundary bug (reopening a partial
+  // file, appending onto it) if either implementation drifts.
+  it('resumes a real AES-256-GCM-encrypted download after an interruption, and the reassembled ciphertext still passes the GCM tag check', async () => {
+    const bookId = 'chunked-download-resume';
+    const plaintext = new Uint8Array(Math.floor(CHUNK_SIZE_BYTES * 3.3)).map((_, i) => i % 256);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
+
+    const loan = openAccessLoanFor(bookId, {
+      licenceModel: 'SUBSCRIPTION',
+      canPersist: true,
+      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const session = sessionFor(bookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint,
+      },
+    });
+
+    // First attempt: the loan/session calls succeed (real endpoints), but the 3rd chunk of the
+    // real ciphertext fails outright — simulating a dropped connection mid-asset, same shape as
+    // chunkedAssetFetcher.test.ts's own resume test. Wraps the already-proven mockFetchForChunked
+    // rather than reimplementing the loan/session branches, so only the interruption itself is new.
+    let chunkCallCount = 0;
+    const workingFetch = mockFetchForChunked(loan, session, encryptedBytes);
+    const failingFetch = jest.fn().mockImplementation(async (url: string, init?: unknown) => {
+      if (url === session.content.url) {
+        chunkCallCount++;
+        if (chunkCallCount === 3) {
+          throw new TypeError('Network request failed');
+        }
+      }
+      return workingFetch(url, init);
+    });
+    global.fetch = failingFetch;
+
+    // A plain `try/catch` here, not `await expect(...).rejects...`: the throw above happens
+    // inside an async mock nested one layer deeper than the other tests in this file (this mock
+    // wraps mockFetchForChunked's own mock rather than being called directly), and that extra hop
+    // trips Node's unhandled-rejection detection racing `.rejects`' own handler attachment —
+    // confirmed empirically, not a style preference. The assertion is identical either way.
+    let firstAttemptError: unknown;
+    try {
+      await downloadBook(bookId);
+    } catch (error) {
+      firstAttemptError = error;
+    }
+    expect(firstAttemptError).toBeInstanceOf(DownloadFailure);
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+
+    // Second attempt: resumes from the 2 chunks already on disk (chunkedAssetFetcher.ts's own
+    // partial-download state), fetches only the remainder, and must reassemble to the exact same
+    // ciphertext bytes as the real encrypt() call produced above.
+    const resumeFetch = mockFetchForChunked(loan, session, encryptedBytes);
+    global.fetch = resumeFetch;
+
+    await expect(downloadBook(bookId)).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    // Only the remaining chunk(s) were re-requested against the content URL — proves this
+    // resumed rather than re-fetching the whole 3.3-MiB asset from byte 0.
+    const resumedContentRequests = resumeFetch.mock.calls.filter((call) => call[0] === session.content.url);
+    expect(resumedContentRequests.length).toBeLessThan(4);
+    expect(resumedContentRequests[0][1].headers.Range).toBe(
+      `bytes=${CHUNK_SIZE_BYTES * 2}-${CHUNK_SIZE_BYTES * 3 - 1}`,
+    );
+
+    // THE ACTUAL CLAIM: decryptBook() calls decipher.final() (aesGcm.ts), which throws on a bad
+    // GCM tag. Reaching this assertion at all — with the correct plaintext back out — is the
+    // proof the resumed-then-reassembled ciphertext is byte-identical to what encrypt() produced,
+    // not just "some bytes of the right length".
     await contentStore.openSession(bookId);
     const decrypted = await contentStore.decryptBook(bookId);
     expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
