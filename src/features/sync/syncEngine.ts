@@ -17,7 +17,7 @@ import { personalizationTable } from './stores/personalizationStore';
 import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
 import { api, ApiError } from './syncApi';
-import { checkEntitlements, type EntitlementReport } from './offlineLock';
+import { applyDownloadRecord, recordEntitlementCheck } from './offlineLock';
 
 /** One place that knows how to apply a server record for each entity type. */
 const TABLES = {
@@ -49,13 +49,6 @@ export interface SyncReport {
   pulled: number;
   applied: number;
   error?: string;
-  /**
-   * What the loan change feed said, when it answered. See {@link EntitlementReport}.
-   *
-   * Absent only if the entitlement step itself was never reached. `checked: false` inside it
-   * means the feed could not be read - which is NOT the same as "nothing is revoked".
-   */
-  entitlement?: EntitlementReport;
 }
 
 let inFlight: Promise<SyncReport> | null = null;
@@ -63,12 +56,16 @@ let inFlight: Promise<SyncReport> | null = null;
 /**
  * The Sync Manager, talking to the Mongo backend's per-entity CRUD endpoints.
  *
- * Push first so the server has our changes before we ask what it has, then pull,
- * then read the loan change feed. Three invariants:
+ * Push first so the server has our changes before we ask what it has, then pull. Three
+ * invariants:
  *   1. An outbox row is removed only after the server has acknowledged it.
  *   2. The pull checkpoint advances only after every pulled change is applied.
  *   3. A stale local edit never overwrites a newer server record. Whoever does
  *      the comparison, the later `updatedAt` wins.
+ *
+ * The entitlement check (`B6`) is no longer a separate step: `downloads.isValid` is written
+ * server-side now, so pulling `downloads` like any other collection IS the check - see
+ * `offlineLock.ts`.
  */
 export const syncEngine = {
   /** Concurrent calls share one run rather than racing each other. */
@@ -83,17 +80,6 @@ export const syncEngine = {
 
   isRunning(): boolean {
     return inFlight !== null;
-  },
-
-  /**
-   * The entitlement check on its own - see `offlineLock.ts`.
-   *
-   * `run()` already ends with it, so this is for the case a sync never covers: the app sitting
-   * open and online with an empty outbox, where nothing would otherwise trigger a run until the
-   * next reconnect or foreground. One cheap read, and no interaction with the outbox at all.
-   */
-  checkEntitlements(): Promise<EntitlementReport> {
-    return checkEntitlements();
   },
 };
 
@@ -114,13 +100,6 @@ async function execute(): Promise<SyncReport> {
     // pushed before it stays pushed; nothing is lost and nothing is duplicated.
     report.error = error instanceof Error ? error.message : String(error);
   }
-
-  // Outside the try above, and last. Outside because the feed is read-only and independent of the
-  // outbox, so a push that stalled on one bad payload must not stop the device learning that a
-  // book was revoked. Last because `is_valid` is a synced column: a pulled `downloads` record
-  // carries the server's copy of it, so asking after the pull gives the feed the final word
-  // within every run. It never throws - see `checkEntitlements`.
-  report.entitlement = await checkEntitlements();
 
   return report;
 }
@@ -345,10 +324,17 @@ async function pull(report: SyncReport): Promise<void> {
 
     for (const record of response.data ?? []) {
       report.pulled += 1;
-      // Last-Write-Wins, and device-local columns (local_path) are preserved.
-      const applied = await table.applyServerRecord(record);
+      // Last-Write-Wins, and device-local columns (local_path) are preserved. `downloads` goes
+      // through applyDownloadRecord instead of the table directly - same LWW guard underneath,
+      // but it also diffs isValid and emits content.lock/content.unlock on a real change (B6).
+      const applied =
+        entityType === 'downloads'
+          ? await applyDownloadRecord(record)
+          : await table.applyServerRecord(record);
       if (applied) report.applied += 1;
     }
+
+    if (entityType === 'downloads') await recordEntitlementCheck();
   }
 
   // The checkpoint moves only once everything above has landed in SQLite.

@@ -78,62 +78,70 @@ good news for (a): the tracked backend's `/api/*` doesn't collide with either co
 
 ---
 
-## 3. `B6` 🟡 — flambeau's change feed: Sync half DONE, Encryption half outstanding
+## 3. `B6` 🟡 — revocation channel: now the `downloads` pull itself, not a separate feed
 
-`GET /api/v1/loans/changes` is the contract's designed revocation channel. flambeau, in its own
-words:
+`GET /api/v1/loans/changes` was the contract's originally designed revocation channel, and this
+section used to describe `loanChanges.ts` polling it. **That mechanism is now removed.** The
+licence side changed how it publishes revocation: it writes `isValid` directly onto the
+`downloads` document server-side (Mongo), rather than emitting it as an event on a feed this
+device has to page through. `A10` (whether the feed lives at `/api/v1/loans/changes` or
+`/api/v1/changes`) is therefore **moot** — there is no feed call left for the path to matter to.
 
-> A revocation is the reason this endpoint exists at all — it is the only way the app learns that a
-> book it is showing has stopped being readable.
+**Why this is on your list and not only Abhinav's, unchanged from before:** it is still a
+sync-shaped concern (pull, act-on-change) about a value Download/licence owns the source of.
 
-The mobile app implements no change feed, stores no cursor, and has no `ChangeEntry` type. **But
-CAP-7 already has cursor handling** — `syncEngine.ts` and `stores/syncMetadataStore.ts` — pointed at
-a different backend. The machinery exists; the flambeau feed is unwired.
+- **This is still what makes Download's fail-open policy safe.** The app allows reads against
+  already-persisted ciphertext on any unconfirmable error (`B7`), which means a revoked reader
+  keeps reading offline indefinitely unless something eventually tells it otherwise. Fail-open
+  plus a working entitlement check is a reasonable design; fail-open plus no check is a hole. The
+  action on a revocation is still `ContentStore.destroy()`.
+- **This is a real narrowing of what Sync can report, and needs Abhinav's sign-off, not just
+  notice.** The old feed carried a `reason` (`ENTITLEMENT_REVOKED` vs `_EXPIRED` vs `_SUSPENDED` vs
+  `LOAN_RETURNED` vs `LOAN_RENEWED`), which is what let `_EXPIRED` map to the non-destructive
+  `'expired'` lock reason instead of `'revoked'`. A bare `isValid: boolean` carries none of that -
+  `applyDownloadRecord` in `offlineLock.ts` currently emits `reason: 'revoked'` unconditionally for
+  every `false` transition, because there is nothing else to go on. If the licence side's writer
+  can distinguish "revoked" from "merely expired" (which Encryption already detects unaided from
+  the licence it holds), that distinction needs to travel on the `downloads` document too, or every
+  invalidation reason now triggers BEK destruction, including ones that never used to.
 
-**Why this is on your list and not only Abhinav's:** it is a sync-shaped concern (cursor, incremental
-pull, act-on-change) about loan state that Download owns. The boundary needs deciding, not
-assuming. Two things to know before either of you starts:
+### Status — mechanism replaced (this change)
 
-- **`A10` is unresolved.** flambeau has itself proposed moving this to `GET /api/v1/changes`,
-  because a hold event arriving on a loan-shaped path mislabels it. Decide before implementing, or
-  it gets built twice.
-- **This is what makes Download's fail-open policy safe.** The app currently allows reads against
-  already-persisted ciphertext on any unconfirmable error (`B7`), which means a revoked reader keeps
-  reading offline indefinitely. Fail-open plus a change feed is a reasonable design; fail-open plus
-  no change feed is a hole. The action on `ENTITLEMENT_REVOKED` is `ContentStore.destroy()`, which
-  already exists and makes the ciphertext noise instantly, offline, regardless of size.
+`offlineLock.ts` no longer reads a feed. `downloads` is one of the six collections
+`syncEngine.ts`'s `pull()` already sweeps every run; `pull()` now routes each `downloads` record
+through `applyDownloadRecord` instead of the generic `applyServerRecord` directly. That function
+still calls the generic one underneath (so Last-Write-Wins still governs whether the record is
+even applied), then diffs the row's `is_valid` before vs. after and emits `content.lock` /
+`content.unlock` on the shared bus only on a genuine transition — a repeated revocation is not
+re-announced. `LAST_LOAN_CHANGES_CURSOR` is gone (nothing pages through anything any more);
+`LAST_ENTITLEMENT_CHECK_AT` stays, now set whenever the `downloads` collection is pulled, since
+that pull IS the entitlement check now.
 
-### Status — Sync side implemented (this change)
-
-`loanChanges.ts` consumes the feed; `offlineLock.ts` applies it. The cursor lives in
-`sync_metadata` under `LAST_LOAN_CHANGES_CURSOR`, reusing the machinery this section pointed at.
-
-What it does: reads the feed on every sync run (after push and pull, outside their try/catch so a
-stuck payload cannot block it), writes the advisory `downloads.is_valid` column, and emits
-`content.lock` / `content.unlock` on the shared bus. Signals fire only on a real state change, so a
-repeated revocation is not re-announced.
-
-What it deliberately does NOT do:
+What it deliberately still does NOT do:
 
 - **It does not gate reading.** Encryption remains the only gate. `is_valid` is advisory and exists
-  so the UI can explain a locked book; `downloadStore.isBookValid()` is named the same as before but
-  now means "what the last check said", not "the column the reader gates on".
+  so the UI can explain a locked book; `downloadStore.isBookValid()` still means "what the last
+  check said", not "the column the reader gates on".
 - **It does not destroy key material.** `reason: 'revoked'` is the privileged signal that asks
-  Encryption to. Nothing subscribes yet — **that half is Abhinav's** and until it lands a revocation
-  is recorded and announced but nothing acts on it.
-- **`ENTITLEMENT_EXPIRED` maps to `'expired'`, not `'revoked'`**, on purpose: Encryption already
-  sees expiry from the licence it holds, and destroying a BEK over it would force a needless
-  re-download.
+  Encryption to. Nothing subscribes yet — **that half is Abhinav's** and until it lands a
+  revocation is recorded and announced but nothing acts on it.
 
-Fail-open is unchanged and is now pinned by tests: offline, a timeout, a 404, or an unparseable body
-emits nothing, changes no row, and does not advance the cursor. `B7`'s hole therefore narrows but
-does not close — a revoked book stays readable while the device stays offline, which still needs the
-Phase 6 anti-rollback high-water-mark.
+Fail-open is unchanged, just inherited from the pull it now rides on rather than from its own
+try/catch: offline, or any failed pull, means `applyDownloadRecord` is never called for anything,
+so nothing changes and nothing is announced. `B7`'s hole therefore narrows but does not close — a
+revoked book stays readable while the device stays offline, which still needs the Phase 6
+anti-rollback high-water-mark.
 
-**Wire shape is a mirror, not a verified schema.** No tracked file reproduces a `ChangeEntry` JSON
-schema, so field names are inferred from flambeau's prose. Everything downstream tolerates a
-mismatch: an unrecognised `reason` is ignored rather than guessed at, and a malformed page reads as
-"no changes". Fixing the names later touches `loanChanges.ts` only.
+**This still needs a joint decision, not just a Sync-side change.** `src/shared/contracts/
+offline-lock.ts` — jointly owned by Sync and Encryption — documents a *previous* withdrawn attempt
+at offline entitlement that had this exact shape: an externally-written, synced `is_valid` column
+as a second, independent source of entitlement truth that could disagree with the `SignedLicence`
+Encryption already verifies, and that propagated one device's verdict to every other device. That
+file's own open question 3 says the column "must not be a synced column: one device's verdict must
+not propagate as another device's truth" — which this design is. Whether that concern still
+applies now that the write comes from the licence side itself (rather than from another device's
+locally-computed verdict) is exactly the kind of thing that file exists to have agreed jointly
+before being built, and it has not been re-visited here.
 
 ---
 
