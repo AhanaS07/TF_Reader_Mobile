@@ -44,6 +44,7 @@ import {
   isMultiColumnCount,
   isPaginated,
   readerMetrics,
+  sanitizeFontDataUri,
   sanitizeFontFamily,
 } from '@/features/reader/webview/src/readerMetrics';
 import { DEFAULT_PREFS } from '@/shared/contracts';
@@ -441,6 +442,22 @@ describe('baselineCss carries the prefs-application theme/typography overrides',
       /font-family: Georgia, sans-serif !important/,
     );
   });
+
+  it('injects an @font-face, declared under the bare fontFamily, when both are given', () => {
+    const css = baselineCss(m, { fontFamily: 'Inter', fontFaceDataUri: 'data:font/ttf;base64,AAA=' });
+    expect(css).toMatch(/@font-face \{/);
+    expect(css).toMatch(/font-family: Inter;/);
+    expect(css).toMatch(/src: url\("data:font\/ttf;base64,AAA="\);/);
+    expect(css).toMatch(/font-display: swap;/);
+    // Declared before the baseline rules, so it registers before anything references the name.
+    expect(css.indexOf('@font-face')).toBeLessThan(css.indexOf('html, body {'));
+  });
+
+  it('emits no @font-face when either half is missing', () => {
+    expect(baselineCss(m, { fontFamily: 'Inter' })).not.toMatch(/@font-face/);
+    expect(baselineCss(m, { fontFaceDataUri: 'data:font/ttf;base64,AAA=' })).not.toMatch(/@font-face/);
+    expect(baselineCss(m)).not.toMatch(/@font-face/);
+  });
 });
 
 describe('sanitizeFontFamily — the allow-list standing between a preference and CSS text', () => {
@@ -469,6 +486,32 @@ describe('sanitizeFontFamily — the allow-list standing between a preference an
     expect(sanitizeFontFamily(`"; } body { background: url(evil) `)).toBe('');
     expect(sanitizeFontFamily('Georgia<script>')).toBe('');
     expect(sanitizeFontFamily("Georgia'; alert(1)")).toBe('');
+  });
+});
+
+describe('sanitizeFontDataUri — the allow-list standing between a font byte source and CSS text', () => {
+  it('passes through a well-formed data:font URI unchanged', () => {
+    expect(sanitizeFontDataUri('data:font/ttf;base64,AAAA')).toBe('data:font/ttf;base64,AAAA');
+  });
+
+  it('accepts other font mime subtypes', () => {
+    expect(sanitizeFontDataUri('data:font/woff2;base64,AAAA')).toBe('data:font/woff2;base64,AAAA');
+  });
+
+  it('treats null or empty/whitespace input as "do not override"', () => {
+    expect(sanitizeFontDataUri(null)).toBe('');
+    expect(sanitizeFontDataUri('')).toBe('');
+    expect(sanitizeFontDataUri('   ')).toBe('');
+  });
+
+  it('rejects a non-data: scheme, e.g. what a stray upload path would look like', () => {
+    expect(sanitizeFontDataUri('file:///fonts/x.otf')).toBe('');
+    expect(sanitizeFontDataUri('https://example.com/font.ttf')).toBe('');
+  });
+
+  it('refuses an injection attempt breaking out of the src: url("...") it will end up in', () => {
+    expect(sanitizeFontDataUri('data:font/ttf;base64,AAA");}body{background:url(evil)}')).toBe('');
+    expect(sanitizeFontDataUri("data:font/ttf;base64,AAA' onload='alert(1)")).toBe('');
   });
 });
 

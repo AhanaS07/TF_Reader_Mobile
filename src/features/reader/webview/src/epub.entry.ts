@@ -41,6 +41,7 @@ import {
   isPaginated,
   READER_FLOW,
   readerMetrics,
+  sanitizeFontDataUri,
   sanitizeFontFamily,
   type AppearanceCssOptions,
   type ReaderFlow,
@@ -90,12 +91,17 @@ function currentFlow(): ReaderFlow {
 
 function appearanceCssOptions(): AppearanceCssOptions {
   if (!currentAppearance) return {};
+  const fontFamily = sanitizeFontFamily(currentAppearance.fontFamily);
+  const fontFaceDataUri = sanitizeFontDataUri(currentAppearance.customFontUri);
   return {
     fg: currentAppearance.fg,
     bg: currentAppearance.bg,
     link: currentAppearance.link,
-    fontFamily: sanitizeFontFamily(currentAppearance.fontFamily),
+    fontFamily,
     letterSpacingPx: currentAppearance.letterSpacingPx,
+    // Only meaningful alongside a non-empty fontFamily — baselineCss's @font-face declares itself
+    // under that exact name, so a URI with nothing to attach it to is dropped rather than passed.
+    ...(fontFamily && fontFaceDataUri ? { fontFaceDataUri } : {}),
   };
 }
 

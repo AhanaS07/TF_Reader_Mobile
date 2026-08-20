@@ -23,8 +23,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { AppearanceEnv, ReaderAppearance } from '@/features/personalization/readerAppearance';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -46,7 +48,7 @@ import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
-import type { BookId, ContentFormat, LayoutPrefs } from '@/shared/contracts';
+import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
@@ -129,6 +131,19 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * `toReaderAppearance`'s own `customFontUri` is a straight passthrough of `FontPrefs.customFontUri`
+ * — a separate, still-unused upload-path field (see readerAppearance.ts). This overlays it with the
+ * loaded bundled-font data URI for `prefs.font.family` instead (or `null` for `'system'`/unknown) —
+ * Reader's chosen meaning for this field on the bridge, per CUSTOM_FONTS_WIRING.md. Both send sites
+ * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
+ * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
+ */
+async function buildAppearanceWithFont(prefs: SharedPrefs, env: AppearanceEnv): Promise<ReaderAppearance> {
+  const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
+  return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
 }
 
 interface ReaderScreenProps {
@@ -361,7 +376,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
       try {
         const prefs = await prefsStore.getPrefs();
-        sender({ type: 'applyAppearance', appearance: toReaderAppearance(prefs, env) });
+        sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
       } catch {
         // Best-effort — see the note above.
       }
@@ -565,7 +580,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     return prefsStore.subscribe((freshPrefs) => {
       setLayoutPrefs(freshPrefs.layout);
       if (send === null) return;
-      send({ type: 'applyAppearance', appearance: toReaderAppearance(freshPrefs, appearanceEnvRef.current) });
+      void (async () => {
+        const appearance = await buildAppearanceWithFont(freshPrefs, appearanceEnvRef.current);
+        send({ type: 'applyAppearance', appearance });
+      })();
     });
   }, [send]);
 

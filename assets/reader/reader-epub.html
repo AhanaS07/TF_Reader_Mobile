@@ -305,8 +305,16 @@ ${text}`;
   function baselineCss(m, appearance = {}, flow = READER_FLOW) {
     const f = m.fontPx;
     const l = m.linePx;
-    const { fg, bg, link, fontFamily, letterSpacingPx } = appearance;
+    const { fg, bg, link, fontFamily, letterSpacingPx, fontFaceDataUri } = appearance;
+    const fontFaceRule = fontFamily && fontFaceDataUri ? [
+      "@font-face {",
+      `  font-family: ${fontFamily};`,
+      `  src: url("${fontFaceDataUri}");`,
+      "  font-display: swap;",
+      "}"
+    ] : [];
     let css = [
+      ...fontFaceRule,
       // The iframe inherits nothing from the host document, so the host's own -webkit-text-size-adjust
       // does not reach it. Without this, WKWebView inflates text inside a fixed-height column:
       // clipped rows, phantom pages.
@@ -413,6 +421,13 @@ ${text}`;
     const families = trimmed.split(",").map((part) => part.trim()).filter((part) => part !== "").map((part) => part.includes(" ") ? `"${part}"` : part);
     return families.join(", ");
   }
+  var FONT_DATA_URI_ALLOWED = /^data:font\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
+  function sanitizeFontDataUri(raw) {
+    if (raw === null) return "";
+    const trimmed = raw.trim();
+    if (trimmed === "" || !FONT_DATA_URI_ALLOWED.test(trimmed)) return "";
+    return trimmed;
+  }
   function isForcedBreak(value) {
     return value === "always" || value === "page" || value === "left" || value === "right" || value === "recto" || value === "verso";
   }
@@ -460,12 +475,17 @@ ${text}`;
   }
   function appearanceCssOptions() {
     if (!currentAppearance) return {};
+    const fontFamily = sanitizeFontFamily(currentAppearance.fontFamily);
+    const fontFaceDataUri = sanitizeFontDataUri(currentAppearance.customFontUri);
     return {
       fg: currentAppearance.fg,
       bg: currentAppearance.bg,
       link: currentAppearance.link,
-      fontFamily: sanitizeFontFamily(currentAppearance.fontFamily),
-      letterSpacingPx: currentAppearance.letterSpacingPx
+      fontFamily,
+      letterSpacingPx: currentAppearance.letterSpacingPx,
+      // Only meaningful alongside a non-empty fontFamily — baselineCss's @font-face declares itself
+      // under that exact name, so a URI with nothing to attach it to is dropped rather than passed.
+      ...fontFamily && fontFaceDataUri ? { fontFaceDataUri } : {}
     };
   }
   function mapSpread(spread) {

@@ -39,12 +39,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent } from 'react-native';
 
+import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { ContentFormat, LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
-
-const BIG_TEXT_SIZE = 28;
 
 const THEME_OPTIONS: readonly { label: string; theme: Theme }[] = [
   { label: 'Light', theme: 'light' },
@@ -58,15 +57,26 @@ function toggleTheme(current: SharedPrefs, theme: Theme): PrefsPatch {
   return { theme: current.theme === theme ? DEFAULT_PREFS.theme : theme };
 }
 
-function isBigText(prefs: SharedPrefs): boolean {
-  return prefs.typography.size === BIG_TEXT_SIZE;
-}
+/**
+ * `system` plus the 6 bundled fonts `fontCatalog.ts`/`fontFaceLoader.ts` ship — Reader's half of
+ * CUSTOM_FONTS_WIRING.md now loads the selected family's bytes and injects them as an `@font-face`
+ * (epub.entry.ts), so picking one of these actually changes the open EPUB's font, not just its name.
+ */
+const FAMILY_OPTIONS: readonly { label: string; family: string }[] = [
+  { label: 'System', family: 'system' },
+  ...FONT_CATALOG.map((entry) => ({ label: entry.label, family: entry.family as string })),
+];
 
-function toggleBigText(prefs: SharedPrefs): PrefsPatch {
+/** Same revert-on-reselect convention as `toggleTheme`. `customFontUri: undefined` clears the
+ * separate, unused `FontPrefs.customFontUri` upload field on switch — the reader computes the data
+ * URI for whichever family IS selected fresh, at apply time, via `loadFontFaceSrc`; it never reads
+ * this stored field, but leaving a stale value here would mislead a future reader of the record. */
+function toggleFontFamily(current: SharedPrefs, family: string): PrefsPatch {
   return {
-    typography: isBigText(prefs)
-      ? { ...DEFAULT_PREFS.typography }
-      : { ...DEFAULT_PREFS.typography, size: BIG_TEXT_SIZE },
+    font: {
+      family: current.font.family === family ? DEFAULT_PREFS.font.family : family,
+      customFontUri: undefined,
+    },
   };
 }
 
@@ -196,6 +206,91 @@ function ZoomSlider({
   );
 }
 
+/**
+ * Font-size bounds for the slider only — `TypographyPrefs.size` itself carries no documented range
+ * (it's absolute points; `readerMetrics.ts`'s ABSOLUTE_MIN/MAX_FONT_PX, 8/200, are a pathological-
+ * value backstop, not a usable reading range). 12-32pt centers `DEFAULT_PREFS.typography.size` (16)
+ * and comfortably covers the 28pt this slider replaces.
+ */
+const FONT_SIZE_MIN = 12;
+const FONT_SIZE_MAX = 32;
+const FONT_SIZE_STEP = 1;
+const FONT_SIZE_THUMB_SIZE = 20;
+
+function snapToFontSizeStep(value: number): number {
+  return Math.round(clamp(value, FONT_SIZE_MIN, FONT_SIZE_MAX) / FONT_SIZE_STEP) * FONT_SIZE_STEP;
+}
+
+/** Same drag-live/commit-on-release shape as `ZoomSlider` above, adapted to `typography.size`'s own
+ * bounds and a "12pt"-style label instead of a percentage. Kept as its own copy rather than a shared
+ * generic slider — this file already treats each toggle as its own small function rather than a
+ * shared abstraction (see `toggleFlow`/`toggleSpread`), matching its "one dev widget, not a design
+ * system" scope. */
+function FontSizeSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  const valueFromX = useCallback((x: number): number => {
+    if (trackWidth <= 0) return value;
+    const ratio = clamp(x / trackWidth, 0, 1);
+    return snapToFontSizeStep(FONT_SIZE_MIN + ratio * (FONT_SIZE_MAX - FONT_SIZE_MIN));
+  }, [trackWidth, value]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio = (clamp(displayValue, FONT_SIZE_MIN, FONT_SIZE_MAX) - FONT_SIZE_MIN) / (FONT_SIZE_MAX - FONT_SIZE_MIN);
+  const thumbLeft = ratio * trackWidth - FONT_SIZE_THUMB_SIZE / 2;
+
+  return (
+    <View style={styles.fontSizeSlider}>
+      <Text style={styles.zoomValue}>{Math.round(displayValue)}pt</Text>
+      <View
+        style={styles.zoomTrack}
+        onLayout={handleTrackLayout}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        <View
+          style={[
+            styles.zoomThumb,
+            { left: clamp(thumbLeft, -FONT_SIZE_THUMB_SIZE / 2, trackWidth - FONT_SIZE_THUMB_SIZE / 2) },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export interface DevPreferencesMenuProps {
   /** The active book's format, so Zoom can be hidden for an EPUB — see the header note on why.
    * Undefined only for the fallback fixture row (an id App.tsx does not recognise), in which case
@@ -234,6 +329,21 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
     void prefsStore.savePrefs({ zoom: { level } });
   }, []);
 
+  // Unlike `commitZoom`, this spreads the CURRENT typography group rather than `DEFAULT_PREFS`'s —
+  // `typography` has siblings (lineHeight/spacing/margins) a bare `{ size }` patch would silently
+  // reset, the exact "one rule that bites" this file's header already warns about for layout. That
+  // makes it depend on `prefs`, so (unlike `commitZoom`) its identity changes on every prefs update —
+  // acceptable here since, unlike Zoom's PanResponder, a size change while mid-drag on THIS slider
+  // can only come from `prefs.typography.size` itself changing, which only happens via this same
+  // callback's own commit.
+  const commitFontSize = useCallback(
+    (size: number) => {
+      if (!prefs) return;
+      void prefsStore.savePrefs({ typography: { ...prefs.typography, size } });
+    },
+    [prefs],
+  );
+
   return (
     <View style={styles.container}>
       <Pressable
@@ -271,20 +381,27 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
           </View>
 
           <Text style={styles.sectionLabel}>Typography</Text>
+          <FontSizeSlider value={prefs.typography.size} onCommit={commitFontSize} />
           <View style={styles.row}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: isBigText(prefs) }}
-              accessibilityLabel={`Big text${isBigText(prefs) ? ', selected' : ''}`}
-              onPress={() => {
-                void prefsStore.savePrefs(toggleBigText(prefs));
-              }}
-              style={[styles.toggle, isBigText(prefs) && styles.toggleActive]}
-            >
-              <Text style={[styles.toggleLabel, isBigText(prefs) && styles.toggleLabelActive]}>
-                Big text
-              </Text>
-            </Pressable>
+            {FAMILY_OPTIONS.map(({ label, family }) => {
+              const active = prefs.font.family === family;
+              return (
+                <Pressable
+                  key={family}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`Font: ${label}${active ? ', selected' : ''}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs(toggleFontFamily(prefs, family));
+                  }}
+                  style={[styles.toggle, active && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
 
           <Text style={styles.sectionLabel}>Layout</Text>
@@ -401,6 +518,10 @@ const styles = StyleSheet.create({
   toggleActive: { backgroundColor: '#111111', borderColor: '#111111' },
   toggleLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
   toggleLabelActive: { color: '#ffffff' },
+
+  // Spacing between the font-size slider and the font-family row directly below it — the Zoom
+  // slider needs no equivalent since nothing else follows it in that section.
+  fontSizeSlider: { marginBottom: 8 },
 
   // The slider. A plain 6px track with a filled portion behind a round thumb — deliberately not
   // trying to look like either platform's native slider, since this is a dev tool, not UI the app

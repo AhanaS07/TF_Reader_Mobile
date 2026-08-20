@@ -212,6 +212,12 @@ export interface AppearanceCssOptions {
   /** Already sanitised by the caller. `''` or absent means "don't override". */
   fontFamily?: string;
   letterSpacingPx?: number;
+  /**
+   * Already sanitised by the caller (`sanitizeFontDataUri`). `''`/absent means no `@font-face` to
+   * inject — only meaningful alongside a non-empty `fontFamily`, since that's the name the injected
+   * face is declared under.
+   */
+  fontFaceDataUri?: string;
 }
 
 export function baselineCss(
@@ -221,9 +227,25 @@ export function baselineCss(
 ): string {
   const f = m.fontPx;
   const l = m.linePx;
-  const { fg, bg, link, fontFamily, letterSpacingPx } = appearance;
+  const { fg, bg, link, fontFamily, letterSpacingPx, fontFaceDataUri } = appearance;
+
+  // Declared under the bare sanitised `fontFamily` name (before the `, sans-serif` fallback the
+  // `body` rule below appends), so the face this declares and the family the body rule references
+  // are the same string. `font-display: swap` matters — without it a slow-loading face paints
+  // invisible text rather than the fallback.
+  const fontFaceRule =
+    fontFamily && fontFaceDataUri
+      ? [
+          '@font-face {',
+          `  font-family: ${fontFamily};`,
+          `  src: url("${fontFaceDataUri}");`,
+          '  font-display: swap;',
+          '}',
+        ]
+      : [];
 
   let css: string[] = [
+    ...fontFaceRule,
     // The iframe inherits nothing from the host document, so the host's own -webkit-text-size-adjust
     // does not reach it. Without this, WKWebView inflates text inside a fixed-height column:
     // clipped rows, phantom pages.
@@ -348,6 +370,26 @@ export function sanitizeFontFamily(raw: string): string {
     .map((part) => (part.includes(' ') ? `"${part}"` : part));
 
   return families.join(', ');
+}
+
+/**
+ * Does `raw` look like a well-formed `data:font/...;base64,<payload>` URI?
+ *
+ * `customFontUri` reaches this module the same way `fontFamily` does — a bare string ending up in
+ * CSS text (`@font-face { src: url("...") }`) inside a document holding decrypted licensed content
+ * — so it gets the same allow-list treatment `WEBVIEW_BRIDGE.md`'s "four things" item 4 calls for.
+ * `loadFontFaceSrc` only ever produces bundled-font bytes, not user input, but validating on arrival
+ * rather than trusting the sender is what keeps that true if the sender ever changes. Anything
+ * outside the allow-list, or `null`/empty, sanitises to `''` — the same "don't override" convention
+ * `sanitizeFontFamily` already uses.
+ */
+const FONT_DATA_URI_ALLOWED = /^data:font\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
+
+export function sanitizeFontDataUri(raw: string | null): string {
+  if (raw === null) return '';
+  const trimmed = raw.trim();
+  if (trimmed === '' || !FONT_DATA_URI_ALLOWED.test(trimmed)) return '';
+  return trimmed;
 }
 
 /**

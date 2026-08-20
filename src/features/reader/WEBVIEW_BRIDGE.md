@@ -132,8 +132,11 @@ is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced ho
 `flow`: a payload with `flow: 'scrolled-doc'` switches the PDF shell from its single-canvas renderer
 into a virtualised, scrollable multi-page one (`enterScrollMode`/`leaveScrollMode` in `pdf.entry.ts`);
 everything else (theme/typography) is still silently ignored, since pdf.js rasterises pages and there
-is no text CSS layer to override. `customFontUri` still carries through unresolved — the
-bytes-transport question in §8.3 of `READER_PREFS_APPLICATION.md` remains open and out of scope here.
+is no text CSS layer to override. EPUB now also injects an `@font-face` from `customFontUri` (the
+bundled-font bytes `ReaderScreen.tsx`'s `buildAppearanceWithFont` loads via `loadFontFaceSrc`) when it
+and `fontFamily` both sanitise non-empty — `sanitizeFontDataUri`/`sanitizeFontFamily` in
+`readerMetrics.ts` gate what reaches the stylesheet. PDF continues to ignore `customFontUri` for the
+same rasterisation reason as the rest of typography.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
@@ -304,7 +307,9 @@ cheapest to validate. Same design, different justification; do not let the old w
 4. **`fontFamily` and `customFontUri` are user-supplied strings that end up in CSS text.**
    `JSON.stringify` in `buildCommandScript` protects the injected *script*; it does nothing for the
    stylesheet the entry then builds by concatenation, inside a document holding decrypted licensed
-   content. They need a character allow-list and CSS quoting on arrival. Reader's to implement.
+   content. They need a character allow-list and CSS quoting on arrival. **Implemented**:
+   `sanitizeFontFamily`/`sanitizeFontDataUri` in `readerMetrics.ts`, both called from `epub.entry.ts`'s
+   `appearanceCssOptions()` before either value reaches `baselineCss()`.
 
 ### The font-size clamp: clamp the FACTOR, not the product
 

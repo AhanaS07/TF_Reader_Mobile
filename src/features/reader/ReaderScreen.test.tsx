@@ -31,6 +31,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
+import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { AppearanceEnv } from '@/features/personalization/readerAppearance';
@@ -133,6 +134,18 @@ jest.mock('@/features/reader/useAppearanceEnv', () => ({
   useAppearanceEnv: jest.fn(),
 }));
 
+/**
+ * The custom-font byte-loading seam. Mocked for the same reason `readerAssets` is: the real
+ * implementation is native (expo-asset/expo-file-system), and its own contract ("null for
+ * 'system'/unknown, a data: URI otherwise, never throws") is this mock's job to honour, not to
+ * re-verify — that's fontFaceLoader's own concern. Defaults to `null`, matching every test's default
+ * `font.family: 'system'`, so the existing `applyAppearance` assertions below (which compare against
+ * `toReaderAppearance` directly) are unaffected unless a test opts into a real family.
+ */
+jest.mock('@/features/personalization/fontFaceLoader', () => ({
+  loadFontFaceSrc: jest.fn(() => Promise.resolve(null)),
+}));
+
 const LIGHT_ENV: AppearanceEnv = {
   osColorScheme: 'light',
   osFontScale: 1,
@@ -161,6 +174,7 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
 beforeEach(() => {
   jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+  jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
 });
 
 /**
@@ -918,6 +932,11 @@ describe('applyAppearance — the prefs-application wiring', () => {
     // act tracking was mid-flight from the preceding reportReady()).
     const changed = makePrefs({ theme: 'dark' });
     __emitPrefsChange(changed);
+    // The listener's send is now behind two microtask hops (buildAppearanceWithFont's own await of
+    // loadFontFaceSrc, then the listener's await of buildAppearanceWithFont itself) — a bare double
+    // await, not act(), per the note above.
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(__injectJavaScript).toHaveBeenCalledWith(
       buildCommandScript({ type: 'applyAppearance', appearance: toReaderAppearance(changed, LIGHT_ENV) }),
@@ -967,6 +986,49 @@ describe('applyAppearance — the prefs-application wiring', () => {
     __emitPrefsChange(makePrefs({ theme: 'dark' }));
 
     expect(__injectJavaScript).not.toHaveBeenCalled();
+  });
+
+  it('overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance\'s own passthrough', async () => {
+    const fontDataUri = 'data:font/ttf;base64,AAAA';
+    jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
+    const withInter = makePrefs({ font: { family: 'Inter' } });
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withInter);
+
+    await mountReader();
+    await reportReady();
+
+    // toReaderAppearance's own resolveFont carries customFontUri through unresolved (undefined on
+    // this prefs record) — the sent payload must have the LOADED bytes instead, not that passthrough.
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: { ...toReaderAppearance(withInter, LIGHT_ENV), customFontUri: fontDataUri },
+      }),
+    );
+    expect(jest.mocked(loadFontFaceSrc)).toHaveBeenCalledWith('Inter');
+  });
+
+  it('overlays the loaded font-face bytes on the prefs-subscribe re-apply too', async () => {
+    await mountReader();
+    await reportReady();
+    __injectJavaScript.mockClear();
+
+    const fontDataUri = 'data:font/ttf;base64,BBBB';
+    jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
+    const withPoppins = makePrefs({ font: { family: 'Poppins' } });
+
+    // Not act()-wrapped — see the note on the theme-change test above; two microtask hops, same
+    // reasoning as there.
+    __emitPrefsChange(withPoppins);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: { ...toReaderAppearance(withPoppins, LIGHT_ENV), customFontUri: fontDataUri },
+      }),
+    );
   });
 });
 
