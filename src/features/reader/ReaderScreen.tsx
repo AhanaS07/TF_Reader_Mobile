@@ -209,6 +209,23 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const search = useBookSearch(bookId);
 
   /**
+   * A search hit selected while `send` was still null, queued rather than dropped.
+   *
+   * `selectHit` used to do `send?.({...})` unconditionally: if the WebView had not yet
+   * reported `ready`, that optional-chained call was a silent no-op — the panel still
+   * closed and the match bar still said "Match N of M" as if the jump had happened. A
+   * ref rather than state because nothing needs to re-render off ITS value; `awaitingSeek`
+   * below is the render-facing half.
+   */
+  const pendingSeekRef = useRef<ReaderTarget | null>(null);
+  const [awaitingSeek, setAwaitingSeek] = useState(false);
+
+  const cancelPendingSeek = useCallback((): void => {
+    pendingSeekRef.current = null;
+    setAwaitingSeek(false);
+  }, []);
+
+  /**
    * Which edges of the Contents list are currently faded.
    *
    * ONE STATE OBJECT OF TWO BOOLEANS, NOT THE SCROLL OFFSET. Keeping the offset in
@@ -497,6 +514,24 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     }
   }, []);
 
+  /**
+   * Flush a search jump that was queued while `send` was still null.
+   *
+   * `send` only ever transitions null -> non-null (set once, from `handleReady`), so this
+   * fires at most once per queued target. It is a separate effect rather than logic inside
+   * `selectHit` because the queueing and the flushing happen at two different, unrelated
+   * moments — a tap, and a bridge message — and nothing else should re-check the queue.
+   */
+  useEffect(() => {
+    if (send === null) return;
+    const target = pendingSeekRef.current;
+    if (target === null) return;
+    pendingSeekRef.current = null;
+    setAwaitingSeek(false);
+    setShowSearch(false);
+    send({ type: 'goTo', target });
+  }, [send]);
+
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
   const goTo = useCallback(
@@ -553,8 +588,24 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       const target = targetOf(hit);
       if (target === null) return;
       search.setActiveIndex(index);
+
+      if (send === null) {
+        // Search itself runs host-side over the decrypted index, so results can arrive well
+        // before the WebView reports `ready` — `send` is still null here. `send?.({...})`
+        // below would silently drop the jump: the panel would still close and the match bar
+        // would still say "Match N of M" as if it had worked. Queue it and reopen the panel
+        // (rather than leaving it wherever this was called from — the match bar's stepper
+        // reaches this too) so the wait is visible; the effect above flushes it once `send`
+        // exists.
+        pendingSeekRef.current = target;
+        setAwaitingSeek(true);
+        setShowToc(false);
+        setShowSearch(true);
+        return;
+      }
+
       setShowSearch(false);
-      send?.({ type: 'goTo', target });
+      send({ type: 'goTo', target });
     },
     [search, send],
   );
@@ -770,8 +821,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <SearchPanel
             query={search.query}
             onQueryChange={search.setQuery}
-            onSubmit={search.submit}
+            onSubmit={() => {
+              // A fresh search means the tapped hit's queued jump, if any, no longer
+              // matches what is on screen — cancel rather than let it fire later against
+              // a different result set.
+              cancelPendingSeek();
+              search.submit();
+            }}
             onClose={() => {
+              cancelPendingSeek();
               setShowSearch(false);
             }}
             status={search.status}
@@ -780,6 +838,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             failure={search.failure}
             activeIndex={search.activeIndex}
             onSelectHit={selectHit}
+            awaitingSeek={awaitingSeek}
           />
         )}
 
@@ -795,7 +854,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
               setShowToc(false);
               setShowSearch(true);
             }}
-            onDismiss={search.clear}
+            onDismiss={() => {
+              cancelPendingSeek();
+              search.clear();
+            }}
           />
         )}
 

@@ -956,6 +956,87 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.getByText('Match 2 of 2')).toBeTruthy();
   });
 
+  it('queues a tapped hit while the book is still loading, then jumps once ready', async () => {
+    // THE FAILSAFE. `send` stays null until the WebView reports `ready` — but search
+    // runs host-side over the decrypted index (queryBookIndex), so results can be back
+    // and tapped well before that. `send?.({...})` used to silently drop the jump here:
+    // the panel closed and the match bar claimed "Match 2 of 2" as if it had worked.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    // No reportReady() yet — send is still null.
+    await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
+
+    const goTo = buildCommandScript({
+      type: 'goTo',
+      target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:2)' },
+    });
+
+    // Not dropped, and not pretending it happened: the panel stays open with a visible
+    // notice instead of closing onto a match bar that lied about the jump.
+    expect(screen.getByTestId('reader-search-input')).toBeTruthy();
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(goTo);
+
+    await reportReady();
+
+    // Queued jump fires the moment `send` exists, alongside (not instead of) the open
+    // command that `ready` also triggers.
+    expect(__injectJavaScript).toHaveBeenCalledWith(goTo);
+    expect(screen.queryByTestId('reader-search-input')).toBeNull();
+    expect(screen.getByTestId('reader-search-match-bar')).toBeTruthy();
+    expect(screen.getByText('Match 2 of 2')).toBeTruthy();
+  });
+
+  it('cancels a queued jump when a new search is submitted before the book is ready', async () => {
+    // A queued target is only meaningful against the result set it was tapped from.
+    // Running a new search before the book becomes ready must not leave a stale jump
+    // waiting to fire into whatever the reader shows once it is.
+    jest
+      .mocked(queryBookIndex)
+      .mockResolvedValueOnce([epubHit(1)])
+      .mockResolvedValueOnce([epubHit(5)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+
+    await runSearch('bear');
+    expect(screen.queryByTestId('reader-search-awaiting-seek')).toBeNull();
+
+    await reportReady();
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      }),
+    );
+  });
+
+  it('cancels a queued jump when the panel is closed', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await reportReady();
+
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      }),
+    );
+  });
+
   it('leaves the viewer mounted and unresized while searching', async () => {
     // THE REGRESSION THIS GUARDS. Both search surfaces overlay the viewer instead of
     // sharing the column with it. A sibling that occupies layout changes the viewer's

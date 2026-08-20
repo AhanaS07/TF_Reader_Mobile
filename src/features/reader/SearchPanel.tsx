@@ -67,6 +67,13 @@ export interface SearchPanelProps {
   activeIndex: number;
   /** Index into `hits`. The screen decides what selecting one means. */
   onSelectHit: (index: number) => void;
+  /**
+   * A hit was tapped but the WebView is not ready to seek yet — the screen has queued
+   * the jump and will fire it the moment it can. Shown regardless of `status`: the
+   * search itself already finished (that is how there is a hit to tap), so this is not
+   * a search state, it is a "still opening the book" state.
+   */
+  awaitingSeek: boolean;
 }
 
 export function SearchPanel({
@@ -80,6 +87,7 @@ export function SearchPanel({
   failure,
   activeIndex,
   onSelectHit,
+  awaitingSeek,
 }: SearchPanelProps): React.JSX.Element {
   const rendered = hits.slice(0, MAX_RENDERED_HITS);
   const tokens = termTokens(submittedTerm);
@@ -122,6 +130,21 @@ export function SearchPanel({
       <Text style={styles.status} accessibilityLiveRegion="polite">
         {statusLine(status, hits.length, submittedTerm)}
       </Text>
+
+      {/*
+        ORTHOGONAL TO `status`: the search already finished (there is a hit to have
+        tapped), this is the book itself still opening. Its own live region, separate
+        from the status line above, because it appears and disappears independently of
+        anything a new search would change.
+      */}
+      {awaitingSeek && (
+        <View style={styles.busyRow} accessibilityLiveRegion="polite">
+          <ActivityIndicator />
+          <Text style={styles.hint} testID="reader-search-awaiting-seek">
+            Still opening this book — this result will open as soon as it&apos;s ready.
+          </Text>
+        </View>
+      )}
 
       {status === 'searching' && (
         <View style={styles.busyRow}>
