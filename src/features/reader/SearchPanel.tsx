@@ -30,7 +30,7 @@ import {
   View,
 } from 'react-native';
 
-import { cfiOf, locatorKey } from '@/features/reader/useBookSearch';
+import { targetOf, locatorKey } from '@/features/reader/useBookSearch';
 import type { SearchStatus } from '@/features/reader/useBookSearch';
 // Search's own tokenizer, so the words named in the multi-word hint below are exactly
 // the ones the query ran on. Re-splitting the term here would be a second, divergent
@@ -200,7 +200,11 @@ export function SearchPanel({
           showsVerticalScrollIndicator
         >
           {rendered.map((hit, index) => {
-            const navigable = cfiOf(hit) !== null;
+            // Both formats seek now, so in practice every row is navigable — this used to be false
+            // for every PDF hit, which rendered a real result as an unavailable one. Kept rather than
+            // removed: it is the honest state for a locator shape the reader has no renderer for, and
+            // a row that looks tappable and is not would be worse than one that says so.
+            const navigable = targetOf(hit) !== null;
             // A run header, not a section list: chapterId is an extractor-side id, and
             // resolving it to a human chapter title would mean guessing that it shares a
             // namespace with the TOC's hrefs. Nothing states that it does.

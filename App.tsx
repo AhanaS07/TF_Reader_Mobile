@@ -33,33 +33,80 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
+import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import {
+  DEV_FIXTURE_EPUB_BOOK_ID,
+  DEV_FIXTURE_PDF_BOOK_ID,
   DEV_SAMPLE_BOOK_ID,
   DEV_SAMPLE_EPUB_BOOK_ID,
   DEV_SAMPLE_PDF_BOOK_ID,
 } from '@/features/reader/devContentSeed';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
 /**
  * TEMP, with everything else in this file.
  *
- * A format picker rather than a book picker, because these two fixtures exist only to
- * exercise the two renderers. When RootNavigator and a library screen land, this is
- * replaced by picking a real book — and NOTHING about the reader changes, because the
- * reader never took a format: it reads it back from the stored package via
- * getFormat(bookId). Switching these ids is the same code path a real library uses.
+ * A fixture picker rather than a book picker, because these exist only to exercise the two
+ * renderers at two sizes. When RootNavigator and a library screen land, this is replaced by
+ * picking a real book — and NOTHING about the reader changes, because the reader never took a
+ * format: it reads it back from the stored package via getFormat(bookId). Switching these ids is
+ * the same code path a real library uses.
+ *
+ * FOUR TABS, ALWAYS — the two bundled stand-ins and the two large books pushed into the container.
+ * The large pair is listed even when nothing has been pushed for them, deliberately: they are the
+ * books real features have to be rolled out against, and a tab that appears only once an env var
+ * is set is indistinguishable from a feature that was never built. Tapping an unpopulated one
+ * raises an error naming the variable that would fix it (devContentSeed's sampleBookBytes).
+ *
+ * The bundled two go FIRST so the everyday case is the default reach, and the large two are the
+ * deliberate second step. When the large pair has carried every feature, the bundled two are what
+ * gets deleted — not this picker.
  */
-const FIXTURES: readonly { label: string; bookId: BookId }[] = [
-  { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID },
-  { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID },
+const DEV_FIXTURES: readonly { label: string; bookId: BookId; format: ContentFormat }[] = [
+  { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
+  { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
+  { label: 'Big EPUB', bookId: DEV_FIXTURE_EPUB_BOOK_ID, format: 'EPUB' },
+  { label: 'Big PDF', bookId: DEV_FIXTURE_PDF_BOOK_ID, format: 'PDF' },
 ];
+
+/**
+ * The four fixtures, plus `active` when it is somehow none of them.
+ *
+ * THE EXTRA ROW IS NOT COSMETIC, and is kept even though all four ids are now listed: it exists so
+ * the picker can never fail to offer the book actually on screen. If it did, nothing would render
+ * as selected and one tap would land on a stand-in with no way back short of a relaunch — the
+ * "measuring the 3.6 KB book and believing it was 20 MB" failure devContentSeed.ts's distinct-id
+ * note warns about, reached through the UI instead of through a shared id. It is unreachable while
+ * DEV_SAMPLE_BOOK_ID resolves to one of the four; it costs one line to keep it that way.
+ *
+ * EXPORTED, AND A PURE FUNCTION OF ITS ARGUMENT, only so it can be tested: the value it
+ * is called with comes from an env var read at module load, and reaching that through a
+ * re-required App would hand the renderer a second copy of React.
+ */
+export function devFixtureOptions(
+  active: BookId,
+): readonly { label: string; bookId: BookId; format: ContentFormat }[] {
+  return DEV_FIXTURES.some((fixture) => fixture.bookId === active)
+    ? DEV_FIXTURES
+    : [{ label: 'Fixture', bookId: active, format: 'EPUB' }, ...DEV_FIXTURES];
+}
+
+const FIXTURES = devFixtureOptions(DEV_SAMPLE_BOOK_ID);
 
 export default function App() {
   // TEMP, with the block above. Initialised from DEV_SAMPLE_BOOK_ID so
   // EXPO_PUBLIC_READER_FORMAT=PDF still launches straight into the PDF, and the
   // picker below is a convenience on top rather than the only way in.
   const [bookId, setBookId] = useState<BookId>(DEV_SAMPLE_BOOK_ID);
+  const selectedFormat = FIXTURES.find((fixture) => fixture.bookId === bookId)?.format ?? 'EPUB';
+
+  // TEMP, with the block below: the only current way to exercise downloadBook()'s real network
+  // path at all (see downloadManager.ts) — the reader itself opens the seeded fixture via
+  // devContentSeed.ts's ensureSeeded(), never downloadBook(). This button is a separate,
+  // additional exercise of the download path, not a replacement for how the reader gets content.
+  const downloadProgress = useDownloadProgress();
 
   return (
     <SafeAreaProvider>
@@ -91,6 +138,28 @@ export default function App() {
               );
             })}
           </View>
+
+          {/*
+            TEMP, with the picker above: exercises downloadBook()'s onProgress option end-to-end
+            against the real/mock backend (download/config.ts) — a separate path from the
+            already-seeded content ReaderScreen opens below.
+
+            Disabled while downloading: useDownloadProgress's generation counter only stops a
+            superseded call's callbacks from touching state, it does not cancel the underlying
+            downloadBook() call (no AbortController runs end to end today — see its own header
+            comment) — a second tap here would race a real second network download and a second
+            contentStore.store() for the same book, not just a UI inconsistency.
+          */}
+          <Pressable
+            onPress={() => downloadProgress.start(bookId, selectedFormat)}
+            disabled={downloadProgress.status === 'downloading'}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: downloadProgress.status === 'downloading' }}
+            style={[styles.downloadButton, downloadProgress.status === 'downloading' && styles.downloadButtonDisabled]}
+          >
+            <Text style={styles.downloadButtonLabel}>Download</Text>
+          </Pressable>
+          <DownloadProgressIndicator {...downloadProgress} />
         </View>
 
         {/*
@@ -119,7 +188,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontWeight: '600', color: '#111111' },
 
   // TEMP, with the picker above.
-  picker: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  picker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   pickerOption: {
     paddingHorizontal: 14,
     paddingVertical: 6,
@@ -131,4 +200,16 @@ const styles = StyleSheet.create({
   pickerOptionSelected: { backgroundColor: '#111111', borderColor: '#111111' },
   pickerLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
   pickerLabelSelected: { color: '#ffffff' },
+
+  // TEMP, with the download button/indicator above.
+  downloadButton: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#111111',
+  },
+  downloadButtonDisabled: { backgroundColor: '#9a9a9a' },
+  downloadButtonLabel: { fontSize: 13, fontWeight: '600', color: '#ffffff' },
 });

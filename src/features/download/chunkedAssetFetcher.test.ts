@@ -100,6 +100,19 @@ describe('fetchEncryptedAssetChunked — happy path', () => {
     expect(Buffer.from(result).equals(Buffer.from(asset))).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1); // one request, whole body, no further chunk requests
   });
+
+  it('still reports onProgress once, at 100%, on the no-Range fallback path', async () => {
+    const bookId = 'chunked-no-range-progress';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 1.5));
+    const fetchMock = jest.fn().mockResolvedValue(new Response(asset, { status: 200 }));
+    global.fetch = fetchMock;
+    const onProgress = jest.fn();
+
+    await fetchEncryptedAssetChunked(bookId, ASSET_URL, { onProgress });
+
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(asset.length, asset.length);
+  });
 });
 
 describe('fetchEncryptedAssetChunked — resume after an interruption', () => {
@@ -139,6 +152,38 @@ describe('fetchEncryptedAssetChunked — resume after an interruption', () => {
     expect(resumeFetch.mock.calls[0][1].headers.Range).toBe(
       `bytes=${CHUNK_SIZE_BYTES * 2}-${CHUNK_SIZE_BYTES * 3 - 1}`,
     );
+  });
+
+  it('reports the resumed baseline via onProgress immediately, before any new chunk lands', async () => {
+    const bookId = 'chunked-resume-progress';
+    const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 3.3)); // 4 chunks
+
+    let callCount = 0;
+    const failingFetch = jest.fn().mockImplementation(async (_url: string, init: { headers: Record<string, string> }) => {
+      callCount++;
+      if (callCount === 3) {
+        throw new TypeError('Network request failed');
+      }
+      const [, startStr, endStr] = /^bytes=(\d+)-(\d+)$/.exec(init.headers.Range)!;
+      const start = Number(startStr);
+      const end = Math.min(Number(endStr), asset.length - 1);
+      return new Response(asset.subarray(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${asset.length}` },
+      });
+    });
+    global.fetch = failingFetch;
+    await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
+
+    // Resume: onProgress's FIRST call on this attempt must be the already-known baseline
+    // (2 chunks in), not wait for a new chunk to land.
+    const resumeFetch = rangeServerFetch(asset);
+    global.fetch = resumeFetch;
+    const onProgress = jest.fn();
+
+    await fetchEncryptedAssetChunked(bookId, ASSET_URL, { onProgress });
+
+    expect(onProgress).toHaveBeenNthCalledWith(1, CHUNK_SIZE_BYTES * 2, asset.length);
   });
 
   it('discardPartialDownload lets a caller give up for good — the next call starts from 0', async () => {

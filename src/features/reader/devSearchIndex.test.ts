@@ -14,34 +14,54 @@
 // Nothing here tests the search FEATURE; that is ReaderScreen.test.tsx. This tests
 // the fixture wiring only, which is why it dies with the fixture.
 
-import index from '../../../assets/reader/sample-search-index.json';
-import { DEV_SAMPLE_BOOK_ID } from '@/features/reader/devContentSeed';
+import epubIndex from '../../../assets/reader/sample-search-index.json';
+import pdfIndex from '../../../assets/reader/sample-pdf-search-index.json';
+import {
+  DEV_SAMPLE_EPUB_BOOK_ID,
+  DEV_SAMPLE_PDF_BOOK_ID,
+} from '@/features/reader/devContentSeed';
 
-describe('the dev search index fixture', () => {
-  it('is built for the book devContentSeed actually seeds', () => {
-    // DEV_SAMPLE_BOOK_ID switches to 'dev-fixture-epub' when
-    // EXPO_PUBLIC_READER_FIXTURE_PATH is set — and in that case devContentSeed
-    // deliberately attaches NO index, because this one is the wrong book's. Only the
-    // bundled-sample path is asserted here, for the same reason.
-    expect(process.env.EXPO_PUBLIC_READER_FIXTURE_PATH).toBeUndefined();
-    expect(index.bookId).toBe(DEV_SAMPLE_BOOK_ID);
+describe('the dev search index fixtures', () => {
+  // ONE INDEX PER FORMAT, and they are not interchangeable: queryBookIndex THROWS when an index's
+  // bookId is not the book requested (a guard against handing over the wrong book's ciphertext), so a
+  // mismatch here turns every search in the app into an error rather than an empty list. This is the
+  // seam that made PDF search look unimplemented for a while — the extractor worked; no PDF book
+  // carried an index.
+  it.each([
+    ['EPUB', () => epubIndex, () => DEV_SAMPLE_EPUB_BOOK_ID, 'EPUB'],
+    ['PDF', () => pdfIndex, () => DEV_SAMPLE_PDF_BOOK_ID, 'PDF'],
+  ])('the %s index is built for the book devContentSeed seeds it against', (_l, idx, bookId, fmt) => {
+    expect(idx().bookId).toBe(bookId());
+    expect(idx().format).toBe(fmt);
   });
 
-  it('carries EPUB CFI locators, which is what goTo can resolve', () => {
-    // A PDF-locator index would list results the reader can only render as disabled
-    // rows, which looks like a broken feature rather than a wrong fixture.
-    expect(index.format).toBe('EPUB');
-
-    const postings = Object.values(index.index).flat();
+  it('carries EPUB CFI locators in the EPUB index, which goTo resolves as an href target', () => {
+    const postings = Object.values(epubIndex.index).flat();
     expect(postings.length).toBeGreaterThan(0);
     expect(postings.every((posting) => posting.locator.type === 'EPUB')).toBe(true);
   });
 
-  it('has a word with enough occurrences to demonstrate stepping', () => {
-    // "chapter" spans ch1/ch2/ch3 in the sample. If a regenerated sample ever loses
-    // that, the next/prev arrows have nothing meaningful to walk on the simulator.
-    const chapterPostings = index.index.chapter ?? [];
-    expect(chapterPostings.length).toBeGreaterThan(1);
-    expect(new Set(chapterPostings.map((posting) => posting.chapterId)).size).toBeGreaterThan(1);
+  it('carries PDF page locators in the PDF index, which goTo resolves as a page target', () => {
+    // These are what makes a PDF hit navigable at all: `targetOf` turns `{type:'PDF', page}` into
+    // `{kind:'page', page}`, and a hit with no page could only ever be a dead row.
+    const postings = Object.values(pdfIndex.index).flat();
+    expect(postings.length).toBeGreaterThan(0);
+    for (const posting of postings) {
+      expect(posting.locator.type).toBe('PDF');
+      expect(Number.isInteger(posting.locator.page)).toBe(true);
+      expect(posting.locator.page).toBeGreaterThan(0);
+    }
+  });
+
+  it('has a word with enough occurrences in each index to demonstrate stepping', () => {
+    for (const idx of [epubIndex, pdfIndex]) {
+      const counts = Object.values(idx.index).map((postings) => postings.length);
+      expect(Math.max(...counts)).toBeGreaterThan(1);
+    }
+  });
+
+  // The two indexes address different books, so nothing should be able to serve one for the other.
+  it('never gives the two fixtures the same bookId', () => {
+    expect(epubIndex.bookId).not.toBe(pdfIndex.bookId);
   });
 });

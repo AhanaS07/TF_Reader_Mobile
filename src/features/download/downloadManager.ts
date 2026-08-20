@@ -151,7 +151,17 @@ export function computeOriginalLength(cipherLength: number, isEncrypted: boolean
   return isEncrypted ? cipherLength - NONCE_BYTES - GCM_TAG_BYTES : cipherLength;
 }
 
-export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB'): Promise<void> {
+export interface DownloadOptions {
+  /** Forwarded verbatim to `fetchEncryptedAssetChunked` — see its own doc comment. Only the main
+   * asset reports progress; the search index fetch below is small enough that it doesn't need it. */
+  onProgress?: (bytesReceived: number, expectedLength: number) => void;
+}
+
+export async function downloadBook(
+  bookId: BookId,
+  format: ContentFormat = 'EPUB',
+  options: DownloadOptions = {},
+): Promise<void> {
   const hasPermission = await checkStoragePermission();
   if (!hasPermission) {
     throw new DownloadFailure(DownloadError.PERMISSION_DENIED, bookId);
@@ -215,7 +225,10 @@ export async function downloadBook(bookId: BookId, format: ContentFormat = 'EPUB
   // audio. Converting here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely —
   // it only ever sees "a byte budget", not why that number is what it is.
   const maxCipherBytes = MAX_DECRYPTED_BYTES + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
-  const bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, { maxBytes: maxCipherBytes });
+  const bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, {
+    maxBytes: maxCipherBytes,
+    onProgress: options.onProgress,
+  });
 
   // `content.originalLength`/`mimeType` are OPTIONAL on the real spec (reading-session.ts's own
   // header — "test for presence, not length"). Found in review: comparing a real number against

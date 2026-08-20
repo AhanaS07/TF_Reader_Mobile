@@ -10,6 +10,7 @@
 // AbortSignal, it caches nothing, and it can throw. See the notes on each below.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReaderTarget } from '@/features/reader/readerBridge';
 
 import { queryBookIndex } from '@/features/search/queryBookIndex';
 import { ContentFailure } from '@/shared/contracts';
@@ -55,6 +56,28 @@ export interface BookSearch {
  */
 export function cfiOf(hit: SearchHit): string | null {
   return hit.locator.type === 'EPUB' ? hit.locator.cfi : null;
+}
+
+/**
+ * A hit's location as something the reader can navigate to.
+ *
+ * >>> THIS IS WHAT `cfiOf` COULD NOT DO, AND WHY PDF HITS USED TO BE DEAD ROWS. <<<
+ * `cfiOf` unwraps `locator.cfi`, which only an EPUB locator has, so it returned null for every PDF
+ * hit and the reader had nowhere to send it. That was never a decision about whether a PDF result
+ * should be navigable — it was a limitation of `goTo` taking a bare string, since a page number and a
+ * spine href could not be told apart in one. `ReaderTarget` is discriminated, so both fit.
+ *
+ * `Locator` is the FROZEN contract and `ReaderTarget` is bridge-local: this function is the seam
+ * between them, and it is the only place `locator.type` is read for navigation. That is deliberate —
+ * the frozen union must not travel to the WebView, so it is unwrapped exactly once, here.
+ *
+ * Returns null only for a locator shape the reader has no renderer for, which is unreachable today.
+ */
+export function targetOf(hit: SearchHit): ReaderTarget | null {
+  const locator = hit.locator;
+  if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
+  if (locator.type === 'PDF') return { kind: 'page', page: locator.page };
+  return null;
 }
 
 /**
