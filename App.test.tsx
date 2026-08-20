@@ -61,10 +61,10 @@ const LARGE = ['dev-fixture-epub', 'dev-fixture-pdf'];
 describe('the temporary fixture picker', () => {
   it('offers all four fixtures — both bundled stand-ins and both large books', () => {
     expect(devFixtureOptions('dev-sample-epub')).toEqual([
-      { label: 'EPUB', bookId: 'dev-sample-epub' },
-      { label: 'PDF', bookId: 'dev-sample-pdf' },
-      { label: 'Big EPUB', bookId: 'dev-fixture-epub' },
-      { label: 'Big PDF', bookId: 'dev-fixture-pdf' },
+      { label: 'EPUB', bookId: 'dev-sample-epub', format: 'EPUB' },
+      { label: 'PDF', bookId: 'dev-sample-pdf', format: 'PDF' },
+      { label: 'Big EPUB', bookId: 'dev-fixture-epub', format: 'EPUB' },
+      { label: 'Big PDF', bookId: 'dev-fixture-pdf', format: 'PDF' },
     ]);
   });
 
@@ -90,7 +90,11 @@ describe('the temporary fixture picker', () => {
   it('puts an unrecognised active book first, so it is the visibly selected one', () => {
     const options = devFixtureOptions('dev-something-nobody-has-added-yet');
 
-    expect(options[0]).toEqual({ label: 'Fixture', bookId: 'dev-something-nobody-has-added-yet' });
+    expect(options[0]).toEqual({
+      label: 'Fixture',
+      bookId: 'dev-something-nobody-has-added-yet',
+      format: 'EPUB',
+    });
     // The four stay reachable: switching to a stand-in is fine as a deliberate tap, and only a
     // problem when it is the only thing on offer.
     expect(options).toHaveLength(5);

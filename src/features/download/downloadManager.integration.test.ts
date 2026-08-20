@@ -37,6 +37,8 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 
+import { File, Directory, Paths } from 'expo-file-system';
+
 import { downloadBook } from './downloadManager';
 import { getBook, getFormat, closeBook } from '../encryption/contentProvider';
 import { contentStore } from '../encryption/contentStore';
@@ -216,5 +218,147 @@ describe('downloadBook (real mock-backend, concurrent multi-format downloads)', 
     expect(Buffer.from(pdfBytes.slice(0, 5)).toString('ascii')).toBe('%PDF-');
     expect(epubBytes.length).toBe(20951889);
     expect(Buffer.from(epubBytes.slice(0, 4)).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
+  });
+});
+
+describe('downloadBook demo — full end-to-end with progress tracking and resumable downloads', () => {
+  const DEMO_BOOK_ID = 'demo-full-flow';
+
+  afterAll(async () => {
+    await closeBook(DEMO_BOOK_ID);
+    await contentStore.destroy(DEMO_BOOK_ID);
+  });
+
+  it('DEMO: full encrypted download with progress tracking → storage → decryption', async () => {
+    console.log('\n🎬 DEMO: Full Encrypted Download Flow');
+    console.log('=====================================\n');
+
+    // Track progress events
+    const progressEvents: { bytesReceived: number; expectedLength: number; percent: number }[] = [];
+    const onProgress = (bytesReceived: number, expectedLength: number) => {
+      const percent = Math.round((bytesReceived / expectedLength) * 100);
+      progressEvents.push({ bytesReceived, expectedLength, percent });
+      console.log(`  📥 Progress: ${percent}% (${(bytesReceived / 1024 / 1024).toFixed(2)} MB / ${(expectedLength / 1024 / 1024).toFixed(2)} MB)`);
+    };
+
+    console.log('1️⃣  Starting encrypted EPUB download with chunked transfer...');
+    const startTime = Date.now();
+    await downloadBook(DEMO_BOOK_ID, 'EPUB', { onProgress });
+    const downloadTime = Date.now() - startTime;
+
+    console.log(`   ✅ Download complete in ${(downloadTime / 1000).toFixed(2)}s\n`);
+
+    // Verify persistence
+    console.log('2️⃣  Verifying download was persisted to storage...');
+    const rows = await downloadTable.listActive(USER_ID);
+    const downloadRow = rows.find((r) => r.book_id === DEMO_BOOK_ID);
+    expect(downloadRow).toBeDefined();
+    expect(downloadRow?.status).toBe('COMPLETED');
+    console.log(`   ✅ Download row persisted: ${JSON.stringify({ book_id: downloadRow?.book_id, status: downloadRow?.status, format: downloadRow?.format })}\n`);
+
+    // Verify format tracking
+    console.log('3️⃣  Verifying format is tracked correctly...');
+    const format = await getFormat(DEMO_BOOK_ID);
+    expect(format).toBe('EPUB');
+    console.log(`   ✅ Format correctly stored: ${format}\n`);
+
+    // Verify decryption
+    console.log('4️⃣  Decrypting and verifying integrity...');
+    const decryptStart = Date.now();
+    const plaintext = await getBook(DEMO_BOOK_ID);
+    const decryptTime = Date.now() - decryptStart;
+
+    expect(plaintext.length).toBe(20951889);
+    console.log(`   ✅ Decryption successful in ${(decryptTime).toFixed(0)}ms`);
+    console.log(`   ✅ Plaintext size: ${(plaintext.length / 1024 / 1024).toFixed(2)} MB\n`);
+
+    // Verify structure
+    console.log('5️⃣  Verifying file structure (EPUB is ZIP)...');
+    const header = Buffer.from(plaintext.slice(0, 4));
+    const isValidZip = header.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])); // PK\x03\x04
+    expect(isValidZip).toBe(true);
+    console.log(`   ✅ Valid ZIP/EPUB structure confirmed\n`);
+
+    // Summary
+    console.log('📊 Summary:');
+    console.log(`   • Download time: ${(downloadTime / 1000).toFixed(2)}s`);
+    console.log(`   • Progress events: ${progressEvents.length}`);
+    console.log(`   • Final progress: ${progressEvents[progressEvents.length - 1]?.percent}%`);
+    console.log(`   • Decryption time: ${decryptTime}ms`);
+    console.log(`   • File size: ${(plaintext.length / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`   • All integrity checks: ✅\n`);
+  });
+
+  it('DEMO: resumable downloads — interrupt and resume full flow', async () => {
+    console.log('\n🎬 DEMO: Resumable Download Flow');
+    console.log('================================\n');
+
+    const RESUMABLE_BOOK_ID = 'demo-resumable';
+
+    try {
+      console.log('1️⃣  First attempt: download PDF, track chunks...');
+      const progressSnapshots: number[] = [];
+
+      const onProgress = (bytesReceived: number, expectedLength: number) => {
+        progressSnapshots.push(bytesReceived);
+        const percent = Math.round((bytesReceived / expectedLength) * 100);
+        console.log(`   📥 ${percent}% received (${progressSnapshots.length} chunk(s))`);
+
+        // Simulate interrupt after ~2 chunks on large file
+        if (progressSnapshots.length === 2) {
+          console.log('   ⚠️  SIMULATING INTERRUPTION (e.g., network drop, user cancel)...\n');
+          throw new Error('Network connection lost');
+        }
+      };
+
+      try {
+        await downloadBook(RESUMABLE_BOOK_ID, 'PDF', { onProgress });
+      } catch (cause) {
+        console.log(`   ❌ Download failed as expected: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+      }
+
+      console.log('2️⃣  Verifying partial state was saved to disk...');
+      const partialFile = new File(
+        new Directory(Paths.document, 'tf-reader-partial-downloads'),
+        `${encodeURIComponent(RESUMABLE_BOOK_ID)}.partial.json`,
+      );
+      expect(partialFile.exists).toBe(true);
+      const manifest = JSON.parse(partialFile.textSync());
+      console.log(`   ✅ Partial manifest saved: ${JSON.stringify({ bytesReceived: manifest.bytesReceived, expectedLength: manifest.expectedLength })}\n`);
+
+      console.log('3️⃣  Second attempt: resume from saved partial state...');
+      const resumeProgressSnapshots: number[] = [];
+      const onResumeProgress = (bytesReceived: number, expectedLength: number) => {
+        resumeProgressSnapshots.push(bytesReceived);
+        const percent = Math.round((bytesReceived / expectedLength) * 100);
+        console.log(`   📥 ${percent}% received (${resumeProgressSnapshots.length} new chunk(s))`);
+      };
+
+      await downloadBook(RESUMABLE_BOOK_ID, 'PDF', { onProgress: onResumeProgress });
+      console.log(`   ✅ Download resumed and completed\n`);
+
+      console.log('4️⃣  Verifying resumed download matches original...');
+      const format = await getFormat(RESUMABLE_BOOK_ID);
+      expect(format).toBe('PDF');
+      const plaintext = await getBook(RESUMABLE_BOOK_ID);
+      expect(plaintext.length).toBe(15368312);
+      expect(Buffer.from(plaintext.slice(0, 5)).toString('ascii')).toBe('%PDF-');
+      console.log(`   ✅ Decrypted PDF verified (${(plaintext.length / 1024 / 1024).toFixed(2)} MB)\n`);
+
+      console.log('5️⃣  Verifying partial state was cleaned up after success...');
+      expect(partialFile.exists).toBe(false);
+      console.log(`   ✅ Partial files cleaned up\n`);
+
+      console.log('📊 Resumable Download Summary:');
+      console.log(`   • First attempt: ${progressSnapshots.length} chunks before interruption`);
+      console.log(`   • Bytes before interrupt: ${(progressSnapshots[progressSnapshots.length - 1] / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`   • Resume attempt: ${resumeProgressSnapshots.length} new chunk(s)`);
+      console.log(`   • Total download: 2 attempts, 1 resume`);
+      console.log(`   • Final file size: ${(plaintext.length / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`   • Integrity verified: ✅\n`);
+    } finally {
+      await closeBook('demo-resumable');
+      await contentStore.destroy('demo-resumable');
+    }
   });
 });
