@@ -111,11 +111,22 @@ jest.setTimeout(60000);
 const PDF_BOOK_ID = 'integration-test-pdf-15mb';
 const EPUB_BOOK_ID = 'integration-test-epub-20mb';
 
+// A second, distinct pair — downloaded CONCURRENTLY with each other (see the describe block
+// below) rather than sequentially like the pair above, and kept separate from PDF_BOOK_ID/
+// EPUB_BOOK_ID so this suite still proves the sequential single-book path independently of the
+// concurrent multi-book one.
+const CONCURRENT_PDF_BOOK_ID = 'integration-test-concurrent-pdf';
+const CONCURRENT_EPUB_BOOK_ID = 'integration-test-concurrent-epub';
+
 afterAll(async () => {
   await closeBook(PDF_BOOK_ID);
   await contentStore.destroy(PDF_BOOK_ID);
   await closeBook(EPUB_BOOK_ID);
   await contentStore.destroy(EPUB_BOOK_ID);
+  await closeBook(CONCURRENT_PDF_BOOK_ID);
+  await contentStore.destroy(CONCURRENT_PDF_BOOK_ID);
+  await closeBook(CONCURRENT_EPUB_BOOK_ID);
+  await contentStore.destroy(CONCURRENT_EPUB_BOOK_ID);
 });
 
 describe('downloadBook (real mock-backend, real PDF)', () => {
@@ -169,5 +180,41 @@ describe('downloadBook (real mock-backend, real EPUB)', () => {
     // -app round trip, not coincidentally right-length garbage.
     const header = Buffer.from(bytes.slice(0, 4));
     expect(header.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
+  });
+});
+
+describe('downloadBook (real mock-backend, concurrent multi-format downloads)', () => {
+  it('two different content types, downloaded at the same time, decrypt independently with no cross-contamination', async () => {
+    // Same-tick, not sequential: both downloadBook() calls run their chunked fetch + RSA-OAEP
+    // unwrap + AES-256-GCM decrypt interleaved on the event loop. This is the scenario the
+    // book-by-book tests above can't exercise — it proves contentStore's per-bookId keying
+    // (packageCache, session state, on-disk meta/content files) doesn't leak or race across two
+    // concurrent downloads of DIFFERENT formats.
+    await Promise.all([
+      downloadBook(CONCURRENT_PDF_BOOK_ID, 'PDF'),
+      downloadBook(CONCURRENT_EPUB_BOOK_ID, 'EPUB'),
+    ]);
+
+    const rows = await downloadTable.listActive(USER_ID);
+    expect(rows.find((r) => r.book_id === CONCURRENT_PDF_BOOK_ID)?.status).toBe('COMPLETED');
+    expect(rows.find((r) => r.book_id === CONCURRENT_EPUB_BOOK_ID)?.status).toBe('COMPLETED');
+
+    // Fetch both back concurrently too — getFormat() and getBook() must each resolve to the
+    // book THEY were asked about, not whichever the other concurrent call last touched.
+    const [pdfFormat, epubFormat] = await Promise.all([
+      getFormat(CONCURRENT_PDF_BOOK_ID),
+      getFormat(CONCURRENT_EPUB_BOOK_ID),
+    ]);
+    expect(pdfFormat).toBe('PDF');
+    expect(epubFormat).toBe('EPUB');
+
+    const [pdfBytes, epubBytes] = await Promise.all([
+      getBook(CONCURRENT_PDF_BOOK_ID),
+      getBook(CONCURRENT_EPUB_BOOK_ID),
+    ]);
+    expect(pdfBytes.length).toBe(15368312);
+    expect(Buffer.from(pdfBytes.slice(0, 5)).toString('ascii')).toBe('%PDF-');
+    expect(epubBytes.length).toBe(20951889);
+    expect(Buffer.from(epubBytes.slice(0, 4)).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))).toBe(true);
   });
 });
