@@ -100,14 +100,15 @@ function anArticleDetail(over: Partial<Publication> = {}) {
   return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
 }
 
-// Every method a real DataSource must have, so the fake typechecks as one. Only
-// `getPublication` is exercised; the rest reject, which turns an unexpected
-// dependency into a loud failure instead of a silent one — same idiom as
-// CatalogueScreen.test.tsx and InstitutionDetailScreen.test.tsx.
-// Both detail methods are served by the same stub, because which one the screen
-// picks depends on whether an institution is selected and almost every test here
-// cares about the rendering rather than the route. The two tests that DO care
-// pin it directly — see 'ItemDetailScreen endpoint choice'.
+// Every method a real DataSource must have, so the fake typechecks as one. The
+// methods no test here calls reject, which turns an unexpected dependency into a
+// loud failure instead of a silent one — same idiom as CatalogueScreen.test.tsx
+// and InstitutionDetailScreen.test.tsx.
+//
+// BOTH detail methods are served by the one stub: which of them the screen calls
+// depends on whether an institution is selected, and almost every test below
+// cares about the rendering rather than the route. The two that DO care pin it
+// directly — see 'ItemDetailScreen endpoint choice'.
 function fakeSource(getPublication: DataSource['getPublication']): DataSource {
   const unused = () => Promise.reject(new Error('not stubbed for this test'));
   return {
@@ -121,7 +122,14 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
   };
 }
 
-const routeProps = { route: { params: { itemId: 'item_42' } } };
+// Shared across every test below except the ones that specifically assert on
+// navigation — those read `mockNavigate` directly rather than needing their
+// own `navigation` object.
+const mockNavigate = jest.fn();
+const routeProps = {
+  route: { params: { itemId: 'item_42' } },
+  navigation: { navigate: mockNavigate },
+};
 
 const INSTITUTION: Institution = {
   id: 'inst_a21',
@@ -135,6 +143,7 @@ const INSTITUTION: Institution = {
 afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
+  mockNavigate.mockClear();
   useInstitutionStore.setState({ selectedInstitution: null });
 });
 
@@ -290,6 +299,41 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText('Sign in')).toBeTruthy());
     expect(screen.queryByText('Read')).toBeNull();
   });
+
+  it('opens AccessGate with the item id, title and authors when Sign in is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Sign in')).toBeTruthy());
+    fireEvent.press(screen.getByText('Sign in'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('AccessGate', {
+      itemId: 'item_42',
+      title: 'Rights for Robots',
+      authors: 'Joshua C. Gellers',
+    });
+  });
+
+  // Screen 03 is reachable from exactly one action. Every other resolved
+  // action must still be untouched by this change. One press, not two — two
+  // `fireEvent.press` calls in a single test open overlapping `act()` scopes
+  // and corrupt every render after it in the file (same trap noted in
+  // QueueNotification.test.tsx).
+  it('still no-ops for actions other than signIn', async () => {
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+    fireEvent.press(screen.getByText('Read'));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 });
 
 describe('ItemDetailScreen format, price and table of contents', () => {
@@ -404,7 +448,11 @@ describe('ItemDetailScreen errors', () => {
       }),
     );
 
-    await render(<ItemDetailScreen {...{ route: { params: { itemId: 'item_missing' } } }} />);
+    await render(
+      <ItemDetailScreen
+        {...{ route: { params: { itemId: 'item_missing' } }, navigation: { navigate: mockNavigate } }}
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText(/couldn.?t find this title/i)).toBeTruthy());
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();

@@ -6,7 +6,8 @@ export type EmptyStateVariant =
   | 'no_query_results'
   | 'no_filter_results'
   | 'no_content'
-  | 'browse_instead';
+  | 'browse_instead'
+  | 'offline_no_results';
 
 export interface EmptyStateProps {
   variant: EmptyStateVariant;
@@ -23,6 +24,7 @@ const MESSAGES: Record<EmptyStateVariant, string> = {
   no_filter_results: 'Try adjusting your filters.',
   no_content: 'Nothing to show here yet.',
   browse_instead: 'No results for this search.',
+  offline_no_results: 'No matches in your offline list — connect to search the full directory.',
 };
 
 export default function EmptyState({

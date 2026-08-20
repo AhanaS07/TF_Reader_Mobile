@@ -28,6 +28,11 @@ export type CatalogueStackParamList = {
   // Screen 02 — sign-in sheet. Institution is read from institutionStore;
   // no params needed because selection always precedes navigation here.
   SignIn: undefined;
+  // Screen 03 — access gate, raised when `resolveAccess` returns
+  // `requires_signin`. title/authors ride along with itemId for the same
+  // reason `Shelf`'s `title` does: display data the caller already has,
+  // rather than a second fetch for a value that never changes here.
+  AccessGate: { itemId: string; title: string; authors: string };
   // Shelf detail — Prayas wires CategoryCard.onPress to this route (C1).
   // title is passed so the AppHeader can display it without a network call.
   //
@@ -45,6 +50,11 @@ export type CatalogueStackParamList = {
 export type SearchStackParamList = {
   SearchHome: undefined;
   ItemDetail: { itemId: string };
+  // Same reason ItemDetail is registered in both stacks: the gate can be
+  // raised from either origin. "Through my institution" crosses back into
+  // the Catalogue tab from here, since SignIn/InstitutionList exist only
+  // there — see AccessGateScreen.tsx.
+  AccessGate: { itemId: string; title: string; authors: string };
 };
 
 /** Single-screen stacks — no pushed screens in Week 1. */
