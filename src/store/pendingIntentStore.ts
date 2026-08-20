@@ -1,28 +1,6 @@
 // src/store/pendingIntentStore.ts
-// What the reader was trying to do before sign-in interrupted them.
-//
-// WHY THIS HAS TO SURVIVE A RESTART. Institutional sign-in is SAML, which is a
-// browser redirect protocol: the app is backgrounded while an identity provider
-// takes over, and on a tight device it may be killed outright before the reader
-// gets back. An intent held in memory is therefore an intent lost at precisely the
-// moment it is needed. index.html §State lists it as Zustand, persisted, survives
-// restart — and that row is the only reason this file is not a `useRef`.
-//
-// TWO CALL SITES, and they are less alike than they look:
-//
-//   1. The reader taps something that needs an identity we do not have. They only
-//      ever saw one button (`signIn`), so the intent is the app's judgement about
-//      what to resume — "take them back to this title and open it" — rather than a
-//      button they pressed.
-//   2. The reader taps Read or Download while apparently signed in, and the call
-//      comes back unauthenticated because the token lapsed. Here the intent IS the
-//      action they pressed, and replaying it is the whole point.
-//
-// ONE SLOT, AND A SECOND INTENT REPLACES THE FIRST. Deliberately unlike the queue
-// offer store (D15), which is also one slot but must NOT silently overwrite: an
-// offer is a copy already reassigned, so losing one costs the reader something
-// real. An intent is just a note about what they were doing, and the most recent
-// tap is by definition the one they still want.
+// Persists what the reader intended before SAML sign-in backgrounded the app.
+// Single slot — a newer intent silently overwrites the older one (unlike D15 offer store).
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import storage from '@storage/storage';
@@ -115,9 +93,14 @@ export const usePendingIntentStore = create<PendingIntentState>()(
       // Only data crosses the storage boundary — _hasHydrated resets to false on
       // every cold start (by design), and actions are never serialisable.
       partialize: (state) => ({ pending: state.pending }),
-      // If rehydration fails, state is undefined and _hasHydrated stays false,
-      // which is the safe fallback: nothing is replayed.
-      onRehydrateStorage: () => (state) => {
+      // Flip _hasHydrated on both paths — a failed rehydrate means no stored
+      // intent, same as a first launch. Without the error branch the flag
+      // stays false and the navigator hangs permanently.
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          usePendingIntentStore.setState({ _hasHydrated: true });
+          return;
+        }
         state?.setHasHydrated(true);
       },
       version: 1,
