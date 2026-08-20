@@ -17,6 +17,10 @@ interface InstitutionState {
   // Last 3 selected institution IDs, most recent first. Used to pin the
   // recently-used row at the top of the institution list screen (C1).
   recentlyUsedIds: string[];
+  // Last successful page-0 unfiltered fetch of the institution list. Served
+  // when the device is offline so the list keeps working without a network call
+  // (C8). Persisted so it survives cold starts.
+  cachedInstitutions: Institution[];
   // True once AsyncStorage has finished loading persisted state. Screens read
   // this before rendering so they never flash "no institution selected" on
   // launch before the stored value has arrived (FL-5).
@@ -27,6 +31,7 @@ interface InstitutionState {
   // Remove a single ID from recentlyUsedIds — used by InstitutionListScreen to
   // prune IDs that resolve to CatalogueFailure(NOT_FOUND) (institution inactive).
   removeRecentlyUsedId: (id: string) => void;
+  setCachedInstitutions: (institutions: Institution[]) => void;
   // Called internally by onRehydrateStorage — not for screens to call directly.
   setHasHydrated: (value: boolean) => void;
 }
@@ -36,6 +41,7 @@ export const useInstitutionStore = create<InstitutionState>()(
     (set) => ({
       selectedInstitution: null,
       recentlyUsedIds: [],
+      cachedInstitutions: [],
       _hasHydrated: false,
 
       setSelectedInstitution: (institution) =>
@@ -55,6 +61,8 @@ export const useInstitutionStore = create<InstitutionState>()(
           recentlyUsedIds: state.recentlyUsedIds.filter((rid) => rid !== id),
         })),
 
+      setCachedInstitutions: (institutions) => set({ cachedInstitutions: institutions }),
+
       setHasHydrated: (value) => set({ _hasHydrated: value }),
     }),
     {
@@ -65,6 +73,7 @@ export const useInstitutionStore = create<InstitutionState>()(
       partialize: (state) => ({
         selectedInstitution: state.selectedInstitution,
         recentlyUsedIds: state.recentlyUsedIds,
+        cachedInstitutions: state.cachedInstitutions,
       }),
       // Flip _hasHydrated once AsyncStorage has finished loading. The optional
       // chain handles the error path: if rehydration fails, state is undefined

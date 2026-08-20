@@ -78,6 +78,13 @@ export default function InstitutionListScreen() {
   const recentlyUsedIds = useInstitutionStore((s) => s.recentlyUsedIds);
   const setSelectedInstitution = useInstitutionStore((s) => s.setSelectedInstitution);
   const removeRecentlyUsedId = useInstitutionStore((s) => s.removeRecentlyUsedId);
+  const cachedInstitutions = useInstitutionStore((s) => s.cachedInstitutions);
+  const setCachedInstitutions = useInstitutionStore((s) => s.setCachedInstitutions);
+
+  // Ref so fetchPage can read the latest cache without being listed as a dep
+  // and causing a re-fetch loop every time the cache is written.
+  const cachedRef = useRef(cachedInstitutions);
+  useEffect(() => { cachedRef.current = cachedInstitutions; }, [cachedInstitutions]);
 
   // Institutions resolved directly by ID for the "Recently used" section.
   // Needed because paging means a recently-used institution may not appear in
@@ -91,6 +98,29 @@ export default function InstitutionListScreen() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchPage = useCallback((q: string, pageNum: number, replace: boolean) => {
+    const cached = cachedRef.current;
+
+    // Offline: serve the persisted cache instead of hitting the network.
+    // Pagination is disabled (hasMore=false) since we only cache page 0.
+    // A search query is satisfied client-side against the cached names.
+    if (!isOnline) {
+      setHasMore(false);
+      setLoading(false);
+      setLoadingMore(false);
+      if (replace) {
+        if (cached.length > 0) {
+          setInstitutions(
+            q.length > 0
+              ? cached.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))
+              : cached,
+          );
+        } else {
+          setFetchError(true);
+        }
+      }
+      return;
+    }
+
     if (replace) { setLoading(true); } else { setLoadingMore(true); }
     setFetchError(false);
     searchInstitutions({ ...(q.length > 0 ? { q } : {}), page: pageNum, size: PAGE_SIZE })
@@ -98,10 +128,21 @@ export default function InstitutionListScreen() {
         setInstitutions((prev) => replace ? results : [...prev, ...results]);
         setHasMore(results.length === PAGE_SIZE);
         setPage(pageNum);
+        // Cache only the first page of the unfiltered list — that is the list the
+        // offline path serves. Filtered or paginated results are intentionally excluded.
+        if (pageNum === 0 && q.length === 0) setCachedInstitutions(results);
       })
-      .catch(() => setFetchError(true))
+      .catch(() => {
+        // Mid-flight disconnect: prefer the cache over an error screen on initial load.
+        if (replace && cached.length > 0) {
+          setInstitutions(cached);
+          setHasMore(false);
+        } else {
+          setFetchError(true);
+        }
+      })
       .finally(() => { setLoading(false); setLoadingMore(false); });
-  }, []);
+  }, [isOnline, setCachedInstitutions]);
 
   useEffect(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
