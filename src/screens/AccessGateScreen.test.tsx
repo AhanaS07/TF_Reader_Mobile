@@ -117,12 +117,39 @@ describe('AccessGateScreen institution option', () => {
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'SignIn' });
   });
 
+  // AccessGate must not stay mounted underneath SignIn — see review follow-up.
+  it('dismisses AccessGate before navigating to SignIn', async () => {
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    fireEvent.press(screen.getByLabelText('Through my institution'));
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'SignIn' });
+  });
+
   it('navigates to InstitutionList when no institution is selected', async () => {
     await render(<AccessGateScreen {...makeProps()} />);
 
     fireEvent.press(screen.getByLabelText('Through my institution'));
 
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'InstitutionList' });
+  });
+
+  // No dismiss-and-forward here — InstitutionList's own `goBack()` is what
+  // returns the reader to this screen to try again with a selection made.
+  it('does not dismiss AccessGate when no institution is selected', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    fireEvent.press(screen.getByLabelText('Through my institution'));
+
+    expect(mockGoBack).not.toHaveBeenCalled();
+  });
+
+  it('renders a trailing chevron on the institution card', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    expect(screen.getByTestId('access-gate-institution-chevron')).toBeTruthy();
   });
 });
 
@@ -135,13 +162,13 @@ describe('AccessGateScreen personal account option', () => {
   });
 
   // Shown, not hidden — index.html: "screen 03's second option is reopened
-  // rather than settled." No destination exists to navigate to.
-  it('exposes a disabled accessibility state', async () => {
+  // rather than settled." No destination exists to navigate to, so this is
+  // `text`, not `button` — same convention as `UnavailableTag` elsewhere in
+  // this codebase for "shown but not backed by data" gaps.
+  it('uses a text accessibility role, not button', async () => {
     await render(<AccessGateScreen {...makeProps()} />);
 
-    expect(screen.getByLabelText('Personal account').props.accessibilityState.disabled).toBe(
-      true,
-    );
+    expect(screen.getByLabelText('Personal account').props.accessibilityRole).toBe('text');
   });
 
   it('does not navigate when pressed', async () => {
@@ -158,6 +185,12 @@ describe('AccessGateScreen personal account option', () => {
     fireEvent.press(screen.getByLabelText('Personal account'));
 
     expect(usePendingIntentStore.getState().pending).toBeNull();
+  });
+
+  it('renders a trailing chevron', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    expect(screen.getByTestId('access-gate-personal-account-chevron')).toBeTruthy();
   });
 });
 

@@ -81,6 +81,9 @@ export default function AccessGateScreen({ route, navigation }: Props) {
     // whether this screen is currently mounted under Catalogue or Search,
     // since SignIn and InstitutionList exist only in the Catalogue stack.
     if (selectedInstitution !== null) {
+      // Dismiss this screen first — otherwise AccessGate stays mounted
+      // underneath SignIn instead of being replaced by it.
+      navigation.goBack();
       navigation.navigate('Catalogue', { screen: 'SignIn' });
     } else {
       navigation.navigate('Catalogue', { screen: 'InstitutionList' });
@@ -133,6 +136,12 @@ export default function AccessGateScreen({ route, navigation }: Props) {
               <Text style={styles.cardTitle}>Through my institution</Text>
               <Text style={styles.cardSubtitle}>Sign in via SAML/SSO</Text>
             </View>
+            <Ionicons
+              testID="access-gate-institution-chevron"
+              name="chevron-forward"
+              size={20}
+              color={color.textSecondary}
+            />
           </Pressable>
 
           {/* Shown, not hidden — same rule as every other unsettled mockup
@@ -142,15 +151,20 @@ export default function AccessGateScreen({ route, navigation }: Props) {
               is reopened rather than settled"). */}
           <View
             style={[styles.card, styles.cardDisabled]}
-            accessibilityRole="button"
+            accessibilityRole="text"
             accessibilityLabel="Personal account"
-            accessibilityState={{ disabled: true }}
           >
             <Ionicons name="person-outline" size={ICON_SIZE} color={color.textSecondary} />
             <View style={styles.cardText}>
               <Text style={styles.cardTitle}>Personal account</Text>
               <Text style={styles.cardSubtitle}>Sign in with email</Text>
             </View>
+            <Ionicons
+              testID="access-gate-personal-account-chevron"
+              name="chevron-forward"
+              size={20}
+              color={color.textSecondary}
+            />
           </View>
 
           <Pressable
