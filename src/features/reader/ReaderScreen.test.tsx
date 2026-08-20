@@ -289,6 +289,92 @@ describe('a PDF Contents row', () => {
   });
 });
 
+describe('Prev/Next navigation controls', () => {
+  function prevButton() {
+    return screen.getByRole('button', { name: '‹ Prev' });
+  }
+
+  function nextButton() {
+    return screen.getByRole('button', { name: 'Next ›' });
+  }
+
+  async function relocate(atStart: boolean, atEnd: boolean): Promise<void> {
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart,
+      atEnd,
+    });
+  }
+
+  // Same reasoning as ReaderWebView's own READY_TIMEOUT window: before the first `relocated`
+  // arrives, "the book opens on its first page" is what Prev being disabled already means, and
+  // this is the state a fresh open sits in for however long the WebView takes to report it.
+  it('disables Prev before any position has arrived, matching a book opening on its first page', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+  });
+
+  it('disables Prev at the start and Next at the end, independently', async () => {
+    await mountReader();
+    await reportReady();
+
+    await relocate(true, false);
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+
+    await relocate(false, true);
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('re-enables both once neither edge applies any more', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(true, false);
+
+    await relocate(false, false);
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+  });
+
+  // CONTINUOUS SCROLL IS NAVIGATED BY SCROLLING, NOT BY THESE BUTTONS — so both are disabled
+  // unconditionally in that flow, independent of atStart/atEnd (which the WebView still reports,
+  // scrolled by whatever "one screenful" means there — see epub.entry.ts/pdf.entry.ts).
+  it('disables both in continuous scroll, regardless of position', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(false, false); // clearly not at either edge
+
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+    });
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('re-enables on returning to paginated flow, honouring the last reported edges', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(false, false);
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+    });
+
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+    });
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+  });
+});
+
 describe('the page indicator', () => {
   // PDF-ONLY BY CONSTRUCTION, not by choice. `ReaderPosition` is discriminated by format, and an EPUB
   // reports a CFI because a reflowable book has no stable page. Showing a number derived from a CFI

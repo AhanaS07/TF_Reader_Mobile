@@ -381,6 +381,31 @@ export function isMultiColumnCount(value: string): boolean {
 }
 
 /**
+ * The horizontal margin cap, as a fraction of the viewport width, past which a book's own
+ * margin-left/margin-right reads as a print-layout artifact rather than an intentional indent.
+ *
+ * WHY THIS EXISTS: Calibre's PDF-to-EPUB conversion often has no better way to represent a print
+ * page's original horizontal position than a hardcoded margin in em, commonly on generated classes
+ * (`applyAuthoredBreaks`'s own note explains why those exist) — anywhere from a couple of em (a
+ * genuine indent, a blockquote or a nested list) up to 20+ em (a print-page x-offset sized for a
+ * desktop-width column, seen verbatim in a real fixture: `.calibre27 { margin: 1em 0 1em 20em; }`).
+ * On a phone-width text column the latter consumes most or all of the available width, which reads
+ * as "the book has weird extra spacing" rather than as the indent it is. 0.2 leaves visible room for
+ * a real indent while catching the artifact.
+ */
+const MAX_INDENT_FRACTION = 0.2;
+
+/** Does an authored margin exceed the cap for this viewport? */
+export function isExcessiveIndent(marginPx: number, viewportWidthPx: number): boolean {
+  return Number.isFinite(marginPx) && marginPx > viewportWidthPx * MAX_INDENT_FRACTION;
+}
+
+/** The margin to use instead, when `isExcessiveIndent(...)` is true. */
+export function cappedIndent(viewportWidthPx: number): number {
+  return viewportWidthPx * MAX_INDENT_FRACTION;
+}
+
+/**
  * Collapses an author-declared multi-column layout back to one column, everywhere in the chapter.
  *
  * WHY THIS HAS TO EXIST: our own pagination IS a CSS column context — WebKit fragments the body

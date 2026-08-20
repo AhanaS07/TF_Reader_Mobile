@@ -24,6 +24,16 @@
 // was a way to CHANGE them without hand-editing SQLite, which is what the two new sections below are
 // for. `PREFS_API_FOR_FRONTEND.md` (Personalization, 2026-08-20) is a field catalogue for a real
 // settings screen — it documents these fields, it does not introduce them.
+//
+// ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. `ReaderAppearance.zoom`'s own doc comment always
+// said as much ("a reflowable EPUB scales through fontSizePt instead, so the EPUB renderer may
+// ignore this"), and `epub.entry.ts` never reads `appearance.zoom` anywhere — it was already a
+// no-op there, just not one the menu admitted to. The Zoom section below is hidden whenever the
+// active book's format is `'EPUB'` (App.tsx passes it down from the fixture picker), rather than
+// left visible and inert: a control with nothing to control is worse than no control, the same
+// reasoning ReaderScreen already applies to the PDF-only page indicator. `zoom` stays in
+// `ReaderAppearance`/the bridge payload regardless — PDF still needs it, and it is one payload for
+// both renderers by design (see readerAppearance.ts's own header).
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -32,7 +42,7 @@ import type { LayoutChangeEvent } from 'react-native';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
-import type { LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
+import type { ContentFormat, LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
 
 const BIG_TEXT_SIZE = 28;
 
@@ -186,7 +196,14 @@ function ZoomSlider({
   );
 }
 
-export function DevPreferencesMenu(): React.JSX.Element {
+export interface DevPreferencesMenuProps {
+  /** The active book's format, so Zoom can be hidden for an EPUB — see the header note on why.
+   * Undefined only for the fallback fixture row (an id App.tsx does not recognise), in which case
+   * Zoom stays visible rather than guessing it should hide. */
+  format?: ContentFormat;
+}
+
+export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
   // Local, live copy of prefs — needed to know which toggle is currently "on" (so pressing it again
@@ -314,8 +331,16 @@ export function DevPreferencesMenu(): React.JSX.Element {
             })}
           </View>
 
-          <Text style={styles.sectionLabel}>Zoom</Text>
-          <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
+          {/* ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. See this file's header note: a
+              reflowable EPUB scales via fontSizePt, epub.entry.ts never reads appearance.zoom, and
+              a control with nothing to control is worse than no control. Shown for PDF and for the
+              unrecognised-fixture fallback (format undefined), hidden only for a known EPUB. */}
+          {format !== 'EPUB' && (
+            <>
+              <Text style={styles.sectionLabel}>Zoom</Text>
+              <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
+            </>
+          )}
         </View>
       )}
     </View>

@@ -420,6 +420,13 @@ ${text}`;
     const count = Number.parseInt(value, 10);
     return Number.isFinite(count) && count >= 2;
   }
+  var MAX_INDENT_FRACTION = 0.2;
+  function isExcessiveIndent(marginPx, viewportWidthPx) {
+    return Number.isFinite(marginPx) && marginPx > viewportWidthPx * MAX_INDENT_FRACTION;
+  }
+  function cappedIndent(viewportWidthPx) {
+    return viewportWidthPx * MAX_INDENT_FRACTION;
+  }
   function columnOverrideCss() {
     return [
       "body, body * {",
@@ -463,6 +470,9 @@ ${text}`;
   }
   function mapSpread(spread) {
     return spread === "double" ? "auto" : "none";
+  }
+  function mapManager(flow) {
+    return flow === "paginated" ? "default" : "continuous";
   }
   function insertStylesheet(contents, css) {
     contents.addStylesheetCss(
@@ -517,6 +527,24 @@ ${text}`;
     }
     return applied;
   }
+  function capExcessiveIndents(doc, viewportWidthPx) {
+    if (!doc?.body || !doc.defaultView) return;
+    const win = doc.defaultView;
+    const nodes = doc.body.querySelectorAll(BREAK_CANDIDATE_SELECTOR);
+    const limit = Math.min(nodes.length, MAX_BREAK_CANDIDATES);
+    for (let i = 0; i < limit; i++) {
+      const el = nodes[i];
+      const computed = win.getComputedStyle(el);
+      const marginLeft = Number.parseFloat(computed.marginLeft);
+      if (isExcessiveIndent(marginLeft, viewportWidthPx)) {
+        el.style.setProperty("margin-left", `${cappedIndent(viewportWidthPx)}px`, "important");
+      }
+      const marginRight = Number.parseFloat(computed.marginRight);
+      if (isExcessiveIndent(marginRight, viewportWidthPx)) {
+        el.style.setProperty("margin-right", `${cappedIndent(viewportWidthPx)}px`, "important");
+      }
+    }
+  }
   function hasAuthoredColumns(doc) {
     if (!doc?.body || !doc.defaultView) return false;
     const win = doc.defaultView;
@@ -529,8 +557,43 @@ ${text}`;
     return false;
   }
   function finalCssFor(doc) {
-    return isPaginated() && hasAuthoredColumns(doc) ? `${currentCss}
+    return isPaginated(currentFlow()) && hasAuthoredColumns(doc) ? `${currentCss}
 ${columnOverrideCss()}` : currentCss;
+  }
+  function createRendition() {
+    if (!book) throw new Error("createRendition() called before a book was opened");
+    rendition = book.renderTo("viewer", {
+      flow: currentFlow(),
+      manager: mapManager(currentFlow()),
+      // '100%' AS STRINGS, NOT NUMBERS — see the note this carried before extraction: Stage.onResize
+      // only attaches a window resize listener when width/height are NOT numeric (stage.js:147-153).
+      // Pinned by readerTemplate.test.ts.
+      width: "100%",
+      height: "100%",
+      spread: currentAppearance ? mapSpread(currentAppearance.spread) : "none"
+    });
+    applyBaselineCss();
+    rendition.hooks.content.register((contents) => {
+      if (isPaginated(currentFlow())) applyAuthoredBreaks(contents.document);
+      capExcessiveIndents(contents.document, viewportSize().width);
+      insertStylesheet(contents, finalCssFor(contents.document));
+    });
+    rendition.on("resized", () => {
+      applyBaselineCss();
+    });
+    rendition.on("relocated", (location) => {
+      lastCfi = location?.start?.cfi ?? null;
+      post({
+        type: "relocated",
+        // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
+        // the whole reason ReaderPosition is discriminated by format rather than carrying both shapes
+        // flat with one of them always null.
+        position: { kind: "cfi", cfi: lastCfi },
+        atStart: !!location?.atStart,
+        atEnd: !!location?.atEnd
+      });
+    });
+    return rendition;
   }
   var api = {
     /**
@@ -560,45 +623,8 @@ ${columnOverrideCss()}` : currentCss;
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
-          rendition = book.renderTo("viewer", {
-            // The current appearance's flow/spread if applyAppearance already landed (the host sends
-            // it before openEpub), falling back to the pre-payload default otherwise — see
-            // currentAppearance's own note.
-            flow: currentFlow(),
-            // '100%' AS STRINGS, NOT NUMBERS — this is what makes the reader survive a rotation.
-            // Stage.onResize only attaches a window resize listener when width/height are NOT numeric
-            // (stage.js:147-153), and that listener is the whole of our resize handling: it lands in
-            // Rendition.onResized, which re-lays out and re-displays the current CFI
-            // (rendition.js:479-481). Pass pixel numbers here and rotation silently stops re-flowing.
-            // Pinned by readerTemplate.test.ts.
-            width: "100%",
-            height: "100%",
-            // 'none' (single) keeps one page per screen; the default ('auto') shows two side-by-side
-            // on wide screens, which makes next/prev look like it is skipping pages. Prefs-driven once
-            // currentAppearance exists.
-            spread: currentAppearance ? mapSpread(currentAppearance.spread) : "none"
-          });
-          applyBaselineCss();
-          rendition.hooks.content.register((contents) => {
-            if (isPaginated()) applyAuthoredBreaks(contents.document);
-            insertStylesheet(contents, finalCssFor(contents.document));
-          });
-          rendition.on("resized", () => {
-            applyBaselineCss();
-          });
-          rendition.on("relocated", (location) => {
-            lastCfi = location?.start?.cfi ?? null;
-            post({
-              type: "relocated",
-              // A CFI, not a page: this book is reflowable, so there is no stable page to report. That
-              // is the whole reason ReaderPosition is discriminated by format rather than carrying both
-              // shapes flat with one of them always null.
-              position: { kind: "cfi", cfi: lastCfi },
-              atStart: !!location?.atStart,
-              atEnd: !!location?.atEnd
-            });
-          });
-          await rendition.display();
+          const newRendition = createRendition();
+          await newRendition.display();
           post({ type: "rendered" });
           const navigation = await book.loaded.navigation;
           post({ type: "toc", items: flattenToc(navigation?.toc ?? [], 0, []) });
@@ -658,23 +684,29 @@ ${columnOverrideCss()}` : currentCss;
      * Theme colours ride the SAME `addStylesheetCss` path as typography, not `rendition.themes.*` —
      * see `baselineCss`'s own note on why themes cannot carry this at all for chapters loaded later.
      *
-     * `flow` is the one change that needs epub.js to re-layout rather than just re-style: changing it
-     * without re-displaying leaves the rendition paginating in the OLD mode against the NEW CSS.
-     * Skipped when the flow is unchanged so an unrelated theme-only appearance update never triggers a
-     * layout flash. `spread` needs no such guard — `rendition.spread()` is cheap and idempotent.
+     * `flow` is the one change that needs more than re-styling, and more than `rendition.flow()`
+     * alone can give it: a flow change that crosses the `mapManager()` boundary (paginated <->
+     * anything else) needs a DIFFERENT epub.js manager, and the manager is fixed at construction —
+     * there is no public API to hot-swap it. So instead of calling `rendition.flow()`, this destroys
+     * the current rendition and rebuilds one from scratch via `createRendition()`, redisplaying at the
+     * last known CFI. Skipped when the flow is unchanged so an unrelated theme-only appearance update
+     * never triggers a rebuild. `spread` needs no such guard — `rendition.spread()` is cheap and
+     * idempotent, and is not epub.js's manager choice.
      */
     applyAppearance: (appearance) => {
       const previousFlow = currentAppearance?.flow;
       currentAppearance = appearance;
-      applyBaselineCss();
       if (!rendition) return;
-      rendition.spread(mapSpread(appearance.spread));
       if (previousFlow !== void 0 && previousFlow !== appearance.flow) {
-        rendition.flow(appearance.flow);
-        rendition.display(lastCfi ?? void 0).catch((error) => {
+        const cfi = lastCfi;
+        rendition.destroy();
+        createRendition().display(cfi ?? void 0).catch((error) => {
           fail("NAVIGATION_FAILED", error);
         });
+        return;
       }
+      applyBaselineCss();
+      rendition.spread(mapSpread(appearance.spread));
     }
   };
   if (!epubFactory()) {

@@ -67,7 +67,21 @@ import { DevPreferencesMenu } from './DevPreferencesMenu';
  * deliberate second step. When the large pair has carried every feature, the bundled two are what
  * gets deleted — not this picker.
  */
-const DEV_FIXTURES: readonly { label: string; bookId: BookId; format: ContentFormat }[] = [
+/**
+ * `format` is metadata about the FIXTURE, not something read back from the book — these ids are
+ * seeded with a known format by devContentSeed.ts, so it is known statically here. It exists so
+ * DevPreferencesMenu can hide the Zoom control for whichever fixture is an EPUB (see the note where
+ * it is passed down): zoom has no EPUB equivalent (a reflowable book scales via fontSizePt instead),
+ * so offering it there is a control with nothing to control. The download button below also reads
+ * it, to pass downloadBook() the right format for whichever fixture is selected.
+ */
+interface DevFixture {
+  label: string;
+  bookId: BookId;
+  format?: ContentFormat;
+}
+
+const DEV_FIXTURES: readonly DevFixture[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
   { label: 'Big EPUB', bookId: DEV_FIXTURE_EPUB_BOOK_ID, format: 'EPUB' },
@@ -84,13 +98,15 @@ const DEV_FIXTURES: readonly { label: string; bookId: BookId; format: ContentFor
  * note warns about, reached through the UI instead of through a shared id. It is unreachable while
  * DEV_SAMPLE_BOOK_ID resolves to one of the four; it costs one line to keep it that way.
  *
+ * The fallback row defaults to `format: 'EPUB'` rather than leaving it unset — an id this file does
+ * not recognise has no statically known format, and both consumers (the download button, Zoom's
+ * hide-for-EPUB check) need some value rather than a third undefined case to handle.
+ *
  * EXPORTED, AND A PURE FUNCTION OF ITS ARGUMENT, only so it can be tested: the value it
  * is called with comes from an env var read at module load, and reaching that through a
  * re-required App would hand the renderer a second copy of React.
  */
-export function devFixtureOptions(
-  active: BookId,
-): readonly { label: string; bookId: BookId; format: ContentFormat }[] {
+export function devFixtureOptions(active: BookId): readonly DevFixture[] {
   return DEV_FIXTURES.some((fixture) => fixture.bookId === active)
     ? DEV_FIXTURES
     : [{ label: 'Fixture', bookId: active, format: 'EPUB' }, ...DEV_FIXTURES];
@@ -113,6 +129,12 @@ export default function App() {
   // additional exercise of the download path, not a replacement for how the reader gets content.
   const downloadProgress = useDownloadProgress();
 
+  // The active fixture's known format (see DevFixture's own note). `.find()` is what makes this
+  // possibly undefined to the type system, not the fixture data — every row, including the
+  // fallback, now carries one — and DevPreferencesMenu defaults to showing Zoom rather than
+  // guessing in that unreachable-in-practice case.
+  const currentFormat = FIXTURES.find((fixture) => fixture.bookId === bookId)?.format;
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -125,8 +147,11 @@ export default function App() {
               fixture picker below, whenever a real prefs-editing UI lands. __DEV__-gated so it
               never ships. Overlays the reader rather than sitting in this row's own layout flow,
               so opening it never resizes the WebView underneath.
+
+              `format` is passed so it can hide Zoom for an EPUB — zoom is not format applicable
+              there (see DevPreferencesMenu.tsx's own note on the Zoom section).
             */}
-            {__DEV__ && <DevPreferencesMenu />}
+            {__DEV__ && <DevPreferencesMenu format={currentFormat} />}
           </View>
 
           {/*

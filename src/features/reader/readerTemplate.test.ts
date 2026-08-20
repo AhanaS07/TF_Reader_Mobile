@@ -37,7 +37,9 @@ import * as path from 'path';
 
 import {
   baselineCss,
+  cappedIndent,
   columnOverrideCss,
+  isExcessiveIndent,
   isForcedBreak,
   isMultiColumnCount,
   isPaginated,
@@ -95,12 +97,21 @@ describe('the stylesheet is applied in a way epub.js honours', () => {
     // it. The hook is what puts the sheet into each chapter document. Registered after display(),
     // the first chapter paints at UA defaults and then re-flows — a visible flash of the exact bug
     // the baseline exists to fix.
+    //
+    // The hook lives inside createRendition() (shared by openEpub and applyAppearance's flow-change
+    // rebuild) rather than inline in openEpub, so the invariant this test pins shifted from "earlier
+    // in this function's text" to "createRendition() registers it before returning, and openEpub
+    // only calls display() on what createRendition() returns" — checked as three text positions
+    // rather than two, since that is what now makes the ordering structural rather than textual.
     const hookAt = EPUB_ENTRY.indexOf('rendition.hooks.content.register(');
-    const displayAt = EPUB_ENTRY.indexOf('await rendition.display()');
+    const createCallAt = EPUB_ENTRY.indexOf('const newRendition = createRendition();');
+    const displayAt = EPUB_ENTRY.indexOf('await newRendition.display()');
 
     expect(hookAt).toBeGreaterThan(-1);
+    expect(createCallAt).toBeGreaterThan(-1);
     expect(displayAt).toBeGreaterThan(-1);
-    expect(hookAt).toBeLessThan(displayAt);
+    expect(hookAt).toBeLessThan(createCallAt);
+    expect(createCallAt).toBeLessThan(displayAt);
   });
 
   it('re-applies the sheet on resize, not just on load', () => {
@@ -237,8 +248,45 @@ describe("the book's own page breaks are honoured", () => {
   });
 
   it('only runs in paginated flow', () => {
-    // In scrolled-doc there are no columns to break, and the walk would be pure cost.
-    expect(EPUB_ENTRY).toMatch(/if \(isPaginated\(\)\) applyAuthoredBreaks\(contents\.document\)/);
+    // In scrolled-doc there are no columns to break, and the walk would be pure cost. Checked
+    // against the LIVE flow (currentFlow()), not the static READER_FLOW default — this call sat
+    // bare (isPaginated()) until continuous scroll shipped, which meant it silently always used
+    // the paginated-flow default regardless of what the user was actually reading in.
+    expect(EPUB_ENTRY).toMatch(
+      /if \(isPaginated\(currentFlow\(\)\)\) applyAuthoredBreaks\(contents\.document\)/,
+    );
+  });
+});
+
+describe("a book's own print-layout margins don't eat the whole column", () => {
+  // Real values from a Calibre-converted fixture: .calibre27 { margin: 1em 0 1em 20em; } — a
+  // print-page x-offset with nowhere else to go once converted to HTML, now sized for a phone.
+  const VIEWPORT_WIDTH = 380;
+
+  it('leaves a modest, plausibly-intentional indent alone', () => {
+    // ~2em at a 16px root — a nested list or a blockquote, not a layout artifact.
+    expect(isExcessiveIndent(32, VIEWPORT_WIDTH)).toBe(false);
+  });
+
+  it('flags a margin that consumes most of the column', () => {
+    // 20em at 16px root = 320px, on a 380px column — the fixture's actual value.
+    expect(isExcessiveIndent(320, VIEWPORT_WIDTH)).toBe(true);
+  });
+
+  it('caps to a fraction of the viewport, not to a fixed pixel value', () => {
+    // Scales with the viewport rather than clamping every phone to one hardcoded number — a tablet
+    // legitimately has more room for the same indent to still read as intentional.
+    expect(cappedIndent(380)).toBeCloseTo(76);
+    expect(cappedIndent(760)).toBeCloseTo(152);
+  });
+
+  it('applies regardless of flow, unlike the break walk and the column override', () => {
+    // Horizontal width is scarce in scrolled-doc too — only pagination-specific fixes are gated on
+    // isPaginated().
+    expect(EPUB_ENTRY).toMatch(
+      /capExcessiveIndents\(contents\.document, viewportSize\(\)\.width\)/,
+    );
+    expect(EPUB_ENTRY).not.toMatch(/if \(isPaginated\([^)]*\)\)\s*capExcessiveIndents/);
   });
 });
 
@@ -276,9 +324,10 @@ describe("an authored multi-column layout doesn't fight our own page columns", (
   it('only overrides columns when this chapter actually authors them', () => {
     // The override must be conditional — appending it unconditionally would mean every chapter of
     // every book pays for a rule it never needed, and would force column-count: 1 on legitimately
-    // authored two-column content this reader has no opinion about outside paginated flow.
+    // authored two-column content this reader has no opinion about outside paginated flow. Checked
+    // against the LIVE flow, same reasoning as the break walk above.
     expect(EPUB_ENTRY).toMatch(
-      /isPaginated\(\) && hasAuthoredColumns\(doc\)\s*\n\s*\? `\$\{currentCss\}\\n\$\{columnOverrideCss\(\)\}`\s*\n\s*: currentCss/,
+      /isPaginated\(currentFlow\(\)\) && hasAuthoredColumns\(doc\)\s*\n\s*\? `\$\{currentCss\}\\n\$\{columnOverrideCss\(\)\}`\s*\n\s*: currentCss/,
     );
   });
 
@@ -499,6 +548,26 @@ describe('each shell carries the DOM its entry queries', () => {
     // untypechecked half of the bridge growing back.
     expect(source()).toMatch(/<!-- @inject:entry -->/);
     expect(source()).not.toMatch(/<script>\s*\n\s*\(function/);
+  });
+});
+
+describe('the PDF shell carries continuous scroll\'s second surface', () => {
+  // pdf.entry.ts toggles which of #pdf-single/#pdf-scroll is visible off applyAppearance's flow —
+  // both silently do nothing if their elements go missing, same failure mode the block above guards
+  // for the single-page surface.
+  it('defines #pdf-single wrapping the existing single-page canvas', () => {
+    expect(PDF_TEMPLATE).toMatch(
+      /<div id="pdf-single"><canvas id="pdf-canvas"><\/canvas><\/div>/,
+    );
+  });
+
+  it('defines the scrollable surface and its page-wrapper content root', () => {
+    expect(PDF_TEMPLATE).toMatch(/<div id="pdf-scroll">/);
+    expect(PDF_TEMPLATE).toMatch(/<div id="pdf-scroll-content"><\/div>/);
+  });
+
+  it('hides #pdf-scroll by default, so a book always opens in single-page mode absent an appearance', () => {
+    expect(PDF_TEMPLATE).toMatch(/#pdf-scroll\s*\{[^}]*display:\s*none/);
   });
 });
 

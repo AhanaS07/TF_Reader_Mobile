@@ -15,6 +15,8 @@ import {
   buildOutlineToc,
   collectOutline,
   fitScale,
+  fitWidthScale,
+  mostVisiblePage,
   outlineDestPage,
   pageFromTarget,
   type OutlineDocument,
@@ -229,5 +231,46 @@ describe('fitScale', () => {
     ['a degenerate page', 400, 400, 0, 400],
   ])('returns 0 for %s', (_label, bw, bh, pw, ph) => {
     expect(fitScale(bw, bh, pw, ph)).toBe(0);
+  });
+});
+
+describe('fitWidthScale', () => {
+  // Continuous scroll fits width only — height is the page's share of scroll length, not something
+  // to bound.
+  it('fits to the width ratio regardless of page height', () => {
+    expect(fitWidthScale(400, 800)).toBeCloseTo(0.5);
+    expect(fitWidthScale(800, 400)).toBeCloseTo(2);
+  });
+
+  it.each([
+    ['an unmeasurable viewport', 0, 400],
+    ['a degenerate page', 400, 0],
+  ])('returns 0 for %s', (_label, boxWidth, pageWidth) => {
+    expect(fitWidthScale(boxWidth, pageWidth)).toBe(0);
+  });
+});
+
+describe('mostVisiblePage', () => {
+  const pageTops = [0, 800, 1600];
+
+  it('reports the page under the viewport MIDPOINT, not the top edge', () => {
+    expect(mostVisiblePage(pageTops, 0, 800)).toBe(1); // midpoint 400 — inside page 1
+    expect(mostVisiblePage(pageTops, 800, 800)).toBe(2); // midpoint 1200 — inside page 2
+    expect(mostVisiblePage(pageTops, 1600, 800)).toBe(3); // midpoint 2000 — inside page 3
+  });
+
+  it('does not jump a page early — a page top just past the viewport top is not yet "current"', () => {
+    // Viewport [750, 1550): midpoint 1150 is still inside page 2 (800-1600), even though page 2's
+    // top has already scrolled 50px past the viewport's own top edge.
+    expect(mostVisiblePage(pageTops, 750, 800)).toBe(2);
+  });
+
+  it('treats an exact boundary as having entered the next page', () => {
+    expect(mostVisiblePage(pageTops, 800, 0)).toBe(2); // midpoint exactly 800
+  });
+
+  it('defaults to page 1 for an empty list or a midpoint above every page', () => {
+    expect(mostVisiblePage([], 0, 800)).toBe(1);
+    expect(mostVisiblePage(pageTops, -1000, 0)).toBe(1);
   });
 });
