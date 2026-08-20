@@ -16,23 +16,28 @@
 // nothing here is sent or received. These are compile-time reads of a constant, resolved before the
 // shell is even built.
 
+import type { LayoutPrefs } from '@/shared/contracts';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 
+export type ReaderFlow = LayoutPrefs['flow'];
+
 /**
- * The rendition flow, in ONE place.
+ * The rendition flow default, until `applyAppearance` supplies a real one.
  *
- * Everything pagination-specific below keys off `isPaginated()`, so when `LayoutPrefs.flow` starts
- * arriving over the bridge this constant becomes the value it sets and the guarded blocks are the
- * only things that change. `scrolled-doc` needs no line grid (no page edges to slice a line) and no
- * column breaks (no columns).
+ * Everything pagination-specific below keys off `isPaginated()`. `scrolled-doc` needs no line grid
+ * (no page edges to slice a line) and no column breaks (no columns).
  *
- * Derived from the contract rather than restated: `'paginated'` is `DEFAULT_PREFS.layout.flow`, and
- * this is the reader's default until a preference overrides it.
+ * Derived from the contract rather than restated: `'paginated'` is `DEFAULT_PREFS.layout.flow`.
  */
 export const READER_FLOW = DEFAULT_PREFS.layout.flow;
 
-export function isPaginated(): boolean {
-  return READER_FLOW === 'paginated';
+/**
+ * `flow` defaults to `READER_FLOW` rather than being required everywhere, so every existing call
+ * site (and every existing test) keeps working unchanged while the entry — the one place `flow` can
+ * actually change live — passes the current value explicitly.
+ */
+export function isPaginated(flow: ReaderFlow = READER_FLOW): boolean {
+  return flow === 'paginated';
 }
 
 /**
@@ -40,24 +45,69 @@ export function isPaginated(): boolean {
  * as px at the reference width below — 16px is plainly the UA default it came from. Settling that
  * unit is Personalization's call.
  *
- * `spacing` (letter/word spacing) is deliberately unused: it defaults to 0, and a rule setting a
- * property to its own default only adds another declaration for a real book's CSS to lose to.
+ * These three are the PRE-PAYLOAD fallback `readerMetrics`/`baselineCss` use before the first
+ * `applyAppearance` arrives (it is sent after `ready`, and prefs are an async read) — not dead code
+ * once prefs are live, still the value a book paints at if that read is slow or fails.
  */
 const BASELINE_FONT_SIZE_PX = DEFAULT_PREFS.typography.size;
 const BASELINE_LINE_HEIGHT = DEFAULT_PREFS.typography.lineHeight;
 const BASELINE_MARGIN_PX = DEFAULT_PREFS.typography.margins;
 
+/** The typography inputs `readerMetrics` scales — the slice of `ReaderAppearance` this module needs,
+ * not the whole payload, so this file stays ignorant of the personalization type. */
+export interface TypographyInput {
+  fontSizePt: number;
+  lineHeight: number;
+  marginPx: number;
+}
+
+const DEFAULT_TYPOGRAPHY: TypographyInput = {
+  fontSizePt: BASELINE_FONT_SIZE_PX,
+  lineHeight: BASELINE_LINE_HEIGHT,
+  marginPx: BASELINE_MARGIN_PX,
+};
+
 /**
- * The width `BASELINE_FONT_SIZE_PX` is calibrated for (a 393pt iPhone), and the range the scaled
- * result is held inside. Type scales WITH the viewport rather than being fixed, but proportional
- * scaling alone would give a 34px body on an iPad and 13px on the smallest phone, so the clamp is
- * what keeps it a reading size on both.
+ * The width `fontSizePt` is calibrated for (a 393pt iPhone), and the range the VIEWPORT FACTOR is
+ * held inside — not the resulting px. Type scales WITH the viewport rather than being fixed, but
+ * proportional scaling alone would give a 34px body on an iPad and 13px on the smallest phone, so
+ * the clamp is what keeps it a reading size on both.
  *
- * These three are Reader's own numbers, not a preference, so they stay literals.
+ * >>> CLAMP THE FACTOR, NOT THE PRODUCT. <<< A prior version clamped the scaled PX result to
+ * [15, 22], which silently re-capped exactly the accessibility user this feature is for: a chosen
+ * `fontSizePt` above the old ceiling collapsed to 22px regardless of how deliberately it was set.
+ * Clamping the viewport factor instead means a legitimate large `fontSizePt` still scales past 22px
+ * on a narrow phone, while an absurd one (see ABSOLUTE_*_FONT_PX below) is still caught.
+ *
+ * These four are Reader's own numbers, not a preference, so they stay literals. 0.94/1.375 are
+ * chosen so this clamp is a no-op at the DEFAULT_TYPOGRAPHY font size: `round(16 * 0.94) === 15` and
+ * `round(16 * 1.375) === 22`, the same bounds the old product clamp produced.
  */
 const REFERENCE_VIEWPORT_WIDTH_PX = 393;
-const MIN_FONT_SIZE_PX = 15;
-const MAX_FONT_SIZE_PX = 22;
+const MIN_VIEWPORT_FACTOR = 0.94;
+const MAX_VIEWPORT_FACTOR = 1.375;
+
+/**
+ * A pathological-value guard, not a design bound. `fontSizePt` arrives from prefs uncomposed with
+ * any clamp of its own (composeFontSizePt() is deliberately unclamped — see readerAppearance.ts), so
+ * a corrupt or absurd stored value must not reach the line-grid arithmetic below unchecked.
+ */
+const ABSOLUTE_MIN_FONT_PX = 8;
+const ABSOLUTE_MAX_FONT_PX = 200;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * `marginPx` is user-supplied and, unlike the font size, feeds directly into `padTop`/`padBottom`
+ * arithmetic rather than through a scaling factor — an adversarial value (or simply a generous one on
+ * a small viewport) can drive `padBottom` negative once `lines` floors to its minimum of 1. Capping
+ * it at a quarter of the viewport height keeps room for at least one line box regardless of height.
+ */
+function clampMargin(marginPx: number, height: number): number {
+  return clamp(marginPx, 0, Math.floor(height / 4));
+}
 
 export interface ReaderMetrics {
   fontPx: number;
@@ -85,32 +135,44 @@ export interface ReaderMetrics {
  * until the next page. Bounding them to the page (max-height) limits that to one page rather than
  * fixing it.
  */
-export function readerMetrics(width: number, height: number): ReaderMetrics {
-  const scaled = Math.round((BASELINE_FONT_SIZE_PX * width) / REFERENCE_VIEWPORT_WIDTH_PX);
-  const fontPx = Math.min(Math.max(scaled, MIN_FONT_SIZE_PX), MAX_FONT_SIZE_PX);
-  const linePx = Math.round(fontPx * BASELINE_LINE_HEIGHT);
+export function readerMetrics(
+  width: number,
+  height: number,
+  typography: TypographyInput = DEFAULT_TYPOGRAPHY,
+  flow: ReaderFlow = READER_FLOW,
+): ReaderMetrics {
+  const viewportFactor = clamp(
+    width / REFERENCE_VIEWPORT_WIDTH_PX,
+    MIN_VIEWPORT_FACTOR,
+    MAX_VIEWPORT_FACTOR,
+  );
+  const scaled = Math.round(typography.fontSizePt * viewportFactor);
+  const fontPx = clamp(scaled, ABSOLUTE_MIN_FONT_PX, ABSOLUTE_MAX_FONT_PX);
+  const linePx = Math.round(fontPx * typography.lineHeight);
+  const marginPx = clampMargin(typography.marginPx, height);
 
-  if (!isPaginated()) {
+  if (!isPaginated(flow)) {
     // No page edge to slice a line, so no quantisation — just even margins.
     return {
       fontPx,
       linePx,
-      padTop: BASELINE_MARGIN_PX,
-      padBottom: BASELINE_MARGIN_PX,
+      padTop: marginPx,
+      padBottom: marginPx,
       lines: 0,
     };
   }
 
-  const padTop = BASELINE_MARGIN_PX;
-  const lines = Math.max(1, Math.floor((height - padTop - BASELINE_MARGIN_PX) / linePx));
+  const padTop = marginPx;
+  const lines = Math.max(1, Math.floor((height - padTop - marginPx) / linePx));
 
   return {
     fontPx,
     linePx,
     padTop,
-    // The remainder, so padTop + lines * linePx + padBottom === height exactly. Never smaller than
-    // BASELINE_MARGIN_PX, because `lines` floored first.
-    padBottom: height - padTop - lines * linePx,
+    // The remainder, so padTop + lines * linePx + padBottom === height exactly, EXCEPT when a
+    // pathological linePx (an extreme fontSizePt/lineHeight combination the guards above did not
+    // fully rule out) does not fit even once — floored at 0 rather than going negative.
+    padBottom: Math.max(0, height - padTop - lines * linePx),
     lines,
   };
 }
@@ -137,12 +199,29 @@ export function readerMetrics(width: number, height: number): ReaderMetrics {
  *     forced. A deliberate trade: the book's typographic intent is discarded in exchange for one
  *     predictable size, and it becomes a preference at the prefs stage.
  *
- * NOT set here, on purpose: font-family (books ship their own; overriding is FontPrefs, not a
- * baseline) and text-align (justification is a preference and a bad default on a narrow column).
+ * `fontFamily`/`fg`/`bg`/`link`/`letterSpacingPx` are the prefs-application override: `''`/0/absent
+ * means "leave the book's own choice alone", matching the baseline's original stance. `fontFamily`
+ * must already be sanitised (see `sanitizeFontFamily` below) — this function formats trusted CSS
+ * text, it does not validate it. `text-align` stays unset regardless — justification is a preference
+ * this payload does not currently carry.
  */
-export function baselineCss(m: ReaderMetrics): string {
+export interface AppearanceCssOptions {
+  fg?: string;
+  bg?: string;
+  link?: string;
+  /** Already sanitised by the caller. `''` or absent means "don't override". */
+  fontFamily?: string;
+  letterSpacingPx?: number;
+}
+
+export function baselineCss(
+  m: ReaderMetrics,
+  appearance: AppearanceCssOptions = {},
+  flow: ReaderFlow = READER_FLOW,
+): string {
   const f = m.fontPx;
   const l = m.linePx;
+  const { fg, bg, link, fontFamily, letterSpacingPx } = appearance;
 
   let css: string[] = [
     // The iframe inherits nothing from the host document, so the host's own -webkit-text-size-adjust
@@ -151,12 +230,19 @@ export function baselineCss(m: ReaderMetrics): string {
     'html, body {',
     '  -webkit-text-size-adjust: 100% !important;',
     '  text-size-adjust: 100% !important;',
+    ...(bg ? [`  background: ${bg} !important;`] : []),
     '}',
     'body {',
     `  font-size: ${f}px !important;`,
     `  line-height: ${l}px !important;`,
     `  padding-top: ${m.padTop}px !important;`,
     `  padding-bottom: ${m.padBottom}px !important;`,
+    ...(fg ? [`  color: ${fg} !important;`] : []),
+    ...(fontFamily ? [`  font-family: ${fontFamily}, sans-serif !important;`] : []),
+    // 0 is the default and is omitted entirely, per the same "don't restate the default" reasoning
+    // as the spacing note used to give — a rule set to its own default only adds a declaration for a
+    // real book's CSS to lose to.
+    ...(letterSpacingPx ? [`  letter-spacing: ${letterSpacingPx}px !important;`] : []),
     // No hyphenation and no mid-word wrapping: a word broken across a page boundary is the thing
     // that reads as broken. Long unbreakable tokens are handled below, where they actually occur,
     // rather than by letting every word in the book break.
@@ -165,6 +251,7 @@ export function baselineCss(m: ReaderMetrics): string {
     '  word-break: normal !important;',
     '  overflow-wrap: normal !important;',
     '}',
+    ...(link ? [`a { color: ${link} !important; }`] : []),
     // One size for every text-bearing element. `div` and `span` are in the list because
     // Calibre-converted books put their scaling on wrappers.
     'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',
@@ -221,7 +308,7 @@ export function baselineCss(m: ReaderMetrics): string {
     '}',
   ];
 
-  if (isPaginated()) {
+  if (isPaginated(flow)) {
     css = css.concat([
       // Keep a figure or table whole rather than sliced by a page edge.
       'figure, table, img, svg {',
@@ -240,6 +327,30 @@ export function baselineCss(m: ReaderMetrics): string {
 }
 
 /**
+ * Chars a CSS font-family value may contain, once quoted names are handled below. `fontFamily`
+ * arrives from prefs — a user-supplied string reaching CSS text via `baselineCss` — so this is the
+ * allow-list that stands between it and a stylesheet-injection payload (`"; } body { ... `). Anything
+ * outside it, or an empty/all-whitespace result, sanitises to `''` — the same "don't override"
+ * value `resolveFont()` already uses for a blank preference, not a broken CSS rule.
+ */
+const FONT_FAMILY_ALLOWED = /^[A-Za-z0-9 ,-]*$/;
+
+export function sanitizeFontFamily(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === '' || !FONT_FAMILY_ALLOWED.test(trimmed)) return '';
+
+  const families = trimmed
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '')
+    // CSS requires quoting a family name that contains a space (e.g. `"Times New Roman"`); a
+    // single-word name is valid unquoted.
+    .map((part) => (part.includes(' ') ? `"${part}"` : part));
+
+  return families.join(', ');
+}
+
+/**
  * Does a computed break value mean "force a break here"?
  *
  * Covers the CSS3 `break-*` vocabulary and the legacy `page-break-*` one that EPUB CSS is actually
@@ -254,6 +365,47 @@ export function isForcedBreak(value: string): boolean {
     value === 'recto' ||
     value === 'verso'
   );
+}
+
+/**
+ * Does a computed `column-count` mean "this element authors its own multi-column layout"?
+ *
+ * The computed value is either `'auto'` (no author columns) or a positive integer as a string.
+ * `Number.parseInt` on `'auto'` is `NaN`, which fails the finite check — no separate string
+ * comparison needed. 1 does not count: a book that explicitly sets `column-count: 1` is not
+ * fighting our pagination, so there is nothing to detect.
+ */
+export function isMultiColumnCount(value: string): boolean {
+  const count = Number.parseInt(value, 10);
+  return Number.isFinite(count) && count >= 2;
+}
+
+/**
+ * Collapses an author-declared multi-column layout back to one column, everywhere in the chapter.
+ *
+ * WHY THIS HAS TO EXIST: our own pagination IS a CSS column context — WebKit fragments the body
+ * into columns and epub.js calls each fragment a "page" (see READER_FLOW). A book that ALSO sets
+ * `column-count` on its own content nests one column context inside the other. Nested columns are
+ * valid CSS, but WebKit fills the inner columns top-to-bottom-then-across before it lets the outer
+ * (our page) column fragment run — so text several book-columns "ahead" can render before the rest
+ * of the current page, which reads as pages arriving out of spine order. Forcing every descendant
+ * back to one column removes the inner context entirely, leaving our page column as the only one,
+ * which is what keeps `next()`/`prev()` and CFI order matching what is on screen.
+ *
+ * `body *` rather than just `body`: the book can author columns on any wrapper, not only the root,
+ * and `applyAuthoredBreaks` already shows Calibre-style books put such rules on generated classes
+ * rather than a selector worth guessing.
+ */
+export function columnOverrideCss(): string {
+  return [
+    'body, body * {',
+    '  column-count: 1 !important;',
+    '  -webkit-column-count: 1 !important;',
+    '  column-width: auto !important;',
+    '  -webkit-column-width: auto !important;',
+    '  columns: auto !important;',
+    '}',
+  ].join('\n');
 }
 
 /**

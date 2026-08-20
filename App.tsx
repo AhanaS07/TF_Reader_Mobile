@@ -44,6 +44,8 @@ import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId } from '@/shared/contracts';
 
+import { DevPreferencesMenu } from './DevPreferencesMenu';
+
 /**
  * TEMP, with everything else in this file.
  *
@@ -104,7 +106,17 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.header}>
-          <Text style={styles.title}>TF Reader</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>TF Reader</Text>
+
+            {/*
+              TEMP, see DevPreferencesMenu.tsx's own header note — deletes independently of the
+              fixture picker below, whenever a real prefs-editing UI lands. __DEV__-gated so it
+              never ships. Overlays the reader rather than sitting in this row's own layout flow,
+              so opening it never resizes the WebView underneath.
+            */}
+            {__DEV__ && <DevPreferencesMenu />}
+          </View>
 
           {/*
             TEMP: picks which stand-in fixture to open, because there is no library
@@ -155,6 +167,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e2e2e2',
   },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { fontSize: 20, fontWeight: '600', color: '#111111' },
 
   // TEMP, with the picker above.

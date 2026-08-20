@@ -20,6 +20,8 @@
 
 import type { Book, Contents, Rendition } from 'epubjs';
 
+import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+
 import {
   base64ToArrayBuffer,
   fail,
@@ -31,10 +33,16 @@ import {
 import { flattenToc, type NavItem } from './epubOutline';
 import {
   baselineCss,
+  columnOverrideCss,
   isForcedBreak,
+  isMultiColumnCount,
   isPaginated,
   READER_FLOW,
   readerMetrics,
+  sanitizeFontFamily,
+  type AppearanceCssOptions,
+  type ReaderFlow,
+  type TypographyInput,
 } from './readerMetrics';
 
 /** epub.js's factory, as it appears on `window`. */
@@ -52,6 +60,48 @@ const STYLESHEET_KEY = 'tf-baseline';
 /** The last CSS we built. Read by the content hook for chapters that load later — a book is many
  * documents, and each one needs the sheet inserted again. */
 let currentCss = '';
+
+/**
+ * The latest `applyAppearance` payload, or null before the first one arrives. The host sends this
+ * before `openEpub` (see readerBridge.ts), so in practice this is set before `book.open()` runs —
+ * but nothing here may ASSUME that: null falls back to the same DEFAULT_PREFS-derived baseline the
+ * reader painted before prefs-application existed.
+ */
+let currentAppearance: ReaderAppearance | null = null;
+
+/** The last reported CFI, kept only to re-display the reading position after a live flow change —
+ * the one appearance change that needs epub.js to re-layout rather than just re-style. */
+let lastCfi: string | null = null;
+
+function currentTypography(): TypographyInput | undefined {
+  if (!currentAppearance) return undefined;
+  return {
+    fontSizePt: currentAppearance.fontSizePt,
+    lineHeight: currentAppearance.lineHeight,
+    marginPx: currentAppearance.marginPx,
+  };
+}
+
+function currentFlow(): ReaderFlow {
+  return currentAppearance?.flow ?? READER_FLOW;
+}
+
+function appearanceCssOptions(): AppearanceCssOptions {
+  if (!currentAppearance) return {};
+  return {
+    fg: currentAppearance.fg,
+    bg: currentAppearance.bg,
+    link: currentAppearance.link,
+    fontFamily: sanitizeFontFamily(currentAppearance.fontFamily),
+    letterSpacingPx: currentAppearance.letterSpacingPx,
+  };
+}
+
+/** `'single'`/`'double'` -> epub.js's own vocabulary. `'double'` is inert under epub.js's
+ * `minSpreadWidth` (800) on phone widths — expected, not a bug to chase. */
+function mapSpread(spread: ReaderAppearance['spread']): 'none' | 'auto' {
+  return spread === 'double' ? 'auto' : 'none';
+}
 
 /**
  * Insert our baseline sheet into one chapter document.
@@ -106,12 +156,16 @@ function viewportSize(): { width: number; height: number } {
  */
 function applyBaselineCss(): void {
   const size = viewportSize();
-  currentCss = baselineCss(readerMetrics(size.width, size.height));
+  currentCss = baselineCss(
+    readerMetrics(size.width, size.height, currentTypography(), currentFlow()),
+    appearanceCssOptions(),
+    currentFlow(),
+  );
 
   if (!rendition) return;
 
   for (const contents of rendition.getContents() as unknown as Contents[]) {
-    insertStylesheet(contents, currentCss);
+    insertStylesheet(contents, finalCssFor(contents.document));
   }
 }
 
@@ -162,6 +216,47 @@ function applyAuthoredBreaks(doc: Document | null | undefined): number {
   return applied;
 }
 
+/**
+ * Does this chapter author its own multi-column CSS (e.g. `column-count: 2`), on the body or on
+ * any of the same block-level containers `applyAuthoredBreaks` already walks?
+ *
+ * Reads the COMPUTED value, not a selector match, for the reason `applyAuthoredBreaks` gives:
+ * Calibre-converted books put such rules on generated classes, so there is no selector worth
+ * guessing, and the computed value is what actually reaches WebKit's layout regardless of where
+ * the declaration came from.
+ */
+function hasAuthoredColumns(doc: Document | null | undefined): boolean {
+  if (!doc?.body || !doc.defaultView) return false;
+
+  const win = doc.defaultView;
+  if (isMultiColumnCount(win.getComputedStyle(doc.body).columnCount)) return true;
+
+  const nodes = doc.body.querySelectorAll(BREAK_CANDIDATE_SELECTOR);
+  const limit = Math.min(nodes.length, MAX_BREAK_CANDIDATES);
+
+  for (let i = 0; i < limit; i++) {
+    if (isMultiColumnCount(win.getComputedStyle(nodes[i] as HTMLElement).columnCount)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * The stylesheet for ONE chapter document: the shared baseline, plus the column override IF this
+ * chapter needs it.
+ *
+ * Detection runs against the chapter's own document each time, rather than once per book, because
+ * a book's chapters are not guaranteed to share a stylesheet — a front-matter page can be plain
+ * while a glossary a few spine items later authors two columns. Cheap to re-check: bounded by the
+ * same MAX_BREAK_CANDIDATES cap as the break walk, and only reachable in paginated flow, where a
+ * nested column context is possible at all.
+ */
+function finalCssFor(doc: Document | null | undefined): string {
+  return isPaginated() && hasAuthoredColumns(doc)
+    ? `${currentCss}\n${columnOverrideCss()}`
+    : currentCss;
+}
+
 const api: TFReaderApi<'openEpub'> = {
   /**
    * Open a whole book from base64-encoded EPUB bytes and paginate it.
@@ -197,8 +292,10 @@ const api: TFReaderApi<'openEpub'> = {
         await book.open(buffer, 'binary');
 
         rendition = book.renderTo('viewer', {
-          // The one place the flow is chosen; see READER_FLOW in readerMetrics.ts.
-          flow: READER_FLOW,
+          // The current appearance's flow/spread if applyAppearance already landed (the host sends
+          // it before openEpub), falling back to the pre-payload default otherwise — see
+          // currentAppearance's own note.
+          flow: currentFlow(),
           // '100%' AS STRINGS, NOT NUMBERS — this is what makes the reader survive a rotation.
           // Stage.onResize only attaches a window resize listener when width/height are NOT numeric
           // (stage.js:147-153), and that listener is the whole of our resize handling: it lands in
@@ -207,9 +304,10 @@ const api: TFReaderApi<'openEpub'> = {
           // Pinned by readerTemplate.test.ts.
           width: '100%',
           height: '100%',
-          // 'none' keeps one page per screen. The default ('auto') shows two side-by-side on wide
-          // screens, which makes next/prev look like it is skipping pages.
-          spread: 'none',
+          // 'none' (single) keeps one page per screen; the default ('auto') shows two side-by-side
+          // on wide screens, which makes next/prev look like it is skipping pages. Prefs-driven once
+          // currentAppearance exists.
+          spread: currentAppearance ? mapSpread(currentAppearance.spread) : 'none',
         });
 
         // BEFORE display(), deliberately. The hook is what inserts the stylesheet into each chapter
@@ -221,8 +319,8 @@ const api: TFReaderApi<'openEpub'> = {
         // chapter rather than once per book.
         applyBaselineCss();
         rendition.hooks.content.register((contents: Contents) => {
-          insertStylesheet(contents, currentCss);
           if (isPaginated()) applyAuthoredBreaks(contents.document);
+          insertStylesheet(contents, finalCssFor(contents.document));
         });
 
         // Rotation changes the type size AND the line-grid remainder, so a sheet built for portrait
@@ -233,12 +331,13 @@ const api: TFReaderApi<'openEpub'> = {
         });
 
         rendition.on('relocated', (location: { start?: { cfi?: string }; atStart?: boolean; atEnd?: boolean }) => {
+          lastCfi = location?.start?.cfi ?? null;
           post({
             type: 'relocated',
             // A CFI, not a page: this book is reflowable, so there is no stable page to report. That
             // is the whole reason ReaderPosition is discriminated by format rather than carrying both
             // shapes flat with one of them always null.
-            position: { kind: 'cfi', cfi: location?.start?.cfi ?? null },
+            position: { kind: 'cfi', cfi: lastCfi },
             atStart: !!location?.atStart,
             atEnd: !!location?.atEnd,
           });
@@ -302,6 +401,35 @@ const api: TFReaderApi<'openEpub'> = {
     rendition.display(target.href).catch((error: unknown) => {
       fail('NAVIGATION_FAILED', error);
     });
+  },
+
+  /**
+   * Apply a resolved appearance. Fire-and-forget, sent before `openEpub` in the normal case (see
+   * `currentAppearance`'s note) and again on any live prefs/OS change thereafter — never a reopen.
+   *
+   * Theme colours ride the SAME `addStylesheetCss` path as typography, not `rendition.themes.*` —
+   * see `baselineCss`'s own note on why themes cannot carry this at all for chapters loaded later.
+   *
+   * `flow` is the one change that needs epub.js to re-layout rather than just re-style: changing it
+   * without re-displaying leaves the rendition paginating in the OLD mode against the NEW CSS.
+   * Skipped when the flow is unchanged so an unrelated theme-only appearance update never triggers a
+   * layout flash. `spread` needs no such guard — `rendition.spread()` is cheap and idempotent.
+   */
+  applyAppearance: (appearance) => {
+    const previousFlow = currentAppearance?.flow;
+    currentAppearance = appearance;
+    applyBaselineCss();
+
+    if (!rendition) return;
+
+    rendition.spread(mapSpread(appearance.spread));
+
+    if (previousFlow !== undefined && previousFlow !== appearance.flow) {
+      rendition.flow(appearance.flow);
+      rendition.display(lastCfi ?? undefined).catch((error: unknown) => {
+        fail('NAVIGATION_FAILED', error);
+      });
+    }
   },
 };
 

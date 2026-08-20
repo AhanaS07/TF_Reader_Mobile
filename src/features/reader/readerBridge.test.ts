@@ -43,6 +43,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 import {
   HOST_ERROR_CODES,
   MAX_TOC_DEPTH,
@@ -52,6 +53,30 @@ import {
   buildCommandScript,
   parseReaderMessage,
 } from '@/features/reader/readerBridge';
+
+/** A representative appearance payload — every field, so the JSON-encoding test is not testing a
+ * partial shape by accident. */
+const SAMPLE_APPEARANCE: ReaderAppearance = {
+  colorScheme: 'dark',
+  fg: '#e6e6e6',
+  bg: '#121212',
+  link: '#6ea8fe',
+  fontFamily: '',
+  customFontUri: null,
+  fontSizePt: 16,
+  lineHeight: 1.5,
+  letterSpacingPx: 0,
+  marginPx: 16,
+  flow: 'paginated',
+  spread: 'single',
+  zoom: 1,
+  reduceMotion: false,
+  highContrast: false,
+  boldText: false,
+  dyslexiaFont: false,
+  readableSpacing: false,
+  announcePageChanges: true,
+};
 
 const webviewFile = (...parts: string[]): string =>
   fs.readFileSync(path.join(__dirname, 'webview', ...parts), 'utf8');
@@ -311,6 +336,16 @@ describe('buildCommandScript', () => {
     );
   });
 
+  it('calls applyAppearance with the whole appearance object, JSON-encoded', () => {
+    // ReaderAppearance is flat and primitive-only (readerAppearance.test.ts pins that), so encoding
+    // the whole object is exactly as safe as goTo.target above — there is no second field to keep in
+    // step, unlike CommandArgs's per-field entries.
+    const script = buildCommandScript({ type: 'applyAppearance', appearance: SAMPLE_APPEARANCE });
+    expect(script).toContain(
+      `window.TFReader.applyAppearance(${JSON.stringify(SAMPLE_APPEARANCE)})`,
+    );
+  });
+
   it('never puts a ContentFormat value into a command payload', () => {
     // Trigger 3 in WEBVIEW_BRIDGE.md, as an executable assertion rather than a note.
     // Format is routed by CHOOSING a command, so the literals 'EPUB'/'PDF'/'AUDIO'
@@ -320,6 +355,7 @@ describe('buildCommandScript', () => {
       buildCommandScript({ type: 'openPdf', base64: 'JVBERi0xLjQK' }),
       buildCommandScript({ type: 'next' }),
       buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
+      buildCommandScript({ type: 'applyAppearance', appearance: SAMPLE_APPEARANCE }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
         expect(script).not.toContain(`'${format}'`);

@@ -2,6 +2,11 @@
 //
 // The typed half of the RN <-> WebView bridge — and since 2026-08-18, the ONLY description of it.
 //
+// `ReaderAppearance` (imported below) is the one signed-off cross-owner type on this file: it is
+// Personalization's, resolved host-side by `toReaderAppearance()`, and it is a bridge-local flat
+// shape rather than a `src/shared/contracts/` type — importing it here is NOT trigger 3. See
+// WEBVIEW_BRIDGE.md's "prefs-application design, as signed off" for why that distinction holds.
+//
 // >>> THE TYPECHECKED-WEBVIEW CONVERSION IS DONE. THE HAND-SYNC CONTRACT IS OVER. <<<
 // The WebView half used to be plain JS inside .html files, deliberately outside tsc's view, kept in
 // step with this file BY HAND and guarded by tests that read those files as text. It is now real
@@ -46,6 +51,8 @@
 //      possible to improve: a typed payload can carry a discriminated target instead of one string
 //      meaning two things. Worth doing, and deliberately NOT bundled into the conversion — it is a
 //      protocol change with a host-side half, not a change of how one file is produced.
+
+import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 
 /**
  * Somewhere in a book the reader can be asked to go, discriminated by format.
@@ -278,6 +285,7 @@ export const READER_COMMANDS = {
   next: 'next',
   prev: 'prev',
   goTo: 'goTo',
+  applyAppearance: 'applyAppearance',
 } as const;
 
 /**
@@ -306,12 +314,24 @@ export const READER_COMMANDS = {
  * Do not "simplify" these into one command with a format argument. It reads tidier
  * and it moves a frozen contract across the boundary.
  */
+/**
+ * `applyAppearance` carries the whole `ReaderAppearance` object as one payload field rather than
+ * flattening it onto the command — there is exactly one consumer of the whole shape (the entry's
+ * `applyAppearance` method), so there is no "argument per field" case here to keep in step, unlike
+ * `goTo.target`.
+ *
+ * MUST reach both shells (`TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` both require it —
+ * see `SharedCommandName` in bridge.ts) and MUST be sent before `openEpub`/`openPdf`: PDF answers
+ * `NOT_READY` to anything sent before `open*`, and EPUB's `flow`/`spread` only take effect if set
+ * before `renderTo()`. See WEBVIEW_BRIDGE.md's "prefs-application design, as signed off".
+ */
 export type ReaderCommand =
   | { type: 'openEpub'; base64: string }
   | { type: 'openPdf'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
-  | { type: 'goTo'; target: ReaderTarget };
+  | { type: 'goTo'; target: ReaderTarget }
+  | { type: 'applyAppearance'; appearance: ReaderAppearance };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -492,7 +512,11 @@ export function buildCommandScript(command: ReaderCommand): string {
         ? // An OBJECT now, not a bare string. JSON.stringify already handled this correctly — which is
           // the whole reason the escaping rule below is stated as "every argument", not "every string".
           JSON.stringify(command.target)
-        : '';
+        : command.type === 'applyAppearance'
+          ? // ReaderAppearance is flat and primitive-only (its own contract, enforced by
+            // readerAppearance.test.ts), so this is exactly as safe as goTo.target above.
+            JSON.stringify(command.appearance)
+          : '';
 
   return `(function(){
     try {
