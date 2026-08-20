@@ -152,18 +152,21 @@ list and the adapter live in `personalizationRow.ts`.
 
 **Open items a consumer should know:**
 
-- **`typography.size` units are not yet agreed** (points vs scale-factor). `DEFAULT_PREFS` commits
-  *points* (16) today; don't hardcode an interpretation until this closes (Ahana + Vaishnavi).
+- **`typography.size` units: RESOLVED — absolute points** (Ahana, 2026-08-18; see §6). `DEFAULT_PREFS`
+  commits *points* (16); composition is `size × resolveFontScale(...)`.
 - **`theme: 'highContrast'` is deprecated** in favour of `accessibility.display.highContrast`, kept in
   the union only so old records parse. Migrate on read (`migratePrefs.ts`).
 
 ---
 
-## 6. `typography.size` units + text-scale composition — proposed, pending Ahana
+## 6. `typography.size` units + text-scale composition — RESOLVED (Ahana, 2026-08-18)
 
-Closes prefs.ts DECISION LOG #4. This is a joint call with Ahana (she renders it); recorded here as a
-proposal to ratify, not a settled answer. Schema-safe either way — the column is REAL, so nothing in
-`personalizationRow.ts` changes. It blocks *Reader applying prefs*, not the store.
+**Closed. Ratified exactly as proposed below:** `typography.size` is absolute **points**, and the
+composition is `size × resolveFontScale(a11y.text, osFontScale)`. Closes prefs.ts DECISION LOG #4.
+Implemented as `composeFontSizePt` in `readerAppearance.ts`; the Reader owns the final bound and
+clamps the viewport factor (0.94–1.375), not the product. The rest of this section is kept as the
+rationale of record. Schema-safe either way — the column is REAL, so nothing in `personalizationRow.ts`
+changed.
 
 Three knobs scale text and their interaction was undecided:
 

@@ -1,164 +1,110 @@
 // Owner: Reader (Ahana).
 //
-// The typed half of the RN <-> WebView bridge. Its counterparts are the plain-JS
-// IIFEs in src/features/reader/webview/reader-epub.template.html and
-// reader-pdf.template.html, plus the shared half both of them inline from
-// reader.bridge.html. THREE files, one contract — the drift guard in
-// readerBridge.test.ts reads all three and compares the union.
+// The typed half of the RN <-> WebView bridge — and since 2026-08-18, the ONLY description of it.
 //
-// >>> HAND-SYNC CONTRACT — READ BEFORE EDITING <<<
-// The WebView side is NOT typechecked — it lives in a .html file precisely to
-// keep it out of tsc's view — so NOTHING mechanically enforces that these two
-// files agree. What keeps that safe is that the surface is tiny and 1:1:
+// >>> THE TYPECHECKED-WEBVIEW CONVERSION IS DONE. THE HAND-SYNC CONTRACT IS OVER. <<<
+// The WebView half used to be plain JS inside .html files, deliberately outside tsc's view, kept in
+// step with this file BY HAND and guarded by tests that read those files as text. It is now real
+// TypeScript under src/features/reader/webview/src/, compiled into the generated shells by
+// buildReaderHtml.ts (esbuild), and it IMPORTS the types below:
 //
-//   ReaderMessage['type']   <-> every post({ type: ... }) in the template
-//   READER_COMMANDS keys    <-> every method name on window.TFReader
+//   webview/src/bridge.ts        post/fail/showFallback/base64ToArrayBuffer + the TFReaderApi type
+//   webview/src/epub.entry.ts    epub.js renderer, openEpub
+//   webview/src/pdf.entry.ts     pdf.js renderer, openPdf
+//   webview/src/readerMetrics.ts typography arithmetic and the stylesheet (pure, unit-tested)
+//   webview/src/epubOutline.ts   epub.js navigation -> toc (pure, unit-tested)
+//   webview/src/pdfOutline.ts    pdf.js outline -> toc, page/scale arithmetic (pure, unit-tested)
 //
-// Both directions are asserted at runtime below, so a drift shows up as a loud,
-// coded error rather than a silently ignored message. KEEP THIS UNION MINIMAL:
-// once it needs to grow much past this, the right answer is a real typechecked
-// build step for the WebView payload, not more hand-synced cases.
+// So `ReaderMessage` and `ReaderCommand` are one contract with two consumers, not two descriptions of
+// one protocol. `post()` takes `ReaderMessage`; `fail()` takes `WebViewErrorCode`; each entry declares
+// `TFReaderApi<'openEpub' | 'openPdf'>`, a mapped type over `ReaderCommand` that also checks each
+// method's ARGUMENTS against its command's payload — something the old text-based guard could not see
+// at all, because it compared names.
 //
-// >>> REVISIT WEBVIEW-JS TYPING WHEN THE BRIDGE GROWS <<<
-// Full analysis, stage forecast and conversion plan: WEBVIEW_BRIDGE.md, in this
-// folder. Read it before changing anything below, and update it in the same
-// change. The summary here is so this decision is not missed by someone who only
-// opens this file.
+// WHAT THIS MEANS WHEN YOU CHANGE SOMETHING HERE: add a case to `ReaderMessage` and the WebView half
+// fails to compile until it handles it. There is no longer a list to remember, a template to re-grep,
+// or a trigger to re-run. WEBVIEW_BRIDGE.md records what the triggers were and which stage finally
+// fired one, as history rather than as a forecast.
 //
-// Accepted debt, not an oversight — but it compounds with surface area, so here
-// is the trigger rather than a vague "someday". Surface as of 2026-08-17:
+// >>> parseReaderMessage() STAYS, AND IS NOT REDUNDANT. <<<
+// Compile-time types do not survive the JSON round trip through `postMessage`. The host receives an
+// untyped string built from a book's own navigation document — untrusted input — so the runtime
+// validation below is still the only thing between book content and the host. Types are not a
+// substitute for the parser, and a future refactor that "simplifies" it away by casting is the one
+// change this file most needs to refuse.
 //
-//   5 message types (ready, rendered, relocated, toc, error)
-//   5 commands      (openEpub, openPdf, next, prev, goTo)
+// THREE DESIGN DECISIONS THE CONVERSION DID NOT CHANGE, because each is about what crosses the
+// boundary rather than about how it is typed:
 //
-// Runtime assertions cover a tiny 1:1 surface cheaply. They stop being enough
-// when a mismatch can be SHAPE-level rather than NAME-level — parseReaderMessage
-// can check that `type` is one of five strings, but it cannot tell you the
-// template stopped sending a field some case needs. Switch to a typechecked
-// WebView build (tsc over a real .ts entry, bundled into the template by
-// buildReaderHtml.ts) when ANY of these becomes true:
-//
-//   - the message union passes ~8 cases, or any single PAYLOAD grows past ~3
-//     fields, in EITHER direction — a command's arguments count exactly as a
-//     message's fields do (wording fixed 2026-08-18; it used to say "any case",
-//     which only ever meant a ReaderMessage case and left a 13-field command
-//     firing nothing). The NUMBER of commands is still deliberately uncounted
-//   - a command needs a RESPONSE (request/reply, not fire-and-forget) — that
-//     doubles the hand-synced surface per call and adds correlation ids
-//   - a bridge payload is a type owned by a FROZEN contract in src/shared/
-//     contracts/ (Locator, SharedPrefs, SearchHit, …) rather than a primitive
-//     local to this file. WEBVIEW_BRIDGE.md calls this the sharpest one: tsc
-//     walks every TS consumer of a frozen contract and walks straight past the
-//     .html, so hand-copying a frozen shape silently removes the WebView from
-//     the freeze's blast radius
-//   - the transport stops being base64-over-injectJavaScript (see the note on
-//     getBookBase64 in readerAssets.ts); a new transport means re-agreeing the
-//     whole payload shape, which is the cheapest moment to get a compiler
-//   - anything inside the WebView starts holding state RN also models
-//
-// (This list is a copy of WEBVIEW_BRIDGE.md's; keep the two in step. The frozen-
-// contract trigger above was missing here until 2026-08-13 — which is precisely
-// the drift a duplicated list invites, and the reason the note below about
-// "trips two" only ever parsed against the doc's version.)
-//
-// Day 3 (whole-book decrypt) did NOT trip any of these — worth recording,
-// because it was the predicted trigger. The decrypted-buffer handoff reused
-// `open` unchanged, TOC already existed, and the one new code
-// (CONTENT_LOAD_FAILED) is host-side and never crosses the bridge.
-//
-// Day 4 (the 20 MB whole-book transport) did NOT trip any either, and that one
-// was expected to: base64-over-injectJavaScript was ASSERTED not to scale to a
-// 20 MB book. Measured instead — the payload crosses and renders in ~330ms, ~5%
-// of a warm open — so the transport stayed and only the base64 IMPLEMENTATION
-// changed on each side, behind an unchanged open(base64). Chunking would have
-// fired trigger 4 and 5; it turned out not to be needed. The debt is still cheap.
-//
-// Widening `goTo` to take an EPUB CFI (for Search hits) did NOT trip any either.
-// It is an argument rename, not a new capability — `rendition.display()` already
-// resolved CFIs — and the payload stays a bare string, so trigger 3 is untouched.
-// That last part is the whole reason it stayed cheap: see the note on
-// ReaderCommand below, and do not "simplify" it by passing the Locator.
-//
-// Flattening the TOC (following epub.js's nested `subitems`) did NOT trip any
-// either — but it is the first change here that grew a SHAPE rather than a name:
-// ReaderTocItem went from {label, href} to {label, href, depth}. That is AT
-// trigger 1's "~3 fields" boundary rather than past it, and `depth` is a plain
-// number local to this file, not a frozen contract. The NEXT field added to a TOC
-// entry fires trigger 1; say so then instead of re-arguing the boundary.
-//
-// PDF support (a second renderer, a second template) did NOT trip any either, and
-// this one is worth reading before assuming the obvious. Routing a FORMAT looks
-// exactly like trigger 3 — ContentFormat is frozen, in shared/types/primitives.ts —
-// and it would have been, had the format value crossed. It does not. The host reads
-// ContentFormat in typechecked TS and picks BETWEEN TWO COMMAND NAMES (openEpub /
-// openPdf); the bridge only ever sees a name that belongs to this file. That is the
-// same manoeuvre that kept `goTo` cheap: discriminate host-side, send a primitive.
-// Commands went 4 -> 5, which trigger 1 does not count (it counts MESSAGE cases and
-// fields per case, both unchanged). PDFJS_MISSING is one more code in an existing
-// list, not a new shape.
-//
-// What was deliberately NOT built, because it would have fired trigger 1: reporting
-// the PDF page in `relocated`. That is a fourth field on a case already at the
-// boundary. Nothing consumes a reading position yet, so the field would have bought
-// nothing and cost the conversion. When Progress needs it, adding it IS the
-// conversion — say so then instead of re-arguing it.
-//
-// DUE NOW, NOT FORECAST: prefs-application was requested on 2026-08-18 and the
-// design is signed off, so the conversion is the next task in this folder. Read
-// "The prefs-application design, as signed off" in WEBVIEW_BRIDGE.md before
-// starting it. The short version, because it changes what lands here:
-//
-//   - ONE fire-and-forget command, applyAppearance(appearance), carrying a flat
-//     primitive-only ReaderAppearance (features/personalization/
-//     readerAppearance.ts). NOT applyPrefs(SharedPrefs) — that is trigger 3 by
-//     definition — and NOT five setters.
-//   - So trigger 3 is DESIGNED OUT, the same way goTo's and openEpub/openPdf's
-//     were: resolve host-side, send primitives. Trigger 1 still fires on the
-//     field count, which is why the conversion is still first.
-//   - It must be defined in BOTH templates. Only the EPUB one needs typography,
-//     but buildCommandScript guards on the method existing, so a PDF open would
-//     otherwise answer NOT_READY for a command that simply is not there.
-//   - It must be sent BEFORE openEpub/openPdf: flow and spread are renderTo()
-//     options, and renderTo runs inside openEpub.
-//   - fontFamily/customFontUri are user-supplied strings that end up in CSS
-//     text. JSON.stringify below protects the injected SCRIPT, not the
-//     stylesheet the template concatenates. They need sanitising on arrival.
-//
-// SECOND CANDIDATE, AS OF 2026-08-16: TTS. The Reader -> TTS seam is agreed (see
-// TTS_PROVIDER.md in this folder) and Accessibility is building against it now.
-// Its bridge half needs `requestSentence` to RETURN a sentence — trigger 2
-// outright, the first request/reply here — and a 7-field reply payload, well past
-// trigger 1. The agreed design is stateless per request (the anchor CFI travels
-// with every call), which keeps trigger 5 clear, but that changes nothing about
-// the due date. Whichever of prefs-application and TTS starts first pays for the
-// conversion; neither can be built without it. Nothing about the TTS interface or
-// its fake touches this file — they are RN-side only.
-//
-// THE BRIDGE IS NOW THE ONLY THING LEFT BLOCKING THAT STAGE. Until Sync landed,
-// there was a second blocker that made this date feel far away: prefs existed only
-// as an in-memory stub that reset every launch, so there was nothing durable to
-// apply. That is no longer true — `features/sync/sharedPrefs.ts`'s
-// `readSharedPrefs()` reads both tables off SQLite and merges them into one
-// contract-shaped `SharedPrefs`. So the work can start the day someone asks for it,
-// and when it does, the conversion is the first task rather than a discovery.
+//   1. TWO OPEN COMMANDS, not `open(base64, format)`. `ContentFormat` is a frozen contract; routing it
+//      by COMMAND NAME keeps its value off the bridge entirely. See the note on `ReaderCommand`.
+//   2. `goTo.target` STAYS A BARE STRING. Search stores a `Locator`; the host unwraps `.cfi` before
+//      sending. Now that the WebView is a tsc consumer, importing `Locator` there would no longer be
+//      a *drift* risk — but it would still put a discriminated union on a channel whose payloads all
+//      arrive as JSON, and `parseReaderMessage` would have to validate every variant.
+//   3. `toc.items[].href` CARRIES A PAGE NUMBER FOR PDF. This is the one thing the conversion makes it
+//      possible to improve: a typed payload can carry a discriminated target instead of one string
+//      meaning two things. Worth doing, and deliberately NOT bundled into the conversion — it is a
+//      protocol change with a host-side half, not a change of how one file is produced.
 
 /**
- * One entry from epub.js `book.loaded.navigation`, flattened.
+ * Somewhere in a book the reader can be asked to go, discriminated by format.
  *
- * `depth` is the entry's nesting level in the book's navigation tree — 0 for a
- * top-level entry. The tree is flattened depth-first in the template (see
- * `flattenToc` there) and arrives as a single ordered list, so the host indents by
- * `depth` rather than rendering a recursive structure. That is the point: a
- * recursive payload is the shape a hand-synced, untypechecked boundary is worst at.
+ * >>> THIS REPLACED AN OVERLOADED STRING, AND THE OVERLOAD IS WORTH UNDERSTANDING. <<<
+ * `ReaderTocItem.href` used to be one `string` meaning a spine href for EPUB and a 1-based page
+ * number for PDF. That was chosen deliberately, back when a fourth field on the `toc` message meant
+ * paying for the typechecked-WebView conversion — a real cost for a Contents panel. The conversion has
+ * happened, so the cheaper option stopped being cheaper and this is the honest shape.
  *
- * A MISSING `depth` PARSES AS 0 ON PURPOSE. `assets/reader/reader-epub.html` is a
- * generated but tracked artifact, so a working tree can legitimately hold a
- * template older than this file; degrading to a flat list beats dropping every
- * entry, which is what a required field would do.
+ * THE EPUB VARIANT STILL ACCEPTS TWO THINGS, and that one is NOT an overload to remove: `href` is a
+ * spine href (from a TOC entry) or an EPUB CFI (from a Search hit), and epub.js discriminates them
+ * itself — `spine.get()` tests `isCfiString()` before its href lookup, so `rendition.display()` routes
+ * both through one call. One field, two forms, resolved by the library rather than by us.
+ *
+ * IT TRAVELS IN BOTH DIRECTIONS: out on `toc`, back in on `goTo`. That is the point — the host no
+ * longer has to flatten a typed target into an ambiguous string to send it anywhere.
+ */
+export type ReaderTarget =
+  | { kind: 'href'; href: string }
+  | { kind: 'page'; page: number };
+
+/**
+ * >>> WHY `kind` AND NOT `format`. <<<
+ * The first draft of this type discriminated on `format: 'EPUB' | 'PDF'`, and
+ * `readerBridge.test.ts`'s "never puts a ContentFormat value into a command payload" caught it: the
+ * string `"PDF"` was suddenly on the wire. Relaxing that guard would have been the wrong fix.
+ *
+ * The right fix is that a target is not discriminated by a book's format at all — it is discriminated
+ * by its ADDRESSING SCHEME. `href` addresses a spine item (or a CFI); `page` addresses a page number.
+ * Two schemes exist because two renderers exist, but the payload describes the scheme, and the reader
+ * branches on "is this a page?" rather than on "is this book a PDF?".
+ *
+ * Three things fall out of that, and they are why the rename is worth the words:
+ *  - `ContentFormat` stays entirely off the bridge, so the guard passes honestly.
+ *  - `ContentFormat` has a third member (`AUDIO`) with no addressing scheme here. A `format`
+ *    discriminant invited the question "where is the AUDIO case?"; a `kind` discriminant does not.
+ *  - Adding a fourth `ContentFormat` cannot silently change this union's meaning, because the two are
+ *    now unrelated by construction rather than by coincidence of spelling.
+ */
+
+/**
+ * One Contents entry, flattened — from epub.js `book.loaded.navigation` for an EPUB, or from pdf.js
+ * `getOutline()` for a PDF.
+ *
+ * `target` is handed straight back as `goTo`'s argument, so a row the host can render is a row it can
+ * navigate to. What makes that safe is that the receiving shell VALIDATES rather than trusts: this
+ * payload originates in a book's own navigation document, which is untrusted input, and each entry
+ * refuses a target belonging to the other format outright.
+ *
+ * `depth` is the entry's nesting level in the book's navigation tree — 0 for a top-level entry. The
+ * tree is flattened depth-first in the WebView (`flattenToc` in epubOutline.ts, `collectOutline` in
+ * pdfOutline.ts) and arrives as one ordered list, so the host indents by `depth` rather than rendering
+ * a recursive structure. A recursive payload is the shape this boundary is worst at: it arrives as
+ * JSON, so every level would have to be re-validated by hand.
  */
 export interface ReaderTocItem {
   label: string;
-  href: string;
+  target: ReaderTarget;
   depth: number;
 }
 
@@ -178,11 +124,13 @@ export const MAX_TOC_DEPTH = 6;
  * across the two templates and the shared bridge fragment — one entry per call
  * site, no extras.
  *
- * This is a UNION over three files, not a list from one. `EPUBJS_MISSING` and
+ * This is a UNION over the WebView sources, not a list from one. `EPUBJS_MISSING` and
  * `JSZIP_MISSING` are raised only by the EPUB template, `PDFJS_MISSING` only by the
  * PDF one, and the two `WEBVIEW_*` catch-alls only by the shared fragment. The drift
  * guard reads all three and unions them before comparing, so a code raised in one
- * template and absent from the other is correct rather than drift.
+ * shell and absent from the other is correct rather than drift. `fail()` takes `WebViewErrorCode`,
+ * so the raised-implies-declared direction is now the compiler's; readerBridge.test.ts still checks
+ * the reverse, because nothing stops this list growing a member no shell can produce.
  */
 export const WEBVIEW_ERROR_CODES = [
   'EPUBJS_MISSING',
@@ -237,17 +185,43 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *   ready     — TFReader is defined and both libs loaded. RN waits for this
  *               before injecting anything; injecting sooner races the IIFE.
  *   rendered  — first display() resolved; the book is on screen.
- *   relocated — the page changed (also fires for the first page). Carries the
- *               CFI, which is the stable anchor Progress will eventually store
- *               (see the OPEN note in @/shared/contracts progress.ts).
+ *   relocated — the page changed (also fires for the first page). Carries a
+ *               `ReaderPosition`: a CFI from the EPUB shell, a page + page count from the PDF one.
  *   toc       — navigation resolved, as one depth-first flattened list (a book's
  *               nav document is a tree). Arrives AFTER rendered, not with it.
  *   error     — anything went wrong; always coded, never bare.
  */
+/**
+ * Where the reader is, discriminated by format.
+ *
+ * >>> WHY THIS IS A DISCRIMINATED UNION AND NOT FLAT FIELDS. <<<
+ * The two formats do not have a common notion of position. A CFI addresses an EPUB spine offset and
+ * has no PDF meaning; a page number addresses a PDF and has no reflowable meaning. Carried flat, one
+ * of them is always `null` and the reader has to know which — which is the same "one field, two
+ * meanings" arrangement `toc.items[].href` still suffers from, and the thing the typechecked-WebView
+ * conversion made it possible to stop doing.
+ *
+ * Before the conversion the PDF page was DELIBERATELY NOT REPORTED: `relocated` was at the field
+ * boundary that would have forced the conversion, nothing consumed a reading position, so the field
+ * bought nothing and cost a day. Both halves of that have changed — the conversion has happened, and
+ * `progressStore.savePage()` exists on Sync's side with nothing to feed it.
+ *
+ * `pageCount` rides along with `page` rather than arriving as its own message because they are only
+ * meaningful together: "page 4" with no total is not something a reader can be shown, and a total
+ * that arrives separately has to be correlated with a position that may already have moved.
+ */
+export type ReaderPosition =
+  | { kind: 'cfi'; cfi: string | null }
+  | { kind: 'page'; page: number; pageCount: number };
+
+// Discriminated on `kind` for the same reason `ReaderTarget` is — see the note there. Read it as "the
+// position is a CFI" / "the position is a page", not as "the book is an EPUB".
+
+
 export type ReaderMessage =
   | { type: 'ready' }
   | { type: 'rendered' }
-  | { type: 'relocated'; cfi: string | null; atStart: boolean; atEnd: boolean }
+  | { type: 'relocated'; position: ReaderPosition; atStart: boolean; atEnd: boolean }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string };
 
@@ -258,7 +232,7 @@ export type ReaderMessageType = ReaderMessage['type'];
  *
  * WHY: a TS union has no runtime form, so the drift guard in readerBridge.test.ts
  * mirrored this list as a hand-written literal — which made the guard itself the
- * one hand-synced thing it exists to eliminate. Adding a case to `ReaderMessage`
+ * one hand-synced thing it existed to eliminate. Adding a case to `ReaderMessage`
  * and to the template while forgetting the test's copy was green. The test reads
  * this instead, and the two checks below make it impossible for this array and
  * the union to disagree.
@@ -316,7 +290,8 @@ export const READER_COMMANDS = {
  *
  * It MUST stay a bare string. Search stores a `Locator`; the host unwraps
  * `.cfi` before sending. Passing the `Locator` union itself would put a frozen
- * contract inside untypechecked WebView JS — trigger 3, see WEBVIEW_BRIDGE.md.
+ * union itself would mean re-validating every variant in `parseReaderMessage`, since types do not
+ * survive the JSON hop. See WEBVIEW_BRIDGE.md.
  */
 /**
  * WHY TWO OPEN COMMANDS RATHER THAN `open(base64, format)`.
@@ -324,10 +299,9 @@ export const READER_COMMANDS = {
  * This is how `ContentFormat` is routed WITHOUT putting it on the bridge. Each
  * template defines exactly one of these two methods — the EPUB one calls epub.js,
  * the PDF one calls pdf.js — and the host chooses which to send from a typechecked
- * `switch` on `ContentFormat`. So the discriminant is a command NAME, which is
- * owned by this file, instead of a frozen enum value hand-copied into untypechecked
- * WebView JS. That distinction is trigger 3 in WEBVIEW_BRIDGE.md, and it is the
- * whole reason PDF support did not force the typechecked-WebView conversion.
+ * `switch` on `ContentFormat`. So the discriminant is a command NAME, owned by this file, and the
+ * frozen enum's value never crosses. That is still worth keeping after the conversion: it is what
+ * lets each shell declare exactly one open method and be checked for it.
  *
  * Do not "simplify" these into one command with a format argument. It reads tidier
  * and it moves a frozen contract across the boundary.
@@ -337,7 +311,7 @@ export type ReaderCommand =
   | { type: 'openPdf'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
-  | { type: 'goTo'; target: string };
+  | { type: 'goTo'; target: ReaderTarget };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -355,14 +329,75 @@ function asTocDepth(value: unknown): number {
   return Math.min(value, MAX_TOC_DEPTH);
 }
 
+/**
+ * A `ReaderTarget` from an untrusted payload, or null if it is not one.
+ *
+ * A PDF page is checked as a positive integer. The upper bound is NOT checked here and cannot be — the
+ * host does not know the document's page count at parse time. The receiving shell does, and
+ * `pageFromTarget` in pdfOutline.ts range-checks there. Two checks, two different pieces of knowledge.
+ */
+function asTarget(value: unknown): ReaderTarget | null {
+  if (!isRecord(value)) return null;
+
+  if (value.kind === 'href') {
+    return typeof value.href === 'string' ? { kind: 'href', href: value.href } : null;
+  }
+
+  if (value.kind === 'page') {
+    return isPositiveInteger(value.page) ? { kind: 'page', page: value.page } : null;
+  }
+
+  return null;
+}
+
 function asTocItems(value: unknown): ReaderTocItem[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry): ReaderTocItem[] => {
     if (!isRecord(entry)) return [];
-    const { label, href, depth } = entry;
-    if (typeof label !== 'string' || typeof href !== 'string') return [];
-    return [{ label, href, depth: asTocDepth(depth) }];
+    const { label, target, depth } = entry;
+    if (typeof label !== 'string') return [];
+
+    // A row with an unusable target is DROPPED rather than kept as a dead row. The old shape could not
+    // make this distinction: any string was a plausible href, so a malformed entry became a Contents
+    // row that could only ever raise NAVIGATION_FAILED when tapped.
+    const parsed = asTarget(target);
+    if (parsed === null) return [];
+
+    return [{ label, target: parsed, depth: asTocDepth(depth) }];
   });
+}
+
+/**
+ * A `ReaderPosition` from an untrusted payload, or null if it is not one.
+ *
+ * STRICTER THAN THE OTHER HARDENERS IN THIS FILE, on purpose. `asTocDepth` collapses a bad value to 0
+ * and `asTocItems` drops a bad entry, because a mis-indented or missing Contents row is cosmetic. A
+ * position drives what the reader TELLS THE USER about where they are, and later what Progress
+ * persists, so a nonsense value must not be smoothed into a plausible one.
+ *
+ * `page` and `pageCount` are checked as positive integers with `page <= pageCount`. The relation is
+ * the part worth having: each field alone can be individually valid and jointly impossible, and
+ * "page 7 of 3" is exactly the shape a rendering bug would produce.
+ */
+function asPosition(value: unknown): ReaderPosition | null {
+  if (!isRecord(value)) return null;
+
+  if (value.kind === 'cfi') {
+    return { kind: 'cfi', cfi: typeof value.cfi === 'string' ? value.cfi : null };
+  }
+
+  if (value.kind === 'page') {
+    const { page, pageCount } = value;
+    if (!isPositiveInteger(page) || !isPositiveInteger(pageCount)) return null;
+    if (page > pageCount) return null;
+    return { kind: 'page', page, pageCount };
+  }
+
+  return null;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 function asErrorCode(value: unknown): ReaderErrorCode {
@@ -399,13 +434,20 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
     case 'rendered':
       return { type: 'rendered' };
 
-    case 'relocated':
+    case 'relocated': {
+      const position = asPosition(parsed.position);
+      // A position that cannot be understood is not a position. Dropping the whole message is right
+      // rather than substituting a default: a wrong page number shown confidently is worse than no
+      // indicator, and the caller raises BRIDGE_PARSE_FAILED so it is not silent either.
+      if (position === null) return null;
+
       return {
         type: 'relocated',
-        cfi: typeof parsed.cfi === 'string' ? parsed.cfi : null,
+        position,
         atStart: parsed.atStart === true,
         atEnd: parsed.atEnd === true,
       };
+    }
 
     case 'toc':
       return { type: 'toc', items: asTocItems(parsed.items) };
@@ -447,7 +489,9 @@ export function buildCommandScript(command: ReaderCommand): string {
     command.type === 'openEpub' || command.type === 'openPdf'
       ? JSON.stringify(command.base64)
       : command.type === 'goTo'
-        ? JSON.stringify(command.target)
+        ? // An OBJECT now, not a bare string. JSON.stringify already handled this correctly — which is
+          // the whole reason the escaping rule below is stated as "every argument", not "every string".
+          JSON.stringify(command.target)
         : '';
 
   return `(function(){

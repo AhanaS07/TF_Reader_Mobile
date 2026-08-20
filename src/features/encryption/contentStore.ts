@@ -444,6 +444,24 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
       );
     }
 
+    // Drop the redundant in-memory ciphertext (added 2026-08-18 — one of CLAUDE.md's "roughly six"
+    // full-size copies). `pkg` is the SAME object packageCache holds, so this mutates the cache
+    // entry in place. Safe ONLY for non-Elite: Subscription/OA ciphertext is safely on DISK
+    // (written by store(), above) and `loadPersisted()` reloads it on any future cold read after
+    // close() clears this cache entry — so nothing is lost. Every other reader of `pkg.content`
+    // in this file (assertLengthInvariant, the open-access copy and the decrypt() call just above)
+    // has already run by this point; a live session never re-enters this function once
+    // session.plaintext is set (see the early return at the top of decryptBook), so nothing reads
+    // this emptied field again for the rest of this session's life.
+    //
+    // ELITE IS EXCLUDED, not an oversight: isElite() packages never reach disk (store() returns
+    // before its writeFile calls), so the in-memory copy here is the ONLY copy — emptying it would
+    // make the book permanently undecryptable until a fresh store(), for no RAM saved (Elite's
+    // ciphertext was never going to be held twice in the first place).
+    if (!isElite(pkg)) {
+      pkg.content = new Uint8Array(0);
+    }
+
     session.plaintext = plaintext;
     return plaintext;
   };
@@ -561,9 +579,20 @@ async function decryptSearchIndex(bookId: BookId): Promise<Uint8Array | null> {
  * End THIS book's session: zero its decrypted buffer (and search index, and, for Elite, its
  * in-memory-only key). REVERSIBLE — ciphertext + wrappedBek stay on device (Subscription),
  * reopenable offline. Idempotent: closing a book with no open session is a no-op.
+ *
+ * ALSO drops `bookId` from `packageCache` (added 2026-08-18 — previously only `destroy()` did
+ * this, so a closed-but-not-destroyed book's whole ciphertext, 20MB+ for a real book, stayed
+ * resident in RAM indefinitely; see CLAUDE.md's former "known open item #1"). The trade-off this
+ * makes deliberately: the NEXT `openSession()` for this book is a cold read — `loadPersisted()`'s
+ * synchronous `bytesSync()` off the JS thread — instead of an in-memory hit. That is the correct
+ * side to take it on: a reader who closed a book is not mid-read, so paying a one-time re-read
+ * cost on the next open is a fair price for not holding every finished book's ciphertext in RAM
+ * for the rest of the app's life. Ciphertext on DISK is untouched — this only affects the RAM
+ * cache, same as the ciphertext-persistence guarantee `close()` already documented.
  */
 async function close(bookId: BookId): Promise<void> {
   const session = sessions.get(bookId);
+  packageCache.delete(bookId);
   if (!session) return;
 
   session.plaintext?.fill(0);

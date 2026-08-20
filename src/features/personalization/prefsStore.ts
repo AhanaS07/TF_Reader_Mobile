@@ -23,10 +23,14 @@
 // becomes real, the account-vs-device question (see API_CONTRACT_NOTES.md §4) decides
 // whether this signature grows one.
 //
-// FOLLOW-UP (not wired yet): a write should emit `PrefsChangedEvent` (event-bus.ts) so
-// Reader re-reads and re-applies. There is no event-bus RUNTIME in the repo yet — the
-// channel is contract-only — so there is nothing to publish through. Add the emit here
-// (or in Sync's write path) the moment a bus lands.
+// LIVE RE-APPLY: this store is the notification channel, NOT the event bus. Ahana's
+// prefs-application decision (2026-08-18) is explicit: no bus, and Karthik is not on the
+// critical path. Reader subscribes to `subscribe()` below; a `savePrefs`/`resetPrefs`
+// notifies subscribers with the fresh record, and Reader re-resolves + re-applies it into
+// the WebView with no reopen. This is why the event-bus `PrefsChangedEvent` follow-up that
+// used to live here is gone: the singleton store is the single JS-process source of truth,
+// so a direct subscription is simpler than a bus and needs no second emitter.
+// See READER_PREFS_APPLICATION.md §5.
 
 import type { SharedPrefs } from '@/shared/contracts';
 import {
@@ -43,13 +47,44 @@ export type PrefsPatch = Partial<
   Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>
 >;
 
+/** Notified with the fresh record after every successful write. Returns unsubscribe. */
+export type PrefsListener = (prefs: SharedPrefs) => void;
+
 export interface PrefsStore {
   /** Current prefs. Returns DEFAULT_PREFS on first run, before any row is written. */
   getPrefs(): Promise<SharedPrefs>;
-  /** Apply a patch, persist it (marked for sync), and return the re-read result. */
+  /** Apply a patch, persist it (marked for sync), notify subscribers, and return the re-read result. */
   savePrefs(patch: PrefsPatch): Promise<SharedPrefs>;
-  /** Restore defaults (a rewrite + updatedAt bump, not a tombstone) and return them. */
+  /** Restore defaults (a rewrite + updatedAt bump, not a tombstone), notify subscribers, and return them. */
   resetPrefs(): Promise<SharedPrefs>;
+  /**
+   * Subscribe to prefs changes. The listener fires AFTER a `savePrefs`/`resetPrefs` write
+   * settles, with the fresh record — this is how the Reader re-applies live without a
+   * reopen and without an event bus (see the header note). Returns an unsubscribe.
+   *
+   * Only local writes THROUGH this store notify. A prefs row pulled by Sync from the
+   * server does not pass through here, so if that path ever needs to drive a live
+   * re-apply it must notify too — call it out then rather than assuming this covers it.
+   */
+  subscribe(listener: PrefsListener): () => void;
+}
+
+// Module-level, matching the store's singleton nature. A Set so the same listener added
+// twice is one entry, and unsubscribe is O(1).
+const listeners = new Set<PrefsListener>();
+
+function notify(prefs: SharedPrefs): void {
+  // A throwing subscriber must not fail the write that already succeeded — mirrors the
+  // event-bus contract's "emit never throws to its caller". Snapshot first so a listener
+  // that unsubscribes mid-notify does not skip a sibling.
+  for (const listener of [...listeners]) {
+    try {
+      listener(prefs);
+    } catch {
+      // Swallowed deliberately: the persist is done, and one bad subscriber must not
+      // take out the others or the caller.
+    }
+  }
 }
 
 export const prefsStore: PrefsStore = {
@@ -63,11 +98,22 @@ export const prefsStore: PrefsStore = {
     // (rather than stripping them) is harmless and keeps this a one-liner merge.
     const current = await readSharedPrefs();
     await writeSharedPrefs({ ...current, ...patch });
-    return readSharedPrefs();
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    return fresh;
   },
 
   async resetPrefs() {
     await resetSharedPrefs();
-    return readSharedPrefs();
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    return fresh;
+  },
+
+  subscribe(listener) {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   },
 };

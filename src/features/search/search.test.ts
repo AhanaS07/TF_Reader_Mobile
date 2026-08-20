@@ -43,7 +43,7 @@ describe('EPUB search prototype — inverted index over the sample book', () => 
   it('builds a BookSearchIndex in the frozen shape, tagged EPUB', () => {
     expect(index.bookId).toBe(BOOK_ID);
     expect(index.format).toBe('EPUB');
-    expect(index.version).toBe(1);
+    expect(index.version).toBe(2); // v2: postings carry seq (token-sequence adjacency)
     expect(Object.keys(index.index).length).toBeGreaterThan(0);
     expect(index.index.chapter?.length).toBeGreaterThan(3); // shared filler word
   });

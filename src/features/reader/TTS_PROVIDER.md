@@ -24,6 +24,13 @@ does not restate it.
 Accessibility does not send bridge commands, does not read `book.spine`, and does not construct or
 parse a CFI. Reader does not read `AccessibilityPrefs` and does not decide when to speak.
 
+**The one boolean that does cross, and how.** Reader decides whether and where the TTS controls
+appear, which means it needs `accessibility.tts.enabled` — and the rule above says it cannot go and
+read it. So Accessibility exports it as a primitive: `useTtsEnabled()` in
+`features/accessibility/tts/useTtsEnabled.ts`. Reader calls that and never imports a prefs shape.
+This is also the *only* gate on TTS being available: `useTtsSession`'s `play()` deliberately does
+not re-check `enabled`, on the grounds that mounting the controls is already the decision.
+
 `ReaderTextProvider` has **no `dispose`**. Lifetime belongs to whoever owns the book —
 `ReaderScreen`, in the effect that calls `closeBook` — and a consumer that could tear the provider
 down could tear it down while another consumer was using it. Teardown travels one way, through
@@ -90,14 +97,23 @@ WebView conversion.
 ```
 1. Agree the interface                      ✅ 2026-08-16
 2. Ship types + FakeReaderTextProvider       ✅ 2026-08-16
-3. Accessibility builds the TTS session      ← unblocked now, against the fake
-4. Reader: typechecked WebView conversion    ← WEBVIEW_BRIDGE.md
-5. Reader: sentence/highlight bridge + real provider
+3. Accessibility builds the TTS session      ← unblocked, against the fake
+4. Reader: typechecked WebView conversion    ✅ 2026-08-18
+5. Reader: sentence/highlight bridge + real provider   ← UNBLOCKED, not started
 6. Swap fake → real; integration and device testing
 ```
 
-Step 4 is not free and is not started. `WEBVIEW_BRIDGE.md` currently schedules the conversion at
-prefs-application; whichever of the two stages lands first pays for it.
+**Step 4 is done** — prefs-application called the conversion in and it landed the same day, so the
+WebView half is typechecked TypeScript that imports its types from `readerBridge.ts`
+(`WEBVIEW_BRIDGE.md`). Step 5 is therefore unblocked.
+
+**What the conversion did NOT do for this seam, so nobody plans around a saving that is not there.**
+It removed the hand-sync risk; it did not build request/reply. `requestSentence` still needs a
+**reply**, which is the first non-fire-and-forget call on this bridge: `buildCommandScript` only
+injects a call, and nothing correlates a response back to its caller. That correlation — plus the
+`(bookId, generation)` stamp described above — is real work, and it is Reader's. What is genuinely
+cheaper now is that the reply's seven-field payload is a shared type rather than a shape to
+hand-copy, and that a mismatch is a compile error.
 
 ## The fake, and deleting it
 
