@@ -50,6 +50,16 @@ import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 interface ItemDetailRouteProps {
   route: { params: { itemId: string } };
+  // Hand-typed rather than one stack's generated props, same reason as
+  // `route` above — this screen is shared by both stacks, and `navigate` is
+  // typed for exactly the one real call it makes: opening the access gate
+  // when `resolveAccess` resolves to `requires_signin`.
+  navigation: {
+    navigate: (
+      screen: 'AccessGate',
+      params: { itemId: string; title: string; authors: string },
+    ) => void;
+  };
 }
 
 // Explicit and typed, so this line breaks to a compile error rather than a typo
@@ -358,7 +368,7 @@ export function renderArticleContent(
   );
 }
 
-export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
+export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteProps) {
   const { itemId } = route.params;
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
@@ -396,11 +406,25 @@ export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
     fetchItem();
   }, [fetchItem]);
 
-  // Not wired to a real call. The four flambeau calls behind these actions
-  // (generate, check, revoke, join queue) are Akriti's D9/D13 — Week 3 — so this
-  // screen renders the resolved buttons and stops there rather than pretending
-  // a tap does something it does not yet do.
-  const handleAction = useCallback((_action: ActionId) => {}, []);
+  // `signIn` is the one action with somewhere real to go: it opens the access
+  // gate (screen 03), same trigger `resolveAccess`'s "signed out on a
+  // licensed tier" branch names it for. Every other action is still a
+  // no-op — the four flambeau calls behind them (generate, check, revoke,
+  // join queue) are Akriti's D9/D13, Week 3 — so this screen renders the
+  // resolved buttons and stops there rather than pretending a tap does
+  // something it does not yet do.
+  const handleAction = useCallback(
+    (action: ActionId) => {
+      if (action === 'signIn' && detail !== null) {
+        navigation.navigate('AccessGate', {
+          itemId: detail.id,
+          title: detail.title,
+          authors: detail.authors.join(', '),
+        });
+      }
+    },
+    [navigation, detail],
+  );
 
   let body: ReactNode;
 
