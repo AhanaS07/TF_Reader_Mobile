@@ -289,6 +289,50 @@ describe('a PDF Contents row', () => {
   });
 });
 
+describe('an EPUB grouping heading with no href', () => {
+  // epubOutline.ts's flattenToc keeps a nav point with no href rather than dropping it (a heading
+  // that only groups its subitems), emitting `{kind:'href', href:''}` so the row still appears and
+  // its children keep their depth. Tapping it must not reach goTo -> epub.entry.ts's
+  // `rendition.display('')`, whose behavior is unverified — the row has nothing to navigate to.
+  it('does not navigate when tapped', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+    const before = __injectJavaScript.mock.calls.length;
+
+    await fireEvent.press(screen.getByText('Grouping heading'));
+
+    expect(__injectJavaScript.mock.calls.length).toBe(before);
+  });
+
+  it('is marked disabled for assistive tech, unlike a real chapter row', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+
+    expect(screen.getByText('Grouping heading').parent?.props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+    expect(screen.getByText('Chapter 1').parent?.props.accessibilityState).not.toMatchObject({
+      disabled: true,
+    });
+  });
+});
+
 describe('Prev/Next navigation controls', () => {
   function prevButton() {
     return screen.getByRole('button', { name: '‹ Prev' });

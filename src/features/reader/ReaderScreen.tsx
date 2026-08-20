@@ -939,22 +939,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                   // duplicate-key warning on device. Targets are not unique in the wild, so they
                   // cannot be identity here — and a PDF outline repeats page numbers by design, since
                   // several sections legitimately open on the same page.
-                  toc.map((item, index) => (
-                    <Pressable
-                      key={`${index}-${targetKey(item.target)}`}
-                      onPress={() => {
-                        goTo(item.target);
-                      }}
-                      // Indent, do not inset the row: paddingLeft keeps the whole
-                      // width tappable at every depth, where marginLeft would shrink
-                      // the touch target of the entries that are already hardest to
-                      // hit. `depth` is clamped by parseReaderMessage, so this cannot
-                      // run away.
-                      style={[styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]}
-                    >
-                      <Text style={styles.tocItemText}>{item.label}</Text>
-                    </Pressable>
-                  ))
+                  toc.map((item, index) => {
+                    // A nav point with no href (epubOutline.ts's flattenToc keeps a grouping
+                    // heading rather than dropping it, as `{kind:'href', href:''}`) has nothing to
+                    // navigate to. `disabled` stops onPress from firing at all, so this never
+                    // reaches goTo -> epub.entry.ts's `rendition.display('')`, whose behavior is
+                    // otherwise unverified.
+                    const isNavigable = item.target.kind !== 'href' || item.target.href !== '';
+                    return (
+                      <Pressable
+                        key={`${index}-${targetKey(item.target)}`}
+                        disabled={!isNavigable}
+                        accessibilityState={{ disabled: !isNavigable }}
+                        onPress={() => {
+                          goTo(item.target);
+                        }}
+                        // Indent, do not inset the row: paddingLeft keeps the whole
+                        // width tappable at every depth, where marginLeft would shrink
+                        // the touch target of the entries that are already hardest to
+                        // hit. `depth` is clamped by parseReaderMessage, so this cannot
+                        // run away.
+                        // Two elements when navigable, matching every row before this change
+                        // (pinned by the depth-indent test) — the disabled style only extends the
+                        // array for a grouping heading, which that test never covers.
+                        style={
+                          isNavigable
+                            ? [styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]
+                            : [
+                                styles.tocItem,
+                                { paddingLeft: item.depth * TOC_INDENT_PX },
+                                styles.tocItemDisabled,
+                              ]
+                        }
+                      >
+                        <Text style={styles.tocItemText}>{item.label}</Text>
+                      </Pressable>
+                    );
+                  })
                 )}
               </ScrollView>
 
@@ -1266,6 +1287,8 @@ const styles = StyleSheet.create({
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },
+  // A grouping heading with no href — see the note at the TOC row's `isNavigable` check.
+  tocItemDisabled: { opacity: 0.5 },
 
   // FULLY OPAQUE is the whole point — a translucent cover still photographs the text underneath.
   privacyCover: {
