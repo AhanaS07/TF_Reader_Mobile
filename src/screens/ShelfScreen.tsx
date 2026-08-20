@@ -1,9 +1,8 @@
 // A4 (Prayas) — one shelf as a full, paginated listing.
 //
 // Replaces the navigation stub that landed on main as scaffolding for this work
-// ("renders the shelfId so Prayas can verify navigation is wired"). Its route
-// contract is kept exactly: `Shelf` with `{ shelfId, title }`, so the navigator
-// entry and every caller on main keep working unchanged.
+// ("renders the shelfId so Prayas can verify navigation is wired"). The route is
+// `Shelf`, carrying `{ shelfId, title, institutionId }`.
 //
 // THE APP BAR OWNS THE TITLE. RootNavigator sets it from `route.params.title`,
 // so this screen renders no heading of its own — a SectionHeader here would
@@ -30,23 +29,22 @@
 // still renders the full-screen error; a later page failing shows an inline
 // retry under the rows the user already has.
 //
-// `institutionId` IS HARDCODED to the one id the mock fixtures serve. CAP-3
-// (institution selection) has not landed, so there is no real value to read yet.
-// Replace this constant with whatever CAP-3 hands the screen; nothing else here
-// should need to change.
+// `institutionId` ARRIVES IN THE ROUTE PARAMS, from the catalogue that
+// advertised this shelf. Not read from the store here: a param cannot be
+// omitted, so there is no fallback id for a reader who has chosen no
+// institution to fall through to.
 //
-// NO ACCESS BADGE YET, AND `resolveAccess` IS NO LONGER THE REASON — it landed
-// and is on main. `ContentCard`'s `badge` slot takes already-resolved UI (Design
-// Spec §5.1 — the UI must never calculate access rights), and reaching into
-// `publication.acquisition` here to fake one is still exactly the violation that
-// rule exists to prevent. What is left is the wiring, and nothing blocks it —
-// see the same note in `CatalogueScreen`.
+// THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
+// passes only the resulting `.tier` into ContentCard's slot — see the same note
+// in `CatalogueScreen`. `session: null` with no loan and no hold is correct for
+// a list row: it resolves the tier from feed data alone.
 //
-// 'ebooks' IS THE ONLY SHELF THAT PAGES on mock data today: it is the one with
-// both a page-0 and a page-1 fixture. 'audiobooks' and 'open-access' have no
-// standalone feed at all and so never reach this screen (MockAdapter returns
-// NOT_FOUND and the error state above renders). Nothing here is shelf-specific —
-// they will page the moment their fixtures land.
+// 'all' IS THE ONLY SHELF THAT PAGES on mock data today: it is the one with both
+// a page-0 and a page-1 fixture (03 and 04). 'shelf_1' and 'shelf_2' have
+// single-page feeds (05 and 06), and 'shelf_3' is advertised in navigation with
+// no feed behind it, so it keeps the NOT_FOUND path exercised — MockAdapter
+// returns NOT_FOUND and the error state above renders. Nothing here is
+// shelf-specific; they will page the moment their fixtures land.
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -55,6 +53,8 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 
+import { resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
@@ -74,14 +74,12 @@ type Props = NativeStackScreenProps<CatalogueStackParamList, 'Shelf'>;
 // "loading and failed at once" cannot be represented.
 type MoreStatus = 'idle' | 'loading' | 'failed';
 
-const PLACEHOLDER_INSTITUTION_ID = 'inst_7f3';
-
 // How many skeleton cards to show before the first page arrives. Arbitrary —
 // there is no data yet to size it from.
 const SKELETON_COUNT = 3;
 
 export default function ShelfScreen({ route }: Props) {
-  const { shelfId } = route.params;
+  const { shelfId, institutionId } = route.params;
   const navigation = useNavigation<Nav>();
 
   // The shelf's IDENTITY, taken from the first page and then left alone: title
@@ -125,7 +123,7 @@ export default function ShelfScreen({ route }: Props) {
         // Page omitted, not passed as 0: the adapter forwards it to the server
         // as a query param only when present, so the server applies its own
         // default.
-        .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId, undefined, { ...filters, sort })
+        .getShelf(institutionId, shelfId, undefined, { ...filters, sort })
         .then((page) => {
           setShelf(page);
           setPublications(page.publications);
@@ -137,7 +135,7 @@ export default function ShelfScreen({ route }: Props) {
         })
         .finally(() => setLoading(false));
     },
-    [shelfId],
+    [institutionId, shelfId],
   );
 
   useEffect(() => {
@@ -199,7 +197,7 @@ export default function ShelfScreen({ route }: Props) {
     getCatalogueSource()
       // The same filters/sort the current page was fetched with — a further
       // page of the same request, never a fresh, unfiltered one.
-      .getShelf(PLACEHOLDER_INSTITUTION_ID, shelfId, nextPage, {
+      .getShelf(institutionId, shelfId, nextPage, {
         ...appliedFilters,
         sort: appliedSort,
       })
@@ -218,7 +216,7 @@ export default function ShelfScreen({ route }: Props) {
       // Deliberately does NOT set `failed`: the rows already on screen stay,
       // and the inline label below turns into a retry.
       .catch(() => setMoreStatus('failed'));
-  }, [nextPage, moreStatus, shelfId, appliedFilters, appliedSort]);
+  }, [nextPage, moreStatus, institutionId, shelfId, appliedFilters, appliedSort]);
 
   if (failed) {
     return (
@@ -267,6 +265,11 @@ export default function ShelfScreen({ route }: Props) {
                 title={publication.title}
                 publisher={publication.publisher}
                 imageUrl={publication.coverUrl}
+                badge={
+                  <AccessTierBadge
+                    tier={resolveAccess({ item: publication, institutionId, session: null }).tier}
+                  />
+                }
                 onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
               />
             ))}

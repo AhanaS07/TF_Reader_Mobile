@@ -13,7 +13,8 @@ import { TopAppBar } from '../components/TopAppBar';
 import { BottomTabBar } from '../components/BottomTabBar';
 import type { TabItem } from '../components/BottomTabBar';
 
-import CatalogueScreen from '../screens/CatalogueScreen';
+// Picks between the institution catalogue and the public one — see the file.
+import CatalogueHomeScreen from '../screens/CatalogueHomeScreen';
 import SearchScreen from '../screens/SearchScreen';
 import LibraryScreen from '../screens/LibraryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
@@ -89,7 +90,7 @@ function CatalogueNavigator() {
     <CatalogueStack.Navigator screenOptions={{ header: (props) => <AppHeader {...props} /> }}>
       <CatalogueStack.Screen
         name="CatalogueHome"
-        component={CatalogueScreen}
+        component={CatalogueHomeScreen}
         options={{ title: 'Taylor & Francis' }}
       />
       <CatalogueStack.Screen

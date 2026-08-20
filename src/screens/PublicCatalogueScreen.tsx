@@ -1,0 +1,226 @@
+// A1 (Prayas) — the catalogue a reader sees before choosing an institution.
+//
+// A FLAT LIST, NOT A HOME SCREEN. Curated shelves are configured per institution
+// and this reader has none, so there is no category strip and no section heading
+// here — one list of open access titles and nothing else. That absence is the
+// feature, not an unfinished screen.
+//
+// The feed is fetched with no institution id and no token (getPublicFeed), so
+// nothing on this screen may reach for `institutionStore`.
+//
+// Paging is "Load more" rather than infinite scroll, and a failed later page
+// leaves the loaded rows alone — both the same rules ShelfScreen already follows,
+// for the same reasons.
+//
+// Rows are badged with `institutionId: null`, which resolveAccess treats as a
+// real value — the public path — not as a missing one. Reading the store for an
+// id here would break the rule above.
+import { useCallback, useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+import EmptyState from '@/components/EmptyState';
+import OfflineBanner from '@/components/OfflineBanner';
+import { resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
+import { ContentCard } from '../components/ContentCard';
+import { ErrorState } from '@components/ErrorState';
+import { getCatalogueSource } from '../config/catalogue';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
+import type { Publication } from '../model/types';
+import type { CatalogueStackParamList } from '../navigation/types';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import { color, space, type as typeScale } from '../theme/tokens';
+
+type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>;
+
+// State of a SUBSEQUENT page request only. A union rather than two booleans so
+// "loading and failed at once" cannot be represented.
+type MoreStatus = 'idle' | 'loading' | 'failed';
+
+// How many skeleton cards to show before the first page arrives. Arbitrary —
+// there is no data yet to size it from.
+const SKELETON_COUNT = 3;
+
+function moreLabelFor(status: MoreStatus): string {
+  if (status === 'loading') return 'Loading…';
+  if (status === 'failed') return "Couldn't load more — tap to retry";
+  return 'Load more';
+}
+
+export default function PublicCatalogueScreen() {
+  const navigation = useNavigation<Nav>();
+
+  const [publications, setPublications] = useState<Publication[]>([]);
+  // The cursor, taken off the response's own `next` link. `undefined` means
+  // there is no next page.
+  const [nextPage, setNextPage] = useState<number | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
+  const [moreStatus, setMoreStatus] = useState<MoreStatus>('idle');
+
+  const isOnline = useNetworkStatus();
+
+  // No synchronous setState in the effect body — that trips the cascading-renders
+  // lint rule, and `loading`/`failed` already hold these values on mount. Retry
+  // resets them from a press handler instead.
+  const fetchFirstPage = useCallback(() => {
+    getCatalogueSource()
+      // Page omitted, not passed as 0, so the server applies its own default.
+      .getPublicFeed()
+      .then((feed) => {
+        setPublications(feed.publications);
+        setNextPage(feed.nextPage);
+      })
+      .catch((err: unknown) => {
+        setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+        setFailed(true);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    fetchFirstPage();
+  }, [fetchFirstPage]);
+
+  const retry = useCallback(() => {
+    setLoading(true);
+    setFailed(false);
+    fetchFirstPage();
+  }, [fetchFirstPage]);
+
+  const loadMore = useCallback(() => {
+    // A guard, not an assertion: the button is hidden with no next page and
+    // disabled while a page is in flight, so reaching here in either state means
+    // two taps landed in one tick.
+    if (nextPage === undefined || moreStatus === 'loading') return;
+
+    setMoreStatus('loading');
+    getCatalogueSource()
+      .getPublicFeed(nextPage)
+      .then((feed) => {
+        // Appended, never replaced. Deduped by id because overlapping pages are
+        // a real server behaviour and a repeat would mean duplicate React keys.
+        setPublications((previous) => {
+          const seen = new Set(previous.map((publication) => publication.id));
+          return [...previous, ...feed.publications.filter(({ id }) => !seen.has(id))];
+        });
+        setNextPage(feed.nextPage);
+        setMoreStatus('idle');
+      })
+      // Deliberately does NOT set `failed`: the rows already on screen stay, and
+      // the inline label below turns into a retry.
+      .catch(() => setMoreStatus('failed'));
+  }, [nextPage, moreStatus]);
+
+  if (failed) {
+    const variant = errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode);
+    const message =
+      errorCode === undefined ? "Couldn't load the catalogue." : CATALOGUE_ERROR_COPY[errorCode];
+
+    return (
+      <View style={styles.screen}>
+        <OfflineBanner visible={!isOnline} />
+        <View style={styles.center}>
+          <ErrorState variant={variant} message={message} onRetry={retry} />
+        </View>
+      </View>
+    );
+  }
+
+  const isEmpty = !loading && publications.length === 0;
+  const moreLabel = moreLabelFor(moreStatus);
+
+  return (
+    <View style={styles.screen}>
+      <OfflineBanner visible={!isOnline} />
+
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        {loading &&
+          Array.from({ length: SKELETON_COUNT }, (_, index) => (
+            <ContentCard key={index} state="loading" title="" />
+          ))}
+
+        {/* Nothing open access at all. Not an error, so no Retry — see the
+            EmptyState test. */}
+        {isEmpty && <EmptyState variant="no_content" />}
+
+        {publications.map((publication) => (
+          <ContentCard
+            key={publication.id}
+            title={publication.title}
+            publisher={publication.publisher}
+            imageUrl={publication.coverUrl}
+            badge={
+              <AccessTierBadge
+                tier={resolveAccess({ item: publication, institutionId: null, session: null }).tier}
+              />
+            }
+            onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+          />
+        ))}
+
+        {/* Absent, not disabled, on the last page: a permanently dead button
+            reads as broken. */}
+        {nextPage !== undefined && (
+          <Pressable
+            onPress={loadMore}
+            disabled={moreStatus === 'loading'}
+            style={styles.loadMore}
+            accessibilityRole="button"
+            accessibilityLabel={moreLabel}
+            accessibilityState={{ disabled: moreStatus === 'loading' }}
+          >
+            <Text
+              style={[
+                styles.loadMoreLabel,
+                moreStatus === 'loading' && styles.loadMoreLabelLoading,
+                moreStatus === 'failed' && styles.loadMoreLabelFailed,
+              ]}
+            >
+              {moreLabel}
+            </Text>
+          </Pressable>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: color.surface,
+  },
+  content: {
+    padding: space.md,
+    gap: space.sm,
+  },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+    backgroundColor: color.surface,
+  },
+  loadMore: {
+    alignSelf: 'center',
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+  },
+  loadMoreLabel: {
+    fontWeight: typeScale.button.weight,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
+  },
+  loadMoreLabelLoading: {
+    color: color.textSecondary,
+  },
+  loadMoreLabelFailed: {
+    color: color.error,
+  },
+});

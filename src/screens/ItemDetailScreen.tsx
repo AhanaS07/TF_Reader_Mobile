@@ -62,10 +62,6 @@ export const BOOK_WORK_TYPE: WorkType = 'book';
 // would use, rather than a second hand-typed 'article' string that could drift.
 export const ARTICLE_WORK_TYPE: WorkType = 'article';
 
-// Same fallback CatalogueScreen uses: the one institution the mock fixtures
-// serve, until CAP-3 selection has actually run.
-const FALLBACK_INSTITUTION_ID = 'inst_7f3';
-
 const COVER_WIDTH = space.xl * 3;
 const COVER_HEIGHT = space.xl * 4 + space.md;
 
@@ -362,7 +358,12 @@ export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
   const { itemId } = route.params;
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
-  const institutionId = selectedInstitution?.id ?? FALLBACK_INSTITUTION_ID;
+  // NULL IS A REAL STATE HERE, not a missing value: this screen is reachable
+  // from the public catalogue, where the reader has chosen no institution. It
+  // picks the public endpoint in that case, and resolveAccess already takes
+  // `institutionId: string | null`, so the null travels all the way through
+  // rather than being papered over with a default id.
+  const institutionId = selectedInstitution?.id ?? null;
 
   const isOnline = useNetworkStatus();
 
@@ -374,8 +375,15 @@ export default function ItemDetailScreen({ route }: ItemDetailRouteProps) {
   // note as InstitutionDetailScreen: retry is the one path that resets
   // loading/failure, and it runs from a press handler, not an effect.
   const fetchItem = useCallback(() => {
-    getCatalogueSource()
-      .getPublication(institutionId, itemId)
+    const source = getCatalogueSource();
+    // No institution means the reader arrived from the public catalogue, so the
+    // public route is the only one that can honestly answer for them.
+    const request =
+      institutionId === null
+        ? source.getPublicPublication(itemId)
+        : source.getPublication(institutionId, itemId);
+
+    request
       .then((publication) => {
         // `publication` already has the two fields resolveAccess reads
         // (`id`, `acquisition`), so it is passed straight in.

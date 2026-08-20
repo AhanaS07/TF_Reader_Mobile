@@ -16,6 +16,8 @@ import allTitlesPage1 from '@model/fixtures/OPDS-samples/04-shelf-all-page1.json
 import curatedShelf from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
 import curatedShelfAlt from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
 import publicationDetail from '@model/fixtures/OPDS-samples/07-publication-detail.json';
+import publicCataloguePage0 from '@model/fixtures/OPDS-samples/08-public-catalogue-page0.json';
+import publicCataloguePage1 from '@model/fixtures/OPDS-samples/09-public-catalogue-page1.json';
 import searchAudio from '@search/fixtures/search-audio.json';
 import searchBrowseInstead from '@search/fixtures/search-browse-instead.json';
 import searchResultsPage2 from '@search/fixtures/search-results-page-2.json';
@@ -50,6 +52,16 @@ const LINK_TITLES = ['links[].title :string'];
 // An edited volume has editors and no author. The contract models both — its
 // getPublicFeed example uses `editor` — so this is a real case, not a mistake.
 const EDITED_VOLUME = ['publications[].metadata.editor[].name :string'];
+
+// The mirror of EDITED_VOLUME, needed wherever the example happens to be an
+// edited volume: getPublicFeed's is, so an ordinary authored title reads as an
+// extra field there.
+const AUTHORED_TITLE = ['publications[].metadata.author[].name :string'];
+
+// An OPDS identifier — an ISBN, or our own urn for a title that has none. The
+// contract models it (getRootFeed, getGroupFeed and getPublication examples all
+// carry one); only getPublicFeed's single example leaves it out.
+const IDENTIFIER = ['publications[].metadata.identifier :string'];
 
 const FIXTURE_CASES: FixtureCase[] = [
   {
@@ -103,6 +115,36 @@ const FIXTURE_CASES: FixtureCase[] = [
     file: '07-publication-detail.json',
     document: publicationDetail,
     operationId: 'getPublication',
+  },
+  {
+    file: '08-public-catalogue-page0.json',
+    document: publicCataloguePage0,
+    operationId: 'getPublicFeed',
+    allowedExtraPaths: [
+      ...COVER_DIMENSIONS,
+      ...LINK_TITLES,
+      ...AUTHORED_TITLE,
+      ...IDENTIFIER,
+      // When the open access feed last changed, so a client can cache it.
+      'metadata.modified :string',
+    ],
+  },
+  {
+    file: '09-public-catalogue-page1.json',
+    document: publicCataloguePage1,
+    operationId: 'getPublicFeed',
+    allowedExtraPaths: [
+      ...COVER_DIMENSIONS,
+      ...LINK_TITLES,
+      ...AUTHORED_TITLE,
+      ...IDENTIFIER,
+      'metadata.modified :string',
+    ],
+    omittedBranches: [
+      // Both titles on this page have authors — see AUTHORED_TITLE. Page 0
+      // carries the edited volume, so the example's branch is still exercised.
+      'publications[].metadata.editor',
+    ],
   },
   {
     file: 'institutions.json',

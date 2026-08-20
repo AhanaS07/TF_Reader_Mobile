@@ -35,6 +35,11 @@ export const KNOWN_INSTITUTION = 'inst_7f3';
 export const KNOWN_SHELF = 'all';
 export const KNOWN_PUBLICATION = 'item_42';
 
+// A title the PUBLIC feed serves. Deliberately not KNOWN_PUBLICATION: that one is
+// Elite, so it can never appear here, and a public-feed test that reused it would
+// be asserting the opposite of what the endpoint promises.
+export const KNOWN_PUBLIC_PUBLICATION = 'item_oa1';
+
 async function expectNotFound(operation: Promise<unknown>, what: string): Promise<void> {
   let caught: unknown;
   try {
@@ -228,6 +233,97 @@ export function describeCatalogueSourceConformance(
         await expectNotFound(
           createSource().getPublication('inst_does_not_exist', KNOWN_PUBLICATION),
           'getPublication',
+        );
+      });
+    });
+
+    // A1 — the second entry point, for a reader who has chosen no institution.
+    //
+    // THE MISSING ARGUMENT IS THE CONTRACT. Every method above takes an
+    // institutionId; these two take none, and that is the whole feature rather
+    // than a convenience. A source that quietly served an institution's feed here
+    // would pass every shape assertion below, so the open-access test is the one
+    // that actually pins it.
+    describe('getPublicFeed', () => {
+      it('returns a flat list of publications without an institution', async () => {
+        const feed = await createSource().getPublicFeed();
+
+        expect(feed.title.length).toBeGreaterThan(0);
+        expect(feed.publications.length).toBeGreaterThan(0);
+      });
+
+      it('carries open access titles only', async () => {
+        const feed = await createSource().getPublicFeed();
+
+        for (const publication of feed.publications) {
+          expect(publication.acquisition.licenceModel).toBe('OPEN_ACCESS');
+        }
+      });
+
+      // The same end-to-end paging contract getShelf is held to: follow the
+      // advertised cursor, get genuinely different rows, and eventually stop.
+      it('serves the page its own next cursor names', async () => {
+        const source = createSource();
+        const firstPage = await source.getPublicFeed();
+        expect(firstPage.nextPage).toBeDefined();
+
+        const secondPage = await source.getPublicFeed(firstPage.nextPage);
+
+        expect(secondPage.publications.length).toBeGreaterThan(0);
+        const firstIds = firstPage.publications.map((publication) => publication.id);
+        for (const publication of secondPage.publications) {
+          expect(firstIds).not.toContain(publication.id);
+        }
+        expect(secondPage.nextPage).toBeUndefined();
+      });
+
+      it('returns publications that satisfy the model invariants', async () => {
+        const feed = await createSource().getPublicFeed();
+
+        for (const publication of feed.publications) {
+          expect(() => assertPublication(publication)).not.toThrow();
+        }
+      });
+
+      it('never exposes OPDS wire fields to callers', async () => {
+        const feed = await createSource().getPublicFeed();
+        const [publication] = feed.publications;
+
+        expect(publication).not.toHaveProperty('links');
+        expect(publication).not.toHaveProperty('metadata');
+        expect(publication).not.toHaveProperty('properties');
+      });
+    });
+
+    describe('getPublicPublication', () => {
+      it('returns the publication that was asked for', async () => {
+        const publication = await createSource().getPublicPublication(KNOWN_PUBLIC_PUBLICATION);
+
+        expect(publication.id).toBe(KNOWN_PUBLIC_PUBLICATION);
+        expect(publication.title.length).toBeGreaterThan(0);
+        expect(publication.acquisition.href.length).toBeGreaterThan(0);
+      });
+
+      it('satisfies the model invariants', async () => {
+        const publication = await createSource().getPublicPublication(KNOWN_PUBLIC_PUBLICATION);
+
+        expect(() => assertPublication(publication)).not.toThrow();
+      });
+
+      it('opens every title its own feed listed', async () => {
+        const source = createSource();
+        const feed = await source.getPublicFeed();
+
+        for (const listed of feed.publications) {
+          const detail = await source.getPublicPublication(listed.id);
+          expect(detail.id).toBe(listed.id);
+        }
+      });
+
+      it('rejects an unknown publication with NOT_FOUND', async () => {
+        await expectNotFound(
+          createSource().getPublicPublication('item_nope'),
+          'getPublicPublication',
         );
       });
     });

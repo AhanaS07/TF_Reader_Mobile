@@ -50,4 +50,24 @@ export interface CatalogueSource {
   // Rejects CatalogueFailure(NOT_FOUND) if the institution or publication is
   // unknown.
   getPublication(institutionId: string, bookId: BookId): Promise<Publication>;
+
+  // A1 — the open access catalogue, for a reader who has chosen no institution.
+  //
+  // TAKES NO institutionId, AND THAT IS THE POINT. Shelves belong to an
+  // institution, so a reader without one has none: this is a single flat,
+  // paginated list rather than a home screen, and it carries open access titles
+  // only. Deliberately narrower than what public search would find — this feed
+  // is what you can read right now.
+  //
+  // Returns `Shelf` because the wire shape IS a shelf's: one titled, paginated
+  // OpdsPublicationFeed. The name is the odd part, not the type — there is no
+  // second parser and no second set of paging rules to keep in step.
+  getPublicFeed(page?: number): Promise<Shelf>;
+
+  // One publication for that same reader. Separate from `getPublication` for the
+  // same reason as above: there is no institution to scope it by, and falling
+  // back to some default institution's copy would answer a question nobody asked.
+  //
+  // Rejects CatalogueFailure(NOT_FOUND) if the publication is unknown.
+  getPublicPublication(bookId: BookId): Promise<Publication>;
 }

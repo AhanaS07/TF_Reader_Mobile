@@ -14,6 +14,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
+import type { Institution } from '@model/institution';
 import type { Catalogue } from '@model/types';
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 
@@ -98,10 +99,23 @@ function fakeSource(getHomeCatalogue: DataSource['getHomeCatalogue']): DataSourc
     getHomeCatalogue,
     getShelf: unused,
     getPublication: unused,
+    getPublicFeed: unused,
+    getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution: unused,
   };
 }
+
+// Deliberately NOT inst_7f3, the id this screen used to fall back to: a test
+// that used the old default could not tell "read the prop" from "ignored it".
+const OTHER_INSTITUTION: Institution = {
+  id: 'inst_a21',
+  name: 'Second Institution',
+  country: 'GB',
+  code: 'SEC',
+  city: 'Leeds',
+  catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_a21/catalogue',
+};
 
 afterEach(() => {
   setCatalogueSource(undefined);
@@ -109,12 +123,42 @@ afterEach(() => {
   mockUseNetworkStatus.mockReturnValue(true);
 });
 
+// CatalogueScreen is only ever rendered for a reader who HAS an institution —
+// CatalogueHomeScreen sends everyone else to the public feed. So the institution
+// arrives as a prop and there is no fallback id here any more: a screen that
+// defaulted to one would silently serve the wrong catalogue to an anonymous
+// reader, which is the bug A1 exists to fix.
+describe('CatalogueScreen institution', () => {
+  it('fetches the catalogue for the institution it was given', async () => {
+    const asked: string[] = [];
+    setCatalogueSource(
+      fakeSource(async (institutionId) => {
+        asked.push(institutionId);
+        return FAKE_CATALOGUE;
+      }),
+    );
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    expect(asked).toEqual([OTHER_INSTITUTION.id]);
+  });
+
+  it('names that institution in the picker', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText(OTHER_INSTITUTION.name)).toBeTruthy());
+  });
+});
+
 describe('CatalogueScreen loading', () => {
   it('shows skeletons before the catalogue arrives', async () => {
     // Never resolves within the test, so the screen is caught mid-load.
     setCatalogueSource(fakeSource(() => new Promise(() => {})));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     expect(screen.getAllByTestId('category-card-skeleton').length).toBeGreaterThan(0);
     expect(screen.getAllByTestId('content-card-skeleton').length).toBeGreaterThan(0);
@@ -125,7 +169,7 @@ describe('CatalogueScreen with data', () => {
   it('renders one CategoryCard per navigation entry', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     expect(screen.getByText('Audiobooks')).toBeTruthy();
@@ -138,7 +182,7 @@ describe('CatalogueScreen with data', () => {
   it('renders one section per shelf, each with its own publications', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('New this term')).toBeTruthy());
     expect(screen.getByText('Rights for Robots')).toBeTruthy();
@@ -153,26 +197,53 @@ describe('CatalogueScreen with data', () => {
   it('navigates to the Shelf route with the shelfId and title when a category card is pressed', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     fireEvent.press(screen.getByRole('button', { name: 'eBooks' }));
 
+    // The institution goes with it: ShelfScreen fetches the listing itself and
+    // must fetch it for the institution whose catalogue named this shelf.
     expect(mockNavigate).toHaveBeenCalledWith('Shelf', {
       shelfId: 'ebooks',
       title: 'eBooks',
+      institutionId: 'inst_a21',
     });
   });
 
   it('navigates to ItemDetail with the publication id when a row is pressed', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
     fireEvent.press(screen.getByRole('button', { name: 'Rights for Robots' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+// A3 — every row carries its access tier. The label is asserted, not just the
+// slot: a screen that filled the slot with the wrong publication's tier would
+// still pass a count-only check.
+describe('CatalogueScreen access-tier badges', () => {
+  it('gives every publication row a badge', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    // Two shelves, one publication each.
+    expect(screen.getAllByTestId('content-card-badge')).toHaveLength(2);
+  });
+
+  it('labels a subscription title and an open access title differently', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Subscription')).toBeTruthy());
+    expect(screen.getByText('Open Access')).toBeTruthy();
   });
 });
 
@@ -187,7 +258,7 @@ describe('CatalogueScreen error', () => {
       }),
     );
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
 
@@ -230,7 +301,7 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
     ];
     setCatalogueSource(fakeSource(async () => catalogueWithNavigation(titles)));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText(titles[0])).toBeTruthy());
     // Read out of the tree in tree order, so reordering the row would fail here.
@@ -245,7 +316,7 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
   it('renders a single row without treating it as special', async () => {
     setCatalogueSource(fakeSource(async () => catalogueWithNavigation(['All titles'])));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('All titles')).toBeTruthy());
   });
@@ -256,7 +327,7 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
   it('renders no rows at all without crashing', async () => {
     setCatalogueSource(fakeSource(async () => catalogueWithNavigation([])));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     // The sections below the row still arrive, which is how we know the screen
     // rendered rather than died on an empty array.
@@ -267,7 +338,7 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
   it('renders the real home-catalogue fixture correctly', async () => {
     setCatalogueSource(fakeSource(async () => normalizeCatalogue(homeCatalogueFixture)));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('All titles')).toBeTruthy());
     const rendered = screen.getAllByTestId('category-card-title').map((node) => node.props.children);
@@ -301,7 +372,7 @@ describe('CatalogueScreen renders whatever shelves arrive', () => {
     const titles = ['New this month', 'Criticism & theory', 'Audio picks'];
     setCatalogueSource(fakeSource(async () => catalogueWithShelves(titles)));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     for (const title of titles) {
       await waitFor(() => expect(screen.getByText(title)).toBeTruthy());
@@ -314,7 +385,7 @@ describe('CatalogueScreen renders whatever shelves arrive', () => {
     const titles = ['A', 'B', 'C', 'D', 'E'];
     setCatalogueSource(fakeSource(async () => catalogueWithShelves(titles)));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('E')).toBeTruthy());
   });
@@ -354,7 +425,7 @@ describe('CatalogueScreen renders whatever shelves arrive', () => {
 
     setCatalogueSource(fakeSource(async () => catalogueWithGap));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     // The 2 real sections render.
     await waitFor(() => expect(screen.getByText('One')).toBeTruthy());
@@ -372,7 +443,7 @@ describe('CatalogueScreen offline', () => {
     mockUseNetworkStatus.mockReturnValue(false);
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     // The banner is a notice, not a blocker — the catalogue underneath it
     // must still be there (AGENTS.md: offline is degraded, not disabled).
@@ -383,7 +454,7 @@ describe('CatalogueScreen offline', () => {
   it('renders no offline banner while the network is up', async () => {
     setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     expect(screen.queryByText("You're offline")).toBeNull();
@@ -397,7 +468,7 @@ describe('CatalogueScreen with no curated shelves', () => {
     const noShelves: Catalogue = { ...FAKE_CATALOGUE, shelves: [] };
     setCatalogueSource(fakeSource(async () => noShelves));
 
-    await render(<CatalogueScreen />);
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() =>
       expect(screen.getByText('Nothing to show here yet.')).toBeTruthy(),
