@@ -20,6 +20,17 @@ import { ContentError } from '@/shared/contracts';
 
 import App, { devFixtureOptions } from './App';
 
+// App now mounts useAutoSync (sync), which reads NetInfo through useConnectivity.
+// Real NetInfo has no JS-only implementation for Jest to fall back on - same mock
+// as useConnectivity.test.ts.
+jest.mock('@react-native-community/netinfo', () => ({
+  __esModule: true,
+  default: {
+    addEventListener: jest.fn(() => jest.fn()),
+    fetch: jest.fn().mockResolvedValue({ isConnected: false }),
+  },
+}));
+
 describe('toolchain', () => {
   // NOTE FOR EVERY COMPONENT TEST IN THIS REPO: `render` is ASYNC in
   // @testing-library/react-native v14 — it returns a Promise, not a

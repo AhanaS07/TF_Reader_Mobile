@@ -22,6 +22,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { prefsStore } from '@/features/personalization/prefsStore';
+import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -40,6 +42,7 @@ import type {
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId, ContentFormat } from '@/shared/contracts';
@@ -209,6 +212,23 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const search = useBookSearch(bookId);
 
   /**
+   * A search hit selected while `send` was still null, queued rather than dropped.
+   *
+   * `selectHit` used to do `send?.({...})` unconditionally: if the WebView had not yet
+   * reported `ready`, that optional-chained call was a silent no-op — the panel still
+   * closed and the match bar still said "Match N of M" as if the jump had happened. A
+   * ref rather than state because nothing needs to re-render off ITS value; `awaitingSeek`
+   * below is the render-facing half.
+   */
+  const pendingSeekRef = useRef<ReaderTarget | null>(null);
+  const [awaitingSeek, setAwaitingSeek] = useState(false);
+
+  const cancelPendingSeek = useCallback((): void => {
+    pendingSeekRef.current = null;
+    setAwaitingSeek(false);
+  }, []);
+
+  /**
    * Which edges of the Contents list are currently faded.
    *
    * ONE STATE OBJECT OF TWO BOOLEANS, NOT THE SCROLL OFFSET. Keeping the offset in
@@ -284,6 +304,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const raiseError = useCallback((code: ReaderErrorCode, message: string): void => {
     setError({ code, message });
   }, []);
+
+  /**
+   * The OS half of `applyAppearance`'s inputs (color scheme, font scale, reduce motion).
+   *
+   * REF, NOT READ DIRECTLY, from `handleReady`'s closure: `handleReady` is memoised on
+   * `[bookId, format, raiseError]` (see below) precisely so it does not change identity on every
+   * appearance-env tick — `ReaderWebView` only reads its latest `onReady` via its own ref (see the
+   * note there), so a stale env in the CLOSURE would matter even though a stale PROP would not.
+   * Kept current by an effect with no dependency array, same pattern as `ReaderWebView`'s own
+   * `onReadyRef`.
+   */
+  const appearanceEnv = useAppearanceEnv();
+  const appearanceEnvRef = useRef(appearanceEnv);
+  useEffect(() => {
+    appearanceEnvRef.current = appearanceEnv;
+  });
+
+  /**
+   * Resolve the current prefs against `env` and send `applyAppearance` — the one seam both the
+   * open-time send (trigger A) and the live re-apply effects below (triggers B/C) go through, so
+   * "read prefs, resolve, send" is not duplicated three times.
+   *
+   * Best-effort: a failed prefs read must not block opening the book. The WebView already paints at
+   * its DEFAULT_PREFS-derived baseline with no `applyAppearance` at all, which is exactly the
+   * fallback this failure leaves it at.
+   */
+  const applyAppearanceWith = useCallback(
+    async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
+      try {
+        const prefs = await prefsStore.getPrefs();
+        sender({ type: 'applyAppearance', appearance: toReaderAppearance(prefs, env) });
+      } catch {
+        // Best-effort — see the note above.
+      }
+    },
+    [],
+  );
 
   // Resolve the book's format and its matching shell before mounting the WebView.
   //
@@ -396,6 +453,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             return;
           }
 
+          // BEFORE the open command, not alongside it: PDF answers NOT_READY to anything sent
+          // before open*, and EPUB's flow/spread only take effect if set before renderTo(). Awaited
+          // (not fired-and-forgotten) so the order is guaranteed rather than merely likely — see
+          // WEBVIEW_BRIDGE.md's "prefs-application design, as signed off".
+          await applyAppearanceWith(sender);
+
           const base64 = await withOpenTimeout(getBookBase64(bookId, format));
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length, format });
@@ -458,8 +521,37 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         }
       })();
     },
-    [bookId, format, raiseError],
+    [bookId, format, raiseError, applyAppearanceWith],
   );
+
+  /**
+   * Trigger B (READER_PREFS_APPLICATION.md §5): a local prefs edit. `prefsStore.subscribe` hands
+   * back the FRESH `SharedPrefs` record directly, so there is no `getPrefs()` round trip here —
+   * unlike `applyAppearanceWith`, which reads it because trigger A/C have no record handed to them.
+   *
+   * `send === null` is checked inside the listener rather than skipped by not subscribing: `send`
+   * transitions null -> non-null exactly once (see its own state comment), and the effect should
+   * stay subscribed across that transition rather than resubscribing — same reasoning as the queued
+   * search-seek effect below, which is keyed on `[send]` for the same class of problem.
+   */
+  useEffect(() => {
+    return prefsStore.subscribe((freshPrefs) => {
+      if (send === null) return;
+      send({ type: 'applyAppearance', appearance: toReaderAppearance(freshPrefs, appearanceEnvRef.current) });
+    });
+  }, [send]);
+
+  /**
+   * Trigger C (READER_PREFS_APPLICATION.md §5): an OS-level change (system dark mode, Dynamic Type,
+   * Reduce Motion) — `useAppearanceEnv` re-renders this component with a new `env` whenever one of
+   * those fires, and this effect is what turns that into a re-resolve-and-resend. Skipped while
+   * `send` is null: trigger A already sends the FIRST appearance once `send` exists, so there is
+   * nothing to re-apply until then.
+   */
+  useEffect(() => {
+    if (send === null) return;
+    void applyAppearanceWith(send, appearanceEnv);
+  }, [send, appearanceEnv, applyAppearanceWith]);
 
   const handleMessage = useCallback((message: ReaderMessage): void => {
     switch (message.type) {
@@ -496,6 +588,24 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         break;
     }
   }, []);
+
+  /**
+   * Flush a search jump that was queued while `send` was still null.
+   *
+   * `send` only ever transitions null -> non-null (set once, from `handleReady`), so this
+   * fires at most once per queued target. It is a separate effect rather than logic inside
+   * `selectHit` because the queueing and the flushing happen at two different, unrelated
+   * moments — a tap, and a bridge message — and nothing else should re-check the queue.
+   */
+  useEffect(() => {
+    if (send === null) return;
+    const target = pendingSeekRef.current;
+    if (target === null) return;
+    pendingSeekRef.current = null;
+    setAwaitingSeek(false);
+    setShowSearch(false);
+    send({ type: 'goTo', target });
+  }, [send]);
 
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
@@ -553,8 +663,24 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       const target = targetOf(hit);
       if (target === null) return;
       search.setActiveIndex(index);
+
+      if (send === null) {
+        // Search itself runs host-side over the decrypted index, so results can arrive well
+        // before the WebView reports `ready` — `send` is still null here. `send?.({...})`
+        // below would silently drop the jump: the panel would still close and the match bar
+        // would still say "Match N of M" as if it had worked. Queue it and reopen the panel
+        // (rather than leaving it wherever this was called from — the match bar's stepper
+        // reaches this too) so the wait is visible; the effect above flushes it once `send`
+        // exists.
+        pendingSeekRef.current = target;
+        setAwaitingSeek(true);
+        setShowToc(false);
+        setShowSearch(true);
+        return;
+      }
+
       setShowSearch(false);
-      send?.({ type: 'goTo', target });
+      send({ type: 'goTo', target });
     },
     [search, send],
   );
@@ -770,8 +896,15 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           <SearchPanel
             query={search.query}
             onQueryChange={search.setQuery}
-            onSubmit={search.submit}
+            onSubmit={() => {
+              // A fresh search means the tapped hit's queued jump, if any, no longer
+              // matches what is on screen — cancel rather than let it fire later against
+              // a different result set.
+              cancelPendingSeek();
+              search.submit();
+            }}
             onClose={() => {
+              cancelPendingSeek();
               setShowSearch(false);
             }}
             status={search.status}
@@ -780,6 +913,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             failure={search.failure}
             activeIndex={search.activeIndex}
             onSelectHit={selectHit}
+            awaitingSeek={awaitingSeek}
           />
         )}
 
@@ -795,7 +929,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
               setShowToc(false);
               setShowSearch(true);
             }}
-            onDismiss={search.clear}
+            onDismiss={() => {
+              cancelPendingSeek();
+              search.clear();
+            }}
           />
         )}
 

@@ -21,6 +21,8 @@
 
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 
+import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+
 import {
   base64ToArrayBuffer,
   fail,
@@ -67,6 +69,14 @@ installErrorHandlers();
 let pdfDoc: PDFDocumentProxy | null = null;
 let currentPage = 0;
 let pageCount = 0;
+
+/**
+ * The latest `applyAppearance` payload. Per the sign-off doc, PDF applies only `bg` and `zoom` and
+ * ignores typography entirely — pdf.js rasterises pages, so there is no text CSS to override. `zoom`
+ * defaults to 1.0 (100%) rather than being undefined before the first payload arrives, matching
+ * DEFAULT_PREFS.zoom.level.
+ */
+let currentZoom = 1.0;
 
 /**
  * Guards against overlapping renders. pdf.js rejects a second `render()` on a page whose first is
@@ -175,7 +185,7 @@ async function renderPage(pageNumber: number): Promise<void> {
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const viewport = page.getViewport({ scale: fit * dpr });
+  const viewport = page.getViewport({ scale: fit * dpr * currentZoom });
 
   const canvas = document.getElementById('pdf-canvas') as HTMLCanvasElement | null;
   const context = canvas?.getContext('2d');
@@ -186,8 +196,10 @@ async function renderPage(pageNumber: number): Promise<void> {
 
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
-  canvas.style.width = `${Math.floor(base.width * fit)}px`;
-  canvas.style.height = `${Math.floor(base.height * fit)}px`;
+  // CSS/layout size carries `currentZoom` too — it is the visual magnification the user asked for,
+  // not just extra backing-buffer resolution the way `dpr` is.
+  canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
+  canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
 
   await page.render({ canvasContext: context, viewport }).promise;
   if (token !== renderToken) return;
@@ -322,6 +334,25 @@ const api: TFReaderApi<'openPdf'> = {
     }
 
     renderPageGuarded(page);
+  },
+
+  /**
+   * Apply a resolved appearance. Per the sign-off doc this shell applies only `bg` and `zoom` —
+   * typography/theme-text fields are silently ignored, not an oversight: pdf.js rasterises pages, so
+   * there is no text CSS layer to override here the way the EPUB shell has.
+   *
+   * `document.body.style` rather than a stylesheet: there is no `Contents` abstraction to hook into
+   * (one page is one canvas, not a chapter document), so a single direct style write is enough.
+   */
+  applyAppearance: (appearance: ReaderAppearance) => {
+    document.body.style.background = appearance.bg;
+
+    const zoomChanged = appearance.zoom !== currentZoom;
+    currentZoom = appearance.zoom;
+
+    if (zoomChanged && pdfDoc && currentPage) {
+      renderPageGuarded(currentPage);
+    }
   },
 };
 

@@ -31,6 +31,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
+import { prefsStore } from '@/features/personalization/prefsStore';
+import { toReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { AppearanceEnv } from '@/features/personalization/readerAppearance';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -40,8 +43,10 @@ import {
 } from '@/features/reader/readerAssets';
 import { buildCommandScript } from '@/features/reader/readerBridge';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
-import type { ContentFormat, SearchHit } from '@/shared/contracts';
+import { DEFAULT_PREFS } from '@/shared/contracts';
+import type { ContentFormat, SearchHit, SharedPrefs } from '@/shared/contracts';
 
 /**
  * The byte/asset seam. `prepareBook` decides the format, which decides BOTH the shell
@@ -82,6 +87,81 @@ jest.mock('@/features/encryption/contentProvider', () => ({
 jest.mock('@/features/search/queryBookIndex', () => ({
   queryBookIndex: jest.fn(() => Promise.resolve([])),
 }));
+
+/**
+ * A named alias, not an inline `(prefs: SharedPrefs) => void` inside the factory below:
+ * babel-plugin-jest-hoist's out-of-scope-variable check mis-parses an inline function-type
+ * parameter name as a variable reference (a known quirk, not a real scope violation), and fails
+ * the whole factory. Declaring it here, outside jest.mock()'s callback, avoids the parameter name
+ * ever appearing inside the checked scope.
+ */
+type PrefsListener = (prefs: SharedPrefs) => void;
+
+/**
+ * The prefs-application seam. Mocked rather than exercised through the real (SQLite-backed)
+ * store for the same reason the byte path is mocked above: this file is chrome coverage, and
+ * `prefsStore`'s own contract (subscribe/notify semantics, SQLite round-tripping) has its own
+ * tests in prefsStore.test.ts. `__emitPrefsChange` mirrors the `__injectJavaScript` convention
+ * below — the one hook a test needs to drive the mock from outside.
+ */
+jest.mock('@/features/personalization/prefsStore', () => {
+  const listeners = new Set<PrefsListener>();
+  return {
+    prefsStore: {
+      getPrefs: jest.fn(),
+      subscribe: jest.fn((listener: PrefsListener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }),
+    },
+    __emitPrefsChange: (prefs: SharedPrefs) => {
+      for (const listener of listeners) listener(prefs);
+    },
+  };
+});
+
+const { __emitPrefsChange } = jest.requireMock('@/features/personalization/prefsStore') as {
+  __emitPrefsChange: (prefs: SharedPrefs) => void;
+};
+
+/**
+ * The OS half of `applyAppearance`'s inputs. Mocked for determinism: the real hook reads RN's
+ * `Appearance`/`AccessibilityInfo`/`PixelRatio`, none of which this chrome test has any reason to
+ * depend on the actual jest-preset defaults for.
+ */
+jest.mock('@/features/reader/useAppearanceEnv', () => ({
+  useAppearanceEnv: jest.fn(),
+}));
+
+const LIGHT_ENV: AppearanceEnv = {
+  osColorScheme: 'light',
+  osFontScale: 1,
+  osReduceMotionEnabled: false,
+};
+
+/** A complete SharedPrefs, so toReaderAppearance never sees a partial record. Fresh identity
+ * fields and a structuredClone of DEFAULT_PREFS per call, guarding against cross-test mutation. */
+function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
+  return {
+    ...structuredClone(DEFAULT_PREFS),
+    id: 'prefs-1',
+    userId: 'user-1',
+    updatedAt: 0,
+    isDeleted: false,
+    synced: false,
+    ...overrides,
+  };
+}
+
+// Sane defaults for every test in this file, most of which have no opinion on appearance at all —
+// without this, `prefsStore.getPrefs()` resolves `undefined` and `applyAppearanceWith`'s catch
+// swallows the resulting throw, which happens to leave every existing assertion (all of which read
+// the LAST or a RELATIVE injectJavaScript call, never an absolute count) unaffected either way. Set
+// explicitly anyway so the applyAppearance-specific tests below have a real baseline to diff from.
+beforeEach(() => {
+  jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
+  jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+});
 
 /**
  * A WebView mock with a usable ref, overriding the inert one in jest.setup.js.
@@ -670,6 +750,96 @@ describe('routing ContentFormat to a renderer', () => {
   });
 });
 
+describe('applyAppearance — the prefs-application wiring', () => {
+  afterEach(() => {
+    jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+  });
+
+  it('sends applyAppearance before the open command, not alongside or after it', async () => {
+    await mountReader();
+    await reportReady();
+
+    const calls = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+    const appearanceIndex = calls.indexOf(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: toReaderAppearance(makePrefs(), LIGHT_ENV),
+      }),
+    );
+    const openIndex = calls.indexOf(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+
+    // Both must actually have been sent (index -1 would mean "never called", not "called first").
+    expect(appearanceIndex).toBeGreaterThanOrEqual(0);
+    expect(openIndex).toBeGreaterThan(appearanceIndex);
+  });
+
+  it('re-sends applyAppearance when prefsStore notifies, without reopening the book', async () => {
+    await mountReader();
+    await reportReady();
+    __injectJavaScript.mockClear();
+
+    // NOT wrapped in act(): the listener calls `send`, a ref method call
+    // (webViewRef.current.injectJavaScript), not a React state update — there is nothing for act()
+    // to flush, and wrapping it anyway was found to corrupt the test-act environment for every test
+    // that ran afterward in this file (an unrelated `act()` call landing while React's own internal
+    // act tracking was mid-flight from the preceding reportReady()).
+    const changed = makePrefs({ theme: 'dark' });
+    __emitPrefsChange(changed);
+
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({ type: 'applyAppearance', appearance: toReaderAppearance(changed, LIGHT_ENV) }),
+    );
+    // NOT a reopen: `openEpub` carries the book's bytes and nothing about a theme change should
+    // touch them.
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+  });
+
+  it('re-sends applyAppearance when the OS-level appearance changes', async () => {
+    const view = await render(<ReaderScreen bookId="test-book" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    __injectJavaScript.mockClear();
+
+    const darkEnv: AppearanceEnv = { ...LIGHT_ENV, osColorScheme: 'dark' };
+    jest.mocked(useAppearanceEnv).mockReturnValue(darkEnv);
+    await act(async () => {
+      await view.rerender(<ReaderScreen bookId="test-book" />);
+    });
+
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: toReaderAppearance(makePrefs(), darkEnv),
+      }),
+    );
+
+    // Explicit, rather than relying on auto-cleanup between tests: this component is the one
+    // subscriber in the whole file that registers with a SHARED module-level mock registry
+    // (prefsStore's `listeners` Set), so a tree left mounted here is externally observable by a
+    // later test in a way nothing else in this file is — see the unmount test below for exactly
+    // that failure mode.
+    await view.unmount();
+  });
+
+  it('stops re-applying after unmount', async () => {
+    const view = await render(<ReaderScreen bookId="test-book" />);
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    __injectJavaScript.mockClear();
+
+    await view.unmount();
+    // Not act()-wrapped — see the note in the test above.
+    __emitPrefsChange(makePrefs({ theme: 'dark' }));
+
+    expect(__injectJavaScript).not.toHaveBeenCalled();
+  });
+});
+
 describe('ReaderScreen Contents panel', () => {
   it('opens on the Contents button and lists every entry the book sent', async () => {
     await mountReader();
@@ -954,6 +1124,87 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.queryByTestId('reader-search-input')).toBeNull();
     expect(screen.getByTestId('reader-search-match-bar')).toBeTruthy();
     expect(screen.getByText('Match 2 of 2')).toBeTruthy();
+  });
+
+  it('queues a tapped hit while the book is still loading, then jumps once ready', async () => {
+    // THE FAILSAFE. `send` stays null until the WebView reports `ready` — but search
+    // runs host-side over the decrypted index (queryBookIndex), so results can be back
+    // and tapped well before that. `send?.({...})` used to silently drop the jump here:
+    // the panel closed and the match bar claimed "Match 2 of 2" as if it had worked.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    // No reportReady() yet — send is still null.
+    await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
+
+    const goTo = buildCommandScript({
+      type: 'goTo',
+      target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:2)' },
+    });
+
+    // Not dropped, and not pretending it happened: the panel stays open with a visible
+    // notice instead of closing onto a match bar that lied about the jump.
+    expect(screen.getByTestId('reader-search-input')).toBeTruthy();
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(goTo);
+
+    await reportReady();
+
+    // Queued jump fires the moment `send` exists, alongside (not instead of) the open
+    // command that `ready` also triggers.
+    expect(__injectJavaScript).toHaveBeenCalledWith(goTo);
+    expect(screen.queryByTestId('reader-search-input')).toBeNull();
+    expect(screen.getByTestId('reader-search-match-bar')).toBeTruthy();
+    expect(screen.getByText('Match 2 of 2')).toBeTruthy();
+  });
+
+  it('cancels a queued jump when a new search is submitted before the book is ready', async () => {
+    // A queued target is only meaningful against the result set it was tapped from.
+    // Running a new search before the book becomes ready must not leave a stale jump
+    // waiting to fire into whatever the reader shows once it is.
+    jest
+      .mocked(queryBookIndex)
+      .mockResolvedValueOnce([epubHit(1)])
+      .mockResolvedValueOnce([epubHit(5)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+
+    await runSearch('bear');
+    expect(screen.queryByTestId('reader-search-awaiting-seek')).toBeNull();
+
+    await reportReady();
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      }),
+    );
+  });
+
+  it('cancels a queued jump when the panel is closed', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await reportReady();
+
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      }),
+    );
   });
 
   it('leaves the viewer mounted and unresized while searching', async () => {

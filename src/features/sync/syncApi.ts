@@ -237,17 +237,4 @@ export const api = {
     request<T[]>(
       `${collection(entityPath)}${queryString({ ...params, includeDeleted: 'true' })}`,
     ),
-
-  /**
-   * flambeau's loan change feed. READ-ONLY, and not one of the six entities.
-   *
-   * Takes a full path rather than an entity segment, because it does not live under
-   * `collection()`'s `${API_V1}/${entity}` pattern and because `A10` may move it - see
-   * `LOAN_CHANGES_PATH`. Nothing is pushed here; there is no local loans table.
-   *
-   * The `cursor` is opaque: stored, echoed back, never parsed. Omitted entirely on the first
-   * ever call, which is what asks the server for the current position rather than for history.
-   */
-  loanChanges: <T>(path: string, cursor: string | null) =>
-    request<T>(`${path}${queryString({ cursor: cursor ?? undefined })}`),
 };
