@@ -73,9 +73,19 @@ cut both directions:
 ```
 EXPO_PUBLIC_READER_TIMING=1 \
 EXPO_PUBLIC_READER_FORMAT=PDF \
-EXPO_PUBLIC_READER_FIXTURE_PATH="$PWD/samples/fixtures/<book>.pdf" \
+EXPO_PUBLIC_READER_FIXTURE_PDF="$PWD/samples/fixtures/<book>.pdf" \
+EXPO_PUBLIC_READER_FIXTURE_EPUB="$PWD/samples/fixtures/<book>.epub" \
 npx expo start --dev-client --clear
 ```
+
+**One path per format since 2026-08-20**, so both large books are populated in the same run and the
+picker can offer all four at once. `EXPO_PUBLIC_READER_FORMAT` no longer decides which large book
+_exists_ — only which one is open before the first tap. Set just the one you are measuring if you
+prefer; the other tab then raises an error naming its variable rather than falling back to a
+stand-in.
+
+`EXPO_PUBLIC_READER_FIXTURE_PATH` still works and still applies to whichever format
+`EXPO_PUBLIC_READER_FORMAT` selects, so every run recorded in this file reproduces unchanged.
 
 `--clear` is **not optional**: `EXPO_PUBLIC_*` values are inlined at transform time, so a warm Metro
 cache keeps serving the previous one (`T4_Readme.md`). Getting this wrong measures the last run.
@@ -89,9 +99,11 @@ another's stored package. `devFixturePath.test.ts` pins that.
 1. **Measure the SECOND launch.** The first one seeds: a synchronous whole-file read
    (`devContentSeed.ts:220`) plus an in-process encrypt (`:252`), which peaks higher than any warm
    open and is not what the EPUB numbers measured.
-2. **Do not tap the picker.** With `FIXTURE_PATH` set, the picker's first option _is_ the pushed
-   fixture (`devFixtureOptions` in `App.tsx`), so a stray tap on EPUB/PDF switches you to a ~3 KB
-   stand-in. Numbers stay plausible; the book is wrong.
+2. **Do not tap the picker mid-run.** It offers four fixed tabs (`devFixtureOptions` in `App.tsx`):
+   `EPUB` and `PDF` are the ~3 KB bundled stand-ins, `Big EPUB` and `Big PDF` are the pushed books.
+   A stray tap on either of the first two switches you to a stand-in and the numbers stay plausible
+   while the book is wrong. Check the selected tab is the `Big` one before recording anything —
+   which is easier than it was when the pushed fixture was an unlabelled first row.
 3. **If you swap the fixture file while keeping the id**, clear the seed marker or you re-measure
    the previous book:
    `rm -f "$(xcrun simctl get_app_container booted com.taylorandfrancis.tfreader.dev data)/Documents/dev-seed-dev-fixture-pdf.version"`

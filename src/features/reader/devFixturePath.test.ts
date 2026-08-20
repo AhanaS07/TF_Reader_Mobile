@@ -33,10 +33,13 @@ interface SeedModule {
 
 interface ProviderModule {
   getFormat: (bookId: BookId) => Promise<ContentFormat>;
+  getBook: (bookId: BookId) => Promise<Uint8Array>;
 }
 
 const FIXTURE_KEY = 'EXPO_PUBLIC_READER_FIXTURE_PATH';
 const FORMAT_KEY = 'EXPO_PUBLIC_READER_FORMAT';
+const EPUB_KEY = 'EXPO_PUBLIC_READER_FIXTURE_EPUB';
+const PDF_KEY = 'EXPO_PUBLIC_READER_FIXTURE_PDF';
 
 // LITERAL member access for the READS, computed keys only for the writes — which is exactly the
 // distinction `expo/no-dynamic-env-var` enforces, and it caught this file getting it wrong. A read
@@ -44,6 +47,8 @@ const FORMAT_KEY = 'EXPO_PUBLIC_READER_FORMAT';
 // a write is plain runtime mutation and has no such constraint.
 const originalFixture = process.env.EXPO_PUBLIC_READER_FIXTURE_PATH;
 const originalFormat = process.env.EXPO_PUBLIC_READER_FORMAT;
+const originalEpub = process.env.EXPO_PUBLIC_READER_FIXTURE_EPUB;
+const originalPdf = process.env.EXPO_PUBLIC_READER_FIXTURE_PDF;
 
 function restore(key: string, value: string | undefined): void {
   if (value === undefined) {
@@ -60,12 +65,19 @@ function restore(key: string, value: string | undefined): void {
  * and package maps, so a devContentSeed from one registry and a getFormat from another would not be
  * talking about the same store, and the integration cases below would pass vacuously.
  */
-function loadWith(env: { fixturePath?: string; format?: string }): {
+function loadWith(env: {
+  fixturePath?: string;
+  format?: string;
+  epubPath?: string;
+  pdfPath?: string;
+}): {
   seed: SeedModule;
   provider: ProviderModule;
 } {
   restore(FIXTURE_KEY, env.fixturePath);
   restore(FORMAT_KEY, env.format);
+  restore(EPUB_KEY, env.epubPath);
+  restore(PDF_KEY, env.pdfPath);
 
   let loaded: { seed: SeedModule; provider: ProviderModule } | null = null;
   jest.isolateModules(() => {
@@ -92,6 +104,8 @@ function writeFixture(name: string, text: string): string {
 afterAll(() => {
   restore(FIXTURE_KEY, originalFixture);
   restore(FORMAT_KEY, originalFormat);
+  restore(EPUB_KEY, originalEpub);
+  restore(PDF_KEY, originalPdf);
 });
 
 describe('DEV_SAMPLE_BOOK_ID crosses source x format', () => {
@@ -167,5 +181,69 @@ describe('the fixture path seeds the format it was asked for', () => {
     const { seed } = loadWith({ fixturePath: '/tmp/tf-reader-no-such-fixture.pdf', format: 'PDF' });
 
     await expect(seed.ensureSeeded(seed.DEV_SAMPLE_BOOK_ID)).rejects.toThrow(/PDF/);
+  }, 30_000);
+});
+
+// ─── the per-format fixture paths (2026-08-20) ──────────────────────────────
+// WHY THESE EXIST. The single EXPO_PUBLIC_READER_FIXTURE_PATH above is crossed with DEV_FORMAT, so
+// exactly ONE large book existed per bundle and comparing the 20 MB EPUB against the 15 MB PDF meant
+// restarting Metro with a different env var. App.tsx now offers all four fixtures as tabs at once,
+// which is only honest if both large books can be populated in the same run — that is the property
+// this block pins.
+describe('the per-format fixture paths are independent', () => {
+  it('reaches BOTH large books in one run, each seeded as its own format', async () => {
+    const epubPath = writeFixture('big.epub', 'PK not a parseable archive');
+    const pdfPath = writeFixture('big.pdf', '%PDF-1.4\nnot a parseable document\n');
+    const { seed, provider } = loadWith({ epubPath, pdfPath });
+
+    // The whole point: no relaunch between these two.
+    await seed.ensureSeeded('dev-fixture-epub');
+    await seed.ensureSeeded('dev-fixture-pdf');
+
+    expect(await provider.getFormat('dev-fixture-epub')).toBe('EPUB');
+    expect(await provider.getFormat('dev-fixture-pdf')).toBe('PDF');
+  }, 30_000);
+
+  // Setting only one must not quietly feed its bytes to the other tab — that would store an EPUB
+  // under format 'PDF', which is the same class of defect this file's header describes one level up.
+  it('does not lend one format\'s file to the other tab', async () => {
+    const epubPath = writeFixture('big.epub', 'PK not a parseable archive');
+    const { seed } = loadWith({ epubPath });
+
+    await expect(seed.ensureSeeded('dev-fixture-pdf')).rejects.toThrow(
+      /EXPO_PUBLIC_READER_FIXTURE_PDF/,
+    );
+  }, 30_000);
+
+  // The legacy var stays scoped to DEV_FORMAT, so an old single-var measurement run cannot
+  // accidentally populate the tab it was never pointing at.
+  it('keeps the legacy shared var scoped to the format it was set for', async () => {
+    const fixturePath = writeFixture('big.pdf', '%PDF-1.4\nnot a parseable document\n');
+    const { seed, provider } = loadWith({ fixturePath, format: 'PDF' });
+
+    await seed.ensureSeeded('dev-fixture-pdf');
+    expect(await provider.getFormat('dev-fixture-pdf')).toBe('PDF');
+
+    await expect(seed.ensureSeeded('dev-fixture-epub')).rejects.toThrow(
+      /EXPO_PUBLIC_READER_FIXTURE_EPUB/,
+    );
+  }, 30_000);
+
+  it('prefers the per-format var over the legacy one when both are set', async () => {
+    const legacy = writeFixture('legacy.pdf', '%PDF-1.4 legacy\n');
+    const specific = writeFixture('specific.pdf', '%PDF-1.4 specific and rather longer\n');
+    const { seed, provider } = loadWith({
+      fixturePath: legacy,
+      format: 'PDF',
+      pdfPath: specific,
+    });
+
+    await seed.ensureSeeded('dev-fixture-pdf');
+
+    // Same format either way, so the format alone cannot tell them apart — the byte count can.
+    expect(await provider.getFormat('dev-fixture-pdf')).toBe('PDF');
+    expect((await provider.getBook('dev-fixture-pdf')).length).toBe(
+      Buffer.byteLength('%PDF-1.4 specific and rather longer\n'),
+    );
   }, 30_000);
 });

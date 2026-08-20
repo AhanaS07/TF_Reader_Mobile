@@ -109,9 +109,14 @@ export class UnsupportedFormatError extends Error {
  * here means the ordering lives in ONE place, and it is the same place that has to
  * be unpicked when `devContentSeed.ts` goes away.
  *
- * `getFormat` is cheap even cold: `openSession` only reads the persisted metadata
- * written by `store()`, it does not decrypt. So this can run before the WebView is
- * mounted without paying for the book.
+ * `getFormat` DOES NOT DECRYPT — but it is only cheap WARM. `openSession` resolves the package,
+ * and on a cold resolve (`packageCache` miss) `contentStore.loadPersisted` reads the whole
+ * ciphertext off disk with a synchronous `bytesSync()`, not just the metadata. So on any launch
+ * after the first — and, since `close()` began clearing `packageCache` on 2026-08-18, on every
+ * reopen within one run — this pays a full-size synchronous read on the JS thread before the
+ * WebView is mounted. That is Encryption's trade-off to own (CLAUDE.md records it against
+ * `close()`), but the cost lands HERE, so do not read this call as free and do not move it onto a
+ * path where a frame is waiting on it.
  *
  * `ensureSeeded` is TEMPORARY and goes away with devContentSeed.ts. It is also
  * called again inside `getBookBase64`, which is not redundant work — it

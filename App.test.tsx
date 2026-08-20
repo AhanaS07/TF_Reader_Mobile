@@ -39,35 +39,54 @@ describe('toolchain', () => {
 // Not a toolchain test, unlike the block above — this covers the temporary dev picker, and it goes
 // when RootNavigator replaces it.
 //
-// THE PROPERTY: the picker must always offer whatever DEV_SAMPLE_BOOK_ID actually resolved to. With
-// EXPO_PUBLIC_READER_FIXTURE_PATH set that is a fixture id matching neither bundled row, so the
-// screen opens a book no option matches and one tap lands on a 3 KB stand-in with no way back short
-// of a relaunch. That silently invalidates a whole-book measurement and looks like nothing happened,
-// which is why it is worth a test rather than a comment.
+// THE PROPERTY: the picker must always offer whatever DEV_SAMPLE_BOOK_ID actually resolved to. If it
+// does not, the screen opens a book no option matches, nothing renders as selected, and one tap
+// lands on a 3 KB stand-in with no way back short of a relaunch. That silently invalidates a
+// whole-book measurement and looks like nothing happened, which is why it is worth a test rather
+// than a comment.
+const BUNDLED = ['dev-sample-epub', 'dev-sample-pdf'];
+const LARGE = ['dev-fixture-epub', 'dev-fixture-pdf'];
+
 describe('the temporary fixture picker', () => {
-  it('offers exactly the two bundled fixtures when one of them is active', () => {
+  it('offers all four fixtures — both bundled stand-ins and both large books', () => {
     expect(devFixtureOptions('dev-sample-epub')).toEqual([
       { label: 'EPUB', bookId: 'dev-sample-epub' },
       { label: 'PDF', bookId: 'dev-sample-pdf' },
+      { label: 'Big EPUB', bookId: 'dev-fixture-epub' },
+      { label: 'Big PDF', bookId: 'dev-fixture-pdf' },
     ]);
-    expect(devFixtureOptions('dev-sample-pdf')).toHaveLength(2);
   });
 
-  // Both fixture-path ids, because the PDF one is the whole reason the large-PDF measurement is
-  // reachable at all — offering the EPUB one and not it would leave exactly that run exposed.
-  it.each(['dev-fixture-epub', 'dev-fixture-pdf'])('also offers %s when it is active', (active) => {
-    const options = devFixtureOptions(active);
+  // The large two are offered whether or not a file was pushed for them. That is the point of the
+  // change: a tab that appears only once an env var is set cannot be told apart from a feature that
+  // was never built, and these are the books features get rolled out against. An unpopulated tap
+  // raises an error naming the variable to set — it does not silently fall back to a stand-in.
+  it.each([...BUNDLED, ...LARGE])('offers %s regardless of which book is active', (active) => {
+    for (const other of [...BUNDLED, ...LARGE]) {
+      expect(devFixtureOptions(other).map((option) => option.bookId)).toContain(active);
+    }
+  });
 
-    expect(options.map((option) => option.bookId)).toContain(active);
-    // First, so it is the visibly selected one rather than a row below the fold.
-    expect(options[0]).toEqual({ label: 'Fixture', bookId: active });
-    // The bundled two stay reachable: switching to a stand-in is fine as a deliberate tap, and only
-    // a problem when it is the only thing on offer.
-    expect(options).toHaveLength(3);
+  // The guarantee that survives whatever the id ladder resolves to, including ids this file does
+  // not know about — the fallback row exists for exactly this.
+  it.each([...BUNDLED, ...LARGE, 'dev-something-nobody-has-added-yet'])(
+    'always offers the active book %s',
+    (active) => {
+      expect(devFixtureOptions(active).map((option) => option.bookId)).toContain(active);
+    },
+  );
+
+  it('puts an unrecognised active book first, so it is the visibly selected one', () => {
+    const options = devFixtureOptions('dev-something-nobody-has-added-yet');
+
+    expect(options[0]).toEqual({ label: 'Fixture', bookId: 'dev-something-nobody-has-added-yet' });
+    // The four stay reachable: switching to a stand-in is fine as a deliberate tap, and only a
+    // problem when it is the only thing on offer.
+    expect(options).toHaveLength(5);
   });
 
   it('never offers the same book twice, so a tap cannot be ambiguous', () => {
-    for (const active of ['dev-sample-epub', 'dev-sample-pdf', 'dev-fixture-epub']) {
+    for (const active of [...BUNDLED, ...LARGE, 'dev-unknown']) {
       const ids = devFixtureOptions(active).map((option) => option.bookId);
       expect(new Set(ids).size).toBe(ids.length);
     }

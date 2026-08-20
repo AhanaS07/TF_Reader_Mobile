@@ -171,12 +171,15 @@ set and the `projectService` wiring are already there, so it is a one-line chang
 it for someone else's directory on their behalf.
 
 `__mocks__/react-native-quick-crypto.js` gained `randomBytes` on 2026-08-18 so `ensureSeeded()` could
-be exercised under Jest. Test-only, additive, and a one-line passthrough to Node's `crypto` in keeping
-with that file's design — but it is a shared mock, so it is recorded here rather than only in git.
+be exercised under Jest, and `createCipheriv`/`createDecipheriv` the same day for `aesGcm.ts`'s swap
+onto this module. Test-only, additive, and one-line passthroughs to Node's `crypto` in keeping with
+that file's design — but it is a shared mock, so it is recorded here rather than only in git. Both
+halves arrived on separate branches and collided on rebase; the resolution keeps every passthrough
+and names both consumers, because the next such edit will collide the same way.
 
 ### Known open items — both are Abhinav's call
 
-This list used to have three. **The stale keychain-cached BEK is fixed:** `store()` now clears the
+This list used to have four. **The stale keychain-cached BEK is fixed:** `store()` now clears the
 cached BEK when the incoming `wrappedBek` differs from the persisted one
 (`invalidateStaleCachedKeyIfRotated`, `contentStore.ts:206`), and
 `contentStore.edgecases.test.ts` pins the fix rather than the defect. `devContentSeed.ts`'s
@@ -186,18 +189,32 @@ The two below are memory/lifecycle defects found from Reader's side. They are **
 list of open items in Download/Encryption — the contract-driven ones live in those directories'
 `API_CONTRACT_NOTES.md` (see the table above).
 
-**1. `close()` leaves the ciphertext resident.** `contentStore.close()` zeroes `session.plaintext`,
-`indexPlaintext` and `rawKey` and drops the session, but does **not** touch the module-level
-`packageCache` — only `destroy()` does. So after `closeBook(bookId)` the whole **ciphertext** stays
-in RAM: 20 MB for the test book, indefinitely, for a book the reader has finished with.
+**The resident-ciphertext-after-`close()` item is FIXED**, by Abhinav on 2026-08-18: `close()` now
+does `packageCache.delete(bookId)`, and `decryptBook()` additionally empties `pkg.content` for
+non-Elite packages once the plaintext exists (two of the "roughly six" copies item 2 counts). The
+cold-read trade-off it names below was taken deliberately and is documented at both call sites. The
+cost lands in Reader — `prepareBook`'s `getFormat` is now only cheap WARM, because a cold
+`resolvePackage` reads the whole ciphertext with a synchronous `bytesSync()`; `readerAssets.ts`
+records that where the call is made.
 
-Reader has **no legitimate workaround**, and this is not a style opinion: `contentProvider.ts`
-exposes only `closeBook` (→ `close`), reaching past the frozen one-call seam into `contentStore` is
-exactly what that seam exists to prevent, and `destroy()` is terminal anyway (deletes ciphertext +
-BEK, forcing a re-download). The one-line fix is `packageCache.delete(bookId)` inside `close()`, and
-it is genuinely a trade-off rather than an oversight — it makes the next open a cold read, i.e. a
-fresh 20 MB **synchronous** `bytesSync()` on the JS thread (`contentStore.ts:229`). That call is
-Abhinav's to make.
+**1. `close()` is now TERMINAL for Elite, which the frozen contract says only `destroy()` is.**
+Introduced by the fix above: `close()` deletes the `packageCache` entry unconditionally, but Elite
+(`licence.canPersist === false`) never persists — `store()` returns before its `writeFile` calls, so
+that cache entry is the **only** copy. After `close()` an Elite book cannot be reopened at all:
+`openSession` → `resolvePackage` → cache miss → `loadPersisted` finds no meta → the whole read fails
+`DECRYPTION_FAILED` ("no stored package for this book"). Confirmed by probe, 2026-08-18.
+
+`content-provider.ts` draws exactly the distinction this erases: `openSession` is specified for "a
+stored (**or in-memory Elite**) book", `close()` is "REVERSIBLE", and `destroy()` is the "TERMINAL"
+one. So this is a frozen-contract divergence, not a preference. It is invisible today because
+nothing ships Elite content — `devContentSeed.ts` seeds `canPersist: true` — which is precisely why
+it needs writing down rather than discovering later. **No test covers Elite close-then-reopen**;
+`contentStore.test.ts`'s Elite block stops at `store()` and `decryptBook()`.
+
+The fix is to guard the delete on the package rather than drop it unconditionally (Elite has no disk
+copy to fall back to, so it must stay cached until `destroy()`). Reader has no workaround and this is
+Abhinav's call — same reasoning as the item it replaced: `contentProvider.ts` exposes only
+`closeBook`, and reaching past that seam is what the seam exists to prevent.
 
 **2. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
 holds and is now proven twice over: **both** codec swaps have landed, time fell by ~30x, and the
@@ -220,6 +237,13 @@ What did NOT change is the point: opening a book still materialises the payload 
 roughly **six** times, so a ~630 MB peak survives making every one of those copies ~30x faster. Only
 *removing* copies moves the peak. That is now the sole remaining lever, and it is a design change
 (streaming, or a bytes-in/bytes-out native API), not an optimisation.
+
+**Copy removal has since STARTED, and the peak above predates it — do not quote the 631 MB as
+current.** Abhinav's 2026-08-18 work removes two of those full-size residents for non-Elite books
+(`decryptBook` empties `pkg.content` once the plaintext exists; `close()` drops the `packageCache`
+entry). By this item's own logic that should move the peak, which makes it the first change here that
+is worth re-measuring rather than reasoning about — and it is **unmeasured**: the numbers in the
+table were taken before it landed. `READER_MEASUREMENTS.md` has the procedure.
 
 Caveat that must travel with these numbers: **simulator, dev build, and the simulator has no
 jetsam.** ~1.0 GB combined would be a likely foreground kill on a 2 GB device. Real-device
@@ -281,12 +305,19 @@ that list — the UI is permanent and does not know the fixture exists. Removing
 it compiling and green, with on-device searches simply returning `[]` again. If deleting the
 fixture breaks the UI or a test, the boundary has leaked and that is the bug.
 
-`devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_PATH` when set, to load a large EPUB
-pushed into the app container instead of the bundled sample (measurement scaffolding — Metro cannot
-`require()` an untracked 20 MB asset, and real content must never be committed). It goes with the
-rest of the file. **Anything using it must delete the pushed plaintext EPUB from the container when
-finished** — that path puts an unencrypted book on disk by construction, which is exactly what a
-storage-leak sweep should flag.
+`devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_EPUB` and `EXPO_PUBLIC_READER_FIXTURE_PDF`
+when set, to load the large books in `samples/fixtures/` instead of the bundled samples (measurement
+scaffolding — Metro cannot `require()` an untracked 20 MB asset, and real content must never be
+committed). **One path per format since 2026-08-20**, so both are populated in the same run and
+App.tsx's picker offers four tabs; the older single `EXPO_PUBLIC_READER_FIXTURE_PATH`, scoped to
+`EXPO_PUBLIC_READER_FORMAT`, still works so recorded runs reproduce. It all goes with the rest of the
+file.
+
+**Point these at `samples/fixtures/` (gitignored), not at a copy pushed into the app container.**
+Both work — the path is read directly and the simulator can see the repo — but a container copy is
+an unencrypted book sitting in the app's own Documents directory, which is exactly what a
+storage-leak sweep should flag and exactly what it will find. If you do push one in, delete it when
+finished.
 
 **The sample PDF goes with `devContentSeed.ts` as well — three items.** There is no `.pdf` anywhere
 else in the repo, and there must never be a real one, so without a generated stand-in the entire
@@ -299,16 +330,25 @@ one, so it has no shared-fixture entanglement and needs nobody looped in.
 | 2 | `assets/reader/sample-plaintext.pdf` + the `reader:build-sample-pdf` script and its CI step |
 | 3 | `DEV_FORMAT` / `EXPO_PUBLIC_READER_FORMAT` and the PDF branch in `devContentSeed.ts` |
 
-**The measurement fixture path goes with `devContentSeed.ts` as well — four more items**, added
-2026-08-18 when `EXPO_PUBLIC_READER_FIXTURE_PATH` was extended to PDF so the pdf.js path could be
-measured on a real book. It is the same scaffolding as the rest of that file and dies with it.
+**The measurement fixture paths go with `devContentSeed.ts` as well — five more items**, added
+2026-08-18 when the fixture path was extended to PDF, and widened 2026-08-20 to one path per format
+so both large books are reachable at once. It is the same scaffolding as the rest of that file and
+dies with it.
 
 | # | Delete |
 | - | ------ |
 | 1 | `DEV_FIXTURE_EPUB_BOOK_ID` / `DEV_FIXTURE_PDF_BOOK_ID` and their `DEV_FIXTURES` entries |
-| 2 | `src/features/reader/devFixturePath.test.ts` (it tests only the env-var crossing) |
-| 3 | `devFixtureOptions()` in `App.tsx`, with the rest of the temp picker |
-| 4 | whatever sits in `samples/fixtures/` — real content, gitignored, never committed |
+| 2 | `EXPO_PUBLIC_READER_FIXTURE_EPUB` / `_PDF` / `_PATH` and the `*_FIXTURE_PATH` consts they feed |
+| 3 | `src/features/reader/devFixturePath.test.ts` (it tests only the env-var crossings) |
+| 4 | `devFixtureOptions()` in `App.tsx`, with the rest of the temp picker |
+| 5 | whatever sits in `samples/fixtures/` — real content, gitignored, never committed |
+
+**The two `Big` tabs are the ones features get rolled out against, and the bundled pair is what gets
+deleted first.** That is the stated intent as of 2026-08-20: `EPUB`/`PDF` (the generated ~3 KB
+stand-ins) exist so the renderers are reachable with nothing pushed, and they retire once every
+feature has been exercised on the real books. Deleting them is NOT the same removal as the table
+above — `sample-plaintext.epub` is Search's fixture too (see that note), and the whole picker dies
+with `RootNavigator` regardless.
 
 `READER_MEASUREMENTS.md` is **not** on that list. It records numbers and a procedure that outlive the
 fixture; what it needs then is a note saying how the books were loaded, not deletion. Neither is

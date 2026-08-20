@@ -34,6 +34,8 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+  DEV_FIXTURE_EPUB_BOOK_ID,
+  DEV_FIXTURE_PDF_BOOK_ID,
   DEV_SAMPLE_BOOK_ID,
   DEV_SAMPLE_EPUB_BOOK_ID,
   DEV_SAMPLE_PDF_BOOK_ID,
@@ -44,35 +46,47 @@ import type { BookId } from '@/shared/contracts';
 /**
  * TEMP, with everything else in this file.
  *
- * A format picker rather than a book picker, because these two fixtures exist only to
- * exercise the two renderers. When RootNavigator and a library screen land, this is
- * replaced by picking a real book — and NOTHING about the reader changes, because the
- * reader never took a format: it reads it back from the stored package via
- * getFormat(bookId). Switching these ids is the same code path a real library uses.
+ * A fixture picker rather than a book picker, because these exist only to exercise the two
+ * renderers at two sizes. When RootNavigator and a library screen land, this is replaced by
+ * picking a real book — and NOTHING about the reader changes, because the reader never took a
+ * format: it reads it back from the stored package via getFormat(bookId). Switching these ids is
+ * the same code path a real library uses.
+ *
+ * FOUR TABS, ALWAYS — the two bundled stand-ins and the two large books pushed into the container.
+ * The large pair is listed even when nothing has been pushed for them, deliberately: they are the
+ * books real features have to be rolled out against, and a tab that appears only once an env var
+ * is set is indistinguishable from a feature that was never built. Tapping an unpopulated one
+ * raises an error naming the variable that would fix it (devContentSeed's sampleBookBytes).
+ *
+ * The bundled two go FIRST so the everyday case is the default reach, and the large two are the
+ * deliberate second step. When the large pair has carried every feature, the bundled two are what
+ * gets deleted — not this picker.
  */
-const BUNDLED_FIXTURES: readonly { label: string; bookId: BookId }[] = [
+const DEV_FIXTURES: readonly { label: string; bookId: BookId }[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID },
+  { label: 'Big EPUB', bookId: DEV_FIXTURE_EPUB_BOOK_ID },
+  { label: 'Big PDF', bookId: DEV_FIXTURE_PDF_BOOK_ID },
 ];
 
 /**
- * The bundled two, plus `active` when it is neither of them.
+ * The four fixtures, plus `active` when it is somehow none of them.
  *
- * THE EXTRA ROW IS NOT COSMETIC — it exists to stop a measurement run being silently
- * invalidated. With `EXPO_PUBLIC_READER_FIXTURE_PATH` set, `DEV_SAMPLE_BOOK_ID` is a
- * fixture id matching neither bundled row, so nothing renders as selected and one tap
- * lands on a bundled 3 KB stand-in with no way back without a relaunch. That is the
- * "measuring the 3.6 KB book and believing it was 20 MB" failure devContentSeed.ts's
- * distinct-id note warns about, reached through the UI instead of through a shared id.
+ * THE EXTRA ROW IS NOT COSMETIC, and is kept even though all four ids are now listed: it exists so
+ * the picker can never fail to offer the book actually on screen. If it did, nothing would render
+ * as selected and one tap would land on a stand-in with no way back short of a relaunch — the
+ * "measuring the 3.6 KB book and believing it was 20 MB" failure devContentSeed.ts's distinct-id
+ * note warns about, reached through the UI instead of through a shared id. It is unreachable while
+ * DEV_SAMPLE_BOOK_ID resolves to one of the four; it costs one line to keep it that way.
  *
  * EXPORTED, AND A PURE FUNCTION OF ITS ARGUMENT, only so it can be tested: the value it
  * is called with comes from an env var read at module load, and reaching that through a
  * re-required App would hand the renderer a second copy of React.
  */
 export function devFixtureOptions(active: BookId): readonly { label: string; bookId: BookId }[] {
-  return BUNDLED_FIXTURES.some((fixture) => fixture.bookId === active)
-    ? BUNDLED_FIXTURES
-    : [{ label: 'Fixture', bookId: active }, ...BUNDLED_FIXTURES];
+  return DEV_FIXTURES.some((fixture) => fixture.bookId === active)
+    ? DEV_FIXTURES
+    : [{ label: 'Fixture', bookId: active }, ...DEV_FIXTURES];
 }
 
 const FIXTURES = devFixtureOptions(DEV_SAMPLE_BOOK_ID);
@@ -141,7 +155,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontWeight: '600', color: '#111111' },
 
   // TEMP, with the picker above.
-  picker: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  picker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   pickerOption: {
     paddingHorizontal: 14,
     paddingVertical: 6,
