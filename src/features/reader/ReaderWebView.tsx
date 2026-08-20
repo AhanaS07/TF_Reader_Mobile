@@ -46,6 +46,18 @@ export interface ReaderWebViewProps {
   onHostError: (code: ReaderErrorCode, message: string) => void;
   /** Called once the bridge is up; hand back a sender for RN -> WebView commands. */
   onReady: (send: (command: ReaderCommand) => void) => void;
+  /**
+   * Whether the WebView's own top-level scroll view may scroll. Defaults to `false`, preserving the
+   * original "pagination is driven by the bridge, not by dragging the document" behaviour.
+   *
+   * Set `true` only for continuous-scroll flow: both templates' `html, body` keep `overflow: hidden`
+   * regardless, so this only matters for the NESTED scroll container each format's continuous mode
+   * manages internally (epub.js's own scrolled-doc container; PDF's `#pdf-scroll`) — a top-level
+   * document with nothing scrollable is unaffected either way. Nested `overflow: auto` scrolling is
+   * ordinarily independent of the top-level scroll view's enabled state, but that assumption is
+   * unverified against this app's exact CSS chain; check on-device when exercising continuous scroll.
+   */
+  scrollEnabled?: boolean;
 }
 
 export function ReaderWebView({
@@ -53,6 +65,7 @@ export function ReaderWebView({
   onMessage,
   onHostError,
   onReady,
+  scrollEnabled = false,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
@@ -219,8 +232,9 @@ export function ReaderWebView({
         thirdPartyCookiesEnabled={false}
         cacheEnabled={false}
         incognito
-        // Pagination is driven by the bridge, not by dragging the document.
-        scrollEnabled={false}
+        // Pagination is driven by the bridge, not by dragging the document — EXCEPT in
+        // continuous-scroll flow, where the caller opts this in. See the prop doc above.
+        scrollEnabled={scrollEnabled}
         bounces={false}
         overScrollMode="never"
         // Transport-level failures. Without these, a bad URI is a white screen.

@@ -128,9 +128,15 @@ wrong one.
 `applyAppearance` is implemented — the design in "The prefs-application design, as signed off" below
 is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced host-side, in
 `ReaderScreen.tsx`'s `handleReady`); EPUB applies theme/typography/flow/spread through the same
-`addStylesheetCss` path as the baseline, PDF applies only `bg`/`zoom`. `customFontUri` still carries
-through unresolved — the bytes-transport question in §8.3 of `READER_PREFS_APPLICATION.md` remains
-open and out of scope here.
+`addStylesheetCss` path as the baseline. PDF applies `bg`, `zoom`, and — as of continuous scroll —
+`flow`: a payload with `flow: 'scrolled-doc'` switches the PDF shell from its single-canvas renderer
+into a virtualised, scrollable multi-page one (`enterScrollMode`/`leaveScrollMode` in `pdf.entry.ts`);
+everything else (theme/typography) is still silently ignored, since pdf.js rasterises pages and there
+is no text CSS layer to override. EPUB now also injects an `@font-face` from `customFontUri` (the
+bundled-font bytes `ReaderScreen.tsx`'s `buildAppearanceWithFont` loads via `loadFontFaceSrc`) when it
+and `fontFamily` both sanitise non-empty — `sanitizeFontDataUri`/`sanitizeFontFamily` in
+`readerMetrics.ts` gate what reaches the stylesheet. PDF continues to ignore `customFontUri` for the
+same rasterisation reason as the rest of typography.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
@@ -280,10 +286,11 @@ cheapest to validate. Same design, different justification; do not let the old w
 
 1. **`applyAppearance` must be defined in BOTH entries.** `buildCommandScript` guards on
    `typeof window.TFReader.applyAppearance === 'function'`, so a PDF open would otherwise answer
-   `NOT_READY` for a command that simply is not there. The PDF half applies `bg` and `zoom` and ignores
-   typography. **This is now enforced rather than remembered**: adding it to `CommandArgs` makes both
-   `TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` require it, so a missing half fails to
-   compile.
+   `NOT_READY` for a command that simply is not there. The PDF half applies `bg`, `zoom` and `flow`
+   (continuous scroll) and still ignores typography — pdf.js rasterises pages, so there is no text CSS
+   layer for a font/theme change to reach. **This is now enforced rather than remembered**: adding it to
+   `CommandArgs` makes both `TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` require it, so a
+   missing half fails to compile.
 2. **It must be sent BEFORE `openEpub`/`openPdf`, not alongside.** `flow` and `spread` are `renderTo()`
    options and `renderTo` runs *inside* `openEpub`, so a payload arriving after it renders in the wrong
    flow and needs a second re-layout. Order: `ready` → `applyAppearance` → `open*`.
@@ -300,7 +307,9 @@ cheapest to validate. Same design, different justification; do not let the old w
 4. **`fontFamily` and `customFontUri` are user-supplied strings that end up in CSS text.**
    `JSON.stringify` in `buildCommandScript` protects the injected *script*; it does nothing for the
    stylesheet the entry then builds by concatenation, inside a document holding decrypted licensed
-   content. They need a character allow-list and CSS quoting on arrival. Reader's to implement.
+   content. They need a character allow-list and CSS quoting on arrival. **Implemented**:
+   `sanitizeFontFamily`/`sanitizeFontDataUri` in `readerMetrics.ts`, both called from `epub.entry.ts`'s
+   `appearanceCssOptions()` before either value reaches `baselineCss()`.
 
 ### The font-size clamp: clamp the FACTOR, not the product
 

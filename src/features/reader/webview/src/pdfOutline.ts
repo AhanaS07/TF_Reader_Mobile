@@ -195,3 +195,47 @@ export function fitScale(
   if (boxWidth <= 0 || boxHeight <= 0 || pageWidth <= 0 || pageHeight <= 0) return 0;
   return Math.min(boxWidth / pageWidth, boxHeight / pageHeight);
 }
+
+/**
+ * The scale that fits a page to a viewport's WIDTH only, for continuous scroll.
+ *
+ * Unlike `fitScale`, height is not an input: in a scrolled list a page's rendered height IS its
+ * share of the scroll length, not something to be bounded by the viewport, so fitting both axes
+ * (and cropping or shrinking to fit a "page" that no longer exists as a screenful) would be wrong
+ * here in a way it is not for the single-page-at-a-time view.
+ *
+ * Returns 0 for an unmeasurable viewport or a degenerate page, same convention as `fitScale` — the
+ * caller treats that as "not renderable yet".
+ */
+export function fitWidthScale(boxWidth: number, pageWidth: number): number {
+  if (boxWidth <= 0 || pageWidth <= 0) return 0;
+  return boxWidth / pageWidth;
+}
+
+/**
+ * Which 1-based page the middle of the viewport is currently over, given each page's top offset
+ * (ascending, `pageTops[0]` is page 1's) in the scroll container's own coordinate space.
+ *
+ * THE MIDPOINT, NOT THE TOP EDGE. A page whose top has just scrolled past the viewport's top edge is
+ * mostly still off-screen below; reporting it as "current" the instant it appears would make the
+ * position indicator jump a page early on every scroll tick. The midpoint is the same "which page are
+ * we most looking at" heuristic a reader would use by eye.
+ *
+ * Defaults to page 1 for an empty list or a midpoint above every page's top — both mean "nothing to
+ * measure against yet", which is what page 1 already means before any scroll has happened.
+ */
+export function mostVisiblePage(
+  pageTops: number[],
+  viewportTop: number,
+  viewportHeight: number,
+): number {
+  const midpoint = viewportTop + viewportHeight / 2;
+  let page = 1;
+
+  for (let i = 0; i < pageTops.length; i++) {
+    if (pageTops[i] > midpoint) break;
+    page = i + 1;
+  }
+
+  return page;
+}

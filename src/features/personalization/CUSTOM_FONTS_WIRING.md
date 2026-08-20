@@ -1,5 +1,15 @@
 # Custom fonts — reader wiring note (Personalization → Reader)
 
+**DONE — 2026-08-20.** Both wiring steps below are implemented: `ReaderScreen.tsx`'s
+`buildAppearanceWithFont` loads the selected family's bytes via `loadFontFaceSrc` and overlays them
+onto `customFontUri` (at both the open-time send and the prefs-subscribe re-apply); `epub.entry.ts`'s
+`appearanceCssOptions()` sanitises it (`sanitizeFontDataUri`, `readerMetrics.ts`) and `baselineCss()`
+injects the `@font-face` rule when it and `fontFamily` both sanitise non-empty. `WEBVIEW_BRIDGE.md`'s
+"Current surface" section and "four things" item 4 are updated to match. Kept below for the design
+rationale; nothing under "Host side"/"WebView side" is still outstanding.
+
+---
+
 **For:** Ahana (Reader). **From:** Vaishnavi (Personalization). Complements `READER_PREFS_APPLICATION.md` §8.
 
 Personalization's half is **built and in the tree**. This is the reader-side apply, which is yours.

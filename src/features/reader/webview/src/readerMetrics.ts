@@ -212,6 +212,12 @@ export interface AppearanceCssOptions {
   /** Already sanitised by the caller. `''` or absent means "don't override". */
   fontFamily?: string;
   letterSpacingPx?: number;
+  /**
+   * Already sanitised by the caller (`sanitizeFontDataUri`). `''`/absent means no `@font-face` to
+   * inject — only meaningful alongside a non-empty `fontFamily`, since that's the name the injected
+   * face is declared under.
+   */
+  fontFaceDataUri?: string;
 }
 
 export function baselineCss(
@@ -221,9 +227,25 @@ export function baselineCss(
 ): string {
   const f = m.fontPx;
   const l = m.linePx;
-  const { fg, bg, link, fontFamily, letterSpacingPx } = appearance;
+  const { fg, bg, link, fontFamily, letterSpacingPx, fontFaceDataUri } = appearance;
+
+  // Declared under the bare sanitised `fontFamily` name (before the `, sans-serif` fallback the
+  // `body` rule below appends), so the face this declares and the family the body rule references
+  // are the same string. `font-display: swap` matters — without it a slow-loading face paints
+  // invisible text rather than the fallback.
+  const fontFaceRule =
+    fontFamily && fontFaceDataUri
+      ? [
+          '@font-face {',
+          `  font-family: ${fontFamily};`,
+          `  src: url("${fontFaceDataUri}");`,
+          '  font-display: swap;',
+          '}',
+        ]
+      : [];
 
   let css: string[] = [
+    ...fontFaceRule,
     // The iframe inherits nothing from the host document, so the host's own -webkit-text-size-adjust
     // does not reach it. Without this, WKWebView inflates text inside a fixed-height column:
     // clipped rows, phantom pages.
@@ -351,6 +373,26 @@ export function sanitizeFontFamily(raw: string): string {
 }
 
 /**
+ * Does `raw` look like a well-formed `data:font/...;base64,<payload>` URI?
+ *
+ * `customFontUri` reaches this module the same way `fontFamily` does — a bare string ending up in
+ * CSS text (`@font-face { src: url("...") }`) inside a document holding decrypted licensed content
+ * — so it gets the same allow-list treatment `WEBVIEW_BRIDGE.md`'s "four things" item 4 calls for.
+ * `loadFontFaceSrc` only ever produces bundled-font bytes, not user input, but validating on arrival
+ * rather than trusting the sender is what keeps that true if the sender ever changes. Anything
+ * outside the allow-list, or `null`/empty, sanitises to `''` — the same "don't override" convention
+ * `sanitizeFontFamily` already uses.
+ */
+const FONT_DATA_URI_ALLOWED = /^data:font\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
+
+export function sanitizeFontDataUri(raw: string | null): string {
+  if (raw === null) return '';
+  const trimmed = raw.trim();
+  if (trimmed === '' || !FONT_DATA_URI_ALLOWED.test(trimmed)) return '';
+  return trimmed;
+}
+
+/**
  * Does a computed break value mean "force a break here"?
  *
  * Covers the CSS3 `break-*` vocabulary and the legacy `page-break-*` one that EPUB CSS is actually
@@ -378,6 +420,31 @@ export function isForcedBreak(value: string): boolean {
 export function isMultiColumnCount(value: string): boolean {
   const count = Number.parseInt(value, 10);
   return Number.isFinite(count) && count >= 2;
+}
+
+/**
+ * The horizontal margin cap, as a fraction of the viewport width, past which a book's own
+ * margin-left/margin-right reads as a print-layout artifact rather than an intentional indent.
+ *
+ * WHY THIS EXISTS: Calibre's PDF-to-EPUB conversion often has no better way to represent a print
+ * page's original horizontal position than a hardcoded margin in em, commonly on generated classes
+ * (`applyAuthoredBreaks`'s own note explains why those exist) — anywhere from a couple of em (a
+ * genuine indent, a blockquote or a nested list) up to 20+ em (a print-page x-offset sized for a
+ * desktop-width column, seen verbatim in a real fixture: `.calibre27 { margin: 1em 0 1em 20em; }`).
+ * On a phone-width text column the latter consumes most or all of the available width, which reads
+ * as "the book has weird extra spacing" rather than as the indent it is. 0.2 leaves visible room for
+ * a real indent while catching the artifact.
+ */
+const MAX_INDENT_FRACTION = 0.2;
+
+/** Does an authored margin exceed the cap for this viewport? */
+export function isExcessiveIndent(marginPx: number, viewportWidthPx: number): boolean {
+  return Number.isFinite(marginPx) && marginPx > viewportWidthPx * MAX_INDENT_FRACTION;
+}
+
+/** The margin to use instead, when `isExcessiveIndent(...)` is true. */
+export function cappedIndent(viewportWidthPx: number): number {
+  return viewportWidthPx * MAX_INDENT_FRACTION;
 }
 
 /**
