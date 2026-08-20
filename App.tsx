@@ -41,6 +41,7 @@ import {
   DEV_SAMPLE_PDF_BOOK_ID,
 } from '@/features/reader/devContentSeed';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
+import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId } from '@/shared/contracts';
 
 /**
@@ -92,6 +93,8 @@ export function devFixtureOptions(active: BookId): readonly { label: string; boo
 const FIXTURES = devFixtureOptions(DEV_SAMPLE_BOOK_ID);
 
 export default function App() {
+  useAutoSync();
+
   // TEMP, with the block above. Initialised from DEV_SAMPLE_BOOK_ID so
   // EXPO_PUBLIC_READER_FORMAT=PDF still launches straight into the PDF, and the
   // picker below is a convenience on top rather than the only way in.
