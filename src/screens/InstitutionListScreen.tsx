@@ -78,6 +78,13 @@ export default function InstitutionListScreen() {
   const recentlyUsedIds = useInstitutionStore((s) => s.recentlyUsedIds);
   const setSelectedInstitution = useInstitutionStore((s) => s.setSelectedInstitution);
   const removeRecentlyUsedId = useInstitutionStore((s) => s.removeRecentlyUsedId);
+  const cachedInstitutions = useInstitutionStore((s) => s.cachedInstitutions);
+  const setCachedInstitutions = useInstitutionStore((s) => s.setCachedInstitutions);
+
+  // Ref so fetchPage can read the latest cache without being listed as a dep
+  // and causing a re-fetch loop every time the cache is written.
+  const cachedRef = useRef(cachedInstitutions);
+  useEffect(() => { cachedRef.current = cachedInstitutions; }, [cachedInstitutions]);
 
   // Institutions resolved directly by ID for the "Recently used" section.
   // Needed because paging means a recently-used institution may not appear in
@@ -91,17 +98,57 @@ export default function InstitutionListScreen() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchPage = useCallback((q: string, pageNum: number, replace: boolean) => {
+    const cached = cachedRef.current;
+
+    // Clear any previous error before deciding whether to fetch or serve cache.
+    // Must sit here — above the offline branch — so going offline with a cache
+    // after a failed online attempt clears the error and shows the cache rather
+    // than staying on the ErrorState.
+    if (replace) setFetchError(false);
+
+    // Offline: serve the persisted cache instead of hitting the network.
+    // Pagination is disabled (hasMore=false) since we only cache page 0.
+    // A search query is satisfied client-side against the cached names.
+    if (!isOnline) {
+      setHasMore(false);
+      setPage(0);
+      setLoading(false);
+      setLoadingMore(false);
+      if (replace) {
+        if (cached.length > 0) {
+          setInstitutions(
+            q.length > 0
+              ? cached.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))
+              : cached,
+          );
+        } else {
+          setFetchError(true);
+        }
+      }
+      return;
+    }
+
     if (replace) { setLoading(true); } else { setLoadingMore(true); }
-    setFetchError(false);
     searchInstitutions({ ...(q.length > 0 ? { q } : {}), page: pageNum, size: PAGE_SIZE })
       .then((results) => {
         setInstitutions((prev) => replace ? results : [...prev, ...results]);
         setHasMore(results.length === PAGE_SIZE);
         setPage(pageNum);
+        // Cache only the first page of the unfiltered list — that is the list the
+        // offline path serves. Filtered or paginated results are intentionally excluded.
+        if (pageNum === 0 && q.length === 0) setCachedInstitutions(results);
       })
-      .catch(() => setFetchError(true))
+      .catch(() => {
+        // Mid-flight disconnect: prefer the cache over an error screen on initial load.
+        if (replace && cached.length > 0) {
+          setInstitutions(cached);
+          setHasMore(false);
+        } else {
+          setFetchError(true);
+        }
+      })
       .finally(() => { setLoading(false); setLoadingMore(false); });
-  }, []);
+  }, [isOnline, setCachedInstitutions]);
 
   useEffect(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
@@ -115,36 +162,49 @@ export default function InstitutionListScreen() {
   // After the initial page loads, resolve any recently-used IDs not found in the
   // current results. Institutions on later pages are fetched directly by ID.
   // Inactive institutions (NOT_FOUND) are pruned from recentlyUsedIds so stale
-  // IDs don't accumulate across sessions. Network errors leave the ID intact —
-  // the user is offline and the institution may still exist.
+  // IDs don't accumulate across sessions.
+  //
+  // resolvedRef is marked AFTER a successful resolution (or NOT_FOUND), not
+  // before the fetch. A transient network error must not permanently suppress
+  // the ID for the rest of the session — the user reconnects and the Recently
+  // used row should reappear without a restart.
   useEffect(() => {
     if (loading) return;
+    // Skip while offline — getInstitution calls are guaranteed to fail, and the
+    // IDs must remain unresolved so they are retried when the device reconnects.
+    if (!isOnline) return;
     let cancelled = false;
     const source = getCatalogueSource();
 
     recentlyUsedIds.forEach((id) => {
       if (resolvedRef.current.has(id)) return;
-      resolvedRef.current.add(id);
 
       const alreadyLoaded = institutions.find((i) => i.id === id);
       if (alreadyLoaded) {
+        resolvedRef.current.add(id);
         if (!cancelled) setResolvedRecents((prev) => [...prev, alreadyLoaded]);
         return;
       }
 
       source.getInstitution(id)
         .then((institution) => {
+          resolvedRef.current.add(id);
           if (!cancelled) setResolvedRecents((prev) => [...prev, institution]);
         })
         .catch((err) => {
-          if (!cancelled && isCatalogueFailure(err) && err.code === CatalogueError.NOT_FOUND) {
+          if (isCatalogueFailure(err) && err.code === CatalogueError.NOT_FOUND) {
+            // NOT_FOUND is permanent and idempotent — safe to handle even after
+            // the effect is cancelled. Cleanup only fires on dep change (not
+            // unmount), so calling a Zustand action here is safe.
+            resolvedRef.current.add(id);
             removeRecentlyUsedId(id);
           }
+          // Network errors: leave the ID out of resolvedRef so it retries after reconnect.
         });
     });
 
     return () => { cancelled = true; };
-  }, [loading, recentlyUsedIds, institutions, removeRecentlyUsedId]);
+  }, [loading, isOnline, recentlyUsedIds, institutions, removeRecentlyUsedId]);
 
   const handleRetry = useCallback(() => {
     fetchPage(query, 0, true);
@@ -239,8 +299,14 @@ export default function InstitutionListScreen() {
   const listEmpty =
     !loading && pinnedInstitutions.length === 0 ? (
       <EmptyState
-        variant={query.length > 0 ? 'no_query_results' : 'no_content'}
-        query={query.length > 0 ? query : undefined}
+        variant={
+          !isOnline && query.length > 0
+            ? 'offline_no_results'
+            : query.length > 0
+              ? 'no_query_results'
+              : 'no_content'
+        }
+        query={!isOnline || query.length === 0 ? undefined : query}
       />
     ) : null;
 
