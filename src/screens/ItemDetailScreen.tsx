@@ -19,11 +19,11 @@
 // line that changes is the one call to `buildItemDetail` in `fetchItem`.
 //
 // ACCESS IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place access
-// logic may live (CONVENTIONS §3) — this screen calls it once, with `session:
-// null` because no session store exists yet. That is not a placeholder hack:
-// resolveAccess's own header says omitting session/loan/hold is exactly what
-// lets a screen resolve Open Access, Subscription and Elite-with-nothing-held
-// correctly before flambeau exists.
+// logic may live (CONVENTIONS §3) — this screen calls it once, with a SESSION
+// FROM `handToggledSession`, A7's stand-in for real sign-in. Selecting an
+// institution now unlocks a licensed tier's Read/Borrow button, same as real
+// sign-in will; `loan`/`hold` stay omitted, which still resolves Open Access
+// and Elite-with-nothing-held correctly without flambeau's two remaining calls.
 //
 // THREE STATES, KEPT VISIBLY DISTINCT, plus an offline overlay that is
 // independent of them. Same shape as InstitutionDetailScreen: a skeleton while
@@ -33,6 +33,7 @@ import { useCallback, useEffect, useState, type ReactElement, type ReactNode } f
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
+import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
@@ -397,7 +398,11 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       .then((publication) => {
         // `publication` already has the two fields resolveAccess reads
         // (`id`, `acquisition`), so it is passed straight in.
-        const access = resolveAccess({ item: publication, institutionId, session: null });
+        const access = resolveAccess({
+          item: publication,
+          institutionId,
+          session: handToggledSession(institutionId),
+        });
         setDetail(buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access }));
       })
       .catch((err: unknown) => setFailure(err))

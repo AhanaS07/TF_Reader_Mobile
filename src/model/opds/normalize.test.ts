@@ -7,6 +7,8 @@
 //
 // Hand-built documents appear below only for cases a legal feed cannot express —
 // a malformed feed, or a shelf count no single institution would have.
+import { resolveAccess } from '@access/resolveAccess';
+import { loadContractExample } from '@model/contracts/contractExample';
 import { CatalogueError } from '@model/errors';
 import { normalizeCatalogue, normalizeShelf, normalizePublication } from '@model/opds/normalize';
 
@@ -461,11 +463,15 @@ describe('a subscribe publication, which has no file at all', () => {
         href: 'https://api.tf/api/v1/institutions',
         type: 'application/json',
         title: 'Available through your institution',
+        // EXACTLY what the contract sends, and nothing more — wokay-api.yaml
+        // `getPublicPublication`/`searchPublic` both show a subscribe link
+        // carrying only these two properties. `OpdsLinkProperties` requires
+        // `licenceModel` alone, so `hasSearchIndex` and `canPersist` are absent
+        // here on purpose: this fixture used to add them, which meant the block
+        // below passed against a shape the server never sends.
         properties: {
           licenceModel: 'ELITE',
           availability: { state: 'unavailable' },
-          hasSearchIndex: false,
-          canPersist: false,
         },
       },
     ],
@@ -487,6 +493,51 @@ describe('a subscribe publication, which has no file at all', () => {
 
   it('keeps the rel, which is what resolveAccess keys the subscribe case on', () => {
     expect(normalizePublication(subscribeOnly).acquisition.actionId).toBe('subscribe');
+  });
+
+  // Same rule as `format`, and for the same reason: both describe a file, and a
+  // subscribe link leads to a page. Omitted rather than defaulted to false, so
+  // nothing can read a fabricated answer back as a real one.
+  it('omits hasSearchIndex and canPersist, which describe a file it does not have', () => {
+    const { acquisition } = normalizePublication(subscribeOnly);
+
+    expect('hasSearchIndex' in acquisition).toBe(false);
+    expect('canPersist' in acquisition).toBe(false);
+  });
+
+  // The consequence that matters: Download is appended off `canPersist`, so an
+  // absent one must read as "no download" rather than throwing on the way in.
+  it('resolves to a subscribe action with no Download', () => {
+    const access = resolveAccess({
+      item: normalizePublication(subscribeOnly),
+      institutionId: null,
+      session: null,
+    });
+
+    expect(access.actions).toEqual(['subscribe']);
+  });
+});
+
+// THE SAME CASE, TAKEN STRAIGHT FROM THE CONTRACT instead of written out above.
+// This is the guard the block above could not be: a hand-built document can
+// drift from wokay's shape, and it had — it carried two properties the server
+// never sends, so the subscribe case read as covered while the only shape that
+// actually arrives still threw. Parsed from docs/contracts/wokay-api.yaml, so
+// there is nothing left to keep in sync by hand.
+describe("the contract's own subscribe example", () => {
+  const example = loadContractExample('wokay-api.yaml', 'getPublicPublication');
+
+  it('normalizes without throwing', () => {
+    expect(() => normalizePublication(example)).not.toThrow();
+  });
+
+  it('is a subscribe title carrying none of the three file facts', () => {
+    const publication = normalizePublication(example);
+
+    expect(publication.acquisition.actionId).toBe('subscribe');
+    expect('format' in publication).toBe(false);
+    expect('hasSearchIndex' in publication.acquisition).toBe(false);
+    expect('canPersist' in publication.acquisition).toBe(false);
   });
 });
 

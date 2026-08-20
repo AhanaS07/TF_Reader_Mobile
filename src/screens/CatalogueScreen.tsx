@@ -21,14 +21,17 @@
 // THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
 // passes only the resulting `.tier` into ContentCard's slot — reading
 // `publication.acquisition.licenceModel` in this file would be the Design Spec
-// §5.1 violation ("the UI must never calculate access rights"). `session: null`
-// with no loan and no hold is correct for a list: it resolves Open Access,
-// Subscription and Elite-with-nothing-held from feed data alone.
+// §5.1 violation ("the UI must never calculate access rights"). The session
+// comes from `handToggledSession` — A7's stand-in for real sign-in — which is
+// never null here: CatalogueHomeScreen only renders this screen once an
+// institution is selected. `loan`/`hold` stay omitted, which still resolves
+// Open Access and Elite-with-nothing-held from feed data alone.
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
+import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
@@ -42,6 +45,7 @@ import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import type { Institution } from '@model/institution';
 import { color, space, type as typeScale } from '../theme/tokens';
+import { useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import OfflineBanner from '@/components/OfflineBanner';
 
@@ -73,6 +77,11 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   const isOnline = useNetworkStatus();
 
   const institutionId = institution.id;
+
+  // A7 — keyed on the institution, not one shared offset: signing out swaps this
+  // screen for the public feed, and each has its own place to return to. Changing
+  // institution is a different feed too, so it starts at the top.
+  const { scrollRef, onScroll, onContentSizeChange } = useFeedScrollMemory(institutionId);
 
   let body: ReactNode;
   // No synchronous setState here — only inside the async continuations. A
@@ -115,7 +124,15 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   }
   else{
     body = (
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <ScrollView
+        testID="catalogue-feed"
+        ref={scrollRef}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={onContentSizeChange}
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+      >
       <Pressable
         style={styles.institutionPicker}
         onPress={() => navigation.navigate('InstitutionList')}
@@ -178,10 +195,15 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                     title={publication.title}
                     publisher={publication.publisher}
                     imageUrl={publication.coverUrl}
+                    format={publication.format}
                     badge={
                       <AccessTierBadge
                         tier={
-                          resolveAccess({ item: publication, institutionId, session: null }).tier
+                          resolveAccess({
+                            item: publication,
+                            institutionId,
+                            session: handToggledSession(institutionId),
+                          }).tier
                         }
                       />
                     }

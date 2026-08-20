@@ -3,7 +3,9 @@
 // `strict` proves a Publication has a format and an encryption slot; only an
 // assertion can prove that an AUDIO publication's encryption slot is null.
 import { CatalogueError } from '@model/errors';
+import { loadContractExample } from '@model/contracts/contractExample';
 import { assertPublication } from '@model/validate';
+import { normalizePublication } from '@model/opds/normalize';
 import type { Publication } from '@model/types';
 
 function publication(overrides: Partial<Publication> = {}): Publication {
@@ -127,4 +129,36 @@ it('rejects an ELITE licence with no copy count', () => {
   expect(() => assertPublication(noCopies)).toThrow(
     expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),
   );
+});
+
+// THE ONE EXCEPTION TO THE RULE ABOVE. A `subscribe` link leads to a page
+// explaining how to get access, never to the loan endpoint, so there is no
+// count of free copies to report — `copies` is absent on every subscribe
+// example in the contract, same tier or not. Keyed on `actionId` rather than
+// "ELITE with no copies is fine", so a real borrowable ELITE title that
+// genuinely lacks a count still throws.
+it('accepts a subscribe-rel ELITE title with no copy count', () => {
+  const subscribeElite = publication({
+    format: undefined,
+    acquisition: {
+      actionId: 'subscribe',
+      href: 'https://api.tf/api/v1/institutions',
+      licenceModel: 'ELITE',
+      encryption: null,
+    },
+  });
+  expect(() => assertPublication(subscribeElite)).not.toThrow();
+});
+
+// END TO END, through both functions the way MockAdapter and ApiAdapter
+// actually call them — normalizePublication then assertPublication — and
+// sourced from the contract itself rather than typed out by hand. This is
+// the exact case that slipped through before: normalize.ts's own fixture
+// passed because it fabricated fields the contract does not send, and
+// nothing carried the result on to assertPublication to catch what normalize
+// alone could not.
+it('normalizes and validates the contract’s own subscribe example without throwing', () => {
+  const example = loadContractExample('wokay-api.yaml', 'getPublicPublication');
+
+  expect(() => assertPublication(normalizePublication(example))).not.toThrow();
 });
