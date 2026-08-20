@@ -4,6 +4,8 @@
 // This file's own job is the client-side chunking/resume/budget logic, not re-proving Range
 // support exists on the server — that's already confirmed live.
 
+import { File, Directory, Paths } from 'expo-file-system';
+
 import { CHUNK_SIZE_BYTES, fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
 import { DownloadError, DownloadFailure } from './errors';
 
@@ -312,7 +314,6 @@ describe('fetchEncryptedAssetChunked — edge cases', () => {
     const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
 
     // Write a corrupted manifest (not valid JSON)
-    const { File, Directory, Paths } = require('expo-file-system');
     const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
     if (!partialDir.exists) partialDir.create({ intermediates: true });
     const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
@@ -381,7 +382,6 @@ describe('fetchEncryptedAssetChunked — edge cases', () => {
     const asset = randomBytes(Math.floor(CHUNK_SIZE_BYTES * 2.5)); // 3 chunks
 
     // Simulate corrupted partial state: partial file exists but manifest doesn't
-    const { File, Directory, Paths } = require('expo-file-system');
     const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
     if (!partialDir.exists) partialDir.create({ intermediates: true });
     const contentFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.bin`);
@@ -461,7 +461,6 @@ describe('fetchEncryptedAssetChunked — extended resumable path tests', () => {
     await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
 
     // Verify manifest records correct state
-    const { File, Directory, Paths } = require('expo-file-system');
     const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
     const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
     const manifest = JSON.parse(manifestFile.textSync());
@@ -659,7 +658,6 @@ describe('fetchEncryptedAssetChunked — extended resumable path tests', () => {
     await expect(fetchEncryptedAssetChunked(bookId, ASSET_URL)).rejects.toBeInstanceOf(DownloadFailure);
 
     // Corrupt the manifest before resume
-    const { File, Directory, Paths } = require('expo-file-system');
     const partialDir = new Directory(Paths.document, 'tf-reader-partial-downloads');
     const manifestFile = new File(partialDir, `${encodeURIComponent(bookId)}.partial.json`);
     if (manifestFile.exists) {
