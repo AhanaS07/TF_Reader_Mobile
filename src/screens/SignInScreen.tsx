@@ -15,6 +15,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { useInstitutionStore } from '@store/institutionStore';
+import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
 import type { CatalogueStackParamList } from '../navigation/types';
 
@@ -22,6 +23,7 @@ type Props = NativeStackScreenProps<CatalogueStackParamList, 'SignIn'>;
 
 export default function SignInScreen({ navigation }: Props) {
   const institution = useInstitutionStore((s) => s.selectedInstitution);
+  const takeIntent = usePendingIntentStore((s) => s.take);
 
   const handleDismiss = useCallback(() => {
     navigation.goBack();
@@ -35,9 +37,20 @@ export default function SignInScreen({ navigation }: Props) {
     //   1. Call flambeau.beginSamlSignIn({ institutionId: institution.id, idpHint: institution.signIn?.idpHint })
     //      `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
     //   2. Wire the token return path (deep link / polling authTxnId — Question 5)
-    //   3. On token received: replay pendingIntentStore.take() if present
-    navigation.goBack();
-  }, [institution, navigation]);
+    //
+    // The line below is NOT step 3 done early — there is still no real token
+    // and no real session. It replays whatever the stub already treats as
+    // "signed in" (this same tap), so a stored intent stops being silently
+    // dropped in the meantime. When flambeau's contract lands and this stub
+    // is replaced by a real async handoff, this call moves into the actual
+    // token-received branch; the replay logic itself does not change.
+    const intent = takeIntent();
+    if (intent !== null) {
+      navigation.navigate('ItemDetail', { itemId: intent.itemId });
+    } else {
+      navigation.goBack();
+    }
+  }, [institution, navigation, takeIntent]);
 
   // Guard: institution must be selected before this sheet is navigated to.
   // If the store is empty (shouldn't happen in normal flow), go back silently.
