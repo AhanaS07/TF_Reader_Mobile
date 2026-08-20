@@ -1,7 +1,7 @@
 // The CatalogueHome route picks between the two catalogues. Both children are
 // mocked out: what is under test is the CHOICE, not either screen's own
 // behaviour — those have their own suites.
-import { render, screen } from '@testing-library/react-native';
+import { act, render, screen } from '@testing-library/react-native';
 
 import type { Institution } from '@model/institution';
 import { useInstitutionStore } from '@store/institutionStore';
@@ -50,5 +50,24 @@ describe('CatalogueHomeScreen', () => {
 
     expect(screen.getByText('institution catalogue')).toBeTruthy();
     expect(screen.queryByText('public catalogue')).toBeNull();
+  });
+
+  // A7: signing out must re-scope an ALREADY-MOUNTED screen, not just pick the
+  // right branch on a fresh render. The two tests above only prove the static
+  // switch — this one flips the store under a mounted screen and checks the
+  // live transition.
+  it('switches to the public catalogue in place when the institution is cleared, without remounting from scratch', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+
+    await render(<CatalogueHomeScreen />);
+
+    expect(screen.getByText('institution catalogue')).toBeTruthy();
+
+    await act(async () => {
+      useInstitutionStore.setState({ selectedInstitution: null });
+    });
+
+    expect(screen.getByText('public catalogue')).toBeTruthy();
+    expect(screen.queryByText('institution catalogue')).toBeNull();
   });
 });
