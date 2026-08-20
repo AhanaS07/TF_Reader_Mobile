@@ -157,10 +157,304 @@ async function openContents(count: number): Promise<void> {
 function flatToc(count: number): ReaderTocItem[] {
   return Array.from({ length: count }, (_, i) => ({
     label: `Chapter ${i + 1}`,
-    href: `ch${i + 1}.xhtml`,
+    target: { kind: 'href', href: `ch${i + 1}.xhtml` },
     depth: 0,
   }));
 }
+
+/** A PDF Contents row, for the cases that used to be unrepresentable in one shared string. */
+function pdfToc(pages: number[]): ReaderTocItem[] {
+  return pages.map((page) => ({
+    label: `Page ${page}`,
+    target: { kind: 'page', page },
+    depth: 0,
+  }));
+}
+
+describe('a PDF Contents row', () => {
+  // THE CASE THAT USED TO BE UNREPRESENTABLE IN A SHARED STRING. A PDF outline row arrived as
+  // `href: '12'` and went back as the string '12', which the PDF shell parseInt'd. The host had to
+  // carry a value in a vocabulary it could not name. It now carries a `{kind:'page', page}` target end
+  // to end and never has to know what PDF addressing looks like.
+  it('navigates with the page target the shell sent, unmodified', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
+    await openContents(3);
+
+    await fireEvent.press(screen.getByText('Page 12'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
+    );
+  });
+
+  // A PDF outline repeats page numbers BY DESIGN — several sections legitimately open on the same
+  // page, and the sample fixture has exactly that. Rows must stay distinct anyway, which is why the
+  // React key is index-composed rather than target-derived.
+  it('lists every row when several sections open on the same page', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Section A', target: { kind: 'page', page: 2 }, depth: 0 },
+        { label: 'Section B', target: { kind: 'page', page: 2 }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+
+    expect(screen.getByText('Section A')).toBeTruthy();
+    expect(screen.getByText('Section B')).toBeTruthy();
+  });
+});
+
+describe('the page indicator', () => {
+  // PDF-ONLY BY CONSTRUCTION, not by choice. `ReaderPosition` is discriminated by format, and an EPUB
+  // reports a CFI because a reflowable book has no stable page. Showing a number derived from a CFI
+  // would be a number that changes with the font size, which is worse than showing none.
+  async function relocateTo(position: unknown): Promise<void> {
+    await deliver({ type: 'relocated', position, atStart: false, atEnd: false });
+  }
+
+  it('shows nothing until a position arrives', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
+  });
+
+  it('reports the page and the page count for a PDF', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ kind: 'page', page: 4, pageCount: 50 });
+
+    expect(screen.getByLabelText('Page 4 of 50. Go to a page.')).toBeTruthy();
+    expect(screen.getByText('4 / 50')).toBeTruthy();
+  });
+
+  it('follows the position as it moves', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ kind: 'page', page: 1, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 3, pageCount: 3 });
+
+    expect(screen.getByLabelText('Page 3 of 3. Go to a page.')).toBeTruthy();
+    expect(screen.queryByText('1 / 3')).toBeNull();
+  });
+
+  it('shows no indicator for an EPUB, which has no stable page', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' });
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
+  });
+
+  // AN IMPOSSIBLE POSITION IS REFUSED LOUDLY, NOT SMOOTHED OVER — and that is deliberate, so it is
+  // worth saying why the harsher option is the right one here.
+  //
+  // "page 9 of 3" cannot come from book content. `pageCount` is `doc.numPages` and `currentPage` only
+  // moves through next/prev/goTo, all of which bound it. So a position like this means OUR OWN SHELL is
+  // broken, and a shell that miscounts pages is not one whose other messages should be trusted either.
+  // errors.ts requires that class of thing fail loudly rather than degrade.
+  //
+  // Contrast the TOC hardeners, which drop one bad row and keep the panel: a mis-indented Contents entry
+  // really can come from a malformed book, and losing a chapter is worse than mis-indenting one.
+  it('refuses an impossible position rather than displaying it', async () => {
+    await mountReader();
+    await reportReady();
+    await relocateTo({ kind: 'page', page: 2, pageCount: 3 });
+    await relocateTo({ kind: 'page', page: 9, pageCount: 3 });
+
+    expect(screen.getByText('BRIDGE_PARSE_FAILED')).toBeTruthy();
+  });
+});
+
+describe('the page jump', () => {
+  // WHAT THIS IS FOR: a PDF with no outline has no Contents to offer — and most PDFs in the wild are
+  // that, including the 15 MB measurement fixture. Contents stays correctly disabled for them; this is
+  // the navigation such a book CAN offer, and it is only possible because `pageCount` now reaches the
+  // host.
+  async function atPage(page: number, pageCount: number): Promise<void> {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page, pageCount },
+      atStart: false,
+      atEnd: false,
+    });
+  }
+
+  async function openJump(): Promise<void> {
+    await fireEvent.press(screen.getByTestId('reader-page-indicator'));
+  }
+
+  async function type(text: string): Promise<void> {
+    await fireEvent.changeText(screen.getByTestId('reader-page-jump'), text);
+  }
+
+  async function submit(): Promise<void> {
+    await fireEvent(screen.getByTestId('reader-page-jump'), 'submitEditing');
+  }
+
+  it('opens from the page indicator', async () => {
+    await atPage(3, 50);
+
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+    await openJump();
+
+    expect(screen.getByTestId('reader-page-jump')).toBeTruthy();
+    // The RANGE is on the field, which is the point of the host knowing pageCount: the bound is
+    // visible before you type rather than discovered by being refused.
+    expect(screen.getByPlaceholderText('1–50')).toBeTruthy();
+  });
+
+  it('sends a page target for a page inside the document', async () => {
+    await atPage(3, 50);
+    await openJump();
+    await type('42');
+    await submit();
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 42 } }),
+    );
+    // Closes on success, so the row goes back to reporting where you are.
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+  });
+
+  it.each([
+    ['past the last page', '51'],
+    ['zero', '0'],
+    ['a negative', '-4'],
+    ['a fraction', '2.5'],
+    ['not a number', 'abc'],
+    ['empty', ''],
+  ])('declines %s without navigating, and keeps the field open', async (_label, text) => {
+    await atPage(3, 50);
+    const before = __injectJavaScript.mock.calls.length;
+    await openJump();
+    await type(text);
+    await submit();
+
+    // NOT an error banner. The shell would range-check too and raise NAVIGATION_FAILED, which is the
+    // right response to a corrupt book and a wildly disproportionate one to a typo — so the host
+    // declines silently instead.
+    expect(__injectJavaScript.mock.calls.length).toBe(before);
+    expect(screen.queryByTestId('reader-error')).toBeNull();
+    // Left open with the text intact: a rejection should not also lose what you typed.
+    expect(screen.getByTestId('reader-page-jump')).toBeTruthy();
+  });
+
+  it('accepts the first and last page exactly', async () => {
+    await atPage(3, 50);
+    await openJump();
+    await type('1');
+    await submit();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 1 } }),
+    );
+
+    await openJump();
+    await type('50');
+    await submit();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 50 } }),
+    );
+  });
+
+  // A reflowable book has no stable page, so there is nothing to jump to and no indicator to open.
+  it('is unreachable for an EPUB', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
+    expect(screen.queryByTestId('reader-page-jump')).toBeNull();
+  });
+
+  it('is unreachable before any position has arrived', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByTestId('reader-page-indicator')).toBeNull();
+  });
+});
+
+describe('the outline timing probe', () => {
+  // WHY THIS IS TIMED AT ALL: on the PDF shell every outline destination is resolved through the
+  // pdf.js worker, so a large book's Contents can lag well behind `rendered`. That window is
+  // invisible from the outside — a page is on screen and the Contents button is simply still
+  // disabled — so it needs a number rather than an impression.
+  const original = process.env.EXPO_PUBLIC_READER_TIMING;
+  let logSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    if (original === undefined) {
+      delete process.env.EXPO_PUBLIC_READER_TIMING;
+    } else {
+      process.env.EXPO_PUBLIC_READER_TIMING = original;
+    }
+  });
+
+  function tfperfLines(): string[] {
+    return logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('[TFPERF]'));
+  }
+
+  it('reports how long the outline took, and how many entries it carried', async () => {
+    process.env.EXPO_PUBLIC_READER_TIMING = '1';
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: flatToc(22) });
+
+    // The count is the load-bearing extra: a slow outline and a huge outline are the same
+    // millisecond figure, and only one of them is a bug in this code.
+    expect(tfperfLines()).toContainEqual(expect.stringMatching(/^\[TFPERF\] open -> toc \d+ms/));
+    expect(tfperfLines()).toContainEqual(expect.stringContaining('items=22'));
+  });
+
+  // Off-by-default is a security property here, not a preference — these lines report payload sizes
+  // from a path holding decrypted licensed content. Same guarantee readerTiming.test.ts pins for the
+  // probes themselves, asserted once through a real open so a stray unconditional log would show up.
+  it('emits nothing at all when timing is not switched on', async () => {
+    delete process.env.EXPO_PUBLIC_READER_TIMING;
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: flatToc(3) });
+
+    expect(tfperfLines()).toEqual([]);
+  });
+
+  // An empty outline is the NORMAL case for a PDF, so the span must still land — otherwise the one
+  // book whose Contents is legitimately empty is also the one with no timing for it.
+  it('still reports the span for a book with no outline', async () => {
+    process.env.EXPO_PUBLIC_READER_TIMING = '1';
+
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'toc', items: [] });
+
+    expect(tfperfLines()).toContainEqual(expect.stringContaining('items=0'));
+  });
+});
 
 describe('the bounded wait on the byte path', () => {
   // Fake timers, because the real bound is 20s and no test should take 20s. Set up
@@ -396,9 +690,9 @@ describe('ReaderScreen Contents panel', () => {
     await deliver({
       type: 'toc',
       items: [
-        { label: 'Part One', href: 'part1.xhtml', depth: 0 },
-        { label: 'Chapter 1', href: 'ch1.xhtml', depth: 1 },
-        { label: 'Section 1.1', href: 'ch1.xhtml#s1', depth: 2 },
+        { label: 'Part One', target: { kind: 'href', href: 'part1.xhtml' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+        { label: 'Section 1.1', target: { kind: 'href', href: 'ch1.xhtml#s1' }, depth: 2 },
       ],
     });
     await openContents(3);
@@ -650,7 +944,10 @@ describe('ReaderScreen in-book search', () => {
     await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
 
     expect(__injectJavaScript).toHaveBeenLastCalledWith(
-      buildCommandScript({ type: 'goTo', target: 'epubcfi(/6/2[ch1]!/4/4/1:2)' }),
+      buildCommandScript({
+        type: 'goTo',
+        target: { kind: 'href', href: 'epubcfi(/6/2[ch1]!/4/4/1:2)' },
+      }),
     );
     // The panel DISMISSES on select — it covers the page, so staying open would hide
     // the text the jump just went to. The floating match bar is what remains.
@@ -729,7 +1026,13 @@ describe('ReaderScreen in-book search', () => {
     ).toMatchObject({ disabled: true });
   });
 
-  it('lists a PDF hit but never navigates to it', async () => {
+  // REPLACES "lists a PDF hit but never navigates to it", which pinned a dead row.
+  //
+  // That was never a decision about whether PDF results should be navigable — `cfiOf` unwrapped
+  // `locator.cfi`, which only an EPUB locator has, so a PDF hit had nowhere to be sent while `goTo`
+  // took a bare string. A discriminated `ReaderTarget` can carry a page, so `targetOf` sends one and
+  // the row stops being a dead end.
+  it('seeks to a PDF hit by page, not just an EPUB hit by CFI', async () => {
     const pdfHit: SearchHit = {
       bookId: 'test-book',
       chapterId: 'ch1',
@@ -743,17 +1046,43 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('wolf');
 
-    // Listed, not filtered: dropping it would desynchronise the ordinals from
-    // "Match n of m", and an all-PDF result set would render as an empty list under a
-    // "no matches" heading.
+    // Still LISTED rather than filtered, for the reason it always was: dropping a hit would
+    // desynchronise the ordinals from "Match n of m".
     expect(screen.getByText('…a page-addressed hit…')).toBeTruthy();
-    expect(screen.getByText('Not available in this reader')).toBeTruthy();
+    // And no longer labelled unavailable, because it is not.
+    expect(screen.queryByText('Not available in this reader')).toBeNull();
 
-    // Stepping skips straight over it to the next EPUB hit.
+    await fireEvent.press(screen.getByText('…a page-addressed hit…'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 4 } }),
+    );
+  });
+
+  it('steps onto a PDF hit instead of skipping past it', async () => {
+    // The match bar used to step straight over every PDF hit while still counting it, so "Match 2 of
+    // 3" was unreachable — the ordinals described a list the arrows could not visit.
+    const pdfHit: SearchHit = {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'PDF', page: 7 },
+      snippet: '…the middle hit…',
+    };
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), pdfHit, epubHit(3)]);
+
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
     await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
-    expect(screen.getByText('Match 3 of 3')).toBeTruthy();
+
+    expect(screen.getByText('Match 2 of 3')).toBeTruthy();
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 7 } }),
+    );
   });
 
   it('drops a stale response that lands after a newer search', async () => {

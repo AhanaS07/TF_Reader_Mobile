@@ -3,17 +3,27 @@
 // Builds the self-contained HTML files the reader WebView loads — ONE PER CONTENT
 // FORMAT:
 //
-//   webview/reader-epub.template.html                  (source, edit this)
+//   webview/reader-epub.template.html                  (shell: HTML + CSS only, edit this)
 //   + node_modules/jszip/dist/jszip.min.js             (inlined)
 //   + node_modules/epubjs/dist/epub.min.js             (inlined)
-//   + webview/reader.bridge.html                       (inlined, raw)
+//   + webview/src/epub.entry.ts                        (COMPILED by esbuild, then inlined)
 //   = assets/reader/reader-epub.html                   (generated, committed)
 //
-//   webview/reader-pdf.template.html                   (source, edit this)
+//   webview/reader-pdf.template.html                   (shell: HTML + CSS only, edit this)
 //   + node_modules/pdfjs-dist/build/pdf.min.js         (inlined)
 //   + node_modules/pdfjs-dist/build/pdf.worker.min.js  (inlined, raw, as text/plain)
-//   + webview/reader.bridge.html                       (inlined, raw)
+//   + webview/src/pdf.entry.ts                         (COMPILED by esbuild, then inlined)
 //   = assets/reader/reader-pdf.html                    (generated, committed)
+//
+// >>> THE WEBVIEW HALF IS TYPECHECKED TYPESCRIPT NOW. <<< It used to be plain JS inside the
+// templates plus a shared reader.bridge.html fragment, kept in sync with readerBridge.ts by hand.
+// The entries under webview/src/ IMPORT ReaderMessage / ReaderCommand from readerBridge.ts, so the
+// two halves of the bridge are one contract rather than two descriptions of it. `npm run typecheck`
+// covers them like any other file under src/ — no second tsconfig, because the root one already has
+// DOM in `lib`. See WEBVIEW_BRIDGE.md.
+//
+// esbuild is used ONLY as a bundler; it strips types without checking them. `npm run typecheck` is
+// what checks them, so a build that succeeds here proves nothing about types on its own.
 //
 // Run: npm run reader:build-html
 // (which is `npx tsx src/features/reader/scripts/buildReaderHtml.ts` — tsx, not
@@ -22,9 +32,11 @@
 //
 // WHY TWO ARTIFACTS AND NOT ONE BRANCHING FILE: pdf.js plus its worker is ~1.4MB
 // inlined. A single file would make every EPUB read carry a renderer it can never
-// call. The cost of splitting is that the two templates share a bridge, which is
-// why reader.bridge.html exists and is injected into both — one copy of post() /
-// fail() / base64ToArrayBuffer(), not two to hand-sync.
+// call. It is also load-bearing for CORRECTNESS, not just size: one shell per book is
+// why each shell only ever receives targets in its own addressing scheme, and can
+// refuse the other outright. The two entries share their bridge half by IMPORTING
+// webview/src/bridge.ts, so there is one copy of post() / fail() /
+// base64ToArrayBuffer() and no hand-sync anywhere.
 //
 // WHY INLINE INSTEAD OF SHIPPING SEPARATE FILES: Metro classifies `.js` as a SOURCE
 // extension, so a `.js` file can never be bundled as an asset and served next to
@@ -54,19 +66,36 @@
 // NOTHING under src/features/reader/ OUTSIDE this scripts/ folder may import
 // Node built-ins; the rest of the feature is React Native code.
 
+import * as esbuild from 'esbuild';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vm from 'vm';
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..', '..');
 
-const webview = (file: string): string =>
-  path.join(REPO_ROOT, 'src', 'features', 'reader', 'webview', file);
+const webview = (...parts: string[]): string =>
+  path.join(REPO_ROOT, 'src', 'features', 'reader', 'webview', ...parts);
 const dist = (...parts: string[]): string => path.join(REPO_ROOT, 'node_modules', ...parts);
 const asset = (file: string): string => path.join(REPO_ROOT, 'assets', 'reader', file);
 
-/** The shared bridge half, injected into every template. */
-const BRIDGE = webview('reader.bridge.html');
+/**
+ * The compiled entry point for each format. Both pull in webview/src/bridge.ts, which is where the
+ * shared half of the bridge lives now that it is a real module rather than a spliced-in fragment.
+ */
+const EPUB_ENTRY = webview('src', 'epub.entry.ts');
+const PDF_ENTRY = webview('src', 'pdf.entry.ts');
+
+/**
+ * Hard ceiling on a compiled entry, and it is a real guard rather than a tidiness rule.
+ *
+ * epub.js, JSZip and pdf.js arrive on `window` from their own inlined <script> tags. If an entry ever
+ * imports one of them as a VALUE instead of `import type`, esbuild would helpfully bundle a second
+ * copy — 300 KB to 1.4 MB of it — into a file that already contains the library. The result still
+ * works, so nothing else here would notice. Both entries are comfortably under 20 KB today; this
+ * leaves headroom for the prefs-application work while a library leak overshoots by an order of
+ * magnitude.
+ */
+const MAX_ENTRY_BUNDLE_BYTES = 80 * 1024;
 
 /**
  * How an injected source is spliced in.
@@ -87,6 +116,11 @@ interface Injection {
   source: string;
   label: string;
   wrap: Wrap;
+  /**
+   * Compile `source` as a TypeScript entry point with esbuild instead of inlining the file verbatim.
+   * Only the two webview/src entries use this.
+   */
+  bundle?: boolean;
 }
 
 interface Artifact {
@@ -123,9 +157,17 @@ const ARTIFACTS: readonly Artifact[] = [
         label: 'epub.js',
         wrap: 'script',
       },
-      { marker: '<!-- @inject:bridge -->', source: BRIDGE, label: 'bridge', wrap: 'raw' },
+      {
+        marker: '<!-- @inject:entry -->',
+        source: EPUB_ENTRY,
+        label: 'epub entry',
+        wrap: 'script',
+        bundle: true,
+      },
     ],
-    order: ['<!-- @inject:jszip -->', '<!-- @inject:epubjs -->'],
+    // The entry is LAST on purpose: it reads window.ePub and window.JSZip as it runs, and posts
+    // EPUBJS_MISSING / JSZIP_MISSING if either is absent. Put it first and every open fails that way.
+    order: ['<!-- @inject:jszip -->', '<!-- @inject:epubjs -->', '<!-- @inject:entry -->'],
     fingerprints: [
       { needle: 'JSZip v3', hint: 'JSZip banner — inline produced nothing.' },
       {
@@ -154,9 +196,21 @@ const ARTIFACTS: readonly Artifact[] = [
         label: 'pdf.js worker',
         wrap: 'raw',
       },
-      { marker: '<!-- @inject:bridge -->', source: BRIDGE, label: 'bridge', wrap: 'raw' },
+      {
+        marker: '<!-- @inject:entry -->',
+        source: PDF_ENTRY,
+        label: 'pdf entry',
+        wrap: 'script',
+        bundle: true,
+      },
     ],
-    order: ['<!-- @inject:pdfjs -->', '<!-- @inject:pdfjsworker -->'],
+    // The entry is LAST on purpose: it reads window.pdfjsLib as it runs and posts PDFJS_MISSING if it
+    // is absent. It also reads the text/plain worker block out of the DOM, which must already exist.
+    order: [
+      '<!-- @inject:pdfjs -->',
+      '<!-- @inject:pdfjsworker -->',
+      '<!-- @inject:entry -->',
+    ],
     fingerprints: [
       {
         needle: 't.pdfjsLib=e()',
@@ -173,6 +227,71 @@ const ARTIFACTS: readonly Artifact[] = [
     ],
   },
 ];
+
+/**
+ * Compile one entry point to a single self-contained IIFE.
+ *
+ * Every option below is load-bearing:
+ *
+ *  - `format: 'iife'` PRESERVES THE SCOPE PROPERTY STRUCTURALLY. Nothing in the entry becomes a
+ *    global except what it explicitly assigns to `window`. That matters because this document holds
+ *    decrypted book content, and widening what a malicious book's own script can reach is exactly
+ *    what the old "inject the fragment raw, inside the IIFE" rule was protecting.
+ *  - `bundle: true` with no `external`, so the output has zero imports and needs no module loader —
+ *    the same zero-sub-resource-requests property the inlined libs have.
+ *  - `minify: false` DELIBERATELY. These artifacts are tracked and diffed in review and in CI; a
+ *    readable diff is worth far more than a few KB next to 1.4 MB of already-minified pdf.js. It also
+ *    means a stack trace from inside a document holding licensed content is legible.
+ *  - `target: 'safari15'` rather than `esnext`, so output runs on the WKWebView versions this app
+ *    supports. Do NOT raise it casually: `base64ToArrayBuffer`'s feature test for
+ *    `Uint8Array.fromBase64` exists because that API is much newer than the floor.
+ *  - `tsconfig` explicitly, so esbuild resolves the `@/` path alias the same way tsc does.
+ *
+ * DETERMINISM IS A REQUIREMENT, NOT A NICETY: CI regenerates both artifacts and `git diff
+ * --exit-code`s them. esbuild's output is stable for a fixed version and input, which is why
+ * package.json pins it EXACTLY (no caret). A flapping diff here means the version drifted; do not
+ * "fix" it by loosening the CI check.
+ */
+function bundleEntry(entry: string, label: string): string {
+  if (!fs.existsSync(entry)) {
+    throw new Error(`Missing ${label} entry point: ${entry}`);
+  }
+
+  const result = esbuild.buildSync({
+    entryPoints: [entry],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'safari15',
+    minify: false,
+    legalComments: 'none',
+    tsconfig: path.join(REPO_ROOT, 'tsconfig.json'),
+    write: false,
+  });
+
+  const file = result.outputFiles[0];
+  if (!file) {
+    throw new Error(`${label}: esbuild produced no output for ${entry}.`);
+  }
+
+  const code = file.text;
+
+  if (Buffer.byteLength(code) > MAX_ENTRY_BUNDLE_BYTES) {
+    throw new Error(
+      `${label} compiled to ${Math.round(Buffer.byteLength(code) / 1024)}KB, over the ` +
+        `${Math.round(MAX_ENTRY_BUNDLE_BYTES / 1024)}KB ceiling. The usual cause is a VALUE import ` +
+        `of epubjs, jszip or pdfjs-dist: those arrive on window from their own inlined script tags, ` +
+        `so importing one bundles a second copy. Use \`import type\` for their types.`,
+    );
+  }
+
+  // The entry is entirely first-party, so this is the strongest place to apply the offline check —
+  // stronger than scanning the old .html sources, because it also covers everything the entry
+  // imports.
+  assertNoNetworkReferences(code, label);
+
+  return code;
+}
 
 function read(file: string, what: string): string {
   if (!fs.existsSync(file)) {
@@ -208,11 +327,12 @@ function scriptTag(source: string, label: string): string {
  * of the marker. Blank lines are left empty rather than padded, so this cannot
  * introduce trailing whitespace.
  *
- * Cosmetic only — nothing parses these files by column. The one position-anchored
- * regex in readerBridge.test.ts targets `window.TFReader`, which lives in the
- * templates and is never injected. This exists so the generated file is readable by
- * a human diffing it, and so the fragment can be written at normal top-level indent
- * instead of being pre-padded to match one particular injection site.
+ * Cosmetic only — nothing parses these files by column any more. It used to matter: the drift guard
+ * in readerBridge.test.ts located `window.TFReader` with a regex anchored to an exact indent, which
+ * is also why both templates sit in .prettierignore. The typechecked-WebView conversion deleted that
+ * guard in favour of a type, so this is now purely about a generated file a human can diff.
+ *
+ * Still used for the one remaining raw injection, the pdf.js worker.
  */
 function reindent(source: string, indent: string): string {
   if (!indent) return source;
@@ -230,7 +350,8 @@ function reindent(source: string, indent: string): string {
  * if that ever stops being true — a human then decides, rather than shipping HTML
  * that only breaks on a device.
  *
- * Verified 2026-08-17: zero occurrences in pdf.worker.min.js or reader.bridge.html.
+ * Only the pdf.js worker is injected raw now — the shared bridge became a real module the entries
+ * import. Verified: zero occurrences in pdf.worker.min.js.
  */
 function assertSourceIsInlinable(source: string, label: string, wrap: Wrap): void {
   if (wrap === 'raw' && /<\/script/i.test(source)) {
@@ -299,7 +420,9 @@ function buildArtifact(artifact: Artifact): void {
 
   let html = template;
 
-  for (const { marker, source, label, wrap } of artifact.injections) {
+  const emitted = new Map<string, number>();
+
+  for (const { marker, source, label, wrap, bundle } of artifact.injections) {
     const at = html.match(new RegExp(`^([ \\t]*)${escapeForRegExp(marker)}`, 'm'));
     if (!at) {
       throw new Error(
@@ -308,9 +431,11 @@ function buildArtifact(artifact: Artifact): void {
       );
     }
 
-    const code = read(source, `${label} source`).replace(/\n+$/, '');
+    const code = bundle
+      ? bundleEntry(source, label)
+      : read(source, `${label} source`).replace(/\n+$/, '');
     assertSourceIsInlinable(code, label, wrap);
-    if (source === BRIDGE) assertNoNetworkReferences(code, 'reader.bridge.html');
+    emitted.set(label, Buffer.byteLength(code));
 
     const replacement =
       wrap === 'script' ? scriptTag(code, label) : reindent(code, at[1] ?? '');
@@ -336,8 +461,10 @@ function buildArtifact(artifact: Artifact): void {
   console.log(
     `Wrote ${path.relative(REPO_ROOT, artifact.output)} (${kb(Buffer.byteLength(html))})`,
   );
-  for (const { source, label } of artifact.injections) {
-    console.log(`  ${label.padEnd(14)} ${kb(fs.statSync(source).size)}`);
+  for (const { label, bundle } of artifact.injections) {
+    // The emitted size, not the source's. For a bundled entry those differ by every module it pulls
+    // in, and the emitted number is the one the ceiling is about.
+    console.log(`  ${label.padEnd(14)} ${kb(emitted.get(label) ?? 0)}${bundle ? ' (compiled)' : ''}`);
   }
 }
 
@@ -413,8 +540,8 @@ function assertScriptsParse(html: string, artifact: Artifact): void {
       throw new Error(
         `${artifact.name}: the "${label}" script in the output does not parse: ` +
           `${error instanceof Error ? error.message : String(error)}\n` +
-          `An inlined source corrupted it. If this is the inline IIFE, suspect a stray ` +
-          `comment terminator in reader.bridge.html or the template.`,
+          `An inlined source corrupted it. For a compiled entry this should be unreachable — ` +
+          `esbuild emits valid JS or fails — so suspect the </script escape or the template.`,
       );
     }
   }
@@ -436,13 +563,21 @@ function assertBuild(html: string, artifact: Artifact): void {
     }
   }
 
-  // 3. The shared bridge landed. Checked by behaviour rather than by marker: if
-  //    post() is missing, every message this document would ever send is gone and
-  //    the reader presents as a permanent blank page with no error.
+  // 3. The compiled entry landed, checked by behaviour rather than by marker — twice, because the
+  //    two failures look identical from outside (a blank page and a READY_TIMEOUT) and have
+  //    different causes. No postMessage means the bridge half is missing, so every message this
+  //    document would ever send is gone. No window.TFReader means the API half is missing, so every
+  //    command answers NOT_READY.
   if (!html.includes('window.ReactNativeWebView.postMessage')) {
     throw new Error(
-      `${artifact.name}: the bridge fragment did not inline — no postMessage call in ` +
-        `the output. Check the @inject:bridge marker.`,
+      `${artifact.name}: no postMessage call in the output — the compiled entry did not inline. ` +
+        `Check the @inject:entry marker.`,
+    );
+  }
+  if (!html.includes('window.TFReader')) {
+    throw new Error(
+      `${artifact.name}: no window.TFReader assignment in the output. The entry compiled but never ` +
+        `published its API — suspect esbuild tree-shaking a side-effect-only entry.`,
     );
   }
 
