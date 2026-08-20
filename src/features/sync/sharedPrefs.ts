@@ -26,10 +26,13 @@
 import {
   DEFAULT_ACCESSIBILITY_PREFS,
   DEFAULT_PREFS,
+  TTS_PITCH_MAX,
+  TTS_PITCH_MIN,
   TTS_RATE_MAX,
   TTS_RATE_MIN,
   isValidReduceMotion,
   isValidTtsHighlightMode,
+  isValidTtsPitch,
   isValidTtsRate,
   migrateReduceMotion,
 } from '@/shared/contracts';
@@ -64,6 +67,10 @@ const asOneOf = <T extends string>(value: string, allowed: T[], fallback: T): T 
 const clampRate = (rate: number): number =>
   isValidTtsRate(rate) ? rate : Math.min(TTS_RATE_MAX, Math.max(TTS_RATE_MIN, rate || 1.0));
 
+/** Clamps rather than rejects: a pitch slightly out of range should still speak. */
+const clampPitch = (pitch: number): number =>
+  isValidTtsPitch(pitch) ? pitch : Math.min(TTS_PITCH_MAX, Math.max(TTS_PITCH_MIN, pitch || 1.0));
+
 /**
  * Rebuilds the accessibility block from its row.
  *
@@ -97,7 +104,7 @@ export function toAccessibilityPrefs(row: AccessibilityRow | null): Accessibilit
       enabled: toBool(row.tts_enabled),
       voiceId: row.tts_voice_id,
       rate: clampRate(row.tts_rate),
-      pitch: row.tts_pitch,
+      pitch: clampPitch(row.tts_pitch),
       highlightMode: isValidTtsHighlightMode(row.tts_highlight_mode)
         ? row.tts_highlight_mode
         : DEFAULT_ACCESSIBILITY_PREFS.tts.highlightMode,

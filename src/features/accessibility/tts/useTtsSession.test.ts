@@ -337,4 +337,62 @@ describe('useTtsSession', () => {
     const written = writeSharedPrefsMock.mock.calls.at(-1)?.[0];
     expect(written.accessibility.tts.rate).toBe(2.0);
   });
+
+  it('setPitch applies the native pitch and persists it', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.setPitch(1.5));
+
+    expect(result.current.prefs.pitch).toBe(1.5);
+    expect(mockTts.setDefaultPitch).toHaveBeenLastCalledWith(1.5);
+    await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalled());
+    const written = writeSharedPrefsMock.mock.calls.at(-1)?.[0];
+    expect(written.accessibility.tts.pitch).toBe(1.5);
+  });
+
+  it('setVoice applies the native voice and persists it', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.setVoice('com.test.voice'));
+
+    expect(result.current.prefs.voiceId).toBe('com.test.voice');
+    expect(mockTts.setDefaultVoice).toHaveBeenLastCalledWith('com.test.voice');
+    await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalled());
+    const written = writeSharedPrefsMock.mock.calls.at(-1)?.[0];
+    expect(written.accessibility.tts.voiceId).toBe('com.test.voice');
+  });
+
+  it('setVoice(null) persists the platform default without calling the native engine', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.setVoice(null));
+
+    expect(result.current.prefs.voiceId).toBeNull();
+    expect(mockTts.setDefaultVoice).not.toHaveBeenCalled();
+    await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalled());
+    const written = writeSharedPrefsMock.mock.calls.at(-1)?.[0];
+    expect(written.accessibility.tts.voiceId).toBeNull();
+  });
+
+  it('on mount, applies stored non-default pitch and voiceId to the native engine', async () => {
+    readSharedPrefsMock.mockResolvedValue(
+      makeSharedPrefs({ pitch: 1.5, voiceId: 'com.test.voice' }),
+    );
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.pitch).toBe(1.5));
+    expect(result.current.prefs.voiceId).toBe('com.test.voice');
+    expect(mockTts.setDefaultPitch).toHaveBeenCalledWith(1.5);
+    expect(mockTts.setDefaultVoice).toHaveBeenCalledWith('com.test.voice');
+  });
 });
