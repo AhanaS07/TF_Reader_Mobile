@@ -33,13 +33,15 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
+import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import {
   DEV_SAMPLE_BOOK_ID,
   DEV_SAMPLE_EPUB_BOOK_ID,
   DEV_SAMPLE_PDF_BOOK_ID,
 } from '@/features/reader/devContentSeed';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
 /**
  * TEMP, with everything else in this file.
@@ -50,9 +52,9 @@ import type { BookId } from '@/shared/contracts';
  * reader never took a format: it reads it back from the stored package via
  * getFormat(bookId). Switching these ids is the same code path a real library uses.
  */
-const FIXTURES: readonly { label: string; bookId: BookId }[] = [
-  { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID },
-  { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID },
+const FIXTURES: readonly { label: string; bookId: BookId; format: ContentFormat }[] = [
+  { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
+  { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
 ];
 
 export default function App() {
@@ -60,6 +62,13 @@ export default function App() {
   // EXPO_PUBLIC_READER_FORMAT=PDF still launches straight into the PDF, and the
   // picker below is a convenience on top rather than the only way in.
   const [bookId, setBookId] = useState<BookId>(DEV_SAMPLE_BOOK_ID);
+  const selectedFormat = FIXTURES.find((fixture) => fixture.bookId === bookId)?.format ?? 'EPUB';
+
+  // TEMP, with the block below: the only current way to exercise downloadBook()'s real network
+  // path at all (see downloadManager.ts) — the reader itself opens the seeded fixture via
+  // devContentSeed.ts's ensureSeeded(), never downloadBook(). This button is a separate,
+  // additional exercise of the download path, not a replacement for how the reader gets content.
+  const downloadProgress = useDownloadProgress();
 
   return (
     <SafeAreaProvider>
@@ -91,6 +100,28 @@ export default function App() {
               );
             })}
           </View>
+
+          {/*
+            TEMP, with the picker above: exercises downloadBook()'s onProgress option end-to-end
+            against the real/mock backend (download/config.ts) — a separate path from the
+            already-seeded content ReaderScreen opens below.
+
+            Disabled while downloading: useDownloadProgress's generation counter only stops a
+            superseded call's callbacks from touching state, it does not cancel the underlying
+            downloadBook() call (no AbortController runs end to end today — see its own header
+            comment) — a second tap here would race a real second network download and a second
+            contentStore.store() for the same book, not just a UI inconsistency.
+          */}
+          <Pressable
+            onPress={() => downloadProgress.start(bookId, selectedFormat)}
+            disabled={downloadProgress.status === 'downloading'}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: downloadProgress.status === 'downloading' }}
+            style={[styles.downloadButton, downloadProgress.status === 'downloading' && styles.downloadButtonDisabled]}
+          >
+            <Text style={styles.downloadButtonLabel}>Download</Text>
+          </Pressable>
+          <DownloadProgressIndicator {...downloadProgress} />
         </View>
 
         {/*
@@ -131,4 +162,16 @@ const styles = StyleSheet.create({
   pickerOptionSelected: { backgroundColor: '#111111', borderColor: '#111111' },
   pickerLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
   pickerLabelSelected: { color: '#ffffff' },
+
+  // TEMP, with the download button/indicator above.
+  downloadButton: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#111111',
+  },
+  downloadButtonDisabled: { backgroundColor: '#9a9a9a' },
+  downloadButtonLabel: { fontSize: 13, fontWeight: '600', color: '#ffffff' },
 });
