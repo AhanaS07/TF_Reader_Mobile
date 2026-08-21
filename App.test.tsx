@@ -14,7 +14,7 @@
 // and then throws "Unable to resolve module" the moment it executes. Importing
 // a real runtime value (ContentError is an enum, so it survives erasure) proves
 // the babel half is wired. A `import type` here would prove nothing.
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 
 import { ContentError } from '@/shared/contracts';
 
@@ -30,6 +30,45 @@ jest.mock('@react-native-community/netinfo', () => ({
     fetch: jest.fn().mockResolvedValue({ isConnected: false }),
   },
 }));
+
+// TEMP: goes with the "TTS Demo" tab in App.tsx (TtsReadingScreen) — mocked at `./ttsEngine`,
+// same as useTtsSession.test.ts, so this toolchain smoke test doesn't have to import the real
+// `@iternio/react-native-tts` native module (which Jest can't transform). Delete alongside
+// TtsReadingScreen once TtsControls has a real mount point in ReaderScreen and this demo tab is
+// removed.
+jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
+  __esModule: true,
+  default: {
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    speak: jest.fn(() => Promise.resolve('utterance-1')),
+    stop: jest.fn(() => Promise.resolve(true)),
+    pause: jest.fn(() => Promise.resolve(true)),
+    resume: jest.fn(() => Promise.resolve(true)),
+    setDefaultRate: jest.fn(() => Promise.resolve(true)),
+    setDefaultPitch: jest.fn(() => Promise.resolve(true)),
+    setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    voices: jest.fn(() => Promise.resolve([])),
+  },
+}));
+
+jest.mock('@/features/sync/sharedPrefs', () => {
+  // jest.requireActual, not an outer-scope import — jest.mock() factories can't close over
+  // module-level variables. Resolves with tts.enabled already true so TtsReadingScreen's
+  // force-enable effect is a no-op — this smoke test only needs the render tree to mount cleanly.
+  const { DEFAULT_PREFS, DEFAULT_ACCESSIBILITY_PREFS } = jest.requireActual('@/shared/contracts');
+  return {
+    readSharedPrefs: jest.fn(() =>
+      Promise.resolve({
+        ...DEFAULT_PREFS,
+        accessibility: {
+          ...DEFAULT_ACCESSIBILITY_PREFS,
+          tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts, enabled: true },
+        },
+      }),
+    ),
+    writeSharedPrefs: jest.fn(() => Promise.resolve()),
+  };
+});
 
 describe('toolchain', () => {
   // NOTE FOR EVERY COMPONENT TEST IN THIS REPO: `render` is ASYNC in
@@ -105,5 +144,25 @@ describe('the temporary fixture picker', () => {
       const ids = devFixtureOptions(active).map((option) => option.bookId);
       expect(new Set(ids).size).toBe(ids.length);
     }
+  });
+});
+
+// ─── TEMP: REMOVE WITH TtsReadingScreen ─────────────────────────────────────
+// Covers the "TTS Demo" tab added alongside the fixture picker, not the fixture picker itself —
+// goes when TtsReadingScreen does (see its own header note).
+describe('the TTS Demo tab', () => {
+  it('swaps the reader for the TTS demo screen, and back again', async () => {
+    const { getByText, queryByText } = await render(<App />);
+
+    expect(queryByText('Now reading (fake content)')).toBeNull();
+
+    await fireEvent.press(getByText('TTS Demo'));
+
+    expect(getByText('Now reading (fake content)')).toBeTruthy();
+    expect(getByText('Press play to start.')).toBeTruthy();
+
+    await fireEvent.press(getByText('EPUB'));
+
+    expect(queryByText('Now reading (fake content)')).toBeNull();
   });
 });

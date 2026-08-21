@@ -35,7 +35,8 @@
 // effect most recently assigned, so callers never need to worry about identity.
 
 import { useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
+import type { AppStateStatus } from 'react-native';
 
 import type {
   ReaderTextProvider,
@@ -214,10 +215,12 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
     }
 
     function handleTtsPause(): void {
+      if (!awaitingUtterance) return;
       updateStatus('paused');
     }
 
     function handleTtsResume(): void {
+      if (!awaitingUtterance) return;
       updateStatus('speaking');
     }
 
@@ -225,6 +228,21 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       if (!awaitingUtterance) return;
       setErrorMessage(event.message ?? 'The TTS engine reported an error.');
       stopInternal({ status: 'error' });
+    }
+
+    // Neither native TTS module observes app backgrounding itself (confirmed by reading
+    // TextToSpeech.m and TextToSpeechModule.java), and this app declares no UIBackgroundModes, so
+    // iOS/Android can suspend or kill speech with no callback into JS at all. AppState is the
+    // only signal available. Fires on 'background' only, not 'inactive' — 'inactive' also covers
+    // transient interruptions (a notification banner, Control Center) where the app is still
+    // frontmost and the native module's own audio-session interruption handling already applies;
+    // stopping speech on every one of those would be a regression, not a fix. Routing through
+    // stopInternal() means the reset happens the instant backgrounding starts, so there is nothing
+    // left to reconcile on returning to the foreground — no auto-resume path exists because
+    // nothing preserved a resumable state across the transition.
+    function handleAppStateChange(next: AppStateStatus): void {
+      if (next !== 'background') return;
+      stopInternal();
     }
 
     /**
@@ -309,6 +327,8 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       Tts.addListener('tts-error', handleTtsError),
     ];
 
+    const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
+
     const unsubscribeInterrupted = provider.onInterrupted((reason) => {
       if (reason === 'navigated') {
         // Not a teardown, and Reader already cleared the highlight itself. Just drop any
@@ -334,6 +354,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
     return () => {
       torn = true;
       subscriptions.forEach((subscription) => subscription.remove());
+      appStateSubscription.remove();
       unsubscribeInterrupted();
       generation += 1;
       clearHighlight();

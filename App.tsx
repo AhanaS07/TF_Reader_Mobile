@@ -33,6 +33,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
+import { TtsReadingScreen } from '@/features/accessibility/tts/TtsReadingScreen';
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import {
@@ -123,6 +124,13 @@ export default function App() {
   const [bookId, setBookId] = useState<BookId>(DEV_SAMPLE_BOOK_ID);
   const selectedFormat = FIXTURES.find((fixture) => fixture.bookId === bookId)?.format ?? 'EPUB';
 
+  // TEMP, with the picker below: a 5th tab alongside the book fixtures, showing
+  // TtsReadingScreen (the fake-content TTS demo) instead of ReaderScreen. Kept separate from
+  // `bookId` rather than added as a fifth DevFixture — it has no BookId of its own, so folding it
+  // into that list would hand `.find()`-based lookups (selectedFormat, currentFormat, the
+  // download button) a row with nothing valid to find.
+  const [showTtsDemo, setShowTtsDemo] = useState(false);
+
   // TEMP, with the block below: the only current way to exercise downloadBook()'s real network
   // path at all (see downloadManager.ts) — the reader itself opens the seeded fixture via
   // devContentSeed.ts's ensureSeeded(), never downloadBook(). This button is a separate,
@@ -162,11 +170,14 @@ export default function App() {
           */}
           <View style={styles.picker}>
             {FIXTURES.map((fixture) => {
-              const selected = fixture.bookId === bookId;
+              const selected = !showTtsDemo && fixture.bookId === bookId;
               return (
                 <Pressable
                   key={fixture.bookId}
-                  onPress={() => setBookId(fixture.bookId)}
+                  onPress={() => {
+                    setShowTtsDemo(false);
+                    setBookId(fixture.bookId);
+                  }}
                   accessibilityRole="button"
                   accessibilityState={{ selected }}
                   style={[styles.pickerOption, selected && styles.pickerOptionSelected]}
@@ -177,6 +188,22 @@ export default function App() {
                 </Pressable>
               );
             })}
+
+            {/*
+              TEMP, with the rest of the picker: shows TtsReadingScreen (fake-content TTS demo)
+              in place of ReaderScreen below, rather than as a separate DevFixture — see the note
+              on showTtsDemo's declaration.
+            */}
+            <Pressable
+              onPress={() => setShowTtsDemo(true)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: showTtsDemo }}
+              style={[styles.pickerOption, showTtsDemo && styles.pickerOptionSelected]}
+            >
+              <Text style={[styles.pickerLabel, showTtsDemo && styles.pickerLabelSelected]}>
+                TTS Demo
+              </Text>
+            </Pressable>
           </View>
 
           {/*
@@ -203,12 +230,19 @@ export default function App() {
         </View>
 
         {/*
+          TEMP: the "TTS Demo" tab swaps this whole slot for TtsReadingScreen instead of adding
+          another sibling below ReaderScreen — see showTtsDemo's declaration above. Unmounting
+          ReaderScreen while it's shown is fine (no state to lose outside the WebView, and
+          switching back remounts a fresh instance via the key below); unmounting
+          TtsReadingScreen mid-speech is also fine — useTtsSession's own effect cleanup stops
+          playback and clears the highlight.
+
           KEYED ON bookId, which ReaderScreen's own prop doc requires: all of its state
           is per-book, so switching fixtures remounts rather than carrying the previous
           book's format, shell, TOC and sender across. A real navigator does this for
           free by giving each route its own instance.
         */}
-        <ReaderScreen key={bookId} bookId={bookId} />
+        {showTtsDemo ? <TtsReadingScreen /> : <ReaderScreen key={bookId} bookId={bookId} />}
       </SafeAreaView>
     </SafeAreaProvider>
   );

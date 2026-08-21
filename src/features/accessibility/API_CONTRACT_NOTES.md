@@ -21,7 +21,10 @@ Nothing here has been changed in your code.
 You have more of a contract than the directory suggests:
 
 - **`shared/contracts/accessibility.ts`** — `AccessibilityPrefs`, `ReduceMotion`,
-  `TtsHighlightMode`, `DEFAULT_ACCESSIBILITY_PREFS`, `createDefaultAccessibilityPrefs()`.
+  `TtsHighlightMode`, `DEFAULT_ACCESSIBILITY_PREFS`, `createDefaultAccessibilityPrefs()`. Also
+  `TTS_PITCH_MIN`/`TTS_PITCH_MAX`/`isValidTtsPitch` (2026-08-20), added alongside the existing rate
+  bounds once `tts.pitch` got a UI — `sharedPrefs.ts` now clamps it on read the same way it already
+  clamped rate.
 - **`shared/contracts/__typecheck__.ts`** pins all of it, including that "reset" hands back a
   **detached copy** rather than a shared reference to the defaults. That property is load-bearing —
   if it broke, resetting one reader's prefs would mutate the defaults for everyone.
