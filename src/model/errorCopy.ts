@@ -18,6 +18,7 @@ export const CATALOGUE_ERROR_COPY: Record<CatalogueError, string> = {
   [CatalogueError.NETWORK_UNAVAILABLE]: 'You appear to be offline.',
   [CatalogueError.MALFORMED_FEED]: 'Something went wrong loading this content.',
   [CatalogueError.TIMEOUT]: 'This took too long to respond.',
+  [CatalogueError.TOO_MANY_IDS]: 'Too many items requested at once.',
 };
 
 // Which ErrorState affordance a code renders with. NOT_FOUND is the one code
@@ -28,6 +29,7 @@ const ERROR_STATE_VARIANT: Record<CatalogueError, ErrorStateVariant> = {
   [CatalogueError.NETWORK_UNAVAILABLE]: 'network',
   [CatalogueError.MALFORMED_FEED]: 'not_ready',
   [CatalogueError.TIMEOUT]: 'not_ready',
+  [CatalogueError.TOO_MANY_IDS]: 'not_ready',
 };
 
 export function catalogueErrorVariant(code: CatalogueError): ErrorStateVariant {

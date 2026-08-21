@@ -54,6 +54,7 @@ function fakeSource(getInstitution: DataSource['getInstitution']): DataSource {
     getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution,
+    getItemsBatch: unused,
   };
 }
 
@@ -160,7 +161,7 @@ describe('InstitutionDetailScreen errors', () => {
 
     await render(<InstitutionDetailScreen {...props} />);
 
-    await waitFor(() => expect(screen.getByText(/couldn.?t find this institution/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('This could not be found.')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 
@@ -200,7 +201,7 @@ describe('InstitutionDetailScreen errors', () => {
 
     await render(<InstitutionDetailScreen {...props} />);
 
-    await waitFor(() => expect(screen.getByText(/took longer than expected/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/took too long to respond/i)).toBeTruthy());
     expect(screen.queryByText(/you appear to be offline/i)).toBeNull();
     expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
   });

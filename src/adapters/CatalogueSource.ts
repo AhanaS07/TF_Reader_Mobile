@@ -9,7 +9,7 @@
 // Both implementations are held to `conformance.ts`. If a method's contract
 // changes, change it here and the suite will fail for both until they agree.
 import type { BookId } from '@/shared/types/primitives';
-import type { Catalogue, Publication, Shelf, SortOrder } from '@model/types';
+import type { BatchItemsResult, Catalogue, Publication, Shelf, SortOrder } from '@model/types';
 import type { BrowseFilters } from '@search/browseLink';
 
 // Everything a shelf request can narrow or order by, beyond page — an OPTIONAL
@@ -70,4 +70,15 @@ export interface CatalogueSource {
   //
   // Rejects CatalogueFailure(NOT_FOUND) if the publication is unknown.
   getPublicPublication(bookId: BookId): Promise<Publication>;
+
+  // F9 — turns a batch of item ids (what a loan/download record keys by) into
+  // thin summaries in one call. wokay's batchGetItems.
+  //
+  // TAKES NO institutionId, same reasoning as getPublicFeed: the contract
+  // scopes this by app token only, not by institution.
+  //
+  // notFound/denied are NOT failures — a batch with some bad ids still
+  // resolves normally, so one bad id never fails the whole call. Only
+  // rejects CatalogueFailure(TOO_MANY_IDS) if more than 100 ids are requested.
+  getItemsBatch(ids: BookId[]): Promise<BatchItemsResult>;
 }

@@ -78,6 +78,7 @@ function fakeSource(getPublicFeed: DataSource['getPublicFeed']): DataSource {
     getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution: unused,
+    getItemsBatch: unused,
   };
 }
 

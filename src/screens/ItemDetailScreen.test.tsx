@@ -139,6 +139,7 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
     getPublicPublication: (bookId) => getPublication('', bookId),
     getInstitutions: unused,
     getInstitution: unused,
+    getItemsBatch: unused,
   };
 }
 
@@ -193,6 +194,7 @@ describe('ItemDetailScreen endpoint choice', () => {
       },
       getInstitutions: unused,
       getInstitution: unused,
+      getItemsBatch: unused,
     };
   }
 
@@ -511,7 +513,7 @@ describe('ItemDetailScreen errors', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText(/couldn.?t find this title/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('This could not be found.')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 

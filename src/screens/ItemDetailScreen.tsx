@@ -36,7 +36,7 @@ import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { ErrorState, type ErrorStateVariant } from '@components/ErrorState';
+import { ErrorState } from '@components/ErrorState';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
@@ -45,7 +45,8 @@ import { getLicenceSource } from '@config/licence';
 import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
-import { CatalogueError, isCatalogueFailure } from '@model/errors';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { ActionId, Publication, WorkType } from '@model/types';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
@@ -79,30 +80,6 @@ const COVER_WIDTH = space.xl * 3;
 const COVER_HEIGHT = space.xl * 4 + space.md;
 
 const GENERIC_MESSAGE = "We couldn't load this title.";
-
-// Same shape as InstitutionDetailScreen's describeFailure: variant and message
-// travel together because the variant decides whether Retry renders at all.
-// `not_found` gets none — repeating a well-formed request for a title that does
-// not exist cannot make it appear.
-function describeFailure(err: unknown): { variant: ErrorStateVariant; message: string } {
-  if (isCatalogueFailure(err)) {
-    switch (err.code) {
-      case CatalogueError.NOT_FOUND:
-        return { variant: 'not_found', message: "We couldn't find this title." };
-      case CatalogueError.NETWORK_UNAVAILABLE:
-        return {
-          variant: 'network',
-          message: 'You appear to be offline. Check your connection and try again.',
-        };
-      case CatalogueError.TIMEOUT:
-        return { variant: 'network', message: 'That took longer than expected. Try again.' };
-      case CatalogueError.MALFORMED_FEED:
-        return { variant: 'not_ready', message: "We couldn't read this title's details." };
-    }
-  }
-
-  return { variant: 'not_ready', message: GENERIC_MESSAGE };
-}
 
 // Screen 05's presentation. Exported for the same reason `renderArticleContent`
 // below is — a test can render it directly from a hand-built `ItemDetail`
@@ -402,7 +379,8 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // loan/hold change — without re-fetching from wokay.
   const [publication, setPublication] = useState<Publication | null>(null);
   const [loading, setLoading] = useState(true);
-  const [failure, setFailure] = useState<unknown>(null);
+  const [failed, setFailed] = useState(false);
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
 
   // Recomputed whenever the publication or the reader's holdings change. Pure and
   // fast — no call is made, resolveAccess is synchronous.
@@ -432,7 +410,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 
     request
       .then((pub) => setPublication(pub))
-      .catch((err: unknown) => setFailure(err))
+      .catch((err: unknown) => {
+        setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+        setFailed(true);
+      })
       .finally(() => setLoading(false));
   }, [institutionId, itemId]);
 
@@ -446,7 +427,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 
   const retry = useCallback(() => {
     setLoading(true);
-    setFailure(null);
+    setFailed(false);
     fetchItem();
   }, [fetchItem]);
 
@@ -508,8 +489,12 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         <Skeleton variant="text" width={COVER_WIDTH} height={typeScale.body.lineHeight} />
       </View>
     );
-  } else if (failure !== null) {
-    const { variant, message } = describeFailure(failure);
+  } else if (failed) {
+    // errorCode is undefined when the rejection was not a CatalogueFailure at
+    // all — a bug rather than a condition D14 has copy for, so this falls back
+    // to the same honest generic line the unreachable branch below uses.
+    const variant = errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode);
+    const message = errorCode === undefined ? GENERIC_MESSAGE : CATALOGUE_ERROR_COPY[errorCode];
     body = (
       <View style={styles.centre}>
         <ErrorState variant={variant} message={message} onRetry={retry} />

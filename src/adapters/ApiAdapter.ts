@@ -20,11 +20,12 @@
 // fresh — the same behaviour as before this existed, just with a chance to
 // skip the download on a warm one.
 import type { BookId } from '@/shared/types/primitives';
-import type { Catalogue, Publication, Shelf } from '@model/types';
+import type { BatchItemsResult, Catalogue, Publication, Shelf } from '@model/types';
 import type { DataSource } from '@adapters/InstitutionSource';
 import type { ShelfQuery } from '@adapters/CatalogueSource';
 import { CatalogueError, CatalogueFailure, isCatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
+import { MAX_BATCH_IDS, normalizeBatchItemsResponse } from '@model/batchItems';
 import {
   type Institution,
   normalizeInstitution,
@@ -51,7 +52,9 @@ export interface FetchResponse {
 
 export type FetchLike = (
   url: string,
-  init?: { signal?: AbortSignal; headers?: Record<string, string> },
+  // method/body optional so every existing GET call site keeps compiling
+  // unchanged — only getItemsBatch's POST reads them.
+  init?: { signal?: AbortSignal; headers?: Record<string, string>; method?: string; body?: string },
 ) => Promise<FetchResponse>;
 
 export interface ApiAdapterOptions {
@@ -223,10 +226,67 @@ export class ApiAdapter implements DataSource {
     return normalizeInstitution(body);
   }
 
+  // Turns a list of item ids into thin summaries in one call. batchGetItems
+  // lives at the API host's root (/api/v1/...), a sibling namespace to the
+  // OPDS routes every other method here builds off `baseUrl` — so this uses
+  // apiOrigin() instead.
+  async getItemsBatch(ids: BookId[]): Promise<BatchItemsResult> {
+    if (ids.length > MAX_BATCH_IDS) {
+      throw new CatalogueFailure(CatalogueError.TOO_MANY_IDS, `${ids.length} ids`);
+    }
+
+    const url = `${this.apiOrigin()}/api/v1/catalogue/items:batch`;
+    const body = await this.postJson(url, 'items:batch', { ids });
+    return normalizeBatchItemsResponse(body);
+  }
+
   // Ids are percent-encoded on the way into the path. Without this, an id
   // containing '../' or '?' would silently rewrite which endpoint gets called.
   private institutionPath(institutionId: string): string {
     return `${this.baseUrl}/institutions/${encodeURIComponent(institutionId)}`;
+  }
+
+  // baseUrl is OPDS-rooted ('.../opds/v1'), but items:batch is pinned by the
+  // frozen contract at the host root ('/api/v1/...'), a sibling path — so this
+  // takes the scheme+host only, not baseUrl's OPDS suffix.
+  private apiOrigin(): string {
+    const afterScheme = this.baseUrl.indexOf('://') + 3;
+    const pathStart = this.baseUrl.indexOf('/', afterScheme);
+    return pathStart === -1 ? this.baseUrl : this.baseUrl.slice(0, pathStart);
+  }
+
+  // POST counterpart to getJson. Kept separate rather than widening getJson,
+  // because the status mapping differs: a 400 here means TOO_MANY_IDS, a
+  // meaningful code, not getJson's generic "server having a bad time" bucket.
+  private async postJson(url: string, target: string, requestBody: unknown): Promise<unknown> {
+    try {
+      const response = await this.fetchWithTimeout(
+        url,
+        target,
+        { 'Content-Type': 'application/json' },
+        'POST',
+        JSON.stringify(requestBody),
+      );
+
+      if (!response.ok) {
+        if (response.status === 400) {
+          throw new CatalogueFailure(CatalogueError.TOO_MANY_IDS, target);
+        }
+        throw new CatalogueFailure(
+          response.status === 404 ? CatalogueError.NOT_FOUND : CatalogueError.NETWORK_UNAVAILABLE,
+          target,
+        );
+      }
+
+      try {
+        return await response.json();
+      } catch (cause) {
+        throw new CatalogueFailure(CatalogueError.MALFORMED_FEED, target, cause);
+      }
+    } catch (err) {
+      if (isCatalogueFailure(err)) throw err;
+      throw new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE, target, err);
+    }
   }
 
   // The transport step alone: issues the request under a deadline and maps a
@@ -238,12 +298,14 @@ export class ApiAdapter implements DataSource {
     url: string,
     target: string,
     headers?: Record<string, string>,
+    method?: string,
+    body?: string,
   ): Promise<FetchResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      return await this.fetch(url, { signal: controller.signal, headers });
+      return await this.fetch(url, { signal: controller.signal, headers, method, body });
     } catch (err) {
       // The deadline fired, or the caller aborted.
       if (err instanceof Error && err.name === 'AbortError') {

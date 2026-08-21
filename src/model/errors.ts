@@ -41,6 +41,11 @@ export enum CatalogueError {
   // NETWORK_UNAVAILABLE because a slow server and no connection call for
   // different copy and different retry behaviour.
   TIMEOUT = 'TIMEOUT',
+
+  // getItemsBatch was asked for more than 100 ids in one call — checked
+  // client-side before the request goes out, and mapped from the server's
+  // own 400 TOO_MANY_IDS if it ever disagrees with our cap.
+  TOO_MANY_IDS = 'TOO_MANY_IDS',
 }
 
 // What every CatalogueSource method rejects with. Never reject with a bare

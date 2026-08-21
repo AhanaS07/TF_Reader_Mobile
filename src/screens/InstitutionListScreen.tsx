@@ -17,6 +17,7 @@ import { SearchInput } from '@components/SearchInput';
 import { Skeleton } from '@components/Skeleton';
 import type { Institution } from '@model/institution';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import { getCatalogueSource } from '@config/catalogue';
 import { searchInstitutions } from '../search/searchInstitutions';
 import { useInstitutionStore } from '@store/institutionStore';
@@ -63,6 +64,11 @@ type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'InstitutionList'>
 const DEBOUNCE_MS = 300;
 const PAGE_SIZE = 20;
 
+// Used both when offline with no cache (no CatalogueFailure exists to key on —
+// the client never called the network) and when the rejection was not a
+// CatalogueFailure at all, same fallback idiom as the other catalogue screens.
+const GENERIC_MESSAGE = "Couldn't load institutions. Check your connection and try again.";
+
 export default function InstitutionListScreen() {
   const navigation = useNavigation<Nav>();
 
@@ -71,6 +77,7 @@ export default function InstitutionListScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [fetchError, setFetchError] = useState(false);
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
 
@@ -104,7 +111,10 @@ export default function InstitutionListScreen() {
     // Must sit here — above the offline branch — so going offline with a cache
     // after a failed online attempt clears the error and shows the cache rather
     // than staying on the ErrorState.
-    if (replace) setFetchError(false);
+    if (replace) {
+      setFetchError(false);
+      setErrorCode(undefined);
+    }
 
     // Offline: serve the persisted cache instead of hitting the network.
     // Pagination is disabled (hasMore=false) since we only cache page 0.
@@ -138,12 +148,13 @@ export default function InstitutionListScreen() {
         // offline path serves. Filtered or paginated results are intentionally excluded.
         if (pageNum === 0 && q.length === 0) setCachedInstitutions(results);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // Mid-flight disconnect: prefer the cache over an error screen on initial load.
         if (replace && cached.length > 0) {
           setInstitutions(cached);
           setHasMore(false);
         } else {
+          setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
           setFetchError(true);
         }
       })
@@ -260,14 +271,17 @@ export default function InstitutionListScreen() {
   }
 
   if (fetchError) {
+    // errorCode is undefined both when offline with no cache (no
+    // CatalogueFailure exists — the client never reached the network) and when
+    // the rejection was not a CatalogueFailure at all. Either way this falls
+    // back to the same honest generic line, kept as `network` since a
+    // connectivity problem is the likeliest of the two.
+    const variant = errorCode === undefined ? 'network' : catalogueErrorVariant(errorCode);
+    const message = errorCode === undefined ? GENERIC_MESSAGE : CATALOGUE_ERROR_COPY[errorCode];
     return (
       <View style={styles.screen}>
         {searchBar}
-        <ErrorState
-          variant="network"
-          message="Couldn't load institutions. Check your connection and try again."
-          onRetry={handleRetry}
-        />
+        <ErrorState variant={variant} message={message} onRetry={handleRetry} />
         <OfflineBanner visible={!isOnline} />
       </View>
     );

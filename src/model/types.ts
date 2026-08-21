@@ -310,6 +310,31 @@ export interface SearchFeed {
   browseInstead: NavLink[];
 }
 
+// What getItemsBatch (F9) returns for one requested id, from wokay's plain-JSON
+// POST /catalogue/items:batch — deliberately NOT a Publication. That response is
+// explicitly not OPDS and carries less than a publication detail does (no
+// subtitle, description, page count, acquisition link) — a loan-record lookup
+// only needs enough to draw a row; getPublication is one call away for the rest.
+export interface BookSummary {
+  id: BookId;
+  title: string;
+  authors?: string[];
+  coverUrl?: string;
+  isbn?: string;
+  format: ContentFormat;
+  accessTier: AccessTier;
+  totalCopies?: number;
+  hasSearchIndex: boolean;
+}
+
+// getItemsBatch's whole response. notFound/denied are ORDINARY DATA, not
+// failures — one bad id in a batch must not fail the other 99.
+export interface BatchItemsResult {
+  items: BookSummary[];
+  notFound: BookId[];
+  denied: BookId[];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // From Akriti's dcd04fe types.ts — net-new scope only. Everything below is
 // additive: it does not touch OPDS normalization (rels.ts/normalize.ts) or

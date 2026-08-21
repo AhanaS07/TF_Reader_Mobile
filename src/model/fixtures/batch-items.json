@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "id": "item_42",
+      "title": "Rights for Robots",
+      "authors": ["Joshua C. Gellers"],
+      "coverUrl": "https://cdn.tf/covers/item_42.jpg",
+      "isbn": "9780367211745",
+      "contentType": "PDF",
+      "accessTier": "ELITE",
+      "totalCopies": 2,
+      "hasSearchIndex": true
+    },
+    {
+      "id": "item_oa1",
+      "title": "Coastal Wetlands of the Bay of Bengal",
+      "coverUrl": "https://cdn.tf/covers/item_oa1.jpg",
+      "isbn": "9781138298194",
+      "contentType": "EPUB",
+      "accessTier": "OPEN_ACCESS",
+      "hasSearchIndex": true
+    }
+  ],
+  "notFound": ["item_bogus"],
+  "denied": ["item_77"]
+}

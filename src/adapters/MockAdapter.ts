@@ -10,14 +10,16 @@
 // point: if the normalizer mishandles wokay's OPDS, this adapter surfaces it
 // today instead of the day the backend lands.
 import type { BookId } from '@/shared/types/primitives';
-import type { Catalogue, Publication, Shelf, SortOrder } from '@model/types';
+import type { BatchItemsResult, Catalogue, Publication, Shelf, SortOrder } from '@model/types';
 import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
 import type { ShelfQuery } from '@adapters/CatalogueSource';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
+import { MAX_BATCH_IDS, normalizeBatchItemsResponse } from '@model/batchItems';
 import { type Institution, normalizeInstitutionList } from '@model/institution';
 import { assertPublication } from '@model/validate';
 
+import batchItemsFixture from '@model/fixtures/batch-items.json';
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 import newInstitutionCatalogueFixture from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
 import allTitlesPage0Fixture from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
@@ -213,6 +215,40 @@ export class MockAdapter implements DataSource {
 
     assertPublication(publication);
     return publication;
+  }
+
+  // F9. One canonical fixture, shaped like the contract's own batchGetItems
+  // example, normalized fresh per call (same "no shared mutable state between
+  // callers" rule as publicationsById()/publicPublicationsById() below) into
+  // an id-keyed map plus a denied-id set. Every REQUESTED id is then bucketed
+  // against those — this generalizes to any subset/superset of ids, not just
+  // the fixture's own canonical request.
+  async getItemsBatch(ids: BookId[]): Promise<BatchItemsResult> {
+    await this.simulate('items:batch');
+    if (ids.length > MAX_BATCH_IDS) {
+      throw new CatalogueFailure(CatalogueError.TOO_MANY_IDS, `${ids.length} ids`);
+    }
+
+    const canonical = normalizeBatchItemsResponse(batchItemsFixture);
+    const knownById = new Map(canonical.items.map((item) => [item.id, item]));
+    const deniedIds = new Set(canonical.denied);
+
+    const items: BatchItemsResult['items'] = [];
+    const notFound: BookId[] = [];
+    const denied: BookId[] = [];
+    for (const id of ids) {
+      if (deniedIds.has(id)) {
+        denied.push(id);
+        continue;
+      }
+      const item = knownById.get(id);
+      if (item === undefined) {
+        notFound.push(id);
+        continue;
+      }
+      items.push(item);
+    }
+    return { items, notFound, denied };
   }
 
   async getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]> {
