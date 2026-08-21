@@ -34,6 +34,11 @@
 // reasoning ReaderScreen already applies to the PDF-only page indicator. `zoom` stays in
 // `ReaderAppearance`/the bridge payload regardless — PDF still needs it, and it is one payload for
 // both renderers by design (see readerAppearance.ts's own header).
+//
+// TYPOGRAPHY REMOVED FOR PDF, same reasoning inverted: `pdf.entry.ts` ignores typography entirely
+// (it rasterises pages — there is no text CSS to override), so the Typography section is hidden
+// whenever the active book's format is `'PDF'`. `fontFamily`/`fontSizePt`/etc. stay in
+// `ReaderAppearance` regardless — EPUB still needs them.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -380,29 +385,39 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             })}
           </View>
 
-          <Text style={styles.sectionLabel}>Typography</Text>
-          <FontSizeSlider value={prefs.typography.size} onCommit={commitFontSize} />
-          <View style={styles.row}>
-            {FAMILY_OPTIONS.map(({ label, family }) => {
-              const active = prefs.font.family === family;
-              return (
-                <Pressable
-                  key={family}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={`Font: ${label}${active ? ', selected' : ''}`}
-                  onPress={() => {
-                    void prefsStore.savePrefs(toggleFontFamily(prefs, family));
-                  }}
-                  style={[styles.toggle, active && styles.toggleActive]}
-                >
-                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
-                    {label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* TYPOGRAPHY REMOVED FOR PDF — NOT FORMAT APPLICABLE. pdf.entry.ts ignores typography
+              entirely (it rasterises pages, so there is no text CSS to override); ReaderAppearance
+              still carries fontFamily/fontSizePt/lineHeight/etc. regardless, one payload for both
+              renderers by design. Same reasoning as the Zoom guard below, just the other format:
+              a control with nothing to control is worse than no control. Shown for EPUB and for the
+              unrecognised-fixture fallback (format undefined), hidden only for a known PDF. */}
+          {format !== 'PDF' && (
+            <>
+              <Text style={styles.sectionLabel}>Typography</Text>
+              <FontSizeSlider value={prefs.typography.size} onCommit={commitFontSize} />
+              <View style={styles.row}>
+                {FAMILY_OPTIONS.map(({ label, family }) => {
+                  const active = prefs.font.family === family;
+                  return (
+                    <Pressable
+                      key={family}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`Font: ${label}${active ? ', selected' : ''}`}
+                      onPress={() => {
+                        void prefsStore.savePrefs(toggleFontFamily(prefs, family));
+                      }}
+                      style={[styles.toggle, active && styles.toggleActive]}
+                    >
+                      <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
 
           <Text style={styles.sectionLabel}>Layout</Text>
           <View style={styles.row}>

@@ -17,8 +17,13 @@ import {
   fitScale,
   fitWidthScale,
   mostVisiblePage,
+  nextSpreadStart,
   outlineDestPage,
   pageFromTarget,
+  PDF_SPREAD_MIN_WIDTH,
+  prevSpreadStart,
+  shouldRenderSpread,
+  spreadPages,
   type OutlineDocument,
   type OutlineNode,
 } from '@/features/reader/webview/src/pdfOutline';
@@ -272,5 +277,81 @@ describe('mostVisiblePage', () => {
   it('defaults to page 1 for an empty list or a midpoint above every page', () => {
     expect(mostVisiblePage([], 0, 800)).toBe(1);
     expect(mostVisiblePage(pageTops, -1000, 0)).toBe(1);
+  });
+});
+
+describe('shouldRenderSpread', () => {
+  it('is false for an explicit single-page preference regardless of width', () => {
+    expect(shouldRenderSpread('single', 2000)).toBe(false);
+  });
+
+  it('is false below the threshold and true at or above it — matching epub.js\'s own default', () => {
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH - 1)).toBe(false);
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH)).toBe(true);
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH + 200)).toBe(true);
+  });
+});
+
+describe('spreadPages', () => {
+  it('returns a single page whenever not spreading', () => {
+    expect(spreadPages(4, 10, false)).toEqual([4]);
+  });
+
+  it('keeps the cover (page 1) alone even while spreading', () => {
+    expect(spreadPages(1, 10, true)).toEqual([1]);
+  });
+
+  it('pairs an even page with the odd page after it', () => {
+    expect(spreadPages(2, 10, true)).toEqual([2, 3]);
+    expect(spreadPages(4, 10, true)).toEqual([4, 5]);
+  });
+
+  it('resolves an odd page (other than the cover) to the pair starting before it', () => {
+    expect(spreadPages(3, 10, true)).toEqual([2, 3]);
+    expect(spreadPages(7, 10, true)).toEqual([6, 7]);
+  });
+
+  it('renders a trailing unpaired page alone when pageCount is even', () => {
+    // Cover alone (1), then (2,3) (4,5) — page 6 has no partner left.
+    expect(spreadPages(6, 6, true)).toEqual([6]);
+  });
+
+  it('does not spread a one-page document', () => {
+    expect(spreadPages(1, 1, true)).toEqual([1]);
+  });
+});
+
+describe('nextSpreadStart', () => {
+  it('steps by one page when not spreading', () => {
+    expect(nextSpreadStart(4, 10, false)).toBe(5);
+  });
+
+  it('steps past the whole pair when spreading', () => {
+    expect(nextSpreadStart(1, 10, true)).toBe(2); // cover -> (2,3)
+    expect(nextSpreadStart(2, 10, true)).toBe(4); // (2,3) -> (4,5)
+    expect(nextSpreadStart(9, 10, true)).toBe(10); // (8,9) -> the trailing unpaired page 10
+  });
+
+  it('returns null once the spread already reaches the last page', () => {
+    expect(nextSpreadStart(10, 10, false)).toBeNull();
+    expect(nextSpreadStart(10, 10, true)).toBeNull(); // trailing unpaired page 10 IS the end
+  });
+});
+
+describe('prevSpreadStart', () => {
+  it('steps by one page when not spreading', () => {
+    expect(prevSpreadStart(4, 10, false)).toBe(3);
+  });
+
+  it('steps back past the whole pair when spreading', () => {
+    // The returned value need not be a pair's literal start — spreadPages() re-resolves it when
+    // rendering, so landing anywhere inside the target pair is correct.
+    expect(prevSpreadStart(6, 10, true)).toBe(5); // (6,7) -> resolves to (4,5) via spreadPages(5, ...)
+    expect(prevSpreadStart(2, 10, true)).toBe(1); // (2,3) -> cover
+  });
+
+  it('returns null once the spread already starts at page 1', () => {
+    expect(prevSpreadStart(1, 10, false)).toBeNull();
+    expect(prevSpreadStart(1, 10, true)).toBeNull();
   });
 });

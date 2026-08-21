@@ -27,10 +27,12 @@
   arrangement would end; this is it.
 
   WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-canvas,
-  #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus the CSS.
-  A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
-  #pdf-single/#pdf-canvas are the single-page-at-a-time surface; #pdf-scroll/#pdf-scroll-content
-  are continuous scroll's — pdf.entry.ts toggles which is visible off `applyAppearance`'s flow.
+  #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus
+  the CSS. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
+  a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
+  #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
+  is visible off `applyAppearance`'s flow.
 -->
 <html lang="en">
   <head>
@@ -91,6 +93,17 @@
       }
 
       /*
+        THE SECOND SPREAD CANVAS. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
+        epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
+        and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
+        `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+      */
+      #pdf-canvas-2 {
+        display: none;
+      }
+
+      /*
         CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
         display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
         surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of
@@ -103,6 +116,11 @@
         height: 100%;
         align-items: center;
         justify-content: center;
+        /* The gutter between the two canvases of a spread — MUST match SPREAD_GAP_PX in
+           pdf.entry.ts, which subtracts this same 8px when computing each canvas's fit width. A
+           no-op whenever #pdf-canvas-2 is display:none — flex gap only applies space between
+           IN-FLOW children. */
+        gap: 8px;
         /* Lets a zoomed-in page (bigger than the viewport, see #pdf-canvas's own note) be panned
            to, rather than silently clipped by #pdf-pages's overflow: hidden. A no-op at zoom 1.0,
            where the canvas already fits and there is nothing to scroll. */
@@ -156,7 +174,7 @@
   </head>
   <body>
     <div id="pdf-pages">
-      <div id="pdf-single"><canvas id="pdf-canvas"></canvas></div>
+      <div id="pdf-single"><canvas id="pdf-canvas"></canvas><canvas id="pdf-canvas-2"></canvas></div>
       <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
     </div>
     <pre id="fallback"></pre>

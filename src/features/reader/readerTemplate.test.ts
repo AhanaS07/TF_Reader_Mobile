@@ -598,9 +598,9 @@ describe('the PDF shell carries continuous scroll\'s second surface', () => {
   // pdf.entry.ts toggles which of #pdf-single/#pdf-scroll is visible off applyAppearance's flow —
   // both silently do nothing if their elements go missing, same failure mode the block above guards
   // for the single-page surface.
-  it('defines #pdf-single wrapping the existing single-page canvas', () => {
+  it('defines #pdf-single wrapping both spread canvases', () => {
     expect(PDF_TEMPLATE).toMatch(
-      /<div id="pdf-single"><canvas id="pdf-canvas"><\/canvas><\/div>/,
+      /<div id="pdf-single"><canvas id="pdf-canvas"><\/canvas><canvas id="pdf-canvas-2"><\/canvas><\/div>/,
     );
   });
 
@@ -611,6 +611,19 @@ describe('the PDF shell carries continuous scroll\'s second surface', () => {
 
   it('hides #pdf-scroll by default, so a book always opens in single-page mode absent an appearance', () => {
     expect(PDF_TEMPLATE).toMatch(/#pdf-scroll\s*\{[^}]*display:\s*none/);
+  });
+});
+
+describe('the PDF shell carries double-page spread\'s second canvas', () => {
+  // renderCurrent() (pdf.entry.ts) toggles #pdf-canvas-2's display when a spread has two pages —
+  // same failure mode as the rest of this file: an element that goes missing here means the second
+  // page of a spread silently never appears, with no error to explain why.
+  it('hides #pdf-canvas-2 by default, so a book always opens on one page absent an appearance', () => {
+    expect(PDF_TEMPLATE).toMatch(/#pdf-canvas-2\s*\{[^}]*display:\s*none/);
+  });
+
+  it('gives #pdf-single a gutter for when both canvases are showing', () => {
+    expect(PDF_TEMPLATE).toMatch(/#pdf-single\s*\{[^}]*gap:\s*8px/);
   });
 });
 
