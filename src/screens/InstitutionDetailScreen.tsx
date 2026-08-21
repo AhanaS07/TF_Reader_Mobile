@@ -20,11 +20,12 @@ import { StyleSheet, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { InstitutionSource } from '@adapters/InstitutionSource';
-import { ErrorState, type ErrorStateVariant } from '@components/ErrorState';
+import { ErrorState } from '@components/ErrorState';
 import { InstitutionDetailView } from '@components/InstitutionDetailView';
 import { Skeleton } from '@components/Skeleton';
 import { getCatalogueSource } from '@config/catalogue';
-import { CatalogueError, isCatalogueFailure } from '@model/errors';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Institution } from '@model/institution';
 import { useInstitutionStore } from '@store/institutionStore';
 import { color, space, type as typeScale } from '@theme/tokens';
@@ -52,57 +53,18 @@ const ACTION_HEIGHT = space.sm * 2 + typeScale.button.lineHeight;
 // so the two cannot drift apart.
 const GENERIC_MESSAGE = "We couldn't load this institution.";
 
-// Copy for every way the fetch can fail. Variant and message travel together
-// because the variant decides which affordance renders: ErrorState treats only
-// `network` and `not_ready` as retryable, so `not_found` deliberately gets no
-// Retry — repeating a well-formed request for something that is not there cannot
-// make it appear.
-//
-// NO `code` IS PASSED. ErrorState's `code` is wokay's envelope enumeration
-// (ERROR_CODES in @model/types), a different vocabulary from CatalogueError, and
-// no wokay envelope is involved on this path. The code-to-copy map is D14.
-function describeFailure(err: unknown): { variant: ErrorStateVariant; message: string } {
-  if (isCatalogueFailure(err)) {
-    switch (err.code) {
-      case CatalogueError.NOT_FOUND:
-        // Not-found, never forbidden. An inactive institution returns the same
-        // 404 as one that never existed, so its existence is not disclosed.
-        return { variant: 'not_found', message: "We couldn't find this institution." };
-      case CatalogueError.NETWORK_UNAVAILABLE:
-        return {
-          variant: 'network',
-          message: 'You appear to be offline. Check your connection and try again.',
-        };
-      case CatalogueError.TIMEOUT:
-        // Its own line rather than the offline one. errors.ts keeps the two codes
-        // apart precisely because a slow server and no connection read
-        // differently to a reader.
-        return { variant: 'network', message: 'That took longer than expected. Try again.' };
-      case CatalogueError.MALFORMED_FEED:
-        return { variant: 'not_ready', message: "We couldn't read this institution's details." };
-    }
-  }
-
-  // Not a CatalogueFailure at all, so it is a bug rather than a condition: the
-  // honest generic line and a retry, rather than an invented reason.
-  //
-  // MALFORMED_FEED lands on `not_ready` above for the same reason — none of
-  // ErrorState's four variants means "the payload is wrong". Raised at the Friday
-  // review rather than widening the union here.
-  return { variant: 'not_ready', message: GENERIC_MESSAGE };
-}
-
 export default function InstitutionDetailScreen({ route, navigation }: Props) {
   const { institutionId } = route.params;
 
   const [institution, setInstitution] = useState<Institution | null>(null);
   const [loading, setLoading] = useState(true);
-  const [failure, setFailure] = useState<unknown>(null);
+  const [failed, setFailed] = useState(false);
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
 
   const setSelectedInstitution = useInstitutionStore((s) => s.setSelectedInstitution);
 
   // No synchronous setState in here: a setState reachable directly from an effect
-  // body trips the cascading-renders lint, and `loading`/`failure` already hold
+  // body trips the cascading-renders lint, and `loading`/`failed` already hold
   // these values on mount. Retry is the one path that must reset them, and it
   // runs from a press handler — see below.
   const fetchInstitution = useCallback(() => {
@@ -112,7 +74,10 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
     source
       .getInstitution(institutionId)
       .then(setInstitution)
-      .catch((err: unknown) => setFailure(err))
+      .catch((err: unknown) => {
+        setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+        setFailed(true);
+      })
       .finally(() => setLoading(false));
   }, [institutionId]);
 
@@ -122,7 +87,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
 
   const retry = useCallback(() => {
     setLoading(true);
-    setFailure(null);
+    setFailed(false);
     fetchInstitution();
   }, [fetchInstitution]);
 
@@ -149,8 +114,12 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
     );
   }
 
-  if (failure !== null) {
-    const { variant, message } = describeFailure(failure);
+  if (failed) {
+    // errorCode is undefined when the rejection was not a CatalogueFailure at
+    // all — a bug rather than a condition D14 has copy for, so this falls back
+    // to the same honest generic line the unreachable branch below uses.
+    const variant = errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode);
+    const message = errorCode === undefined ? GENERIC_MESSAGE : CATALOGUE_ERROR_COPY[errorCode];
     return (
       <View style={[styles.screen, styles.centre]}>
         {/* onRetry is passed for every variant; ErrorState decides whether to

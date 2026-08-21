@@ -145,6 +145,25 @@ describe('InstitutionListScreen offline cache — mid-flight fallback', () => {
       expect(screen.getByText(/couldn.?t load institutions/i)).toBeTruthy(),
     );
   });
+
+  // D14 — a real CatalogueFailure carries its own copy and variant (not the
+  // hardcoded 'network' every other case here happens to also want), so a
+  // code this project has real copy for must actually surface it.
+  it('renders MALFORMED_FEED with D14\'s own copy, not the generic fallback', async () => {
+    mockIsOnline.mockReturnValue(true);
+    setCatalogueSource(
+      fakeSource(async () => {
+        throw new CatalogueFailure(CatalogueError.MALFORMED_FEED, 'institutions');
+      }),
+    );
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() =>
+      expect(screen.getByText('Something went wrong loading this content.')).toBeTruthy(),
+    );
+    expect(screen.queryByText(/couldn.?t load institutions/i)).toBeNull();
+  });
 });
 
 describe('InstitutionListScreen offline cache — bug regressions', () => {

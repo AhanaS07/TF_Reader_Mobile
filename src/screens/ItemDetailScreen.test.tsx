@@ -513,7 +513,7 @@ describe('ItemDetailScreen errors', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText(/couldn.?t find this title/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('This could not be found.')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 
