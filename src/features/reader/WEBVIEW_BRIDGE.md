@@ -128,15 +128,32 @@ wrong one.
 `applyAppearance` is implemented — the design in "The prefs-application design, as signed off" below
 is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced host-side, in
 `ReaderScreen.tsx`'s `handleReady`); EPUB applies theme/typography/flow/spread through the same
-`addStylesheetCss` path as the baseline. PDF applies `bg`, `zoom`, and — as of continuous scroll —
-`flow`: a payload with `flow: 'scrolled-doc'` switches the PDF shell from its single-canvas renderer
-into a virtualised, scrollable multi-page one (`enterScrollMode`/`leaveScrollMode` in `pdf.entry.ts`);
-everything else (theme/typography) is still silently ignored, since pdf.js rasterises pages and there
-is no text CSS layer to override. EPUB now also injects an `@font-face` from `customFontUri` (the
-bundled-font bytes `ReaderScreen.tsx`'s `buildAppearanceWithFont` loads via `loadFontFaceSrc`) when it
-and `fontFamily` both sanitise non-empty — `sanitizeFontDataUri`/`sanitizeFontFamily` in
-`readerMetrics.ts` gate what reaches the stylesheet. PDF continues to ignore `customFontUri` for the
-same rasterisation reason as the rest of typography.
+`addStylesheetCss` path as the baseline. PDF applies `bg`, `zoom`, `flow` (continuous scroll) and —
+as of double-page — `spread`: a payload with `flow: 'scrolled-doc'` switches the PDF shell from its
+single-canvas renderer into a virtualised, scrollable multi-page one (`enterScrollMode`/
+`leaveScrollMode` in `pdf.entry.ts`); everything else (theme/typography) is still silently ignored,
+since pdf.js rasterises pages and there is no text CSS layer to override. EPUB now also injects an
+`@font-face` from `customFontUri` (the bundled-font bytes `ReaderScreen.tsx`'s
+`buildAppearanceWithFont` loads via `loadFontFaceSrc`) when it and `fontFamily` both sanitise
+non-empty — `sanitizeFontDataUri`/`sanitizeFontFamily` in `readerMetrics.ts` gate what reaches the
+stylesheet. PDF continues to ignore `customFontUri` for the same rasterisation reason as the rest of
+typography.
+
+**PDF's `spread` handling, added for double-page display.** epub.js gates its own two-up rendering on
+`minSpreadWidth` (default 800 CSS px — see the note further down) so `spread: 'double'` is inert on a
+phone and renders two pages on a tablet-sized viewport. pdf.js has no such concept at all — it
+rasterises one page into one canvas — so this shell builds the equivalent from scratch, matched to
+the same 800px threshold for consistency: `PDF_SPREAD_MIN_WIDTH`, `shouldRenderSpread` and
+`spreadPages` in `pdfOutline.ts` (pure, unit-tested), consumed by `renderCurrent` in `pdf.entry.ts`
+(the renamed, spread-aware `renderPage`). Pairing is COVER-ALONE: page 1 stands alone, then pages
+pair as (2,3), (4,5), (6,7)... — matching both a physical book's layout and the visual result
+epub.js already gives. `next`/`prev` step by the whole pair (`nextSpreadStart`/`prevSpreadStart`,
+also in `pdfOutline.ts`); a `goTo` or resize/rotation re-resolves the correct pair via `spreadPages`
+regardless of which page inside it was targeted. **Scope: single-page (paginated) mode only** —
+continuous scroll ignores `spread` entirely and stays one column, since pairing virtualized scroll
+wrappers is a materially bigger change this did not need. The second canvas (`#pdf-canvas-2` in
+`reader-pdf.template.html`) is hidden whenever the current spread has only one page, and its backing
+store is released (`width`/`height` set to 0) rather than left resident.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.

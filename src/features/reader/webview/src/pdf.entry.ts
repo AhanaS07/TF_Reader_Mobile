@@ -19,7 +19,7 @@
 // imported (erased at compile time) and that is exactly why the cast below is checked rather than
 // hopeful.
 
-import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 
@@ -36,7 +36,11 @@ import {
   fitScale,
   fitWidthScale,
   mostVisiblePage,
+  nextSpreadStart,
   pageFromTarget,
+  prevSpreadStart,
+  shouldRenderSpread,
+  spreadPages,
   type OutlineDocument,
 } from './pdfOutline';
 
@@ -81,9 +85,23 @@ let pageCount = 0;
 let currentZoom = 1.0;
 
 /**
+ * The latest `applyAppearance` spread preference. Single-page mode only — continuous scroll never
+ * consults this (see the module doc in pdfOutline.ts). Defaults to 'single', matching
+ * `ReaderAppearance`'s pre-payload baseline the same way `currentZoom` defaults to 1.0.
+ */
+let spreadPref: 'single' | 'double' = 'single';
+
+/** Gutter between the two canvases when a spread is actually showing two pages. Small and fixed —
+ * this reader has no other "gap" concept to reuse, and a book's own gutter is not part of the page
+ * bitmap pdf.js hands back. */
+const SPREAD_GAP_PX = 8;
+
+/**
  * Guards against overlapping renders. pdf.js rejects a second `render()` on a page whose first is
  * still running, and next/prev can easily outpace a render on a slow page — so a token is compared
- * on completion and a stale result is discarded rather than painted over a newer one.
+ * on completion and a stale result is discarded rather than painted over a newer one. Shared across
+ * both pages of a spread: they are one render operation as far as staleness is concerned, since a
+ * newer call always supersedes both canvases at once.
  */
 let renderToken = 0;
 
@@ -351,7 +369,7 @@ function leaveScrollMode(): void {
   if (scroll) scroll.style.display = 'none';
   if (single) single.style.display = 'flex';
 
-  if (pdfDoc && currentPage) renderPageGuarded(currentPage);
+  if (pdfDoc && currentPage) renderCurrentGuarded(currentPage);
 }
 
 /** Re-fit every wrapper's height and re-render whatever is currently in the buffer — the
@@ -365,7 +383,7 @@ async function resizeScrollList(doc: PDFDocumentProxy): Promise<void> {
   virtualize();
 }
 
-/** Scroll straight to a page's wrapper — the continuous-scroll equivalent of `renderPageGuarded`
+/** Scroll straight to a page's wrapper — the continuous-scroll equivalent of `renderCurrentGuarded`
  * for `next`/`prev`/`goTo`. Instant, for the same no-animation reason as `enterScrollMode`. */
 function scrollToPage(page: number): void {
   const scroll = scrollContainer();
@@ -445,55 +463,92 @@ function viewportSize(): { width: number; height: number } {
 }
 
 /**
- * Render one page, fitted to the container, and report the new position.
+ * Render the spread containing `pageNumber` — one canvas normally, two when `spreadPref` is
+ * 'double' and the viewport is wide enough (`shouldRenderSpread`/`spreadPages` in pdfOutline.ts) —
+ * and report the new position. Reports are keyed off the spread's FIRST page; `atEnd` looks at its
+ * LAST page, so a two-page spread ending on the book's final page is correctly reported as the end.
  *
  * devicePixelRatio is applied to the CANVAS BUFFER only, with CSS holding the layout size — the
  * standard sharp-canvas trick. Without it, text on a 3x screen renders at a third of the available
  * resolution and looks soft in a way that reads as "the PDF is low quality".
  *
+ * When two pages are showing, both render at the SMALLER of their two individual fit scales, so a
+ * spread has one consistent scale even if the two pages differ in size, rather than each page
+ * maximising its own half independently.
+ *
  * The fit scale itself is `fitScale()` in pdfOutline.ts, where it is tested.
  */
-async function renderPage(pageNumber: number): Promise<void> {
+async function renderCurrent(pageNumber: number): Promise<void> {
   if (!pdfDoc) {
-    fail('NOT_READY', 'renderPage() before a document was opened');
+    fail('NOT_READY', 'renderCurrent() before a document was opened');
     return;
   }
-
-  const token = ++renderToken;
-  const page: PDFPageProxy = await pdfDoc.getPage(pageNumber);
-  if (token !== renderToken) return;
+  const doc = pdfDoc;
 
   const box = viewportSize();
-  const base = page.getViewport({ scale: 1 });
-  const fit = fitScale(box.width, box.height, base.width, base.height);
+  const spreading = shouldRenderSpread(spreadPref, box.width);
+  const pages = spreadPages(pageNumber, pageCount, spreading);
+
+  const token = ++renderToken;
+  const pageProxies = await Promise.all(pages.map((p) => doc.getPage(p)));
+  if (token !== renderToken) return;
+
+  // Two pages share the viewport width minus one gutter; one page gets the whole thing.
+  const perPageWidth = pages.length === 2 ? (box.width - SPREAD_GAP_PX) / 2 : box.width;
+  const bases = pageProxies.map((p) => p.getViewport({ scale: 1 }));
+  const fit = Math.min(
+    ...bases.map((base) => fitScale(perPageWidth, box.height, base.width, base.height)),
+  );
+
   if (fit === 0) {
-    // A zero-height container yields a zero-scale canvas — a blank page with no error, which is an
-    // explicit non-acceptance criterion. Say so instead of painting nothing.
+    // A zero-height container (or a degenerate page) yields a zero-scale canvas — a blank page with
+    // no error, which is an explicit non-acceptance criterion. Say so instead of painting nothing.
     fail('NAVIGATION_FAILED', 'the reader container has no measurable size');
     return;
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const viewport = page.getViewport({ scale: fit * dpr * currentZoom });
+  const canvasIds = ['pdf-canvas', 'pdf-canvas-2'] as const;
+  const renders: Promise<void>[] = [];
 
-  const canvas = document.getElementById('pdf-canvas') as HTMLCanvasElement | null;
-  const context = canvas?.getContext('2d');
-  if (!canvas || !context) {
-    fail('NAVIGATION_FAILED', 'the page canvas is missing from the shell');
-    return;
+  for (let i = 0; i < canvasIds.length; i++) {
+    const canvas = document.getElementById(canvasIds[i]) as HTMLCanvasElement | null;
+    if (!canvas) {
+      fail('NAVIGATION_FAILED', 'the page canvas is missing from the shell');
+      return;
+    }
+
+    if (i >= pageProxies.length) {
+      // Not part of this spread. Backing store released rather than left resident — a hidden canvas
+      // otherwise keeps its last full-size frame in memory for no reason.
+      canvas.style.display = 'none';
+      canvas.width = 0;
+      canvas.height = 0;
+      continue;
+    }
+
+    canvas.style.display = 'block';
+    const base = bases[i];
+    const viewport = pageProxies[i].getViewport({ scale: fit * dpr * currentZoom });
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    // CSS/layout size carries `currentZoom` too — it is the visual magnification the user asked for,
+    // not just extra backing-buffer resolution the way `dpr` is.
+    canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
+    canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      fail('NAVIGATION_FAILED', 'the page canvas is missing from the shell');
+      return;
+    }
+    renders.push(pageProxies[i].render({ canvasContext: context, viewport }).promise);
   }
 
-  canvas.width = Math.floor(viewport.width);
-  canvas.height = Math.floor(viewport.height);
-  // CSS/layout size carries `currentZoom` too — it is the visual magnification the user asked for,
-  // not just extra backing-buffer resolution the way `dpr` is.
-  canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
-  canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
-
-  await page.render({ canvasContext: context, viewport }).promise;
+  await Promise.all(renders);
   if (token !== renderToken) return;
 
-  currentPage = pageNumber;
+  currentPage = pages[0];
 
   // THE PAGE AND THE PAGE COUNT, which this shell tracked privately for a long time and deliberately
   // did not report: `relocated` was at the payload-size boundary that would have forced the
@@ -506,14 +561,14 @@ async function renderPage(pageNumber: number): Promise<void> {
   post({
     type: 'relocated',
     position: { kind: 'page', page: currentPage, pageCount },
-    atStart: currentPage <= 1,
-    atEnd: currentPage >= pageCount,
+    atStart: pages[0] <= 1,
+    atEnd: pages[pages.length - 1] >= pageCount,
   });
 }
 
 /** Report a render failure without letting the rejection escape into the catch-all. */
-function renderPageGuarded(pageNumber: number): void {
-  renderPage(pageNumber).catch((error: unknown) => {
+function renderCurrentGuarded(pageNumber: number): void {
+  renderCurrent(pageNumber).catch((error: unknown) => {
     fail('NAVIGATION_FAILED', error);
   });
 }
@@ -521,7 +576,9 @@ function renderPageGuarded(pageNumber: number): void {
 // Rotation and split-view resizes change the fit scale, so the current page has to be re-rasterised
 // or it stays at the old resolution, stretched by CSS. epub.js does its own resize handling; pdf.js
 // does none, so this is ours. Branches on scrollMode: a resize changes every wrapper's fit-to-width
-// height, not just the one page single-page mode would re-render.
+// height, not just the one page single-page mode would re-render. In single-page mode this also
+// re-evaluates spread: rotating across PDF_SPREAD_MIN_WIDTH should switch between one and two
+// canvases live, not just re-fit whichever was already showing.
 window.addEventListener('resize', () => {
   if (!pdfDoc) return;
   if (scrollMode) {
@@ -529,7 +586,7 @@ window.addEventListener('resize', () => {
       fail('NAVIGATION_FAILED', error);
     });
   } else if (currentPage) {
-    renderPageGuarded(currentPage);
+    renderCurrentGuarded(currentPage);
   }
 });
 
@@ -574,7 +631,7 @@ const api: TFReaderApi<'openPdf'> = {
       try {
         pdfDoc = await loading.promise;
         pageCount = pdfDoc.numPages;
-        await renderPage(1);
+        await renderCurrent(1);
 
         // Consults `wantsScroll` rather than defaulting to single-page: `applyAppearance` always
         // arrives BEFORE `openPdf` (WEBVIEW_BRIDGE.md's ordering requirement), so if the user's
@@ -602,12 +659,15 @@ const api: TFReaderApi<'openPdf'> = {
       fail('NOT_READY', 'next() before a document was opened');
       return;
     }
-    if (currentPage >= pageCount) return;
     if (scrollMode) {
+      if (currentPage >= pageCount) return;
       scrollToPage(currentPage + 1);
       return;
     }
-    renderPageGuarded(currentPage + 1);
+    const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+    const target = nextSpreadStart(currentPage, pageCount, spreading);
+    if (target === null) return;
+    renderCurrentGuarded(target);
   },
 
   prev: () => {
@@ -615,12 +675,15 @@ const api: TFReaderApi<'openPdf'> = {
       fail('NOT_READY', 'prev() before a document was opened');
       return;
     }
-    if (currentPage <= 1) return;
     if (scrollMode) {
+      if (currentPage <= 1) return;
       scrollToPage(currentPage - 1);
       return;
     }
-    renderPageGuarded(currentPage - 1);
+    const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+    const target = prevSpreadStart(currentPage, pageCount, spreading);
+    if (target === null) return;
+    renderCurrentGuarded(target);
   },
 
   /**
@@ -651,14 +714,18 @@ const api: TFReaderApi<'openPdf'> = {
       scrollToPage(page);
       return;
     }
-    renderPageGuarded(page);
+    renderCurrentGuarded(page);
   },
 
   /**
-   * Apply a resolved appearance. Per the sign-off doc this shell applies only `bg`, `zoom` and (as
-   * of continuous scroll) `flow` — typography/theme-text fields are still silently ignored, not an
-   * oversight: pdf.js rasterises pages, so there is no text CSS layer to override here the way the
-   * EPUB shell has.
+   * Apply a resolved appearance. Per the sign-off doc this shell applies `bg`, `zoom`, `flow` (as of
+   * continuous scroll) and — as of double-page — `spread`; typography/theme-text fields are still
+   * silently ignored, not an oversight: pdf.js rasterises pages, so there is no text CSS layer to
+   * override here the way the EPUB shell has.
+   *
+   * `spread` only affects the single-page surface (pdfOutline.ts's module doc explains why
+   * continuous scroll is out of scope) — tracked here regardless of `scrollMode` so it is already
+   * current if the user leaves scroll mode later, but it only triggers a re-render below.
    *
    * `document.body.style` rather than a stylesheet: there is no `Contents` abstraction to hook into
    * (one page is one canvas, not a chapter document), so a single direct style write is enough.
@@ -670,8 +737,12 @@ const api: TFReaderApi<'openPdf'> = {
     currentZoom = appearance.zoom;
     wantsScroll = appearance.flow === 'scrolled-doc';
 
-    // Before `pdfDoc` exists this is all there is to do — `openPdf` reads `wantsScroll` itself once
-    // the document is open (see the note there). Nothing below is reachable before then.
+    const spreadChanged = appearance.spread !== spreadPref;
+    spreadPref = appearance.spread;
+
+    // Before `pdfDoc` exists this is all there is to do — `openPdf` reads `wantsScroll` (and
+    // `spreadPref`, via renderCurrent) itself once the document is open. Nothing below is reachable
+    // before then.
     if (!pdfDoc) return;
 
     if (wantsScroll && !scrollMode) {
@@ -686,14 +757,16 @@ const api: TFReaderApi<'openPdf'> = {
       return;
     }
 
-    if (!zoomChanged) return;
-
     if (scrollMode) {
+      if (!zoomChanged) return;
       resizeScrollList(pdfDoc).catch((error: unknown) => {
         fail('NAVIGATION_FAILED', error);
       });
-    } else if (currentPage) {
-      renderPageGuarded(currentPage);
+      return;
+    }
+
+    if ((zoomChanged || spreadChanged) && currentPage) {
+      renderCurrentGuarded(currentPage);
     }
   },
 };

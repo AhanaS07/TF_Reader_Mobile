@@ -27,10 +27,12 @@
   arrangement would end; this is it.
 
   WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-canvas,
-  #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus the CSS.
-  A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
-  #pdf-single/#pdf-canvas are the single-page-at-a-time surface; #pdf-scroll/#pdf-scroll-content
-  are continuous scroll's — pdf.entry.ts toggles which is visible off `applyAppearance`'s flow.
+  #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus
+  the CSS. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
+  a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
+  #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
+  is visible off `applyAppearance`'s flow.
 -->
 <html lang="en">
   <head>
@@ -91,6 +93,17 @@
       }
 
       /*
+        THE SECOND SPREAD CANVAS. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
+        epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
+        and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
+        `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+      */
+      #pdf-canvas-2 {
+        display: none;
+      }
+
+      /*
         CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
         display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
         surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of
@@ -103,6 +116,11 @@
         height: 100%;
         align-items: center;
         justify-content: center;
+        /* The gutter between the two canvases of a spread — MUST match SPREAD_GAP_PX in
+           pdf.entry.ts, which subtracts this same 8px when computing each canvas's fit width. A
+           no-op whenever #pdf-canvas-2 is display:none — flex gap only applies space between
+           IN-FLOW children. */
+        gap: 8px;
         /* Lets a zoomed-in page (bigger than the viewport, see #pdf-canvas's own note) be panned
            to, rather than silently clipped by #pdf-pages's overflow: hidden. A no-op at zoom 1.0,
            where the canvas already fits and there is nothing to scroll. */
@@ -156,7 +174,7 @@
   </head>
   <body>
     <div id="pdf-pages">
-      <div id="pdf-single"><canvas id="pdf-canvas"></canvas></div>
+      <div id="pdf-single"><canvas id="pdf-canvas"></canvas><canvas id="pdf-canvas-2"></canvas></div>
       <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
     </div>
     <pre id="fallback"></pre>
@@ -345,6 +363,25 @@ ${text}`;
     }
     return page;
   }
+  var PDF_SPREAD_MIN_WIDTH = 800;
+  function shouldRenderSpread(pref, viewportWidth) {
+    return pref === "double" && viewportWidth >= PDF_SPREAD_MIN_WIDTH;
+  }
+  function spreadPages(page, pageCount2, spreading) {
+    if (!spreading || page === 1 || pageCount2 <= 1) return [page];
+    const pairStart = page % 2 === 0 ? page : page - 1;
+    return pairStart + 1 <= pageCount2 ? [pairStart, pairStart + 1] : [pairStart];
+  }
+  function nextSpreadStart(page, pageCount2, spreading) {
+    const pages = spreadPages(page, pageCount2, spreading);
+    const last = pages[pages.length - 1];
+    return last >= pageCount2 ? null : last + 1;
+  }
+  function prevSpreadStart(page, pageCount2, spreading) {
+    const pages = spreadPages(page, pageCount2, spreading);
+    const first = pages[0];
+    return first <= 1 ? null : first - 1;
+  }
 
   // src/features/reader/webview/src/pdf.entry.ts
   installErrorHandlers();
@@ -352,6 +389,8 @@ ${text}`;
   var currentPage = 0;
   var pageCount = 0;
   var currentZoom = 1;
+  var spreadPref = "single";
+  var SPREAD_GAP_PX = 8;
   var renderToken = 0;
   var scrollMode = false;
   var wantsScroll = false;
@@ -504,7 +543,7 @@ ${text}`;
     const scroll = scrollContainer();
     if (scroll) scroll.style.display = "none";
     if (single) single.style.display = "flex";
-    if (pdfDoc && currentPage) renderPageGuarded(currentPage);
+    if (pdfDoc && currentPage) renderCurrentGuarded(currentPage);
   }
   async function resizeScrollList(doc) {
     if (!scrollMode) return;
@@ -547,45 +586,68 @@ ${text}`;
       height: el?.clientHeight || window.innerHeight || 0
     };
   }
-  async function renderPage(pageNumber) {
+  async function renderCurrent(pageNumber) {
     if (!pdfDoc) {
-      fail("NOT_READY", "renderPage() before a document was opened");
+      fail("NOT_READY", "renderCurrent() before a document was opened");
       return;
     }
-    const token = ++renderToken;
-    const page = await pdfDoc.getPage(pageNumber);
-    if (token !== renderToken) return;
+    const doc = pdfDoc;
     const box = viewportSize();
-    const base = page.getViewport({ scale: 1 });
-    const fit = fitScale(box.width, box.height, base.width, base.height);
+    const spreading = shouldRenderSpread(spreadPref, box.width);
+    const pages = spreadPages(pageNumber, pageCount, spreading);
+    const token = ++renderToken;
+    const pageProxies = await Promise.all(pages.map((p) => doc.getPage(p)));
+    if (token !== renderToken) return;
+    const perPageWidth = pages.length === 2 ? (box.width - SPREAD_GAP_PX) / 2 : box.width;
+    const bases = pageProxies.map((p) => p.getViewport({ scale: 1 }));
+    const fit = Math.min(
+      ...bases.map((base) => fitScale(perPageWidth, box.height, base.width, base.height))
+    );
     if (fit === 0) {
       fail("NAVIGATION_FAILED", "the reader container has no measurable size");
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const viewport = page.getViewport({ scale: fit * dpr * currentZoom });
-    const canvas = document.getElementById("pdf-canvas");
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context) {
-      fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
-      return;
+    const canvasIds = ["pdf-canvas", "pdf-canvas-2"];
+    const renders = [];
+    for (let i = 0; i < canvasIds.length; i++) {
+      const canvas = document.getElementById(canvasIds[i]);
+      if (!canvas) {
+        fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
+        return;
+      }
+      if (i >= pageProxies.length) {
+        canvas.style.display = "none";
+        canvas.width = 0;
+        canvas.height = 0;
+        continue;
+      }
+      canvas.style.display = "block";
+      const base = bases[i];
+      const viewport = pageProxies[i].getViewport({ scale: fit * dpr * currentZoom });
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
+      canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
+        return;
+      }
+      renders.push(pageProxies[i].render({ canvasContext: context, viewport }).promise);
     }
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
-    canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
-    await page.render({ canvasContext: context, viewport }).promise;
+    await Promise.all(renders);
     if (token !== renderToken) return;
-    currentPage = pageNumber;
+    currentPage = pages[0];
     post({
       type: "relocated",
       position: { kind: "page", page: currentPage, pageCount },
-      atStart: currentPage <= 1,
-      atEnd: currentPage >= pageCount
+      atStart: pages[0] <= 1,
+      atEnd: pages[pages.length - 1] >= pageCount
     });
   }
-  function renderPageGuarded(pageNumber) {
-    renderPage(pageNumber).catch((error) => {
+  function renderCurrentGuarded(pageNumber) {
+    renderCurrent(pageNumber).catch((error) => {
       fail("NAVIGATION_FAILED", error);
     });
   }
@@ -596,7 +658,7 @@ ${text}`;
         fail("NAVIGATION_FAILED", error);
       });
     } else if (currentPage) {
-      renderPageGuarded(currentPage);
+      renderCurrentGuarded(currentPage);
     }
   });
   var api = {
@@ -633,7 +695,7 @@ ${text}`;
         try {
           pdfDoc = await loading.promise;
           pageCount = pdfDoc.numPages;
-          await renderPage(1);
+          await renderCurrent(1);
           if (wantsScroll) {
             await enterScrollMode(pdfDoc);
           }
@@ -649,24 +711,30 @@ ${text}`;
         fail("NOT_READY", "next() before a document was opened");
         return;
       }
-      if (currentPage >= pageCount) return;
       if (scrollMode) {
+        if (currentPage >= pageCount) return;
         scrollToPage(currentPage + 1);
         return;
       }
-      renderPageGuarded(currentPage + 1);
+      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+      const target = nextSpreadStart(currentPage, pageCount, spreading);
+      if (target === null) return;
+      renderCurrentGuarded(target);
     },
     prev: () => {
       if (!pdfDoc) {
         fail("NOT_READY", "prev() before a document was opened");
         return;
       }
-      if (currentPage <= 1) return;
       if (scrollMode) {
+        if (currentPage <= 1) return;
         scrollToPage(currentPage - 1);
         return;
       }
-      renderPageGuarded(currentPage - 1);
+      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+      const target = prevSpreadStart(currentPage, pageCount, spreading);
+      if (target === null) return;
+      renderCurrentGuarded(target);
     },
     /**
      * Navigate to a PDF target.
@@ -692,13 +760,17 @@ ${text}`;
         scrollToPage(page);
         return;
       }
-      renderPageGuarded(page);
+      renderCurrentGuarded(page);
     },
     /**
-     * Apply a resolved appearance. Per the sign-off doc this shell applies only `bg`, `zoom` and (as
-     * of continuous scroll) `flow` — typography/theme-text fields are still silently ignored, not an
-     * oversight: pdf.js rasterises pages, so there is no text CSS layer to override here the way the
-     * EPUB shell has.
+     * Apply a resolved appearance. Per the sign-off doc this shell applies `bg`, `zoom`, `flow` (as of
+     * continuous scroll) and — as of double-page — `spread`; typography/theme-text fields are still
+     * silently ignored, not an oversight: pdf.js rasterises pages, so there is no text CSS layer to
+     * override here the way the EPUB shell has.
+     *
+     * `spread` only affects the single-page surface (pdfOutline.ts's module doc explains why
+     * continuous scroll is out of scope) — tracked here regardless of `scrollMode` so it is already
+     * current if the user leaves scroll mode later, but it only triggers a re-render below.
      *
      * `document.body.style` rather than a stylesheet: there is no `Contents` abstraction to hook into
      * (one page is one canvas, not a chapter document), so a single direct style write is enough.
@@ -708,6 +780,8 @@ ${text}`;
       const zoomChanged = appearance.zoom !== currentZoom;
       currentZoom = appearance.zoom;
       wantsScroll = appearance.flow === "scrolled-doc";
+      const spreadChanged = appearance.spread !== spreadPref;
+      spreadPref = appearance.spread;
       if (!pdfDoc) return;
       if (wantsScroll && !scrollMode) {
         enterScrollMode(pdfDoc).catch((error) => {
@@ -719,13 +793,15 @@ ${text}`;
         leaveScrollMode();
         return;
       }
-      if (!zoomChanged) return;
       if (scrollMode) {
+        if (!zoomChanged) return;
         resizeScrollList(pdfDoc).catch((error) => {
           fail("NAVIGATION_FAILED", error);
         });
-      } else if (currentPage) {
-        renderPageGuarded(currentPage);
+        return;
+      }
+      if ((zoomChanged || spreadChanged) && currentPage) {
+        renderCurrentGuarded(currentPage);
       }
     }
   };
