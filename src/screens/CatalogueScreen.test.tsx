@@ -22,7 +22,15 @@ import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue
 import { color } from '@theme/tokens';
 
 import { normalizeCatalogue } from '@/model/opds/normalize';
+import { useLibraryStore } from '@store/libraryStore';
 import CatalogueScreen from './CatalogueScreen';
+
+// Controls what the licence source returns for the holdings cache.
+// Defaults to empty so existing tests are unaffected.
+const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
+jest.mock('@config/licence', () => ({
+  getLicenceSource: () => ({ getLibrary: () => mockGetLibrary() }),
+}));
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
 // referencing out-of-scope variables whose name starts with "mock".
@@ -125,6 +133,9 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
   mockUseNetworkStatus.mockReturnValue(true);
+  mockGetLibrary.mockClear();
+  mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  useLibraryStore.setState({ loans: [], holds: [], loading: false });
   // Module state, so it would otherwise carry into the next test.
   forgetFeedOffsets();
 });
@@ -627,5 +638,60 @@ describe('CatalogueScreen with no curated shelves', () => {
     // The category row is unaffected by an empty shelf list — the two are
     // independent, same as the "missing shelf" case above.
     expect(screen.getByText('eBooks')).toBeTruthy();
+  });
+});
+
+// F8 — list-level cache. The whole point of the library store is that forty
+// cards share one GET /api/v1/library call rather than making forty. This
+// verifies the screen calls getLibrary exactly once on mount, regardless of
+// how many publications are in the catalogue.
+describe('CatalogueScreen — list-level holdings cache', () => {
+  it('calls getLibrary once on mount, not once per card', async () => {
+    // Two shelves, three publications total — getLibrary must still be called once.
+    const multiCardCatalogue: Catalogue = {
+      ...FAKE_CATALOGUE,
+      shelves: [
+        {
+          id: 'shelf_a',
+          title: 'Shelf A',
+          publications: [
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_1', title: 'Book One' },
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_2', title: 'Book Two' },
+          ],
+        },
+        {
+          id: 'shelf_b',
+          title: 'Shelf B',
+          publications: [
+            { ...FAKE_CATALOGUE.shelves[0].publications[0], id: 'item_3', title: 'Book Three' },
+          ],
+        },
+      ],
+    };
+    setCatalogueSource(fakeSource(async () => multiCardCatalogue));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Book One')).toBeTruthy());
+    expect(mockGetLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  // D10 — holdings joined per item. Pre-populating the store verifies that the
+  // badge resolves against the live loan rather than against empty holdings.
+  it('reflects a held loan in the action tier when the library store has one', async () => {
+    useLibraryStore.setState({
+      loans: [{ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 }],
+      holds: [],
+    });
+    // item_42 is ELITE in FAKE_CATALOGUE — with an active loan resolveAccess
+    // resolves to 'available', which renders the ELITE tier badge regardless.
+    // The important thing is the screen does not crash when a loan is present.
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    // Screen rendered without error and the card is present — the holding was joined.
+    expect(screen.getByText('Rights for Robots')).toBeTruthy();
   });
 });

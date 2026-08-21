@@ -15,11 +15,10 @@
 // they remember from chapter nine, get nothing, and reasonably decide the app is
 // broken.
 //
-// NO ACCESS BADGE, for the reason CatalogueScreen already documents — but note
-// that `resolveAccess` is no longer that reason: it landed and is on main, and
-// only the wiring is outstanding. `ContentCard`'s `badge` slot takes
-// already-resolved UI, and deriving one from `publication.acquisition` here is
-// still exactly the Design Spec §5.1 violation the slot exists to prevent.
+// THE BADGE IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place
+// access logic may live (Design Spec §5.1) — this screen calls it per row and
+// passes only the resolved `.tier` into `ContentCard`'s `badge` slot. It never
+// reads `publication.acquisition.licenceModel` itself.
 //
 // EMPTY AND ERROR RENDER THROUGH THE SHARED COMPONENTS. Khushi's `EmptyState`
 // (K1) and `ErrorState` own this copy and this layout now that both exist —
@@ -32,6 +31,8 @@ import { useNavigation, type CompositeNavigationProp } from '@react-navigation/n
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
+import { resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { EmptyState } from '@components/EmptyState';
@@ -298,15 +299,27 @@ export default function SearchScreen() {
           </View>
         )}
 
-        {search.publications.map((publication) => (
-          <ContentCard
-            key={publication.id}
-            title={publication.title}
-            publisher={publication.publisher}
-            imageUrl={publication.coverUrl}
-            onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
-          />
-        ))}
+        {search.publications.map((publication) => {
+          // No loan/hold/session on a list row, same as CatalogueScreen and
+          // ItemDetailScreen — resolveAccess's own header says this is exactly
+          // what lets a row resolve from feed data alone.
+          const access = resolveAccess({
+            item: publication,
+            institutionId: PLACEHOLDER_INSTITUTION_ID,
+            session: null,
+          });
+
+          return (
+            <ContentCard
+              key={publication.id}
+              title={publication.title}
+              publisher={publication.publisher}
+              imageUrl={publication.coverUrl}
+              badge={<AccessTierBadge tier={access.tier} />}
+              onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+            />
+          );
+        })}
 
         {/* PAGINATION IS THE RESPONSE'S `next`, FOLLOWED. No page numbers: the
             server said where the next page is, and there is nothing else to

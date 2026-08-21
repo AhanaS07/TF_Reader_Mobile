@@ -24,8 +24,8 @@
 // §5.1 violation ("the UI must never calculate access rights"). The session
 // comes from `handToggledSession` — A7's stand-in for real sign-in — which is
 // never null here: CatalogueHomeScreen only renders this screen once an
-// institution is selected. `loan`/`hold` stay omitted, which still resolves
-// Open Access and Elite-with-nothing-held from feed data alone.
+// institution is selected. loan/hold are joined per item from the library cache
+// so each badge reflects the reader's live holdings without a per-card call.
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -48,6 +48,7 @@ import { color, space, type as typeScale } from '../theme/tokens';
 import { useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import OfflineBanner from '@/components/OfflineBanner';
+import { useLibraryStore } from '@store/libraryStore';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
@@ -78,6 +79,12 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
 
   const institutionId = institution.id;
 
+  // Holdings joined per item so each badge reflects the reader's live state.
+  // One fetch per mount — not one per card.
+  const loans = useLibraryStore((s) => s.loans);
+  const holds = useLibraryStore((s) => s.holds);
+  const refresh = useLibraryStore((s) => s.refresh);
+
   // A7 — keyed on the institution, not one shared offset: signing out swaps this
   // screen for the public feed, and each has its own place to return to. Changing
   // institution is a different feed too, so it starts at the top.
@@ -103,7 +110,10 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
 
   useEffect(() => {
     fetchCatalogue();
-  }, [fetchCatalogue]);
+    // Populate the holdings cache once per mount so every card's badge is live
+    // rather than the empty-cache default. Runs in parallel with fetchCatalogue.
+    void refresh();
+  }, [fetchCatalogue, refresh]);
 
   const retry = useCallback(() => {
     setLoading(true);
@@ -189,29 +199,35 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                   design shows no action on these headers either. */}
               <SectionHeader title={shelf.title} />
               <View style={styles.list}>
-                {shelf.publications.map((publication) => (
-                  <ContentCard
-                    key={publication.id}
-                    title={publication.title}
-                    publisher={publication.publisher}
-                    imageUrl={publication.coverUrl}
-                    format={publication.format}
-                    badge={
-                      <AccessTierBadge
-                        tier={
-                          resolveAccess({
-                            item: publication,
-                            institutionId,
-                            session: handToggledSession(institutionId),
-                          }).tier
-                        }
-                      />
-                    }
-                    onPress={() =>
-                      navigation.navigate('ItemDetail', { itemId: publication.id })
-                    }
-                  />
-                ))}
+                {shelf.publications.map((publication) => {
+                  const pubLoan = loans.find((l) => l.itemId === publication.id);
+                  const pubHold = holds.find((h) => h.itemId === publication.id);
+                  return (
+                    <ContentCard
+                      key={publication.id}
+                      title={publication.title}
+                      publisher={publication.publisher}
+                      imageUrl={publication.coverUrl}
+                      format={publication.format}
+                      badge={
+                        <AccessTierBadge
+                          tier={
+                            resolveAccess({
+                              item: publication,
+                              institutionId,
+                              session: handToggledSession(institutionId),
+                              loan: pubLoan,
+                              hold: pubHold,
+                            }).tier
+                          }
+                        />
+                      }
+                      onPress={() =>
+                        navigation.navigate('ItemDetail', { itemId: publication.id })
+                      }
+                    />
+                  );
+                })}
               </View>
             </View>
           )) : (
