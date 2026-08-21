@@ -175,7 +175,8 @@ Do not "simplify" this into one command with a format argument.
 
 ### 2. `goTo.target` stays a bare string
 
-Search stores a `Locator`; the host unwraps `.cfi` before sending (`cfiOf()` in `useBookSearch.ts`).
+Search stores a `Locator`; the host unwraps it into a `ReaderTarget` before sending (`targetOf()` in
+`useBookSearch.ts`).
 Before the conversion the argument was that a frozen contract must not be hand-copied into
 untypechecked JS. That specific risk is gone — but the reason stands and has changed shape: a
 discriminated union on this channel still arrives as JSON, so `parseReaderMessage` would have to
@@ -361,6 +362,23 @@ minimum of 1. A prefs-driven margin can reach that; a hand-copied 16 could not.
   `width >= minSpreadWidth`, default 800 (`layout.js:119-120`). So on any phone `double` renders
   single-page whatever we send. That is the behaviour Reader wants; it does mean the preference is inert
   on the device this is tested on, which is the settings UI's problem to be honest about.
+
+  **KNOWN LIMITATION, ACCEPTED RATHER THAN WORKED AROUND: the cover pairs with page 2 on a wide
+  viewport instead of standing alone**, unlike PDF's spread (which is ours to define — see above — and
+  deliberately keeps the cover solo). Traced to epub.js itself, not to how this shell calls it:
+  `DefaultViewManager`'s "cover stands alone" logic
+  (`managers/default/index.js`'s `handleNextPrePaginated` — literally commented "First page (cover)
+  should stand alone for pre-paginated books") is gated on `this.layout.name === "pre-paginated"`, i.e.
+  FIXED-LAYOUT books only. `layout.js`'s reflowable path computes `divisor = 2` from viewport width
+  alone, with no section-index awareness at all, so a reflowable EPUB (what this app's sample/dev books
+  are, and what most text-based EPUBs are) has no "cover alone" concept in the library — `rendition.spread()`
+  is being called exactly as documented; there is nothing to fix on this side of the call. A workaround
+  (forcing `spread: 'none'` only while `book.spine.first()` is displayed, switching back once the reader
+  pages past it) was scoped and explicitly declined: it would fight the manager's internal section-packing
+  rather than use a supported seam, needing a `display()` re-call — not just `spread()` — at the cover/page-2
+  boundary, i.e. a re-render on every crossing, for a cosmetic gap on a fixed-layout-only affordance most
+  reader apps accept as-is for reflowable content. Revisit only if this becomes a real complaint, not a
+  once-off report.
 - **`zoom` is carried, and the WebView may hold the last payload only as a write-only cache**, for
   recomputing on resize. The moment a pinch-zoom gesture inside the WebView *mutates* it, that is state
   RN also models and RN has to own it — the same line the PDF renderer's `currentPage` sits on.
