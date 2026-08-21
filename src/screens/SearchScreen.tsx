@@ -36,15 +36,13 @@ import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { EmptyState } from '@components/EmptyState';
 import { ErrorState } from '@components/ErrorState';
-import { FilterChip } from '@components/FilterChip';
+import { FilterSortSheet } from '@components/FilterSortSheet';
 import { SearchInput } from '@components/SearchInput';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
-import { ACCESS_TIERS, type AccessTier } from '@model/types';
-import type { SearchStatus } from '@/search';
-import { ACCESS_TIER_FILTER_CONFIRMED, useCatalogueSearch } from '@/search';
-import type { ContentFormat } from '@/shared/types/primitives';
+import type { SearchFilters, SearchStatus } from '@/search';
+import { useCatalogueSearch } from '@/search';
 import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, radius, space, type } from '@theme/tokens';
@@ -72,32 +70,18 @@ const SKELETON_COUNT = 3;
 const PLACEHOLDER = 'Search titles, authors, subjects, and descriptions';
 const HELPER = 'Catalogue metadata only — this does not search inside books.';
 
-// Reader-facing labels, kept apart from the machine values so a rewording can
-// never change what goes on the wire.
-//
-// TYPED AS A FULL Record, WHICH IS WHAT MAKES THE ROW EXHAUSTIVE. `ContentFormat`
-// is a type with no const array behind it (primitives.ts declares only the union),
-// so the chip row is driven by this map's keys — and omitting a format here is a
-// compile error rather than a chip that silently stops being offered.
-const CONTENT_TYPE_LABELS: Record<ContentFormat, string> = {
-  EPUB: 'eBooks',
-  PDF: 'PDF',
-  AUDIO: 'Audiobooks',
-};
-
-const CONTENT_TYPES = Object.keys(CONTENT_TYPE_LABELS) as ContentFormat[];
-
-const ACCESS_TIER_LABELS: Record<AccessTier, string> = {
-  OPEN_ACCESS: 'Open access',
-  SUBSCRIPTION: 'Subscription',
-  ELITE: 'Elite',
-};
-
 // Browse-instead cards cycle the accents so three targets do not read as one
 // block of colour. Cycled by INDEX, never chosen from the title — types.ts is
 // explicit that navigation is data, not code, and no shelf may be named in a
 // branch anywhere.
 const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'elite'];
+
+// Search has no sort parameter at all — searchCatalogue's own contract carries
+// none (see SORT_ORDERS in model/types.ts). This satisfies FilterSortSheet's
+// required onSelectSort prop for a row that stays permanently disabled below.
+function noopSort() {
+  /* sort is not a search parameter — see sortDisabled on <FilterSortSheet> */
+}
 
 // ─── Screen ──────────────────────────────────────────────────────────────────
 
@@ -133,6 +117,36 @@ export default function SearchScreen() {
   // The overlay is a pure view; nothing here records audio. See the mic handler.
   const [voiceState, setVoiceState] = useState<VoiceOverlayState | null>(null);
 
+  // Filter & sort sheet — same draft-then-Apply shape ShelfScreen uses.
+  // `search.filters` already IS the applied value (it mirrors the reducer's
+  // own state), so unlike ShelfScreen there is no separate "applied" copy to
+  // keep here — only what the sheet is showing before Apply is pressed.
+  const [draftFilters, setDraftFilters] = useState<SearchFilters>({});
+  const [sheetVisible, setSheetVisible] = useState(false);
+
+  const openSheet = useCallback(() => {
+    setDraftFilters(search.filters);
+    setSheetVisible(true);
+  }, [search.filters]);
+
+  // Both setters fire in one synchronous handler, so React batches them into
+  // one re-render and the reducer threads them correctly — see
+  // searchState.ts's mergeFilters/beginSearch, which apply each action against
+  // the true prior state rather than a stale render-time snapshot. That is
+  // what lets one Apply press commit both dimensions together.
+  const applyFilters = useCallback(() => {
+    setSheetVisible(false);
+    search.onSelectContentType(draftFilters.contentType);
+    search.onSelectAccessTier(draftFilters.accessTier);
+  }, [draftFilters, search]);
+
+  const clearAllFilters = useCallback(() => {
+    setDraftFilters({});
+    setSheetVisible(false);
+    search.onSelectContentType(undefined);
+    search.onSelectAccessTier(undefined);
+  }, [search]);
+
   const state: SearchStatus = search.state;
   const hasResults = search.publications.length > 0;
   const hasActiveFilter =
@@ -166,60 +180,18 @@ export default function SearchScreen() {
         </Text>
       </View>
 
-      {/* Content type. Sent as a query parameter with the search itself, so the
-          server narrows before it paginates — changing a chip starts a new search
-          rather than trimming the page already on screen. */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        // flexGrow: 0 is load-bearing. A horizontal ScrollView in a column parent
-        // expands to fill the free vertical space, which pushes the results list
-        // down the screen and reads as a mysterious gap rather than a layout bug.
-        style={styles.chipsBar}
-        contentContainerStyle={styles.chips}
+      {/* Content type and access tier both live behind this one sheet now —
+          same FilterSortSheet ShelfScreen already uses. Nothing re-searches
+          until Apply is pressed inside it. */}
+      <Pressable
+        testID="search-filter-button"
+        onPress={openSheet}
+        style={styles.filterButton}
+        accessibilityRole="button"
+        accessibilityLabel="Filter and sort"
       >
-        <FilterChip
-          label="All"
-          // "No constraint" is the absence of a value, not a fourth format — so
-          // there is no 'ALL' member to filter back out before the wire.
-          selected={search.filters.contentType === undefined}
-          onPress={() => search.onSelectContentType(undefined)}
-        />
-        {CONTENT_TYPES.map((contentType) => (
-          <FilterChip
-            key={contentType}
-            label={CONTENT_TYPE_LABELS[contentType]}
-            selected={search.filters.contentType === contentType}
-            onPress={() => search.onSelectContentType(contentType)}
-          />
-        ))}
-      </ScrollView>
-
-      {/* Access tier. Q-12 is resolved — wokay's contract confirms `accessTier`
-          as a real filter parameter, so the dimension is enabled and the chosen
-          tier is sent. See ACCESS_TIER_FILTER_CONFIRMED. */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.chipsBar}
-        contentContainerStyle={styles.chips}
-      >
-        {ACCESS_TIERS.map((tier) => (
-          <FilterChip
-            key={tier}
-            label={ACCESS_TIER_LABELS[tier]}
-            selected={search.filters.accessTier === tier}
-            disabled={!ACCESS_TIER_FILTER_CONFIRMED}
-            onPress={() => search.onSelectAccessTier(tier)}
-          />
-        ))}
-      </ScrollView>
-
-      {!ACCESS_TIER_FILTER_CONFIRMED && (
-        <Text testID="search-tier-note" style={styles.note}>
-          Access tier filtering is awaiting confirmation from the catalogue team.
-        </Text>
-      )}
+        <Text style={styles.filterButtonLabel}>Filter & Sort</Text>
+      </Pressable>
 
       <ScrollView contentContainerStyle={styles.results}>
         {state === 'idle' && (
@@ -293,10 +265,7 @@ export default function SearchScreen() {
             <EmptyState
               variant={hasActiveFilter ? 'no_filter_results' : 'no_query_results'}
               query={search.query}
-              onClearFilters={() => {
-                search.onSelectContentType(undefined);
-                search.onSelectAccessTier(undefined);
-              }}
+              onClearFilters={clearAllFilters}
             />
 
             {search.browseInstead.length > 0 && (
@@ -392,6 +361,24 @@ export default function SearchScreen() {
         onCancel={() => setVoiceState(null)}
         onClear={() => setVoiceState('listening')}
       />
+
+      <FilterSortSheet
+        visible={sheetVisible}
+        onDismiss={() => setSheetVisible(false)}
+        contentType={draftFilters.contentType}
+        onSelectContentType={(contentType) =>
+          setDraftFilters((previous) => ({ ...previous, contentType }))
+        }
+        accessTier={draftFilters.accessTier}
+        onSelectAccessTier={(accessTier) =>
+          setDraftFilters((previous) => ({ ...previous, accessTier }))
+        }
+        sort={undefined}
+        onSelectSort={noopSort}
+        sortDisabled
+        onApply={applyFilters}
+        onClearAll={clearAllFilters}
+      />
     </View>
   );
 }
@@ -414,13 +401,21 @@ const styles = StyleSheet.create({
     color: color.textSecondary,
     marginTop: space.sm,
   },
-  chipsBar: {
-    flexGrow: 0,
-  },
-  chips: {
-    gap: space.sm,
+  filterButton: {
+    alignSelf: 'flex-start',
+    marginHorizontal: space.md,
+    marginTop: space.md,
     paddingHorizontal: space.md,
-    paddingTop: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.border,
+  },
+  filterButtonLabel: {
+    fontWeight: type.button.weight,
+    fontSize: type.button.size,
+    lineHeight: type.button.lineHeight,
+    color: color.textPrimary,
   },
   recent: {
     gap: space.xs,
