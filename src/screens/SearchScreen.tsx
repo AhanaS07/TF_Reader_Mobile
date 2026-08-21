@@ -42,8 +42,8 @@ import { SearchInput } from '@components/SearchInput';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
-import type { SearchFilters, SearchStatus } from '@/search';
-import { useCatalogueSearch } from '@/search';
+import type { SearchFilters, SearchStatus, VoiceStatus } from '@/search';
+import { useCatalogueSearch, useVoiceSearch, VOICE_ERROR_COPY } from '@/search';
 import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, radius, space, type } from '@theme/tokens';
@@ -76,6 +76,31 @@ const HELPER = 'Catalogue metadata only — this does not search inside books.';
 // explicit that navigation is data, not code, and no shelf may be named in a
 // branch anywhere.
 const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'elite'];
+
+// How the recogniser's lifecycle renders. `VoiceStatus` is the machine
+// (src/search/voiceState.ts); `VoiceOverlayState` is the four things the surface
+// can look like — they are deliberately not the same list, because the overlay
+// has no reason to distinguish a refusal from a broken recogniser and the
+// machine very much does.
+//
+// A full Record, so a new `VoiceStatus` member is a compile error here rather
+// than a state that silently renders as something else.
+const VOICE_OVERLAY_STATE: Record<VoiceStatus, VoiceOverlayState> = {
+  // Never read — the overlay is hidden when the machine is closed. Present only
+  // because the map is exhaustive.
+  closed: 'listening',
+  // The OS permission dialog is covering the screen, so "Listening…" is what
+  // the reader sees behind it either way.
+  checkingPermission: 'listening',
+  listening: 'listening',
+  processing: 'transcribing',
+  done: 'success',
+  // All three are one surface: the copy carries the difference, and it comes
+  // from VOICE_ERROR_COPY rather than from a fourth visual state.
+  noSpeech: 'error',
+  permissionDenied: 'error',
+  failed: 'error',
+};
 
 // Search has no sort parameter at all — searchCatalogue's own contract carries
 // none (see SORT_ORDERS in model/types.ts). This satisfies FilterSortSheet's
@@ -115,8 +140,27 @@ export default function SearchScreen() {
     [search],
   );
 
-  // The overlay is a pure view; nothing here records audio. See the mic handler.
-  const [voiceState, setVoiceState] = useState<VoiceOverlayState | null>(null);
+  // Screen 11. The overlay stays a pure view — the recogniser and the microphone
+  // permission live in this hook, and it knows nothing about searching.
+  const voice = useVoiceSearch();
+
+  // WHERE VOICE REJOINS ORDINARY SEARCH, and the whole of it. A transcript is
+  // "simply a second way to produce a query string", so it goes through the same
+  // two calls `onSelectRecentQuery` above makes — no voice-shaped search path,
+  // no second pipeline, and nothing new on the wire.
+  const onVoiceSubmit = useCallback(() => {
+    const transcript = voice.transcript.trim();
+    // Belt and braces: the machine cannot reach `submitted` from a silence, and
+    // the overlay disables Search without a transcript. Neither of those is
+    // visible from here, and a blank query fired at an entitlement-scoped
+    // endpoint is the failure worth two guards.
+    if (transcript.length === 0) return;
+
+    voice.onSubmit();
+    addRecentQuery(transcript);
+    search.onChangeQuery(transcript);
+    search.onSubmit();
+  }, [voice, addRecentQuery, search]);
 
   // Filter & sort sheet — same draft-then-Apply shape ShelfScreen uses.
   // `search.filters` already IS the applied value (it mirrors the reducer's
@@ -168,12 +212,9 @@ export default function SearchScreen() {
           // Screen 09 is catalogue search, so the mic belongs here. Screen 06
           // (institution search) passes nothing and gets no mic.
           //
-          // NOTHING IS RECORDED. A recogniser is a native dependency and adding
-          // one is a team decision, so the overlay opens as a view only: the
-          // transcript stays empty and its Search button stays disabled. When a
-          // recogniser lands it feeds `transcript` and drives `voiceState`, and
-          // submitting it is `onChangeQuery` then `onSubmit` — no change here.
-          onVoicePress={() => setVoiceState('listening')}
+          // The press asks for the microphone permission and then opens it —
+          // see `useVoiceSearch`. Nothing about a recogniser reaches this file.
+          onVoicePress={voice.onMicPress}
         />
 
         <Text testID="search-helper" style={styles.helper}>
@@ -368,11 +409,17 @@ export default function SearchScreen() {
         )}
       </ScrollView>
 
+      {/* Screen 11. Still a pure view — every prop below is already-resolved
+          state, and the copy is looked up here rather than in the machine, the
+          same way this screen resolves CATALOGUE_ERROR_COPY for ErrorState. */}
       <VoiceOverlay
-        visible={voiceState !== null}
-        state={voiceState ?? 'listening'}
-        onCancel={() => setVoiceState(null)}
-        onClear={() => setVoiceState('listening')}
+        visible={voice.status !== 'closed'}
+        state={VOICE_OVERLAY_STATE[voice.status]}
+        transcript={voice.transcript}
+        errorMessage={voice.errorCode === undefined ? undefined : VOICE_ERROR_COPY[voice.errorCode]}
+        onCancel={voice.onCancel}
+        onClear={voice.onClear}
+        onSubmit={onVoiceSubmit}
       />
 
       <FilterSortSheet

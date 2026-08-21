@@ -26,3 +26,15 @@ jest.mock(
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
+
+// expo-speech-recognition is a NATIVE module too, and fails the same way: under
+// Jest it resolves to nothing and throws at IMPORT time, so every suite that
+// reaches SearchScreen — including App.test.tsx — fails to load rather than
+// failing a test. Screen 11's recogniser lives behind `useVoiceSearch`, so the
+// blast radius is anything that renders the Search tab.
+//
+// Unlike the two above, no official mock ships with the package, so we own one:
+// src/search/MockSpeechRecognition.ts. It fakes the native BOUNDARY (the method
+// surface and the event stream) and nothing else — a test states the permission
+// answer and the events, because those are exactly what a real device decides.
+jest.mock('expo-speech-recognition', () => require('./src/search/MockSpeechRecognition'));
