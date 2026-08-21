@@ -283,6 +283,17 @@ describe('successful results', () => {
 
 // ─── Filters as query parameters, before pagination ──────────────────────────
 
+// Every dimension lives behind one "Filter and sort" trigger and a sheet —
+// same component ShelfScreen already uses. A chip is never reachable until the
+// sheet is open, and nothing re-searches until Apply is pressed.
+async function openFilterSheet() {
+  await fireEvent.press(screen.getByLabelText('Filter and sort'));
+}
+
+async function applyFilters() {
+  await fireEvent.press(screen.getByTestId('filter-sort-sheet-apply'));
+}
+
 describe('filters are part of the request', () => {
   it('sends a selected contentType as part of the search', async () => {
     const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
@@ -292,7 +303,10 @@ describe('filters are part of the request', () => {
     await submit('climate');
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
 
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
     expect(pipeline.searchCalls[1]).toEqual({
@@ -314,7 +328,10 @@ describe('filters are part of the request', () => {
     await submit('climate');
     await waitFor(() => expect(screen.getByTestId('search-load-more')).toBeTruthy());
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('eBooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('eBooks'));
+    await applyFilters();
 
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
     expect(pipeline.nextCalls).toEqual([]);
@@ -326,10 +343,18 @@ describe('filters are part of the request', () => {
     await render(<SearchScreen />);
 
     await submit('climate');
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
 
-    await fireEvent.press(screen.getByLabelText('All'));
+    await openFilterSheet();
+    // Both dimensions offer an "All" chip inside the sheet — content type's
+    // renders first, so index 0 is the one this test means to press.
+    await waitFor(() => expect(screen.getAllByLabelText('All')).toHaveLength(2));
+    await fireEvent.press(screen.getAllByLabelText('All')[0]);
+    await applyFilters();
 
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(3));
     expect(pipeline.searchCalls[2].filters).toEqual({});
@@ -340,7 +365,10 @@ describe('filters are part of the request', () => {
     setSearchPipeline(pipeline);
     await render(<SearchScreen />);
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
 
     expect(pipeline.searchCalls).toEqual([]);
   });
@@ -353,7 +381,9 @@ describe('access tier is enabled now that Q-12 is resolved', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
-    expect(screen.getByLabelText('Open access')).toBeTruthy();
+    await openFilterSheet();
+
+    await waitFor(() => expect(screen.getByLabelText('Open access')).toBeTruthy());
     expect(screen.getByLabelText('Subscription')).toBeTruthy();
     expect(screen.getByLabelText('Elite')).toBeTruthy();
   });
@@ -362,18 +392,14 @@ describe('access tier is enabled now that Q-12 is resolved', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Open access')).toBeTruthy());
+
     for (const label of ['Open access', 'Subscription', 'Elite']) {
       expect(screen.getByLabelText(label).props.accessibilityState).toMatchObject({
         disabled: false,
       });
     }
-  });
-
-  it('shows no "awaiting confirmation" note', async () => {
-    setSearchPipeline(stub(() => Promise.resolve(feed())));
-    await render(<SearchScreen />);
-
-    expect(screen.queryByTestId('search-tier-note')).toBeNull();
   });
 
   it('starts a new search carrying the tier when a tier chip is pressed', async () => {
@@ -384,10 +410,55 @@ describe('access tier is enabled now that Q-12 is resolved', () => {
     await submit('climate');
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Elite')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Elite'));
+    await applyFilters();
 
     await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
     expect(pipeline.searchCalls[1]?.filters).toEqual({ accessTier: 'ELITE' });
+  });
+});
+
+// Both dimensions live in one sheet session, so one Apply press must commit
+// both together rather than one silently overwriting the other.
+describe('applying more than one filter dimension at once', () => {
+  it('sends both filters together from a single Apply press', async () => {
+    const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await submit('climate');
+    await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
+
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await fireEvent.press(screen.getByLabelText('Elite'));
+    await applyFilters();
+
+    await waitFor(() => expect(pipeline.searchCalls).toHaveLength(2));
+    expect(pipeline.searchCalls[1].filters).toEqual({
+      contentType: 'AUDIO',
+      accessTier: 'ELITE',
+    });
+  });
+});
+
+// Search has no sort parameter at all (searchCatalogue's own contract carries
+// none) — unlike ShelfScreen, this is not conditional on which shelf is open.
+describe('sort is not offered for search', () => {
+  it('always greys the sort row with an explanatory note', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await openFilterSheet();
+
+    await waitFor(() => expect(screen.getByLabelText('Newest')).toBeTruthy());
+    expect(screen.getByTestId('filter-sort-sheet-sort-note')).toBeTruthy();
+    expect(screen.getByLabelText('Newest').props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
   });
 });
 
@@ -412,7 +483,10 @@ describe('a zero-result response', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [] }))));
     await render(<SearchScreen />);
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
     await submit('quantum basket weaving');
 
     await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
@@ -424,7 +498,10 @@ describe('a zero-result response', () => {
     setSearchPipeline(pipeline);
     await render(<SearchScreen />);
 
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
     await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
     await submit('quantum basket weaving');
     await waitFor(() => expect(screen.getByText('Clear filters')).toBeTruthy());
 
