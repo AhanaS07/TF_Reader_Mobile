@@ -18,18 +18,17 @@
 // ItemDetailScreen.test.tsx. The moment `@type` grows a real value, the only
 // line that changes is the one call to `buildItemDetail` in `fetchItem`.
 //
-// ACCESS IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place access
-// logic may live (CONVENTIONS §3) — this screen calls it once, with a SESSION
-// FROM `handToggledSession`, A7's stand-in for real sign-in. Selecting an
-// institution now unlocks a licensed tier's Read/Borrow button, same as real
-// sign-in will; `loan`/`hold` stay omitted, which still resolves Open Access
-// and Elite-with-nothing-held correctly without flambeau's two remaining calls.
+// ACCESS IS RESOLVED REACTIVELY, NOT ONCE AT FETCH TIME. The publication is stored
+// separately and detail is recomputed whenever loans/holds change (after a borrow,
+// return, hold, or accept). This is what makes the action bar update immediately
+// after a tap without re-fetching from wokay — the catalogue data is stable, only
+// the licence state changes.
 //
 // THREE STATES, KEPT VISIBLY DISTINCT, plus an offline overlay that is
 // independent of them. Same shape as InstitutionDetailScreen: a skeleton while
 // the fetch is in flight, ErrorState on rejection, the content once resolved. No
 // ActivityIndicator — skeletons replace spinners.
-import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
@@ -42,11 +41,14 @@ import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
+import { getLicenceSource } from '@config/licence';
+import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
-import type { ActionId, WorkType } from '@model/types';
+import type { ActionId, Publication, WorkType } from '@model/types';
 import { useInstitutionStore } from '@store/institutionStore';
+import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 interface ItemDetailRouteProps {
@@ -387,9 +389,34 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 
   const isOnline = useNetworkStatus();
 
-  const [detail, setDetail] = useState<ItemDetail | null>(null);
+  // Holdings from the session cache. The cache starts empty and is populated by
+  // refresh() — resolveAccess treats undefined loan/hold as "nothing held", so the
+  // action bar is correct on first render and updates once the cache arrives.
+  const loans = useLibraryStore((s) => s.loans);
+  const holds = useLibraryStore((s) => s.holds);
+  const refresh = useLibraryStore((s) => s.refresh);
+  const loan = loans.find((l) => l.itemId === itemId);
+  const hold = holds.find((h) => h.itemId === itemId);
+
+  // Publication stored separately so that access can be re-resolved whenever
+  // loan/hold change — without re-fetching from wokay.
+  const [publication, setPublication] = useState<Publication | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<unknown>(null);
+
+  // Recomputed whenever the publication or the reader's holdings change. Pure and
+  // fast — no call is made, resolveAccess is synchronous.
+  const detail: ItemDetail | null = useMemo(() => {
+    if (publication === null) return null;
+    const access = resolveAccess({
+      item: publication,
+      institutionId,
+      session: handToggledSession(institutionId),
+      loan,
+      hold,
+    });
+    return buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access });
+  }, [publication, institutionId, loan, hold]);
 
   // No synchronous setState in here — only inside the async continuations. Same
   // note as InstitutionDetailScreen: retry is the one path that resets
@@ -404,23 +431,18 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         : source.getPublication(institutionId, itemId);
 
     request
-      .then((publication) => {
-        // `publication` already has the two fields resolveAccess reads
-        // (`id`, `acquisition`), so it is passed straight in.
-        const access = resolveAccess({
-          item: publication,
-          institutionId,
-          session: handToggledSession(institutionId),
-        });
-        setDetail(buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access }));
-      })
+      .then((pub) => setPublication(pub))
       .catch((err: unknown) => setFailure(err))
       .finally(() => setLoading(false));
   }, [institutionId, itemId]);
 
   useEffect(() => {
     fetchItem();
-  }, [fetchItem]);
+    // Fetch the reader's holdings once per mount so the action bar reflects live
+    // state rather than the empty-cache default. Runs in parallel with fetchItem —
+    // neither blocks on the other.
+    void refresh();
+  }, [fetchItem, refresh]);
 
   const retry = useCallback(() => {
     setLoading(true);
@@ -428,24 +450,52 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     fetchItem();
   }, [fetchItem]);
 
-  // `signIn` is the one action with somewhere real to go: it opens the access
-  // gate (screen 03), same trigger `resolveAccess`'s "signed out on a
-  // licensed tier" branch names it for. Every other action is still a
-  // no-op — the four flambeau calls behind them (generate, check, revoke,
-  // join queue) are Akriti's D9/D13, Week 3 — so this screen renders the
-  // resolved buttons and stops there rather than pretending a tap does
-  // something it does not yet do.
   const handleAction = useCallback(
     (action: ActionId) => {
-      if (action === 'signIn' && detail !== null) {
-        navigation.navigate('AccessGate', {
-          itemId: detail.id,
-          title: detail.title,
-          authors: detail.authors.join(', '),
-        });
+      if (action === 'signIn') {
+        if (detail !== null) {
+          navigation.navigate('AccessGate', {
+            itemId: detail.id,
+            title: detail.title,
+            authors: detail.authors.join(', '),
+          });
+        }
+        return;
+      }
+
+      // The four licence calls. Each mutates server state, so the holdings cache is
+      // invalidated immediately after — refresh() re-fetches GET /api/v1/library and
+      // the action bar updates to reflect the new loan or hold.
+      const source = getLicenceSource();
+      if (action === 'read' || action === 'download') {
+        source.borrow(itemId).then(() => refresh()).catch(() => {});
+      } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
+        source.returnLoan(loan.loanId).then(() => refresh()).catch(() => {});
+      } else if (action === 'grantAccess') {
+        // Elite path: attempt borrow first. Only fall through to placeHold on
+        // NO_COPIES_AVAILABLE — a network error or any other refusal should not
+        // silently enqueue the reader for a title they may already hold elsewhere.
+        source
+          .borrow(itemId)
+          .catch((err: unknown) => {
+            if (
+              isLicenceFailure(err) &&
+              err.code === LicenceError.REFUSED &&
+              err.errorCode === 'NO_COPIES_AVAILABLE'
+            ) {
+              return source.placeHold(itemId);
+            }
+            return Promise.reject(err);
+          })
+          .then(() => refresh())
+          .catch(() => {});
+      } else if (action === 'acceptOffer' && hold?.holdId !== undefined) {
+        source.acceptOffer(hold.holdId).then(() => refresh()).catch(() => {});
+      } else if (action === 'rejectOffer' && hold?.holdId !== undefined) {
+        source.cancelHold(hold.holdId).then(() => refresh()).catch(() => {});
       }
     },
-    [navigation, detail],
+    [navigation, detail, itemId, loan, hold, refresh],
   );
 
   let body: ReactNode;
