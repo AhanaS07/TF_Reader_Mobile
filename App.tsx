@@ -29,7 +29,7 @@
 // getByText('TF Reader'), and temporary wiring must not force an edit to a test
 // that is doing its job. The reader mounts underneath it.
 // ────────────────────────────────────────────────────────────────────────────
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -47,6 +47,48 @@ import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
 import { DevPreferencesMenu } from './DevPreferencesMenu';
+
+// ─── TEMP: TTS DEMO SCAFFOLDING, REMOVE ONCE ReaderScreen MOUNTS TtsControls ─
+// TtsControls.tsx is complete and gated by useTtsEnabled(), but nothing in
+// src/features/reader/ mounts it yet (that wiring is Ahana's call, per TtsControls.tsx's
+// own header). This block is ONLY here to see the already-built session/controls run on a
+// device, against the fake reader-text provider (no real book text yet — that's blocked on
+// the WebView typechecked-build conversion, see WEBVIEW_BRIDGE.md). Delete this whole block,
+// its import lines above marked TEMP, and the <TtsDemo /> render below when either the real
+// mount lands in ReaderScreen, or this demo is no longer needed.
+import { createFakeReaderTextProvider } from '@/features/reader/tts/fakeReaderTextProvider';
+import { TtsControls } from '@/features/accessibility/tts/TtsControls';
+import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
+import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
+import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
+
+function TtsDemo() {
+  // TEMP: forces accessibility.tts.enabled = true once, purely so this demo has something to
+  // show without a Settings screen to flip it from. Not how a real user would opt in.
+  useEffect(() => {
+    let cancelled = false;
+    readSharedPrefs()
+      .then((shared) => {
+        if (cancelled || shared.accessibility.tts.enabled) return;
+        return writeSharedPrefs({
+          ...shared,
+          accessibility: { ...shared.accessibility, tts: { ...shared.accessibility.tts, enabled: true } },
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const enabled = useTtsEnabled();
+  const provider = useMemo(() => createFakeReaderTextProvider(), []);
+  const session = useTtsSession(provider);
+
+  if (!enabled) return null;
+  return <TtsControls session={session} />;
+}
+// ─── END TEMP TTS DEMO SCAFFOLDING ───────────────────────────────────────────
 
 /**
  * TEMP, with everything else in this file.
@@ -209,6 +251,9 @@ export default function App() {
           free by giving each route its own instance.
         */}
         <ReaderScreen key={bookId} bookId={bookId} />
+
+        {/* TEMP: see the "TTS DEMO SCAFFOLDING" block above the component. */}
+        <TtsDemo />
       </SafeAreaView>
     </SafeAreaProvider>
   );

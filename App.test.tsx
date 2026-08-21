@@ -31,6 +31,44 @@ jest.mock('@react-native-community/netinfo', () => ({
   },
 }));
 
+// TEMP: goes with the "TTS DEMO SCAFFOLDING" block in App.tsx — mocked at `./ttsEngine`, same
+// as useTtsSession.test.ts, so this toolchain smoke test doesn't have to import the real
+// `@iternio/react-native-tts` native module (which Jest can't transform). Delete alongside that
+// block once TtsControls has a real mount point and this demo is removed.
+jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
+  __esModule: true,
+  default: {
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    speak: jest.fn(() => Promise.resolve('utterance-1')),
+    stop: jest.fn(() => Promise.resolve(true)),
+    pause: jest.fn(() => Promise.resolve(true)),
+    resume: jest.fn(() => Promise.resolve(true)),
+    setDefaultRate: jest.fn(() => Promise.resolve(true)),
+    setDefaultPitch: jest.fn(() => Promise.resolve(true)),
+    setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    voices: jest.fn(() => Promise.resolve([])),
+  },
+}));
+
+jest.mock('@/features/sync/sharedPrefs', () => {
+  // jest.requireActual, not an outer-scope import — jest.mock() factories can't close over
+  // module-level variables. Resolves with tts.enabled already true so TtsDemo's force-enable
+  // effect is a no-op — this smoke test only needs the render tree to mount cleanly.
+  const { DEFAULT_PREFS, DEFAULT_ACCESSIBILITY_PREFS } = jest.requireActual('@/shared/contracts');
+  return {
+    readSharedPrefs: jest.fn(() =>
+      Promise.resolve({
+        ...DEFAULT_PREFS,
+        accessibility: {
+          ...DEFAULT_ACCESSIBILITY_PREFS,
+          tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts, enabled: true },
+        },
+      }),
+    ),
+    writeSharedPrefs: jest.fn(() => Promise.resolve()),
+  };
+});
+
 describe('toolchain', () => {
   // NOTE FOR EVERY COMPONENT TEST IN THIS REPO: `render` is ASYNC in
   // @testing-library/react-native v14 — it returns a Promise, not a
