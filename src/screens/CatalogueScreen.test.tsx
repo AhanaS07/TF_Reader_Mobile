@@ -106,6 +106,7 @@ function fakeSource(getHomeCatalogue: DataSource['getHomeCatalogue']): DataSourc
     getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution: unused,
+    getItemsBatch: unused,
   };
 }
 

@@ -54,6 +54,7 @@ function fakeSource(getInstitution: DataSource['getInstitution']): DataSource {
     getPublicPublication: unused,
     getInstitutions: unused,
     getInstitution,
+    getItemsBatch: unused,
   };
 }
 

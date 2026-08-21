@@ -6,6 +6,7 @@
 // do, and all three are exercised here.
 import { ApiAdapter, type FetchLike, type FetchResponse } from '@adapters/ApiAdapter';
 import {
+  DENIED_BATCH_ITEM_ID,
   describeCatalogueSourceConformance,
   KNOWN_INSTITUTION,
   KNOWN_PUBLICATION,
@@ -16,6 +17,7 @@ import { CatalogueError } from '@model/errors';
 import { normalizeInstitutionList } from '@model/institution';
 import { idFromHref } from '@model/opds/rels';
 
+import batchItemsFixture from '@model/fixtures/batch-items.json';
 import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 import newInstitutionCatalogueFixture from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
 import allTitlesPage0Fixture from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
@@ -78,12 +80,48 @@ for (const page of PUBLIC_PAGES) {
   }
 }
 
+// F9's known items, keyed by the fixture's own item id — same idiom as
+// PUBLIC_PUBLICATIONS above.
+const BATCH_ITEMS_BY_ID = new Map<string, unknown>();
+for (const item of batchItemsFixture.items) {
+  BATCH_ITEMS_BY_ID.set(item.id, item);
+}
+
 // Serves the fixtures at the paths the real OPDS API is expected to expose,
 // derived from the self-hrefs inside the fixtures themselves.
-const serveFixtures: FetchLike = async (url) => {
+const serveFixtures: FetchLike = async (url, init) => {
   const { pathname, searchParams } = new URL(url);
 
-  // The public routes come FIRST: '/public' would otherwise match the
+  // items:batch lives at the API host's root (/api/v1/...), a sibling
+  // namespace to every /opds/v1/... route below — checked first purely for
+  // visibility, no collision risk since the prefixes are disjoint.
+  if (pathname === '/api/v1/catalogue/items:batch') {
+    const parsedBody = JSON.parse((init?.body as string | undefined) ?? '{}') as {
+      ids?: string[];
+    };
+    const requested = parsedBody.ids ?? [];
+    if (requested.length > 100) {
+      return { ok: false, status: 400, json: async () => ({ code: 'TOO_MANY_IDS' }) };
+    }
+    const items: unknown[] = [];
+    const notFoundIds: string[] = [];
+    const deniedIds: string[] = [];
+    for (const id of requested) {
+      if (id === DENIED_BATCH_ITEM_ID) {
+        deniedIds.push(id);
+        continue;
+      }
+      const item = BATCH_ITEMS_BY_ID.get(id);
+      if (item === undefined) {
+        notFoundIds.push(id);
+        continue;
+      }
+      items.push(item);
+    }
+    return ok({ items, notFound: notFoundIds, denied: deniedIds });
+  }
+
+  // The public routes come next: '/public' would otherwise match the
   // `/institutions/([^/]+)` patterns below if those paths ever loosen, and a
   // public request quietly answered by an institution fixture is exactly the
   // bug this whole card exists to prevent.
@@ -529,5 +567,59 @@ describe('ApiAdapter home-feed ETag caching', () => {
     // The second institution has never been fetched before, so it must not
     // carry the first institution's ETag.
     expect(requestInits[1]?.headers).toBeUndefined();
+  });
+});
+
+// Adapter-specific behaviour — the shared conformance suite only pins the
+// contract (shapes, ids, notFound/denied semantics), not how ApiAdapter talks
+// to the network to get there.
+describe('ApiAdapter items:batch', () => {
+  it('posts to the frozen path at the host root, not under baseUrl’s OPDS suffix', async () => {
+    const requests: { url: string; method?: string; body?: string }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url, init) => {
+        requests.push({ url, method: init?.method, body: init?.body });
+        return serveFixtures(url, init);
+      },
+    });
+
+    await adapter.getItemsBatch(['item_42']);
+
+    expect(requests).toEqual([
+      {
+        url: 'https://api.tf/api/v1/catalogue/items:batch',
+        method: 'POST',
+        body: JSON.stringify({ ids: ['item_42'] }),
+      },
+    ]);
+  });
+
+  it('maps a 400 response to TOO_MANY_IDS', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ({ ok: false, status: 400, json: async () => ({ code: 'TOO_MANY_IDS' }) }),
+    });
+
+    await expect(adapter.getItemsBatch(['item_42'])).rejects.toMatchObject({
+      code: CatalogueError.TOO_MANY_IDS,
+    });
+  });
+
+  it('never calls fetch when the client-side cap is exceeded', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return notFound();
+      },
+    });
+    const tooManyIds = Array.from({ length: 101 }, (_, index) => `item_${index}`);
+
+    await expect(adapter.getItemsBatch(tooManyIds)).rejects.toMatchObject({
+      code: CatalogueError.TOO_MANY_IDS,
+    });
+    expect(requested).toEqual([]);
   });
 });

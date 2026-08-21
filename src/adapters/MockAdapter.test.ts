@@ -144,6 +144,9 @@ describe('MockAdapter error injection', () => {
     await expect(
       adapter.getPublication(KNOWN_INSTITUTION, KNOWN_PUBLICATION),
     ).rejects.toMatchObject({ code: CatalogueError.TIMEOUT });
+    await expect(adapter.getItemsBatch(['item_42'])).rejects.toMatchObject({
+      code: CatalogueError.TIMEOUT,
+    });
   });
 
   it('still applies latency before an injected failure', async () => {

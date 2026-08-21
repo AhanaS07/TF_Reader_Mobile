@@ -9,6 +9,7 @@
 import { loadContractExample } from '@model/contracts/contractExample';
 import { compareShape } from '@model/contracts/contractShape';
 import institutions from '@model/fixtures/institutions.json';
+import batchItems from '@model/fixtures/batch-items.json';
 import homeCatalogue from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
 import newInstitutionCatalogue from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
 import allTitlesPage0 from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
@@ -153,6 +154,11 @@ const FIXTURE_CASES: FixtureCase[] = [
     // Added for us on 16 Aug so the catalogue link is discovered rather than
     // built; the contract carries it in the schema but not in this example.
     allowedExtraPaths: ['items[].catalogueUrl :string'],
+  },
+  {
+    file: 'batch-items.json',
+    document: batchItems,
+    operationId: 'batchGetItems',
   },
   {
     file: 'search-results.json',

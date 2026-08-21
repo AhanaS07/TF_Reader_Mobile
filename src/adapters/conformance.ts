@@ -40,6 +40,12 @@ export const KNOWN_PUBLICATION = 'item_42';
 // be asserting the opposite of what the endpoint promises.
 export const KNOWN_PUBLIC_PUBLICATION = 'item_oa1';
 
+// F9 — ids the batch-items fixture resolves as real items, and one it marks
+// denied (the caller exists, is not entitled). Reuses KNOWN_PUBLICATION and
+// KNOWN_PUBLIC_PUBLICATION's own ids rather than inventing new ones.
+export const KNOWN_BATCH_ITEM_IDS = [KNOWN_PUBLICATION, KNOWN_PUBLIC_PUBLICATION];
+export const DENIED_BATCH_ITEM_ID = 'item_77';
+
 async function expectNotFound(operation: Promise<unknown>, what: string): Promise<void> {
   let caught: unknown;
   try {
@@ -325,6 +331,88 @@ export function describeCatalogueSourceConformance(
           createSource().getPublicPublication('item_nope'),
           'getPublicPublication',
         );
+      });
+    });
+
+    // F9. Partial failure is the normal case here, not an exception: a batch
+    // with some bad ids still resolves, split across three arrays. That is why
+    // this block does NOT reuse expectNotFound anywhere — an unknown or denied
+    // id is ordinary data, never a rejection.
+    describe('getItemsBatch', () => {
+      it('returns a summary for every known id in one call', async () => {
+        const result = await createSource().getItemsBatch(KNOWN_BATCH_ITEM_IDS);
+
+        const returnedIds = result.items.map((item) => item.id);
+        for (const id of KNOWN_BATCH_ITEM_IDS) {
+          expect(returnedIds).toContain(id);
+        }
+        expect(result.notFound).toEqual([]);
+        expect(result.denied).toEqual([]);
+      });
+
+      it('carries a format and accessTier from the frozen vocabularies', async () => {
+        const result = await createSource().getItemsBatch(KNOWN_BATCH_ITEM_IDS);
+
+        for (const item of result.items) {
+          expect(['PDF', 'EPUB', 'AUDIO']).toContain(item.format);
+          expect(['OPEN_ACCESS', 'SUBSCRIPTION', 'ELITE']).toContain(item.accessTier);
+        }
+      });
+
+      it('never exposes OPDS wire fields to callers', async () => {
+        const result = await createSource().getItemsBatch(KNOWN_BATCH_ITEM_IDS);
+        const [item] = result.items;
+
+        expect(item).not.toHaveProperty('links');
+        expect(item).not.toHaveProperty('metadata');
+        expect(item).not.toHaveProperty('properties');
+      });
+
+      it('reports an unknown id under notFound, not as a failure', async () => {
+        const result = await createSource().getItemsBatch(['item_batch_missing']);
+
+        expect(result.notFound).toEqual(['item_batch_missing']);
+        expect(result.items).toEqual([]);
+        expect(result.denied).toEqual([]);
+      });
+
+      it('reports a denied id under denied, not as a failure', async () => {
+        const result = await createSource().getItemsBatch([DENIED_BATCH_ITEM_ID]);
+
+        expect(result.denied).toEqual([DENIED_BATCH_ITEM_ID]);
+        expect(result.items).toEqual([]);
+        expect(result.notFound).toEqual([]);
+      });
+
+      it('never double-counts a requested id across the three arrays', async () => {
+        const requested = [...KNOWN_BATCH_ITEM_IDS, DENIED_BATCH_ITEM_ID, 'item_batch_missing'];
+        const result = await createSource().getItemsBatch(requested);
+
+        const bucketed = [
+          ...result.items.map((item) => item.id),
+          ...result.notFound,
+          ...result.denied,
+        ];
+        expect(bucketed.length).toBe(requested.length);
+        expect(new Set(bucketed).size).toBe(requested.length);
+      });
+
+      it('accepts a request at exactly the 100-id cap', async () => {
+        const exactlyMaxIds = Array.from({ length: 100 }, (_, index) => `item_${index}`);
+
+        await expect(createSource().getItemsBatch(exactlyMaxIds)).resolves.toBeDefined();
+      });
+
+      it('rejects a request over the 100-id cap with TOO_MANY_IDS', async () => {
+        const tooManyIds = Array.from({ length: 101 }, (_, index) => `item_${index}`);
+        let caught: unknown;
+        try {
+          await createSource().getItemsBatch(tooManyIds);
+        } catch (err) {
+          caught = err;
+        }
+        expect(isCatalogueFailure(caught)).toBe(true);
+        expect((caught as { code: CatalogueError }).code).toBe(CatalogueError.TOO_MANY_IDS);
       });
     });
   });

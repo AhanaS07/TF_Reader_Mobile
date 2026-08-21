@@ -67,6 +67,7 @@ function fakeSource(
     getPublicPublication: unused,
     getInstitutions,
     getInstitution: getInstitution ?? unused,
+    getItemsBatch: unused,
   };
 }
 

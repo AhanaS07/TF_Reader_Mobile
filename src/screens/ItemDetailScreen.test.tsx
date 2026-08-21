@@ -119,6 +119,7 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
     getPublicPublication: (bookId) => getPublication('', bookId),
     getInstitutions: unused,
     getInstitution: unused,
+    getItemsBatch: unused,
   };
 }
 
@@ -168,6 +169,7 @@ describe('ItemDetailScreen endpoint choice', () => {
       },
       getInstitutions: unused,
       getInstitution: unused,
+      getItemsBatch: unused,
     };
   }
 
