@@ -8,7 +8,7 @@
 //
 // `await render(...)` is required — @testing-library/react-native v14 returns a
 // Promise. See the note in App.test.tsx.
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 
 import { setSearchPipeline } from '@config/search';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
@@ -30,7 +30,12 @@ jest.mock('@react-navigation/native', () => ({
 
 // ─── Test doubles ────────────────────────────────────────────────────────────
 
-function publication(id: string, title: string, publisher: string): Publication {
+function publication(
+  id: string,
+  title: string,
+  publisher: string,
+  licenceModel: Publication['acquisition']['licenceModel'] = 'OPEN_ACCESS',
+): Publication {
   return {
     id,
     title,
@@ -39,9 +44,9 @@ function publication(id: string, title: string, publisher: string): Publication 
     subjects: [],
     format: 'EPUB',
     acquisition: {
-      actionId: 'openAccess',
+      actionId: licenceModel === 'OPEN_ACCESS' ? 'openAccess' : 'borrow',
       href: `https://api.tf/api/v1/reading-sessions?itemId=${id}`,
-      licenceModel: 'OPEN_ACCESS',
+      licenceModel,
       encryption: null,
       hasSearchIndex: true,
       canPersist: true,
@@ -51,6 +56,12 @@ function publication(id: string, title: string, publisher: string): Publication 
 
 const FIRST = publication('item_env', 'Environmental Policy in China', 'Routledge');
 const SECOND = publication('item_ab6', 'Ethnographies of Waiting', 'CRC Press');
+const SUBSCRIPTION_ITEM = publication(
+  'item_sub',
+  'Advanced Ethnographic Methods',
+  'CRC Press',
+  'SUBSCRIPTION',
+);
 
 const BROWSE: NavLink[] = [
   { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks' },
@@ -278,6 +289,20 @@ describe('successful results', () => {
     await waitFor(() => expect(screen.getByTestId('content-card')).toBeTruthy());
     expect(screen.queryByTestId('search-empty')).toBeNull();
     expect(screen.queryByTestId('search-error')).toBeNull();
+  });
+
+  it('renders one access-tier badge per result, resolved per row', async () => {
+    setSearchPipeline(
+      stub(() => Promise.resolve(feed({ publications: [FIRST, SUBSCRIPTION_ITEM] }))),
+    );
+    await render(<SearchScreen />);
+
+    await submit('climate');
+
+    await waitFor(() => expect(screen.getAllByTestId('content-card-badge')).toHaveLength(2));
+    const badges = screen.getAllByTestId('content-card-badge');
+    expect(within(badges[0]).getByText('Open Access')).toBeTruthy();
+    expect(within(badges[1]).getByText('Subscription')).toBeTruthy();
   });
 });
 
