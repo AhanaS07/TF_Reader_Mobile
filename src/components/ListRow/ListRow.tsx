@@ -130,9 +130,8 @@ const styles = StyleSheet.create({
   titleDestructive: {
     color: color.error,
   },
-  // Opacity rather than a greyed colour token, for ActionButton's reason: a
-  // washed-out row reads as "not available", where a recoloured one reads as
-  // "broken". Permitted by CONVENTIONS §5 as a layout primitive.
+  // Permitted by CONVENTIONS §5 as a layout primitive — opacity is the exception
+  // to "no bare numbers", which is why disabled needs no new grey token.
   rowDisabled: {
     opacity: 0.4,
   },

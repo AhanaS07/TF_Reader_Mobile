@@ -1,28 +1,7 @@
-// Screen 03 — access gate. Raised when `resolveAccess` returns
-// `requires_signin` and the reader taps the one button that state offers
-// (`signIn`) — see ItemDetailScreen.tsx's `handleAction`.
-//
-// PRESENTED LIKE SignInScreen, NOT VIA `BottomSheet`, for the same reason
-// SignInScreen gives: BottomSheet wraps its own Modal, and nesting a Modal
-// inside this screen's `transparentModal` presentation produces z-index
-// issues on Android. The sheet chrome (backdrop, handle, radius) is
-// reproduced inline, matching SignInScreen's existing pattern exactly rather
-// than inventing a second way to build a sheet.
-//
-// TWO ROUTES FORWARD, AND ONLY ONE OF THEM GOES ANYWHERE YET.
-// "Through my institution" is a real, wired path: it remembers the tapped
-// item, then hands off to whichever of SignIn or InstitutionList the reader
-// needs next. "Personal account" is shown, per the mockup, but disabled —
-// index.html: "screen 03's second option is reopened rather than settled."
-// B2C as a concept was answered 13 Aug (retained; `subscribe` resolves an
-// entitled reader like a Subscription) — but that answers the resolveAccess
-// layer, not where this button goes. Screen 13 (email sign-in) is
-// flambeau's and still reopened, so there is no destination or contract to
-// wire here yet.
-//
-// NO AUTHENTICATION HAPPENS IN THIS FILE. This screen decides where the
-// reader goes next and what to remember on the way; SignInScreen (and,
-// eventually, flambeau's SAML handoff) is what actually signs anyone in.
+// Screen 03 — access gate. Raised when resolveAccess returns requires_signin.
+// transparentModal, not BottomSheet — same z-index reason as SignInScreen.
+// "Through my institution" is wired; "Personal account" is shown but disabled (B2C destination unsettled).
+// No auth here — navigation and intent only; SignInScreen handles SAML.
 import { useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -107,8 +86,10 @@ export default function AccessGateScreen({ route, navigation }: Props) {
         onPress={handleDismiss}
         accessibilityLabel="Dismiss"
       />
-      {/* Stop taps on the sheet itself from bubbling up to the dismiss pressable. */}
-      <Pressable style={styles.sheet} onPress={() => {}}>
+      {/* Stop taps on the sheet itself from bubbling up to the dismiss pressable.
+          View + onStartShouldSetResponder claims the touch without wrapping children
+          in an accessibility container (a Pressable would group them into one unit). */}
+      <View style={styles.sheet} onStartShouldSetResponder={() => true}>
         <View style={styles.handleArea}>
           <View style={styles.handle} />
         </View>
@@ -184,7 +165,7 @@ export default function AccessGateScreen({ route, navigation }: Props) {
             <Text style={styles.laterLabel}>I&apos;ll decide later</Text>
           </Pressable>
         </View>
-      </Pressable>
+      </View>
     </View>
   );
 }
