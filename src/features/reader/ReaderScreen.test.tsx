@@ -1528,6 +1528,46 @@ describe('ReaderScreen in-book search', () => {
     );
   });
 
+  // THE MATCH BAR'S ARROWS USED TO BE PERMANENTLY DISABLED FOR AN ALL-PDF RESULT SET, even though
+  // every hit was genuinely navigable. `hasNavigableFrom` (useBookSearch.ts) checked an EPUB-only
+  // unwrap that returns null for every PDF locator, so a mixed EPUB+PDF list (the other tests above)
+  // still found an EPUB hit and reported navigable — the bug was invisible there. A PDF-only book
+  // failed every check, so `canStepBack`/`canStepForward` were false from the first render. Asserting
+  // on `accessibilityState.disabled` is the point: the earlier tests only checked that pressing the
+  // button worked, and RNTL's fireEvent.press does not itself respect a `disabled` prop the way a
+  // real device's Pressable does — so this is the check that would actually have caught it.
+  it('does not disable the match bar arrows for an all-PDF result set', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([
+      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 3 }, snippet: '…one…' },
+      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 7 }, snippet: '…two…' },
+    ]);
+
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
+    expect(
+      screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: false });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+
+    expect(screen.getByText('Match 1 of 2')).toBeTruthy();
+    // Landed on the FIRST hit — "Previous" is correctly disabled (nothing before it), but "Next"
+    // must still be enabled since there is a second PDF hit ahead of it.
+    expect(
+      screen.getByRole('button', { name: 'Previous match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+    expect(
+      screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: false });
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 3 } }),
+    );
+  });
+
   it('drops a stale response that lands after a newer search', async () => {
     // Justifies the sequence guard in useBookSearch: queryBookIndex takes no
     // AbortSignal, so a slow broad search can still be parsing when a narrower one has

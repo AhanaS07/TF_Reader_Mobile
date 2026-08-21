@@ -41,31 +41,13 @@ export interface BookSearch {
 }
 
 /**
- * The bare CFI `goTo` takes, or null when this hit is not addressable by this reader.
- *
- * THE UNWRAP HAPPENS HERE AND NOWHERE ELSE. The bridge command carries a bare string;
- * handing it `SearchHit.locator` — a frozen contract type, and a discriminated union
- * at that — would put a shared contract inside untypechecked WebView JS. That is
- * trigger 3 in WEBVIEW_BRIDGE.md, and tripping it makes converting the WebView to a
- * typechecked build the task rather than a follow-up. Keeping the union on this side
- * of the boundary is the whole reason search needed no bridge change.
- *
- * PDF hits return null rather than throwing: `Locator` covers both formats because
- * Search indexes both, but this reader is epub.js and has nowhere to send a page
- * number. Callers list such a hit and disable it — see SearchPanel.
- */
-export function cfiOf(hit: SearchHit): string | null {
-  return hit.locator.type === 'EPUB' ? hit.locator.cfi : null;
-}
-
-/**
- * A hit's location as something the reader can navigate to.
- *
- * >>> THIS IS WHAT `cfiOf` COULD NOT DO, AND WHY PDF HITS USED TO BE DEAD ROWS. <<<
- * `cfiOf` unwraps `locator.cfi`, which only an EPUB locator has, so it returned null for every PDF
- * hit and the reader had nowhere to send it. That was never a decision about whether a PDF result
- * should be navigable — it was a limitation of `goTo` taking a bare string, since a page number and a
- * spine href could not be told apart in one. `ReaderTarget` is discriminated, so both fit.
+ * A hit's location as something the reader can navigate to — and the ONLY function that should
+ * ever be used to decide whether a hit is navigable. An earlier unwrap only handled the EPUB case
+ * (returning null for every PDF locator, since only EPUB has a `.cfi`) and PDF hits were dead rows
+ * as a result — not a decision that PDF results shouldn't be navigable, just a limitation of `goTo`
+ * taking a bare string, since a page number and a spine href could not be told apart in one.
+ * `ReaderTarget` is discriminated, so both fit. That EPUB-only unwrap is gone now; do not recreate
+ * it under a new name — see `hasNavigableFrom`'s note for how a second one survived past it.
  *
  * `Locator` is the FROZEN contract and `ReaderTarget` is bridge-local: this function is the seam
  * between them, and it is the only place `locator.type` is read for navigation. That is deliberate —
@@ -94,9 +76,18 @@ export function locatorKey(hit: SearchHit): string {
 /**
  * Whether stepping `delta` from `activeIndex` would reach a hit this reader can open.
  *
- * Shared by the stepper's disabled state and the step itself, so the arrow cannot be
- * enabled for a move that then does nothing (or vice versa) — the two would drift the
- * moment one learned about PDF hits and the other did not.
+ * Shared by the stepper's disabled state and the step itself (`ReaderScreen.tsx`'s `stepHit`), so
+ * the arrow cannot be enabled for a move that then does nothing (or vice versa) — the two would
+ * drift the moment one learned about PDF hits and the other did not.
+ *
+ * THIS ALREADY HAPPENED ONCE. This used to check an EPUB-only unwrap (an earlier, narrower version
+ * of what `targetOf` now is) that returned null for every PDF locator. `SearchPanel`'s row-disabling
+ * and `stepHit` were both moved onto the general `targetOf` when PDF hits became navigable; this
+ * call site was missed. The bug was invisible in a mixed EPUB+PDF hit list (a loop over several hits
+ * still finds an EPUB one and returns true) and total in an all-PDF book: every hit failed the
+ * EPUB-only check, so the match bar's arrows were permanently disabled there — exactly the report
+ * that found this. Use `targetOf` for any "can this reader open it" check; do not reintroduce a
+ * format-specific unwrap for navigability under a new name.
  */
 export function hasNavigableFrom(
   hits: readonly SearchHit[],
@@ -105,7 +96,7 @@ export function hasNavigableFrom(
 ): boolean {
   const from = activeIndex < 0 ? (delta === 1 ? 0 : hits.length - 1) : activeIndex + delta;
   for (let i = from; i >= 0 && i < hits.length; i += delta) {
-    if (cfiOf(hits[i]) !== null) return true;
+    if (targetOf(hits[i]) !== null) return true;
   }
   return false;
 }
