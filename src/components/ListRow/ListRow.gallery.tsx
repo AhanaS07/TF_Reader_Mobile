@@ -78,6 +78,42 @@ export default function ListRowGallery() {
         onPress={() => {}}
       />
 
+      {/* `disabled` crosses every variant rather than being one of its own, so
+          each one gets an entry — a greyed toggle and a greyed chevron are
+          different pictures, and only the toggle can be wrong in two ways
+          (the row inert but the Switch still flipping). */}
+      <Text style={styles.label}>chevron — disabled, nothing behind it yet</Text>
+      <ListRow
+        title="Privacy & Security"
+        variant="chevron"
+        disabled
+        icon={<Ionicons name="shield-checkmark-outline" size={20} color={color.primary} />}
+      />
+
+      <Text style={styles.label}>chevron — disabled, with subtitle</Text>
+      <ListRow
+        title="Reading Preferences"
+        subtitle="Font size, theme"
+        variant="chevron"
+        disabled
+        icon={<Ionicons name="book-outline" size={20} color={color.primary} />}
+      />
+
+      <Text style={styles.label}>toggle — disabled (the Switch is inert too)</Text>
+      <ListRow
+        title="Notifications"
+        variant="toggle"
+        toggleValue={false}
+        disabled
+        icon={<Ionicons name="notifications-outline" size={20} color={color.primary} />}
+      />
+
+      <Text style={styles.label}>value — disabled</Text>
+      <ListRow title="Language" variant="value" valueText="English" disabled />
+
+      <Text style={styles.label}>destructive — disabled</Text>
+      <ListRow title="Sign Out" variant="destructive" disabled />
+
       <View style={styles.spacer} />
     </ScrollView>
   );

@@ -6,16 +6,16 @@ import { useEffect, useState } from 'react';
 import NetInfo from '@react-native-community/netinfo';
 
 export function useNetworkStatus() {
-  // Start assuming online, so nothing flashes an offline state before the
-  // first real reading comes in.
-  const [isOnline, setIsOnline] = useState(true);
+  // Start closed (false) so the sign-in guard never passes before we have a
+  // real reading. NetInfo.fetch() resolves immediately from the OS cache on
+  // both platforms, so the window is sub-100 ms on a connected device.
+  const [isOnline, setIsOnline] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsOnline(state.isConnected === true);
+    NetInfo.fetch().then((s) => setIsOnline(s.isConnected === true));
+    const unsubscribe = NetInfo.addEventListener((s) => {
+      setIsOnline(s.isConnected === true);
     });
-
-    // NetInfo hands back its own unsubscribe function — just return it.
     return unsubscribe;
   }, []);
 

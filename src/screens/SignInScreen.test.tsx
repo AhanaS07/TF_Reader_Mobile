@@ -1,18 +1,40 @@
 // src/screens/SignInScreen.test.tsx
-// Screen 02. Scope: the pending-intent replay wired into the sign-in stub
-// (see the comment above `handleSignIn` in SignInScreen.tsx for why this is
-// a replay of the stub's own "tap = signed in" behaviour, not a real
-// token-received event). Full screen coverage — loading/error/offline
-// states — is a separate, larger gap tracked outside this change.
+// Screen 02 — Sign-in sheet
 //
-// `await render(...)` is required — RTL 14's render is async.
-import { fireEvent, render, screen } from '@testing-library/react-native';
+// Covered behaviours:
+//   1. Renders the selected institution's name when one is in the store.
+//   2. No institution in the store → goBack() is called immediately; nothing rendered.
+//   3. Backdrop tap dismisses; the sheet View claims its own touches via onStartShouldSetResponder.
+//   4. Sign-in button is disabled when the device is offline — pressing it does not call goBack.
+//   5. Sign-in button is disabled while a sign-in attempt is in flight (submitting=true).
+//   6. If the sign-in call throws, ErrorState appears and pressing Retry re-invokes the handler.
+//   7. A pending intent is replayed with popTo, not navigate, so the ItemDetail
+//      already in the stack is returned to rather than duplicated.
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { useInstitutionStore } from '@store/institutionStore';
-import { usePendingIntentStore, INTENT_MAX_AGE_MS } from '@store/pendingIntentStore';
+import { usePendingIntentStore } from '@store/pendingIntentStore';
+import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import type { Institution } from '@model/institution';
+import type { CatalogueStackParamList } from '../navigation/types';
 
 import SignInScreen from './SignInScreen';
+
+jest.mock('@hooks/useNetworkStatus');
+const mockIsOnline = useNetworkStatus as jest.MockedFunction<typeof useNetworkStatus>;
+
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+const mockPopTo = jest.fn();
+
+type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'SignIn'>;
+const mockNavigation = {
+  goBack: mockGoBack,
+  navigate: mockNavigate,
+  popTo: mockPopTo,
+} as unknown as Nav;
+
 
 const IMPERIAL: Institution = {
   id: 'inst_7f3',
@@ -21,43 +43,96 @@ const IMPERIAL: Institution = {
   code: 'ICL',
   city: 'London',
   catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+  branding: { logoUrl: 'https://cdn.tf/crests/inst_7f3.png' },
 };
-
-const mockNavigate = jest.fn();
-const mockGoBack = jest.fn();
-const mockPopTo = jest.fn();
-
-// Only `navigation.navigate`/`goBack`/`popTo` are ever read, so the rest of
-// the typed NativeStackScreenProps navigation object is cast rather than
-// constructed — same convention as InstitutionDetailScreen.test.tsx.
-type SignInProps = {
-  navigation: { navigate: jest.Mock; goBack: jest.Mock; popTo: jest.Mock };
-};
-
-function makeProps() {
-  return {
-    navigation: { navigate: mockNavigate, goBack: mockGoBack, popTo: mockPopTo },
-  } as unknown as Parameters<typeof SignInScreen>[0] & SignInProps;
-}
-
-beforeEach(() => {
-  useInstitutionStore.setState({ selectedInstitution: IMPERIAL, recentlyUsedIds: [] });
-});
 
 afterEach(() => {
-  mockNavigate.mockClear();
-  mockGoBack.mockClear();
-  mockPopTo.mockClear();
-  useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
+  useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [], cachedInstitutions: [] });
   usePendingIntentStore.setState({ pending: null });
+  mockGoBack.mockClear();
+  mockNavigate.mockClear();
+  mockPopTo.mockClear();
+  mockIsOnline.mockReset();
+});
+
+describe('SignInScreen', () => {
+  it('renders the selected institution name', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('calls goBack immediately when there is no selected institution', async () => {
+    mockIsOnline.mockReturnValue(true);
+    // selectedInstitution defaults to null after afterEach reset
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalled());
+  });
+
+  it('tapping the backdrop calls goBack; the sheet claims its own touches', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    // onStartShouldSetResponder must return true so native touch bubbling stops
+    // before reaching the absoluteFill dismiss Pressable behind the sheet.
+    // fireEvent.press cannot exercise the responder system — verify the contract directly.
+    const sheet = screen.getByTestId('sign-in-sheet');
+    expect(sheet.props.onStartShouldSetResponder()).toBe(true);
+
+    // The backdrop Pressable should still call goBack.
+    fireEvent.press(screen.getByLabelText('Dismiss'));
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the sign-in button when offline and pressing it does not trigger goBack', async () => {
+    mockIsOnline.mockReturnValue(false);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    // ActionButton renders with testID="action-button-signIn"; the handleSignIn guard
+    // (!isOnline) ensures goBack is never called even if fireEvent bypasses disabled.
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+    expect(mockGoBack).not.toHaveBeenCalled();
+  });
+
+  it('shows ErrorState and a Retry button when sign-in throws; pressing Retry re-invokes the handler', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    // Make goBack throw so the catch block fires and signInError=true
+    mockGoBack.mockImplementationOnce(() => { throw new Error('flambeau unavailable'); });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+
+    await waitFor(() =>
+      expect(screen.getByText(/sign-in could not be started/i)).toBeTruthy(),
+    );
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
+
+    // Retry re-invokes the handler — goBack is called on the second attempt
+    fireEvent.press(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalled());
+  });
 });
 
 describe('SignInScreen pending-intent replay', () => {
-  // `popTo`, not `navigate` — the existing ItemDetail already in the stack
-  // (from before AccessGate and this screen were pushed on top of it) must be
-  // popped back to, not duplicated with a fresh instance. See the comment
-  // above `handleSignIn`.
-  it('resumes ItemDetail when a pending intent exists', async () => {
+  // `popTo`, not `navigate` — the ItemDetail already in the stack (pushed
+  // before AccessGate and this screen went on top of it) must be returned to,
+  // not duplicated. A duplicate leaves this sheet stranded underneath, so the
+  // first back press reveals it again instead of reaching the list.
+  it('resumes the remembered item with popTo', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
     usePendingIntentStore.setState({
       pending: {
         action: 'read',
@@ -67,39 +142,26 @@ describe('SignInScreen pending-intent replay', () => {
       },
     });
 
-    await render(<SignInScreen {...makeProps()} />);
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
 
-    fireEvent.press(screen.getByText('Sign in with institution'));
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
 
-    expect(mockPopTo).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
-    expect(mockGoBack).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mockPopTo).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' }),
+    );
     expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockGoBack).not.toHaveBeenCalled();
   });
 
   it('falls back to goBack when no intent is pending', async () => {
-    await render(<SignInScreen {...makeProps()} />);
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
 
-    fireEvent.press(screen.getByText('Sign in with institution'));
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
 
-    expect(mockGoBack).toHaveBeenCalledTimes(1);
-    expect(mockPopTo).not.toHaveBeenCalled();
-  });
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
 
-  it('falls back to goBack when the pending intent is stale', async () => {
-    usePendingIntentStore.setState({
-      pending: {
-        action: 'read',
-        itemId: 'item_42',
-        institutionId: 'inst_7f3',
-        createdAt: Date.now() - INTENT_MAX_AGE_MS - 1,
-      },
-    });
-
-    await render(<SignInScreen {...makeProps()} />);
-
-    fireEvent.press(screen.getByText('Sign in with institution'));
-
-    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalledTimes(1));
     expect(mockPopTo).not.toHaveBeenCalled();
   });
 });

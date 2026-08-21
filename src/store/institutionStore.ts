@@ -82,10 +82,16 @@ export const useInstitutionStore = create<InstitutionState>()(
         recentlyUsedIds: state.recentlyUsedIds,
         cachedInstitutions: state.cachedInstitutions,
       }),
-      // Flip _hasHydrated once AsyncStorage has finished loading. The optional
-      // chain handles the error path: if rehydration fails, state is undefined
-      // and _hasHydrated stays false, which is the safe fallback.
-      onRehydrateStorage: () => (state) => {
+      // Flip _hasHydrated on BOTH paths — success and failure.
+      // A failed rehydrate means no stored selection, the same as a first launch:
+      // the reader gets the institution picker, which is recoverable. Without the
+      // error branch the flag stays false and RootNavigator shows a permanent
+      // white screen with no recovery path.
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          useInstitutionStore.setState({ _hasHydrated: true });
+          return;
+        }
         state?.setHasHydrated(true);
       },
       version: 2,
