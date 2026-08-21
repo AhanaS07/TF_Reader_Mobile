@@ -38,3 +38,18 @@ export {
   type UseCatalogueSearch,
   type UseCatalogueSearchOptions,
 } from './useCatalogueSearch';
+// Screen 11. Voice is a second way to produce a query string, so it lives
+// beside the query state rather than in a feature folder of its own — and the
+// recogniser is exported only as a hook, so no screen can reach the native
+// module directly. `MockSpeechRecognition` is deliberately absent: it is a Jest
+// artefact registered in jest.setup.js, not part of this surface.
+export {
+  initialVoiceState,
+  voiceReducer,
+  type VoiceAction,
+  type VoiceErrorCode,
+  type VoiceState,
+  type VoiceStatus,
+} from './voiceState';
+export { VOICE_ERROR_COPY } from './voiceErrorCopy';
+export { useVoiceSearch, type UseVoiceSearch } from './useVoiceSearch';

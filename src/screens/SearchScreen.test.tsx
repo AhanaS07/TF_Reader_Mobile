@@ -8,9 +8,13 @@
 //
 // `await render(...)` is required — @testing-library/react-native v14 returns a
 // Promise. See the note in App.test.tsx.
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 
 import { setSearchPipeline } from '@config/search';
+// The Jest double registered globally in jest.setup.js — importing it here is
+// how the voice block below states the permission answer and drives the
+// recogniser's events. See the file for what it does and does not fake.
+import { mockSpeechRecognition } from '@search/MockSpeechRecognition';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { NavLink, Publication, SearchFeed } from '@model/types';
 import type { CatalogueSearchPipeline, SearchRequest } from '@/search';
@@ -777,5 +781,408 @@ describe('an actual failure', () => {
     await waitFor(() => expect(screen.getByTestId('search-page-error')).toBeTruthy());
     expect(screen.getByTestId('content-card')).toBeTruthy();
     expect(screen.queryByTestId('search-error')).toBeNull();
+  });
+});
+
+// ─── Screen 11 — voice search ────────────────────────────────────────────────
+
+// WHAT THIS BLOCK IS FOR: proving that speech becomes an ORDINARY query. Voice
+// adds no endpoint, no second pipeline and no new error surface, so almost every
+// assertion below is that an existing path was reached — `searchCalls`,
+// `search-error`, `search-empty`, the recent-searches store. The genuinely new
+// claims are narrow: a refusal must not search, a silence must not search, and a
+// cancel must not search.
+//
+// The native module is mocked globally (jest.setup.js → MockSpeechRecognition).
+// It fakes the module surface and the event stream; the permission answer and
+// the recognition events are stated by each test, because those are exactly what
+// a real device decides. No microphone and no OS dialog is exercised here.
+describe('voice search', () => {
+  beforeEach(() => {
+    mockSpeechRecognition.reset();
+  });
+
+  // Opens the overlay and gets as far as an open microphone.
+  async function pressMic() {
+    await fireEvent.press(screen.getByTestId('search-input-voice'));
+    await waitFor(() => expect(mockSpeechRecognition.isRunning()).toBe(true));
+    await act(async () => {
+      mockSpeechRecognition.emit('start', null);
+    });
+  }
+
+  async function say(words: string) {
+    await act(async () => {
+      mockSpeechRecognition.emitTranscript(words);
+    });
+  }
+
+  // The recogniser stops hearing speech, resolves a final, and closes.
+  async function stopSpeaking() {
+    await act(async () => {
+      mockSpeechRecognition.emit('speechend', null);
+      mockSpeechRecognition.emit('end', null);
+    });
+  }
+
+  it('opens the listening surface when the mic is pressed', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await pressMic();
+
+    expect(screen.getByTestId('voice-overlay')).toBeTruthy();
+    expect(screen.getByText('Listening…')).toBeTruthy();
+  });
+
+  // The transcript has to appear as it is spoken — it is the only evidence the
+  // microphone is working, and the mockup shows it growing under the disc.
+  it('asks the recogniser for interim results', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await pressMic();
+
+    expect(mockSpeechRecognition.startCalls()).toHaveLength(1);
+    expect(mockSpeechRecognition.startCalls()[0]).toMatchObject({ interimResults: true });
+  });
+
+  it('shows partial results as they arrive', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await pressMic();
+    await say('machine');
+    expect(screen.getByText('machine')).toBeTruthy();
+
+    await say('machine learning');
+    expect(screen.getByText('machine learning')).toBeTruthy();
+  });
+
+  // ── Regression: the session-counter race ───────────────────────────────────
+
+  // Two mic presses committed in ONE React batch. `fireEvent` is act()-wrapped,
+  // so nesting both inside an outer act() defers the passive effects until the
+  // batch closes — which is exactly the window the bug needed, and the one a
+  // pair of ordinary awaited presses can never produce.
+  //
+  // The bug: the hook kept its own session counter beside the reducer's and
+  // guarded it with a copy of the state that a passive effect updated. Batched
+  // presses advanced that counter twice while the reducer accepted one session,
+  // and the two never resynchronised — every event belonging to the session that
+  // actually ran was then rejected as stale.
+  //
+  // It does not crash and it does not look broken: `checkingPermission` renders
+  // as "Listening…", so the overlay sits there looking healthy over a live
+  // microphone it is ignoring. The assertion therefore has to be that speech
+  // still reaches the surface, not that something threw.
+  describe('two mic presses in a single React batch', () => {
+    async function doublePressMic() {
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('search-input-voice'));
+        fireEvent.press(screen.getByTestId('search-input-voice'));
+      });
+      await waitFor(() => expect(mockSpeechRecognition.isRunning()).toBe(true));
+    }
+
+    it('starts exactly one recogniser', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await doublePressMic();
+
+      expect(mockSpeechRecognition.startCalls()).toHaveLength(1);
+    });
+
+    // The discriminator. Under the old counter this transcript never arrived.
+    it('still delivers the transcript to the surface', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await doublePressMic();
+      await act(async () => {
+        mockSpeechRecognition.emit('start', null);
+        mockSpeechRecognition.emitTranscript('machine learning');
+      });
+
+      expect(screen.getByText('machine learning')).toBeTruthy();
+    });
+
+    // The drift was permanent, not per-session: once the two counters parted,
+    // every later session was dead too. So the cycle after it has to work.
+    it('leaves the next session working after a cancel', async () => {
+      const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await doublePressMic();
+      await fireEvent.press(screen.getByTestId('voice-overlay-cancel'));
+
+      // A whole fresh session, end to end.
+      await pressMic();
+      await say('climate');
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
+      expect(pipeline.searchCalls[0].query).toBe('climate');
+    });
+  });
+
+  // ── Permission ─────────────────────────────────────────────────────────────
+
+  describe('when the microphone is refused', () => {
+    it('says so, in copy that names the fix', async () => {
+      mockSpeechRecognition.setPermissionGranted(false);
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await fireEvent.press(screen.getByTestId('search-input-voice'));
+
+      await waitFor(() => expect(screen.getByTestId('voice-overlay-error')).toBeTruthy());
+      expect(
+        screen.getByText('Microphone access is off. Turn it on in Settings to search by voice.'),
+      ).toBeTruthy();
+    });
+
+    it('never opens the microphone', async () => {
+      mockSpeechRecognition.setPermissionGranted(false);
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await fireEvent.press(screen.getByTestId('search-input-voice'));
+
+      await waitFor(() => expect(screen.getByTestId('voice-overlay-error')).toBeTruthy());
+      expect(mockSpeechRecognition.startCalls()).toHaveLength(0);
+    });
+
+    // The one that matters: a refusal is not a query.
+    it('starts no search', async () => {
+      mockSpeechRecognition.setPermissionGranted(false);
+      const pipeline = stub(() => Promise.resolve(feed()));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await fireEvent.press(screen.getByTestId('search-input-voice'));
+
+      await waitFor(() => expect(screen.getByTestId('voice-overlay-error')).toBeTruthy());
+      expect(pipeline.searchCalls).toHaveLength(0);
+    });
+  });
+
+  // ── The transcript becomes a query ─────────────────────────────────────────
+
+  describe('a recognised transcript', () => {
+    it('sends the transcript to the search pipeline, unchanged', async () => {
+      const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('machine learning in healthcare');
+      await stopSpeaking();
+
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
+      expect(pipeline.searchCalls[0].query).toBe('machine learning in healthcare');
+    });
+
+    // Same store, same cap, same dedupe as a typed query — a voice search is a
+    // search, so it belongs in the list of recent ones.
+    it('is remembered as a recent search', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('climate');
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() =>
+        expect(useRecentSearchesStore.getState().queries).toContain('climate'),
+      );
+    });
+
+    it('closes the overlay, revealing the results underneath', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('climate');
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(screen.getByTestId('content-card')).toBeTruthy());
+      expect(screen.queryByTestId('voice-overlay')).toBeNull();
+      expect(screen.getByText('Environmental Policy in China')).toBeTruthy();
+    });
+
+    // The mockup shows Search live while the title still reads "Listening…",
+    // so a reader may commit before the recogniser decides they have stopped.
+    // The overlay must still close, and the microphone must still shut.
+    it('can be committed mid-utterance, closing the microphone with it', async () => {
+      const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('machine learning');
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(pipeline.searchCalls).toHaveLength(1));
+      expect(pipeline.searchCalls[0].query).toBe('machine learning');
+      expect(screen.queryByTestId('voice-overlay')).toBeNull();
+      expect(mockSpeechRecognition.isRunning()).toBe(false);
+    });
+
+    // Voice adds no error surface of its own. Once the transcript is submitted
+    // it is an ordinary search and fails like one.
+    it('renders a post-recognition failure through the existing search error', async () => {
+      setSearchPipeline(
+        stub(() => Promise.reject(new CatalogueFailure(CatalogueError.TIMEOUT, 'search'))),
+      );
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('climate');
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(screen.getByTestId('search-error')).toBeTruthy());
+      expect(screen.getByText('This took too long to respond.')).toBeTruthy();
+    });
+
+    it('renders zero results through the existing empty state, not an error', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('quantum basket weaving');
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-submit'));
+
+      await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
+      expect(screen.queryByTestId('search-error')).toBeNull();
+    });
+  });
+
+  // ── The two ways a session ends without a query ────────────────────────────
+
+  describe('when nothing was heard', () => {
+    it('says so rather than reporting a breakage', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await stopSpeaking();
+
+      expect(screen.getByText('No speech was heard. Try again.')).toBeTruthy();
+    });
+
+    it('starts no search', async () => {
+      const pipeline = stub(() => Promise.resolve(feed()));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await stopSpeaking();
+
+      expect(pipeline.searchCalls).toHaveLength(0);
+      expect(screen.queryByTestId('search-empty')).toBeNull();
+    });
+
+    // Clear is the recovery, and it must reopen the microphone rather than
+    // leaving the reader on a dead surface.
+    it('offers a retry that listens again', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await stopSpeaking();
+      await fireEvent.press(screen.getByTestId('voice-overlay-clear'));
+
+      await waitFor(() => expect(mockSpeechRecognition.startCalls()).toHaveLength(2));
+      expect(screen.queryByTestId('voice-overlay-error')).toBeNull();
+    });
+  });
+
+  describe('when the reader cancels', () => {
+    it('starts no search, even with a transcript on screen', async () => {
+      const pipeline = stub(() => Promise.resolve(feed({ publications: [FIRST] })));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('climate');
+      await fireEvent.press(screen.getByTestId('voice-overlay-cancel'));
+
+      expect(pipeline.searchCalls).toHaveLength(0);
+      expect(screen.queryByTestId('voice-overlay')).toBeNull();
+    });
+
+    it('closes the microphone', async () => {
+      setSearchPipeline(stub(() => Promise.resolve(feed())));
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await fireEvent.press(screen.getByTestId('voice-overlay-cancel'));
+
+      expect(mockSpeechRecognition.isRunning()).toBe(false);
+    });
+
+    // The native recogniser keeps emitting after abort(). A trailing end would
+    // otherwise put a dismissed overlay back on screen as "no speech heard".
+    it('ignores the events the recogniser emits after it was stopped', async () => {
+      const pipeline = stub(() => Promise.resolve(feed()));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('climate');
+      await fireEvent.press(screen.getByTestId('voice-overlay-cancel'));
+
+      await act(async () => {
+        mockSpeechRecognition.emitTranscript('climate change', true);
+        mockSpeechRecognition.emit('end', null);
+      });
+
+      expect(screen.queryByTestId('voice-overlay')).toBeNull();
+      expect(pipeline.searchCalls).toHaveLength(0);
+    });
+  });
+
+  // ── A recogniser that broke ────────────────────────────────────────────────
+
+  it('reports a recogniser failure without starting a search', async () => {
+    const pipeline = stub(() => Promise.resolve(feed()));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await pressMic();
+    await act(async () => {
+      mockSpeechRecognition.emit('error', { error: 'network', message: 'no connection' });
+      mockSpeechRecognition.emit('end', null);
+    });
+
+    expect(screen.getByText('You appear to be offline.')).toBeTruthy();
+    expect(pipeline.searchCalls).toHaveLength(0);
+  });
+
+  it('keeps a device with no recogniser out of the retry loop', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await pressMic();
+    await act(async () => {
+      mockSpeechRecognition.emit('error', {
+        error: 'service-not-allowed',
+        message: 'no recognition service',
+      });
+    });
+
+    expect(
+      screen.getByText('Voice search is not available on this device. Type your search instead.'),
+    ).toBeTruthy();
   });
 });

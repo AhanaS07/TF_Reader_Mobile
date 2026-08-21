@@ -14,6 +14,16 @@
     "android": {
       "package": "com.taylorandfrancis.tfreader.dev"
     },
-    "plugins": ["expo-dev-client", "expo-font"]
+    "plugins": [
+      "expo-dev-client",
+      "expo-font",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone so you can search the catalogue by voice.",
+          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to turn what you say into text so you can search the catalogue by voice."
+        }
+      ]
+    ]
   }
 }
