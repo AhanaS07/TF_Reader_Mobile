@@ -28,7 +28,8 @@
 // results already on screen, not a screen-level takeover either component models.
 import { useCallback, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
@@ -44,11 +45,17 @@ import { ACCESS_TIERS, type AccessTier } from '@model/types';
 import type { SearchStatus } from '@/search';
 import { ACCESS_TIER_FILTER_CONFIRMED, useCatalogueSearch } from '@/search';
 import type { ContentFormat } from '@/shared/types/primitives';
-import type { SearchStackParamList } from '@navigation/types';
+import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, radius, space, type } from '@theme/tokens';
 
-type Nav = NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>;
+// Composite, not a plain stack prop, because "Browse the full catalogue"
+// crosses into the Catalogue tab's Shelf screen — same cross-tab pattern
+// ProfileScreen and AccessGateScreen already use to reach the other tab.
+type Nav = CompositeNavigationProp<
+  NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>,
+  BottomTabNavigationProp<RootTabParamList, 'Search'>
+>;
 
 // Same placeholder CatalogueScreen uses, and for the same reason: CAP-3
 // (institution selection) has not landed, so there is no real value to read yet.
@@ -296,16 +303,25 @@ export default function SearchScreen() {
               <View testID="search-browse-instead" style={styles.browse}>
                 <Text style={styles.browseHeading}>Browse instead</Text>
                 {search.browseInstead.map((entry, index) => (
-                  // NOT PRESSABLE, AND THAT IS A GAP RATHER THAN A CHOICE. Each
-                  // entry carries a `shelfId` ready to open, but no stack in this
-                  // app has a shelf route yet (navigation is P0-6's) — so there is
-                  // nowhere to send the tap. A card that looked tappable and did
-                  // nothing would be worse than one that does not claim to be.
-                  // When a shelf route lands this becomes one `onPress`.
+                  // Shelf now exists (Catalogue stack), so this crosses tabs to
+                  // it — same cross-tab pattern AccessGateScreen already uses to
+                  // reach SignIn. `PLACEHOLDER_INSTITUTION_ID` matches every
+                  // other call this screen makes: a shelf only exists within one
+                  // institution's catalogue, and Search has no real one yet.
                   <CategoryCard
                     key={entry.shelfId}
                     title={entry.title}
                     accent={BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]}
+                    onPress={() =>
+                      navigation.navigate('Catalogue', {
+                        screen: 'Shelf',
+                        params: {
+                          shelfId: entry.shelfId,
+                          title: entry.title,
+                          institutionId: PLACEHOLDER_INSTITUTION_ID,
+                        },
+                      })
+                    }
                   />
                 ))}
               </View>

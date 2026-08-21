@@ -174,7 +174,13 @@ export function renderBookContent(
           for its own four dead tabs. */}
       <UnavailableTag label="Table of Contents" />
 
-      <ActionBar actions={detail.access.actions} onAction={onAction} />
+      {/* ActionBar sets no width of its own (CONVENTIONS §8 — the screen that
+          places it owns that), and `styles.content`'s `alignItems: 'center'`
+          would otherwise shrink it to its content instead of letting it fill
+          the row the way ActionBar's own row/slot layout expects. */}
+      <View style={styles.actionBarWrapper}>
+        <ActionBar actions={detail.access.actions} onAction={onAction} />
+      </View>
     </ScrollView>
   );
 }
@@ -360,7 +366,10 @@ export function renderArticleContent(
           Shown inert rather than removed, same rule as the tabs above. */}
       <UnavailableTag label="Download citation" />
 
-      <ActionBar actions={detail.access.actions} onAction={onAction} />
+      {/* Same stretch fix as renderBookContent's ActionBar — see the comment there. */}
+      <View style={styles.actionBarWrapper}>
+        <ActionBar actions={detail.access.actions} onAction={onAction} />
+      </View>
     </ScrollView>
   );
 }
@@ -538,6 +547,12 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     gap: space.xs,
     marginTop: space.sm,
+  },
+  // Only override needed for a `styles.content` child: `alignItems: 'center'`
+  // would otherwise shrink ActionBar to its content instead of the full row
+  // width its own row/slot layout expects.
+  actionBarWrapper: {
+    alignSelf: 'stretch',
   },
   metaRow: {
     fontWeight: typeScale.meta.weight,

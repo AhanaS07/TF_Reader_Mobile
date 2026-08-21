@@ -51,10 +51,13 @@ export type SearchStackParamList = {
   SearchHome: undefined;
   ItemDetail: { itemId: string };
   // Same reason ItemDetail is registered in both stacks: the gate can be
-  // raised from either origin. "Through my institution" crosses back into
-  // the Catalogue tab from here, since SignIn/InstitutionList exist only
-  // there — see AccessGateScreen.tsx.
+  // raised from either origin. SignIn and InstitutionList are registered here
+  // too, for the same reason — so "Through my institution" can stay on
+  // whichever tab it started on instead of jumping to Catalogue. See
+  // AccessGateScreen.tsx.
   AccessGate: { itemId: string; title: string; authors: string };
+  SignIn: undefined;
+  InstitutionList: undefined;
 };
 
 /** Single-screen stacks — no pushed screens in Week 1. */

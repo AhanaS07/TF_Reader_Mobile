@@ -2,7 +2,7 @@
 // transparentModal, not BottomSheet — same z-index reason as SignInScreen.
 // "Through my institution" is wired; "Personal account" is shown but disabled (B2C destination unsettled).
 // No auth here — navigation and intent only; SignInScreen handles SAML.
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
@@ -16,16 +16,14 @@ import { color, radius, space, type as typeScale } from '@theme/tokens';
 // same reason ItemDetailScreen's own route type is hand-typed: this screen is
 // registered in both CatalogueStackParamList and SearchStackParamList, and
 // picking one stack's `NativeStackScreenProps` would be wrong for the other.
-// `navigate` is typed for exactly the two cross-tab calls this file makes —
-// React Navigation resolves 'Catalogue' by switching tabs first, then
-// pushing the named screen, the same pattern ProfileScreen already uses.
+// SignIn and InstitutionList are registered in both stacks too (same reason),
+// so `navigate` only ever needs to push within whichever stack this screen is
+// currently mounted in — never a cross-tab jump, and never a claim about
+// which tab the reader ends up looking at for a flow that started elsewhere.
 interface Props {
   route: { params: { itemId: string; title: string; authors: string } };
   navigation: {
-    navigate: (
-      tab: 'Catalogue',
-      target: { screen: 'SignIn' } | { screen: 'InstitutionList' },
-    ) => void;
+    navigate: (screen: 'SignIn' | 'InstitutionList') => void;
     goBack: () => void;
   };
 }
@@ -39,7 +37,23 @@ export default function AccessGateScreen({ route, navigation }: Props) {
   const remember = usePendingIntentStore((s) => s.remember);
   const isOnline = useNetworkStatus();
 
+  // Set right before sending the reader to InstitutionList with nothing
+  // selected yet; cleared once the effect below fires, or on dismiss. Not
+  // strictly load-bearing now that InstitutionList lives in the same stack as
+  // this screen (its own `goBack()` correctly lands back here either way) —
+  // kept because it also removes the need for a second manual tap on
+  // "Through my institution" to notice the selection and continue.
+  const awaitingInstitution = useRef(false);
+
+  useEffect(() => {
+    if (!awaitingInstitution.current || selectedInstitution === null) return;
+    awaitingInstitution.current = false;
+    navigation.goBack();
+    navigation.navigate('SignIn');
+  }, [selectedInstitution, navigation]);
+
   const handleDismiss = useCallback(() => {
+    awaitingInstitution.current = false;
     navigation.goBack();
   }, [navigation]);
 
@@ -58,23 +72,19 @@ export default function AccessGateScreen({ route, navigation }: Props) {
       institutionId: selectedInstitution?.id ?? null,
     });
 
-    // Explicit cross-tab navigation, matching ProfileScreen's own
-    // `navigate('Catalogue', { screen: ... })` call — correct regardless of
-    // whether this screen is currently mounted under Catalogue or Search,
-    // since SignIn and InstitutionList exist only in the Catalogue stack.
+    // In-stack navigation — pushes onto whichever stack this screen is
+    // currently mounted in (Catalogue or Search), so a flow that started in
+    // Search stays in Search rather than relocating the reader to a tab they
+    // never chose.
     if (selectedInstitution !== null) {
       // Dismiss this screen first — otherwise AccessGate stays mounted
       // underneath SignIn instead of being replaced by it.
       navigation.goBack();
-      navigation.navigate('Catalogue', { screen: 'SignIn' });
+      navigation.navigate('SignIn');
     } else {
-      // No auto-continue after InstitutionList — deliberate. Selecting an
-      // institution calls goBack() there, returning the reader to this
-      // screen with a selection now made; tapping "Through my institution"
-      // a second time takes the branch above. No callback/param/event
-      // invented for a one-tap saving the existing back-stack already
-      // provides for free.
-      navigation.navigate('Catalogue', { screen: 'InstitutionList' });
+      // The effect above continues to SignIn once a selection lands.
+      awaitingInstitution.current = true;
+      navigation.navigate('InstitutionList');
     }
   }, [remember, itemId, selectedInstitution, navigation]);
 

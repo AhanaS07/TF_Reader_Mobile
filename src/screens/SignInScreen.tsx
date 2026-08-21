@@ -39,9 +39,15 @@ export default function SignInScreen({ navigation }: Props) {
       //   1. Call flambeau.beginSamlSignIn({ institutionId: institution.id, idpHint: institution.signIn?.idpHint })
       //      `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
       //   2. Wire the token return path (deep link / polling authTxnId — Question 5)
+      //
+      // `popTo`, NOT `navigate` — for the common case the same ItemDetail is
+      // already in the stack underneath AccessGate and this screen (the reader
+      // never left the app), and `navigate` does not reliably collapse back to
+      // it, leaving a duplicate with a stranded sheet beneath. `popTo` pops to
+      // the existing entry, and pushes a fresh one if it genuinely isn't there.
       const intent = takeIntent();
       if (intent?.action === 'read') {
-        navigation.navigate('ItemDetail', { itemId: intent.itemId });
+        navigation.popTo('ItemDetail', { itemId: intent.itemId });
       } else {
         navigation.goBack();
       }
