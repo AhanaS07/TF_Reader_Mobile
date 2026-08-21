@@ -44,9 +44,16 @@ export default function SignInScreen({ navigation }: Props) {
     // dropped in the meantime. When flambeau's contract lands and this stub
     // is replaced by a real async handoff, this call moves into the actual
     // token-received branch; the replay logic itself does not change.
+    //
+    // `popTo`, NOT `navigate` — the item the intent points at is the same
+    // ItemDetail already sitting underneath AccessGate and this screen in the
+    // stack for the common case (the reader never left the app). A plain
+    // `navigate` call does not reliably collapse back to that existing entry;
+    // `popTo` pops everything above it explicitly, and falls back to pushing
+    // a fresh one if it genuinely isn't there (e.g. a resumed cold start).
     const intent = takeIntent();
     if (intent !== null) {
-      navigation.navigate('ItemDetail', { itemId: intent.itemId });
+      navigation.popTo('ItemDetail', { itemId: intent.itemId });
     } else {
       navigation.goBack();
     }

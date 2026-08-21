@@ -146,6 +146,16 @@ function SearchNavigator() {
         component={AccessGateScreen}
         options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
       />
+      <SearchStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+      />
+      <SearchStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
     </SearchStack.Navigator>
   );
 }

@@ -4,7 +4,7 @@
 // unlike most screen tests there is no fake DataSource to inject.
 //
 // `await render(...)` is required — RTL 14's render is async.
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
@@ -114,7 +114,7 @@ describe('AccessGateScreen institution option', () => {
 
     fireEvent.press(screen.getByLabelText('Through my institution'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'SignIn' });
+    expect(mockNavigate).toHaveBeenCalledWith('SignIn');
   });
 
   // AccessGate must not stay mounted underneath SignIn — see review follow-up.
@@ -125,7 +125,7 @@ describe('AccessGateScreen institution option', () => {
     fireEvent.press(screen.getByLabelText('Through my institution'));
 
     expect(mockGoBack).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'SignIn' });
+    expect(mockNavigate).toHaveBeenCalledWith('SignIn');
   });
 
   it('navigates to InstitutionList when no institution is selected', async () => {
@@ -133,16 +133,53 @@ describe('AccessGateScreen institution option', () => {
 
     fireEvent.press(screen.getByLabelText('Through my institution'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'InstitutionList' });
+    expect(mockNavigate).toHaveBeenCalledWith('InstitutionList');
   });
 
-  // No dismiss-and-forward here — InstitutionList's own `goBack()` is what
-  // returns the reader to this screen to try again with a selection made.
+  // Nothing to dismiss yet at the moment of the tap — the screen is still
+  // waiting on a selection. See the test below for what happens once one lands.
   it('does not dismiss AccessGate when no institution is selected', async () => {
     await render(<AccessGateScreen {...makeProps()} />);
 
     fireEvent.press(screen.getByLabelText('Through my institution'));
 
+    expect(mockGoBack).not.toHaveBeenCalled();
+  });
+
+  // No second tap needed — the effect notices the selection landing in the
+  // store and continues on its own, rather than requiring the reader to press
+  // "Through my institution" again once they're back on this screen.
+  it('continues on to SignIn once an institution is selected, without a second tap', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    await fireEvent.press(screen.getByLabelText('Through my institution'));
+    expect(mockNavigate).toHaveBeenCalledWith('InstitutionList');
+    mockNavigate.mockClear();
+
+    await act(async () => {
+      useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+    });
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('SignIn');
+  });
+
+  // Dismissing first must cancel the wait — otherwise picking an institution
+  // later some other way (e.g. Profile) would yank the reader into a stray
+  // SignIn sheet for an item they already walked away from.
+  it('does not continue to SignIn after being dismissed, even if a selection lands later', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    await fireEvent.press(screen.getByLabelText('Through my institution'));
+    await fireEvent.press(screen.getByText("I'll decide later"));
+    mockNavigate.mockClear();
+    mockGoBack.mockClear();
+
+    await act(async () => {
+      useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockGoBack).not.toHaveBeenCalled();
   });
 

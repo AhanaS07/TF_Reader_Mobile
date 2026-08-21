@@ -10,7 +10,7 @@
 // point: if the normalizer mishandles wokay's OPDS, this adapter surfaces it
 // today instead of the day the backend lands.
 import type { BookId } from '@/shared/types/primitives';
-import type { Catalogue, Publication, Shelf } from '@model/types';
+import type { Catalogue, Publication, Shelf, SortOrder } from '@model/types';
 import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
 import type { ShelfQuery } from '@adapters/CatalogueSource';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
@@ -32,6 +32,48 @@ import institutionsFixture from '@model/fixtures/institutions.json';
 // Strip combining diacritical marks so "Zurich" matches "Zürich".
 function fold(str: string): string {
   return str.normalize('NFD').replace(/\p{M}/gu, '');
+}
+
+// Screen 12 — filter, applied against the whole shelf before paging, the same
+// order a real server has to do it in: filter decides which rows exist at
+// all, page decides which slice of THOSE this response carries. Filtering
+// each fixture page independently would answer a different, wrong question —
+// what's left of the page that happened to load, not what matches shelf-wide.
+//
+// `licenceModel` read directly off the publication's own acquisition data,
+// not via `resolveAccess` — this mirrors a server matching a stored field,
+// not the UI computing entitlement (Design Spec §5.1 is about the latter).
+function matchesShelfQuery(publications: Publication[], query: ShelfQuery | undefined): Publication[] {
+  if (query === undefined) return publications;
+
+  return publications.filter((publication) => {
+    if (query.contentType !== undefined && publication.format !== query.contentType) {
+      return false;
+    }
+    if (query.accessTier !== undefined && publication.acquisition.licenceModel !== query.accessTier) {
+      return false;
+    }
+    return true;
+  });
+}
+
+// Only ever called for the 'all' shelf — ShelfQuery.sort's own comment: sent
+// for every shelf, honoured only here, a no-op elsewhere. `undefined`
+// `published` sorts last on both directions rather than throwing off the
+// comparator with a mixed string/undefined compare.
+function sortByShelfQuery(publications: Publication[], sort: SortOrder | undefined): Publication[] {
+  if (sort === undefined) return publications;
+
+  const sorted = [...publications];
+  if (sort === 'title.asc') sorted.sort((a, b) => a.title.localeCompare(b.title));
+  if (sort === 'title.desc') sorted.sort((a, b) => b.title.localeCompare(a.title));
+  if (sort === 'publishedAt.asc') {
+    sorted.sort((a, b) => (a.published ?? '').localeCompare(b.published ?? ''));
+  }
+  if (sort === 'publishedAt.desc') {
+    sorted.sort((a, b) => (b.published ?? '').localeCompare(a.published ?? ''));
+  }
+  return sorted;
 }
 
 // Two institutions have their own root feed; the rest are served the first one
@@ -83,7 +125,7 @@ export class MockAdapter implements DataSource {
     institutionId: string,
     shelfId: string,
     page?: number,
-    _query?: ShelfQuery,
+    query?: ShelfQuery,
   ): Promise<Shelf> {
     await this.simulate(shelfId);
     this.assertKnownInstitution(institutionId);
@@ -98,20 +140,32 @@ export class MockAdapter implements DataSource {
       throw new CatalogueFailure(CatalogueError.NOT_FOUND, shelfId);
     }
 
+    // Every fixture page concatenated, filtered and (on 'all' only) sorted as
+    // one shelf-wide list, THEN re-paged — see matchesShelfQuery's comment for
+    // why that order matters. Unfiltered, this reproduces the fixtures' own
+    // page split exactly: slicing an unchanged list by its first page's own
+    // length just hands back the same pages it started as.
+    const whole = pages.flatMap((shelfPage) => shelfPage.publications);
+    const matching = matchesShelfQuery(whole, query);
+    const ordered = shelfId === 'all' ? sortByShelfQuery(matching, query?.sort) : matching;
+
     // Page omitted means the first one, matching ApiAdapter: it sends no `page`
     // query param at all in that case and lets the server pick its default.
-    const shelf = pages[page ?? 0];
+    const pageSize = pages[0].publications.length;
+    const start = (page ?? 0) * pageSize;
+    const slice = ordered.slice(start, start + pageSize);
 
-    // Past the last page of fixture data: an empty final page rather than
-    // NOT_FOUND, because running off the end of a listing is normal paging, not
-    // a missing shelf. `nextPage` is stripped so a caller cannot loop forever.
-    if (shelf === undefined) {
-      const { nextPage: _nextPage, ...lastPage } = pages[pages.length - 1];
-      return { ...lastPage, publications: [] };
-    }
-
-    shelf.publications.forEach(assertPublication);
-    return shelf;
+    // Running off the end (of the real data, or of what a filter left behind)
+    // is normal paging, not a missing shelf — an empty page, not NOT_FOUND.
+    slice.forEach(assertPublication);
+    return {
+      id: pages[0].id,
+      title: pages[0].title,
+      publications: slice,
+      totalItems: ordered.length,
+      itemsPerPage: pageSize,
+      nextPage: start + pageSize < ordered.length ? (page ?? 0) + 1 : undefined,
+    };
   }
 
   async getPublication(institutionId: string, bookId: BookId): Promise<Publication> {
@@ -283,17 +337,19 @@ export class MockAdapter implements DataSource {
     ];
   }
 
-  // Only what the PUBLIC feed lists — deliberately not publicationsById().
+  // The PUBLIC feed's own titles, plus one locked title reachable only by id —
+  // NOT by browsing. `publicPages()` (the anonymous Catalogue tab) still lists
+  // open access titles exclusively, per the ratified "the logged-out feed is
+  // open-access only" decision; nothing here adds a locked card to that feed.
   //
-  // An anonymous reader can open an open access title and nothing else, so
-  // serving an institution's Elite or Subscription title here would answer a
-  // question this endpoint is not allowed to answer. The real route
-  // (/opds/v1/public/publications) does return locked titles too, for the
-  // discovery-search path, which is not built.
-  //
-  // Those payloads DO normalize now — a `subscribe` link's missing format,
-  // hasSearchIndex and canPersist are all handled. What is still missing is a
-  // fixture and a route to serve it from, not parser support.
+  // An anonymous reader can open an open access title and nothing else BY
+  // BROWSING. Discovery search is different: the real route
+  // (/opds/v1/public/publications) does return locked titles for a reader who
+  // found the id some other way (search), which is the gap this fills — the
+  // same `item_42` detail already used by `publicationsById()` below, so a
+  // reader who finds it via search and one who finds it once signed in land on
+  // the identical detail. Still one fixture short of the real thing: a search
+  // fixture that could surface *any* id here, not just this one.
   private publicPublicationsById(): Map<BookId, Publication> {
     const publications = new Map<BookId, Publication>();
     for (const page of this.publicPages()) {
@@ -301,6 +357,8 @@ export class MockAdapter implements DataSource {
         publications.set(publication.id, publication);
       }
     }
+    const locked = normalizePublication(publicationDetailFixture);
+    publications.set(locked.id, locked);
     return publications;
   }
 

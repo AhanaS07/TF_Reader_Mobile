@@ -232,3 +232,88 @@ describe('MockAdapter shelf resolution', () => {
     expect(previewed.length).toBeGreaterThan(0);
   });
 });
+
+describe('MockAdapter shelf filter and sort', () => {
+  it('narrows to only the matching access tier, across every fixture page', async () => {
+    const adapter = new MockAdapter();
+
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      accessTier: 'OPEN_ACCESS',
+    });
+
+    expect(shelf.publications.length).toBeGreaterThan(0);
+    expect(
+      shelf.publications.every((publication) => publication.acquisition.licenceModel === 'OPEN_ACCESS'),
+    ).toBe(true);
+  });
+
+  it('narrows to only the matching content format', async () => {
+    const adapter = new MockAdapter();
+
+    const shelf = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      contentType: 'AUDIO',
+    });
+
+    expect(shelf.publications.length).toBeGreaterThan(0);
+    expect(shelf.publications.every((publication) => publication.format === 'AUDIO')).toBe(true);
+  });
+
+  // Filtering is expected to shrink the shelf enough that both fixture pages'
+  // worth of matches fit on one response — proves matching runs against the
+  // whole shelf, not page-by-page, per matchesShelfQuery's own comment.
+  it('reports a total that reflects the filter, not the unfiltered shelf', async () => {
+    const adapter = new MockAdapter();
+
+    const unfiltered = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+    const filtered = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      accessTier: 'ELITE',
+    });
+
+    expect(filtered.totalItems).toBeLessThan(unfiltered.totalItems ?? 0);
+    expect(filtered.totalItems).toBe(filtered.publications.length);
+  });
+
+  it('orders by title on the "all" shelf when a sort is requested', async () => {
+    const adapter = new MockAdapter();
+
+    // Every title across every page, gathered unsorted, so the expectation is
+    // built from the same source data the sorted request draws from — not a
+    // second, independent guess at what the fixtures contain.
+    const firstPage = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+    const secondPage =
+      firstPage.nextPage === undefined
+        ? undefined
+        : await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, firstPage.nextPage);
+    const allTitles = [
+      ...firstPage.publications,
+      ...(secondPage?.publications ?? []),
+    ].map((publication) => publication.title);
+
+    const sortedFirstPage = await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      sort: 'title.asc',
+    });
+
+    const expectedTitles = [...allTitles].sort((a, b) => a.localeCompare(b));
+    expect(sortedFirstPage.publications.map((publication) => publication.title)).toEqual(
+      expectedTitles.slice(0, sortedFirstPage.publications.length),
+    );
+  });
+
+  // ShelfQuery's own contract: sort is accepted everywhere but only honoured
+  // on 'all' — a curated shelf may treat it as a no-op rather than an error.
+  it('ignores sort on a shelf other than "all"', async () => {
+    const adapter = new MockAdapter();
+    const catalogue = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    const curatedShelfId = catalogue.shelves.find((shelf) => shelf.id !== 'all')?.id;
+    if (curatedShelfId === undefined) throw new Error('fixture has no curated shelf to test against');
+
+    const unsorted = await adapter.getShelf(KNOWN_INSTITUTION, curatedShelfId);
+    const requestedSort = await adapter.getShelf(KNOWN_INSTITUTION, curatedShelfId, undefined, {
+      sort: 'title.desc',
+    });
+
+    expect(requestedSort.publications.map((publication) => publication.id)).toEqual(
+      unsorted.publications.map((publication) => publication.id),
+    );
+  });
+});

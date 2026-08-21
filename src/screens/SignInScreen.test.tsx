@@ -25,17 +25,18 @@ const IMPERIAL: Institution = {
 
 const mockNavigate = jest.fn();
 const mockGoBack = jest.fn();
+const mockPopTo = jest.fn();
 
-// Only `navigation.navigate`/`goBack` are ever read, so the rest of the
-// typed NativeStackScreenProps navigation object is cast rather than
+// Only `navigation.navigate`/`goBack`/`popTo` are ever read, so the rest of
+// the typed NativeStackScreenProps navigation object is cast rather than
 // constructed — same convention as InstitutionDetailScreen.test.tsx.
 type SignInProps = {
-  navigation: { navigate: jest.Mock; goBack: jest.Mock };
+  navigation: { navigate: jest.Mock; goBack: jest.Mock; popTo: jest.Mock };
 };
 
 function makeProps() {
   return {
-    navigation: { navigate: mockNavigate, goBack: mockGoBack },
+    navigation: { navigate: mockNavigate, goBack: mockGoBack, popTo: mockPopTo },
   } as unknown as Parameters<typeof SignInScreen>[0] & SignInProps;
 }
 
@@ -46,11 +47,16 @@ beforeEach(() => {
 afterEach(() => {
   mockNavigate.mockClear();
   mockGoBack.mockClear();
+  mockPopTo.mockClear();
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
   usePendingIntentStore.setState({ pending: null });
 });
 
 describe('SignInScreen pending-intent replay', () => {
+  // `popTo`, not `navigate` — the existing ItemDetail already in the stack
+  // (from before AccessGate and this screen were pushed on top of it) must be
+  // popped back to, not duplicated with a fresh instance. See the comment
+  // above `handleSignIn`.
   it('resumes ItemDetail when a pending intent exists', async () => {
     usePendingIntentStore.setState({
       pending: {
@@ -65,8 +71,9 @@ describe('SignInScreen pending-intent replay', () => {
 
     fireEvent.press(screen.getByText('Sign in with institution'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+    expect(mockPopTo).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
     expect(mockGoBack).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it('falls back to goBack when no intent is pending', async () => {
@@ -75,7 +82,7 @@ describe('SignInScreen pending-intent replay', () => {
     fireEvent.press(screen.getByText('Sign in with institution'));
 
     expect(mockGoBack).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockPopTo).not.toHaveBeenCalled();
   });
 
   it('falls back to goBack when the pending intent is stale', async () => {
@@ -93,6 +100,6 @@ describe('SignInScreen pending-intent replay', () => {
     fireEvent.press(screen.getByText('Sign in with institution'));
 
     expect(mockGoBack).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockPopTo).not.toHaveBeenCalled();
   });
 });
