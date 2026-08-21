@@ -70,9 +70,9 @@
 // unreadable too" — decryptSearchIndex's own doc comment).
 
 import * as Crypto from 'expo-crypto';
-import type { BookId, ContentFormat, EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { BookId, ContentFormat, EncryptedPackage, ReadingSessionResponse } from '@/shared/contracts';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
-import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
+import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { withWriteLock } from '../sync/stores/syncableTable';
@@ -81,17 +81,12 @@ import { USER_ID } from '../sync/syncConfig';
 import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
-import { borrowLoan, openReadingSession, fetchEncryptedAsset } from './readingSessionClient';
 import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
+import { fetchEncryptedAsset, openReadingSession } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
+import { checkLicense } from './licenseCheck';
 
 export const BOOK_LIMIT = 5;
-
-// A book with no `dueAt` (open access, which never expires per the real contract) needs SOME
-// value for the local SignedLicence's required `expiresAt` — contentStore.ts's `isLicenceExpired`
-// only ever compares against `Date.now()`, so a far-future placeholder is exactly equivalent to
-// "never expires" for every real check, without needing a third, nullable licence shape.
-const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
 
 // Fallback for `SignedUrl.mimeType`, which is optional on the real spec — `EncryptedPackage
 // .mimeType` (content-provider.ts) is NOT optional, so an absent server value needs a real one
@@ -172,7 +167,41 @@ export async function downloadBook(
 
   // Loan BEFORE session, always — the real contract's own ordering requirement (reading-session.ts
   // header). `loan.canPersist` (not `licenceModel`) decides whether we ask to persist at all.
-  const loan = await borrowLoan(bookId);
+  //
+  // UNIFIED LICENSE GATE (licenseCheck.ts): the inline borrow + session + key-fingerprint +
+  // licence-synthesis block that used to live here has been extracted into checkLicense(). That
+  // function is shared by both downloadBook (this file, intent: 'DOWNLOAD') and openBook
+  // (openBook.ts, intent: 'STREAM'). The licence is synthesised once, in checkLicense(), rather
+  // than inline in both callers. callLicense is called AFTER the storage-permission and
+  // storage-availability checks above, because those are download-specific gating that a
+  // network call would be wasteful to make first.
+  const license = await checkLicense(bookId, format, 'DOWNLOAD');
+  if (!license.ok) {
+    throw new DownloadFailure(license.reason, bookId);
+  }
+  // Download requires a live session — the offline fallback produces a result for previously-
+  // downloaded books only, and a newly-downloaded book can't come from an offline path.
+  if (license.mode === 'offline-license') {
+    throw new DownloadFailure(DownloadError.SESSION_FETCH_FAILED, bookId);
+  }
+
+  // Open access short-circuits at checkLicense (before the session step) because open-access
+  // books don't need a reading session for rights — but downloadBook still needs the session
+  // for the asset URL. Fetch it here; checkLicense already returned the loan for this case.
+  let session: ReadingSessionResponse;
+  let loan = license.loan;
+  if (license.mode === 'open-access') {
+    const { publicKey } = await generateDeviceKeypair();
+    session = await openReadingSession(bookId, {
+      format,
+      intent: 'DOWNLOAD',
+      devicePublicKey: publicKeyToRawBase64(publicKey),
+      wantSearchIndex: true,
+    });
+  } else {
+    session = license.session;
+  }
+  const licence = license.mode !== 'open-access' ? license.licence : null;
 
   // Fast-fail before spending bandwidth on the asset — NOT the authoritative check (the one that
   // decides whether a row is written is re-run inside the write lock at the bottom of this
@@ -188,31 +217,11 @@ export async function downloadBook(
     assertBookLimitNotExceeded(bookId, await downloadTable.listActive(USER_ID));
   }
 
-  const { publicKey } = await generateDeviceKeypair();
-  const devicePublicKey = publicKeyToRawBase64(publicKey);
-  const deviceKeyFingerprint = await publicKeyFingerprint(publicKey);
-
-  const session = await openReadingSession(bookId, {
-    format,
-    intent: loan.canPersist ? 'DOWNLOAD' : 'STREAM',
-    devicePublicKey,
-    wantSearchIndex: true,
-  });
-
-  // Anti-key-substitution check (API_CONTRACT_NOTES.md C7/B3), moved HERE rather than left solely
-  // to contentStore.ts's `assertLicenceMatchesPackage()`: `session.encryption.keyFingerprint` is
-  // available the instant the session response arrives, so comparing now fails in milliseconds
-  // instead of after `fetchEncryptedAsset` has pulled up to 25MB. Also surfaces as a typed
-  // `DownloadFailure` at this layer instead of a `ContentFailure` bubbling up from Encryption.
-  // contentStore's own check still runs too — kept as defense in depth for any caller that
-  // reaches `store()` directly (e.g. `devContentSeed.ts`), not made redundant by this.
-  if (session.encryption && session.encryption.keyFingerprint !== deviceKeyFingerprint) {
-    throw new DownloadFailure(
-      DownloadError.KEY_SUBSTITUTION,
-      bookId,
-      new Error("encryption.keyFingerprint does not match this device's own key"),
-    );
-  }
+  // Anti-key-substitution check (API_CONTRACT_NOTES.md C7/B3) is now done inside checkLicense()
+  // (shared by both Open and Download). The check runs before the asset fetch, so a key mismatch
+  // fails in milliseconds instead of after pulling up to 25MB. contentStore's own
+  // assertLicenceMatchesPackage still runs too — defense in depth for any direct store() caller
+  // (e.g. devContentSeed.ts).
 
   // Moved up from below the fetch — needed here now to size the chunked fetch's own RAM-budget
   // ceiling (maxCipherBytes) BEFORE requesting a single byte, not just to classify the response
@@ -314,20 +323,12 @@ export async function downloadBook(
     }
   }
 
-  // Synthesized locally — the real response has no `licence` field at all (see this file's
-  // header). `expiresAt` comes from the LOAN's `dueAt` (the real multi-week offline-reopen
-  // window), never from the session's own ~5-minute `expiresAt`. `signature` has no real-backend
-  // counterpart; contentStore.ts doesn't verify RS256 today regardless (a pre-existing, documented
-  // gap — this placeholder doesn't create a new one).
-  const licence: SignedLicence = {
-    licenceId: session.sessionId,
-    itemId: bookId,
-    keyFingerprint: deviceKeyFingerprint, // computed once, above, before the early substitution check
-    expiresAt: loan.dueAt ?? OPEN_ACCESS_LICENCE_EXPIRES_AT,
-    canPersist: loan.canPersist,
-    rights: { print: false },
-    signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
-  };
+  // Synthesized locally by checkLicense() — the real response has no `licence` field at all (see
+  // reading-session.ts's header). `expiresAt` comes from the LOAN's `dueAt` (the real multi-week
+  // offline-reopen window), not from the session's own ~5-minute `expiresAt`. `signature` has no
+  // real-backend counterpart; contentStore.ts doesn't verify RS256 today regardless (a
+  // pre-existing, documented gap — this placeholder doesn't create a new one). Licence is now
+  // shared with openBook.ts (via licenseCheck.ts) — synthesis happens once, here, not twice.
 
   const pkg: EncryptedPackage = {
     bookId,

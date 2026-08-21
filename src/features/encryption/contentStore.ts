@@ -31,7 +31,7 @@
 // stated target here, not silently widened.
 
 import { Directory, File, Paths } from 'expo-file-system';
-import type { BookId, ContentStore, EncryptedPackage, SessionHandle } from '@/shared/contracts';
+import type { BookId, ContentStore, EncryptedPackage, SessionHandle, SignedLicence } from '@/shared/contracts';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
@@ -613,6 +613,29 @@ async function destroy(bookId: BookId): Promise<void> {
   }
   await deleteBek(bookId);
   packageCache.delete(bookId);
+}
+
+/**
+ * Return the persisted licence and its expiry status for a previously-downloaded book. Used by the
+ * unified license gate's offline fallback: when the network is unreachable, the caller needs to
+ * know whether there is a valid local licence to read against, without fetching or decrypting
+ * anything.
+ *
+ * Returns `{ licence: null, expired: false }` when no metadata file exists (never downloaded, or
+ * destroyed) — the caller should treat a null licence as OFFLINE_LICENSE_UNAVAILABLE.
+ */
+export async function getPersistedLicenceStatus(
+  bookId: BookId,
+): Promise<{ licence: SignedLicence | null; expired: boolean }> {
+  const meta = metaFile(bookId);
+  if (!meta.exists) return { licence: null, expired: false };
+
+  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  if (!parsed.licence) return { licence: null, expired: false };
+
+  const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
+  const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
+  return { licence: parsed.licence, expired };
 }
 
 /**

@@ -88,6 +88,14 @@ export enum DownloadError {
    * for any caller that reaches `contentStore.store()` directly, e.g. `devContentSeed.ts`), but
    * for the real download path this member fails in milliseconds instead of after up to 25MB. */
   KEY_SUBSTITUTION = 'KEY_SUBSTITUTION',
+
+  // --- offline fallback, added for the unified license gate (licenseCheck.ts) ---
+  /** The device is offline and no persisted licence exists for this book (never downloaded, or the
+   * licence was destroyed). Distinct from the server-side denial codes above: the server was never
+   * contacted. A previously-downloaded book with a valid persisted licence succeeds via
+   * `contentStore.getPersistedLicenceStatus()` instead — this code is specifically the "no local
+   * fallback available" case. */
+  OFFLINE_LICENSE_UNAVAILABLE = 'OFFLINE_LICENSE_UNAVAILABLE',
 }
 
 export class DownloadFailure extends Error {
