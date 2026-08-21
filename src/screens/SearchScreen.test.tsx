@@ -1092,6 +1092,32 @@ describe('voice search', () => {
       expect(screen.queryByTestId('search-empty')).toBeNull();
     });
 
+    // THE OTHER ROUTE TO THE SAME OUTCOME, and the one nothing else in this
+    // suite exercises: `nomatch` is a final result the recogniser could not make
+    // anything of. The partials already on screen are exactly what it is
+    // declining to confirm, so they are dropped rather than searched — see the
+    // reducer's `noMatch`. Emitted with the `end` that follows it on a device,
+    // because `end` is what retires the session.
+    it('drops an unconfirmed partial rather than searching it', async () => {
+      const pipeline = stub(() => Promise.resolve(feed()));
+      setSearchPipeline(pipeline);
+      await render(<SearchScreen />);
+
+      await pressMic();
+      await say('quantum bask');
+      await act(async () => {
+        mockSpeechRecognition.emit('nomatch', null);
+        mockSpeechRecognition.emit('end', null);
+      });
+
+      expect(screen.getByText('No speech was heard. Try again.')).toBeTruthy();
+      // The guess the recogniser withdrew is gone from the surface, not left
+      // sitting there submittable.
+      expect(screen.queryByText('quantum bask')).toBeNull();
+      expect(screen.getByTestId('voice-overlay-error')).toBeTruthy();
+      expect(pipeline.searchCalls).toHaveLength(0);
+    });
+
     // Clear is the recovery, and it must reopen the microphone rather than
     // leaving the reader on a dead surface.
     it('offers a retry that listens again', async () => {
@@ -1184,5 +1210,49 @@ describe('voice search', () => {
     expect(
       screen.getByText('Voice search is not available on this device. Type your search instead.'),
     ).toBeTruthy();
+  });
+
+  // A REFUSAL HAS TWO ROUTES IN, and only one of them is the permission response
+  // the block above drives. iOS authorises the microphone and speech recognition
+  // separately, so a reader who has granted the mic can still be refused — and
+  // that arrives as a `not-allowed` error event, not as `granted: false`. Both
+  // must land on the same state and the same copy; the reducer routes on the
+  // code for exactly this reason.
+  it('reports a refusal that arrives as a native error the same way', async () => {
+    const pipeline = stub(() => Promise.resolve(feed()));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await pressMic();
+    await act(async () => {
+      mockSpeechRecognition.emit('error', { error: 'not-allowed', message: 'denied' });
+      // `end` follows every error on a device. It must not overwrite the refusal
+      // with a cheerful "no speech was heard".
+      mockSpeechRecognition.emit('end', null);
+    });
+
+    expect(
+      screen.getByText('Microphone access is off. Turn it on in Settings to search by voice.'),
+    ).toBeTruthy();
+    expect(pipeline.searchCalls).toHaveLength(0);
+  });
+
+  // Android reports a silence as a TIMEOUT rather than as `no-speech`, and it is
+  // the commoner of the two in practice. It is an answer, not a breakage, so it
+  // has to land on the same copy an `end`-with-nothing-heard produces — the
+  // distinction `searchState` keeps between `empty` and `error`, one layer down.
+  it('reports an Android silence timeout as nothing heard, not a breakage', async () => {
+    const pipeline = stub(() => Promise.resolve(feed()));
+    setSearchPipeline(pipeline);
+    await render(<SearchScreen />);
+
+    await pressMic();
+    await act(async () => {
+      mockSpeechRecognition.emit('error', { error: 'speech-timeout', message: 'no speech' });
+      mockSpeechRecognition.emit('end', null);
+    });
+
+    expect(screen.getByText('No speech was heard. Try again.')).toBeTruthy();
+    expect(pipeline.searchCalls).toHaveLength(0);
   });
 });
