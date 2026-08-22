@@ -245,4 +245,98 @@ describe('openBook', () => {
     expect(fetchEncryptedAssetChunked).not.toHaveBeenCalled();
     expect(contentStore.store).not.toHaveBeenCalled();
   });
+
+  // ── open-access tests ─────────────────────────────────────────────────────
+
+  it('fetches session + asset for open-access book, stores ephemerally', async () => {
+    // Borrow returns an OPEN_ACCESS loan → checkLicense short-circuits to open-access mode.
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    // open-access session: no encryption (open-access books are unencrypted).
+    jest.mocked(openReadingSession).mockResolvedValue(
+      makeSession({ encryption: undefined, content: { url: 'http://localhost:4000/fixtures/test-book.epub', expiresAt: '', cipherLength: 28, originalLength: 28, mimeType: 'application/epub+zip' } }),
+    );
+    jest.mocked(fetchEncryptedAssetChunked).mockResolvedValue(new Uint8Array(28));
+
+    const result = await openBook('test-book', 'EPUB');
+
+    expect(result).toEqual(new Uint8Array([10, 20, 30]));
+    // openBook fetches its own session (STREAM intent) since checkLicense short-circuited.
+    expect(openReadingSession).toHaveBeenCalledWith('test-book', {
+      format: 'EPUB',
+      intent: 'STREAM',
+      devicePublicKey: 'device-public-key-base64',
+      wantSearchIndex: false,
+    });
+    expect(fetchEncryptedAssetChunked).toHaveBeenCalled();
+    expect(contentStore.store).toHaveBeenCalledTimes(1);
+    expect(contentStore.openSession).toHaveBeenCalledWith('test-book');
+    expect(contentStore.decryptBook).toHaveBeenCalledWith('test-book');
+  });
+
+  it('attaches synthetic ephemeral licence (canPersist: false, non-null) for open-access', async () => {
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    jest.mocked(openReadingSession).mockResolvedValue(
+      makeSession({ encryption: undefined, content: { url: 'http://localhost:4000/fixtures/test-book.epub', expiresAt: '', cipherLength: 28, originalLength: 28, mimeType: 'application/epub+zip' } }),
+    );
+    jest.mocked(fetchEncryptedAssetChunked).mockResolvedValue(new Uint8Array(28));
+
+    await openBook('test-book', 'EPUB');
+
+    expect(contentStore.store).toHaveBeenCalledTimes(1);
+    const storedPkg = jest.mocked(contentStore.store).mock.calls[0][0];
+    // KEY ASSERTION: non-null licence with canPersist: false → isElite() returns true → in-memory only.
+    expect(storedPkg.licence).not.toBeNull();
+    expect(storedPkg.licence!.canPersist).toBe(false);
+  });
+
+  it('open-access: nothing persists to disk (store is called but package is Elite)', async () => {
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    jest.mocked(openReadingSession).mockResolvedValue(
+      makeSession({ encryption: undefined, content: { url: 'http://localhost:4000/fixtures/test-book.epub', expiresAt: '', cipherLength: 28, originalLength: 28, mimeType: 'application/epub+zip' } }),
+    );
+    jest.mocked(fetchEncryptedAssetChunked).mockResolvedValue(new Uint8Array(28));
+
+    await openBook('test-book', 'EPUB');
+
+    // store() IS called (the Elite branch caches in RAM), but isAvailableOffline must still
+    // be false afterward — nothing was written to disk.
+    expect(contentStore.store).toHaveBeenCalledTimes(1);
+    // The mock returns false by default, which is correct — but verify the store was called
+    // with a package that triggers the Elite path (canPersist: false).
+    const storedPkg = jest.mocked(contentStore.store).mock.calls[0][0];
+    expect(storedPkg.licence!.canPersist).toBe(false);
+  });
+
+  it('open-access: cleans up partial download on fetch error', async () => {
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    jest.mocked(openReadingSession).mockResolvedValue(
+      makeSession({ encryption: undefined }),
+    );
+    jest.mocked(fetchEncryptedAssetChunked).mockRejectedValue(
+      new DownloadFailure(DownloadError.BOOK_TOO_LARGE, 'test-book', new Error('oversized')),
+    );
+
+    await expect(openBook('test-book', 'EPUB')).rejects.toThrow(
+      expect.objectContaining({ code: DownloadError.BOOK_TOO_LARGE }),
+    );
+    expect(discardPartialDownload).toHaveBeenCalledWith('test-book');
+  });
+
+  it('open-access: throws BOOK_TOO_LARGE when oversized', async () => {
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    jest.mocked(openReadingSession).mockResolvedValue(
+      makeSession({ encryption: undefined }),
+    );
+    jest.mocked(fetchEncryptedAssetChunked).mockRejectedValue(
+      new DownloadFailure(
+        DownloadError.BOOK_TOO_LARGE,
+        'test-book',
+        new Error('asset is 30000000 bytes on the wire, exceeds the 25165843-byte budget'),
+      ),
+    );
+
+    await expect(openBook('test-book', 'EPUB')).rejects.toThrow(
+      expect.objectContaining({ code: DownloadError.BOOK_TOO_LARGE }),
+    );
+  });
 });
