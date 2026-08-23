@@ -6,21 +6,22 @@
 //   checkLicense(bookId, format, 'STREAM')   → openBook.ts  (ephemeral, nothing saved)
 //   checkLicense(bookId, format, 'DOWNLOAD') → downloadBook  (persists licence + ciphertext)
 //
-// Both paths share the same borrow → session → key-fingerprint → licence-synthesis sequence.
-// The inline copy in downloadManager.ts is being REPLACED by calls into this file — the
-// synthesis happens exactly once, here, not twice.
+// ONE CALL, NOT TWO: this used to borrow a loan (`POST /api/v1/loans`) before opening a session.
+// The real backend has no such endpoint (confirmed: `POST /api/v1/loans` 405s — only `GET`, a
+// list, is mapped; see `reading-session.ts`'s header, D-020). `licenceModel`/`canPersist`/
+// `licenceId` now come straight off `openReadingSession()`'s response, so there is nothing left
+// to borrow first. `synthesiseLicence()` below reads all of it off the session.
 //
 // Network vs explicit denial (readingSessionClient.ts's own distinction): a mapped
-// FlambeauError code (via LOAN_ERROR_CODE_MAP / SESSION_ERROR_CODE_MAP) means the server
-// answered and said no; the generic LOAN_FAILED / SESSION_FETCH_FAILED fallback means the
-// request never got a structured response at all (timeout, DNS, offline). Only the latter
-// triggers the offline fallback — no new classification logic needed.
+// FlambeauError code (via SESSION_ERROR_CODE_MAP) means the server answered and said no; the
+// generic SESSION_FETCH_FAILED fallback means the request never got a structured response at all
+// (timeout, DNS, offline). Only the latter triggers the offline fallback.
 
-import type { BookId, ContentFormat, Loan, ReadingSessionResponse, SignedLicence } from '@/shared/contracts';
+import type { BookId, ContentFormat, ReadingSessionResponse, SignedLicence } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
 import { getPersistedLicenceStatus } from '../encryption/contentStore';
 import { verifyLicenceSignature } from '../encryption/licenceSignature';
-import { borrowLoan, openReadingSession, FAIL_CLOSED_CODES } from './readingSessionClient';
+import { openReadingSession } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
 
 const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
@@ -29,9 +30,15 @@ const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
 
 export type LicenseCheckResult =
   | { ok: false; reason: DownloadError }
-  | { ok: true; mode: 'open-access'; loan: Loan }
-  | { ok: true; mode: 'online'; loan: Loan; session: ReadingSessionResponse; licence: SignedLicence }
-  | { ok: true; mode: 'offline-license'; loan: Loan; licence: SignedLicence };
+  // `session`/`licence` are present when this came from a live reading-session call, absent when
+  // it came from the offline fallback for a previously-downloaded open-access book (no network
+  // call was made — see offlineFallback's own open-access branch). A caller that needs a live
+  // session (downloadBook) must check for its presence; openBook.ts never needs to, because it
+  // checks contentStore.isAvailableOffline() first and that is guaranteed true whenever this
+  // variant lacks a session.
+  | { ok: true; mode: 'open-access'; session?: ReadingSessionResponse; licence?: SignedLicence }
+  | { ok: true; mode: 'online'; session: ReadingSessionResponse; licence: SignedLicence }
+  | { ok: true; mode: 'offline-license'; licence: SignedLicence };
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -50,19 +57,18 @@ function isGenuineNetworkError(error: DownloadFailure): boolean {
   );
 }
 
-// A book with no `dueAt` (open access) needs a far-future placeholder for the local
-// SignedLicence's `expiresAt`. Same value downloadManager.ts has always used.
-function synthesiseLicence(
-  loan: Loan,
-  session: ReadingSessionResponse,
-  deviceKeyFingerprint: string,
-): SignedLicence {
+// The real backend exposes no long-term loan due-date anywhere (confirmed: `GET /api/v1/loans`
+// returns `dueAt: null` for every seeded loan) — only the session's own ~5-minute `expiresAt`,
+// which must never gate an offline reopen weeks later (reading-session.ts's header). So every
+// synthesized licence gets the same far-future placeholder, for every `licenceModel`, until the
+// backend adds a real one. This is unresolved, not a design choice — see this file's header.
+function synthesiseLicence(session: ReadingSessionResponse, deviceKeyFingerprint: string): SignedLicence {
   return {
-    licenceId: session.sessionId,
-    itemId: loan.itemId,
+    licenceId: session.licenceId ?? session.sessionId,
+    itemId: session.itemId,
     keyFingerprint: deviceKeyFingerprint,
-    expiresAt: loan.dueAt ?? OPEN_ACCESS_LICENCE_EXPIRES_AT,
-    canPersist: loan.canPersist,
+    expiresAt: OPEN_ACCESS_LICENCE_EXPIRES_AT,
+    canPersist: session.canPersist ?? true,
     rights: { print: false },
     signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
   };
@@ -72,84 +78,56 @@ function synthesiseLicence(
 
 /**
  * Unified license check — the first call for both Open and Download. Handles
- * borrow → session → key-fingerprint → licence-synthesis, and falls back to a
- * persisted local licence when the network is unreachable.
+ * session → key-fingerprint → licence-synthesis, and falls back to a persisted
+ * local licence when the network is unreachable. No separate borrow step — see
+ * this file's header.
  *
- * @param intent - `'STREAM'` for Open (nothing persists), `'DOWNLOAD'` for Download.
+ * @param intent - `'STREAM'` for Open (nothing persists), `'DOWNLOAD'` for Download. Sent to the
+ *   server AS REQUESTED — an ELITE title refuses `'DOWNLOAD'` server-side with
+ *   `DOWNLOAD_NOT_PERMITTED` (a `FAIL_CLOSED_CODES` member), which `downloadBook()` surfaces as a
+ *   real failure rather than silently reading it instead. There is no client-side downgrade
+ *   anymore: with no borrow step, `canPersist` isn't known until this call already returns, so
+ *   there is nothing to downgrade based on beforehand. A caller that wants ELITE content should
+ *   use `openBook()` (`'STREAM'`), which is exactly the seam this design added it for.
  * @returns `ok: false` with a `reason` code the caller should throw, or `ok: true`
- *   with everything the caller needs to proceed (loan, session, synthesised licence).
+ *   with everything the caller needs to proceed (session, synthesised licence).
  */
 export async function checkLicense(
   bookId: BookId,
   format: ContentFormat,
   intent: 'STREAM' | 'DOWNLOAD',
 ): Promise<LicenseCheckResult> {
-  // ── step 1: borrow ──────────────────────────────────────────────────────
-
-  let loan: Loan;
-  try {
-    loan = await borrowLoan(bookId);
-  } catch (error) {
-    if (error instanceof DownloadFailure && isGenuineNetworkError(error)) {
-      // Genuine network unreachable (TypeError from fetch) — fall through to the offline
-      // fallback below. Server errors (404/500 with a non-Flambeau body) are NOT routed here;
-      // those mean the server is reachable but the request was bad, and masking that with a
-      // stale local licence would hide a real problem.
-      return offlineFallback(bookId);
-    }
-    // Explicit denial (mapped Flambeau error code) — fail immediately.
-    if (error instanceof DownloadFailure) {
-      return { ok: false, reason: error.code };
-    }
-    throw error;
-  }
-
-  // ── step 2: open access short-circuit ──────────────────────────────────
-
-  if (loan.licenceModel === 'OPEN_ACCESS') {
-    return { ok: true, mode: 'open-access', loan };
-  }
-
-  // ── step 3: reading session ─────────────────────────────────────────────
-
   const { publicKey } = await generateDeviceKeypair();
   const devicePublicKey = publicKeyToRawBase64(publicKey);
   const deviceKeyFingerprint = await publicKeyFingerprint(publicKey);
-
-  // Elite (canPersist: false) refuses DOWNLOAD intent server-side (403 DOWNLOAD_NOT_PERMITTED).
-  // Auto-downgrade to STREAM — the caller asked to download, but the loan doesn't allow it,
-  // so we stream instead. This preserves the old downloadManager.ts behavior where
-  // `loan.canPersist ? 'DOWNLOAD' : 'STREAM'` derived the intent from the loan.
-  const effectiveIntent = intent === 'DOWNLOAD' && !loan.canPersist ? 'STREAM' : intent;
 
   let session: ReadingSessionResponse;
   try {
     session = await openReadingSession(bookId, {
       format,
-      intent: effectiveIntent,
+      intent,
       devicePublicKey,
       wantSearchIndex: true,
     });
   } catch (error) {
     if (error instanceof DownloadFailure && isGenuineNetworkError(error)) {
-      // Genuine network unreachable after a successful borrow — still fall back to offline.
+      // Genuine network unreachable — fall through to the offline fallback below. Server errors
+      // (404/500 with a non-Flambeau body) are NOT routed here; those mean the server is
+      // reachable but the request was bad, and masking that with a stale local licence would
+      // hide a real problem.
       return offlineFallback(bookId);
     }
     if (error instanceof DownloadFailure) {
-      // Explicit denial — fail closed for FAIL_CLOSED_CODES, propagate for everything else.
-      if (FAIL_CLOSED_CODES.has(error.code)) {
-        return { ok: false, reason: error.code };
-      }
-      // Non-fail-closed codes (NO_ACTIVE_LOAN, CONTENT_NOT_READY, unmapped FlambeauError
-      // codes, or LOAN_FAILED/SESSION_FETCH_FAILED from a non-TYPE_ERROR cause like a 404
-      // with a plain body) — the server responded with something we can't map. Propagate
-      // rather than fall back to a stale local licence, which would mask the real problem.
+      // Explicit denial — the server answered and said no, so fail immediately rather than
+      // fall back to a stale local licence. Includes DOWNLOAD_NOT_PERMITTED (see this function's
+      // own doc comment for why an ELITE + 'DOWNLOAD' request lands here instead of being
+      // silently downgraded).
       return { ok: false, reason: error.code };
     }
     throw error;
   }
 
-  // ── step 4: anti-key-substitution check ─────────────────────────────────
+  // ── anti-key-substitution check ──────────────────────────────────────────
 
   if (session.encryption && session.encryption.keyFingerprint !== deviceKeyFingerprint) {
     return {
@@ -158,17 +136,23 @@ export async function checkLicense(
     };
   }
 
-  // ── step 5: synthesise licence ──────────────────────────────────────────
+  // ── synthesise licence ────────────────────────────────────────────────────
 
-  const licence = synthesiseLicence(loan, session, deviceKeyFingerprint);
+  const licence = synthesiseLicence(session, deviceKeyFingerprint);
 
-  // ── step 6: verify licence signature (stub — always true today) ─────────
+  // ── verify licence signature (stub — always true today) ──────────────────
 
   if (!verifyLicenceSignature(licence)) {
     return { ok: false, reason: DownloadError.KEY_SUBSTITUTION };
   }
 
-  return { ok: true, mode: 'online', loan, session, licence };
+  // Branch AFTER the call, not before — the real backend puts `licenceModel` on the session
+  // response itself now, so there is no separate check to do earlier (see this file's header).
+  if (session.licenceModel === 'OPEN_ACCESS') {
+    return { ok: true, mode: 'open-access', session, licence };
+  }
+
+  return { ok: true, mode: 'online', session, licence };
 }
 
 // ── offline fallback ──────────────────────────────────────────────────────
@@ -187,23 +171,12 @@ async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
 
   // Open access persists with `licence: null` (no key material to protect) — a downloaded
   // open-access book has no expiry to check and no signature to verify. Route it through the
-  // same 'open-access' mode the online short-circuit uses; openBook.ts's 'open-access' case
-  // reads the local copy straight off disk via contentStore.isAvailableOffline().
+  // same 'open-access' mode the online path uses, minus `session`/`licence` — no network call
+  // was made, so there is nothing to attach. openBook.ts's 'open-access' case reads the local
+  // copy straight off disk via contentStore.isAvailableOffline() and never needs either field;
+  // downloadBook() rejects this variant outright (a download needs a live session).
   if (!licence) {
-    return {
-      ok: true,
-      mode: 'open-access',
-      loan: {
-        loanId: bookId,
-        itemId: bookId,
-        userId: '',
-        licenceModel: 'OPEN_ACCESS',
-        status: 'ACTIVE',
-        borrowedAt: '',
-        canPersist: true,
-        serverTime: new Date().toISOString(),
-      },
-    };
+    return { ok: true, mode: 'open-access' };
   }
 
   if (!verifyLicenceSignature(licence)) {
@@ -214,21 +187,5 @@ async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
     return { ok: false, reason: DownloadError.ENTITLEMENT_EXPIRED };
   }
 
-  // Build a minimal Loan from the persisted licence so callers that need `loan` (both
-  // openBook and downloadBook do) get a consistent shape. The persisted licence has
-  // `canPersist` and `expiresAt`, which is all the downstream code actually reads off
-  // `loan` — `loan.licenceModel` is only checked in checkLicense itself (step 2 above,
-  // before we reach the offline path).
-  const offlineLoan: Loan = {
-    loanId: licence.licenceId,
-    itemId: licence.itemId,
-    userId: '',
-    licenceModel: 'SUBSCRIPTION',
-    status: 'ACTIVE',
-    borrowedAt: '',
-    canPersist: licence.canPersist,
-    serverTime: new Date().toISOString(),
-  };
-
-  return { ok: true, mode: 'offline-license', loan: offlineLoan, licence };
+  return { ok: true, mode: 'offline-license', licence };
 }

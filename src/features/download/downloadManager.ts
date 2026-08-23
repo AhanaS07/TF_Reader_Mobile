@@ -1,20 +1,22 @@
 // Owner: Download (Abhinav).
 //
 // BuildPlan.md Phase 3 + Phase 4 items 1/3/4: the download skeleton's single entry point.
-// Permission -> storage -> 5-book limit -> borrow a loan -> open a reading session -> resolve the
-// encrypted asset -> reject if the decrypted size would exceed contentStore's RAM budget
+// Permission -> storage -> 5-book limit -> open a reading session (via checkLicense) -> resolve
+// the encrypted asset -> reject if the decrypted size would exceed contentStore's RAM budget
 // (MAX_DECRYPTED_BYTES, BOOK_TOO_LARGE) -> best-effort fetch the encrypted search index, if the
 // session has one -> hand the bytes to Encryption's store() (never persist plaintext) -> record
 // the download locally.
 //
-// REAL FLAMBEAU CONTRACT (2026-08-14) — this file now calls `readingSessionClient.ts`'s
-// `borrowLoan`/`openReadingSession` (team flambeau's real, published `POST /api/v1/loans` +
-// `POST /api/v1/reading-sessions`), NOT `contentLicenceClient.ts`'s `fetchContentLicence` (the
-// old mock-shaped `GET /books/:id/content-licence`) — that function, and `ContentLicenceResponse`
+// REAL FLAMBEAU CONTRACT (2026-08-14), NO BORROW STEP (2026-08-23) — this file calls
+// `checkLicense()` (licenseCheck.ts), which calls `readingSessionClient.ts`'s
+// `openReadingSession()` (team flambeau's real, published `POST /api/v1/reading-sessions`), NOT
+// `contentLicenceClient.ts`'s `fetchContentLicence` (the old mock-shaped
+// `GET /books/:id/content-licence`) — that function, and `ContentLicenceResponse`
 // (content-licence.ts), are left fully in place and still exported/tested, just no longer called
-// from here. See `src/shared/contracts/reading-session.ts`'s header for the full loan-vs-session
-// distinction and why a loan step exists here (no borrow UI/screen exists anywhere in this repo —
-// this function borrows on the caller's behalf, silently, as a pragmatic stand-in).
+// from here. There is no separate borrow call: the real backend has no `POST /api/v1/loans`
+// (confirmed 405 — see `reading-session.ts`'s header, D-020), so `licenceModel`/`canPersist` come
+// off the session response itself, fetched once. `readingSessionClient.ts`'s `borrowLoan` stays
+// for the mock backend/published-contract case; this file no longer calls it.
 //
 // `format` is a NEW required parameter (default 'EPUB' so every pre-existing call site — tests
 // included — keeps compiling and behaving identically): the real request needs it up front
@@ -22,15 +24,14 @@
 // of asking for it — there is no catalogue/browse step anywhere in this repo to source it from
 // otherwise.
 //
-// INTENT IS DERIVED FROM THE LOAN, NOT HARDCODED TO 'DOWNLOAD': `loan.canPersist` (from the
-// borrow step, BEFORE the reading session) decides `intent: 'DOWNLOAD'` vs `intent: 'STREAM'`.
-// Hardcoding `'DOWNLOAD'` would make every ELITE (online-only, canPersist:false) book's read
-// attempt fail outright with `403 DOWNLOAD_NOT_PERMITTED` — the real backend refuses that intent
-// for ELITE unconditionally — which would remove Elite readability entirely (the old mock never
-// refused anything; `contentStore.store()` already handles `canPersist:false` gracefully by not
-// persisting). Requesting `'STREAM'` for an ELITE loan instead keeps that path working exactly as
-// before: the bytes still get fetched and handed to `contentStore.store()`, which still declines
-// to write anything to disk/keychain for it, same as always.
+// INTENT IS 'DOWNLOAD', SENT AS-IS, NO CLIENT-SIDE DOWNGRADE — with no borrow step, `canPersist`
+// isn't known until the reading-session call already returns, so there's nothing to downgrade
+// against beforehand. An ELITE (online-only) book's `downloadBook()` call now fails outright with
+// `DOWNLOAD_NOT_PERMITTED` — the real backend refuses that intent for ELITE unconditionally — and
+// the caller should use `openBook()` (`intent: 'STREAM'`) for that book instead. This is a
+// behavior change from when this file silently requested `'STREAM'` for a canPersist:false loan
+// and returned a non-persisted read from `downloadBook()` itself; seeing `DOWNLOAD_NOT_PERMITTED`
+// here now means "use Open", not "retry".
 //
 // CHECKSUM: the real `ReadingSessionResponse` carries no checksum field at all — GCM's own
 // authentication tag (checked at decrypt time) is the integrity guarantee, not a separate SHA-256
@@ -72,7 +73,6 @@
 import * as Crypto from 'expo-crypto';
 import type { BookId, ContentFormat, EncryptedPackage, ReadingSessionResponse } from '@/shared/contracts';
 import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
-import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { withWriteLock } from '../sync/stores/syncableTable';
@@ -82,7 +82,7 @@ import type { DownloadRow } from '../sync/localDb/types';
 import { checkStoragePermission } from './permissions';
 import { checkAvailableStorage } from './storageCheck';
 import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
-import { fetchEncryptedAsset, openReadingSession } from './readingSessionClient';
+import { fetchEncryptedAsset } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
 import { checkLicense } from './licenseCheck';
 
@@ -165,55 +165,49 @@ export async function downloadBook(
     throw new DownloadFailure(DownloadError.INSUFFICIENT_STORAGE, bookId);
   }
 
-  // Loan BEFORE session, always — the real contract's own ordering requirement (reading-session.ts
-  // header). `loan.canPersist` (not `licenceModel`) decides whether we ask to persist at all.
-  //
   // UNIFIED LICENSE GATE (licenseCheck.ts): the inline borrow + session + key-fingerprint +
   // licence-synthesis block that used to live here has been extracted into checkLicense(). That
   // function is shared by both downloadBook (this file, intent: 'DOWNLOAD') and openBook
   // (openBook.ts, intent: 'STREAM'). The licence is synthesised once, in checkLicense(), rather
-  // than inline in both callers. callLicense is called AFTER the storage-permission and
+  // than inline in both callers. checkLicense is called AFTER the storage-permission and
   // storage-availability checks above, because those are download-specific gating that a
   // network call would be wasteful to make first.
+  //
+  // NO SEPARATE BORROW STEP — checkLicense() makes exactly one call (openReadingSession), not a
+  // borrow-then-session pair (see licenseCheck.ts's header, D-020). `licenceModel`/`canPersist`
+  // come off the session response itself now, so both 'online' and 'open-access' (when reached
+  // live rather than via the offline fallback) already carry a `session` — no second fetch here.
   const license = await checkLicense(bookId, format, 'DOWNLOAD');
   if (!license.ok) {
     throw new DownloadFailure(license.reason, bookId);
   }
-  // Download requires a live session — the offline fallback produces a result for previously-
-  // downloaded books only, and a newly-downloaded book can't come from an offline path.
-  if (license.mode === 'offline-license') {
+  // Download requires a live session. The offline fallback produces a result for previously-
+  // downloaded books only — 'offline-license' always lacks one, and 'open-access' lacks one only
+  // when it came from that same fallback (checkLicense's own LicenseCheckResult doc comment) — a
+  // newly-downloaded book can't come from either.
+  if (license.mode === 'offline-license' || !license.session) {
     throw new DownloadFailure(DownloadError.SESSION_FETCH_FAILED, bookId);
   }
-
-  // Open access short-circuits at checkLicense (before the session step) because open-access
-  // books don't need a reading session for rights — but downloadBook still needs the session
-  // for the asset URL. Fetch it here; checkLicense already returned the loan for this case.
-  let session: ReadingSessionResponse;
-  let loan = license.loan;
-  if (license.mode === 'open-access') {
-    const { publicKey } = await generateDeviceKeypair();
-    session = await openReadingSession(bookId, {
-      format,
-      intent: 'DOWNLOAD',
-      devicePublicKey: publicKeyToRawBase64(publicKey),
-      wantSearchIndex: true,
-    });
-  } else {
-    session = license.session;
-  }
+  const session: ReadingSessionResponse = license.session;
   const licence = license.mode !== 'open-access' ? license.licence : null;
+  // `session.canPersist` is optional on the type (a published contract might not send it — see
+  // reading-session.ts) — default true, same as synthesiseLicence()'s own default (licenseCheck.ts)
+  // does for the licence it hands back. Reading `session.canPersist` raw here would disagree with
+  // that default whenever a caller omits the field, silently skipping the write-lock block below.
+  const canPersist = session.canPersist ?? true;
 
   // Fast-fail before spending bandwidth on the asset — NOT the authoritative check (the one that
   // decides whether a row is written is re-run inside the write lock at the bottom of this
-  // function). Gated on `loan.canPersist`: an ELITE (STREAM-intent) read never persists anything
-  // and never writes a downloads row (see the `withWriteLock` block below), so it must not count
+  // function). Gated on `canPersist`: an ELITE (STREAM-intent) read never persists anything and
+  // never writes a downloads row (see the `withWriteLock` block below), so it must not count
   // against, or be blocked by, the 5-book limit either — found in review (D-18): without this
   // gate, a reader already at the cap on real downloads would get a bogus BOOK_LIMIT_REACHED
   // trying to just READ an ELITE book online, even though doing so would never actually consume a
-  // slot. Checking AFTER the loan (rather than before, as this used to) costs one small loan-borrow
-  // call on a doomed attempt instead of zero — a proportionate trade against blocking legitimate
-  // online-only reads at the cap.
-  if (loan.canPersist) {
+  // slot. In practice `canPersist` is true whenever we reach this line with intent 'DOWNLOAD' —
+  // the server would have refused with DOWNLOAD_NOT_PERMITTED otherwise (see checkLicense.ts) —
+  // but the field is read here rather than assumed, since open access also reaches this line and
+  // carries its own (true) canPersist.
+  if (canPersist) {
     assertBookLimitNotExceeded(bookId, await downloadTable.listActive(USER_ID));
   }
 
@@ -271,9 +265,10 @@ export async function downloadBook(
   // null, `isElite()`/`isLicenceExpired()` (contentStore.ts) both read off `pkg.licence`, and a null
   // licence makes both answer "no restriction" — an Elite audiobook would persist to disk forever
   // instead of staying memory-only, and a Subscription audiobook's local copy would never expire.
-  // `loan.licenceModel === 'OPEN_ACCESS'` is the real test for "no rights to attach" — the app
-  // already has it on the Loan, from the borrow step, independent of the session's encryption block.
-  const needsLicence = loan.licenceModel !== 'OPEN_ACCESS';
+  // `license.mode === 'open-access'` is the real test for "no rights to attach" — checkLicense
+  // already resolved it from the session's own `licenceModel`, independent of the session's
+  // encryption block (see checkLicense.ts's header).
+  const needsLicence = license.mode !== 'open-access';
   const expectedOriginalLength = computeOriginalLength(bytes.length, isEncrypted);
   if (
     session.content.originalLength !== undefined &&
@@ -347,14 +342,14 @@ export async function downloadBook(
 
   await contentStore.store(pkg);
 
-  // ELITE (STREAM-intent, `!loan.canPersist`) never reaches this point with anything actually
-  // written to disk — `contentStore.store()` already declines to persist for it. Found in review
-  // (D-18): the code below used to run unconditionally anyway, writing a `status: 'COMPLETED'`
-  // downloads row and burning one of the 5 offline slots for a book that was never actually
-  // downloaded. Five ELITE reads and zero real offline books would incorrectly hit
-  // BOOK_LIMIT_REACHED. Skip the whole block for a non-persisting read — there is nothing to
-  // track, and nothing to roll back if a race loses, since nothing was written.
-  if (!loan.canPersist) {
+  // Defense-in-depth, not the primary gate: an ELITE (canPersist:false) book now fails earlier,
+  // at checkLicense(), with DOWNLOAD_NOT_PERMITTED (see this file's header) — the server refuses
+  // intent:'DOWNLOAD' for it outright, so `canPersist` should always be true by this line. Kept
+  // rather than assumed, same reasoning as `needsLicence` above: `contentStore.store()` already
+  // declines to persist a canPersist:false package regardless, and skipping the block below for
+  // one avoids writing a `status: 'COMPLETED'` downloads row and burning one of the 5 offline
+  // slots for a book that was never actually persisted (found in review, D-18).
+  if (!canPersist) {
     return;
   }
 

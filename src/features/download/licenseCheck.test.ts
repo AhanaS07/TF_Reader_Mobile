@@ -1,12 +1,15 @@
 // licenseCheck.test.ts — exercises the unified license gate (checkLicense) against mocked
 // network calls and mocked contentStore.getPersistedLicenceStatus. Follows the same
 // jest.mock + global.fetch pattern as readingSessionClient.test.ts and downloadManager.test.ts.
+//
+// ONE CALL, NOT TWO (2026-08-23): the real backend has no `POST /api/v1/loans` (confirmed 405 —
+// see licenseCheck.ts's header, D-020), so these tests mock only `/api/v1/reading-sessions`.
+// `licenceModel`/`canPersist` now travel on the session response itself.
 
-import type { Loan, ReadingSessionResponse } from '@/shared/contracts';
+import type { ReadingSessionResponse } from '@/shared/contracts';
 import { checkLicense } from './licenseCheck';
 import { DownloadError } from './errors';
 import { API_BASE_URL } from './config';
-import { USER_ID } from '../sync/syncConfig';
 import { getPersistedLicenceStatus } from '../encryption/contentStore';
 import { verifyLicenceSignature } from '../encryption/licenceSignature';
 
@@ -42,25 +45,13 @@ jest.mock('../encryption/contentStore', () => ({
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
-function makeLoan(overrides?: Partial<Loan>): Loan {
-  return {
-    loanId: 'loan-test-book',
-    itemId: 'test-book',
-    userId: USER_ID,
-    licenceModel: 'SUBSCRIPTION',
-    status: 'ACTIVE',
-    borrowedAt: new Date().toISOString(),
-    canPersist: true,
-    dueAt: new Date(Date.now() + 86_400_000).toISOString(), // +1 day
-    serverTime: new Date().toISOString(),
-    ...overrides,
-  };
-}
-
 function makeSession(overrides?: Partial<ReadingSessionResponse>): ReadingSessionResponse {
   return {
     sessionId: 'session-test-book',
+    licenceId: 'loan-test-book',
     itemId: 'test-book',
+    licenceModel: 'SUBSCRIPTION',
+    canPersist: true,
     expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
     serverTime: new Date().toISOString(),
     content: {
@@ -74,12 +65,9 @@ function makeSession(overrides?: Partial<ReadingSessionResponse>): ReadingSessio
   };
 }
 
-function mockFetchFor(loan: Loan, session?: ReadingSessionResponse) {
+function mockFetchFor(session: ReadingSessionResponse) {
   return jest.fn().mockImplementation(async (url: string) => {
-    if (url === `${API_BASE_URL}/api/v1/loans`) {
-      return new Response(JSON.stringify(loan), { status: 200 });
-    }
-    if (session && url === `${API_BASE_URL}/api/v1/reading-sessions`) {
+    if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
       return new Response(JSON.stringify(session), { status: 200 });
     }
     return new Response(null, { status: 404 });
@@ -94,10 +82,9 @@ describe('checkLicense', () => {
     global.fetch = originalFetch;
   });
 
-  it('returns ok:true with mode online on successful borrow + session', async () => {
-    const loan = makeLoan();
+  it('returns ok:true with mode online on a successful reading-session call', async () => {
     const session = makeSession();
-    global.fetch = mockFetchFor(loan, session);
+    global.fetch = mockFetchFor(session);
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
 
@@ -105,30 +92,30 @@ describe('checkLicense', () => {
     if (!result.ok) return;
     expect(result.mode).toBe('online');
     if (result.mode !== 'online') return;
-    expect(result.loan.loanId).toBe('loan-test-book');
     expect(result.session.sessionId).toBe('session-test-book');
     expect(result.licence.canPersist).toBe(true);
   });
 
-  it('returns ok:true with mode open-access when loan.licenceModel is OPEN_ACCESS', async () => {
-    const loan = makeLoan({ licenceModel: 'OPEN_ACCESS', canPersist: true });
-    global.fetch = mockFetchFor(loan); // no session mock needed — short-circuits before session
+  it('returns ok:true with mode open-access when session.licenceModel is OPEN_ACCESS', async () => {
+    const session = makeSession({ licenceModel: 'OPEN_ACCESS', canPersist: true });
+    global.fetch = mockFetchFor(session);
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.mode).toBe('open-access');
-    expect(result.loan.licenceModel).toBe('OPEN_ACCESS');
+    if (result.mode !== 'open-access') return;
+    expect(result.session?.licenceModel).toBe('OPEN_ACCESS');
   });
 
-  it('returns ok:false with reason on explicit loan denial (fail-closed)', async () => {
+  it('returns ok:false with reason on fail-closed session denial', async () => {
     const flambeauError = {
       timestamp: new Date().toISOString(),
       status: 403,
       code: 'NO_ENTITLEMENT' as const,
       message: 'No entitlement',
-      path: '/api/v1/loans',
+      path: '/api/v1/reading-sessions',
     };
     global.fetch = jest.fn().mockResolvedValue(
       new Response(JSON.stringify(flambeauError), { status: 403 }),
@@ -141,8 +128,29 @@ describe('checkLicense', () => {
     expect(result.reason).toBe(DownloadError.NO_ENTITLEMENT);
   });
 
-  it('returns ok:false with reason on fail-closed session denial', async () => {
-    const loan = makeLoan();
+  it('returns DOWNLOAD_NOT_PERMITTED when the server refuses DOWNLOAD intent for an ELITE title', async () => {
+    // No client-side downgrade anymore (licenseCheck.ts's header/doc comment) — the caller's
+    // requested intent goes straight to the server, and an ELITE refusal surfaces as a real
+    // failure rather than being silently retried as STREAM.
+    const flambeauError = {
+      timestamp: new Date().toISOString(),
+      status: 403,
+      code: 'DOWNLOAD_NOT_PERMITTED' as const,
+      message: 'Download not permitted',
+      path: '/api/v1/reading-sessions',
+    };
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify(flambeauError), { status: 403 }),
+    );
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.DOWNLOAD_NOT_PERMITTED);
+  });
+
+  it('returns ok:false with reason on fail-closed session denial (device limit)', async () => {
     const flambeauError = {
       timestamp: new Date().toISOString(),
       status: 403,
@@ -150,15 +158,9 @@ describe('checkLicense', () => {
       message: 'Device limit reached',
       path: '/api/v1/reading-sessions',
     };
-    global.fetch = jest.fn().mockImplementation(async (url: string) => {
-      if (url === `${API_BASE_URL}/api/v1/loans`) {
-        return new Response(JSON.stringify(loan), { status: 200 });
-      }
-      if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
-        return new Response(JSON.stringify(flambeauError), { status: 403 });
-      }
-      return new Response(null, { status: 404 });
-    });
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify(flambeauError), { status: 403 }),
+    );
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
 
@@ -168,7 +170,6 @@ describe('checkLicense', () => {
   });
 
   it('returns ok:false with KEY_SUBSTITUTION on key fingerprint mismatch', async () => {
-    const loan = makeLoan();
     const session = makeSession({
       encryption: {
         algorithm: 'AES-256-GCM',
@@ -178,7 +179,7 @@ describe('checkLicense', () => {
         keyFingerprint: 'sha256:wrong-fingerprint', // mismatch with our mock
       },
     });
-    global.fetch = mockFetchFor(loan, session);
+    global.fetch = mockFetchFor(session);
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
 
@@ -187,7 +188,7 @@ describe('checkLicense', () => {
     expect(result.reason).toBe(DownloadError.KEY_SUBSTITUTION);
   });
 
-  it('falls back to offline when borrow fails with genuine network error', async () => {
+  it('falls back to offline when the reading-session call fails with a genuine network error', async () => {
     jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
       licence: {
         licenceId: 'old-licence',
@@ -212,7 +213,7 @@ describe('checkLicense', () => {
     expect(result.licence.licenceId).toBe('old-licence');
   });
 
-  it('falls back to offline when borrow fails with a timeout (AbortError), not just a TypeError', async () => {
+  it('falls back to offline on a timeout (AbortError), not just a TypeError', async () => {
     // readingSessionClient.ts's own 8s AbortController timer rejects with an AbortError, not a
     // TypeError — isGenuineNetworkError must treat both as "genuinely unreachable".
     jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
@@ -254,7 +255,7 @@ describe('checkLicense', () => {
     expect(result.reason).toBe(DownloadError.OFFLINE_LICENSE_UNAVAILABLE);
   });
 
-  it('returns ok:true with mode open-access when offline and a licence-less open-access book was previously downloaded', async () => {
+  it('returns ok:true with mode open-access (no session) when offline and a licence-less open-access book was previously downloaded', async () => {
     // Open access persists with `licence: null` (contentStore.store()'s isElite() comment) —
     // downloaded-but-licence-null must NOT be treated the same as never-downloaded.
     jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
@@ -269,6 +270,9 @@ describe('checkLicense', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.mode).toBe('open-access');
+    if (result.mode !== 'open-access') return;
+    expect(result.session).toBeUndefined();
+    expect(result.licence).toBeUndefined();
   });
 
   it('returns ENTITLEMENT_EXPIRED when offline and persisted licence is expired', async () => {
@@ -297,9 +301,8 @@ describe('checkLicense', () => {
   it('returns ok:false when licence signature verification fails', async () => {
     jest.mocked(verifyLicenceSignature).mockReturnValue(false);
 
-    const loan = makeLoan();
     const session = makeSession();
-    global.fetch = mockFetchFor(loan, session);
+    global.fetch = mockFetchFor(session);
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
 
