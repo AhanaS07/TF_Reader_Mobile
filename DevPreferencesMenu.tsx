@@ -116,6 +116,23 @@ function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): Pref
 }
 
 /**
+ * `accessibility.tts.enabled` is `useTtsEnabled()`'s one source of truth (TTS_PROVIDER.md's "one
+ * boolean that crosses the seam") — until Personalization/Accessibility ships a real settings
+ * screen, this is the only way to flip it on a device, replacing the force-enable effect that used
+ * to live in the now-retired `TtsReadingScreen.tsx` demo tab. `PrefsPatch` already covers
+ * `accessibility` as a top-level group (same "whole group, not deep-merged" contract as `layout`
+ * above), so this is a plain flip rather than a revert-to-default toggle — there is no third state.
+ */
+function toggleTtsEnabled(current: SharedPrefs): PrefsPatch {
+  return {
+    accessibility: {
+      ...current.accessibility,
+      tts: { ...current.accessibility.tts, enabled: !current.accessibility.tts.enabled },
+    },
+  };
+}
+
+/**
  * Zoom bounds for the slider only — `ZoomPrefs.level` itself carries no documented range
  * (prefs.ts:70-72 just says "1.0 = 100%"). 50%–300% covers a PDF's useful reading range without
  * inviting a value so extreme `fit * dpr * zoom` (pdf.entry.ts) produces a degenerate canvas.
@@ -461,6 +478,31 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 </Pressable>
               );
             })}
+          </View>
+
+          {/* Not format-gated, unlike Typography/Zoom below: this is a device-wide accessibility
+              preference, not a per-document layout one. ReaderScreen's own toolbar button
+              (`ttsEnabled && format === 'EPUB'`) is where the EPUB-only gate actually lives. */}
+          <Text style={styles.sectionLabel}>Accessibility</Text>
+          <View style={styles.row}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: prefs.accessibility.tts.enabled }}
+              accessibilityLabel={`TTS: ${prefs.accessibility.tts.enabled ? 'On' : 'Off'}`}
+              onPress={() => {
+                void prefsStore.savePrefs(toggleTtsEnabled(prefs));
+              }}
+              style={[styles.toggle, prefs.accessibility.tts.enabled && styles.toggleActive]}
+            >
+              <Text
+                style={[
+                  styles.toggleLabel,
+                  prefs.accessibility.tts.enabled && styles.toggleLabelActive,
+                ]}
+              >
+                TTS: {prefs.accessibility.tts.enabled ? 'On' : 'Off'}
+              </Text>
+            </Pressable>
           </View>
 
           {/* ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. See this file's header note: a

@@ -78,7 +78,7 @@ jest.mock('@/features/sync/sharedPrefs', () => {
 });
 
 const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine') as {
-  default: { pause: jest.Mock; stop: jest.Mock };
+  default: { addListener: jest.Mock; pause: jest.Mock; stop: jest.Mock };
   __fire: (event: string, payload?: unknown) => void;
 };
 
@@ -116,5 +116,24 @@ describe('useTtsSession on Android', () => {
 
     expect(result.current.status).toBe('idle');
     expect(mockTts.stop).toHaveBeenCalled();
+  });
+
+  // The other side of the platform gap: unlike iOS (useTtsSession.test.ts's mirrored test),
+  // Android's supportedEvents genuinely include 'tts-error' (TextToSpeechModule.java emits it
+  // from UtteranceProgressListener.onError), so useTtsSession.ts's iOS-only guard must not
+  // suppress it here — this was previously untested on either platform.
+  it('subscribes to tts-error and surfaces it as status "error"', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    expect(mockTts.addListener).toHaveBeenCalledWith('tts-error', expect.any(Function));
+
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => fireTtsEvent('tts-error', { message: 'engine busy' }));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.errorMessage).toBe('engine busy');
   });
 });

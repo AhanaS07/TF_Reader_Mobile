@@ -1,7 +1,8 @@
 # Reader → TTS seam (`ReaderTextProvider`)
 
 **Owner:** Reader (Ahana) · **Consumer:** Accessibility (Hruthik) · **Status:** real EPUB provider
-implemented (step 5, 2026-08-23); fake still in place pending Accessibility's call sites (step 6)
+implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23) —
+`fakeReaderTextProvider.ts` itself stays for now, see "The fake, and deleting it" below
 **Agreed:** 2026-08-16
 
 The interface is `src/features/reader/tts/readerTextProvider.ts` and it is the whole of what
@@ -100,7 +101,9 @@ WebView conversion.
 3. Accessibility builds the TTS session      ← unblocked, against the fake
 4. Reader: typechecked WebView conversion    ✅ 2026-08-18
 5. Reader: sentence/highlight bridge + real provider   ✅ 2026-08-23
-6. Swap fake → real; integration and device testing    ← next, see below
+6. Swap fake → real; integration and device testing    ← Accessibility's demo call site done,
+                                                            2026-08-23; fake file itself not yet
+                                                            deleted, see below
 ```
 
 **Step 4 is done** — prefs-application called the conversion in and it landed the same day, so the
@@ -124,17 +127,22 @@ CFIs), scroll-follow-the-spoken-range (open item 2, unchanged below), and a real
 source for `'revoked'` (open item 1, unchanged below — `terminate()` handles the reason identically to
 `'closed'` internally, but nothing calls it yet).
 
-**Step 6 has one coordination item before the fake can go.** The deletion table below still applies,
-but `fakeReaderTextProvider.ts`'s remaining call sites
-(`src/features/accessibility/tts/TtsReadingScreen.tsx`, and its own and `useTtsSession.test.ts`'s test
-harnesses) are in Accessibility's directory, so this round did not delete it — only Reader's own
-call sites moved to `tts/realReaderTextProvider.ts`. Two things for Hruthik specifically: (1)
-`TtsReadingScreen.tsx`'s fake-provider mount has no `bookId`/`send` of its own — it's a standalone
-demo tab — so swapping it needs either retiring that tab now that `ReaderScreen` has a real mount
-point, or wiring it to a real opened book; (2) its header comment cites
-`ReaderScreen.tsx:138-139` for the `showToc`/`showSearch` mutual-exclusion pattern, which has moved
-(state ~line 242-244, toggles ~898/914/1196, panel render ~1178) — worth a fix once he's in
-that file for the swap.
+**Step 6, Accessibility's half: done, 2026-08-23.** `TtsReadingScreen.tsx` (the standalone "TTS Demo"
+tab in `App.tsx`, with no `bookId`/`send` of its own) has been retired now that `ReaderScreen` has a
+real mount point — deleted along with its test and the `App.tsx`/`App.test.tsx` scaffolding that
+wired the tab in. That resolves both items this section used to list for Hruthik: the demo call site
+is gone (rather than rewired to a real book, which would have duplicated plumbing `ReaderScreen`
+already provides), and its header comment's stale citation to `ReaderScreen.tsx:138-139` went with
+the file rather than needing a fix in place.
+
+**What did NOT happen: `fakeReaderTextProvider.ts` itself was not deleted.** The deletion table below
+assumed the demo was the only call site outside `reader/tts/` — it wasn't. `useTtsSession.test.ts`
+(~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) use `createFakeReaderTextProvider`
+as a session-logic test double — prefetch, generation counters, teardown — independent of whether a
+real book exists. Deleting the fake would break those tests today. Whether Accessibility should fork
+its own private test double instead (so this file can eventually close) or whether the fake keeps
+double-duty as shared test infra permanently is an open call between Hruthik and Ahana, not decided by
+this change.
 
 **What the conversion did NOT do for this seam, so nobody plans around a saving that is not there.**
 It removed the hand-sync risk; it did not build request/reply. `requestSentence` still needs a
@@ -156,18 +164,22 @@ side is one import changing. That only holds while nothing depends on the test-o
 `FakeReaderTextProvider` and **not** on `ReaderTextProvider`. Production code typed as
 `ReaderTextProvider` cannot reach them; that is the intended pressure.
 
-The one production call site today is `src/features/accessibility/tts/TtsReadingScreen.tsx` — the
-"TTS Demo" tab in `App.tsx`, standing in for a real mount point until step 5 lands. It renders the
-sentence currently speaking (`session.currentSentence.text`) alongside `TtsControls`, so the demo
-shows what's being "read," not just transport controls.
+The production call site that used to exist — `src/features/accessibility/tts/TtsReadingScreen.tsx`,
+`App.tsx`'s "TTS Demo" tab, standing in for a real mount point until step 5 landed — is gone as of
+2026-08-23. **The remaining call sites outside `reader/tts/` are test-only:**
+`src/features/accessibility/tts/useTtsSession.test.ts` and `useTtsSession.android.test.ts`, which use
+`createFakeReaderTextProvider` to drive `useTtsSession`'s own state machine (prefetch, generation
+counters, teardown) without a real book or WebView. That is a different kind of dependency than "no
+real provider exists yet" — it would still be useful even after every production caller is real,
+which is why item 3 below is not auto-satisfied by the demo's removal.
 
-Delete together, when step 5 lands:
+Delete together, once items 1-3 are actually all gone:
 
 | #   | Delete                                                                            |
 | --- | --------------------------------------------------------------------------------- |
 | 1   | `src/features/reader/tts/fakeReaderTextProvider.ts`                               |
 | 2   | `src/features/reader/tts/fakeReaderTextProvider.test.ts`                          |
-| 3   | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` |
+| 3   | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` — as of 2026-08-23 that's just `useTtsSession.test.ts` / `.android.test.ts`; see the note above before assuming this is done |
 | 4   | this section                                                                      |
 
 `readerTextProvider.ts` is **not** on that list — it is the permanent contract. Neither is
