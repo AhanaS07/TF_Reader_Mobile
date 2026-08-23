@@ -62,6 +62,14 @@ export const TTS_HIGHLIGHT_MODE_VALUES = ['none', 'word', 'sentence'] as const;
 export const TTS_RATE_MIN = 0.5;
 export const TTS_RATE_MAX = 3.0;
 
+/**
+ * Inclusive bounds for `tts.pitch`. The intersection of both native ranges: iOS
+ * `AVSpeechUtterance.pitchMultiplier` hard-clamps to 0.5-2.0, and Android's
+ * `TextToSpeech.setPitch` accepts the same range without an OEM-unsafe ceiling.
+ */
+export const TTS_PITCH_MIN = 0.5;
+export const TTS_PITCH_MAX = 2.0;
+
 /* ────────────────────────────────────────────────────────────────
    PREFERENCE BLOCKS
    ────────────────────────────────────────────────────────────────
@@ -229,6 +237,15 @@ export function isValidTtsRate(value: unknown): value is number {
     Number.isFinite(value) &&
     value >= TTS_RATE_MIN &&
     value <= TTS_RATE_MAX
+  );
+}
+
+export function isValidTtsPitch(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= TTS_PITCH_MIN &&
+    value <= TTS_PITCH_MAX
   );
 }
 

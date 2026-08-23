@@ -127,6 +127,11 @@ side is one import changing. That only holds while nothing depends on the test-o
 `FakeReaderTextProvider` and **not** on `ReaderTextProvider`. Production code typed as
 `ReaderTextProvider` cannot reach them; that is the intended pressure.
 
+The one production call site today is `src/features/accessibility/tts/TtsReadingScreen.tsx` — the
+"TTS Demo" tab in `App.tsx`, standing in for a real mount point until step 5 lands. It renders the
+sentence currently speaking (`session.currentSentence.text`) alongside `TtsControls`, so the demo
+shows what's being "read," not just transport controls.
+
 Delete together, when step 5 lands:
 
 | #   | Delete                                                                            |

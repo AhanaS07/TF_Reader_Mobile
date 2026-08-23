@@ -6,10 +6,11 @@
 // Colours are inline for the same reason App.tsx's are: src/theme/ has not landed
 // yet. Replace with tokens when it does.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,8 +23,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { AppearanceEnv, ReaderAppearance } from '@/features/personalization/readerAppearance';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -44,8 +47,8 @@ import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
-import { ContentFailure } from '@/shared/contracts';
-import type { BookId, ContentFormat } from '@/shared/contracts';
+import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
+import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
@@ -130,6 +133,19 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
   });
 }
 
+/**
+ * `toReaderAppearance`'s own `customFontUri` is a straight passthrough of `FontPrefs.customFontUri`
+ * — a separate, still-unused upload-path field (see readerAppearance.ts). This overlays it with the
+ * loaded bundled-font data URI for `prefs.font.family` instead (or `null` for `'system'`/unknown) —
+ * Reader's chosen meaning for this field on the bridge, per CUSTOM_FONTS_WIRING.md. Both send sites
+ * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
+ * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
+ */
+async function buildAppearanceWithFont(prefs: SharedPrefs, env: AppearanceEnv): Promise<ReaderAppearance> {
+  const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
+  return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
+}
+
 interface ReaderScreenProps {
   /**
    * Identifies the ContentStore session `getBook(bookId)` opens and
@@ -196,6 +212,19 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [position, setPosition] = useState<ReaderPosition | null>(null);
 
   /**
+   * The edges of the current position, as last reported on `relocated` — carried separately from
+   * `position` because both shells send them on every relocation regardless of format, where
+   * `position` itself is discriminated. Used to disable Prev/Next at the ends: `next`/`prev` already
+   * no-op at a boundary WebView-side (both entries clamp against it), so this is a UI-only
+   * refinement — no behavior changes if it is wrong, only whether the button LOOKS tappable.
+   *
+   * Defaults to `atStart: true` because that is what "nothing has relocated yet" actually means —
+   * the book opens on its first page/CFI, so Prev is correctly disabled before the first
+   * `relocated` ever arrives, matching `send === null`'s own disablement over the same window.
+   */
+  const [bounds, setBounds] = useState({ atStart: true, atEnd: false });
+
+  /**
    * The page-jump field: null when closed, the typed text when open.
    *
    * A STRING, not a number, and deliberately: the field has to be able to hold '' while the user
@@ -204,6 +233,19 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+
+  /**
+   * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
+   * `scrollEnabled` below can read it without an async round trip on every render.
+   *
+   * The TOGGLE UI for this lives in `DevPreferencesMenu.tsx` (the temp hamburger prefs menu rendered
+   * alongside this screen from `App.tsx`) — this file only needs to know the CURRENT value, not
+   * offer a second way to set it. Seeded from DEFAULT_PREFS.layout until the initial `getPrefs()`
+   * below resolves, and kept current by the SAME `prefsStore.subscribe` effect that already
+   * re-sends `applyAppearance` (trigger B) — this is additive to that effect, not a second
+   * subscription.
+   */
+  const [layoutPrefs, setLayoutPrefs] = useState<LayoutPrefs>(DEFAULT_PREFS.layout);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
 
@@ -334,7 +376,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
       try {
         const prefs = await prefsStore.getPrefs();
-        sender({ type: 'applyAppearance', appearance: toReaderAppearance(prefs, env) });
+        sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
       } catch {
         // Best-effort — see the note above.
       }
@@ -536,10 +578,27 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    */
   useEffect(() => {
     return prefsStore.subscribe((freshPrefs) => {
+      setLayoutPrefs(freshPrefs.layout);
       if (send === null) return;
-      send({ type: 'applyAppearance', appearance: toReaderAppearance(freshPrefs, appearanceEnvRef.current) });
+      void (async () => {
+        const appearance = await buildAppearanceWithFont(freshPrefs, appearanceEnvRef.current);
+        send({ type: 'applyAppearance', appearance });
+      })();
     });
   }, [send]);
+
+  // Seed `layoutPrefs` once at mount — the subscribe effect above only fires on a SUBSEQUENT
+  // savePrefs/resetPrefs, so without this the toggle and the swipe overlay would see the
+  // DEFAULT_PREFS.layout fallback until the user's first edit, rather than their stored preference.
+  useEffect(() => {
+    let cancelled = false;
+    void prefsStore.getPrefs().then((prefs) => {
+      if (!cancelled) setLayoutPrefs(prefs.layout);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * Trigger C (READER_PREFS_APPLICATION.md §5): an OS-level change (system dark mode, Dynamic Type,
@@ -566,6 +625,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         break;
       case 'relocated':
         setPosition(message.position);
+        setBounds({ atStart: message.atStart, atEnd: message.atEnd });
         break;
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
@@ -715,6 +775,50 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
   const isBusy = htmlUri === null || (!isRendered && error === null);
 
+  /**
+   * Swipe-to-turn-page. INSTANT, NO ANIMATION — reuses the exact `next`/`prev` commands the
+   * Prev/Next buttons already send, so there is no WebView-side change for either format.
+   *
+   * `useMemo` keyed on `send`, NOT a ref: `send` only ever transitions null -> non-null exactly once
+   * (see its own state comment above), so this recreates at most once in practice, and closing over
+   * a plain reactive value rather than a ref is what keeps this out of the "may read a ref during
+   * render" class of bug — a real one for a PanResponder, since `.panHandlers` is spread into JSX
+   * below, which is inherently a render-time read.
+   *
+   * Claims the responder only once a clearly HORIZONTAL drag is under way
+   * (`onMoveShouldSetPanResponder`), so it never fights a vertical scroll gesture — relevant once
+   * continuous scroll exists, even though the overlay itself is not mounted in that flow (see the
+   * render condition below).
+   */
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gestureState) =>
+          Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
+        onPanResponderRelease: (_evt, gestureState) => {
+          if (Math.abs(gestureState.dx) <= SWIPE_MIN_DISTANCE_PX) return;
+          send?.({ type: gestureState.dx < 0 ? 'next' : 'prev' });
+        },
+      }),
+    [send],
+  );
+
+  // Paginated-only: in continuous scroll, native scrolling IS the navigation, and a swipe catcher
+  // sitting over the WebView would block it. Also gated on every overlay that already claims full
+  // priority over touches once visible, matching their own render conditions.
+  const swipeEnabled =
+    send !== null && !showToc && !showSearch && !isBusy && !isObscured &&
+    layoutPrefs.flow === 'paginated';
+
+  // Prev/Next are BUTTON-driven, discrete-page-turn controls, and neither concept applies in
+  // continuous scroll: navigation there is native scrolling, same reasoning as swipeEnabled above.
+  // `bounds` is the UI-only refinement on top of that — `next`/`prev` already no-op at an edge
+  // WebView-side, so disabling here only stops the button LOOKING tappable past the end; it changes
+  // no behaviour if `bounds` is ever behind the WebView's own state.
+  const isScrolling = layoutPrefs.flow === 'scrolled-doc';
+  const prevDisabled = send === null || isScrolling || bounds.atStart;
+  const nextDisabled = send === null || isScrolling || bounds.atEnd;
+
   return (
     <View style={styles.container}>
       {error !== null && (
@@ -761,6 +865,29 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             onMessage={handleMessage}
             onHostError={raiseError}
             onReady={handleReady}
+            scrollEnabled={layoutPrefs.flow === 'scrolled-doc'}
+          />
+        )}
+
+        {/*
+          THE SWIPE CATCHER. A sibling View ON TOP of the WebView, not a wrapper around it — a
+          PanResponder wrapping a native WebView does not reliably see touches at all, because the
+          WebView's own native gesture handling intercepts them before RN's JS responder system does.
+          A plain overlay above it has no such problem: RN hit-tests overlapping siblings by z-order,
+          so every other overlay below (rendered later in this file, hence higher z) still gets first
+          claim on touches within its own bounds once visible.
+
+          Necessarily swallows every touch in the viewer while mounted — there is no existing in-book
+          tap interaction to preserve underneath it; navigation is fully blocked by
+          ReaderWebView.tsx's allow-list already, and everything interactive today is RN-button- or
+          panel-driven.
+        */}
+        {swipeEnabled && (
+          <View
+            style={FILL}
+            {...panResponder.panHandlers}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
           />
         )}
 
@@ -830,22 +957,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                   // duplicate-key warning on device. Targets are not unique in the wild, so they
                   // cannot be identity here — and a PDF outline repeats page numbers by design, since
                   // several sections legitimately open on the same page.
-                  toc.map((item, index) => (
-                    <Pressable
-                      key={`${index}-${targetKey(item.target)}`}
-                      onPress={() => {
-                        goTo(item.target);
-                      }}
-                      // Indent, do not inset the row: paddingLeft keeps the whole
-                      // width tappable at every depth, where marginLeft would shrink
-                      // the touch target of the entries that are already hardest to
-                      // hit. `depth` is clamped by parseReaderMessage, so this cannot
-                      // run away.
-                      style={[styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]}
-                    >
-                      <Text style={styles.tocItemText}>{item.label}</Text>
-                    </Pressable>
-                  ))
+                  toc.map((item, index) => {
+                    // A nav point with no href (epubOutline.ts's flattenToc keeps a grouping
+                    // heading rather than dropping it, as `{kind:'href', href:''}`) has nothing to
+                    // navigate to. `disabled` stops onPress from firing at all, so this never
+                    // reaches goTo -> epub.entry.ts's `rendition.display('')`, whose behavior is
+                    // otherwise unverified.
+                    const isNavigable = item.target.kind !== 'href' || item.target.href !== '';
+                    return (
+                      <Pressable
+                        key={`${index}-${targetKey(item.target)}`}
+                        disabled={!isNavigable}
+                        accessibilityState={{ disabled: !isNavigable }}
+                        onPress={() => {
+                          goTo(item.target);
+                        }}
+                        // Indent, do not inset the row: paddingLeft keeps the whole
+                        // width tappable at every depth, where marginLeft would shrink
+                        // the touch target of the entries that are already hardest to
+                        // hit. `depth` is clamped by parseReaderMessage, so this cannot
+                        // run away.
+                        // Two elements when navigable, matching every row before this change
+                        // (pinned by the depth-indent test) — the disabled style only extends the
+                        // array for a grouping heading, which that test never covers.
+                        style={
+                          isNavigable
+                            ? [styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]
+                            : [
+                                styles.tocItem,
+                                { paddingLeft: item.depth * TOC_INDENT_PX },
+                                styles.tocItemDisabled,
+                              ]
+                        }
+                      >
+                        <Text style={styles.tocItemText}>{item.label}</Text>
+                      </Pressable>
+                    );
+                  })
                 )}
               </ScrollView>
 
@@ -952,9 +1100,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       <View style={styles.controls}>
         <Pressable
           accessibilityRole="button"
-          disabled={send === null}
+          disabled={prevDisabled}
           onPress={() => send?.({ type: 'prev' })}
-          style={[styles.button, send === null && styles.buttonDisabled]}
+          style={[styles.button, prevDisabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonText}>‹ Prev</Text>
         </Pressable>
@@ -1022,9 +1170,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
         <Pressable
           accessibilityRole="button"
-          disabled={send === null}
+          disabled={nextDisabled}
           onPress={() => send?.({ type: 'next' })}
-          style={[styles.button, send === null && styles.buttonDisabled]}
+          style={[styles.button, nextDisabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonText}>Next ›</Text>
         </Pressable>
@@ -1049,6 +1197,9 @@ function targetKey(target: ReaderTarget): string {
  * flattens it and carries a `depth`, so this is the only place the tree is visible.
  */
 const TOC_INDENT_PX = 16;
+
+/** Horizontal drag distance, in points, that counts as a deliberate page-turn swipe. */
+const SWIPE_MIN_DISTANCE_PX = 50;
 
 /**
  * Slack, in points, before an edge counts as "scrolled away from".
@@ -1154,6 +1305,8 @@ const styles = StyleSheet.create({
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },
+  // A grouping heading with no href — see the note at the TOC row's `isNavigable` check.
+  tocItemDisabled: { opacity: 0.5 },
 
   // FULLY OPAQUE is the whole point — a translucent cover still photographs the text underneath.
   privacyCover: {

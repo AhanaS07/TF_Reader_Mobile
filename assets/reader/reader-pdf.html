@@ -26,9 +26,13 @@
   the @inject:entry marker below. WEBVIEW_BRIDGE.md recorded when the hand-synced
   arrangement would end; this is it.
 
-  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-canvas, #fallback,
-  and the text/plain worker block), plus the CSS. A .ts file cannot carry any of it, and
-  readerTemplate.test.ts asserts they are present.
+  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-canvas,
+  #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus
+  the CSS. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
+  a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
+  #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
+  is visible off `applyAppearance`'s flow.
 -->
 <html lang="en">
   <head>
@@ -61,9 +65,10 @@
         reader in a SafeAreaView with edges={['top','bottom']}, so adding vertical
         insets here would inset twice.
 
-        display:flex + center is what keeps a page that does not fill the viewport
-        (a landscape page on a portrait phone) optically centred rather than
-        jammed into the top-left.
+        The flex-centering that used to live here moved to #pdf-single below: #pdf-pages now holds
+        BOTH the single-page and the continuous-scroll surfaces, exactly one of which is visible at
+        a time (pdf.entry.ts toggles which), so the centring belongs to whichever mode is showing
+        rather than to their shared ancestor.
       */
       #pdf-pages {
         width: 100%;
@@ -71,19 +76,78 @@
         box-sizing: border-box;
         padding-left: env(safe-area-inset-left);
         padding-right: env(safe-area-inset-right);
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        overflow: hidden;
       }
 
       /*
-        The canvas is sized in DEVICE pixels by the render below and scaled down to
-        CSS pixels here. Without max-*: 100% a high-DPR canvas overflows its
-        container and the page appears cropped rather than fitted.
+        NO max-width/max-height HERE, ON PURPOSE. At zoom 1.0, renderPage()'s `fitScale()` already
+        sizes the canvas to fit inside the viewport on both axes, so this is a no-op there. Above
+        1.0 (the user zoomed in), the canvas is DELIBERATELY bigger than the viewport — a max-*: 100%
+        rule would have clipped the enlarged page back down to the old size, which reads as "zoom did
+        nothing" or "zoom looks wrong" even though the rasterised pixels are already sharp (see
+        pdf.entry.ts's dpr-aware canvas sizing). #pdf-single's own scroll (below) is what makes the
+        excess reachable instead of clipped.
       */
       #pdf-canvas {
+        display: block;
+      }
+
+      /*
+        THE SECOND SPREAD CANVAS. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
+        epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
+        and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
+        `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+      */
+      #pdf-canvas-2 {
+        display: none;
+      }
+
+      /*
+        CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
+        display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
+        surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of
+        mode, same "one page" viewport-measuring contract viewportSize() relies on for single-page
+        mode.
+      */
+      #pdf-single {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        align-items: center;
+        justify-content: center;
+        /* The gutter between the two canvases of a spread — MUST match SPREAD_GAP_PX in
+           pdf.entry.ts, which subtracts this same 8px when computing each canvas's fit width. A
+           no-op whenever #pdf-canvas-2 is display:none — flex gap only applies space between
+           IN-FLOW children. */
+        gap: 8px;
+        /* Lets a zoomed-in page (bigger than the viewport, see #pdf-canvas's own note) be panned
+           to, rather than silently clipped by #pdf-pages's overflow: hidden. A no-op at zoom 1.0,
+           where the canvas already fits and there is nothing to scroll. */
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      #pdf-scroll {
+        display: none;
+        width: 100%;
+        height: 100%;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      /*
+        Each page gets one wrapper, pre-sized to its fit-to-width height BEFORE it is rasterised —
+        this is what keeps the scrollbar/scroll-length correct while pages are still being lazily
+        rendered around the visible window, rather than the content jumping taller as each one
+        renders in. See pdf.entry.ts's virtualised render pass.
+      */
+      .pdf-scroll-page {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        box-sizing: border-box;
+      }
+      .pdf-scroll-page canvas {
         max-width: 100%;
-        max-height: 100%;
         display: block;
       }
 
@@ -109,7 +173,10 @@
     </style>
   </head>
   <body>
-    <div id="pdf-pages"><canvas id="pdf-canvas"></canvas></div>
+    <div id="pdf-pages">
+      <div id="pdf-single"><canvas id="pdf-canvas"></canvas><canvas id="pdf-canvas-2"></canvas></div>
+      <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
+    </div>
     <pre id="fallback"></pre>
 
     <script data-lib="pdf.js">
@@ -283,6 +350,38 @@ ${text}`;
     if (boxWidth <= 0 || boxHeight <= 0 || pageWidth <= 0 || pageHeight <= 0) return 0;
     return Math.min(boxWidth / pageWidth, boxHeight / pageHeight);
   }
+  function fitWidthScale(boxWidth, pageWidth) {
+    if (boxWidth <= 0 || pageWidth <= 0) return 0;
+    return boxWidth / pageWidth;
+  }
+  function mostVisiblePage(pageTops, viewportTop, viewportHeight) {
+    const midpoint = viewportTop + viewportHeight / 2;
+    let page = 1;
+    for (let i = 0; i < pageTops.length; i++) {
+      if (pageTops[i] > midpoint) break;
+      page = i + 1;
+    }
+    return page;
+  }
+  var PDF_SPREAD_MIN_WIDTH = 800;
+  function shouldRenderSpread(pref, viewportWidth) {
+    return pref === "double" && viewportWidth >= PDF_SPREAD_MIN_WIDTH;
+  }
+  function spreadPages(page, pageCount2, spreading) {
+    if (!spreading || page === 1 || pageCount2 <= 1) return [page];
+    const pairStart = page % 2 === 0 ? page : page - 1;
+    return pairStart + 1 <= pageCount2 ? [pairStart, pairStart + 1] : [pairStart];
+  }
+  function nextSpreadStart(page, pageCount2, spreading) {
+    const pages = spreadPages(page, pageCount2, spreading);
+    const last = pages[pages.length - 1];
+    return last >= pageCount2 ? null : last + 1;
+  }
+  function prevSpreadStart(page, pageCount2, spreading) {
+    const pages = spreadPages(page, pageCount2, spreading);
+    const first = pages[0];
+    return first <= 1 ? null : first - 1;
+  }
 
   // src/features/reader/webview/src/pdf.entry.ts
   installErrorHandlers();
@@ -290,7 +389,176 @@ ${text}`;
   var currentPage = 0;
   var pageCount = 0;
   var currentZoom = 1;
+  var spreadPref = "single";
+  var SPREAD_GAP_PX = 8;
   var renderToken = 0;
+  var scrollMode = false;
+  var wantsScroll = false;
+  var pageWrappers = /* @__PURE__ */ new Map();
+  var renderedPages = /* @__PURE__ */ new Set();
+  var pageRenderTokens = /* @__PURE__ */ new Map();
+  var cachedPageTops = [];
+  var SCROLL_BUFFER_PAGES = 1;
+  function scrollContainer() {
+    return document.getElementById("pdf-scroll");
+  }
+  function scrollContentEl() {
+    return document.getElementById("pdf-scroll-content");
+  }
+  function singlePageEl() {
+    return document.getElementById("pdf-single");
+  }
+  function nextTokenFor(page) {
+    const next = (pageRenderTokens.get(page) ?? 0) + 1;
+    pageRenderTokens.set(page, next);
+    return next;
+  }
+  async function buildScrollList(doc) {
+    const content = scrollContentEl();
+    if (!content) return;
+    content.innerHTML = "";
+    pageWrappers.clear();
+    renderedPages.clear();
+    pageRenderTokens.clear();
+    const box = viewportSize();
+    const pages = await Promise.all(
+      Array.from({ length: pageCount }, (_unused, i) => doc.getPage(i + 1))
+    );
+    for (let i = 0; i < pages.length; i++) {
+      const pageNumber = i + 1;
+      const base = pages[i].getViewport({ scale: 1 });
+      const fit = fitWidthScale(box.width, base.width) * currentZoom;
+      const height = fit > 0 ? base.height * fit : 0;
+      const wrapper = document.createElement("div");
+      wrapper.className = "pdf-scroll-page";
+      wrapper.style.height = `${Math.floor(height)}px`;
+      content.appendChild(wrapper);
+      pageWrappers.set(pageNumber, wrapper);
+    }
+    cachedPageTops = Array.from(
+      { length: pageCount },
+      (_unused, i) => pageWrappers.get(i + 1)?.offsetTop ?? 0
+    );
+  }
+  async function renderScrollPage(pageNumber) {
+    if (!pdfDoc || renderedPages.has(pageNumber)) return;
+    const wrapper = pageWrappers.get(pageNumber);
+    if (!wrapper) return;
+    const token = nextTokenFor(pageNumber);
+    renderedPages.add(pageNumber);
+    try {
+      const page = await pdfDoc.getPage(pageNumber);
+      if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) return;
+      const box = viewportSize();
+      const base = page.getViewport({ scale: 1 });
+      const fit = fitWidthScale(box.width, base.width) * currentZoom;
+      if (fit === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      const viewport = page.getViewport({ scale: fit * dpr });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.style.width = `${Math.floor(base.width * fit)}px`;
+      canvas.style.height = `${Math.floor(base.height * fit)}px`;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      await page.render({ canvasContext: context, viewport }).promise;
+      if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) return;
+      wrapper.replaceChildren(canvas);
+    } catch (error) {
+      renderedPages.delete(pageNumber);
+      throw error;
+    }
+  }
+  function disposeScrollPage(pageNumber) {
+    if (!renderedPages.has(pageNumber)) return;
+    renderedPages.delete(pageNumber);
+    nextTokenFor(pageNumber);
+    pageWrappers.get(pageNumber)?.replaceChildren();
+  }
+  var scrollRaf = 0;
+  function scheduleVirtualize() {
+    if (scrollRaf) return;
+    scrollRaf = window.requestAnimationFrame(() => {
+      scrollRaf = 0;
+      virtualize();
+    });
+  }
+  function virtualize() {
+    if (!scrollMode || !pdfDoc || pageCount === 0) return;
+    const container = scrollContainer();
+    if (!container) return;
+    const current = mostVisiblePage(cachedPageTops, container.scrollTop, container.clientHeight);
+    const lo = Math.max(1, current - SCROLL_BUFFER_PAGES);
+    const hi = Math.min(pageCount, current + SCROLL_BUFFER_PAGES);
+    for (let page = lo; page <= hi; page++) {
+      renderScrollPage(page).catch((error) => {
+        fail("NAVIGATION_FAILED", error);
+      });
+    }
+    for (const page of renderedPages) {
+      if (page < lo || page > hi) disposeScrollPage(page);
+    }
+    currentPage = current;
+    post({
+      type: "relocated",
+      position: { kind: "page", page: current, pageCount },
+      atStart: current <= 1,
+      atEnd: current >= pageCount
+    });
+  }
+  var scrollListenerAttached = false;
+  function attachScrollListener() {
+    if (scrollListenerAttached) return;
+    scrollListenerAttached = true;
+    scrollContainer()?.addEventListener("scroll", scheduleVirtualize, { passive: true });
+  }
+  function detachScrollListener() {
+    if (!scrollListenerAttached) return;
+    scrollListenerAttached = false;
+    scrollContainer()?.removeEventListener("scroll", scheduleVirtualize);
+  }
+  async function enterScrollMode(doc) {
+    if (scrollMode) return;
+    scrollMode = true;
+    const single = singlePageEl();
+    const scroll = scrollContainer();
+    if (single) single.style.display = "none";
+    if (scroll) scroll.style.display = "block";
+    await buildScrollList(doc);
+    if (scroll) scroll.scrollTop = cachedPageTops[currentPage - 1] ?? 0;
+    attachScrollListener();
+    virtualize();
+  }
+  function leaveScrollMode() {
+    if (!scrollMode) return;
+    scrollMode = false;
+    detachScrollListener();
+    for (const page of [...renderedPages]) disposeScrollPage(page);
+    pageWrappers.clear();
+    cachedPageTops = [];
+    const content = scrollContentEl();
+    if (content) content.replaceChildren();
+    const single = singlePageEl();
+    const scroll = scrollContainer();
+    if (scroll) scroll.style.display = "none";
+    if (single) single.style.display = "flex";
+    if (pdfDoc && currentPage) renderCurrentGuarded(currentPage);
+  }
+  async function resizeScrollList(doc) {
+    if (!scrollMode) return;
+    const page = currentPage;
+    await buildScrollList(doc);
+    const scroll = scrollContainer();
+    if (scroll) scroll.scrollTop = cachedPageTops[page - 1] ?? 0;
+    virtualize();
+  }
+  function scrollToPage(page) {
+    const scroll = scrollContainer();
+    if (!scroll) return;
+    scroll.scrollTop = cachedPageTops[page - 1] ?? 0;
+    virtualize();
+  }
   function lib() {
     const candidate = window.pdfjsLib;
     return candidate && typeof candidate.getDocument === "function" ? candidate : null;
@@ -318,50 +586,80 @@ ${text}`;
       height: el?.clientHeight || window.innerHeight || 0
     };
   }
-  async function renderPage(pageNumber) {
+  async function renderCurrent(pageNumber) {
     if (!pdfDoc) {
-      fail("NOT_READY", "renderPage() before a document was opened");
+      fail("NOT_READY", "renderCurrent() before a document was opened");
       return;
     }
-    const token = ++renderToken;
-    const page = await pdfDoc.getPage(pageNumber);
-    if (token !== renderToken) return;
+    const doc = pdfDoc;
     const box = viewportSize();
-    const base = page.getViewport({ scale: 1 });
-    const fit = fitScale(box.width, box.height, base.width, base.height);
+    const spreading = shouldRenderSpread(spreadPref, box.width);
+    const pages = spreadPages(pageNumber, pageCount, spreading);
+    const token = ++renderToken;
+    const pageProxies = await Promise.all(pages.map((p) => doc.getPage(p)));
+    if (token !== renderToken) return;
+    const perPageWidth = pages.length === 2 ? (box.width - SPREAD_GAP_PX) / 2 : box.width;
+    const bases = pageProxies.map((p) => p.getViewport({ scale: 1 }));
+    const fit = Math.min(
+      ...bases.map((base) => fitScale(perPageWidth, box.height, base.width, base.height))
+    );
     if (fit === 0) {
       fail("NAVIGATION_FAILED", "the reader container has no measurable size");
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const viewport = page.getViewport({ scale: fit * dpr * currentZoom });
-    const canvas = document.getElementById("pdf-canvas");
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context) {
-      fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
-      return;
+    const canvasIds = ["pdf-canvas", "pdf-canvas-2"];
+    const renders = [];
+    for (let i = 0; i < canvasIds.length; i++) {
+      const canvas = document.getElementById(canvasIds[i]);
+      if (!canvas) {
+        fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
+        return;
+      }
+      if (i >= pageProxies.length) {
+        canvas.style.display = "none";
+        canvas.width = 0;
+        canvas.height = 0;
+        continue;
+      }
+      canvas.style.display = "block";
+      const base = bases[i];
+      const viewport = pageProxies[i].getViewport({ scale: fit * dpr * currentZoom });
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
+      canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
+        return;
+      }
+      renders.push(pageProxies[i].render({ canvasContext: context, viewport }).promise);
     }
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    canvas.style.width = `${Math.floor(base.width * fit * currentZoom)}px`;
-    canvas.style.height = `${Math.floor(base.height * fit * currentZoom)}px`;
-    await page.render({ canvasContext: context, viewport }).promise;
+    await Promise.all(renders);
     if (token !== renderToken) return;
-    currentPage = pageNumber;
+    currentPage = pages[0];
     post({
       type: "relocated",
       position: { kind: "page", page: currentPage, pageCount },
-      atStart: currentPage <= 1,
-      atEnd: currentPage >= pageCount
+      atStart: pages[0] <= 1,
+      atEnd: pages[pages.length - 1] >= pageCount
     });
   }
-  function renderPageGuarded(pageNumber) {
-    renderPage(pageNumber).catch((error) => {
+  function renderCurrentGuarded(pageNumber) {
+    renderCurrent(pageNumber).catch((error) => {
       fail("NAVIGATION_FAILED", error);
     });
   }
   window.addEventListener("resize", () => {
-    if (pdfDoc && currentPage) renderPageGuarded(currentPage);
+    if (!pdfDoc) return;
+    if (scrollMode) {
+      resizeScrollList(pdfDoc).catch((error) => {
+        fail("NAVIGATION_FAILED", error);
+      });
+    } else if (currentPage) {
+      renderCurrentGuarded(currentPage);
+    }
   });
   var api = {
     /**
@@ -397,7 +695,10 @@ ${text}`;
         try {
           pdfDoc = await loading.promise;
           pageCount = pdfDoc.numPages;
-          await renderPage(1);
+          await renderCurrent(1);
+          if (wantsScroll) {
+            await enterScrollMode(pdfDoc);
+          }
           post({ type: "rendered" });
           post({ type: "toc", items: await buildOutlineToc(pdfDoc) });
         } catch (error) {
@@ -410,16 +711,30 @@ ${text}`;
         fail("NOT_READY", "next() before a document was opened");
         return;
       }
-      if (currentPage >= pageCount) return;
-      renderPageGuarded(currentPage + 1);
+      if (scrollMode) {
+        if (currentPage >= pageCount) return;
+        scrollToPage(currentPage + 1);
+        return;
+      }
+      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+      const target = nextSpreadStart(currentPage, pageCount, spreading);
+      if (target === null) return;
+      renderCurrentGuarded(target);
     },
     prev: () => {
       if (!pdfDoc) {
         fail("NOT_READY", "prev() before a document was opened");
         return;
       }
-      if (currentPage <= 1) return;
-      renderPageGuarded(currentPage - 1);
+      if (scrollMode) {
+        if (currentPage <= 1) return;
+        scrollToPage(currentPage - 1);
+        return;
+      }
+      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+      const target = prevSpreadStart(currentPage, pageCount, spreading);
+      if (target === null) return;
+      renderCurrentGuarded(target);
     },
     /**
      * Navigate to a PDF target.
@@ -441,12 +756,21 @@ ${text}`;
         );
         return;
       }
-      renderPageGuarded(page);
+      if (scrollMode) {
+        scrollToPage(page);
+        return;
+      }
+      renderCurrentGuarded(page);
     },
     /**
-     * Apply a resolved appearance. Per the sign-off doc this shell applies only `bg` and `zoom` —
-     * typography/theme-text fields are silently ignored, not an oversight: pdf.js rasterises pages, so
-     * there is no text CSS layer to override here the way the EPUB shell has.
+     * Apply a resolved appearance. Per the sign-off doc this shell applies `bg`, `zoom`, `flow` (as of
+     * continuous scroll) and — as of double-page — `spread`; typography/theme-text fields are still
+     * silently ignored, not an oversight: pdf.js rasterises pages, so there is no text CSS layer to
+     * override here the way the EPUB shell has.
+     *
+     * `spread` only affects the single-page surface (pdfOutline.ts's module doc explains why
+     * continuous scroll is out of scope) — tracked here regardless of `scrollMode` so it is already
+     * current if the user leaves scroll mode later, but it only triggers a re-render below.
      *
      * `document.body.style` rather than a stylesheet: there is no `Contents` abstraction to hook into
      * (one page is one canvas, not a chapter document), so a single direct style write is enough.
@@ -455,8 +779,29 @@ ${text}`;
       document.body.style.background = appearance.bg;
       const zoomChanged = appearance.zoom !== currentZoom;
       currentZoom = appearance.zoom;
-      if (zoomChanged && pdfDoc && currentPage) {
-        renderPageGuarded(currentPage);
+      wantsScroll = appearance.flow === "scrolled-doc";
+      const spreadChanged = appearance.spread !== spreadPref;
+      spreadPref = appearance.spread;
+      if (!pdfDoc) return;
+      if (wantsScroll && !scrollMode) {
+        enterScrollMode(pdfDoc).catch((error) => {
+          fail("NAVIGATION_FAILED", error);
+        });
+        return;
+      }
+      if (!wantsScroll && scrollMode) {
+        leaveScrollMode();
+        return;
+      }
+      if (scrollMode) {
+        if (!zoomChanged) return;
+        resizeScrollList(pdfDoc).catch((error) => {
+          fail("NAVIGATION_FAILED", error);
+        });
+        return;
+      }
+      if ((zoomChanged || spreadChanged) && currentPage) {
+        renderCurrentGuarded(currentPage);
       }
     }
   };
