@@ -21,6 +21,9 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { TtsControls } from '@/features/accessibility/tts/TtsControls';
+import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
+import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
@@ -46,6 +49,11 @@ import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import {
+  createEpubReaderTextProvider,
+  UNAVAILABLE_READER_TEXT_PROVIDER,
+  type EpubReaderTextProvider,
+} from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
 import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
 import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
@@ -233,6 +241,40 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showTts, setShowTts] = useState(false);
+
+  /**
+   * TTS is EPUB-only (readerTextProvider.ts's segmentation model is CFI-based) and gated on
+   * Accessibility's one exported boolean — `useTtsEnabled()` is deliberately the ONLY check;
+   * `useTtsSession`'s `play()` does not re-check it, on the grounds that mounting the controls IS
+   * the decision (see TTS_PROVIDER.md's "one boolean that crosses" section).
+   *
+   * A `useMemo`, not state-in-an-effect — same reasoning as `panResponder` below: constructing a
+   * provider has no side effect of its own (it sends nothing until a method is called), so it can
+   * be recomputed as a plain function of its deps rather than pushed through setState.
+   */
+  const ttsEnabled = useTtsEnabled();
+  const ttsProvider = useMemo<EpubReaderTextProvider | null>(() => {
+    if (!ttsEnabled || format !== 'EPUB' || send === null) return null;
+    return createEpubReaderTextProvider(bookId, send);
+  }, [bookId, format, send, ttsEnabled]);
+
+  /**
+   * `handleMessage` and the closeBook effect below reach for THIS, not `ttsProvider` directly — a
+   * ref because neither needs a re-render when it changes, only the latest value at the moment a
+   * message or teardown arrives. Kept in sync via the same ref-mirroring pattern `appearanceEnvRef`
+   * already uses in this file.
+   */
+  const ttsProviderRef = useRef(ttsProvider);
+  useEffect(() => {
+    ttsProviderRef.current = ttsProvider;
+  }, [ttsProvider]);
+
+  // useTtsSession cannot be called conditionally (Rules of Hooks), so this always has SOME
+  // provider — the inert singleton while TTS isn't active, the real one once it is. TtsControls is
+  // only ever rendered once `ttsProvider` is non-null (see below), so the inert session is never
+  // shown, only ever briefly held.
+  const ttsSession = useTtsSession(ttsProvider ?? UNAVAILABLE_READER_TEXT_PROVIDER);
 
   /**
    * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
@@ -459,6 +501,11 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // nothing useful to show the user — the screen is already gone.
   useEffect(() => {
     return () => {
+      // BEFORE closeBook, same cleanup, so the ordering is guaranteed rather than dependent on
+      // React's cross-effect cleanup order (which is not the same on an in-place book switch as on
+      // a full unmount). A no-op while TTS was never active (ref is null).
+      ttsProviderRef.current?.notifyClosed();
+
       void (async () => {
         try {
           await closeBook(bookId);
@@ -626,6 +673,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
       case 'relocated':
         setPosition(message.position);
         setBounds({ atStart: message.atStart, atEnd: message.atEnd });
+        // Every real `relocated` is a navigation signal — epub.js never fires it for
+        // setSpokenRange, which only touches annotations — so this is the one call site needed,
+        // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
+        ttsProviderRef.current?.notifyRelocated();
         break;
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
@@ -645,6 +696,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           logSpan('open -> error', openSentAtRef.current, { code: message.code });
         }
         setError({ code: message.code, message: message.message });
+        break;
+      case 'ttsSentence':
+        ttsProviderRef.current?.handleReply(message);
         break;
     }
   }, []);
@@ -807,7 +861,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // sitting over the WebView would block it. Also gated on every overlay that already claims full
   // priority over touches once visible, matching their own render conditions.
   const swipeEnabled =
-    send !== null && !showToc && !showSearch && !isBusy && !isObscured &&
+    send !== null && !showToc && !showSearch && !showTts && !isBusy && !isObscured &&
     layoutPrefs.flow === 'paginated';
 
   // Prev/Next are BUTTON-driven, discrete-page-turn controls, and neither concept applies in
@@ -836,16 +890,34 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           // finds buttons by accessible name.
           accessibilityLabel="Search this book"
           onPress={() => {
-            // Mutual exclusion with Contents. Not cosmetic: both panels' toggles read
+            // Mutual exclusion with Contents (and TTS). Not cosmetic: both panels' toggles read
             // "Close" when open, and two buttons with that name make every
             // getByRole('button', { name: 'Close' }) ambiguous.
             setShowToc(false);
+            setShowTts(false);
             setShowSearch((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔍</Text>
         </Pressable>
+
+        {/* EPUB-only (readerTextProvider.ts is CFI-based) and gated on Accessibility's one
+            exported boolean — see ttsEnabled's own note above. */}
+        {ttsEnabled && format === 'EPUB' && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Listen to this book"
+            onPress={() => {
+              setShowToc(false);
+              setShowSearch(false);
+              setShowTts((open) => !open);
+            }}
+            style={styles.toolbarButton}
+          >
+            <Text style={styles.toolbarIcon}>🔊</Text>
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.viewer}>
@@ -1075,6 +1147,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             onStep={stepHit}
             onOpenResults={() => {
               setShowToc(false);
+              setShowTts(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
@@ -1097,6 +1170,13 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         )}
       </View>
 
+      {/* Docked below the viewer rather than an absolute overlay like the TOC/Search panels — its
+          own styling already assumes ordinary document flow (a border-top separator, not a floating
+          panel with fades). Rendered only once `ttsProvider` is real: while it's null the session
+          passed to useTtsSession is the inert singleton (see ttsProvider's own note), which must
+          never be shown as if it were a working session. */}
+      {showTts && ttsProvider !== null && <TtsControls session={ttsSession} />}
+
       <View style={styles.controls}>
         <Pressable
           accessibilityRole="button"
@@ -1112,6 +1192,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           disabled={toc.length === 0}
           onPress={() => {
             setShowSearch(false); // mutual exclusion — see the toolbar button above
+            setShowTts(false);
             setShowToc((open) => !open);
           }}
           style={[styles.button, toc.length === 0 && styles.buttonDisabled]}

@@ -53,6 +53,7 @@
 //      protocol change with a host-side half, not a change of how one file is produced.
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
 
 /**
  * Somewhere in a book the reader can be asked to go, discriminated by format.
@@ -225,12 +226,22 @@ export type ReaderPosition =
 // position is a CFI" / "the position is a page", not as "the book is an EPUB".
 
 
+/**
+ * The reply to a `requestTtsSentence` command. `requestId` is the same value the command carried —
+ * that is the whole correlation mechanism on the host side; nothing about a book identity or a
+ * generation crosses the wire, because each open book gets its own provider instance with its own
+ * private id space (see `tts/realReaderTextProvider.ts`). `result` is a `TtsFetchResult` — the same
+ * type `ReaderTextProvider.current`/`.next` resolve to — so the wire shape and the seam shape cannot
+ * drift apart; a caller that has already given up on `requestId` (aborted, or the provider was torn
+ * down) simply has nowhere to route this and drops it.
+ */
 export type ReaderMessage =
   | { type: 'ready' }
   | { type: 'rendered' }
   | { type: 'relocated'; position: ReaderPosition; atStart: boolean; atEnd: boolean }
   | { type: 'toc'; items: ReaderTocItem[] }
-  | { type: 'error'; code: ReaderErrorCode; message: string };
+  | { type: 'error'; code: ReaderErrorCode; message: string }
+  | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -253,6 +264,7 @@ export const READER_MESSAGE_TYPES = [
   'relocated',
   'toc',
   'error',
+  'ttsSentence',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -286,6 +298,8 @@ export const READER_COMMANDS = {
   prev: 'prev',
   goTo: 'goTo',
   applyAppearance: 'applyAppearance',
+  requestTtsSentence: 'requestTtsSentence',
+  setSpokenRange: 'setSpokenRange',
 } as const;
 
 /**
@@ -325,13 +339,45 @@ export const READER_COMMANDS = {
  * `NOT_READY` to anything sent before `open*`, and EPUB's `flow`/`spread` only take effect if set
  * before `renderTo()`. See WEBVIEW_BRIDGE.md's "prefs-application design, as signed off".
  */
+/** Which sentence `requestTtsSentence` wants: the one at `from`, or the one after it. */
+export type TtsFetchMode = 'current' | 'next';
+
+/**
+ * `requestTtsSentence`'s whole payload nests under one field rather than three flat ones
+ * (`requestId`, `from`, `mode`) on purpose: `bridge.ts`'s `ExpectedArgs` derives a command's
+ * method-argument tuple from the UNION of its payload fields' value types, so three flat fields of
+ * unrelated types would collapse into one argument typed `number | string | null | TtsFetchMode` —
+ * unwritable as a sane `CommandArgs` entry, and `CommandArgsMatchPayloads` would (correctly) refuse
+ * to compile. One object field keeps the existing one-argument-per-field convention `goTo` and
+ * `applyAppearance` already use.
+ */
+export interface TtsSentenceRequest {
+  requestId: number;
+  from: string | null;
+  mode: TtsFetchMode;
+}
+
 export type ReaderCommand =
   | { type: 'openEpub'; base64: string }
   | { type: 'openPdf'; base64: string }
   | { type: 'next' }
   | { type: 'prev' }
   | { type: 'goTo'; target: ReaderTarget }
-  | { type: 'applyAppearance'; appearance: ReaderAppearance };
+  | { type: 'applyAppearance'; appearance: ReaderAppearance }
+  /**
+   * The FIRST command on this bridge that expects a reply (`ttsSentence`, correlated by
+   * `requestId`). Named `requestTtsSentence` rather than reusing `next`/`prev` — those already mean
+   * "turn the page." One command with a `mode` discriminant, not two commands, so there is one
+   * reply type and one host-side resolve seam to keep consistent, matching `applyAppearance`'s
+   * "one command, one resolve seam" reasoning.
+   */
+  | { type: 'requestTtsSentence'; request: TtsSentenceRequest }
+  /**
+   * Paint or clear the spoken-sentence highlight. Fire-and-forget, matching
+   * `ReaderTextProvider.setSpokenRange`'s own contract: best-effort, never a reply, never a
+   * reason to interrupt speech if it fails.
+   */
+  | { type: 'setSpokenRange'; cfi: string | null };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -420,6 +466,49 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
+/** Like `isPositiveInteger`, but 0 is valid — `spineIndex`/`sentenceIndex`/`requestId` all start at 0. */
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * A `TtsSentence` from an untrusted payload, or null if it is not one.
+ *
+ * STRICT, same as `asPosition` and for the same reason: this is what gets spoken and highlighted,
+ * not a cosmetic Contents row, so a malformed field drops the whole sentence rather than being
+ * smoothed into a plausible one.
+ */
+function asTtsSentence(value: unknown): TtsSentence | null {
+  if (!isRecord(value)) return null;
+  const { text, cfi, spineIndex, sentenceIndex, lastInSection } = value;
+  if (typeof text !== 'string' || typeof cfi !== 'string') return null;
+  if (!isNonNegativeInteger(spineIndex) || !isNonNegativeInteger(sentenceIndex)) return null;
+  if (typeof lastInSection !== 'boolean') return null;
+  return { text, cfi, spineIndex, sentenceIndex, lastInSection };
+}
+
+/** A `TtsFetchResult` from an untrusted payload, or null if `status` is missing or unrecognised. */
+function asTtsFetchResult(value: unknown): TtsFetchResult | null {
+  if (!isRecord(value)) return null;
+
+  switch (value.status) {
+    case 'ok': {
+      const sentence = asTtsSentence(value.sentence);
+      return sentence === null ? null : { status: 'ok', sentence };
+    }
+    case 'endOfBook':
+      return { status: 'endOfBook' };
+    case 'invalidAnchor':
+      return { status: 'invalidAnchor' };
+    case 'unavailable':
+      return { status: 'unavailable' };
+    case 'error':
+      return typeof value.message === 'string' ? { status: 'error', message: value.message } : null;
+    default:
+      return null;
+  }
+}
+
 function asErrorCode(value: unknown): ReaderErrorCode {
   const known: readonly string[] = [...WEBVIEW_ERROR_CODES, ...HOST_ERROR_CODES];
   return typeof value === 'string' && known.includes(value)
@@ -479,6 +568,15 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
         message: typeof parsed.message === 'string' ? parsed.message : 'Unknown reader error',
       };
 
+    case 'ttsSentence': {
+      const result = asTtsFetchResult(parsed.result);
+      // Dropped, not defaulted: an unroutable requestId or an unparseable result leaves a
+      // ReaderTextProvider request pending until its own timeout/abort handling gives up, rather
+      // than resolving it with a fabricated value.
+      if (result === null || !isNonNegativeInteger(parsed.requestId)) return null;
+      return { type: 'ttsSentence', requestId: parsed.requestId, result };
+    }
+
     default:
       return null;
   }
@@ -516,7 +614,11 @@ export function buildCommandScript(command: ReaderCommand): string {
           ? // ReaderAppearance is flat and primitive-only (its own contract, enforced by
             // readerAppearance.test.ts), so this is exactly as safe as goTo.target above.
             JSON.stringify(command.appearance)
-          : '';
+          : command.type === 'requestTtsSentence'
+            ? JSON.stringify(command.request)
+            : command.type === 'setSpokenRange'
+              ? JSON.stringify(command.cfi)
+              : '';
 
   return `(function(){
     try {
