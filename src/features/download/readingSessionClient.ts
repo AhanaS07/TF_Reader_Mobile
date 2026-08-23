@@ -17,8 +17,19 @@
 
 import type { BookId, BorrowRequest, Loan, ReadingFormat, ReadingSessionRequest, ReadingSessionResponse, FlambeauError } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, AUTH_REQUIRED } from './config';
+import { getAuthToken } from './devAuthToken';
 import { DownloadError, DownloadFailure } from './errors';
+
+// Real-backend calls need a bearer token or the `tf-app` resource-server chain 401s before
+// routing runs (see devAuthToken.ts). The mock backend has no `/api/v1/auth/*` routes at all, so
+// this must stay conditional on AUTH_REQUIRED rather than always fetching one.
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!AUTH_REQUIRED) {
+    return {};
+  }
+  return { Authorization: `Bearer ${await getAuthToken()}` };
+}
 
 export { fetchEncryptedAsset } from './contentLicenceClient';
 
@@ -89,7 +100,7 @@ export async function borrowLoan(bookId: BookId): Promise<Loan> {
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/loans`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -135,7 +146,7 @@ export async function openReadingSession(
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/reading-sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
       body: JSON.stringify(body),
       signal: controller.signal,
     });

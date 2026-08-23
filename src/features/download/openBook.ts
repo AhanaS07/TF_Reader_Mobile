@@ -169,6 +169,18 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
     }
 
     case 'open-access': {
+      // Same local-copy check as the 'online' case above: an open-access book downloaded
+      // earlier persists with `licence: null` (contentStore.store()'s isElite() comment), so
+      // isAvailableOffline() is true for it independent of network state. Checking this first
+      // avoids re-fetching the whole asset on every open of an already-downloaded open-access
+      // book, and is what makes offline reads of one possible at all — checkLicense's offline
+      // fallback routes here with a synthetic loan precisely so this branch can serve it
+      // straight from disk instead of ever reaching openReadingSession below.
+      if (await contentStore.isAvailableOffline(bookId)) {
+        await contentStore.openSession(bookId);
+        return contentStore.decryptBook(bookId);
+      }
+
       // Open-access short-circuits at checkLicense (before the session step) because
       // open-access books don't need a reading session for rights — but we still need the
       // session for the asset URL. Fetch it here, same pattern as downloadManager.ts.

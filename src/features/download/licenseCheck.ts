@@ -37,14 +37,16 @@ export type LicenseCheckResult =
 
 function isGenuineNetworkError(error: DownloadFailure): boolean {
   // LOAN_FAILED / SESSION_FETCH_FAILED cover BOTH genuine network errors (fetch rejected
-  // with a TypeError — DNS failure, timeout, offline) AND server responses that weren't
-  // shaped as a FlambeauError (a 404 with a plain HTML body, a 500 with no JSON at all).
-  // Only the former should trigger the offline fallback — a server that actually answered
-  // (even with an error) is reachable, and falling back to a stale local licence masks a
-  // real server-side problem. TypeError is what fetch() throws on network-level failure.
+  // with a TypeError for DNS failure/offline, or an AbortError when readingSessionClient's
+  // own 8s AbortController timer fires — see REQUEST_TIMEOUT_MS) AND server responses that
+  // weren't shaped as a FlambeauError (a 404 with a plain HTML body, a 500 with no JSON at
+  // all). Only the former should trigger the offline fallback — a server that actually
+  // answered (even with an error) is reachable, and falling back to a stale local licence
+  // would mask a real server-side problem.
   return (
     (error.code === DownloadError.LOAN_FAILED || error.code === DownloadError.SESSION_FETCH_FAILED) &&
-    error.cause instanceof TypeError
+    error.cause instanceof Error &&
+    (error.cause instanceof TypeError || error.cause.name === 'AbortError')
   );
 }
 
@@ -177,10 +179,31 @@ export async function checkLicense(
  * content are written together by contentStore.store()).
  */
 async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
-  const { licence, expired } = await getPersistedLicenceStatus(bookId);
+  const { licence, expired, downloaded } = await getPersistedLicenceStatus(bookId);
 
-  if (!licence) {
+  if (!downloaded) {
     return { ok: false, reason: DownloadError.OFFLINE_LICENSE_UNAVAILABLE };
+  }
+
+  // Open access persists with `licence: null` (no key material to protect) — a downloaded
+  // open-access book has no expiry to check and no signature to verify. Route it through the
+  // same 'open-access' mode the online short-circuit uses; openBook.ts's 'open-access' case
+  // reads the local copy straight off disk via contentStore.isAvailableOffline().
+  if (!licence) {
+    return {
+      ok: true,
+      mode: 'open-access',
+      loan: {
+        loanId: bookId,
+        itemId: bookId,
+        userId: '',
+        licenceModel: 'OPEN_ACCESS',
+        status: 'ACTIVE',
+        borrowedAt: '',
+        canPersist: true,
+        serverTime: new Date().toISOString(),
+      },
+    };
   }
 
   if (!verifyLicenceSignature(licence)) {

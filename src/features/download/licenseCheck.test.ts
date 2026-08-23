@@ -36,7 +36,7 @@ jest.mock('../encryption/contentStore', () => ({
     store: jest.fn(),
     destroy: jest.fn(),
   },
-  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false }),
+  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false }),
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
 }));
 
@@ -199,6 +199,7 @@ describe('checkLicense', () => {
         signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
+      downloaded: true,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -211,8 +212,39 @@ describe('checkLicense', () => {
     expect(result.licence.licenceId).toBe('old-licence');
   });
 
-  it('returns OFFLINE_LICENSE_UNAVAILABLE when offline and no persisted licence', async () => {
-    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({ licence: null, expired: false });
+  it('falls back to offline when borrow fails with a timeout (AbortError), not just a TypeError', async () => {
+    // readingSessionClient.ts's own 8s AbortController timer rejects with an AbortError, not a
+    // TypeError — isGenuineNetworkError must treat both as "genuinely unreachable".
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'old-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        canPersist: true,
+        rights: { print: false },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+    });
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    global.fetch = jest.fn().mockRejectedValue(abortError);
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('offline-license');
+  });
+
+  it('returns OFFLINE_LICENSE_UNAVAILABLE when offline and never downloaded', async () => {
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: null,
+      expired: false,
+      downloaded: false,
+    });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
     const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
@@ -220,6 +252,23 @@ describe('checkLicense', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe(DownloadError.OFFLINE_LICENSE_UNAVAILABLE);
+  });
+
+  it('returns ok:true with mode open-access when offline and a licence-less open-access book was previously downloaded', async () => {
+    // Open access persists with `licence: null` (contentStore.store()'s isElite() comment) —
+    // downloaded-but-licence-null must NOT be treated the same as never-downloaded.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: null,
+      expired: false,
+      downloaded: true,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'STREAM');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('open-access');
   });
 
   it('returns ENTITLEMENT_EXPIRED when offline and persisted licence is expired', async () => {
@@ -234,6 +283,7 @@ describe('checkLicense', () => {
         signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: true,
+      downloaded: true,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 

@@ -621,21 +621,24 @@ async function destroy(bookId: BookId): Promise<void> {
  * know whether there is a valid local licence to read against, without fetching or decrypting
  * anything.
  *
- * Returns `{ licence: null, expired: false }` when no metadata file exists (never downloaded, or
- * destroyed) — the caller should treat a null licence as OFFLINE_LICENSE_UNAVAILABLE.
+ * `downloaded` distinguishes "never downloaded" from "downloaded, and licence is legitimately
+ * null" — open-access books persist with `licence: null` (store()'s isElite() comment: "No licence
+ * at all is open access, which DOES persist"), so `licence === null` alone can't tell the two
+ * apart. A caller that treats every null licence as OFFLINE_LICENSE_UNAVAILABLE denies offline
+ * access to a downloaded open-access book, which has content on disk and nothing to verify.
  */
 export async function getPersistedLicenceStatus(
   bookId: BookId,
-): Promise<{ licence: SignedLicence | null; expired: boolean }> {
+): Promise<{ licence: SignedLicence | null; expired: boolean; downloaded: boolean }> {
   const meta = metaFile(bookId);
-  if (!meta.exists) return { licence: null, expired: false };
+  if (!meta.exists) return { licence: null, expired: false, downloaded: false };
 
   const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
-  if (!parsed.licence) return { licence: null, expired: false };
+  if (!parsed.licence) return { licence: null, expired: false, downloaded: true };
 
   const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
   const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
-  return { licence: parsed.licence, expired };
+  return { licence: parsed.licence, expired, downloaded: true };
 }
 
 /**

@@ -70,7 +70,7 @@ jest.mock('../encryption/contentStore', () => ({
     store: jest.fn().mockResolvedValue(undefined),
     destroy: jest.fn().mockResolvedValue(undefined),
   },
-  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false }),
+  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false }),
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
 }));
 
@@ -95,7 +95,7 @@ describe('openBook', () => {
     jest.mocked(contentStore.openSession).mockResolvedValue({ bookId: 'test', format: 'EPUB', openedAt: Date.now() });
     jest.mocked(contentStore.store).mockResolvedValue(undefined);
     jest.mocked(contentStore.close).mockResolvedValue(undefined);
-    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({ licence: null, expired: false });
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({ licence: null, expired: false, downloaded: false });
     jest.mocked(borrowLoan).mockResolvedValue(makeLoan());
     jest.mocked(openReadingSession).mockResolvedValue(
       makeSession({ encryption: { wrappedKey: 'mock-key', keyFingerprint: 'sha256:mock-fingerprint' } } as any),
@@ -154,6 +154,7 @@ describe('openBook', () => {
         signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
+      downloaded: true,
     });
     jest.mocked(borrowLoan).mockRejectedValue(
       new DownloadFailure(DownloadError.LOAN_FAILED, 'test-book', new TypeError('Network request failed')),
@@ -169,8 +170,12 @@ describe('openBook', () => {
     expect(contentStore.store).not.toHaveBeenCalled();
   });
 
-  it('throws OFFLINE_LICENSE_UNAVAILABLE when offline and no persisted licence', async () => {
-    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({ licence: null, expired: false });
+  it('throws OFFLINE_LICENSE_UNAVAILABLE when offline and never downloaded', async () => {
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: null,
+      expired: false,
+      downloaded: false,
+    });
     jest.mocked(borrowLoan).mockRejectedValue(
       new DownloadFailure(DownloadError.LOAN_FAILED, 'test-book', new TypeError('Network request failed')),
     );
@@ -178,6 +183,30 @@ describe('openBook', () => {
     await expect(openBook('test-book', 'EPUB')).rejects.toThrow(
       expect.objectContaining({ code: DownloadError.OFFLINE_LICENSE_UNAVAILABLE }),
     );
+  });
+
+  it('open-access: reads local copy offline when a licence-less open-access book was previously downloaded', async () => {
+    // Open access persists with `licence: null` — downloaded-but-licence-null must route
+    // through 'open-access' mode and serve from disk, not OFFLINE_LICENSE_UNAVAILABLE.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: null,
+      expired: false,
+      downloaded: true,
+    });
+    jest.mocked(contentStore.isAvailableOffline).mockResolvedValue(true);
+    jest.mocked(borrowLoan).mockRejectedValue(
+      new DownloadFailure(DownloadError.LOAN_FAILED, 'test-book', new TypeError('Network request failed')),
+    );
+
+    const result = await openBook('test-book', 'EPUB');
+
+    expect(result).toEqual(new Uint8Array([10, 20, 30]));
+    expect(contentStore.openSession).toHaveBeenCalledWith('test-book');
+    expect(contentStore.decryptBook).toHaveBeenCalledWith('test-book');
+    // No network calls of any kind — served entirely from disk.
+    expect(openReadingSession).not.toHaveBeenCalled();
+    expect(fetchEncryptedAssetChunked).not.toHaveBeenCalled();
+    expect(contentStore.store).not.toHaveBeenCalled();
   });
 
   it('throws BOOK_TOO_LARGE when chunked fetcher aborts due to oversized asset', async () => {
@@ -271,6 +300,21 @@ describe('openBook', () => {
     expect(contentStore.store).toHaveBeenCalledTimes(1);
     expect(contentStore.openSession).toHaveBeenCalledWith('test-book');
     expect(contentStore.decryptBook).toHaveBeenCalledWith('test-book');
+  });
+
+  it('open-access: reuses local copy when already downloaded, without ever fetching a session', async () => {
+    jest.mocked(borrowLoan).mockResolvedValue(makeLoan({ licenceModel: 'OPEN_ACCESS' }));
+    jest.mocked(contentStore.isAvailableOffline).mockResolvedValue(true);
+
+    const result = await openBook('test-book', 'EPUB');
+
+    expect(result).toEqual(new Uint8Array([10, 20, 30]));
+    expect(contentStore.openSession).toHaveBeenCalledWith('test-book');
+    expect(contentStore.decryptBook).toHaveBeenCalledWith('test-book');
+    // Previously this re-fetched a session + the whole asset on every open, even online.
+    expect(openReadingSession).not.toHaveBeenCalled();
+    expect(fetchEncryptedAssetChunked).not.toHaveBeenCalled();
+    expect(contentStore.store).not.toHaveBeenCalled();
   });
 
   it('attaches synthetic ephemeral licence (canPersist: false, non-null) for open-access', async () => {
