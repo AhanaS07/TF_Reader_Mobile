@@ -769,6 +769,22 @@ const api: TFReaderApi<'openPdf'> = {
       renderCurrentGuarded(currentPage);
     }
   },
+
+  /**
+   * Documented no-op. Reader never constructs a ReaderTextProvider for a PDF book — the TTS seam is
+   * EPUB-only (readerTextProvider.ts's segmentation model is CFI-based) — so this should never
+   * actually be invoked. It exists only because `TFReaderApi<'openPdf'>` requires every SHARED
+   * command to have an implementation in both shells; inventing an "EPUB-only command" category in
+   * bridge.ts's mapped-type machinery would be a materially bigger, riskier change to a proven
+   * type-safety mechanism for a one-off need. Answering `unavailable` rather than staying silent
+   * means a caller that somehow reaches this gets a real (if unexpected) status instead of a hang.
+   */
+  requestTtsSentence: ({ requestId }) => {
+    post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
+  },
+
+  /** Documented no-op — see requestTtsSentence's note. PDF has no highlight seam in this scope. */
+  setSpokenRange: () => {},
 };
 
 // Announce last, once the API is fully defined — RN waits for `ready` before injecting any command.

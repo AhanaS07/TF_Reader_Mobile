@@ -77,6 +77,28 @@ jest.mock('@/features/encryption/contentProvider', () => ({
 }));
 
 /**
+ * The TTS native-module seam. `ReaderScreen` now calls `useTtsSession` unconditionally (Rules of
+ * Hooks — see its own note), and `useTtsSession` imports `@iternio/react-native-tts` via
+ * `ttsEngine.ts`. That package ships ES module syntax Jest's default transform does not parse, so
+ * every test here needs this mocked regardless of whether it exercises TTS — same seam
+ * `useTtsSession.test.ts` mocks, at the same path, for the same reason.
+ */
+jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
+  __esModule: true,
+  default: {
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    speak: jest.fn(() => Promise.resolve('utterance-1')),
+    stop: jest.fn(() => Promise.resolve(true)),
+    pause: jest.fn(() => Promise.resolve(true)),
+    resume: jest.fn(() => Promise.resolve(true)),
+    setDefaultRate: jest.fn(() => Promise.resolve(true)),
+    setDefaultPitch: jest.fn(() => Promise.resolve(true)),
+    setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    voices: jest.fn(() => Promise.resolve([])),
+  },
+}));
+
+/**
  * Mock the SEARCH SEAM, not contentProvider's getIndex behind it.
  *
  * Required, not merely convenient: the real queryBookIndex imports getIndex from

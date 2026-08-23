@@ -28,6 +28,7 @@ import type {
   ReaderCommand,
   ReaderMessage,
   ReaderTarget,
+  TtsSentenceRequest,
   WebViewErrorCode,
 } from '@/features/reader/readerBridge';
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -166,6 +167,8 @@ export interface CommandArgs {
   prev: [];
   goTo: [target: ReaderTarget];
   applyAppearance: [appearance: ReaderAppearance];
+  requestTtsSentence: [request: TtsSentenceRequest];
+  setSpokenRange: [cfi: string | null];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */

@@ -124,6 +124,25 @@ wrong one.
 | `prev`           | —                              | no     | both       |
 | `goTo`           | `target` (`ReaderTarget`)      | no     | both       |
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
+| `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
+| `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+
+**`requestTtsSentence`/`ttsSentence` is the FIRST reply-bearing pair on this bridge** — landed for
+TTS_PROVIDER.md's step 5. One command, not two (`current`/`next` share a `mode` discriminant inside
+`TtsSentenceRequest`), for the same "one command, one resolve seam" reason `applyAppearance` is one
+payload rather than five setters. Correlation is by `requestId` alone, generated per-request by the
+host; the `(bookId, generation)` stamp `readerTextProvider.ts`'s doc comments describe never crosses
+the wire — it is host-side bookkeeping in `tts/realReaderTextProvider.ts`; each open book gets its own
+provider instance with its own private `requestId` space, so nothing needs to disambiguate across
+books on the wire. A reply for a `requestId` the host no longer recognises (already resolved by abort,
+or discarded by teardown) is silently dropped.
+
+**PDF answers both with a documented no-op**, the same way it already silently ignores typography in
+`applyAppearance`: Reader never constructs a `ReaderTextProvider` for a PDF book (the segmentation
+model is CFI-based, EPUB-only), so these should never actually be invoked there — they exist only
+because `TFReaderApi<'openPdf'>` requires every shared command to have an implementation in both
+shells. `requestTtsSentence` answers `{status:'unavailable'}` rather than staying silent, so a caller
+that somehow reaches it gets a real status instead of a hang.
 
 `applyAppearance` is implemented — the design in "The prefs-application design, as signed off" below
 is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced host-side, in
@@ -429,3 +448,10 @@ Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than 
 - `src/features/personalization/READER_PREFS_APPLICATION.md` — Personalization's field-by-field mapping
   and the live-reapply flow. Read it together with the sign-off section above, which amends it.
 - `src/features/accessibility/WEBVIEW_A11Y_FINDINGS.md` — §3.7 is the third claimant on that payload.
+- `src/features/reader/tts/readerTextProvider.ts`, `TTS_PROVIDER.md` — the seam `requestTtsSentence`/
+  `ttsSentence`/`setSpokenRange` exist to carry. `tts/realReaderTextProvider.ts` is the host-side
+  correlation layer; `webview/src/epubTtsResolver.ts` (segmentation/CFI-minting, DOM-touching) and
+  `webview/src/ttsSegmentation.ts` (pure, unit-tested) are the WebView side.
+- `webview/src/highlightSeam.ts` / `highlightNaming.ts` — the owner-namespaced `rendition.annotations`
+  seam `setSpokenRange` paints through, built so Personalization/Search can adopt the same `add`/
+  `remove` primitive later without re-litigating the collision `TTS_PROVIDER.md` open item 4 named.

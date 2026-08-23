@@ -426,6 +426,7 @@ describe('what the compiler cannot check about the WebView half', () => {
       relocated: { position: { kind: 'cfi' } },
       toc: {},
       error: {},
+      ttsSentence: { requestId: 0, result: { status: 'unavailable' } },
     };
 
     for (const type of READER_MESSAGE_TYPES) {
