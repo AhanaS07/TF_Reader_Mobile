@@ -136,7 +136,7 @@ describe('SubjectChip tokens', () => {
     expect(chip.backgroundColor).toBe(color.primary);
     expect(chip.borderColor).toBe(color.primary);
     // Teal-on-teal would be unreadable.
-    expect(styleOf('subject-chip-label').color).toBe(color.surface);
+    expect(styleOf('subject-chip-label').color).toBe(color.white);
   });
 
   it('drops the brand colour entirely when disabled', async () => {

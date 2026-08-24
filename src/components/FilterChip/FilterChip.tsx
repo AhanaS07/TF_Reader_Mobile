@@ -101,7 +101,7 @@ export default function FilterChip({
           accessibilityRole="button"
           accessibilityLabel={`Clear ${label} filter`}
         >
-          <Ionicons name="close" size={REMOVE_ICON_SIZE} color={color.surface} />
+          <Ionicons name="close" size={REMOVE_ICON_SIZE} color={color.white} />
         </Pressable>
       )}
     </Pressable>
@@ -136,6 +136,6 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
   },
   labelSelected: {
-    color: color.surface,
+    color: color.white,
   },
 });

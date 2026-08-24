@@ -53,13 +53,13 @@ export default function TopAppBar({
               accessibilityRole="button"
               accessibilityLabel="Go back"
             >
-              <Ionicons name="chevron-back" size={24} color={color.surface} />
+              <Ionicons name="chevron-back" size={24} color={color.white} />
             </TouchableOpacity>
           ) : (
             <Ionicons
               name="book"
               size={24}
-              color={color.surface}
+              color={color.white}
               style={styles.brandIcon}
             />
           )}
@@ -78,7 +78,7 @@ export default function TopAppBar({
               accessibilityRole="button"
               accessibilityLabel="Open search"
             >
-              <Ionicons name="search" size={22} color={color.surface} />
+              <Ionicons name="search" size={22} color={color.white} />
             </TouchableOpacity>
           )}
           {action}
@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
     fontWeight: type.sectionHeader.weight,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
-    color: color.surface,
+    color: color.white,
     flex: 1,
   },
   rightSlot: {

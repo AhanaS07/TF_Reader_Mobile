@@ -111,9 +111,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   labelSelected: {
-    // The near-white surface token, standing in for on-primary: teal-on-teal
-    // would be unreadable and there is no white in the palette.
-    color: color.surface,
+    // On-primary: the label sits on a filled primary chip, so it takes white.
+    color: color.white,
   },
   labelDisabled: {
     color: color.textSecondary,

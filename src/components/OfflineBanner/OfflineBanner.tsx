@@ -58,7 +58,7 @@ const styles = StyleSheet.create({
     fontWeight: type.smallLabel.weight,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
-    color: color.surface,
+    color: color.white,
     textAlign: 'center',
   },
 });

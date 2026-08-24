@@ -41,7 +41,7 @@ export default function AccessTierBadge({ tier, size = 'sm' }: AccessTierBadgePr
       accessibilityRole="text"
       style={[styles.badge, styles[size], { backgroundColor: background }]}
     >
-      <MaterialCommunityIcons name={icon} size={type.smallLabel.size} color={color.surface} />
+      <MaterialCommunityIcons name={icon} size={type.smallLabel.size} color={color.white} />
       <Text style={styles.label}>{label}</Text>
     </View>
   );
@@ -63,6 +63,6 @@ const styles = StyleSheet.create({
     fontWeight: type.smallLabel.weight,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
-    color: color.surface,
+    color: color.white,
   },
 });

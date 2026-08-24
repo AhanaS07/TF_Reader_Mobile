@@ -60,7 +60,7 @@ describe('FilterChip appearance', () => {
     await render(<FilterChip label="Books" selected onPress={() => {}} />);
 
     expect(styleOf('filter-chip')).toMatchObject({ backgroundColor: color.primary });
-    expect(styleOf('filter-chip-label')).toMatchObject({ color: color.surface });
+    expect(styleOf('filter-chip-label')).toMatchObject({ color: color.white });
   });
 });
 

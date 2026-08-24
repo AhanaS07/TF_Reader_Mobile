@@ -87,7 +87,7 @@ export default function ListRow({
           // disabled row still flips.
           disabled={disabled}
           trackColor={{ false: color.border, true: color.primary }}
-          thumbColor={color.surface}
+          thumbColor={color.white}
         />
       )}
       {variant === 'value' && valueText !== undefined && (

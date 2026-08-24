@@ -31,7 +31,7 @@ import { color, elevation, radius, space, type } from '@theme/tokens';
 // A SUBSET OF ColorToken, NOT ALL OF IT. `wait` and `error` are status colours —
 // amber and red carry "something is wrong", which is a lie on a category, and
 // amber cannot hold light text legibly anyway. The remaining five are all dark
-// enough for `color.surface` text to read cleanly.
+// enough for `color.white` text to read cleanly.
 export type CategoryAccent = 'primary' | 'navy' | 'success' | 'subscription' | 'elite';
 
 // `error` and `offline` belong to the screen that owns the feed request, not to
@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
     width: BLOB_LARGE,
     height: BLOB_LARGE,
     borderRadius: radius.pill,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     opacity: 0.12,
     top: -BLOB_LARGE / 3,
     right: -BLOB_LARGE / 4,
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
     width: BLOB_SMALL,
     height: BLOB_SMALL,
     borderRadius: radius.pill,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     opacity: 0.1,
     top: BLOB_SMALL / 2,
     left: -BLOB_SMALL / 3,
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     // The light token, since the card behind it is saturated.
-    color: color.surface,
+    color: color.white,
   },
   footer: {
     flexDirection: 'row',
@@ -173,7 +173,7 @@ const styles = StyleSheet.create({
     fontWeight: type.meta.weight,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
-    color: color.surface,
+    color: color.white,
     // Held back from the title so the two do not compete.
     opacity: 0.85,
   },
@@ -182,14 +182,14 @@ const styles = StyleSheet.create({
     height: CHEVRON,
     borderTopWidth: 1,
     borderRightWidth: 1,
-    borderColor: color.surface,
+    borderColor: color.white,
     transform: [{ rotate: '45deg' }],
     // Nudged in from the edge so the rotated box does not touch the padding.
     marginRight: space.xs,
   },
 
   bar: {
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderRadius: radius.card,
     // Lightened rather than grey: a grey bar on a saturated card looks like a
     // rendering fault instead of a placeholder.

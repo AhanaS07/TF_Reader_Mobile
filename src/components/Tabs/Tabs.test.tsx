@@ -253,6 +253,6 @@ describe('Tabs tokens', () => {
     );
 
     // Teal-on-teal would be unreadable.
-    expect(styleOf(`tabs-label-${THREE_TABS[0].id}`).color).toBe(color.surface);
+    expect(styleOf(`tabs-label-${THREE_TABS[0].id}`).color).toBe(color.white);
   });
 });

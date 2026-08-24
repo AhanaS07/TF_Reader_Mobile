@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
     fontWeight: type.button.weight,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
-    color: color.surface,
+    color: color.white,
   },
   secondaryAction: {
     paddingHorizontal: space.md,
