@@ -181,6 +181,15 @@ export const HOST_ERROR_CODES = [
   // BEFORE any WebView is mounted (ReaderScreen picks the template by format), which
   // is why it is host-side: there is no WebView to raise it from.
   'UNSUPPORTED_FORMAT',
+  // Distinct from CONTENT_LOAD_FAILED: that one means the book never opened.
+  // This one means it DID open, and access was explicitly denied afterward —
+  // Download's readingAccessMonitor.ts re-verifies entitlement every
+  // ACCESS_CHECK_INTERVAL_MS while the book stays open (the real backend's own
+  // reading-session grant is ~5 minutes; see reading-session.ts's `expiresAt`),
+  // and this is the one outcome that check can raise mid-read: an explicit
+  // revocation/expiry/suspension, never a network hiccup (that fails open,
+  // silently, by design — see verifyReadingAccess's own doc comment).
+  'ACCESS_REVOKED',
 ] as const;
 
 export type WebViewErrorCode = (typeof WEBVIEW_ERROR_CODES)[number];
