@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
   bar: {
     gap: space.sm,
     padding: space.md,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderTopWidth: 1,
     borderTopColor: color.border,
   },

@@ -71,7 +71,7 @@ export default function BottomTabBar({
 const styles = StyleSheet.create({
   bar: {
     flexDirection: 'row',
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: color.border,
   },

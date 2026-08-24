@@ -167,7 +167,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   // ErrorState pads itself but does not stretch, so centring it is the caller's
   // job (§8).

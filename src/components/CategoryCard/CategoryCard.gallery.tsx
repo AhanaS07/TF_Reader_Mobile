@@ -100,7 +100,7 @@ export default function CategoryCardGallery() {
 const CARD_WIDTH = space.xl * 5;
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,

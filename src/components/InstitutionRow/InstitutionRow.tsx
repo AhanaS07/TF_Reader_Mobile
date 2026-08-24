@@ -81,7 +81,7 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: color.border,
     gap: space.xs,

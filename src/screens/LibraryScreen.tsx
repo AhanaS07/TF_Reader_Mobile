@@ -10,7 +10,7 @@ export default function LibraryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.surface },
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: color.white },
   title: {
     fontWeight: type.sectionHeader.weight,
     fontSize: type.sectionHeader.size,

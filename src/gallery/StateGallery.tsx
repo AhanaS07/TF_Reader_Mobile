@@ -118,7 +118,7 @@ export default function StateGallery() {
 const styles = StyleSheet.create({
   page: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   switcher: {
     flexDirection: 'row',
@@ -146,7 +146,7 @@ const styles = StyleSheet.create({
     color: color.textSecondary,
   },
   tabLabelSelected: {
-    color: color.surface,
+    color: color.white,
   },
   scroll: {
     flex: 1,

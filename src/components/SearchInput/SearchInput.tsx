@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
     height: FIELD_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     // The hairline stays even though the design shows none. Without a white
     // token the card and the page behind it are the SAME colour (both
     // `surface`), so the shadow alone is not enough separation — and the border

@@ -140,7 +140,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: space.md,
     padding: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderRadius: radius.card,
     // A hairline keeps adjacent rows separable on a white screen where the
     // shadow alone is too subtle to read.

@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   sheet: {
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderTopLeftRadius: radius.sheet,
     borderTopRightRadius: radius.sheet,
     paddingBottom: space.xl,

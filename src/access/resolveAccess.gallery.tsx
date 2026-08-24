@@ -282,7 +282,7 @@ const styles = StyleSheet.create({
     gap: space.xs,
     padding: space.sm,
     borderRadius: radius.card,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderWidth: 1,
     borderColor: color.border,
   },

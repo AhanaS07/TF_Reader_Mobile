@@ -208,7 +208,7 @@ export default function PublicCatalogueScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   content: {
     padding: space.md,
@@ -219,7 +219,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   loadMore: {
     alignSelf: 'center',

@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: color.border,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   chipSelected: {
     backgroundColor: color.primary,

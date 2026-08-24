@@ -90,7 +90,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: space.lg,
     gap: space.md,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   logo: {
     width: LOGO_SIZE,

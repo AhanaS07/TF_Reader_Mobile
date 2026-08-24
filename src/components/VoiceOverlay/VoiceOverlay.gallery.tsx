@@ -100,7 +100,7 @@ export default function VoiceOverlayGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
@@ -124,7 +124,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.card,
     borderWidth: 1,
     borderColor: color.border,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   rowLabel: {
     fontWeight: type.body.weight,

@@ -360,7 +360,7 @@ export default function InstitutionListScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   searchWrapper: {
     paddingHorizontal: space.md,
@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   footer: {
     paddingVertical: space.md,

@@ -248,7 +248,7 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   institutionPicker: {
     flexDirection: 'row',
@@ -256,7 +256,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: space.sm,
     paddingHorizontal: space.md,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderRadius: space.xs,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: color.border,
@@ -284,7 +284,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   categoryStrip: {
     gap: space.md,

@@ -212,7 +212,7 @@ const styles = StyleSheet.create({
   quiet: {},
   done: {
     borderColor: color.border,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   // Permitted by CONVENTIONS §5 as a layout primitive — opacity is the exception
   // to "no bare numbers", which is why disabled needs no new grey token.
