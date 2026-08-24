@@ -118,21 +118,50 @@ async function push(report: SyncReport): Promise<void> {
 
   for (const op of pending) {
     const entityPath = ENTITY_PATHS[op.entity_type];
-    const payload = JSON.parse(op.payload);
+    const table = TABLES[op.entity_type];
+    let payload = JSON.parse(op.payload);
     let saved: any = null;
 
     try {
       if (!SERVER_RESOLVES_CONFLICTS) {
         const serverWins = await serverHasDiverged(op, entityPath);
-        if (serverWins) {
+
+        if (serverWins && !table.mergeFields) {
           report.conflicts += 1;
           await outboxStore.remove([op.id]);
           continue;
+        }
+
+        // A field-merge table (personalization, accessibility) never drops the operation here,
+        // even when serverHasDiverged folded in someone else's newer field(s): "the server won
+        // on some field" does not mean "my whole pending edit is moot" the way it does for a
+        // whole-row table - I may still have OTHER fields that need to reach the server. Instead,
+        // rebuild the payload from the row serverHasDiverged just merged into, so this push
+        // carries both my own edited fields AND whatever I just adopted - sending the original,
+        // pre-merge snapshot here would silently revert the merge the moment it lands.
+        if (serverWins && table.mergeFields) {
+          const fresh = await table.findById(op.entity_id);
+          if (fresh) payload = table.toServerPayload(fresh);
         }
       }
 
       saved = await send(op, entityPath, payload);
     } catch (error) {
+      // A different device's document already occupies this (userId, bookId, locator) slot,
+      // under an id we never generated. Not retried under our own id (that would 404) - resolved
+      // by adopting theirs and discarding ours entirely: this device's row never existed
+      // server-side, so a tombstone would have nothing to propagate to.
+      if (error instanceof LocatorCollision) {
+        const existing = await findDuplicateRecord(error.entityType, error.payload);
+        if (existing) {
+          await TABLES[error.entityType].applyServerRecord(existing);
+        }
+        await TABLES[error.entityType].hardDeleteLocal(op.entity_id);
+        report.conflicts += 1;
+        await outboxStore.remove([op.id]);
+        continue;
+      }
+
       const apiError = error instanceof ApiError ? error : null;
 
       // Reserved for a server that compares timestamps itself and keeps its own
@@ -181,9 +210,79 @@ async function push(report: SyncReport): Promise<void> {
 
 /** Dispatches one outbox operation and returns the record the server stored. */
 function send(op: OutboxRow, entityPath: string, payload: any): Promise<any> {
-  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id, payload);
-  if (op.operation === 'CREATE') return sendCreate(entityPath, op.entity_id, payload);
-  return sendUpdate(entityPath, op.entity_id, payload);
+  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id, payload, op.entity_type);
+  if (op.operation === 'CREATE') return sendCreate(entityPath, op.entity_id, payload, op.entity_type);
+  return sendUpdate(entityPath, op.entity_id, payload, op.entity_type);
+}
+
+/**
+ * Wire field(s) that identify content-duplicate rows for a table where two devices can
+ * legitimately generate two different ids for what is semantically the same thing (the same
+ * bookmark, the same highlighted span) - see `LocatorCollision` below. Absent for every other
+ * table: nothing else has this failure mode, because nothing else can collide on content while
+ * differing only by device-minted id.
+ */
+const DUPLICATE_LOOKUP_FIELDS: Partial<Record<EntityType, readonly string[]>> = {
+  bookmarks: ['locator'],
+  highlights: ['startLocator', 'endLocator'],
+};
+
+/**
+ * Thrown by `sendCreate` when the 409 is a genuine content collision - a different device's
+ * document already occupies this (userId, bookId, locator) slot under a DIFFERENT id - rather
+ * than this device's own dropped-connection retry landing on the SAME id. Distinguished by the
+ * server's `message` on the 409 body: `HIGHLIGHT_LOCATOR_DUPLICATION` / `BOOKMARK_LOCATOR_DUPLICATION`
+ * mean a collision; anything else (e.g. "Bookmark '<id>' already exists") is the same-id retry,
+ * which keeps the existing PUT-to-own-id handling.
+ *
+ * Not an ApiError subclass on purpose: `push()`'s generic ApiError branches (isConflict,
+ * isValidation, ...) must not accidentally swallow this - it needs its own branch, checked first,
+ * because resolving it means discarding this device's own id entirely rather than retrying under
+ * it - see the note at the `push()` catch site.
+ */
+class LocatorCollision {
+  constructor(
+    readonly entityType: EntityType,
+    readonly payload: Record<string, unknown>,
+  ) {}
+}
+
+const LOCATOR_DUPLICATION_MESSAGES = new Set([
+  'HIGHLIGHT_LOCATOR_DUPLICATION',
+  'BOOKMARK_LOCATOR_DUPLICATION',
+]);
+
+function isLocatorDuplication(error: ApiError): boolean {
+  return LOCATOR_DUPLICATION_MESSAGES.has(error.body?.message);
+}
+
+/**
+ * Finds the document that actually owns this (userId, bookId, locator) slot, so it can be
+ * adopted under ITS id in place of the one this device generated - see `LocatorCollision`.
+ *
+ * There is no "find by locator" endpoint, so this lists the whole collection and matches
+ * client-side; both collections are scoped to one book and are not expected to be large. A
+ * dedicated query is the honest fix if that stops being true.
+ */
+async function findDuplicateRecord(
+  entityType: EntityType,
+  payload: Record<string, unknown>,
+): Promise<any | null> {
+  const fields = DUPLICATE_LOOKUP_FIELDS[entityType];
+  if (!fields) return null;
+
+  const response = await api.list<any>(ENTITY_PATHS[entityType], {
+    userId: USER_ID,
+    bookId: BOOK_ID,
+  });
+
+  return (
+    (response.data ?? []).find(
+      (record: any) =>
+        !record.isDeleted &&
+        fields.every((field) => JSON.stringify(record[field]) === JSON.stringify(payload[field])),
+    ) ?? null
+  );
 }
 
 /**
@@ -193,12 +292,25 @@ function send(op: OutboxRow, entityPath: string, payload: any): Promise<any> {
  * saw its response - a dropped connection after the write. Overwriting is the
  * right answer because the payload is a full snapshot, and it is what makes a
  * retried push idempotent rather than a duplicate.
+ *
+ * UNLESS the 409 is a locator collision (see `LocatorCollision`) - PUT-ing to our own id there
+ * would 404, because our id never existed server-side; the document that does exist has someone
+ * else's id. That case is not retried here at all - it is thrown for `push()` to resolve, since
+ * resolving it means discarding this device's local row, not sending anything further for it.
  */
-async function sendCreate(entityPath: string, id: string, payload: any): Promise<any> {
+async function sendCreate(
+  entityPath: string,
+  id: string,
+  payload: any,
+  entityType: EntityType,
+): Promise<any> {
   try {
     return (await api.create<any>(entityPath, payload)).data;
   } catch (error) {
     if (error instanceof ApiError && error.isConflict) {
+      if (isLocatorDuplication(error)) {
+        throw new LocatorCollision(entityType, payload);
+      }
       return (await api.update<any>(entityPath, id, payload)).data;
     }
     throw error;
@@ -213,12 +325,17 @@ async function sendCreate(entityPath: string, id: string, payload: any): Promise
  * UPDATE, because the outbox keeps only the newest operation per record. The
  * server has never seen it, so it has to be created.
  */
-async function sendUpdate(entityPath: string, id: string, payload: any): Promise<any> {
+async function sendUpdate(
+  entityPath: string,
+  id: string,
+  payload: any,
+  entityType: EntityType,
+): Promise<any> {
   try {
     return (await api.update<any>(entityPath, id, payload)).data;
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) {
-      return sendCreate(entityPath, id, payload);
+      return sendCreate(entityPath, id, payload, entityType);
     }
     throw error;
   }
@@ -228,7 +345,12 @@ async function sendUpdate(entityPath: string, id: string, payload: any): Promise
  * A soft delete, which is the tombstone the design needs - the document stays
  * so the delete can reach other devices.
  */
-async function sendDelete(entityPath: string, id: string, payload: any): Promise<any> {
+async function sendDelete(
+  entityPath: string,
+  id: string,
+  payload: any,
+  entityType: EntityType,
+): Promise<any> {
   try {
     return (await api.remove<any>(entityPath, id)).data;
   } catch (error) {
@@ -237,7 +359,7 @@ async function sendDelete(entityPath: string, id: string, payload: any): Promise
     // Created and deleted in the same offline session, and the outbox coalesced
     // both into this one DELETE. The record still has to exist before it can be
     // tombstoned, and a create ignores `isDeleted`, so it takes both calls.
-    await sendCreate(entityPath, id, payload);
+    await sendCreate(entityPath, id, payload, entityType);
     return (await api.remove<any>(entityPath, id)).data;
   }
 }

@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS personalization (
   updated_at              TEXT NOT NULL,
   is_deleted              INTEGER NOT NULL DEFAULT 0,
   synced                  INTEGER NOT NULL DEFAULT 0,
-  server_updated_at       TEXT
+  server_updated_at       TEXT,
+  -- JSON map of field name -> ISO timestamp it was last changed. A whole-row updated_at
+  -- cannot support field-level merge: two devices editing different fields need to know
+  -- WHICH field each one touched and when, not just when the row as a whole last moved.
+  field_updated_at        TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_personalization_user ON personalization (user_id);
 
@@ -108,7 +112,9 @@ CREATE TABLE IF NOT EXISTS accessibility (
   updated_at                 TEXT NOT NULL,
   is_deleted                 INTEGER NOT NULL DEFAULT 0,
   synced                     INTEGER NOT NULL DEFAULT 0,
-  server_updated_at          TEXT
+  server_updated_at          TEXT,
+  -- See the identical column on personalization above - same reason, same shape.
+  field_updated_at           TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_accessibility_user ON accessibility (user_id);
 

@@ -203,6 +203,10 @@ export const personalizationMapper = {
     zoom: row.zoom,
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
+    // Field-level merge's own bookkeeping - see syncableTable.ts. Sent so another device
+    // pulling this record can compare its own per-field times against these, not just the
+    // whole-row updatedAt above.
+    fieldUpdatedAt: parseJson(row.field_updated_at) ?? {},
   }),
   toRow: (record: any): PersonalizationRow => ({
     id: record.id,
@@ -224,6 +228,10 @@ export const personalizationMapper = {
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,
     server_updated_at: record.updatedAt,
+    // Absent on a server that has never seen this field (an old record, or a backend that
+    // drops unrecognised keys) reads as "no field ever recorded here", which is exactly the
+    // fallback-to-row-updatedAt behaviour the merge already has for that case.
+    field_updated_at: stringifyJson(record.fieldUpdatedAt ?? {}),
   }),
 };
 
@@ -254,6 +262,7 @@ export const accessibilityMapper = {
     screenReaderHints: toBool(row.screen_reader_hints),
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
+    fieldUpdatedAt: parseJson(row.field_updated_at) ?? {},
   }),
   toRow: (record: any): AccessibilityRow => ({
     id: record.id,
@@ -281,6 +290,7 @@ export const accessibilityMapper = {
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,
     server_updated_at: record.updatedAt,
+    field_updated_at: stringifyJson(record.fieldUpdatedAt ?? {}),
   }),
 };
 
