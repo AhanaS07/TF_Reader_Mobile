@@ -14,10 +14,12 @@ A pure mapper plus the three call-sites, unit-tested (`readerBookmarks.test.ts`,
 | Export | Role |
 | ------ | ---- |
 | `toReaderBookmarks(rows)` | pure: `BookmarkRow[]` → `{ bookmarks: { id, label, target }[], skippedIds }` |
-| `loadBookmarks()` | call-site 1 — on open: `list()` → navigable rows |
-| `addCurrentEpubBookmark(cfi, chapterId?, name?)` | call-site 2a — bookmark the current EPUB position |
-| `addCurrentPdfBookmark(page, name?)` | call-site 2b — bookmark the current PDF page |
-| `removeBookmark(id)` | call-site 3 — tap-to-delete, **by stored id** |
+| `loadBookmarks(bookId)` | call-site 1 — on open: `list(this book)` → navigable rows |
+| `addCurrentEpubBookmark(bookId, cfi, chapterId?, name?)` | call-site 2a — bookmark the current EPUB position |
+| `addCurrentPdfBookmark(bookId, page, name?)` | call-site 2b — bookmark the current PDF page |
+| `removeBookmark(bookId, id)` | call-site 3 — tap-to-delete, **by stored id** (`bookId` re-lists the right book) |
+
+Every call is scoped to `bookId` (2026-08-24) — see the resolved open item below.
 
 Each `add*`/`removeBookmark` persists through `bookmarkStore` (row + sync outbox op in one
 transaction — offline-safe) and returns the **fresh full set** for the panel to re-render.
@@ -105,17 +107,16 @@ Mongo when connected. Nothing in the UI observes the network.
 
 ## Open items (pre-ship — Karthik/Vaishnavi)
 
-**Every bookmark is tagged with the same book, always — not just "second book won't load its own
-yet".** `bookmarkStore.add()` stamps every row's `book_id` with the single hard-coded `BOOK_ID` from
-`syncConfig.ts`, regardless of which book was actually open when it was created, and `list()` filters
-by that same singleton. So `loadBookmarks()` returns every bookmark ever created, for every book,
-always — there is no per-book identity in the data at all, not merely an unapplied filter. Raised
-2026-08-24 when the user asked for bookmarks to be scoped to the open book; confirmed with them that
-the real fix (thread an actual `bookId` through `bookmarkStore.ts`'s and `readerBookmarks.ts`'s
-signatures, replacing the constant) is Karthik/Vaishnavi's to make, not Reader's — same reasoning as
-`renameBookmark` in item 6. **Reader's partial mitigation is item 8 above** (filtering by
-`target.kind`, which stops cross-FORMAT leaks but not same-format ones) — replace it with the real
-per-book filter once the store threads a real id, and remove item 8's note when that happens.
+**Per-book scoping — RESOLVED 2026-08-24.** Was: `bookmarkStore.add()` stamped every row's `book_id`
+with the single hard-coded `BOOK_ID` and `list()` filtered by that same singleton, so `loadBookmarks()`
+returned every bookmark ever created, for every book. Fixed end to end: Karthik made the stores
+multi-book capable (`list`/`add*`/`addForCfi`/`addForPage` take a `bookId`, commit `25cd740`);
+`readerBookmarks.ts` now threads a real `bookId` through every call — `list(undefined, bookId)` keeps the
+store's single-user default while pinning the open book; and `ReaderScreen.tsx` passes its open-book
+`bookId` prop into all four call-sites. Bookmarks are now genuinely per-book, including two books of the
+SAME format. **Item 8's `target.kind` mitigation is now redundant** for correctness (the data itself
+distinguishes books) — it still harmlessly filters by format and can be simplified whenever Reader
+touches it. Only the `USER_ID` half stays single-user prototype (separate identity item).
 
 **New, 2026-08-24 — a real rename op.** See item 6 above: `renameBookmark`'s delete-and-recreate is a
 stand-in, not the intended shape. Needs a decision on whether `readerBookmarks.ts`'s

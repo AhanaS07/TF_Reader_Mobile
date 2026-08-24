@@ -91,10 +91,14 @@ afterEach(() => {
 
 describe('loadBookmarks', () => {
   it('turns stored rows into navigable panel rows on open', async () => {
-    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([row({ id: 'a' }), pdfRow({ id: 'b' })]);
+    const list = jest
+      .spyOn(bookmarkStore, 'list')
+      .mockResolvedValue([row({ id: 'a' }), pdfRow({ id: 'b' })]);
 
-    const { bookmarks, skippedIds } = await loadBookmarks();
+    const { bookmarks, skippedIds } = await loadBookmarks('book-42');
 
+    // Scoped to THIS book, not the global BOOK_ID constant (undefined keeps the store's user default).
+    expect(list).toHaveBeenCalledWith(undefined, 'book-42');
     expect(bookmarks.map((b) => b.id)).toEqual(['a', 'b']);
     expect(bookmarks[1].target).toEqual({ kind: 'page', page: 7 });
     expect(skippedIds).toEqual([]);
@@ -106,9 +110,9 @@ describe('add / remove call-sites', () => {
     const add = jest.spyOn(bookmarkStore, 'addForCfi').mockResolvedValue({} as BookmarkRow);
     jest.spyOn(bookmarkStore, 'list').mockResolvedValue([row({ id: 'new' })]);
 
-    const { bookmarks } = await addCurrentEpubBookmark('epubcfi(/6/4)', 'chapter-1', 'Start');
+    const { bookmarks } = await addCurrentEpubBookmark('book-42', 'epubcfi(/6/4)', 'chapter-1', 'Start');
 
-    expect(add).toHaveBeenCalledWith('epubcfi(/6/4)', 'chapter-1', 'Start');
+    expect(add).toHaveBeenCalledWith('epubcfi(/6/4)', 'chapter-1', 'Start', 'book-42');
     expect(bookmarks.map((b) => b.id)).toEqual(['new']);
   });
 
@@ -116,16 +120,16 @@ describe('add / remove call-sites', () => {
     const add = jest.spyOn(bookmarkStore, 'addForPage').mockResolvedValue({} as BookmarkRow);
     jest.spyOn(bookmarkStore, 'list').mockResolvedValue([pdfRow({ id: 'new' })]);
 
-    await addCurrentPdfBookmark(7, 'Chart');
+    await addCurrentPdfBookmark('book-42', 7, 'Chart');
 
-    expect(add).toHaveBeenCalledWith(7, 'Chart');
+    expect(add).toHaveBeenCalledWith(7, 'Chart', 'book-42');
   });
 
   it('deletes by id and returns a set no longer containing it', async () => {
     const remove = jest.spyOn(bookmarkStore, 'remove').mockResolvedValue();
     jest.spyOn(bookmarkStore, 'list').mockResolvedValue([row({ id: 'survivor' })]);
 
-    const { bookmarks } = await removeBookmark('victim');
+    const { bookmarks } = await removeBookmark('book-42', 'victim');
 
     expect(remove).toHaveBeenCalledWith('victim');
     expect(bookmarks.map((b) => b.id)).toEqual(['survivor']);
