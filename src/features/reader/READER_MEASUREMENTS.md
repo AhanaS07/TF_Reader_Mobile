@@ -99,11 +99,12 @@ another's stored package. `devFixturePath.test.ts` pins that.
 1. **Measure the SECOND launch.** The first one seeds: a synchronous whole-file read
    (`devContentSeed.ts:220`) plus an in-process encrypt (`:252`), which peaks higher than any warm
    open and is not what the EPUB numbers measured.
-2. **Do not tap the picker mid-run.** It offers four fixed tabs (`devFixtureOptions` in `App.tsx`):
-   `EPUB` and `PDF` are the ~3 KB bundled stand-ins, `Big EPUB` and `Big PDF` are the pushed books.
-   A stray tap on either of the first two switches you to a stand-in and the numbers stay plausible
-   while the book is wrong. Check the selected tab is the `Big` one before recording anything —
-   which is easier than it was when the pushed fixture was an unlabelled first row.
+2. **Do not tap back to the wrong row mid-run.** BookListScreen (`src/navigation/BookListScreen.tsx`)
+   lists four fixed rows: `EPUB` and `PDF` are the ~3 KB bundled stand-ins, `Big EPUB` and `Big PDF`
+   are the pushed books. A stray navigation to either of the first two opens a stand-in and the
+   numbers stay plausible while the book is wrong. Check the Reader route you navigated to is the
+   `Big` one before recording anything — which is easier than it was when the pushed fixture was an
+   unlabelled first row.
 3. **If you swap the fixture file while keeping the id**, clear the seed marker or you re-measure
    the previous book:
    `rm -f "$(xcrun simctl get_app_container booted com.taylorandfrancis.tfreader.dev data)/Documents/dev-seed-dev-fixture-pdf.version"`

@@ -20,8 +20,11 @@
 // chunkedAssetFetcher.ts's own per-chunk AbortControllers. A start() for book B while book A's
 // download is still in flight lets A keep running to completion in the background (still
 // writing to contentStore/downloadTable, consuming a real book-limit slot) with no UI trace.
-// Callers MUST prevent overlapping start() calls themselves until this is closed — see App.tsx's
-// disabled-while-downloading guard on its own Download button for the only caller today.
+// Callers MUST prevent overlapping start() calls themselves until this is closed — see
+// `src/navigation/BookListScreen.tsx`'s disabled-while-downloading guard on each fixture row's own
+// Download button (one `useDownloadProgress()` instance per row, so this only prevents overlap
+// WITHIN a single row's own start() calls, not across rows — moved here from App.tsx's single
+// button when RootNavigator replaced its picker).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 

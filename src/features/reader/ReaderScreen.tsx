@@ -3,8 +3,8 @@
 // The reader screen: WebView + Prev/Next/Contents controls + a visible error
 // banner, reading decrypted bytes through the ContentProvider seam.
 //
-// Colours are inline for the same reason App.tsx's are: src/theme/ has not landed
-// yet. Replace with tokens when it does.
+// Colours are inline for the same reason the navigation screens' (src/navigation/) are: src/theme/
+// has not landed yet. Replace with tokens when it does.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -149,7 +149,10 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
  * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
  * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
  */
-async function buildAppearanceWithFont(prefs: SharedPrefs, env: AppearanceEnv): Promise<ReaderAppearance> {
+async function buildAppearanceWithFont(
+  prefs: SharedPrefs,
+  env: AppearanceEnv,
+): Promise<ReaderAppearance> {
   const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
   return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
 }
@@ -172,13 +175,54 @@ interface ReaderScreenProps {
    * Contents button. Remounting resets all of it in one move, which is why this is a key
    * rather than a pile of resets in the effect below — React forbids those anyway
    * (`react-hooks/set-state-in-effect`), and it is the wrong idiom for "reset on prop
-   * change". A navigator gives each route its own instance and satisfies this for free;
-   * App.tsx's temporary dev picker has to do it by hand.
+   * change". `src/navigation/RootNavigator.tsx` has now landed, and a navigator gives each route
+   * its own instance for free on a genuinely new push — `ReaderRouteScreen.tsx` still passes this
+   * key explicitly as defense-in-depth (a `navigate('Reader', ...)` to an already-mounted Reader
+   * screen would otherwise reuse the instance rather than remount it).
    */
   bookId: BookId;
+
+  /**
+   * Where to `goTo` once, right after this open's first `rendered` — the resume half of session
+   * progress (`sessionProgress.ts`). Read ONCE, at mount: this component is already keyed on
+   * `bookId` (see above), so a genuinely new target means a remount, not a prop change on a live
+   * instance. Omit it and the book opens at its normal default location, same as before this prop
+   * existed.
+   *
+   * NOT this component's concern to source or persist — same division as `onRelocated` below. A
+   * caller (`ReaderRouteScreen.tsx`) reads `sessionProgress.getSessionPosition` and converts it via
+   * `targetFromPosition`; this file just knows how to seek once, having no opinion on where the
+   * target came from.
+   */
+  initialTarget?: ReaderTarget;
+
+  /**
+   * Mirrors every `relocated` position outward, so a caller can keep `sessionProgress` current
+   * without this component knowing that store exists. Fired from the SAME `relocated` branch that
+   * already updates local `position` state — additive, not a second subscription.
+   */
+  onRelocated?: (position: ReaderPosition) => void;
+
+  /**
+   * Rendered as the LAST child of the toolbar row (after Search and, when shown, TTS), so it lands
+   * rightmost — nearest the screen edge — with the built-in icons to its left, all in one row.
+   *
+   * A slot rather than this file importing `DevPreferencesMenu` directly: that component is
+   * `ReaderRouteScreen.tsx`'s temp scaffolding, not this screen's concern (see its own header
+   * note). It used to float as an absolutely-positioned overlay from that caller instead, which put
+   * it on TOP of this exact row rather than IN it — sharing the row's own flex layout is what
+   * guarantees the two can never overlap, on any format, without either file hard-coding the
+   * other's width.
+   */
+  toolbarExtra?: React.ReactNode;
 }
 
-export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
+export function ReaderScreen({
+  bookId,
+  initialTarget,
+  onRelocated,
+  toolbarExtra,
+}: ReaderScreenProps): React.JSX.Element {
   /**
    * The book's format and its matching shell — TAGGED WITH THE bookId THEY BELONG TO,
    * and set as ONE value so they can never disagree.
@@ -280,8 +324,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
    * `scrollEnabled` below can read it without an async round trip on every render.
    *
-   * The TOGGLE UI for this lives in `DevPreferencesMenu.tsx` (the temp hamburger prefs menu rendered
-   * alongside this screen from `App.tsx`) — this file only needs to know the CURRENT value, not
+   * The TOGGLE UI for this lives in `DevPreferencesMenu.tsx` (the temp hamburger prefs menu, floated
+   * over this screen's own body from `src/navigation/ReaderRouteScreen.tsx`) — this file only needs
+   * to know the CURRENT value, not
    * offer a second way to set it. Seeded from DEFAULT_PREFS.layout until the initial `getPrefs()`
    * below resolves, and kept current by the SAME `prefsStore.subscribe` effect that already
    * re-sends `applyAppearance` (trigger B) — this is additive to that effect, not a second
@@ -356,6 +401,25 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const openSentAtRef = useRef<number | null>(null);
 
   /**
+   * The resume target, read ONCE at mount (lazy initialiser) — see `initialTarget`'s own prop doc
+   * for why a prop change on a live instance is not a case this needs to handle. Cleared to null
+   * once sent, so a second `rendered` (there is at most one per mount, but nothing enforces that
+   * upstream) cannot re-seek.
+   */
+  const initialTargetRef = useRef<ReaderTarget | null>(initialTarget ?? null);
+
+  /**
+   * `onRelocated` mirrored into a ref for the same reason `appearanceEnvRef` is: `handleMessage`
+   * below is memoised with an empty dep array (its identity must stay stable across the whole
+   * lifetime — see its own note), so it reads the LATEST callback via a ref rather than closing over
+   * a stale one. Synced every render, same pattern as `appearanceEnvRef`.
+   */
+  const onRelocatedRef = useRef(onRelocated);
+  useEffect(() => {
+    onRelocatedRef.current = onRelocated;
+  });
+
+  /**
    * Covers the rendered book while the app is not frontmost.
    *
    * NOT cosmetic — this closes a measured leak. iOS writes a full-screen capture of the app into
@@ -415,7 +479,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    * fallback this failure leaves it at.
    */
   const applyAppearanceWith = useCallback(
-    async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
+    async (
+      sender: (command: ReaderCommand) => void,
+      env = appearanceEnvRef.current,
+    ): Promise<void> => {
       try {
         const prefs = await prefsStore.getPrefs();
         sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
@@ -538,7 +605,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           // rendered WebView. Checked rather than asserted because a non-null
           // assertion here would be a promise the type system cannot keep.
           if (format === null) {
-            raiseError('UNSUPPORTED_FORMAT', 'The reader became ready before its format was known.');
+            raiseError(
+              'UNSUPPORTED_FORMAT',
+              'The reader became ready before its format was known.',
+            );
             return;
           }
 
@@ -677,6 +747,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         // setSpokenRange, which only touches annotations — so this is the one call site needed,
         // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
         ttsProviderRef.current?.notifyRelocated();
+        onRelocatedRef.current?.(message.position);
         break;
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
@@ -720,6 +791,21 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     setShowSearch(false);
     send({ type: 'goTo', target });
   }, [send]);
+
+  /**
+   * Flush the resume target once, after the FIRST `rendered` — not merely once `send` exists,
+   * because a `goTo` before the rendition itself exists fails `NOT_READY` (both shells guard exactly
+   * that in their own `goTo`). In practice `send` is already non-null by the time `rendered` arrives
+   * (it is set synchronously in `handleReady`, before the awaited open-and-render sequence below it),
+   * so the `send === null` guard here is a belt-and-braces ordering check, not the expected path.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null) return;
+    const target = initialTargetRef.current;
+    if (target === null) return;
+    initialTargetRef.current = null;
+    send({ type: 'goTo', target });
+  }, [isRendered, send]);
 
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
@@ -861,7 +947,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // sitting over the WebView would block it. Also gated on every overlay that already claims full
   // priority over touches once visible, matching their own render conditions.
   const swipeEnabled =
-    send !== null && !showToc && !showSearch && !showTts && !isBusy && !isObscured &&
+    send !== null &&
+    !showToc &&
+    !showSearch &&
+    !showTts &&
+    !isBusy &&
+    !isObscured &&
     layoutPrefs.flow === 'paginated';
 
   // Prev/Next are BUTTON-driven, discrete-page-turn controls, and neither concept applies in
@@ -918,6 +1009,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             <Text style={styles.toolbarIcon}>🔊</Text>
           </Pressable>
         )}
+
+        {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
+            the rightmost item in the row rather than a floating overlay on top of it. */}
+        {toolbarExtra}
       </View>
 
       <View style={styles.viewer}>
@@ -1325,8 +1420,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
   viewer: { flex: 1 },
 
-  // Right-aligned so the icon falls under the thumb rather than next to App.tsx's
-  // temporary title. 44pt is the minimum comfortable touch target.
+  // Right-aligned so the icon falls under the thumb rather than next to the native-stack header's
+  // own title/back button above it. 44pt is the minimum comfortable touch target.
   toolbar: {
     flexDirection: 'row',
     justifyContent: 'flex-end',

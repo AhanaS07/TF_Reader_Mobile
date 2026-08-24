@@ -1,15 +1,25 @@
-// DevPreferencesMenu.tsx — TEMP, same status as App.tsx's fixture picker (see its own header note).
+// DevPreferencesMenu.tsx — TEMP, same status as src/navigation/BookListScreen.tsx's fixture list
+// (see its own header note).
 //
 // Replaces the earlier inline row of one-shot buttons in App.tsx with a hamburger ("☰") dropdown of
 // TOGGLES, so Reader's live `applyAppearance` re-apply path (READER_PREFS_APPLICATION.md §5,
-// triggers A/B) can be exercised without a real settings screen. Delete this file and its use in
-// App.tsx the moment Personalization (Vaishnavi) ships one — this is not that screen, and does not
-// preempt her ownership of src/features/personalization/.
+// triggers A/B) can be exercised without a real settings screen. Passed from
+// `src/navigation/ReaderRouteScreen.tsx` into ReaderScreen's `toolbarExtra` slot, landing as the
+// rightmost icon in ReaderScreen's own toolbar row, alongside Search/TTS. It used to be App.tsx's
+// own header row (back when App.tsx mounted ReaderScreen directly), then briefly the Reader
+// route's native-stack `headerRight` (clipped by react-native-screens' native header — dropdown
+// opened but rendered nothing), then a same-tree absolute overlay (landed on top of and ate touches
+// for the toolbar's own icons, since both anchored to the same corner). See `toolbarExtra`'s own
+// doc in ReaderScreen.tsx and `ReaderRouteScreen.tsx`'s header note for the full history. Delete
+// this file and its render site the moment Personalization (Vaishnavi) ships a real settings
+// screen — this is not that screen, and does not preempt her ownership of
+// src/features/personalization/.
 //
-// LIVE, NOT "ON RETURN": there is no navigation here — the menu is an overlay drawn on top of the
-// still-mounted ReaderScreen, so a toggle's effect is visible immediately through the SAME
-// prefsStore.subscribe() path ReaderScreen already wires up. "Apply when the user goes back to the
-// reader" falls out for free because the reader was never left.
+// LIVE, NOT "ON RETURN": while the Reader route is on screen, the menu is an overlay drawn on top
+// of the still-mounted ReaderScreen, so a toggle's effect is visible immediately through the SAME
+// prefsStore.subscribe() path ReaderScreen already wires up — "apply without leaving the reader"
+// falls out for free. Navigating back to BookList and into a different (or the same) book is a
+// fresh ReaderScreen instance regardless, same as any other prop-driven remount.
 //
 // TOGGLE SEMANTICS: re-pressing the ALREADY-ACTIVE option reverts that field to DEFAULT_PREFS,
 // rather than leaving it stuck once set — exactly the "click again to undo" behaviour asked for.
@@ -29,8 +39,8 @@
 // said as much ("a reflowable EPUB scales through fontSizePt instead, so the EPUB renderer may
 // ignore this"), and `epub.entry.ts` never reads `appearance.zoom` anywhere — it was already a
 // no-op there, just not one the menu admitted to. The Zoom section below is hidden whenever the
-// active book's format is `'EPUB'` (App.tsx passes it down from the fixture picker), rather than
-// left visible and inert: a control with nothing to control is worse than no control, the same
+// active book's format is `'EPUB'` (ReaderRouteScreen passes it down from the route's own params),
+// rather than left visible and inert: a control with nothing to control is worse than no control, the same
 // reasoning ReaderScreen already applies to the PDF-only page indicator. `zoom` stays in
 // `ReaderAppearance`/the bridge payload regardless — PDF still needs it, and it is one payload for
 // both renderers by design (see readerAppearance.ts's own header).
@@ -41,7 +51,7 @@
 // `ReaderAppearance` regardless — EPUB still needs them.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent } from 'react-native';
 
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
@@ -96,23 +106,48 @@ const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[
 ];
 
 /** Spreads the CURRENT layout group so changing `flow` can never silently reset `spread` (or the
- * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about. */
+ * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about.
+ * EXCEPT for the one combination below, where resetting the other field is deliberate, not a bug. */
+
+/**
+ * `flow: 'scrolled-doc'` plus `spread: 'double'` is not a state either renderer can honour: a
+ * double-page spread is a PAGINATED concept (two page boundaries side by side), and continuous
+ * scroll has no page boundaries to pair — epub.entry.ts's scrolled manager never reads
+ * `appearance.spread` at all, and pdf.entry.ts's `scrollMode` branch is the same. Rather than
+ * silently sending the WebView a combination it ignores half of, whichever field is ALREADY set
+ * gets reverted to its default the instant the OTHER one would create the conflict — the field just
+ * tapped always wins, since that is the choice the user is actively making right now — and an alert
+ * says so, so "why did my spread setting disappear" has an answer on screen instead of only in this
+ * comment.
+ */
+function warnScrolledDoubleSpreadConflict(revertedField: string, keptField: string): void {
+  Alert.alert(
+    'Layout updated',
+    `Scrolled flow doesn't support a double-page spread. ${revertedField} has been reset to its ` +
+      `default so ${keptField} could be applied.`,
+  );
+}
+
 function toggleFlow(current: SharedPrefs, flow: LayoutPrefs['flow']): PrefsPatch {
-  return {
-    layout: {
-      ...current.layout,
-      flow: current.layout.flow === flow ? DEFAULT_PREFS.layout.flow : flow,
-    },
-  };
+  const nextFlow = current.layout.flow === flow ? DEFAULT_PREFS.layout.flow : flow;
+
+  if (nextFlow === 'scrolled-doc' && current.layout.spread === 'double') {
+    warnScrolledDoubleSpreadConflict('Spread', 'Scrolled flow');
+    return { layout: { ...current.layout, flow: nextFlow, spread: DEFAULT_PREFS.layout.spread } };
+  }
+
+  return { layout: { ...current.layout, flow: nextFlow } };
 }
 
 function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): PrefsPatch {
-  return {
-    layout: {
-      ...current.layout,
-      spread: current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread,
-    },
-  };
+  const nextSpread = current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread;
+
+  if (nextSpread === 'double' && current.layout.flow === 'scrolled-doc') {
+    warnScrolledDoubleSpreadConflict('Flow', 'Double spread');
+    return { layout: { ...current.layout, spread: nextSpread, flow: DEFAULT_PREFS.layout.flow } };
+  }
+
+  return { layout: { ...current.layout, spread: nextSpread } };
 }
 
 /**
@@ -159,11 +194,14 @@ function ZoomSlider({
   // only changes on layout/rotation, and `value` only changes when THIS component's own onCommit
   // below fires, i.e. after a drag ends), the PanResponder's identity is stable for the lifetime of
   // any single gesture — recreating it mid-touch is what would risk dropping the gesture, not this.
-  const valueFromX = useCallback((x: number): number => {
-    if (trackWidth <= 0) return value;
-    const ratio = clamp(x / trackWidth, 0, 1);
-    return snapToZoomStep(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
-  }, [trackWidth, value]);
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToZoomStep(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
+    },
+    [trackWidth, value],
+  );
 
   const panResponder = useMemo(
     () =>
@@ -196,15 +234,14 @@ function ZoomSlider({
   return (
     <View>
       <Text style={styles.zoomValue}>{Math.round(displayValue * 100)}%</Text>
-      <View
-        style={styles.zoomTrack}
-        onLayout={handleTrackLayout}
-        {...panResponder.panHandlers}
-      >
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
         <View style={styles.zoomTrackBase} />
         <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
         <View
-          style={[styles.zoomThumb, { left: clamp(thumbLeft, -ZOOM_THUMB_SIZE / 2, trackWidth - ZOOM_THUMB_SIZE / 2) }]}
+          style={[
+            styles.zoomThumb,
+            { left: clamp(thumbLeft, -ZOOM_THUMB_SIZE / 2, trackWidth - ZOOM_THUMB_SIZE / 2) },
+          ]}
         />
       </View>
     </View>
@@ -241,11 +278,14 @@ function FontSizeSlider({
   const [trackWidth, setTrackWidth] = useState(0);
   const [dragValue, setDragValue] = useState<number | null>(null);
 
-  const valueFromX = useCallback((x: number): number => {
-    if (trackWidth <= 0) return value;
-    const ratio = clamp(x / trackWidth, 0, 1);
-    return snapToFontSizeStep(FONT_SIZE_MIN + ratio * (FONT_SIZE_MAX - FONT_SIZE_MIN));
-  }, [trackWidth, value]);
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToFontSizeStep(FONT_SIZE_MIN + ratio * (FONT_SIZE_MAX - FONT_SIZE_MIN));
+    },
+    [trackWidth, value],
+  );
 
   const panResponder = useMemo(
     () =>
@@ -272,23 +312,27 @@ function FontSizeSlider({
   }, []);
 
   const displayValue = dragValue ?? value;
-  const ratio = (clamp(displayValue, FONT_SIZE_MIN, FONT_SIZE_MAX) - FONT_SIZE_MIN) / (FONT_SIZE_MAX - FONT_SIZE_MIN);
+  const ratio =
+    (clamp(displayValue, FONT_SIZE_MIN, FONT_SIZE_MAX) - FONT_SIZE_MIN) /
+    (FONT_SIZE_MAX - FONT_SIZE_MIN);
   const thumbLeft = ratio * trackWidth - FONT_SIZE_THUMB_SIZE / 2;
 
   return (
     <View style={styles.fontSizeSlider}>
       <Text style={styles.zoomValue}>{Math.round(displayValue)}pt</Text>
-      <View
-        style={styles.zoomTrack}
-        onLayout={handleTrackLayout}
-        {...panResponder.panHandlers}
-      >
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
         <View style={styles.zoomTrackBase} />
         <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
         <View
           style={[
             styles.zoomThumb,
-            { left: clamp(thumbLeft, -FONT_SIZE_THUMB_SIZE / 2, trackWidth - FONT_SIZE_THUMB_SIZE / 2) },
+            {
+              left: clamp(
+                thumbLeft,
+                -FONT_SIZE_THUMB_SIZE / 2,
+                trackWidth - FONT_SIZE_THUMB_SIZE / 2,
+              ),
+            },
           ]}
         />
       </View>
@@ -298,8 +342,10 @@ function FontSizeSlider({
 
 export interface DevPreferencesMenuProps {
   /** The active book's format, so Zoom can be hidden for an EPUB — see the header note on why.
-   * Undefined only for the fallback fixture row (an id App.tsx does not recognise), in which case
-   * Zoom stays visible rather than guessing it should hide. */
+   * Optional only for callers with no format to hand; ReaderRouteScreen (the only render site)
+   * always has one, since it comes straight off the Reader route's own params — BookListScreen's
+   * fixture rows are never ambiguous about their own format. Undefined falls back to showing Zoom
+   * rather than guessing it should hide. */
   format?: ContentFormat;
 }
 
@@ -495,6 +541,11 @@ const styles = StyleSheet.create({
 
   // Floats over the reader — z-indexed above it and NOT part of the header's own layout flow, so
   // opening it never resizes the WebView underneath (which would re-paginate for no reason).
+  //
+  // RIGHT: this menu is rendered via ReaderScreen's `toolbarExtra` slot, the LAST (rightmost) child
+  // of a right-aligned (`justifyContent: 'flex-end'`) row — see that prop's own doc in
+  // ReaderScreen.tsx. `right: 0` opens the dropdown extending leftward from the button, staying
+  // on-screen regardless of how close to the edge the row packs it.
   dropdown: {
     position: 'absolute',
     top: 48,
