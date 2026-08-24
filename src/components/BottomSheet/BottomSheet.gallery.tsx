@@ -88,6 +88,7 @@ const styles = StyleSheet.create({
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
+    fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -95,6 +96,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -112,6 +114,7 @@ const styles = StyleSheet.create({
   },
   triggerLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.white,
@@ -122,12 +125,14 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
   },
   sheetBody: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
@@ -142,6 +147,7 @@ const styles = StyleSheet.create({
   },
   closeLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.textPrimary,

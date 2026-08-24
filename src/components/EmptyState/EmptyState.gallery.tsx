@@ -41,6 +41,7 @@ const styles = StyleSheet.create({
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
+    fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -48,6 +49,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,

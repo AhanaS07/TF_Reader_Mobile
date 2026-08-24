@@ -141,6 +141,7 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.textSecondary,
@@ -156,6 +157,7 @@ const styles = StyleSheet.create({
   },
   heading: {
     fontWeight: type.pageTitle.weight,
+    fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,

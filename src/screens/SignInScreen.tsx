@@ -156,6 +156,7 @@ const styles = StyleSheet.create({
   },
   heading: {
     fontWeight: typeScale.sectionHeader.weight,
+    fontFamily: typeScale.sectionHeader.fontFamily,
     fontSize: typeScale.sectionHeader.size,
     lineHeight: typeScale.sectionHeader.lineHeight,
     color: color.textPrimary,
@@ -169,6 +170,7 @@ const styles = StyleSheet.create({
   },
   institutionName: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
@@ -176,6 +178,7 @@ const styles = StyleSheet.create({
   },
   institutionMeta: {
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
@@ -187,6 +190,7 @@ const styles = StyleSheet.create({
   },
   cancelLabel: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textSecondary,

@@ -23,19 +23,14 @@ export default function CategoryCardGallery() {
         <CategoryCard title="Audiobooks" accent="navy" count={5} onPress={() => {}} />
       </View>
 
-      <Text style={styles.label}>{'accent="success"'}</Text>
+      <Text style={styles.label}>{'accent="blueDeep"'}</Text>
       <View style={styles.cardBox}>
-        <CategoryCard title="Open access" accent="success" count={30} onPress={() => {}} />
+        <CategoryCard title="Journals" accent="blueDeep" count={8} onPress={() => {}} />
       </View>
 
-      <Text style={styles.label}>{'accent="subscription"'}</Text>
+      <Text style={styles.label}>{'accent="blueBright"'}</Text>
       <View style={styles.cardBox}>
-        <CategoryCard title="Journals" accent="subscription" count={8} onPress={() => {}} />
-      </View>
-
-      <Text style={styles.label}>{'accent="elite"'}</Text>
-      <View style={styles.cardBox}>
-        <CategoryCard title="Elite collection" accent="elite" count={2} onPress={() => {}} />
+        <CategoryCard title="Open access" accent="blueBright" count={30} onPress={() => {}} />
       </View>
 
       <Text style={styles.label}>no accent — falls back to primary</Text>
@@ -55,7 +50,7 @@ export default function CategoryCardGallery() {
 
       <Text style={styles.label}>no count — title only, chevron still right-aligned</Text>
       <View style={styles.cardBox}>
-        <CategoryCard title="Browse all" accent="success" onPress={() => {}} />
+        <CategoryCard title="Browse all" accent="primary" onPress={() => {}} />
       </View>
 
       <Text style={styles.label}>no onPress — not a button, no chevron</Text>
@@ -68,17 +63,17 @@ export default function CategoryCardGallery() {
         <CategoryCard title="" state="loading" accent="navy" onPress={() => {}} />
       </View>
 
-      <Text style={styles.label}>long title — wraps to two lines</Text>
+      <Text style={styles.label}>long title — truncates to one line</Text>
       <View style={styles.cardBox}>
         <CategoryCard
           title="Environmental Policy and Sustainable Development"
-          accent="elite"
+          accent="navy"
           count={4}
           onPress={() => {}}
         />
       </View>
 
-      <Text style={styles.label}>the real strip — three cards side by side</Text>
+      <Text style={styles.label}>the real strip — the full accent cycle in order</Text>
       <View style={styles.strip}>
         <View style={styles.stripCard}>
           <CategoryCard title="eBooks" accent="primary" count={12} onPress={() => {}} />
@@ -87,7 +82,10 @@ export default function CategoryCardGallery() {
           <CategoryCard title="Audiobooks" accent="navy" count={5} onPress={() => {}} />
         </View>
         <View style={styles.stripCard}>
-          <CategoryCard title="Open access" accent="success" count={30} onPress={() => {}} />
+          <CategoryCard title="Open access" accent="blueBright" count={30} onPress={() => {}} />
+        </View>
+        <View style={styles.stripCard}>
+          <CategoryCard title="Journals" accent="blueDeep" count={8} onPress={() => {}} />
         </View>
       </View>
 
@@ -104,6 +102,7 @@ const styles = StyleSheet.create({
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
+    fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -111,6 +110,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,

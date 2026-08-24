@@ -80,6 +80,7 @@ const styles = StyleSheet.create({
     // makes a long title wrap inside the row instead of overflowing it.
     flex: 1,
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
@@ -93,6 +94,7 @@ const styles = StyleSheet.create({
     // The token meant for tappable text; the spec fixes the colour here and
     // leaves the size unstated.
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.primary,

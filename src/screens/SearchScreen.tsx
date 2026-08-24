@@ -75,7 +75,10 @@ const HELPER = 'Catalogue metadata only — this does not search inside books.';
 // block of colour. Cycled by INDEX, never chosen from the title — types.ts is
 // explicit that navigation is data, not code, and no shelf may be named in a
 // branch anywhere.
-const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'elite'];
+//
+// A ramp of blues. The status and access-tier colours that used to be in this
+// cycle are semantic — see the CategoryCard header.
+const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'blueBright'];
 
 // How the recogniser's lifecycle renders. `VoiceStatus` is the machine
 // (src/search/voiceState.ts); `VoiceOverlayState` is the four things the surface
@@ -456,6 +459,7 @@ const styles = StyleSheet.create({
   },
   helper: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -473,6 +477,7 @@ const styles = StyleSheet.create({
   },
   filterButtonLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.textPrimary,
@@ -488,6 +493,7 @@ const styles = StyleSheet.create({
   },
   recentHeading: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
@@ -499,12 +505,14 @@ const styles = StyleSheet.create({
   },
   recentRowLabel: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
   },
   note: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -530,12 +538,14 @@ const styles = StyleSheet.create({
   },
   browseHeading: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
   },
   message: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
@@ -551,6 +561,7 @@ const styles = StyleSheet.create({
   },
   action: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.primary,

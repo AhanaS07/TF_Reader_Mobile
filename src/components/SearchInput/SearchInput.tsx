@@ -202,6 +202,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,

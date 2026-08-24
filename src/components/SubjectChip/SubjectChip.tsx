@@ -105,6 +105,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.primary,

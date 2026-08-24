@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { color, space, type } from '@theme/tokens';
 
@@ -44,8 +44,8 @@ export default function TopAppBar({
   return (
     <View style={[styles.bar, { paddingTop: topInset }]}>
       <View style={styles.inner}>
-        {/* Left — back chevron or brand book icon */}
-        <View style={styles.leftSlot}>
+        {/* Left — back chevron + title on pushed screens, logo only on tab roots */}
+        <View style={[styles.leftSlot, !onBack && styles.leftSlotLogo]}>
           {onBack ? (
             <TouchableOpacity
               style={styles.iconBtn}
@@ -56,17 +56,18 @@ export default function TopAppBar({
               <Ionicons name="chevron-back" size={24} color={color.white} />
             </TouchableOpacity>
           ) : (
-            <Ionicons
-              name="book"
-              size={24}
-              color={color.white}
-              style={styles.brandIcon}
+            <Image
+              source={require('../../../assets/logo.png')}
+              style={styles.logo}
+              accessibilityLabel="Taylor & Francis"
             />
           )}
 
-          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
-            {title}
-          </Text>
+          {onBack && (
+            <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
+              {title}
+            </Text>
+          )}
         </View>
 
         {/* Right — search icon and/or action node */}
@@ -107,8 +108,14 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: space.sm,
   },
-  brandIcon: {
-    marginRight: space.sm,
+  leftSlotLogo: {
+    alignSelf: 'flex-end',
+    marginBottom: space.md,
+  },
+  logo: {
+    width: 150,
+    height: 36,
+    resizeMode: 'contain'
   },
   iconBtn: {
     padding: space.xs,
@@ -116,6 +123,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.white,

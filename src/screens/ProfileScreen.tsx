@@ -317,6 +317,7 @@ const styles = StyleSheet.create({
   // type scale moves.
   groupLabel: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,

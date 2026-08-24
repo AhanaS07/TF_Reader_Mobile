@@ -361,6 +361,7 @@ const styles = StyleSheet.create({
   },
   filterButtonLabel: {
     fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
     fontSize: typeScale.button.size,
     lineHeight: typeScale.button.lineHeight,
     color: color.textPrimary,
@@ -381,6 +382,7 @@ const styles = StyleSheet.create({
   count: {
     alignSelf: 'center',
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
@@ -392,6 +394,7 @@ const styles = StyleSheet.create({
   },
   loadMoreLabel: {
     fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
     fontSize: typeScale.button.size,
     lineHeight: typeScale.button.lineHeight,
     color: color.primary,

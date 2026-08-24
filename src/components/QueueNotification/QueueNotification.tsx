@@ -120,18 +120,21 @@ const styles = StyleSheet.create({
   },
   message: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
   },
   title: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
   },
   expiry: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.wait,

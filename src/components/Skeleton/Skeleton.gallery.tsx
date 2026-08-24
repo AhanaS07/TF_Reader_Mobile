@@ -33,6 +33,7 @@ const styles = StyleSheet.create({
   container: { padding: space.md, gap: space.sm },
   label: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,

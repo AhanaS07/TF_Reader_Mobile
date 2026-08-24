@@ -206,6 +206,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: type.pageTitle.weight,
+    fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -225,6 +226,7 @@ const styles = StyleSheet.create({
   },
   note: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -247,6 +249,7 @@ const styles = StyleSheet.create({
   },
   clearLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.textPrimary,
@@ -261,6 +264,7 @@ const styles = StyleSheet.create({
   },
   applyLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.white,

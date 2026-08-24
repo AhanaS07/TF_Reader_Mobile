@@ -63,6 +63,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
@@ -77,6 +78,7 @@ const styles = StyleSheet.create({
   },
   actionLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.primary,
