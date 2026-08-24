@@ -519,6 +519,40 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
+
+          <Text style={styles.sectionLabel}>TTS</Text>
+          <Text style={styles.hint}>
+            Toggle on, then re-enter the book for the listen button to appear.
+          </Text>
+          <View style={styles.row}>
+            {(['On', 'Off'] as const).map((label) => {
+              const active = label === 'On' ? prefs.accessibility.tts.enabled : !prefs.accessibility.tts.enabled;
+              return (
+                <Pressable
+                  key={label}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`TTS: ${label}${active ? ', selected' : ''}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs({
+                      accessibility: {
+                        ...prefs.accessibility,
+                        tts: {
+                          ...prefs.accessibility.tts,
+                          enabled: label === 'On',
+                        },
+                      },
+                    });
+                  }}
+                  style={[styles.toggle, active && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
       )}
     </View>
@@ -570,6 +604,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 6,
+  },
+  hint: {
+    fontSize: 11,
+    color: '#8a8a8a',
+    marginBottom: 8,
+    fontStyle: 'italic',
   },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
 

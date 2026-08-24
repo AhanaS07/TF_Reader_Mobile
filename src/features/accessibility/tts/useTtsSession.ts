@@ -131,7 +131,13 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
       if (opts?.clearHighlight !== false) clearHighlight();
-      void Tts.stop().catch(noop);
+      // Wrapped in try-catch because the native stop() takes a bool* parameter that can
+      // throw synchronously under the new-arch interop layer when called with undefined.
+      try {
+        void Tts.stop().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be stopped.
+      }
     }
 
     function speakSentence(sentence: TtsSentence, myGeneration: number): void {
@@ -288,7 +294,11 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
 
     pauseRef.current = () => {
       if (!PAUSE_RESUME_SUPPORTED) return;
-      void Tts.pause().catch(noop);
+      try {
+        void Tts.pause().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be paused.
+      }
     };
 
     stopRef.current = () => stopInternal();
@@ -324,7 +334,13 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
-      Tts.addListener('tts-error', handleTtsError),
+      // tts-error is Android-only — the iOS native module does not list it in
+      // supportedEvents, so subscribing on iOS triggers a "not supported" warning
+      // and the handler would never fire anyway. On iOS, synthesis failures surface
+      // as a tts-cancel event instead.
+      ...(Platform.OS === 'android'
+        ? [Tts.addListener('tts-error', handleTtsError)]
+        : []),
     ];
 
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
@@ -340,6 +356,13 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       // closed / revoked are terminal.
       stopInternal();
     });
+
+    // iOS defaults to SoloAmbient audio session, which obeys the hardware mute switch and
+    // routes speech to the receiver. "ignore" switches to Playback so TTS always produces
+    // audible output regardless of the mute switch position.
+    if (Platform.OS === 'ios') {
+      void Tts.setIgnoreSilentSwitch('ignore').catch(noop);
+    }
 
     void readSharedPrefs().then((shared) => {
       if (torn) return;
@@ -358,7 +381,11 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       unsubscribeInterrupted();
       generation += 1;
       clearHighlight();
-      void Tts.stop().catch(noop);
+      try {
+        void Tts.stop().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be stopped.
+      }
     };
   }, [provider]);
 

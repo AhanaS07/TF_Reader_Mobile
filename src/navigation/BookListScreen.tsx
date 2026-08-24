@@ -17,16 +17,20 @@
 // somewhere in the list. A list screen with real routes has no such concept — nothing is "active"
 // here, and Reader always opens exactly the bookId it was navigated to.
 //
-// PER-ROW DOWNLOAD BUTTONS, not one shared button keyed to "whichever fixture is selected" (as
-// App.tsx had): there is no single "selected" fixture on a list screen, so each row owns its own
-// `useDownloadProgress()` instance. Same network-path exerciser as before — see that hook's header
-// for what it does and does not do (no cancellation, no AbortController).
+// OPEN BUTTON FLOWS THROUGH openBook(): tapping a row first calls openBook() (the unified
+// STREAM-intent licence gate — checkLicense → fetch/store → openSession → decryptBook), which
+// stores an Elite (in-memory, canPersist:false) package that ReaderScreen's getBookBase64()
+// picks up. For already-downloaded books, openBook() short-circuits to the disk copy. If
+// openBook() fails (offline with no local copy, entitlement revoked, etc.), the error is shown
+// as an alert and the user stays on the list.
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
+import { openBook } from '@/features/download/openBook';
+import { DownloadFailure } from '@/features/download/errors';
 import {
   DEV_FIXTURE_EPUB_BOOK_ID,
   DEV_FIXTURE_PDF_BOOK_ID,
@@ -98,15 +102,28 @@ function FixtureRow({
 }
 
 export function BookListScreen({ navigation }: Props): React.JSX.Element {
+  const handleOpen = async (bookId: BookId, format: ContentFormat) => {
+    try {
+      // openBook() is the unified STREAM-intent licence gate: checkLicense → fetch/store →
+      // openSession → decryptBook. For already-downloaded books it short-circuits to the disk
+      // copy; for online books it streams into RAM as an Elite (canPersist:false) package that
+      // ReaderScreen's getBookBase64() picks up.
+      await openBook(bookId, format);
+      navigation.navigate('Reader', { bookId, format });
+    } catch (error) {
+      const message =
+        error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
+      Alert.alert('Cannot open book', message);
+    }
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {DEV_FIXTURES.map((fixture) => (
         <FixtureRow
           key={fixture.bookId}
           fixture={fixture}
-          onPress={() =>
-            navigation.navigate('Reader', { bookId: fixture.bookId, format: fixture.format })
-          }
+          onPress={() => handleOpen(fixture.bookId, fixture.format)}
         />
       ))}
 

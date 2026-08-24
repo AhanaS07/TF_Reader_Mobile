@@ -19,12 +19,18 @@
 
 import type { BookId, ContentFormat, ReadingSessionResponse, SignedLicence } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
-import { getPersistedLicenceStatus } from '../encryption/contentStore';
+import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
 import { verifyLicenceSignature } from '../encryption/licenceSignature';
 import { openReadingSession } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
+import { downloadStore } from '../sync/stores/downloadStore';
 
-const OPEN_ACCESS_LICENCE_EXPIRES_AT = '9999-12-31T23:59:59.000Z';
+// Far-future placeholder for `expiresAt` — covers both open-access (no real due date) and
+// subscription (no real due date from the backend, confirmed: `GET /api/v1/loans` returns
+// `dueAt: null` for every seeded loan). This will be replaced by a real date once the backend
+// publishes one; until then, the 4-day offline cap (computeOfflineLicenceExpiry) provides the
+// actual bound for previously-downloaded books.
+const FAR_FUTURE_PLACEHOLDER = '9999-12-31T23:59:59.000Z';
 
 // ── result types ──────────────────────────────────────────────────────────
 
@@ -59,19 +65,47 @@ function isGenuineNetworkError(error: DownloadFailure): boolean {
 
 // The real backend exposes no long-term loan due-date anywhere (confirmed: `GET /api/v1/loans`
 // returns `dueAt: null` for every seeded loan) — only the session's own ~5-minute `expiresAt`,
-// which must never gate an offline reopen weeks later (reading-session.ts's header). So every
-// synthesized licence gets the same far-future placeholder, for every `licenceModel`, until the
-// backend adds a real one. This is unresolved, not a design choice — see this file's header.
-function synthesiseLicence(session: ReadingSessionResponse, deviceKeyFingerprint: string): SignedLicence {
+// which must never gate an offline reopen weeks later (reading-session.ts's header). So the
+// server-shipped `expiresAt` on the synthesised licence is a far-future placeholder until the
+// backend adds a real one. The actual offline bound is computed separately by
+// `computeOfflineLicenceExpiry()` below — the licence is synthesised with the placeholder, and
+// the 4-day cap is applied at open-time, not at synthesis-time.
+function synthesiseLicence(
+  session: ReadingSessionResponse,
+  deviceKeyFingerprint: string,
+  intent: 'STREAM' | 'DOWNLOAD',
+): SignedLicence {
   return {
     licenceId: session.licenceId ?? session.sessionId,
     itemId: session.itemId,
     keyFingerprint: deviceKeyFingerprint,
-    expiresAt: OPEN_ACCESS_LICENCE_EXPIRES_AT,
+    expiresAt: FAR_FUTURE_PLACEHOLDER,
     canPersist: session.canPersist ?? true,
-    rights: { print: false },
+    rights: { print: intent === 'DOWNLOAD' },
     signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
   };
+}
+
+// 4-day offline licence cap: the maximum time a previously-downloaded book can be opened without
+// contacting the server. Computed at OPEN time (not at download time) as:
+//   min(now + 4 days, candidateExpiry)
+//
+// `candidateExpiry` is the licence's own `expiresAt` — a real due-date from the backend, once one
+// exists. Today it is always the FAR_FUTURE_PLACEHOLDER, so the result is always `now + 4 days`.
+// When the backend starts publishing real due dates, the cap naturally shortens to whichever
+// comes first: the server's own expiry, or 4 days from the last successful open.
+const OFFLINE_LICENCE_TTL_MS = 4 * 24 * 60 * 60 * 1000; // 4 days
+
+export function computeOfflineLicenceExpiry(candidateExpiry: string): Date {
+  const now = Date.now();
+  const candidateMs = new Date(candidateExpiry).getTime();
+  if (Number.isNaN(candidateMs)) {
+    // Malformed expiry — fall back to the 4-day window (fail-open on date parsing, fail-closed
+    // on the licence itself: the 4-day cap still applies).
+    return new Date(now + OFFLINE_LICENCE_TTL_MS);
+  }
+  const fourDaysFromNow = now + OFFLINE_LICENCE_TTL_MS;
+  return new Date(Math.min(fourDaysFromNow, candidateMs));
 }
 
 // ── main gate ─────────────────────────────────────────────────────────────
@@ -138,7 +172,7 @@ export async function checkLicense(
 
   // ── synthesise licence ────────────────────────────────────────────────────
 
-  const licence = synthesiseLicence(session, deviceKeyFingerprint);
+  const licence = synthesiseLicence(session, deviceKeyFingerprint, intent);
 
   // ── verify licence signature (stub — always true today) ──────────────────
 
@@ -161,12 +195,29 @@ export async function checkLicense(
  * Offline fallback — only produces a result for a PREVIOUSLY DOWNLOADED book.
  * A valid persisted licence already guarantees the content is on disk (licence and
  * content are written together by contentStore.store()).
+ *
+ * This function does TWO things the server would normally do:
+ * 1. Checks `is_valid` (the pull-based revocation signal) — if false, the entitlement has been
+ *    administratively revoked server-side, and the local copy must be invalidated (licence + BEK
+ *    destroyed, ciphertext left on disk). This is distinct from expiry: revocation is immediate
+ *    and discretionary; expiry is a natural lapse.
+ * 2. Applies the 4-day offline cap (`computeOfflineLicenceExpiry`) — even if the licence's own
+ *    `expiresAt` is a far-future placeholder, the offline window is bounded to 4 days from the
+ *    last successful open.
  */
 async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
-  const { licence, expired, downloaded } = await getPersistedLicenceStatus(bookId);
+  const { licence, expired, downloaded, revoked } = await getPersistedLicenceStatus(bookId);
 
   if (!downloaded) {
     return { ok: false, reason: DownloadError.OFFLINE_LICENSE_UNAVAILABLE };
+  }
+
+  // Post-revocation: the licence was stripped by invalidateLicence() on a previous open when
+  // the server signalled is_valid = false. Ciphertext is still on disk but the licence + BEK
+  // are gone — the book cannot be decrypted. A fresh online open with a valid licence can
+  // re-attach rights and re-wrap the BEK.
+  if (revoked) {
+    return { ok: false, reason: DownloadError.ENTITLEMENT_REVOKED };
   }
 
   // Open access persists with `licence: null` (no key material to protect) — a downloaded
@@ -179,11 +230,28 @@ async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
     return { ok: true, mode: 'open-access' };
   }
 
+  // Pull-based revocation check: is_valid is an advisory signal from the server's last pull.
+  // If false, the entitlement has been revoked — destroy licence + BEK locally, leaving the
+  // ciphertext on disk (a fresh online open with a new licence can re-encrypt the BEK).
+  const isValid = await downloadStore.isBookValid(bookId);
+  if (!isValid) {
+    await invalidateLicence(bookId);
+    return { ok: false, reason: DownloadError.ENTITLEMENT_REVOKED };
+  }
+
   if (!verifyLicenceSignature(licence)) {
     return { ok: false, reason: DownloadError.OFFLINE_LICENSE_UNAVAILABLE };
   }
 
   if (expired) {
+    return { ok: false, reason: DownloadError.ENTITLEMENT_EXPIRED };
+  }
+
+  // 4-day offline cap: even if the licence's own expiresAt is a far-future placeholder, the
+  // offline window is bounded. This is the only place the cap is applied — the synthesised
+  // licence carries the placeholder, and the real bound is checked here at open-time.
+  const offlineExpiry = computeOfflineLicenceExpiry(licence.expiresAt);
+  if (Date.now() >= offlineExpiry.getTime()) {
     return { ok: false, reason: DownloadError.ENTITLEMENT_EXPIRED };
   }
 

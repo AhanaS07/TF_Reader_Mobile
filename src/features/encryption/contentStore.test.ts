@@ -18,7 +18,7 @@ import { encrypt } from './aesGcm';
 import { NONCE_BYTES } from './cipherLayout';
 import { getBek, storeBek } from './keyStorage';
 import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
-import { contentStore, MAX_DECRYPTED_BYTES } from './contentStore';
+import { contentStore, invalidateLicence, getPersistedLicenceStatus, MAX_DECRYPTED_BYTES } from './contentStore';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
 
@@ -403,5 +403,117 @@ describe('contentStore — Elite (memory-only, canPersist: false)', () => {
 
     // And confirms no write side effect either: still nothing in the keychain for this book.
     await expect(getBek(bookId)).rejects.toThrow();
+  });
+});
+
+describe('contentStore — invalidateLicence (revocation without full destroy)', () => {
+  it('strips the licence and BEK but leaves ciphertext on disk', async () => {
+    const bookId = 'revoke-basic';
+    const key = randomKey();
+    const plaintext = plaintextOf(512, 'revocable content');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    await invalidateLicence(bookId);
+
+    // Ciphertext is still on disk — only the rights layer was stripped.
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+
+    // BEK is gone from the keychain.
+    await expect(getBek(bookId)).rejects.toThrow();
+  });
+
+  it('getPersistedLicenceStatus returns revoked:true after invalidation', async () => {
+    const bookId = 'revoke-status';
+    const key = randomKey();
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(256, 'status check'), key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    await invalidateLicence(bookId);
+
+    const status = await getPersistedLicenceStatus(bookId);
+    expect(status.downloaded).toBe(true);
+    expect(status.revoked).toBe(true);
+    expect(status.licence).toBeNull();
+  });
+
+  it('isAvailableOffline returns false for a revoked book', async () => {
+    const bookId = 'revoke-not-available';
+    const key = randomKey();
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(256, 'not available'), key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    await invalidateLicence(bookId);
+
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+  });
+
+  it('is idempotent — invalidating twice does not throw', async () => {
+    const bookId = 'revoke-idempotent';
+    const key = randomKey();
+    const pkg = await buildEncryptedPackage(bookId, plaintextOf(256, 'idempotent'), key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    await invalidateLicence(bookId);
+    await expect(invalidateLicence(bookId)).resolves.toBeUndefined();
+  });
+
+  it('does not affect a different book', async () => {
+    const bookA = 'revoke-isolated-a';
+    const bookB = 'revoke-isolated-b';
+    const key = randomKey();
+    const pkgA = await buildEncryptedPackage(bookA, plaintextOf(256, 'book A'), key);
+    const pkgB = await buildEncryptedPackage(bookB, plaintextOf(256, 'book B'), key);
+    await storeBek(bookA, key);
+    await storeBek(bookB, key);
+    await contentStore.store(pkgA);
+    await contentStore.store(pkgB);
+
+    await invalidateLicence(bookA);
+
+    expect(await contentStore.isAvailableOffline(bookA)).toBe(false);
+    expect(await contentStore.isAvailableOffline(bookB)).toBe(true);
+  });
+
+  it('does not strip licence for a genuinely open-access book (no encryption)', async () => {
+    const bookId = 'revoke-open-access';
+    const plaintext = plaintextOf(256, 'open access, no licence to revoke');
+    await contentStore.store(openAccessPackage(bookId, plaintext));
+
+    const statusBefore = await getPersistedLicenceStatus(bookId);
+    expect(statusBefore.downloaded).toBe(true);
+    expect(statusBefore.revoked).toBe(false);
+    expect(statusBefore.licence).toBeNull();
+
+    // invalidateLicence on a book with no meta.licence is a no-op (no BEK to delete, no
+    // licence to strip) — but it must not corrupt the persisted metadata.
+    await invalidateLicence(bookId);
+
+    const statusAfter = await getPersistedLicenceStatus(bookId);
+    expect(statusAfter.downloaded).toBe(true);
+    expect(statusAfter.revoked).toBe(false);
+    expect(statusAfter.licence).toBeNull();
+  });
+
+  it('decryptBook() after invalidateLicence() rejects with KEYSTORE_UNAVAILABLE', async () => {
+    const bookId = 'revoke-decrypt-fails';
+    const key = randomKey();
+    const plaintext = plaintextOf(512, 'cannot decrypt after revoke');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    await invalidateLicence(bookId);
+
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
+      code: ContentError.KEYSTORE_UNAVAILABLE,
+    });
   });
 });

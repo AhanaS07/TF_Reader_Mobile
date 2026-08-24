@@ -96,6 +96,12 @@ export enum DownloadError {
    * `contentStore.getPersistedLicenceStatus()` instead — this code is specifically the "no local
    * fallback available" case. */
   OFFLINE_LICENSE_UNAVAILABLE = 'OFFLINE_LICENSE_UNAVAILABLE',
+  /** 403 ENTITLEMENT_REVOKED — the entitlement has been administratively revoked (not merely
+   * expired). The server-side licence is void; the local copy must be invalidated. Distinct from
+   * ENTITLEMENT_EXPIRED: revocation is immediate and discretionary (a librarian pulled access back),
+   * whereas expiry is a natural lapse of a time-bounded grant. The offline fallback's `is_valid`
+   * check raises this on a pull-based revocation signal. */
+  ENTITLEMENT_REVOKED = 'ENTITLEMENT_REVOKED',
 }
 
 export class DownloadFailure extends Error {

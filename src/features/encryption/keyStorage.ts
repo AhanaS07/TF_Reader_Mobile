@@ -60,8 +60,9 @@ export async function getBek(bookId: string): Promise<Uint8Array> {
 }
 
 /**
- * Removes the stored BEK for `bookId` — e.g. when Sync's offline-lock signal fires
- * (ContentStore.destroy in the canonical contract) or the book is deleted locally.
+ * Removes the stored BEK for `bookId` — e.g. when the licence is invalidated on revocation
+ * (contentStore.invalidateLicence strips the BEK but leaves ciphertext on disk for potential
+ * re-download), when the book is deleted locally (contentStore.destroy), or on key rotation.
  *
  * @param bookId - which book's key to remove
  */

@@ -63,6 +63,10 @@ interface PersistedMeta {
   originalLength: number;
   mimeType: string;
   hasIndex: boolean;
+  /** Timestamp (ISO string) when `invalidateLicence()` stripped the licence + BEK. Present ONLY
+   *  for the post-revocation shape: ciphertext on disk, but no rights attached. Absent for both
+   *  genuine open-access (never had a licence) and regular persisted books (licence present). */
+  revokedAt?: string;
 }
 
 function writeFile(file: File, content: string | Uint8Array): void {
@@ -616,40 +620,98 @@ async function destroy(bookId: BookId): Promise<void> {
 }
 
 /**
- * Return the persisted licence and its expiry status for a previously-downloaded book. Used by the
- * unified license gate's offline fallback: when the network is unreachable, the caller needs to
- * know whether there is a valid local licence to read against, without fetching or decrypting
- * anything.
+ * Strip the licence and BEK for a previously-downloaded book, leaving the ciphertext on disk.
+ * REVERSIBLE — a fresh `store()` with a new `SignedLicence` re-attaches rights and the BEK can
+ * be re-unwrapped on the next open. Used by the offline fallback's revocation path: the server
+ * has signalled `is_valid = false`, so the local copy's rights are void, but the ciphertext
+ * stays so a later online open can re-attach a valid licence without re-downloading.
  *
- * `downloaded` distinguishes "never downloaded" from "downloaded, and licence is legitimately
- * null" — open-access books persist with `licence: null` (store()'s isElite() comment: "No licence
- * at all is open access, which DOES persist"), so `licence === null` alone can't tell the two
- * apart. A caller that treats every null licence as OFFLINE_LICENSE_UNAVAILABLE denies offline
- * access to a downloaded open-access book, which has content on disk and nothing to verify.
+ * This is NOT `destroy()` — destroy wipes everything (content + metadata + key), which is the
+ * terminal "book deleted" action. `invalidateLicence()` only strips the rights layer, leaving
+ * the encrypted payload for potential reuse.
+ */
+async function invalidateLicence(bookId: BookId): Promise<void> {
+  await close(bookId);
+
+  await deleteBek(bookId);
+
+  // Update meta.json to record the post-revocation shape: ciphertext still on disk, licence
+  // stripped. This lets getPersistedLicenceStatus() and isAvailableOffline() distinguish a
+  // revoked book (encrypted + no licence + revokedAt set) from genuine open-access (unencrypted
+  // + no licence + no revokedAt).
+  //
+  // No-op for genuinely open-access books (no encryption, no licence): there is nothing to
+  // revoke. Setting revokedAt on an open-access book would make getPersistedLicenceStatus()
+  // incorrectly report it as revoked, breaking the offline fallback's open-access branch.
+  const meta = metaFile(bookId);
+  if (meta.exists) {
+    const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+    if (!parsed.licence && !parsed.encryption) return; // open-access — nothing to revoke
+    const updated: PersistedMeta = {
+      ...parsed,
+      licence: null,
+      revokedAt: new Date().toISOString(),
+    };
+    writeFile(meta, JSON.stringify(updated));
+  }
+
+  packageCache.delete(bookId);
+}
+
+/**
+ * Return the persisted licence and its expiry/revocation status for a previously-downloaded book.
+ * Used by the unified license gate's offline fallback: when the network is unreachable, the
+ * caller needs to know whether there is a valid local licence to read against, without fetching
+ * or decrypting anything.
+ *
+ * Three distinct shapes:
+ * - `downloaded: false` — never downloaded (no meta.json)
+ * - `licence: null, downloaded: true, revoked: false` — genuine open-access (no encryption, no
+ *   licence needed; the content IS plaintext)
+ * - `licence: null, downloaded: true, revoked: true` — post-revocation: ciphertext on disk but
+ *   the licence + BEK were stripped by `invalidateLicence()`. Not readable.
+ * - `licence: present, expired: bool` — subscription/elite book with a real licence
  */
 export async function getPersistedLicenceStatus(
   bookId: BookId,
-): Promise<{ licence: SignedLicence | null; expired: boolean; downloaded: boolean }> {
+): Promise<{ licence: SignedLicence | null; expired: boolean; downloaded: boolean; revoked: boolean }> {
   const meta = metaFile(bookId);
-  if (!meta.exists) return { licence: null, expired: false, downloaded: false };
+  if (!meta.exists) return { licence: null, expired: false, downloaded: false, revoked: false };
 
   const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
-  if (!parsed.licence) return { licence: null, expired: false, downloaded: true };
+
+  // Post-revocation: licence was stripped by invalidateLicence(), ciphertext still on disk.
+  // Distinct from genuine open-access: this book WAS encrypted and had a licence, but the
+  // rights were revoked server-side.
+  if (parsed.revokedAt) {
+    return { licence: null, expired: false, downloaded: true, revoked: true };
+  }
+
+  if (!parsed.licence) {
+    return { licence: null, expired: false, downloaded: true, revoked: false };
+  }
 
   const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
   const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
-  return { licence: parsed.licence, expired, downloaded: true };
+  return { licence: parsed.licence, expired, downloaded: true, revoked: false };
 }
 
 /**
  * True iff ciphertext + a currently-valid wrapped key are ON DISK. Always false for Elite —
- * Elite never persists, so its metadata file never exists.
+ * Elite never persists, so its metadata file never exists. Also false for the post-revocation
+ * shape (licence stripped by invalidateLicence(), ciphertext still on disk) — the book has
+ * content but no rights to open it, so it is NOT "available offline" in any useful sense.
  */
 async function isAvailableOffline(bookId: BookId): Promise<boolean> {
   const meta = metaFile(bookId);
   if (!meta.exists) return false;
 
   const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+
+  // Post-revocation: licence stripped, ciphertext still on disk. Not available — the BEK is
+  // gone and there is no rights material to decrypt with.
+  if (parsed.revokedAt) return false;
+
   // Same fail-closed reasoning as isLicenceExpired() above (and the same reason this can't just
   // trust store() to have already validated the date): NaN must count as expired, not as
   // "never expires".
@@ -673,3 +735,7 @@ export const contentStore: ContentStore = {
 
 // Not part of the frozen ContentStore interface — see decryptSearchIndex's own doc comment.
 export { decryptSearchIndex };
+
+// Exported separately from the frozen `ContentStore` interface — see invalidateLicence's own
+// doc comment. Used by licenseCheck.ts's offline revocation path.
+export { invalidateLicence };

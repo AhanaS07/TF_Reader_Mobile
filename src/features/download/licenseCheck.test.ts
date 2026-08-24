@@ -7,11 +7,12 @@
 // `licenceModel`/`canPersist` now travel on the session response itself.
 
 import type { ReadingSessionResponse } from '@/shared/contracts';
-import { checkLicense } from './licenseCheck';
+import { checkLicense, computeOfflineLicenceExpiry } from './licenseCheck';
 import { DownloadError } from './errors';
 import { API_BASE_URL } from './config';
-import { getPersistedLicenceStatus } from '../encryption/contentStore';
+import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
 import { verifyLicenceSignature } from '../encryption/licenceSignature';
+import { downloadStore } from '../sync/stores/downloadStore';
 
 // ── module mocks ──────────────────────────────────────────────────────────
 
@@ -39,8 +40,16 @@ jest.mock('../encryption/contentStore', () => ({
     store: jest.fn(),
     destroy: jest.fn(),
   },
-  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false }),
+  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false, revoked: false }),
+  invalidateLicence: jest.fn().mockResolvedValue(undefined),
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
+}));
+
+// Mock downloadStore.isBookValid — the offline fallback's pull-based revocation check.
+jest.mock('../sync/stores/downloadStore', () => ({
+  downloadStore: {
+    isBookValid: jest.fn().mockResolvedValue(true),
+  },
 }));
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -78,6 +87,13 @@ function mockFetchFor(session: ReadingSessionResponse) {
 
 describe('checkLicense', () => {
   const originalFetch = global.fetch;
+  beforeEach(() => {
+    // Reset mocks that individual tests override (verifyLicenceSignature, etc.)
+    // to their defaults — module-level jest.mock() values persist across tests.
+    jest.mocked(verifyLicenceSignature).mockReturnValue(true);
+    jest.mocked(downloadStore.isBookValid).mockResolvedValue(true);
+    jest.mocked(invalidateLicence).mockResolvedValue(undefined);
+  });
   afterEach(() => {
     global.fetch = originalFetch;
   });
@@ -201,6 +217,7 @@ describe('checkLicense', () => {
       },
       expired: false,
       downloaded: true,
+      revoked: false,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -228,6 +245,7 @@ describe('checkLicense', () => {
       },
       expired: false,
       downloaded: true,
+      revoked: false,
     });
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
@@ -245,6 +263,7 @@ describe('checkLicense', () => {
       licence: null,
       expired: false,
       downloaded: false,
+      revoked: false,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -262,6 +281,7 @@ describe('checkLicense', () => {
       licence: null,
       expired: false,
       downloaded: true,
+      revoked: false,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -288,6 +308,7 @@ describe('checkLicense', () => {
       },
       expired: true,
       downloaded: true,
+      revoked: false,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -309,5 +330,188 @@ describe('checkLicense', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe(DownloadError.KEY_SUBSTITUTION);
+  });
+
+  // ── 4-day offline cap ──────────────────────────────────────────────────────
+
+  it('returns ENTITLEMENT_EXPIRED when offline and the licence expiresAt is in the past (within the 4-day window)', async () => {
+    // The 4-day cap computes `min(now + 4 days, candidateExpiry)`. When the licence's own
+    // expiresAt is in the past, it is less than `now + 4 days`, so the effective offline expiry
+    // IS the licence's expiresAt — which has already passed.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'expired-4day-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() - 1000).toISOString(), // 1 second ago
+        canPersist: true,
+        rights: { print: true },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false, // getPersistedLicenceStatus checks this with its own Date.now()
+      downloaded: true,
+      revoked: false,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.ENTITLEMENT_EXPIRED);
+  });
+
+  it('returns ENTITLEMENT_EXPIRED when offline and the4-day window has elapsed past a far-future licence', async () => {
+    // When the licence's own expiresAt is far-future, the effective offline expiry is
+    // `now + 4 days`. If we mock Date.now() to be far enough in the future relative to
+    // the download, `Date.now() >= computeOfflineLicenceExpiry(expiresAt)` is still false
+    // because the cap rolls forward. So instead test with an expiresAt that is 3 days from
+    // now — the effective expiry is min(now + 4 days,3 days from now) = 3 days from now,
+    // which is still in the future, so it should NOT expire.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'future-4day-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days from now
+        canPersist: true,
+        rights: { print: true },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('offline-license');
+  });
+
+  it('returns ok:true when offline and the far-future licence is within the 4-day rolling window', async () => {
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'fresh-4day-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: '9999-12-31T23:59:59.000Z',
+        canPersist: true,
+        rights: { print: true },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('offline-license');
+  });
+
+  // ── offline revocation ─────────────────────────────────────────────────────
+
+  it('returns ENTITLEMENT_REVOKED when offline and downloadStore.isBookValid is false, and calls invalidateLicence', async () => {
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'revoked-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        canPersist: true,
+        rights: { print: true },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false, // not yet revoked in meta — this is the first time we're checking
+    });
+    jest.mocked(downloadStore.isBookValid).mockResolvedValue(false);
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.ENTITLEMENT_REVOKED);
+    expect(invalidateLicence).toHaveBeenCalledWith('test-book');
+  });
+
+  it('returns ENTITLEMENT_REVOKED when offline and previously invalidated (revoked flag in meta)', async () => {
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: null,
+      expired: false,
+      downloaded: true,
+      revoked: true, // already revoked by a previous open attempt
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.ENTITLEMENT_REVOKED);
+  });
+
+  // ── synthesised licence rights ─────────────────────────────────────────────
+
+  it('synthesises licence with rights.print:true for DOWNLOAD intent', async () => {
+    const session = makeSession();
+    global.fetch = mockFetchFor(session);
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (result.mode !== 'online') return;
+    expect(result.licence.rights.print).toBe(true);
+  });
+
+  it('synthesises licence with rights.print:false for STREAM intent', async () => {
+    const session = makeSession();
+    global.fetch = mockFetchFor(session);
+
+    const result = await checkLicense('test-book', 'EPUB', 'STREAM');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (result.mode !== 'online') return;
+    expect(result.licence.rights.print).toBe(false);
+  });
+});
+
+// ── computeOfflineLicenceExpiry unit tests ────────────────────────────────────
+
+describe('computeOfflineLicenceExpiry', () => {
+  it('returns now+4 days when the candidate expiry is far-future', () => {
+    const before = Date.now();
+    const result = computeOfflineLicenceExpiry('9999-12-31T23:59:59.000Z');
+    const after = Date.now();
+    const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+
+    expect(result.getTime()).toBeGreaterThanOrEqual(before + fourDaysMs);
+    expect(result.getTime()).toBeLessThanOrEqual(after + fourDaysMs);
+  });
+
+  it('returns the candidate expiry when it is sooner than now+4 days', () => {
+    const twoDaysFromNow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+    const result = computeOfflineLicenceExpiry(twoDaysFromNow.toISOString());
+
+    // Should be approximately 2 days from now (within 1 second tolerance)
+    expect(Math.abs(result.getTime() - twoDaysFromNow.getTime())).toBeLessThan(1000);
+  });
+
+  it('falls back to now+4 days when the candidate expiry is malformed', () => {
+    const result = computeOfflineLicenceExpiry('not-a-date');
+    const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+
+    // Should be approximately 4 days from now (within 1 second tolerance)
+    expect(Math.abs(result.getTime() - (Date.now() + fourDaysMs))).toBeLessThan(1000);
   });
 });

@@ -319,11 +319,13 @@ export async function downloadBook(
   }
 
   // Synthesized locally by checkLicense() — the real response has no `licence` field at all (see
-  // reading-session.ts's header). `expiresAt` comes from the LOAN's `dueAt` (the real multi-week
-  // offline-reopen window), not from the session's own ~5-minute `expiresAt`. `signature` has no
-  // real-backend counterpart; contentStore.ts doesn't verify RS256 today regardless (a
-  // pre-existing, documented gap — this placeholder doesn't create a new one). Licence is now
-  // shared with openBook.ts (via licenseCheck.ts) — synthesis happens once, here, not twice.
+  // reading-session.ts's header). `expiresAt` is a far-future placeholder today (the real backend
+  // has no loan due-date — `GET /api/v1/loans` returns `dueAt: null`); the actual offline bound
+  // is the 4-day cap applied by `computeOfflineLicenceExpiry()` at open-time, not at synthesis-
+  // time. `signature` has no real-backend counterpart; contentStore.ts doesn't verify RS256 today
+  // regardless (a pre-existing, documented gap — this placeholder doesn't create a new one).
+  // Licence is now shared with openBook.ts (via licenseCheck.ts) — synthesis happens once, here,
+  // not twice.
 
   const pkg: EncryptedPackage = {
     bookId,

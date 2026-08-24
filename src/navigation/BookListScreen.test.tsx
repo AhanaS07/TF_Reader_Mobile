@@ -6,13 +6,18 @@
 // than a real NavigationContainer — this is a unit test of BookListScreen's own render/press
 // wiring, not an integration test of react-navigation itself.
 //
-// No mock needed for devContentSeed.ts's own imports (expo-asset, react-native-quick-crypto, the
-// encryption stack) — none of it runs at import time, only inside ensureSeeded(), which this test
-// never triggers (no row press reaches ReaderScreen here).
+// openBook() is mocked to succeed immediately — it is the STREAM-intent licence gate that runs
+// BEFORE navigation; this test verifies that navigation happens AFTER it succeeds, not that
+// openBook itself works (that is licenseCheck.test.ts's job).
 
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { BookListScreen } from './BookListScreen';
+import { openBook } from '@/features/download/openBook';
+
+jest.mock('@/features/download/openBook', () => ({
+  openBook: jest.fn().mockResolvedValue(new Uint8Array()),
+}));
 
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
 function renderBookList(navigate: jest.Mock) {
@@ -25,6 +30,11 @@ function renderBookList(navigate: jest.Mock) {
 }
 
 describe('BookListScreen', () => {
+  beforeEach(() => {
+    jest.mocked(openBook).mockClear();
+    jest.mocked(openBook).mockResolvedValue(new Uint8Array());
+  });
+
   it('lists all four book fixtures plus the TTS demo', async () => {
     const { getByText } = await renderBookList(jest.fn());
 
@@ -41,16 +51,33 @@ describe('BookListScreen', () => {
     ['Big EPUB', 'dev-fixture-epub', 'EPUB'],
     ['Big PDF', 'dev-fixture-pdf', 'PDF'],
   ])(
-    'tapping %s navigates to Reader with { bookId: %s, format: %s }',
+    'tapping %s calls openBook then navigates to Reader with { bookId: %s, format: %s }',
     async (label, bookId, format) => {
       const navigate = jest.fn();
       const { getByText } = await renderBookList(navigate);
 
       fireEvent.press(getByText(label));
 
-      expect(navigate).toHaveBeenCalledWith('Reader', { bookId, format });
+      await waitFor(() => {
+        expect(openBook).toHaveBeenCalledWith(bookId, format);
+        expect(navigate).toHaveBeenCalledWith('Reader', { bookId, format });
+      });
     },
   );
+
+  it('does not navigate when openBook rejects', async () => {
+    jest.mocked(openBook).mockRejectedValueOnce(new Error('network error'));
+    const navigate = jest.fn();
+    const { getByText } = await renderBookList(navigate);
+
+    fireEvent.press(getByText('EPUB'));
+
+    // Give the async handler time to settle
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(openBook).toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
 
   it('tapping TTS Demo navigates to the TtsDemo route', async () => {
     const navigate = jest.fn();
