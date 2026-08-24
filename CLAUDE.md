@@ -247,8 +247,10 @@ table were taken before it landed. `READER_MEASUREMENTS.md` has the procedure.
 
 Caveat that must travel with these numbers: **simulator, dev build, and the simulator has no
 jetsam.** ~1.0 GB combined would be a likely foreground kill on a 2 GB device. Real-device
-confirmation is still outstanding. Also still unmeasured: the post-`closeBook` drop, which needs
-`RootNavigator` before anything can unmount `ReaderScreen`.
+confirmation is still outstanding. Also still unmeasured: the post-`closeBook` drop.
+`src/navigation/RootNavigator.tsx` has now landed (2026-08-23), and navigating BookList -> Reader ->
+back to BookList genuinely unmounts `ReaderScreen` (`ReaderRouteScreen.tsx`'s own instance, not a
+kept-alive one), so this measurement is no longer blocked — it just hasn't been taken yet.
 
 **Confirmed for PDF on 2026-08-18, and it makes this item's headline stronger rather than weaker.**
 The app-side cost is **8.66 MB of peak per MB of book, identical to three significant figures for
@@ -266,10 +268,15 @@ counted — are in `src/features/reader/READER_MEASUREMENTS.md`. Read that befor
 `src/features/download/downloadManager.ts` is that pass and has now landed, so this is closer than
 it reads.
 
-It has a **second** call site that is easy to miss: `App.tsx` imports `DEV_SAMPLE_BOOK_ID` from it
-to feed `<ReaderScreen bookId={...} />`, because there is no navigator yet to supply a real one.
-So deleting `devContentSeed.ts` is blocked on `RootNavigator` landing, and the temp wiring in
-`App.tsx` (header, styles, direct mount) goes at the same time — one removal, not two.
+It has a **second** call site that is easy to miss: `src/navigation/BookListScreen.tsx` imports
+`DEV_SAMPLE_EPUB_BOOK_ID`/`DEV_SAMPLE_PDF_BOOK_ID`/`DEV_FIXTURE_EPUB_BOOK_ID`/`DEV_FIXTURE_PDF_BOOK_ID`
+from it to build the fixture rows that route to `<ReaderScreen bookId={...} />`. This moved from
+`App.tsx` when `src/navigation/RootNavigator.tsx` landed (2026-08-23) — **but landing a navigator did
+not unblock this deletion**, and it was never going to: the blocker was always "no real book
+catalogue to list", not "no navigator to push a screen with". `BookListScreen` still lists the same
+four dev fixtures the old picker did, now as real routes instead of a state-swapped tab bar. Deleting
+`devContentSeed.ts` still needs a real library screen backed by an actual catalogue/download-listing
+API before `BookListScreen`'s fixture rows (and the temp wiring around them) can go.
 
 **`assets/reader/sample-plaintext.epub` is NO LONGER Reader's to delete alongside it.** This file
 used to say to remove both together. Since Vaishnavi's search extractor landed, that EPUB is a
@@ -309,7 +316,7 @@ fixture breaks the UI or a test, the boundary has leaked and that is the bug.
 when set, to load the large books in `samples/fixtures/` instead of the bundled samples (measurement
 scaffolding — Metro cannot `require()` an untracked 20 MB asset, and real content must never be
 committed). **One path per format since 2026-08-20**, so both are populated in the same run and
-App.tsx's picker offers four tabs; the older single `EXPO_PUBLIC_READER_FIXTURE_PATH`, scoped to
+`BookListScreen` offers four rows; the older single `EXPO_PUBLIC_READER_FIXTURE_PATH`, scoped to
 `EXPO_PUBLIC_READER_FORMAT`, still works so recorded runs reproduce. It all goes with the rest of the
 file.
 
@@ -340,15 +347,18 @@ dies with it.
 | 1 | `DEV_FIXTURE_EPUB_BOOK_ID` / `DEV_FIXTURE_PDF_BOOK_ID` and their `DEV_FIXTURES` entries |
 | 2 | `EXPO_PUBLIC_READER_FIXTURE_EPUB` / `_PDF` / `_PATH` and the `*_FIXTURE_PATH` consts they feed |
 | 3 | `src/features/reader/devFixturePath.test.ts` (it tests only the env-var crossings) |
-| 4 | `devFixtureOptions()` in `App.tsx`, with the rest of the temp picker |
+| 4 | the `DEV_FIXTURES` table in `src/navigation/BookListScreen.tsx`, with the rest of that screen |
 | 5 | whatever sits in `samples/fixtures/` — real content, gitignored, never committed |
 
-**The two `Big` tabs are the ones features get rolled out against, and the bundled pair is what gets
+**The two `Big` rows are the ones features get rolled out against, and the bundled pair is what gets
 deleted first.** That is the stated intent as of 2026-08-20: `EPUB`/`PDF` (the generated ~3 KB
 stand-ins) exist so the renderers are reachable with nothing pushed, and they retire once every
 feature has been exercised on the real books. Deleting them is NOT the same removal as the table
-above — `sample-plaintext.epub` is Search's fixture too (see that note), and the whole picker dies
-with `RootNavigator` regardless.
+above — `sample-plaintext.epub` is Search's fixture too (see that note). Nor does either removal
+happen automatically when a real library screen replaces `BookListScreen`: that replacement is what
+retires the `Big` rows (once every feature has been exercised on them) and, separately, is what
+finally unblocks deleting `devContentSeed.ts` itself (see this section's opening note) — landing
+`RootNavigator` did not do either, only a real catalogue behind it will.
 
 `READER_MEASUREMENTS.md` is **not** on that list. It records numbers and a procedure that outlive the
 fixture; what it needs then is a note saying how the books were loaded, not deletion. Neither is
@@ -391,6 +401,20 @@ code typed against the interface cannot reach them; if deleting the fake breaks 
 `src/features/reader/TTS_PROVIDER.md` is the source of truth for this seam — the decisions, the
 ownership boundary, the sequencing, and the open items. Read it before changing
 `readerTextProvider.ts`, and update it in the same change.
+
+## Session-only reading progress — not a Sync/Personalization concern
+
+`src/features/reader/sessionProgress.ts` is an in-memory `Map<BookId, ReaderPosition>`, written from
+`ReaderScreen`'s `onRelocated` prop and read by `src/navigation/ReaderRouteScreen.tsx` to resume a
+book at the position it was left at, as long as `BookListScreen -> Reader -> BookListScreen ->
+Reader` all happens within one app run. It is **not** durable: module state, gone on relaunch, on
+purpose — that is what "session" means here.
+
+**Do not confuse this with `progressStore.savePage()`/`savePosition()`** (Sync's side, referenced in
+`ReaderScreen.tsx`'s own note on its `position` state) — that is the durable, cross-device progress
+record, and writing it is deliberately Personalization/Sync's stage, not Reader's. This module solves
+a narrower, permanent-Reader-scaffolding problem: an in-app navigator with no durable-progress wiring
+behind it yet would otherwise always reopen a book at its start.
 
 ## Verifying a change
 

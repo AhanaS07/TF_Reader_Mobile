@@ -30,7 +30,9 @@ import {
   publish,
   type TFReaderApi,
 } from './bridge';
+import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
 import { flattenToc, type NavItem } from './epubOutline';
+import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import {
   baselineCss,
   cappedIndent,
@@ -73,8 +75,19 @@ let currentCss = '';
 let currentAppearance: ReaderAppearance | null = null;
 
 /** The last reported CFI, kept only to re-display the reading position after a live flow change —
- * the one appearance change that needs epub.js to re-layout rather than just re-style. */
+ * the one appearance change that needs epub.js to re-layout rather than just re-style. Also what
+ * `requestTtsSentence`'s `current(null)` resolves against: "wherever the reader actually is." */
 let lastCfi: string | null = null;
+
+/** The CFI `setSpokenRange` last painted, or null if nothing is currently highlighted. Kept so a
+ * flow-triggered rendition rebuild (a new `Annotations` store) can re-paint it, and so `setSpokenRange`
+ * itself can remove the previous range before adding the new one — the seam is stateless by design;
+ * this is the caller-side state it expects. */
+let currentSpokenCfi: string | null = null;
+
+const TTS_OWNER = 'tts';
+const TTS_SPOKEN_VARIANT = 'spoken';
+const TTS_SPOKEN_STYLES: Record<string, string> = { backgroundColor: 'rgba(255, 213, 0, 0.4)' };
 
 function currentTypography(): TypographyInput | undefined {
   if (!currentAppearance) return undefined;
@@ -394,6 +407,12 @@ const api: TFReaderApi<'openEpub'> = {
 
     void (async () => {
       try {
+        // A fresh book gets a fresh cache — a stale sectionCache/cfiIndex entry from whatever was
+        // open before would answer a request with someone else's CFIs. Also clears the highlight
+        // state: a spoken range painted into the previous rendition has nothing to be re-painted onto.
+        resetTtsState();
+        currentSpokenCfi = null;
+
         const buffer = base64ToArrayBuffer(base64);
         book = ePub();
 
@@ -496,6 +515,14 @@ const api: TFReaderApi<'openEpub'> = {
       rendition.destroy();
       createRendition()
         .display(cfi ?? undefined)
+        .then(() => {
+          // A fresh Rendition means a fresh Annotations store — the old highlight is gone with it.
+          // Re-paint rather than silently drop it; setSpokenRange's own remove-then-add would target
+          // the wrong (destroyed) rendition if called from here instead.
+          if (currentSpokenCfi !== null && rendition) {
+            highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+          }
+        })
         .catch((error: unknown) => {
           fail('NAVIGATION_FAILED', error);
         });
@@ -504,6 +531,58 @@ const api: TFReaderApi<'openEpub'> = {
 
     applyBaselineCss();
     rendition.spread(mapSpread(appearance.spread));
+  },
+
+  /**
+   * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
+   * async resolve work starts and used throughout it, rather than re-read from the module-locals —
+   * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
+   * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
+   * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
+   * per-book provider instance is what actually discards a stale reply, not this shell.
+   */
+  requestTtsSentence: ({ requestId, from, mode }) => {
+    const activeBook = book;
+    const activeRendition = rendition;
+
+    if (!activeBook || !activeRendition) {
+      post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
+      return;
+    }
+
+    void (async () => {
+      try {
+        const result =
+          mode === 'current'
+            ? await resolveCurrent(activeBook, activeRendition, from, lastCfi)
+            : await resolveNext(activeBook, activeRendition, from ?? '');
+        post({ type: 'ttsSentence', requestId, result });
+      } catch (error) {
+        post({
+          type: 'ttsSentence',
+          requestId,
+          result: { status: 'error', message: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    })();
+  },
+
+  /**
+   * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
+   * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
+   * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
+   * cannot be painted must not be able to interrupt speech, so this never posts a message and never
+   * throws out of the try.
+   */
+  setSpokenRange: (cfi) => {
+    try {
+      if (!rendition) return;
+      if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
+      currentSpokenCfi = cfi;
+      if (cfi !== null) highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+    } catch {
+      // Best-effort, per the interface's own contract — swallowed rather than reported.
+    }
   },
 };
 
