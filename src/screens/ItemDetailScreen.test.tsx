@@ -449,10 +449,14 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     expect(screen.queryByRole('button', { name: /table of contents/i })).toBeNull();
   });
 
-  // Price and Table of Contents are the same boxed, muted treatment as
-  // citation and the type label on screen 04; the format strip is
-  // deliberately not — see `FormatStrip`'s header comment.
-  it('boxes price and table of contents the same way as citation, but not the format strip', async () => {
+  // Price and Table of Contents are this screen's two unavailable elements, and
+  // the format strip is deliberately NOT one of them — see `FormatStrip`'s
+  // header comment. What this counts is the marker, not the shape: `variant`
+  // gives the three call sites across both screens the shape their own mockup
+  // draws (price a chip, Table of Contents a ruled row, screen 04's pair plain
+  // inline text), so the boxing is no longer what they have in common. Being
+  // muted and untappable is.
+  it('marks price and table of contents unavailable, but not the format strip', async () => {
     setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -697,11 +701,12 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
       ).toBeNull();
     });
 
-    // The mockup draws the tab row as plain text with a divider, not as chips.
-    // `unavailable-tag` is the boxed, bordered, opacity-dimmed wrapper citation
-    // and the type label use — if the five tab labels shared that treatment
-    // there would be seven of these on the screen, not two.
-    it('renders the tab labels without the boxed pill treatment citation and the type label use', async () => {
+    // The tab row is a gap too, but it is not marked one: the five labels are
+    // real and it is only their CONTENT that is missing, so the row is drawn as
+    // the mockup's plain scrolling strip with a divider. `unavailable-tag`
+    // marks the two elements that have nothing behind them at all — citation
+    // and the type label — so there are two of these on this screen, not seven.
+    it('marks citation and the type label unavailable, but not the five tab labels', async () => {
       await render(renderArticleContent(anArticleDetail(), jest.fn()));
 
       expect(screen.queryAllByTestId('unavailable-tag')).toHaveLength(2);

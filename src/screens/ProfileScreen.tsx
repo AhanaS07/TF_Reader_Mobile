@@ -37,7 +37,11 @@ type Nav = CompositeNavigationProp<
   NavigationProp<RootStackParamList>
 >;
 
-const SETTING_ICON_SIZE = 20;
+// Composed from the spacing scale rather than written as 20, so no bare number
+// reaches a style or a size prop (CONVENTIONS §5) — the same trick as
+// `HEIGHT = space.xl + space.md` in ActionButton. The value is unchanged; it is
+// now traceable to the scale.
+const SETTING_ICON_SIZE = space.md + space.xs;
 
 export default function ProfileScreen() {
   const navigation = useNavigation<Nav>();
@@ -73,7 +77,7 @@ export default function ProfileScreen() {
     // handset — the settings block, sign out and the dev entry cannot all fit.
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Institution</Text>
+        <Text style={styles.groupLabel}>Institution</Text>
         {selectedInstitution !== null ? (
           <>
             {/* Crest and name come from the store, and `InstitutionRow` already
@@ -114,7 +118,7 @@ export default function ProfileScreen() {
               declared dependency — a dependency decision, not this screen's. The
               row is drawn without the number rather than with an invented one. */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Settings</Text>
+        <Text style={styles.groupLabel}>Settings</Text>
         <ListRow
           title="Reading Preferences"
           subtitle="Font size, theme"
@@ -168,7 +172,7 @@ export default function ProfileScreen() {
           store, a selected institution is the only "signed in" the app has, and
           a Sign out on an empty profile would be a button that does nothing. */}
       {selectedInstitution !== null && (
-        <View style={styles.section}>
+        <View style={styles.signOut}>
           <ListRow title="Sign out" variant="destructive" onPress={handleSignOut} />
         </View>
       )}
@@ -191,7 +195,7 @@ export default function ProfileScreen() {
           Keshav's navigator, and an unreachable route ships no UI. */}
       {__DEV__ && (
         <View style={styles.dev}>
-          <Text style={styles.devLabel}>Developer</Text>
+          <Text style={styles.groupLabel}>Developer</Text>
           <ListRow
             title="State Gallery"
             subtitle="Every component, variant and state — dev builds only"
@@ -205,6 +209,19 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
+  // WHITE PAGE, TINTED ROWS — and this is a fix, not a preference. `ListRow`
+  // paints itself `color.surface`, and this page was painting itself
+  // `color.surface` too. That was invisible while `surface` was #F8F9FA, because
+  // near-white on near-white still reads as one continuous sheet and the
+  // hairlines did all the work. The brand palette makes `surface` #EBF0FF
+  // Cornflower Neutral, and identical-on-identical is now a settings list with
+  // no visible rows at all — see the emulator against the mockup.
+  //
+  // The page takes `white` and the rows keep `surface`, which is what tokens.ts
+  // already says `surface` is for: "cards, section backgrounds". The rows are
+  // the cards. The page showing through between the sections is what makes each
+  // group read as a group, so the section gaps below are load-bearing now
+  // rather than decorative.
   container: {
     flex: 1,
     backgroundColor: color.white,
@@ -215,18 +232,21 @@ const styles = StyleSheet.create({
   section: {
     marginTop: space.lg,
   },
-  sectionLabel: {
-    fontWeight: type.smallLabel.weight,
-    fontSize: type.smallLabel.size,
-    lineHeight: type.smallLabel.lineHeight,
-    color: color.textSecondary,
-    paddingHorizontal: space.md,
-    paddingBottom: space.xs,
+  // Sign out is not the sixth setting, and on a white page the gap is what says
+  // so. `xl` rather than the sections' `lg`, which is how far the mockup holds
+  // it off the list above it.
+  signOut: {
+    marginTop: space.xl,
   },
+  // The developer block sits further down again — it is not part of the settings
+  // list and should not look like one more group of it.
   dev: {
     marginTop: space.xl,
   },
-  devLabel: {
+  // One style for both group labels. These were two identical declarations,
+  // `sectionLabel` and `devLabel`, which is two places to edit the next time the
+  // type scale moves.
+  groupLabel: {
     fontWeight: type.smallLabel.weight,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
