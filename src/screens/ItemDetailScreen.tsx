@@ -533,7 +533,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   centre: {
     flex: 1,
@@ -625,7 +625,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: color.border,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   formatStripLabel: {
     fontWeight: typeScale.smallLabel.weight,
@@ -643,7 +643,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: color.border,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     opacity: 0.5,
   },
   unavailableTagLabel: {

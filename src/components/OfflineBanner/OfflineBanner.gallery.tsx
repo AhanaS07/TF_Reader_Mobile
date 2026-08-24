@@ -56,7 +56,7 @@ export default function OfflineBannerGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
@@ -79,7 +79,7 @@ const styles = StyleSheet.create({
     marginHorizontal: space.md,
     padding: space.xl,
     gap: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderWidth: 1,
     borderColor: color.border,
   },

@@ -37,7 +37,7 @@ export default function EmptyStateGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,

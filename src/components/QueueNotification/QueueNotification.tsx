@@ -113,7 +113,7 @@ const styles = StyleSheet.create({
   banner: {
     gap: space.sm,
     padding: space.md,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderWidth: 1,
     borderColor: color.wait,
     borderRadius: radius.card,

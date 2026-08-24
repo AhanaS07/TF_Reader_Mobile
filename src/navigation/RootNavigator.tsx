@@ -36,7 +36,7 @@ import type {
 } from './types';
 
 const styles = StyleSheet.create({
-  splash: { flex: 1, backgroundColor: color.surface },
+  splash: { flex: 1, backgroundColor: color.white },
 });
 
 // ─── Navigator instances ──────────────────────────────────────────────────────

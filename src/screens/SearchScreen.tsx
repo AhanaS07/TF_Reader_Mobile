@@ -446,7 +446,7 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
   },
   // SearchInput sets no outer margin of its own (CONVENTIONS §8), so the screen
   // laying it out provides the gutter.

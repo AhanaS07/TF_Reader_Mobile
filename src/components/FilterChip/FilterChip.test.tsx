@@ -52,7 +52,7 @@ describe('FilterChip appearance', () => {
   it('is neutral at rest rather than brand-coloured', async () => {
     await render(<FilterChip label="Books" onPress={() => {}} />);
 
-    expect(styleOf('filter-chip')).toMatchObject({ backgroundColor: color.surface });
+    expect(styleOf('filter-chip')).toMatchObject({ backgroundColor: color.white });
     expect(styleOf('filter-chip-label')).toMatchObject({ color: color.textPrimary });
   });
 

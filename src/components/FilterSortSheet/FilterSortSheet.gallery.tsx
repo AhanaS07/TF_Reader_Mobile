@@ -68,7 +68,7 @@ export default function FilterSortSheetGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
     fontWeight: type.button.weight,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
-    color: color.surface,
+    color: color.white,
   },
   spacer: { height: space.xl },
 });

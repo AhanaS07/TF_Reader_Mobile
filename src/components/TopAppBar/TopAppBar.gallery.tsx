@@ -24,7 +24,7 @@ export default function TopAppBarGallery() {
         title="Item Detail"
         onBack={() => {}}
         action={
-          <Ionicons name="ellipsis-vertical" size={22} color={color.surface} />
+          <Ionicons name="ellipsis-vertical" size={22} color={color.white} />
         }
       />
 
@@ -47,7 +47,7 @@ export default function TopAppBarGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,

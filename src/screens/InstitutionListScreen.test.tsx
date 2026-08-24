@@ -207,6 +207,7 @@ describe('InstitutionListScreen offline cache — bug regressions', () => {
       async () => { throw new Error('network error'); },
     ));
 
+
     await render(<InstitutionListScreen />);
 
     await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());

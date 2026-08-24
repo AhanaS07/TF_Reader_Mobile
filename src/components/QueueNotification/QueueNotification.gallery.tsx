@@ -152,7 +152,7 @@ export default function QueueNotificationGallery() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: color.surface },
+  page: { flex: 1, backgroundColor: color.white },
   content: { paddingHorizontal: space.md, paddingBottom: space.xl },
   heading: {
     fontWeight: type.pageTitle.weight,
@@ -172,7 +172,7 @@ const styles = StyleSheet.create({
   demo: {
     gap: space.sm,
     padding: space.md,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderWidth: 1,
     borderColor: color.border,
   },

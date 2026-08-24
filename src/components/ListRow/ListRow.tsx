@@ -107,7 +107,7 @@ const styles = StyleSheet.create({
     minHeight: ROW_HEIGHT,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    backgroundColor: color.surface,
+    backgroundColor: color.white,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: color.border,
     gap: space.sm,
