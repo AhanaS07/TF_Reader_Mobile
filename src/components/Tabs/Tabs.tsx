@@ -151,9 +151,9 @@ const styles = StyleSheet.create({
     color: color.primary,
   },
   labelSegmentedActive: {
-    // The near-white surface token, standing in for on-primary — there is no
-    // white in the palette and teal-on-teal would be unreadable.
-    color: color.surface,
+    // On-primary: the active segment is a filled primary pill, so the label
+    // takes white.
+    color: color.white,
   },
   underline: {
     // Full width of the label above it, which is what makes it read as a rule

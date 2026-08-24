@@ -130,7 +130,7 @@ export default function VoiceOverlay({
           accessibilityRole="button"
           accessibilityLabel="Cancel voice search"
         >
-          <Ionicons name="close" size={CLOSE_ICON_SIZE} color={color.surface} />
+          <Ionicons name="close" size={CLOSE_ICON_SIZE} color={color.white} />
         </Pressable>
 
         <Text testID="voice-overlay-title" style={styles.title}>
@@ -166,7 +166,7 @@ export default function VoiceOverlay({
           )}
 
           <View style={[styles.mic, state === 'error' && styles.micError]}>
-            <Ionicons name="mic" size={MIC_ICON_SIZE} color={color.surface} />
+            <Ionicons name="mic" size={MIC_ICON_SIZE} color={color.white} />
           </View>
         </View>
 
@@ -240,7 +240,7 @@ const styles = StyleSheet.create({
     fontWeight: type.pageTitle.weight,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
-    color: color.surface,
+    color: color.white,
     textAlign: 'center',
   },
   micArea: {
@@ -279,7 +279,7 @@ const styles = StyleSheet.create({
     fontWeight: type.sectionHeader.weight,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
-    color: color.surface,
+    color: color.white,
     textAlign: 'center',
   },
   error: {
@@ -310,18 +310,18 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: color.surface,
+    borderColor: color.white,
   },
   primaryLabel: {
     fontWeight: type.button.weight,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
-    color: color.surface,
+    color: color.white,
   },
   secondaryLabel: {
     fontWeight: type.button.weight,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
-    color: color.surface,
+    color: color.white,
   },
 });

@@ -90,8 +90,8 @@ describe('CategoryCard accent', () => {
   it('renders its text in the light token so it reads against the tint', async () => {
     await render(<CategoryCard title="eBooks" count={128} />);
 
-    expect(styleOf('category-card-title')).toMatchObject({ color: color.surface });
-    expect(styleOf('category-card-count')).toMatchObject({ color: color.surface });
+    expect(styleOf('category-card-title')).toMatchObject({ color: color.white });
+    expect(styleOf('category-card-count')).toMatchObject({ color: color.white });
   });
 });
 

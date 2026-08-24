@@ -170,7 +170,7 @@ describe('OfflineBanner tokens', () => {
   it('uses the light token for the message', async () => {
     await render(<OfflineBanner visible />);
 
-    expect(messageStyle(FALLBACK).color).toBe(color.surface);
+    expect(messageStyle(FALLBACK).color).toBe(color.white);
   });
 });
 

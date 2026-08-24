@@ -147,7 +147,7 @@ export default function ActionButton({
   // A spent action is not a failure, so it greys rather than dims: secondary
   // colour plus a tick, which reads as "this is finished" instead of "this is
   // broken". `disabled` uses opacity, which is a different signal on purpose.
-  const tint = done ? color.textSecondary : emphasis === 'filled' ? color.surface : color.primary;
+  const tint = done ? color.textSecondary : emphasis === 'filled' ? color.white : color.primary;
 
   return (
     <Pressable
