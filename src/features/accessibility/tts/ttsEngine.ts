@@ -31,6 +31,16 @@ export type { Voice, TtsError } from '@iternio/react-native-tts';
  * library's own exported `TtsEvents` type — that's why these are plain string literals
  * subscribed via `addListener` (inherited, untyped) rather than the library's typed
  * `addEventListener` wrapper, which would reject them at compile time.
+ *
+ * `tts-error` IS NOT SYMMETRIC ACROSS PLATFORMS, unlike everything else listed here. iOS's
+ * `supportedEvents` (ios/TextToSpeech/TextToSpeech.m) never declares or emits it —
+ * AVSpeechSynthesizerDelegate has no error callback for this library to wire it from — while
+ * Android's TextToSpeechModule emits it from UtteranceProgressListener.onError. Calling
+ * `addListener('tts-error', ...)` on iOS throws synchronously (RCTEventEmitter validates against
+ * `supportedEvents`), so `useTtsSession.ts` skips registering it on iOS rather than catching the
+ * throw — see the guard there for the consequence (iOS engine failures never surface as `'error'`
+ * status). Kept in this list regardless: it's still a real event Android emits, and the platform
+ * gap is documented at the one call site that has to know about it, not by removing it here.
  */
 export const TTS_EVENTS = [
   'tts-start',
