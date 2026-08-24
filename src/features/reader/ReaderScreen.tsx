@@ -676,8 +676,18 @@ export function ReaderScreen({
               sender({ type: 'openPdf', base64 });
               break;
             case 'AUDIO':
-              // Unreachable: getReaderHtmlUri already refused this format, so no
-              // WebView exists to be ready. Handled anyway so the switch is total.
+              // UNREACHABLE IN PRACTICE, TWICE OVER, AND KEPT ANYWAY — AUDIO PHASE 3.
+              // getReaderHtmlUri already refused this format before any WebView could exist to be
+              // ready (readerAssets.ts's READER_HTML_MODULES has no AUDIO entry), and — since
+              // Phase 3 — BookListScreen's onPress now routes AUDIO to the AudioPlayer route at
+              // tap time, so ReaderScreen never even mounts for an audio book on the path that
+              // matters. This case is a deliberate BACKSTOP, not stale leftovers: the switch is
+              // exhaustive on purpose (see the note above), and removing this arm would either
+              // reintroduce a non-exhaustive switch or force a `never`-typed default to somehow
+              // handle a real ContentFormat member. If some future caller ever DOES reach
+              // ReaderScreen with an audio bookId (a hand-built deep link, a bug in a future
+              // catalogue-driven routing decision), this is what stands between it and a blank
+              // WebView instead of an explicit, understandable error.
               raiseError(
                 'UNSUPPORTED_FORMAT',
                 `This book is ${format} content, which this reader cannot open yet.`,
