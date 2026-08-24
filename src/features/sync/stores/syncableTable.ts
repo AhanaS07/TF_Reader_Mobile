@@ -295,6 +295,12 @@ export function createSyncableTable<TRow extends RowShape>(
         );
         if (!merged.changed) return false;
 
+        // Outbox refresh for a preserved pending edit (merged.row.synced === 0) is deliberately
+        // NOT done here - see syncEngine.ts's pull(). This function is also called by
+        // serverHasDiverged() DURING an active push for this exact row, which already owns
+        // rebuilding the payload and clearing the outbox once send() succeeds; enqueuing here
+        // too would insert a second outbox row that push()'s own `outboxStore.remove([op.id])`
+        // (keyed on the ORIGINAL op's id) would never find and clean up.
         const { sql, values } = upsertSql(merged.row as unknown as TRow);
         await db.runAsync(sql, values);
         return true;
@@ -412,7 +418,11 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
   merged.updated_at = isAfter(incoming.updated_at, existing.updated_at)
     ? incoming.updated_at
     : existing.updated_at;
-  merged.synced = 1;
+  // NOT hard-coded to 1: if `existing` already had a pending local edit (synced: 0), that
+  // status survives the merge regardless of which individual fields the merge just adopted
+  // from the incoming record - the caller (`applyServerRecord`) is what refreshes the outbox
+  // payload so the pending edit and the newly-merged field travel together on the next push.
+  merged.synced = existing.synced;
   merged.server_updated_at = incoming.updated_at;
   return { row: merged as TRow, changed: true };
 }

@@ -106,11 +106,21 @@ function bookmarkRow(id: string, name: string, updatedAt: string): BookmarkRow {
   };
 }
 
+// pull() now only sweeps userBook-scoped collections (progress, bookmarks, highlights,
+// downloads) for books this device has a local `downloads` row for - see
+// downloadStore.downloadedBookIds(). This suite's dedicated test book needs one, or every pull
+// in this file would silently see nothing for it.
 async function resetLocalTables(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(
     `DELETE FROM outbox; DELETE FROM bookmarks; DELETE FROM highlights;
-     DELETE FROM progress; DELETE FROM personalization; DELETE FROM sync_metadata;`,
+     DELETE FROM progress; DELETE FROM personalization; DELETE FROM downloads;
+     DELETE FROM sync_metadata;`,
+  );
+  await db.runAsync(
+    `INSERT INTO downloads (id, user_id, book_id, format, status, is_valid, updated_at, is_deleted, synced)
+     VALUES ('dl-test-integration-book', ?, ?, 'EPUB', 'COMPLETED', 1, ?, 0, 1)`,
+    [USER_ID, BOOK_ID, new Date().toISOString()],
   );
 }
 

@@ -217,6 +217,63 @@ stay small; a dedicated query is the honest fix if that stops being true.
 
 ---
 
+## 7. `pull()` is now multi-book; the stores are now multi-book/multi-user CAPABLE, not yet USED that way
+
+`syncEngine.ts`'s `pull()` used to hard-code a single `BOOK_ID` for every userBook-scoped
+collection - the comment that used to sit on `pull()` called this out explicitly as a prototype
+limitation. **That loop is fixed now**: it pulls progress/bookmarks/highlights/downloads for
+*every* book this device has a local `downloads` row for (`downloadStore.downloadedBookIds()`),
+not one hard-coded id. A book only ever enters that list by being downloaded on this device first -
+`pull()` refreshes data for books already held, it does not discover new ones from the server.
+
+`bookmarkStore`, `highlightStore`, `progressStore`, and `downloadStore`'s convenience methods
+(`recordCompleted`/`list`/`currentForBook`/`isBookValid`/`setValidity`) now all accept optional
+`bookId`/`userId` parameters, defaulting to the hard-coded `BOOK_ID`/`USER_ID` constants - **every
+existing caller keeps identical behaviour**, nothing was required to change.
+
+**What this does NOT do, and whose call it is:** `readerBookmarks.ts`/`readerHighlights.ts`
+(Personalization, Vaishnavi) and whatever calls them in Reader do not pass a real `bookId` today -
+they were single-book all the way up before this, independently of Sync. Threading a real book id
+from Reader through Personalization's adapters into these now-capable Sync functions is needed
+before multi-book bookmarks/highlights actually work end-to-end; it's flagged here, not done, since
+it means changing files this table doesn't own.
+
+`personalizationStore`/`accessibilityStore` were deliberately left out of this - they're
+`SCOPE: 'user'`, singleton-per-user by contract, and the field-level merge work already changes
+enough about them in the same area without also touching their id derivation.
+
+---
+
+## 8. Pull-merge convergence bug: a preserved pending edit's outbox payload was going stale
+
+`mergeFieldLevel` (§ field-level merge, above) used to hard-code the merged row's `synced` flag to
+`1` on every successful merge - regardless of whether the row already had a genuine pending local
+edit (`synced: 0`) before the merge ran. Concretely: device has an unsynced `zoom` edit queued;
+a pull discovers a remote `theme` change from another device; the merge correctly keeps `zoom`
+local and adopts `theme` from remote - but then marked the row fully synced anyway. The outbox
+entry queued for the `zoom` edit still existed (this bug never touched the outbox table itself),
+but its payload was captured *before* the merge, so it did not carry the newly-adopted `theme`
+field. The next push would have sent that stale snapshot and **silently reverted `theme`** back
+to its pre-merge value - a real, if narrow, data-loss path.
+
+**Fix, two parts:**
+- `mergeFieldLevel` now sets `merged.synced = existing.synced` (preserve, not hard-code) - a row
+  that was already pending stays pending regardless of which individual fields the merge just
+  adopted from the incoming record.
+- `syncEngine.ts`'s `pull()` - **not** `applyServerRecord` itself - refreshes the outbox entry to
+  the merged payload whenever a merge leaves the row `synced: 0`. It has to live in `pull()`
+  specifically: `applyServerRecord` is also called by `serverHasDiverged` *during an active push*
+  for this same row, which already owns rebuilding the payload and clearing the outbox once
+  `send()` succeeds (see § field-level merge above) - enqueuing from inside `applyServerRecord`
+  too would insert a second outbox row that push's own `outboxStore.remove([op.id])` (keyed on the
+  original op's id) would never find, leaving an orphaned duplicate. Confirmed by a real test
+  failure when first attempted the other way.
+
+Scoped to `mergeFields` tables only (personalization, accessibility) - progress/bookmarks/
+highlights/downloads don't set `mergeFields`, so neither code path touches them.
+
+---
+
 ## Not your problem, but it will land on you
 
 | # | Item | Why it reaches Sync |
