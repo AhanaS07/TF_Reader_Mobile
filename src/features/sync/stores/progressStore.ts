@@ -18,14 +18,20 @@ export const progressTable = createSyncableTable<ProgressRow>({
 export const progressStore = {
   ...progressTable,
 
-  async current(): Promise<ProgressRow | null> {
+  /**
+   * `userId`/`bookId` default to the prototype's single hardcoded constants - every current
+   * caller gets identical behaviour to before. A caller that actually knows the signed-in user
+   * and/or the open book (multi-user/multi-book capable) should pass them explicitly instead of
+   * relying on the defaults.
+   */
+  async current(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<ProgressRow | null> {
     const db = await getDatabase();
     return db.getFirstAsync<ProgressRow>(
       `SELECT * FROM progress
         WHERE user_id = ? AND book_id = ? AND is_deleted = 0
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [USER_ID, BOOK_ID],
+      [userId, bookId],
     );
   },
 
@@ -43,13 +49,17 @@ export const progressStore = {
    * and each create their own, silently duplicating the one-row-per-book invariant this store
    * documents above.
    */
-  async savePosition(locator: Locator): Promise<ProgressRow> {
+  async savePosition(
+    locator: Locator,
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<ProgressRow> {
     return withWriteLock(async () => {
-      const existing = await this.current();
+      const existing = await this.current(userId, bookId);
       const row: ProgressRow = {
         id: existing?.id ?? newId(),
-        user_id: USER_ID,
-        book_id: BOOK_ID,
+        user_id: userId,
+        book_id: bookId,
         offset: locator.type === 'PDF' ? locator.page : (existing?.offset ?? 0),
         locator: JSON.stringify(locator),
         updated_at: nowIso(),
@@ -61,16 +71,16 @@ export const progressStore = {
   },
 
   /** Convenience for the PDF path, which addresses by page. */
-  savePage(page: number): Promise<ProgressRow> {
-    return this.savePosition({ type: 'PDF', page });
+  savePage(page: number, bookId: string = BOOK_ID, userId: string = USER_ID): Promise<ProgressRow> {
+    return this.savePosition({ type: 'PDF', page }, bookId, userId);
   },
 
   /**
    * The stored position, preferring the Locator and falling back to `offset` for rows written
    * before the column existed (where a PDF page is all there ever was).
    */
-  async currentLocator(): Promise<Locator | null> {
-    const row = await this.current();
+  async currentLocator(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<Locator | null> {
+    const row = await this.current(userId, bookId);
     if (!row) return null;
     if (row.locator) return JSON.parse(row.locator) as Locator;
     return { type: 'PDF', page: row.offset };

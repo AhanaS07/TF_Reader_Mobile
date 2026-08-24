@@ -64,13 +64,29 @@ async function resetTables(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(
     `DELETE FROM outbox; DELETE FROM progress; DELETE FROM downloads; DELETE FROM bookmarks;
-     DELETE FROM personalization; DELETE FROM sync_metadata;`,
+     DELETE FROM personalization; DELETE FROM accessibility; DELETE FROM sync_metadata;`,
+  );
+}
+
+/**
+ * pull() now only sweeps userBook-scoped collections (progress, bookmarks, highlights,
+ * downloads) for books this device has a local `downloads` row for - see
+ * downloadStore.downloadedBookIds(). Every test in this file exercises exactly BOOK, so it
+ * needs one to exist locally, same as the single hard-coded BOOK_ID implicitly guaranteed before.
+ */
+async function seedKnownBook(): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT INTO downloads (id, user_id, book_id, format, status, is_valid, updated_at, is_deleted, synced)
+     VALUES ('dl-book-001', ?, ?, 'EPUB', 'COMPLETED', 1, ?, 0, 1)`,
+    [USER, BOOK, SERVER_TIME],
   );
 }
 
 beforeEach(async () => {
   jest.clearAllMocks();
   await resetTables();
+  await seedKnownBook();
 
   // Default: nothing on the server. Individual tests override.
   mockApi.list.mockImplementation(() => ok([]) as any);
@@ -320,6 +336,107 @@ describe('field-merge push (personalization)', () => {
   });
 });
 
+describe('pull-merge convergence (personalization/accessibility)', () => {
+  // A pending local edit that push() did NOT resolve this run (simulated with a validation
+  // failure, so push() marks it FAILED and moves on rather than throwing and skipping pull()
+  // entirely) - the row stays synced: 0 into the pull phase, which is the scenario
+  // mergeFieldLevel's synced-preservation and pull()'s outbox-refresh both exist for.
+  it('pull-merge automatically queues a re-push carrying the complete merged state', async () => {
+    await personalizationStore.update({ zoom: 5 });
+    mockApi.create.mockRejectedValue(new ApiError('bad payload', 400));
+
+    mockApi.list.mockImplementation(
+      (path: string) =>
+        (path === 'personalization'
+          ? ok([
+              {
+                id: personalizationId(USER),
+                userId: USER,
+                theme: 'dark',
+                fontFamily: 'system',
+                customFontUri: null,
+                typographySize: 16,
+                typographyLineHeight: 1.5,
+                typographySpacing: 0,
+                typographyMargins: 16,
+                layoutFlow: 'paginated',
+                layoutSpread: 'single',
+                zoom: 1, // stale relative to our local edit - must NOT override it
+                updatedAt: '2026-08-25T00:00:00.000Z',
+                isDeleted: false,
+                fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+              },
+            ])
+          : ok([])) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.failed).toBe(1); // the doomed CREATE attempt
+    const row = await personalizationStore.current();
+    expect(row?.zoom).toBe(5); // local edit survived the merge
+    expect(row?.theme).toBe('dark'); // remote edit landed
+    expect(row?.synced).toBe(0); // NOT marked fully synced - see the ticket this closes
+
+    const [queued] = await outboxAll();
+    expect(queued).toBeDefined();
+    expect(queued.status).toBe('PENDING'); // fresh, not the old FAILED entry
+    const payload = JSON.parse(queued.payload);
+    expect(payload.zoom).toBe(5);
+    expect(payload.theme).toBe('dark');
+    expect(payload.fieldUpdatedAt.zoom).toBeDefined();
+    expect(payload.fieldUpdatedAt.theme).toBe('2026-08-25T00:00:00.000Z');
+  });
+
+  it("syncEngine.run() pushes the merged union to the server on the next attempt", async () => {
+    await personalizationStore.update({ zoom: 5 });
+    mockApi.create.mockRejectedValueOnce(new ApiError('bad payload', 400));
+    mockApi.list.mockImplementation(
+      (path: string) =>
+        (path === 'personalization'
+          ? ok([
+              {
+                id: personalizationId(USER),
+                userId: USER,
+                theme: 'dark',
+                fontFamily: 'system',
+                customFontUri: null,
+                typographySize: 16,
+                typographyLineHeight: 1.5,
+                typographySpacing: 0,
+                typographyMargins: 16,
+                layoutFlow: 'paginated',
+                layoutSpread: 'single',
+                zoom: 1,
+                updatedAt: '2026-08-25T00:00:00.000Z',
+                isDeleted: false,
+                fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+              },
+            ])
+          : ok([])) as any,
+    );
+    await syncEngine.run(); // first run: merge + queue the re-push (previous test's scenario)
+
+    // The re-queued op is an UPDATE - pull() discovering a record at this id means the document
+    // DOES exist server-side, regardless of this device's own earlier failed CREATE attempt.
+    let sentPayload: any = null;
+    mockApi.update.mockImplementation((_path, _id, body: any) => {
+      sentPayload = body;
+      return ok({ ...body, updatedAt: '2026-08-25T00:00:01.000Z' }) as any;
+    });
+    mockApi.list.mockImplementation(() => ok([]) as any); // nothing new on the second run
+
+    const report = await syncEngine.run();
+
+    expect(report.pushed).toBe(1);
+    expect(sentPayload).not.toBeNull();
+    expect(sentPayload.zoom).toBe(5);
+    expect(sentPayload.theme).toBe('dark');
+    expect(await outboxAll()).toHaveLength(0);
+    expect((await personalizationStore.current())?.synced).toBe(1);
+  });
+});
+
 describe('locator collision (bookmarks/highlights created independently on two devices)', () => {
   it('adopts the other device\'s document under its own id and discards this device\'s own row', async () => {
     const mine = await bookmarkStore.addForPage(42, 'my name for it');
@@ -404,6 +521,61 @@ describe('pull', () => {
   it('reads every one of the six collections', async () => {
     await syncEngine.run();
     expect(mockApi.list).toHaveBeenCalledTimes(6);
+  });
+
+  it('pulls userBook-scoped collections for EVERY book this device holds, not just one', async () => {
+    const BOOK2 = 'book-002';
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT INTO downloads (id, user_id, book_id, format, status, is_valid, updated_at, is_deleted, synced)
+       VALUES ('dl-book-002', ?, ?, 'EPUB', 'COMPLETED', 1, ?, 0, 1)`,
+      [USER, BOOK2, SERVER_TIME],
+    );
+
+    const bookIdsRequested: (string | undefined)[] = [];
+    mockApi.list.mockImplementation((path: string, params: any) => {
+      if (path !== 'bookmarks') return ok([]) as any;
+      bookIdsRequested.push(params.bookId);
+      return ok([
+        {
+          id: `bm-${params.bookId}`,
+          userId: USER,
+          bookId: params.bookId,
+          chapterId: 'ch-1',
+          locator: { type: 'PDF', page: 1 },
+          name: `bookmark for ${params.bookId}`,
+          createdAt: SERVER_TIME,
+          updatedAt: SERVER_TIME,
+          isDeleted: false,
+        },
+      ]) as any;
+    });
+
+    const report = await syncEngine.run();
+
+    expect(bookIdsRequested.sort()).toEqual([BOOK, BOOK2].sort());
+    expect(report.pulled).toBe(2); // one bookmark per book
+    expect((await bookmarkTable.findById(`bm-${BOOK}`))?.name).toBe(`bookmark for ${BOOK}`);
+    expect((await bookmarkTable.findById(`bm-${BOOK2}`))?.name).toBe(`bookmark for ${BOOK2}`);
+  });
+
+  it('pulls user-scoped collections (personalization, accessibility) exactly once, not per book', async () => {
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT INTO downloads (id, user_id, book_id, format, status, is_valid, updated_at, is_deleted, synced)
+       VALUES ('dl-book-002', ?, 'book-002', 'EPUB', 'COMPLETED', 1, ?, 0, 1)`,
+      [USER, SERVER_TIME],
+    );
+
+    let personalizationCalls = 0;
+    mockApi.list.mockImplementation((path: string) => {
+      if (path === 'personalization') personalizationCalls += 1;
+      return ok([]) as any;
+    });
+
+    await syncEngine.run();
+
+    expect(personalizationCalls).toBe(1);
   });
 
   it('does not advance the checkpoint when the pull fails', async () => {

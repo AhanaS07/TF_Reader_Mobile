@@ -14,21 +14,44 @@ export const bookmarkTable = createSyncableTable<BookmarkRow>({
 export const bookmarkStore = {
   ...bookmarkTable,
 
-  list(): Promise<BookmarkRow[]> {
-    return bookmarkTable.listActive(USER_ID, BOOK_ID);
+  /**
+   * `userId`/`bookId` default to the prototype's single hardcoded constants - every current
+   * caller gets identical behaviour to before. A caller that actually knows the signed-in user
+   * and/or the open book (multi-user/multi-book capable) should pass them explicitly instead of
+   * relying on the defaults.
+   */
+  list(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<BookmarkRow[]> {
+    return bookmarkTable.listActive(userId, bookId);
   },
 
   /**
    * PDF bookmarks use a page locator. chapter_id doubles as the human-facing
    * section id, which for this sample book is simply "page-N".
    */
-  addForPage(page: number, name?: string): Promise<BookmarkRow> {
-    return this.add({ type: 'PDF', page, offset: 0 }, `page-${page}`, name ?? `Page ${page}`);
+  addForPage(
+    page: number,
+    name?: string,
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<BookmarkRow> {
+    return this.add(
+      { type: 'PDF', page, offset: 0 },
+      `page-${page}`,
+      name ?? `Page ${page}`,
+      bookId,
+      userId,
+    );
   },
 
   /** EPUB bookmarks anchor by CFI - a reflowable book has no stable page number. */
-  addForCfi(cfi: string, chapterId?: string, name?: string): Promise<BookmarkRow> {
-    return this.add({ type: 'EPUB', cfi }, chapterId ?? null, name);
+  addForCfi(
+    cfi: string,
+    chapterId?: string,
+    name?: string,
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<BookmarkRow> {
+    return this.add({ type: 'EPUB', cfi }, chapterId ?? null, name, bookId, userId);
   },
 
   /**
@@ -41,6 +64,8 @@ export const bookmarkStore = {
     locator: Locator,
     chapterId: string | null,
     name?: string,
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
   ): Promise<BookmarkRow> {
     const locatorJson = JSON.stringify(locator);
 
@@ -49,15 +74,15 @@ export const bookmarkStore = {
       `SELECT * FROM bookmarks
         WHERE user_id = ? AND book_id = ? AND locator = ? AND is_deleted = 0
         LIMIT 1`,
-      [USER_ID, BOOK_ID, locatorJson],
+      [userId, bookId, locatorJson],
     );
     if (existing) return existing;
 
     const now = nowIso();
     const row: BookmarkRow = {
       id: newId(),
-      user_id: USER_ID,
-      book_id: BOOK_ID,
+      user_id: userId,
+      book_id: bookId,
       chapter_id: chapterId,
       locator: locatorJson,
       name: name ?? null,
