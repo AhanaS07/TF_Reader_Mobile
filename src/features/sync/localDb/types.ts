@@ -98,6 +98,8 @@ export interface PersonalizationRow extends LocalSyncFields {
   layout_flow: string;
   layout_spread: string;
   zoom: number;
+  /** JSON-encoded {@link Record}<field name, ISO timestamp> - see {@link PERSONALIZATION_MERGE_FIELDS}. */
+  field_updated_at: string;
 }
 
 export interface AccessibilityRow extends LocalSyncFields {
@@ -126,6 +128,8 @@ export interface AccessibilityRow extends LocalSyncFields {
    * this table used to be missing - so it could neither persist nor sync.
    */
   screen_reader_hints: number;
+  /** JSON-encoded {@link Record}<field name, ISO timestamp> - see {@link ACCESSIBILITY_MERGE_FIELDS}. */
+  field_updated_at: string;
 }
 
 export type OutboxOperation = 'CREATE' | 'UPDATE' | 'DELETE';

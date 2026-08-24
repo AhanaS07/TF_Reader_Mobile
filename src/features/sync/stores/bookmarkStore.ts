@@ -1,4 +1,4 @@
-import { newId, nowIso } from '../localDb/database';
+import { getDatabase, newId, nowIso } from '../localDb/database';
 import { bookmarkMapper } from '../localDb/mappers';
 import type { BookmarkRow, Locator } from '../localDb/types';
 import { BOOK_ID, USER_ID } from '../syncConfig';
@@ -31,18 +31,35 @@ export const bookmarkStore = {
     return this.add({ type: 'EPUB', cfi }, chapterId ?? null, name);
   },
 
+  /**
+   * Idempotent on `locator`: a device already holding an active bookmark at this exact
+   * position returns it unchanged rather than creating a second one - same reasoning as
+   * highlightStore.add(). `chapter_id` is not part of the match: it is metadata derived from
+   * the locator, not an independent identity, so matching on locator alone is sufficient.
+   */
   async add(
     locator: Locator,
     chapterId: string | null,
     name?: string,
   ): Promise<BookmarkRow> {
+    const locatorJson = JSON.stringify(locator);
+
+    const db = await getDatabase();
+    const existing = await db.getFirstAsync<BookmarkRow>(
+      `SELECT * FROM bookmarks
+        WHERE user_id = ? AND book_id = ? AND locator = ? AND is_deleted = 0
+        LIMIT 1`,
+      [USER_ID, BOOK_ID, locatorJson],
+    );
+    if (existing) return existing;
+
     const now = nowIso();
     const row: BookmarkRow = {
       id: newId(),
       user_id: USER_ID,
       book_id: BOOK_ID,
       chapter_id: chapterId,
-      locator: JSON.stringify(locator),
+      locator: locatorJson,
       name: name ?? null,
       created_at: now,
       updated_at: now,

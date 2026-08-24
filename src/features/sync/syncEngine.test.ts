@@ -8,6 +8,8 @@
 import { getDatabase } from './localDb/database';
 import { SYNC_KEYS } from './localDb/schema';
 import type { OutboxRow, ProgressRow } from './localDb/types';
+import { bookmarkStore, bookmarkTable } from './stores/bookmarkStore';
+import { personalizationId, personalizationStore, personalizationTable } from './stores/personalizationStore';
 import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
 import { api, ApiError } from './syncApi';
@@ -61,7 +63,8 @@ async function outboxAll(): Promise<OutboxRow[]> {
 async function resetTables(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(
-    `DELETE FROM outbox; DELETE FROM progress; DELETE FROM downloads; DELETE FROM sync_metadata;`,
+    `DELETE FROM outbox; DELETE FROM progress; DELETE FROM downloads; DELETE FROM bookmarks;
+     DELETE FROM personalization; DELETE FROM sync_metadata;`,
   );
 }
 
@@ -246,6 +249,130 @@ describe('push', () => {
     expect(mockApi.update).toHaveBeenCalledTimes(1);
     expect((await progressTable.findById('p-orphan'))?.offset).toBe(42);
     expect(await outboxAll()).toHaveLength(0);
+  });
+});
+
+describe('field-merge push (personalization)', () => {
+  function personalizationRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      id: personalizationId(USER),
+      userId: USER,
+      theme: 'light',
+      fontFamily: 'system',
+      customFontUri: null,
+      typographySize: 16,
+      typographyLineHeight: 1.5,
+      typographySpacing: 0,
+      typographyMargins: 16,
+      layoutFlow: 'paginated',
+      layoutSpread: 'single',
+      zoom: 1,
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      isDeleted: false,
+      fieldUpdatedAt: {},
+      ...overrides,
+    };
+  }
+
+  it('never drops the operation on a concurrent field, and sends both fields merged together', async () => {
+    // Baseline, as if already synced once.
+    await personalizationTable.applyServerRecord(personalizationRecord());
+
+    // Our own edit: zoom only.
+    await personalizationStore.update({ zoom: 2 });
+
+    // serverHasDiverged's pre-check finds someone else changed theme concurrently - a field we
+    // never touched locally.
+    mockApi.findById.mockImplementation(
+      () =>
+        ok(
+          personalizationRecord({
+            theme: 'dark',
+            updatedAt: '2026-08-25T00:00:00.000Z',
+            fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+          }),
+        ) as any,
+    );
+
+    let sentPayload: any = null;
+    mockApi.update.mockImplementation((_path, _id, body: any) => {
+      sentPayload = body;
+      return ok({ ...body, updatedAt: '2026-08-25T00:00:01.000Z' }) as any;
+    });
+
+    const report = await syncEngine.run();
+
+    // Not a resolved conflict: unlike a whole-row table, "the server won on one field" must not
+    // drop our whole pending edit - we still have our own field to push.
+    expect(report.conflicts).toBe(0);
+    expect(report.pushed).toBe(1);
+
+    // The payload actually sent carries BOTH fields - our own edit, and the concurrent one this
+    // push just merged in. Sending the pre-merge snapshot instead would have reverted theme back
+    // to 'light' the moment it landed.
+    expect(sentPayload.zoom).toBe(2);
+    expect(sentPayload.theme).toBe('dark');
+
+    const row = await personalizationStore.current();
+    expect(row?.zoom).toBe(2);
+    expect(row?.theme).toBe('dark');
+    expect(await outboxAll()).toHaveLength(0);
+  });
+});
+
+describe('locator collision (bookmarks/highlights created independently on two devices)', () => {
+  it('adopts the other device\'s document under its own id and discards this device\'s own row', async () => {
+    const mine = await bookmarkStore.addForPage(42, 'my name for it');
+
+    // The server already holds a DIFFERENT id for the exact same (userId, bookId, locator) -
+    // created by another device while this one was offline.
+    const theirs = {
+      id: 'their-id-not-mine',
+      userId: USER,
+      bookId: BOOK,
+      chapterId: 'page-42',
+      locator: { type: 'PDF', page: 42, offset: 0 },
+      name: 'their name for it',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      isDeleted: false,
+    };
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, { code: 'CODE_TAKEN', message: 'BOOKMARK_LOCATOR_DUPLICATION' }),
+    );
+    mockApi.list.mockImplementation(
+      (path: string) => (path === 'bookmarks' ? ok([theirs]) : ok([])) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.update).not.toHaveBeenCalled(); // never retried a PUT to our own, wrong, id
+    expect(await outboxAll()).toHaveLength(0); // not stuck retrying forever
+
+    expect(await bookmarkTable.findById(mine.id)).toBeNull(); // our own row is gone
+    const adopted = await bookmarkTable.findById('their-id-not-mine');
+    expect(adopted?.name).toBe('their name for it');
+    expect(await bookmarkStore.list()).toHaveLength(1); // no duplicate left behind
+  });
+
+  it('still falls back to PUT for an ordinary same-id retry (message does not match)', async () => {
+    const mine = await bookmarkStore.addForPage(42);
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, { code: 'CODE_TAKEN', message: `Bookmark '${mine.id}' already exists` }),
+    );
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...body, updatedAt: '2026-08-13T09:59:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(0);
+    expect(report.pushed).toBe(1);
+    expect(mockApi.update).toHaveBeenCalledWith('bookmarks', mine.id, expect.any(Object));
+    expect(await bookmarkTable.findById(mine.id)).not.toBeNull(); // our own row survives, unchanged id
   });
 });
 

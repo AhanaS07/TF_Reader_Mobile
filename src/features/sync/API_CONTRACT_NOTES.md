@@ -180,6 +180,43 @@ pattern applies here.
 
 ---
 
+## 6. Bookmark/highlight locator-duplication — a backend contract this client now depends on
+
+Two devices can each independently create a bookmark or highlight at the same position while both
+are offline - they mint different ids for what is semantically the same thing, and nothing catches
+it until both reach the server. `bookmarkStore.add()` / `highlightStore.add()` now pre-check local
+SQLite for an existing active row at the same locator (same-device duplicates, or a span already
+pulled from another device), but that cannot see a genuine concurrent create on a device that is
+*also* still offline - only the server can.
+
+**The backend contract this depends on:** a unique constraint on `(userId, bookId, locator)` for
+bookmarks and `(userId, bookId, startLocator, endLocator)` for highlights, rejecting the second
+`CREATE` with **409**, and distinguishing it from an ordinary same-id retry (a dropped-connection
+resend, which must keep succeeding via PUT) by the response body's `message` field:
+
+| `message` | Meaning | Client behaviour |
+| --- | --- | --- |
+| `"BOOKMARK_LOCATOR_DUPLICATION"` | Different id already occupies this locator | Adopt the existing document, discard this device's own id |
+| `"HIGHLIGHT_LOCATOR_DUPLICATION"` | Same, for highlights | Same |
+| anything else (e.g. `"Bookmark '<id>' already exists"`) | Same id, dropped-connection retry | Unchanged: PUT to our own id |
+
+`code` stays `CODE_TAKEN` / status `409` in both cases - **only `message` distinguishes them**, so
+if the backend ever changes that string, `syncEngine.ts`'s `LOCATOR_DUPLICATION_MESSAGES` set (and
+this table) have to change with it, in the same deploy.
+
+**Resolution, client-side (`syncEngine.ts`, `LocatorCollision`):** on the duplication message, the
+client does NOT retry under its own id - a PUT there would 404, since that id never existed
+server-side. Instead it lists the collection, finds the record matching its own locator, adopts
+that record under **its** id via the normal `applyServerRecord` path, and hard-deletes (no
+tombstone - nothing else has seen this id) its own local row. Counted as a resolved conflict, same
+as any other.
+
+**Not yet handled:** there is no "find by locator" endpoint, so resolution lists the whole
+collection and matches client-side (`findDuplicateRecord`). Fine while a book's bookmarks/highlights
+stay small; a dedicated query is the honest fix if that stops being true.
+
+---
+
 ## Not your problem, but it will land on you
 
 | # | Item | Why it reaches Sync |

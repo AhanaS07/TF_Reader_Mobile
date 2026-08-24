@@ -1,6 +1,7 @@
 import { getDatabase, nowIso } from '../localDb/database';
 import type { EntityType, OutboxOperation } from '../localDb/types';
 import { outboxStore } from './outboxStore';
+import { parseFieldTimestamps, stringifyFieldTimestamps } from './fieldTimestamps';
 
 interface SyncableTableOptions<TRow> {
   table: string;
@@ -9,6 +10,13 @@ interface SyncableTableOptions<TRow> {
   toServer: (row: TRow) => Record<string, unknown>;
   /** Maps a server record to a local row. */
   toRow: (record: any) => TRow;
+  /**
+   * Column names eligible for field-level merge, for a multi-field singleton row where two
+   * devices commonly edit different fields between syncs (personalization, accessibility).
+   * Omitted entirely for every other table, which keeps the original whole-row
+   * Last-Write-Wins behaviour byte-for-byte - this option is additive, not a replacement.
+   */
+  mergeFields?: readonly string[];
 }
 
 interface RowShape {
@@ -18,6 +26,10 @@ interface RowShape {
   synced: number;
   /** Base version for conflict detection - see {@link LocalSyncFields}. */
   server_updated_at?: string | null;
+}
+
+interface FieldMergeRowShape extends RowShape {
+  field_updated_at: string;
 }
 
 /**
@@ -106,7 +118,7 @@ export function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
 export function createSyncableTable<TRow extends RowShape>(
   options: SyncableTableOptions<TRow>,
 ) {
-  const { table, entityType, toServer, toRow } = options;
+  const { table, entityType, toServer, toRow, mergeFields } = options;
 
   const columnsOf = (row: TRow) => Object.keys(row) as (keyof TRow & string)[];
 
@@ -127,6 +139,21 @@ export function createSyncableTable<TRow extends RowShape>(
 
   return {
     entityType,
+
+    /** Set only for a field-merge table - see {@link SyncableTableOptions.mergeFields}. */
+    mergeFields,
+
+    /**
+     * Rebuilds the wire payload from a row currently on disk - see `push()`'s field-merge path.
+     *
+     * Takes `any`, not `TRow`, on purpose: every other method called across the heterogeneous
+     * `TABLES` map (`applyServerRecord`, `adoptPushResult`, ...) already takes `any` for the
+     * same reason - a parameter typed by the per-table generic breaks TypeScript's ability to
+     * treat `TABLES[op.entity_type]` as one clean union when calling across all six tables.
+     */
+    toServerPayload(row: any): Record<string, unknown> {
+      return toServer(row);
+    },
 
     /** Raw upsert with no outbox side effect. Used by the pull path. */
     async writeRow(row: TRow): Promise<void> {
@@ -195,6 +222,18 @@ export function createSyncableTable<TRow extends RowShape>(
       await this.saveLocal(tombstone as TRow, 'DELETE');
     },
 
+    /**
+     * Raw hard delete, no tombstone, no outbox entry. For a row that never actually reached the
+     * server under this id - a locally-generated duplicate whose CREATE lost to a server-side
+     * uniqueness constraint (see `syncEngine.ts`'s locator-collision handling). A tombstone would
+     * be wrong here: nothing else has ever seen this id, so there is nothing to propagate a
+     * delete to - the row simply should never have existed as a separate document.
+     */
+    async hardDeleteLocal(id: string): Promise<void> {
+      const db = await getDatabase();
+      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
+    },
+
     async findById(id: string): Promise<TRow | null> {
       const db = await getDatabase();
       return db.getFirstAsync<TRow>(`SELECT * FROM ${table} WHERE id = ?`, [id]);
@@ -233,10 +272,12 @@ export function createSyncableTable<TRow extends RowShape>(
     },
 
     /**
-     * PULL: apply a record the server sent us, using Last-Write-Wins.
+     * PULL: apply a record the server sent us.
      *
-     * A local row that is newer wins and is left alone - it still has an outbox
-     * entry waiting, so the server will catch up on the next push.
+     * Whole-row Last-Write-Wins by default: a local row that is newer wins and is left alone -
+     * it still has an outbox entry waiting, so the server will catch up on the next push.
+     *
+     * With `mergeFields` set, this instead merges field by field - see `mergeFieldLevel` below.
      */
     async applyServerRecord(record: any): Promise<boolean> {
       const db = await getDatabase();
@@ -245,6 +286,19 @@ export function createSyncableTable<TRow extends RowShape>(
         `SELECT * FROM ${table} WHERE id = ?`,
         [incoming.id],
       );
+
+      if (mergeFields) {
+        const merged = mergeFieldLevel(
+          existing as FieldMergeRowShape | null,
+          incoming as unknown as FieldMergeRowShape,
+          mergeFields,
+        );
+        if (!merged.changed) return false;
+
+        const { sql, values } = upsertSql(merged.row as unknown as TRow);
+        await db.runAsync(sql, values);
+        return true;
+      }
 
       if (existing && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
         return false;
@@ -286,6 +340,81 @@ export function createSyncableTable<TRow extends RowShape>(
       return true;
     },
   };
+}
+
+/**
+ * PULL / push-conflict merge for a field-merge table: each field keeps whichever side touched
+ * it most recently, instead of the newer ROW replacing the other wholesale.
+ *
+ * This is what fixes the whole-row-LWW failure mode for a multi-field singleton: device A
+ * changes theme, device B (still on an older base) changes font size and syncs later - under
+ * whole-row LWW, B's newer row would silently revert A's theme change even though the two
+ * edits never touched the same field. Comparing per field means each edit survives.
+ *
+ * Four cases per field, not one comparison, because the two sides can each independently have
+ * or lack an explicit stamp for it:
+ *
+ *   - BOTH stamped: compare the two field timestamps directly.
+ *   - Local stamped, remote not: remote's client never touched this field, so its value is
+ *     just whatever it was carrying already - it must not overwrite a knowingly-fresher local
+ *     edit just because the remote ROW happens to be newer for some unrelated reason.
+ *   - Remote stamped, local not: local never touched this field, so there is nothing local to
+ *     protect - but comparing against the row's own `updated_at` would be wrong, because that
+ *     bumps on every edit to ANY field, making an untouched field look "just changed" the
+ *     moment something else on the row is. Comparing against `server_updated_at` (the last
+ *     point this device is known to have agreed with the server) is stable across unrelated
+ *     local edits and answers the right question: "has the server told us something new about
+ *     this field since we last synced?"
+ *   - NEITHER stamped: the pre-migration case, or a field nothing has ever individually
+ *     touched on either side. Falls back to whole-row `updated_at` - exactly the original
+ *     whole-row LWW guard - which is why an upgraded row behaves identically to before until
+ *     something starts recording per-field times again.
+ */
+function mergeFieldLevel<TRow extends FieldMergeRowShape>(
+  existing: TRow | null,
+  incoming: TRow,
+  fields: readonly string[],
+): { row: TRow; changed: boolean } {
+  if (!existing) return { row: { ...incoming, synced: 1 }, changed: true };
+
+  const existingTimes = parseFieldTimestamps(existing.field_updated_at);
+  const incomingTimes = parseFieldTimestamps(incoming.field_updated_at);
+
+  const merged: any = { ...existing };
+  const mergedTimes: Record<string, string> = { ...existingTimes };
+  let changed = false;
+
+  for (const field of fields) {
+    const localTime = existingTimes[field];
+    const remoteTime = incomingTimes[field];
+
+    let remoteWins: boolean;
+    if (localTime !== undefined && remoteTime !== undefined) {
+      remoteWins = isAfter(remoteTime, localTime);
+    } else if (localTime !== undefined) {
+      remoteWins = false;
+    } else if (remoteTime !== undefined) {
+      remoteWins = isAfter(remoteTime, existing.server_updated_at ?? existing.updated_at);
+    } else {
+      remoteWins = isAfter(incoming.updated_at, existing.updated_at);
+    }
+
+    if (remoteWins) {
+      merged[field] = (incoming as any)[field];
+      mergedTimes[field] = remoteTime ?? incoming.updated_at;
+      changed = true;
+    }
+  }
+
+  if (!changed) return { row: existing, changed: false };
+
+  merged.field_updated_at = stringifyFieldTimestamps(mergedTimes);
+  merged.updated_at = isAfter(incoming.updated_at, existing.updated_at)
+    ? incoming.updated_at
+    : existing.updated_at;
+  merged.synced = 1;
+  merged.server_updated_at = incoming.updated_at;
+  return { row: merged as TRow, changed: true };
 }
 
 /**

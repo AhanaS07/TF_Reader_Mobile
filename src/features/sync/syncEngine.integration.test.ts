@@ -293,6 +293,7 @@ describe('push: personalization (singleton per user)', () => {
       updated_at: new Date().toISOString(),
       is_deleted: 0,
       synced: 0,
+      field_updated_at: '{}',
     };
     await personalizationTable.saveLocal(row, 'CREATE');
 

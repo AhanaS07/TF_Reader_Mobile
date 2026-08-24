@@ -257,6 +257,7 @@ describe('SharedPrefs merge', () => {
       updated_at: '2026-01-01T00:00:00.000Z',
       is_deleted: 0,
       synced: 1,
+      field_updated_at: '{}',
     } satisfies PersonalizationRow;
 
     const merged = mergeSharedPrefs(personalization, {
@@ -380,5 +381,6 @@ function accessibilityDefaultsRow(): AccessibilityRow {
     updated_at: '2026-01-01T00:00:00.000Z',
     is_deleted: 0,
     synced: 1,
+    field_updated_at: '{}',
   };
 }
