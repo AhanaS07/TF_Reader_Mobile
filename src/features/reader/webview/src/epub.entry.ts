@@ -30,15 +30,20 @@ import {
   publish,
   type TFReaderApi,
 } from './bridge';
+import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
 import { flattenToc, type NavItem } from './epubOutline';
+import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import {
   baselineCss,
+  cappedIndent,
   columnOverrideCss,
+  isExcessiveIndent,
   isForcedBreak,
   isMultiColumnCount,
   isPaginated,
   READER_FLOW,
   readerMetrics,
+  sanitizeFontDataUri,
   sanitizeFontFamily,
   type AppearanceCssOptions,
   type ReaderFlow,
@@ -70,8 +75,19 @@ let currentCss = '';
 let currentAppearance: ReaderAppearance | null = null;
 
 /** The last reported CFI, kept only to re-display the reading position after a live flow change —
- * the one appearance change that needs epub.js to re-layout rather than just re-style. */
+ * the one appearance change that needs epub.js to re-layout rather than just re-style. Also what
+ * `requestTtsSentence`'s `current(null)` resolves against: "wherever the reader actually is." */
 let lastCfi: string | null = null;
+
+/** The CFI `setSpokenRange` last painted, or null if nothing is currently highlighted. Kept so a
+ * flow-triggered rendition rebuild (a new `Annotations` store) can re-paint it, and so `setSpokenRange`
+ * itself can remove the previous range before adding the new one — the seam is stateless by design;
+ * this is the caller-side state it expects. */
+let currentSpokenCfi: string | null = null;
+
+const TTS_OWNER = 'tts';
+const TTS_SPOKEN_VARIANT = 'spoken';
+const TTS_SPOKEN_STYLES: Record<string, string> = { backgroundColor: 'rgba(255, 213, 0, 0.4)' };
 
 function currentTypography(): TypographyInput | undefined {
   if (!currentAppearance) return undefined;
@@ -88,12 +104,17 @@ function currentFlow(): ReaderFlow {
 
 function appearanceCssOptions(): AppearanceCssOptions {
   if (!currentAppearance) return {};
+  const fontFamily = sanitizeFontFamily(currentAppearance.fontFamily);
+  const fontFaceDataUri = sanitizeFontDataUri(currentAppearance.customFontUri);
   return {
     fg: currentAppearance.fg,
     bg: currentAppearance.bg,
     link: currentAppearance.link,
-    fontFamily: sanitizeFontFamily(currentAppearance.fontFamily),
+    fontFamily,
     letterSpacingPx: currentAppearance.letterSpacingPx,
+    // Only meaningful alongside a non-empty fontFamily — baselineCss's @font-face declares itself
+    // under that exact name, so a URI with nothing to attach it to is dropped rather than passed.
+    ...(fontFamily && fontFaceDataUri ? { fontFaceDataUri } : {}),
   };
 }
 
@@ -101,6 +122,22 @@ function appearanceCssOptions(): AppearanceCssOptions {
  * `minSpreadWidth` (800) on phone widths — expected, not a bug to chase. */
 function mapSpread(spread: ReaderAppearance['spread']): 'none' | 'auto' {
   return spread === 'double' ? 'auto' : 'none';
+}
+
+/**
+ * `flow` -> epub.js's MANAGER, which is a separate setting from flow and is NOT what `flow` alone
+ * controls.
+ *
+ * >>> WHY THIS EXISTS: epub.js's DEFAULT manager's 'scrolled' flow only scrolls WITHIN whichever
+ * ONE section is currently displayed — moving to the next chapter is still a discrete display()
+ * call, exactly like paginated mode, just without page breaks inside that one section. A short
+ * section (a cover, a title page) has nothing to scroll within, so continuous scroll looked
+ * completely inert on one. True cross-chapter continuous scroll is a DIFFERENT manager
+ * (`ContinuousViewManager`), which keeps several sections mounted and virtualises rendering as the
+ * user scrolls past them — this is what 'continuous' selects here. <<<
+ */
+function mapManager(flow: ReaderFlow): 'default' | 'continuous' {
+  return flow === 'paginated' ? 'default' : 'continuous';
 }
 
 /**
@@ -217,6 +254,39 @@ function applyAuthoredBreaks(doc: Document | null | undefined): number {
 }
 
 /**
+ * Cap an authored margin-left/margin-right that exceeds `MAX_INDENT_FRACTION` of the viewport, on
+ * any of the same block-level containers `applyAuthoredBreaks` already walks.
+ *
+ * FLOW-AGNOSTIC, unlike the break walk and the column override: this is about horizontal width,
+ * which is scarce in both paginated and scrolled-doc flow, so it runs regardless of `isPaginated()`.
+ *
+ * Reading the COMPUTED value rather than matching classes, for the same reason `applyAuthoredBreaks`
+ * does: these values arrive on Calibre-generated classes, so there is no selector worth guessing.
+ */
+function capExcessiveIndents(doc: Document | null | undefined, viewportWidthPx: number): void {
+  if (!doc?.body || !doc.defaultView) return;
+
+  const win = doc.defaultView;
+  const nodes = doc.body.querySelectorAll(BREAK_CANDIDATE_SELECTOR);
+  const limit = Math.min(nodes.length, MAX_BREAK_CANDIDATES);
+
+  for (let i = 0; i < limit; i++) {
+    const el = nodes[i] as HTMLElement;
+    const computed = win.getComputedStyle(el);
+
+    const marginLeft = Number.parseFloat(computed.marginLeft);
+    if (isExcessiveIndent(marginLeft, viewportWidthPx)) {
+      el.style.setProperty('margin-left', `${cappedIndent(viewportWidthPx)}px`, 'important');
+    }
+
+    const marginRight = Number.parseFloat(computed.marginRight);
+    if (isExcessiveIndent(marginRight, viewportWidthPx)) {
+      el.style.setProperty('margin-right', `${cappedIndent(viewportWidthPx)}px`, 'important');
+    }
+  }
+}
+
+/**
  * Does this chapter author its own multi-column CSS (e.g. `column-count: 2`), on the body or on
  * any of the same block-level containers `applyAuthoredBreaks` already walks?
  *
@@ -252,9 +322,63 @@ function hasAuthoredColumns(doc: Document | null | undefined): boolean {
  * nested column context is possible at all.
  */
 function finalCssFor(doc: Document | null | undefined): string {
-  return isPaginated() && hasAuthoredColumns(doc)
+  return isPaginated(currentFlow()) && hasAuthoredColumns(doc)
     ? `${currentCss}\n${columnOverrideCss()}`
     : currentCss;
+}
+
+/**
+ * Build a rendition against the current appearance's flow/spread, wire its handlers, and set it as
+ * THE rendition. Used both by `openEpub` (the first one) and by `applyAppearance` (to rebuild one
+ * when a flow change needs a different manager — see `mapManager`'s note).
+ *
+ * Order matters and mirrors the original inline version: `applyBaselineCss()` BEFORE the content
+ * hook is registered, so the first chapter loads already columnised — registering the hook first
+ * would flash UA-default styles before the first `resized`/reflow.
+ */
+function createRendition(): Rendition {
+  if (!book) throw new Error('createRendition() called before a book was opened');
+
+  rendition = book.renderTo('viewer', {
+    flow: currentFlow(),
+    manager: mapManager(currentFlow()),
+    // '100%' AS STRINGS, NOT NUMBERS — see the note this carried before extraction: Stage.onResize
+    // only attaches a window resize listener when width/height are NOT numeric (stage.js:147-153).
+    // Pinned by readerTemplate.test.ts.
+    width: '100%',
+    height: '100%',
+    spread: currentAppearance ? mapSpread(currentAppearance.spread) : 'none',
+  });
+
+  applyBaselineCss();
+
+  rendition.hooks.content.register((contents: Contents) => {
+    if (isPaginated(currentFlow())) applyAuthoredBreaks(contents.document);
+    capExcessiveIndents(contents.document, viewportSize().width);
+    insertStylesheet(contents, finalCssFor(contents.document));
+  });
+
+  // Rotation changes the type size AND the line-grid remainder, so a sheet built for portrait
+  // leaves sliced lines in landscape. epub.js already re-lays out and re-displays the current CFI
+  // on resize; this is the stylesheet half of it.
+  rendition.on('resized', () => {
+    applyBaselineCss();
+  });
+
+  rendition.on('relocated', (location: { start?: { cfi?: string }; atStart?: boolean; atEnd?: boolean }) => {
+    lastCfi = location?.start?.cfi ?? null;
+    post({
+      type: 'relocated',
+      // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
+      // the whole reason ReaderPosition is discriminated by format rather than carrying both shapes
+      // flat with one of them always null.
+      position: { kind: 'cfi', cfi: lastCfi },
+      atStart: !!location?.atStart,
+      atEnd: !!location?.atEnd,
+    });
+  });
+
+  return rendition;
 }
 
 const api: TFReaderApi<'openEpub'> = {
@@ -283,6 +407,12 @@ const api: TFReaderApi<'openEpub'> = {
 
     void (async () => {
       try {
+        // A fresh book gets a fresh cache — a stale sectionCache/cfiIndex entry from whatever was
+        // open before would answer a request with someone else's CFIs. Also clears the highlight
+        // state: a spoken range painted into the previous rendition has nothing to be re-painted onto.
+        resetTtsState();
+        currentSpokenCfi = null;
+
         const buffer = base64ToArrayBuffer(base64);
         book = ePub();
 
@@ -291,59 +421,14 @@ const api: TFReaderApi<'openEpub'> = {
         // instead of being silently re-detected as a URL.
         await book.open(buffer, 'binary');
 
-        rendition = book.renderTo('viewer', {
-          // The current appearance's flow/spread if applyAppearance already landed (the host sends
-          // it before openEpub), falling back to the pre-payload default otherwise — see
-          // currentAppearance's own note.
-          flow: currentFlow(),
-          // '100%' AS STRINGS, NOT NUMBERS — this is what makes the reader survive a rotation.
-          // Stage.onResize only attaches a window resize listener when width/height are NOT numeric
-          // (stage.js:147-153), and that listener is the whole of our resize handling: it lands in
-          // Rendition.onResized, which re-lays out and re-displays the current CFI
-          // (rendition.js:479-481). Pass pixel numbers here and rotation silently stops re-flowing.
-          // Pinned by readerTemplate.test.ts.
-          width: '100%',
-          height: '100%',
-          // 'none' (single) keeps one page per screen; the default ('auto') shows two side-by-side
-          // on wide screens, which makes next/prev look like it is skipping pages. Prefs-driven once
-          // currentAppearance exists.
-          spread: currentAppearance ? mapSpread(currentAppearance.spread) : 'none',
-        });
+        // Picks up the current appearance's flow/spread if applyAppearance already landed (the host
+        // sends it before openEpub), falling back to the pre-payload default otherwise — see
+        // currentAppearance's own note. See createRendition()'s own note for why this is factored
+        // out: applyAppearance needs to rebuild the same way on a flow change that needs a different
+        // manager.
+        const newRendition = createRendition();
 
-        // BEFORE display(), deliberately. The hook is what inserts the stylesheet into each chapter
-        // document as it loads, so registering it first means the first chapter is columnised with
-        // the baseline already applied. Register it after and the first page paints at UA defaults
-        // and then re-flows — a visible flash of the exact bug this fixes.
-        //
-        // One hook, both jobs, because both need the chapter's document and both must run for every
-        // chapter rather than once per book.
-        applyBaselineCss();
-        rendition.hooks.content.register((contents: Contents) => {
-          if (isPaginated()) applyAuthoredBreaks(contents.document);
-          insertStylesheet(contents, finalCssFor(contents.document));
-        });
-
-        // Rotation changes the type size AND the line-grid remainder, so a sheet built for portrait
-        // leaves sliced lines in landscape. epub.js already re-lays out and re-displays the current
-        // CFI on resize; this is the stylesheet half of it.
-        rendition.on('resized', () => {
-          applyBaselineCss();
-        });
-
-        rendition.on('relocated', (location: { start?: { cfi?: string }; atStart?: boolean; atEnd?: boolean }) => {
-          lastCfi = location?.start?.cfi ?? null;
-          post({
-            type: 'relocated',
-            // A CFI, not a page: this book is reflowable, so there is no stable page to report. That
-            // is the whole reason ReaderPosition is discriminated by format rather than carrying both
-            // shapes flat with one of them always null.
-            position: { kind: 'cfi', cfi: lastCfi },
-            atStart: !!location?.atStart,
-            atEnd: !!location?.atEnd,
-          });
-        });
-
-        await rendition.display();
+        await newRendition.display();
         post({ type: 'rendered' });
 
         const navigation = (await book.loaded.navigation) as { toc?: NavItem[] };
@@ -410,25 +495,93 @@ const api: TFReaderApi<'openEpub'> = {
    * Theme colours ride the SAME `addStylesheetCss` path as typography, not `rendition.themes.*` —
    * see `baselineCss`'s own note on why themes cannot carry this at all for chapters loaded later.
    *
-   * `flow` is the one change that needs epub.js to re-layout rather than just re-style: changing it
-   * without re-displaying leaves the rendition paginating in the OLD mode against the NEW CSS.
-   * Skipped when the flow is unchanged so an unrelated theme-only appearance update never triggers a
-   * layout flash. `spread` needs no such guard — `rendition.spread()` is cheap and idempotent.
+   * `flow` is the one change that needs more than re-styling, and more than `rendition.flow()`
+   * alone can give it: a flow change that crosses the `mapManager()` boundary (paginated <->
+   * anything else) needs a DIFFERENT epub.js manager, and the manager is fixed at construction —
+   * there is no public API to hot-swap it. So instead of calling `rendition.flow()`, this destroys
+   * the current rendition and rebuilds one from scratch via `createRendition()`, redisplaying at the
+   * last known CFI. Skipped when the flow is unchanged so an unrelated theme-only appearance update
+   * never triggers a rebuild. `spread` needs no such guard — `rendition.spread()` is cheap and
+   * idempotent, and is not epub.js's manager choice.
    */
   applyAppearance: (appearance) => {
     const previousFlow = currentAppearance?.flow;
     currentAppearance = appearance;
-    applyBaselineCss();
 
     if (!rendition) return;
 
-    rendition.spread(mapSpread(appearance.spread));
-
     if (previousFlow !== undefined && previousFlow !== appearance.flow) {
-      rendition.flow(appearance.flow);
-      rendition.display(lastCfi ?? undefined).catch((error: unknown) => {
-        fail('NAVIGATION_FAILED', error);
-      });
+      const cfi = lastCfi;
+      rendition.destroy();
+      createRendition()
+        .display(cfi ?? undefined)
+        .then(() => {
+          // A fresh Rendition means a fresh Annotations store — the old highlight is gone with it.
+          // Re-paint rather than silently drop it; setSpokenRange's own remove-then-add would target
+          // the wrong (destroyed) rendition if called from here instead.
+          if (currentSpokenCfi !== null && rendition) {
+            highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+          }
+        })
+        .catch((error: unknown) => {
+          fail('NAVIGATION_FAILED', error);
+        });
+      return;
+    }
+
+    applyBaselineCss();
+    rendition.spread(mapSpread(appearance.spread));
+  },
+
+  /**
+   * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
+   * async resolve work starts and used throughout it, rather than re-read from the module-locals —
+   * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
+   * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
+   * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
+   * per-book provider instance is what actually discards a stale reply, not this shell.
+   */
+  requestTtsSentence: ({ requestId, from, mode }) => {
+    const activeBook = book;
+    const activeRendition = rendition;
+
+    if (!activeBook || !activeRendition) {
+      post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
+      return;
+    }
+
+    void (async () => {
+      try {
+        const result =
+          mode === 'current'
+            ? await resolveCurrent(activeBook, activeRendition, from, lastCfi)
+            : await resolveNext(activeBook, activeRendition, from ?? '');
+        post({ type: 'ttsSentence', requestId, result });
+      } catch (error) {
+        post({
+          type: 'ttsSentence',
+          requestId,
+          result: { status: 'error', message: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    })();
+  },
+
+  /**
+   * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
+   * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
+   * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
+   * cannot be painted must not be able to interrupt speech, so this never posts a message and never
+   * throws out of the try.
+   */
+  setSpokenRange: (cfi) => {
+    try {
+      if (!rendition) return;
+      if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
+      currentSpokenCfi = cfi;
+      if (cfi !== null) highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+    } catch {
+      // Best-effort, per the interface's own contract — swallowed rather than reported.
     }
   },
 };

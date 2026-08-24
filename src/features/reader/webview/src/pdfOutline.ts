@@ -195,3 +195,99 @@ export function fitScale(
   if (boxWidth <= 0 || boxHeight <= 0 || pageWidth <= 0 || pageHeight <= 0) return 0;
   return Math.min(boxWidth / pageWidth, boxHeight / pageHeight);
 }
+
+/**
+ * The scale that fits a page to a viewport's WIDTH only, for continuous scroll.
+ *
+ * Unlike `fitScale`, height is not an input: in a scrolled list a page's rendered height IS its
+ * share of the scroll length, not something to be bounded by the viewport, so fitting both axes
+ * (and cropping or shrinking to fit a "page" that no longer exists as a screenful) would be wrong
+ * here in a way it is not for the single-page-at-a-time view.
+ *
+ * Returns 0 for an unmeasurable viewport or a degenerate page, same convention as `fitScale` — the
+ * caller treats that as "not renderable yet".
+ */
+export function fitWidthScale(boxWidth: number, pageWidth: number): number {
+  if (boxWidth <= 0 || pageWidth <= 0) return 0;
+  return boxWidth / pageWidth;
+}
+
+/**
+ * Which 1-based page the middle of the viewport is currently over, given each page's top offset
+ * (ascending, `pageTops[0]` is page 1's) in the scroll container's own coordinate space.
+ *
+ * THE MIDPOINT, NOT THE TOP EDGE. A page whose top has just scrolled past the viewport's top edge is
+ * mostly still off-screen below; reporting it as "current" the instant it appears would make the
+ * position indicator jump a page early on every scroll tick. The midpoint is the same "which page are
+ * we most looking at" heuristic a reader would use by eye.
+ *
+ * Defaults to page 1 for an empty list or a midpoint above every page's top — both mean "nothing to
+ * measure against yet", which is what page 1 already means before any scroll has happened.
+ */
+export function mostVisiblePage(
+  pageTops: number[],
+  viewportTop: number,
+  viewportHeight: number,
+): number {
+  const midpoint = viewportTop + viewportHeight / 2;
+  let page = 1;
+
+  for (let i = 0; i < pageTops.length; i++) {
+    if (pageTops[i] > midpoint) break;
+    page = i + 1;
+  }
+
+  return page;
+}
+
+// --- double-page spread (single-page/paginated mode only) -------------------------------------
+//
+// epub.js gates its own two-up rendering on `minSpreadWidth` (default 800 CSS px) — see
+// WEBVIEW_BRIDGE.md's note on `spread`/`layout.js`. pdf.js has no equivalent concept at all: it
+// rasterises one page into one canvas. These three functions are that concept for the PDF shell,
+// built to match epub.js's threshold so `spread: 'double'` behaves the same way — inert on a phone,
+// two-up once the viewport is wide enough. Continuous scroll does not consult any of these; spread
+// only applies to the single-page surface (`pdf.entry.ts`'s `renderCurrent`).
+
+/** Matches epub.js's `layout.js` default so a phone stays single-page and a tablet goes two-up,
+ * whichever renderer is loaded. */
+export const PDF_SPREAD_MIN_WIDTH = 800;
+
+/** Whether the viewport is wide enough to honour a 'double' spread preference. Always false for
+ * 'single' — there is no per-viewport override of an explicit single-page choice. */
+export function shouldRenderSpread(pref: 'single' | 'double', viewportWidth: number): boolean {
+  return pref === 'double' && viewportWidth >= PDF_SPREAD_MIN_WIDTH;
+}
+
+/**
+ * The 1 or 2 pages that make up the spread containing `page`, using COVER-ALONE pairing: page 1
+ * stands alone (like a book's cover), then pages pair as (2,3), (4,5), (6,7)... — the same visual
+ * result epub.js gives on a wide viewport, and how a physical book is laid out.
+ *
+ * `page` need not be a pair's first page — a TOC/search jump can land mid-pair (e.g. page 7), and
+ * this still resolves to the pair that contains it ((6,7) here), not a pair starting at 7.
+ *
+ * A trailing unpaired page (when `pageCount` is even, so the last page has no partner after the
+ * cover is removed) renders alone — checked via `pairStart + 1 <= pageCount` below.
+ */
+export function spreadPages(page: number, pageCount: number, spreading: boolean): number[] {
+  if (!spreading || page === 1 || pageCount <= 1) return [page];
+
+  const pairStart = page % 2 === 0 ? page : page - 1;
+  return pairStart + 1 <= pageCount ? [pairStart, pairStart + 1] : [pairStart];
+}
+
+/** The page to render after "next", or null when the current spread already reaches the last page
+ * (the existing no-op-at-the-end behaviour `next` already has for single-page mode). */
+export function nextSpreadStart(page: number, pageCount: number, spreading: boolean): number | null {
+  const pages = spreadPages(page, pageCount, spreading);
+  const last = pages[pages.length - 1];
+  return last >= pageCount ? null : last + 1;
+}
+
+/** The page to render after "prev", or null when the current spread already starts at page 1. */
+export function prevSpreadStart(page: number, pageCount: number, spreading: boolean): number | null {
+  const pages = spreadPages(page, pageCount, spreading);
+  const first = pages[0];
+  return first <= 1 ? null : first - 1;
+}

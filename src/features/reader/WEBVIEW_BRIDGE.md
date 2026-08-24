@@ -124,13 +124,55 @@ wrong one.
 | `prev`           | —                              | no     | both       |
 | `goTo`           | `target` (`ReaderTarget`)      | no     | both       |
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
+| `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
+| `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+
+**`requestTtsSentence`/`ttsSentence` is the FIRST reply-bearing pair on this bridge** — landed for
+TTS_PROVIDER.md's step 5. One command, not two (`current`/`next` share a `mode` discriminant inside
+`TtsSentenceRequest`), for the same "one command, one resolve seam" reason `applyAppearance` is one
+payload rather than five setters. Correlation is by `requestId` alone, generated per-request by the
+host; the `(bookId, generation)` stamp `readerTextProvider.ts`'s doc comments describe never crosses
+the wire — it is host-side bookkeeping in `tts/realReaderTextProvider.ts`; each open book gets its own
+provider instance with its own private `requestId` space, so nothing needs to disambiguate across
+books on the wire. A reply for a `requestId` the host no longer recognises (already resolved by abort,
+or discarded by teardown) is silently dropped.
+
+**PDF answers both with a documented no-op**, the same way it already silently ignores typography in
+`applyAppearance`: Reader never constructs a `ReaderTextProvider` for a PDF book (the segmentation
+model is CFI-based, EPUB-only), so these should never actually be invoked there — they exist only
+because `TFReaderApi<'openPdf'>` requires every shared command to have an implementation in both
+shells. `requestTtsSentence` answers `{status:'unavailable'}` rather than staying silent, so a caller
+that somehow reaches it gets a real status instead of a hang.
 
 `applyAppearance` is implemented — the design in "The prefs-application design, as signed off" below
 is now code, not a forecast. Sent before `openEpub`/`openPdf` (order enforced host-side, in
 `ReaderScreen.tsx`'s `handleReady`); EPUB applies theme/typography/flow/spread through the same
-`addStylesheetCss` path as the baseline, PDF applies only `bg`/`zoom`. `customFontUri` still carries
-through unresolved — the bytes-transport question in §8.3 of `READER_PREFS_APPLICATION.md` remains
-open and out of scope here.
+`addStylesheetCss` path as the baseline. PDF applies `bg`, `zoom`, `flow` (continuous scroll) and —
+as of double-page — `spread`: a payload with `flow: 'scrolled-doc'` switches the PDF shell from its
+single-canvas renderer into a virtualised, scrollable multi-page one (`enterScrollMode`/
+`leaveScrollMode` in `pdf.entry.ts`); everything else (theme/typography) is still silently ignored,
+since pdf.js rasterises pages and there is no text CSS layer to override. EPUB now also injects an
+`@font-face` from `customFontUri` (the bundled-font bytes `ReaderScreen.tsx`'s
+`buildAppearanceWithFont` loads via `loadFontFaceSrc`) when it and `fontFamily` both sanitise
+non-empty — `sanitizeFontDataUri`/`sanitizeFontFamily` in `readerMetrics.ts` gate what reaches the
+stylesheet. PDF continues to ignore `customFontUri` for the same rasterisation reason as the rest of
+typography.
+
+**PDF's `spread` handling, added for double-page display.** epub.js gates its own two-up rendering on
+`minSpreadWidth` (default 800 CSS px — see the note further down) so `spread: 'double'` is inert on a
+phone and renders two pages on a tablet-sized viewport. pdf.js has no such concept at all — it
+rasterises one page into one canvas — so this shell builds the equivalent from scratch, matched to
+the same 800px threshold for consistency: `PDF_SPREAD_MIN_WIDTH`, `shouldRenderSpread` and
+`spreadPages` in `pdfOutline.ts` (pure, unit-tested), consumed by `renderCurrent` in `pdf.entry.ts`
+(the renamed, spread-aware `renderPage`). Pairing is COVER-ALONE: page 1 stands alone, then pages
+pair as (2,3), (4,5), (6,7)... — matching both a physical book's layout and the visual result
+epub.js already gives. `next`/`prev` step by the whole pair (`nextSpreadStart`/`prevSpreadStart`,
+also in `pdfOutline.ts`); a `goTo` or resize/rotation re-resolves the correct pair via `spreadPages`
+regardless of which page inside it was targeted. **Scope: single-page (paginated) mode only** —
+continuous scroll ignores `spread` entirely and stays one column, since pairing virtualized scroll
+wrappers is a materially bigger change this did not need. The second canvas (`#pdf-canvas-2` in
+`reader-pdf.template.html`) is hidden whenever the current spread has only one page, and its backing
+store is released (`width`/`height` set to 0) rather than left resident.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
@@ -152,7 +194,8 @@ Do not "simplify" this into one command with a format argument.
 
 ### 2. `goTo.target` stays a bare string
 
-Search stores a `Locator`; the host unwraps `.cfi` before sending (`cfiOf()` in `useBookSearch.ts`).
+Search stores a `Locator`; the host unwraps it into a `ReaderTarget` before sending (`targetOf()` in
+`useBookSearch.ts`).
 Before the conversion the argument was that a frozen contract must not be hand-copied into
 untypechecked JS. That specific risk is gone — but the reason stands and has changed shape: a
 discriminated union on this channel still arrives as JSON, so `parseReaderMessage` would have to
@@ -280,10 +323,11 @@ cheapest to validate. Same design, different justification; do not let the old w
 
 1. **`applyAppearance` must be defined in BOTH entries.** `buildCommandScript` guards on
    `typeof window.TFReader.applyAppearance === 'function'`, so a PDF open would otherwise answer
-   `NOT_READY` for a command that simply is not there. The PDF half applies `bg` and `zoom` and ignores
-   typography. **This is now enforced rather than remembered**: adding it to `CommandArgs` makes both
-   `TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` require it, so a missing half fails to
-   compile.
+   `NOT_READY` for a command that simply is not there. The PDF half applies `bg`, `zoom` and `flow`
+   (continuous scroll) and still ignores typography — pdf.js rasterises pages, so there is no text CSS
+   layer for a font/theme change to reach. **This is now enforced rather than remembered**: adding it to
+   `CommandArgs` makes both `TFReaderApi<'openEpub'>` and `TFReaderApi<'openPdf'>` require it, so a
+   missing half fails to compile.
 2. **It must be sent BEFORE `openEpub`/`openPdf`, not alongside.** `flow` and `spread` are `renderTo()`
    options and `renderTo` runs *inside* `openEpub`, so a payload arriving after it renders in the wrong
    flow and needs a second re-layout. Order: `ready` → `applyAppearance` → `open*`.
@@ -300,7 +344,9 @@ cheapest to validate. Same design, different justification; do not let the old w
 4. **`fontFamily` and `customFontUri` are user-supplied strings that end up in CSS text.**
    `JSON.stringify` in `buildCommandScript` protects the injected *script*; it does nothing for the
    stylesheet the entry then builds by concatenation, inside a document holding decrypted licensed
-   content. They need a character allow-list and CSS quoting on arrival. Reader's to implement.
+   content. They need a character allow-list and CSS quoting on arrival. **Implemented**:
+   `sanitizeFontFamily`/`sanitizeFontDataUri` in `readerMetrics.ts`, both called from `epub.entry.ts`'s
+   `appearanceCssOptions()` before either value reaches `baselineCss()`.
 
 ### The font-size clamp: clamp the FACTOR, not the product
 
@@ -335,6 +381,23 @@ minimum of 1. A prefs-driven margin can reach that; a hand-copied 16 could not.
   `width >= minSpreadWidth`, default 800 (`layout.js:119-120`). So on any phone `double` renders
   single-page whatever we send. That is the behaviour Reader wants; it does mean the preference is inert
   on the device this is tested on, which is the settings UI's problem to be honest about.
+
+  **KNOWN LIMITATION, ACCEPTED RATHER THAN WORKED AROUND: the cover pairs with page 2 on a wide
+  viewport instead of standing alone**, unlike PDF's spread (which is ours to define — see above — and
+  deliberately keeps the cover solo). Traced to epub.js itself, not to how this shell calls it:
+  `DefaultViewManager`'s "cover stands alone" logic
+  (`managers/default/index.js`'s `handleNextPrePaginated` — literally commented "First page (cover)
+  should stand alone for pre-paginated books") is gated on `this.layout.name === "pre-paginated"`, i.e.
+  FIXED-LAYOUT books only. `layout.js`'s reflowable path computes `divisor = 2` from viewport width
+  alone, with no section-index awareness at all, so a reflowable EPUB (what this app's sample/dev books
+  are, and what most text-based EPUBs are) has no "cover alone" concept in the library — `rendition.spread()`
+  is being called exactly as documented; there is nothing to fix on this side of the call. A workaround
+  (forcing `spread: 'none'` only while `book.spine.first()` is displayed, switching back once the reader
+  pages past it) was scoped and explicitly declined: it would fight the manager's internal section-packing
+  rather than use a supported seam, needing a `display()` re-call — not just `spread()` — at the cover/page-2
+  boundary, i.e. a re-render on every crossing, for a cosmetic gap on a fixed-layout-only affordance most
+  reader apps accept as-is for reflowable content. Revisit only if this becomes a real complaint, not a
+  once-off report.
 - **`zoom` is carried, and the WebView may hold the last payload only as a write-only cache**, for
   recomputing on resize. The moment a pinch-zoom gesture inside the WebView *mutates* it, that is state
   RN also models and RN has to own it — the same line the PDF renderer's `currentPage` sits on.
@@ -385,3 +448,10 @@ Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than 
 - `src/features/personalization/READER_PREFS_APPLICATION.md` — Personalization's field-by-field mapping
   and the live-reapply flow. Read it together with the sign-off section above, which amends it.
 - `src/features/accessibility/WEBVIEW_A11Y_FINDINGS.md` — §3.7 is the third claimant on that payload.
+- `src/features/reader/tts/readerTextProvider.ts`, `TTS_PROVIDER.md` — the seam `requestTtsSentence`/
+  `ttsSentence`/`setSpokenRange` exist to carry. `tts/realReaderTextProvider.ts` is the host-side
+  correlation layer; `webview/src/epubTtsResolver.ts` (segmentation/CFI-minting, DOM-touching) and
+  `webview/src/ttsSegmentation.ts` (pure, unit-tested) are the WebView side.
+- `webview/src/highlightSeam.ts` / `highlightNaming.ts` — the owner-namespaced `rendition.annotations`
+  seam `setSpokenRange` paints through, built so Personalization/Search can adopt the same `add`/
+  `remove` primitive later without re-litigating the collision `TTS_PROVIDER.md` open item 4 named.

@@ -15,8 +15,15 @@ import {
   buildOutlineToc,
   collectOutline,
   fitScale,
+  fitWidthScale,
+  mostVisiblePage,
+  nextSpreadStart,
   outlineDestPage,
   pageFromTarget,
+  PDF_SPREAD_MIN_WIDTH,
+  prevSpreadStart,
+  shouldRenderSpread,
+  spreadPages,
   type OutlineDocument,
   type OutlineNode,
 } from '@/features/reader/webview/src/pdfOutline';
@@ -229,5 +236,122 @@ describe('fitScale', () => {
     ['a degenerate page', 400, 400, 0, 400],
   ])('returns 0 for %s', (_label, bw, bh, pw, ph) => {
     expect(fitScale(bw, bh, pw, ph)).toBe(0);
+  });
+});
+
+describe('fitWidthScale', () => {
+  // Continuous scroll fits width only — height is the page's share of scroll length, not something
+  // to bound.
+  it('fits to the width ratio regardless of page height', () => {
+    expect(fitWidthScale(400, 800)).toBeCloseTo(0.5);
+    expect(fitWidthScale(800, 400)).toBeCloseTo(2);
+  });
+
+  it.each([
+    ['an unmeasurable viewport', 0, 400],
+    ['a degenerate page', 400, 0],
+  ])('returns 0 for %s', (_label, boxWidth, pageWidth) => {
+    expect(fitWidthScale(boxWidth, pageWidth)).toBe(0);
+  });
+});
+
+describe('mostVisiblePage', () => {
+  const pageTops = [0, 800, 1600];
+
+  it('reports the page under the viewport MIDPOINT, not the top edge', () => {
+    expect(mostVisiblePage(pageTops, 0, 800)).toBe(1); // midpoint 400 — inside page 1
+    expect(mostVisiblePage(pageTops, 800, 800)).toBe(2); // midpoint 1200 — inside page 2
+    expect(mostVisiblePage(pageTops, 1600, 800)).toBe(3); // midpoint 2000 — inside page 3
+  });
+
+  it('does not jump a page early — a page top just past the viewport top is not yet "current"', () => {
+    // Viewport [750, 1550): midpoint 1150 is still inside page 2 (800-1600), even though page 2's
+    // top has already scrolled 50px past the viewport's own top edge.
+    expect(mostVisiblePage(pageTops, 750, 800)).toBe(2);
+  });
+
+  it('treats an exact boundary as having entered the next page', () => {
+    expect(mostVisiblePage(pageTops, 800, 0)).toBe(2); // midpoint exactly 800
+  });
+
+  it('defaults to page 1 for an empty list or a midpoint above every page', () => {
+    expect(mostVisiblePage([], 0, 800)).toBe(1);
+    expect(mostVisiblePage(pageTops, -1000, 0)).toBe(1);
+  });
+});
+
+describe('shouldRenderSpread', () => {
+  it('is false for an explicit single-page preference regardless of width', () => {
+    expect(shouldRenderSpread('single', 2000)).toBe(false);
+  });
+
+  it('is false below the threshold and true at or above it — matching epub.js\'s own default', () => {
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH - 1)).toBe(false);
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH)).toBe(true);
+    expect(shouldRenderSpread('double', PDF_SPREAD_MIN_WIDTH + 200)).toBe(true);
+  });
+});
+
+describe('spreadPages', () => {
+  it('returns a single page whenever not spreading', () => {
+    expect(spreadPages(4, 10, false)).toEqual([4]);
+  });
+
+  it('keeps the cover (page 1) alone even while spreading', () => {
+    expect(spreadPages(1, 10, true)).toEqual([1]);
+  });
+
+  it('pairs an even page with the odd page after it', () => {
+    expect(spreadPages(2, 10, true)).toEqual([2, 3]);
+    expect(spreadPages(4, 10, true)).toEqual([4, 5]);
+  });
+
+  it('resolves an odd page (other than the cover) to the pair starting before it', () => {
+    expect(spreadPages(3, 10, true)).toEqual([2, 3]);
+    expect(spreadPages(7, 10, true)).toEqual([6, 7]);
+  });
+
+  it('renders a trailing unpaired page alone when pageCount is even', () => {
+    // Cover alone (1), then (2,3) (4,5) — page 6 has no partner left.
+    expect(spreadPages(6, 6, true)).toEqual([6]);
+  });
+
+  it('does not spread a one-page document', () => {
+    expect(spreadPages(1, 1, true)).toEqual([1]);
+  });
+});
+
+describe('nextSpreadStart', () => {
+  it('steps by one page when not spreading', () => {
+    expect(nextSpreadStart(4, 10, false)).toBe(5);
+  });
+
+  it('steps past the whole pair when spreading', () => {
+    expect(nextSpreadStart(1, 10, true)).toBe(2); // cover -> (2,3)
+    expect(nextSpreadStart(2, 10, true)).toBe(4); // (2,3) -> (4,5)
+    expect(nextSpreadStart(9, 10, true)).toBe(10); // (8,9) -> the trailing unpaired page 10
+  });
+
+  it('returns null once the spread already reaches the last page', () => {
+    expect(nextSpreadStart(10, 10, false)).toBeNull();
+    expect(nextSpreadStart(10, 10, true)).toBeNull(); // trailing unpaired page 10 IS the end
+  });
+});
+
+describe('prevSpreadStart', () => {
+  it('steps by one page when not spreading', () => {
+    expect(prevSpreadStart(4, 10, false)).toBe(3);
+  });
+
+  it('steps back past the whole pair when spreading', () => {
+    // The returned value need not be a pair's literal start — spreadPages() re-resolves it when
+    // rendering, so landing anywhere inside the target pair is correct.
+    expect(prevSpreadStart(6, 10, true)).toBe(5); // (6,7) -> resolves to (4,5) via spreadPages(5, ...)
+    expect(prevSpreadStart(2, 10, true)).toBe(1); // (2,3) -> cover
+  });
+
+  it('returns null once the spread already starts at page 1', () => {
+    expect(prevSpreadStart(1, 10, false)).toBeNull();
+    expect(prevSpreadStart(1, 10, true)).toBeNull();
   });
 });

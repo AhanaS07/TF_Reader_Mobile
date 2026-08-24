@@ -1,15 +1,25 @@
-// DevPreferencesMenu.tsx — TEMP, same status as App.tsx's fixture picker (see its own header note).
+// DevPreferencesMenu.tsx — TEMP, same status as src/navigation/BookListScreen.tsx's fixture list
+// (see its own header note).
 //
 // Replaces the earlier inline row of one-shot buttons in App.tsx with a hamburger ("☰") dropdown of
 // TOGGLES, so Reader's live `applyAppearance` re-apply path (READER_PREFS_APPLICATION.md §5,
-// triggers A/B) can be exercised without a real settings screen. Delete this file and its use in
-// App.tsx the moment Personalization (Vaishnavi) ships one — this is not that screen, and does not
-// preempt her ownership of src/features/personalization/.
+// triggers A/B) can be exercised without a real settings screen. Passed from
+// `src/navigation/ReaderRouteScreen.tsx` into ReaderScreen's `toolbarExtra` slot, landing as the
+// rightmost icon in ReaderScreen's own toolbar row, alongside Search/TTS. It used to be App.tsx's
+// own header row (back when App.tsx mounted ReaderScreen directly), then briefly the Reader
+// route's native-stack `headerRight` (clipped by react-native-screens' native header — dropdown
+// opened but rendered nothing), then a same-tree absolute overlay (landed on top of and ate touches
+// for the toolbar's own icons, since both anchored to the same corner). See `toolbarExtra`'s own
+// doc in ReaderScreen.tsx and `ReaderRouteScreen.tsx`'s header note for the full history. Delete
+// this file and its render site the moment Personalization (Vaishnavi) ships a real settings
+// screen — this is not that screen, and does not preempt her ownership of
+// src/features/personalization/.
 //
-// LIVE, NOT "ON RETURN": there is no navigation here — the menu is an overlay drawn on top of the
-// still-mounted ReaderScreen, so a toggle's effect is visible immediately through the SAME
-// prefsStore.subscribe() path ReaderScreen already wires up. "Apply when the user goes back to the
-// reader" falls out for free because the reader was never left.
+// LIVE, NOT "ON RETURN": while the Reader route is on screen, the menu is an overlay drawn on top
+// of the still-mounted ReaderScreen, so a toggle's effect is visible immediately through the SAME
+// prefsStore.subscribe() path ReaderScreen already wires up — "apply without leaving the reader"
+// falls out for free. Navigating back to BookList and into a different (or the same) book is a
+// fresh ReaderScreen instance regardless, same as any other prop-driven remount.
 //
 // TOGGLE SEMANTICS: re-pressing the ALREADY-ACTIVE option reverts that field to DEFAULT_PREFS,
 // rather than leaving it stuck once set — exactly the "click again to undo" behaviour asked for.
@@ -24,17 +34,31 @@
 // was a way to CHANGE them without hand-editing SQLite, which is what the two new sections below are
 // for. `PREFS_API_FOR_FRONTEND.md` (Personalization, 2026-08-20) is a field catalogue for a real
 // settings screen — it documents these fields, it does not introduce them.
+//
+// ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. `ReaderAppearance.zoom`'s own doc comment always
+// said as much ("a reflowable EPUB scales through fontSizePt instead, so the EPUB renderer may
+// ignore this"), and `epub.entry.ts` never reads `appearance.zoom` anywhere — it was already a
+// no-op there, just not one the menu admitted to. The Zoom section below is hidden whenever the
+// active book's format is `'EPUB'` (ReaderRouteScreen passes it down from the route's own params),
+// rather than left visible and inert: a control with nothing to control is worse than no control, the same
+// reasoning ReaderScreen already applies to the PDF-only page indicator. `zoom` stays in
+// `ReaderAppearance`/the bridge payload regardless — PDF still needs it, and it is one payload for
+// both renderers by design (see readerAppearance.ts's own header).
+//
+// TYPOGRAPHY REMOVED FOR PDF, same reasoning inverted: `pdf.entry.ts` ignores typography entirely
+// (it rasterises pages — there is no text CSS to override), so the Typography section is hidden
+// whenever the active book's format is `'PDF'`. `fontFamily`/`fontSizePt`/etc. stay in
+// `ReaderAppearance` regardless — EPUB still needs them.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent } from 'react-native';
 
+import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
-import type { LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
-
-const BIG_TEXT_SIZE = 28;
+import type { ContentFormat, LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
 
 const THEME_OPTIONS: readonly { label: string; theme: Theme }[] = [
   { label: 'Light', theme: 'light' },
@@ -48,15 +72,26 @@ function toggleTheme(current: SharedPrefs, theme: Theme): PrefsPatch {
   return { theme: current.theme === theme ? DEFAULT_PREFS.theme : theme };
 }
 
-function isBigText(prefs: SharedPrefs): boolean {
-  return prefs.typography.size === BIG_TEXT_SIZE;
-}
+/**
+ * `system` plus the 6 bundled fonts `fontCatalog.ts`/`fontFaceLoader.ts` ship — Reader's half of
+ * CUSTOM_FONTS_WIRING.md now loads the selected family's bytes and injects them as an `@font-face`
+ * (epub.entry.ts), so picking one of these actually changes the open EPUB's font, not just its name.
+ */
+const FAMILY_OPTIONS: readonly { label: string; family: string }[] = [
+  { label: 'System', family: 'system' },
+  ...FONT_CATALOG.map((entry) => ({ label: entry.label, family: entry.family as string })),
+];
 
-function toggleBigText(prefs: SharedPrefs): PrefsPatch {
+/** Same revert-on-reselect convention as `toggleTheme`. `customFontUri: undefined` clears the
+ * separate, unused `FontPrefs.customFontUri` upload field on switch — the reader computes the data
+ * URI for whichever family IS selected fresh, at apply time, via `loadFontFaceSrc`; it never reads
+ * this stored field, but leaving a stale value here would mislead a future reader of the record. */
+function toggleFontFamily(current: SharedPrefs, family: string): PrefsPatch {
   return {
-    typography: isBigText(prefs)
-      ? { ...DEFAULT_PREFS.typography }
-      : { ...DEFAULT_PREFS.typography, size: BIG_TEXT_SIZE },
+    font: {
+      family: current.font.family === family ? DEFAULT_PREFS.font.family : family,
+      customFontUri: undefined,
+    },
   };
 }
 
@@ -71,23 +106,48 @@ const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[
 ];
 
 /** Spreads the CURRENT layout group so changing `flow` can never silently reset `spread` (or the
- * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about. */
+ * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about.
+ * EXCEPT for the one combination below, where resetting the other field is deliberate, not a bug. */
+
+/**
+ * `flow: 'scrolled-doc'` plus `spread: 'double'` is not a state either renderer can honour: a
+ * double-page spread is a PAGINATED concept (two page boundaries side by side), and continuous
+ * scroll has no page boundaries to pair — epub.entry.ts's scrolled manager never reads
+ * `appearance.spread` at all, and pdf.entry.ts's `scrollMode` branch is the same. Rather than
+ * silently sending the WebView a combination it ignores half of, whichever field is ALREADY set
+ * gets reverted to its default the instant the OTHER one would create the conflict — the field just
+ * tapped always wins, since that is the choice the user is actively making right now — and an alert
+ * says so, so "why did my spread setting disappear" has an answer on screen instead of only in this
+ * comment.
+ */
+function warnScrolledDoubleSpreadConflict(revertedField: string, keptField: string): void {
+  Alert.alert(
+    'Layout updated',
+    `Scrolled flow doesn't support a double-page spread. ${revertedField} has been reset to its ` +
+      `default so ${keptField} could be applied.`,
+  );
+}
+
 function toggleFlow(current: SharedPrefs, flow: LayoutPrefs['flow']): PrefsPatch {
-  return {
-    layout: {
-      ...current.layout,
-      flow: current.layout.flow === flow ? DEFAULT_PREFS.layout.flow : flow,
-    },
-  };
+  const nextFlow = current.layout.flow === flow ? DEFAULT_PREFS.layout.flow : flow;
+
+  if (nextFlow === 'scrolled-doc' && current.layout.spread === 'double') {
+    warnScrolledDoubleSpreadConflict('Spread', 'Scrolled flow');
+    return { layout: { ...current.layout, flow: nextFlow, spread: DEFAULT_PREFS.layout.spread } };
+  }
+
+  return { layout: { ...current.layout, flow: nextFlow } };
 }
 
 function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): PrefsPatch {
-  return {
-    layout: {
-      ...current.layout,
-      spread: current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread,
-    },
-  };
+  const nextSpread = current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread;
+
+  if (nextSpread === 'double' && current.layout.flow === 'scrolled-doc') {
+    warnScrolledDoubleSpreadConflict('Flow', 'Double spread');
+    return { layout: { ...current.layout, spread: nextSpread, flow: DEFAULT_PREFS.layout.flow } };
+  }
+
+  return { layout: { ...current.layout, spread: nextSpread } };
 }
 
 /**
@@ -134,11 +194,14 @@ function ZoomSlider({
   // only changes on layout/rotation, and `value` only changes when THIS component's own onCommit
   // below fires, i.e. after a drag ends), the PanResponder's identity is stable for the lifetime of
   // any single gesture — recreating it mid-touch is what would risk dropping the gesture, not this.
-  const valueFromX = useCallback((x: number): number => {
-    if (trackWidth <= 0) return value;
-    const ratio = clamp(x / trackWidth, 0, 1);
-    return snapToZoomStep(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
-  }, [trackWidth, value]);
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToZoomStep(ZOOM_MIN + ratio * (ZOOM_MAX - ZOOM_MIN));
+    },
+    [trackWidth, value],
+  );
 
   const panResponder = useMemo(
     () =>
@@ -171,22 +234,122 @@ function ZoomSlider({
   return (
     <View>
       <Text style={styles.zoomValue}>{Math.round(displayValue * 100)}%</Text>
-      <View
-        style={styles.zoomTrack}
-        onLayout={handleTrackLayout}
-        {...panResponder.panHandlers}
-      >
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
         <View style={styles.zoomTrackBase} />
         <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
         <View
-          style={[styles.zoomThumb, { left: clamp(thumbLeft, -ZOOM_THUMB_SIZE / 2, trackWidth - ZOOM_THUMB_SIZE / 2) }]}
+          style={[
+            styles.zoomThumb,
+            { left: clamp(thumbLeft, -ZOOM_THUMB_SIZE / 2, trackWidth - ZOOM_THUMB_SIZE / 2) },
+          ]}
         />
       </View>
     </View>
   );
 }
 
-export function DevPreferencesMenu(): React.JSX.Element {
+/**
+ * Font-size bounds for the slider only — `TypographyPrefs.size` itself carries no documented range
+ * (it's absolute points; `readerMetrics.ts`'s ABSOLUTE_MIN/MAX_FONT_PX, 8/200, are a pathological-
+ * value backstop, not a usable reading range). 12-32pt centers `DEFAULT_PREFS.typography.size` (16)
+ * and comfortably covers the 28pt this slider replaces.
+ */
+const FONT_SIZE_MIN = 12;
+const FONT_SIZE_MAX = 32;
+const FONT_SIZE_STEP = 1;
+const FONT_SIZE_THUMB_SIZE = 20;
+
+function snapToFontSizeStep(value: number): number {
+  return Math.round(clamp(value, FONT_SIZE_MIN, FONT_SIZE_MAX) / FONT_SIZE_STEP) * FONT_SIZE_STEP;
+}
+
+/** Same drag-live/commit-on-release shape as `ZoomSlider` above, adapted to `typography.size`'s own
+ * bounds and a "12pt"-style label instead of a percentage. Kept as its own copy rather than a shared
+ * generic slider — this file already treats each toggle as its own small function rather than a
+ * shared abstraction (see `toggleFlow`/`toggleSpread`), matching its "one dev widget, not a design
+ * system" scope. */
+function FontSizeSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToFontSizeStep(FONT_SIZE_MIN + ratio * (FONT_SIZE_MAX - FONT_SIZE_MIN));
+    },
+    [trackWidth, value],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio =
+    (clamp(displayValue, FONT_SIZE_MIN, FONT_SIZE_MAX) - FONT_SIZE_MIN) /
+    (FONT_SIZE_MAX - FONT_SIZE_MIN);
+  const thumbLeft = ratio * trackWidth - FONT_SIZE_THUMB_SIZE / 2;
+
+  return (
+    <View style={styles.fontSizeSlider}>
+      <Text style={styles.zoomValue}>{Math.round(displayValue)}pt</Text>
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        <View
+          style={[
+            styles.zoomThumb,
+            {
+              left: clamp(
+                thumbLeft,
+                -FONT_SIZE_THUMB_SIZE / 2,
+                trackWidth - FONT_SIZE_THUMB_SIZE / 2,
+              ),
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
+export interface DevPreferencesMenuProps {
+  /** The active book's format, so Zoom can be hidden for an EPUB — see the header note on why.
+   * Optional only for callers with no format to hand; ReaderRouteScreen (the only render site)
+   * always has one, since it comes straight off the Reader route's own params — BookListScreen's
+   * fixture rows are never ambiguous about their own format. Undefined falls back to showing Zoom
+   * rather than guessing it should hide. */
+  format?: ContentFormat;
+}
+
+export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
   // Local, live copy of prefs — needed to know which toggle is currently "on" (so pressing it again
@@ -216,6 +379,21 @@ export function DevPreferencesMenu(): React.JSX.Element {
   const commitZoom = useCallback((level: number) => {
     void prefsStore.savePrefs({ zoom: { level } });
   }, []);
+
+  // Unlike `commitZoom`, this spreads the CURRENT typography group rather than `DEFAULT_PREFS`'s —
+  // `typography` has siblings (lineHeight/spacing/margins) a bare `{ size }` patch would silently
+  // reset, the exact "one rule that bites" this file's header already warns about for layout. That
+  // makes it depend on `prefs`, so (unlike `commitZoom`) its identity changes on every prefs update —
+  // acceptable here since, unlike Zoom's PanResponder, a size change while mid-drag on THIS slider
+  // can only come from `prefs.typography.size` itself changing, which only happens via this same
+  // callback's own commit.
+  const commitFontSize = useCallback(
+    (size: number) => {
+      if (!prefs) return;
+      void prefsStore.savePrefs({ typography: { ...prefs.typography, size } });
+    },
+    [prefs],
+  );
 
   return (
     <View style={styles.container}>
@@ -253,22 +431,39 @@ export function DevPreferencesMenu(): React.JSX.Element {
             })}
           </View>
 
-          <Text style={styles.sectionLabel}>Typography</Text>
-          <View style={styles.row}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: isBigText(prefs) }}
-              accessibilityLabel={`Big text${isBigText(prefs) ? ', selected' : ''}`}
-              onPress={() => {
-                void prefsStore.savePrefs(toggleBigText(prefs));
-              }}
-              style={[styles.toggle, isBigText(prefs) && styles.toggleActive]}
-            >
-              <Text style={[styles.toggleLabel, isBigText(prefs) && styles.toggleLabelActive]}>
-                Big text
-              </Text>
-            </Pressable>
-          </View>
+          {/* TYPOGRAPHY REMOVED FOR PDF — NOT FORMAT APPLICABLE. pdf.entry.ts ignores typography
+              entirely (it rasterises pages, so there is no text CSS to override); ReaderAppearance
+              still carries fontFamily/fontSizePt/lineHeight/etc. regardless, one payload for both
+              renderers by design. Same reasoning as the Zoom guard below, just the other format:
+              a control with nothing to control is worse than no control. Shown for EPUB and for the
+              unrecognised-fixture fallback (format undefined), hidden only for a known PDF. */}
+          {format !== 'PDF' && (
+            <>
+              <Text style={styles.sectionLabel}>Typography</Text>
+              <FontSizeSlider value={prefs.typography.size} onCommit={commitFontSize} />
+              <View style={styles.row}>
+                {FAMILY_OPTIONS.map(({ label, family }) => {
+                  const active = prefs.font.family === family;
+                  return (
+                    <Pressable
+                      key={family}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`Font: ${label}${active ? ', selected' : ''}`}
+                      onPress={() => {
+                        void prefsStore.savePrefs(toggleFontFamily(prefs, family));
+                      }}
+                      style={[styles.toggle, active && styles.toggleActive]}
+                    >
+                      <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
 
           <Text style={styles.sectionLabel}>Layout</Text>
           <View style={styles.row}>
@@ -314,8 +509,16 @@ export function DevPreferencesMenu(): React.JSX.Element {
             })}
           </View>
 
-          <Text style={styles.sectionLabel}>Zoom</Text>
-          <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
+          {/* ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. See this file's header note: a
+              reflowable EPUB scales via fontSizePt, epub.entry.ts never reads appearance.zoom, and
+              a control with nothing to control is worse than no control. Shown for PDF and for the
+              unrecognised-fixture fallback (format undefined), hidden only for a known EPUB. */}
+          {format !== 'EPUB' && (
+            <>
+              <Text style={styles.sectionLabel}>Zoom</Text>
+              <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
+            </>
+          )}
         </View>
       )}
     </View>
@@ -338,6 +541,11 @@ const styles = StyleSheet.create({
 
   // Floats over the reader — z-indexed above it and NOT part of the header's own layout flow, so
   // opening it never resizes the WebView underneath (which would re-paginate for no reason).
+  //
+  // RIGHT: this menu is rendered via ReaderScreen's `toolbarExtra` slot, the LAST (rightmost) child
+  // of a right-aligned (`justifyContent: 'flex-end'`) row — see that prop's own doc in
+  // ReaderScreen.tsx. `right: 0` opens the dropdown extending leftward from the button, staying
+  // on-screen regardless of how close to the edge the row packs it.
   dropdown: {
     position: 'absolute',
     top: 48,
@@ -376,6 +584,10 @@ const styles = StyleSheet.create({
   toggleActive: { backgroundColor: '#111111', borderColor: '#111111' },
   toggleLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
   toggleLabelActive: { color: '#ffffff' },
+
+  // Spacing between the font-size slider and the font-family row directly below it — the Zoom
+  // slider needs no equivalent since nothing else follows it in that section.
+  fontSizeSlider: { marginBottom: 8 },
 
   // The slider. A plain 6px track with a filled portion behind a round thumb — deliberately not
   // trying to look like either platform's native slider, since this is a dev tool, not UI the app

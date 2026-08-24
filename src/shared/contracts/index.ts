@@ -12,9 +12,9 @@
 //   • OFFLINE_LOCK_EVENTS   (const, offline-lock.ts)
 //   • EVENT_CHANNELS        (const, event-bus.ts)
 // …and everything in accessibility.ts except its types:
-//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX,
+//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX, TTS_PITCH_MIN / _MAX,
 //     REDUCE_MOTION_VALUES, TTS_HIGHLIGHT_MODE_VALUES   (consts)
-//   • createDefaultAccessibilityPrefs, isValidTtsRate,
+//   • createDefaultAccessibilityPrefs, isValidTtsRate, isValidTtsPitch,
 //     isValidReduceMotion, isValidTtsHighlightMode,
 //     resolveReduceMotion, migrateReduceMotion, resolveFontScale   (fns)
 // …and the prefs row adapter + migration (prefs-row.ts):

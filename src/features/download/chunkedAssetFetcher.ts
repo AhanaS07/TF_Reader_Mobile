@@ -162,6 +162,10 @@ export async function fetchEncryptedAssetChunked(
     bytesReceived = existing.bytesReceived;
     expectedLength = existing.expectedLength;
     assertWithinBudget(bookId, expectedLength, options.maxBytes);
+    // Report the resumed baseline immediately — otherwise a caller sees stale/zero progress for
+    // up to CHUNK_TIMEOUT_MS until the next chunk lands, even though bytesReceived is already
+    // known and correct from the manifest.
+    options.onProgress?.(bytesReceived, expectedLength);
   } else {
     // Either nothing to resume, or an inconsistent leftover (manifest without matching bytes on
     // disk, or vice versa) — don't trust a state that can't verify itself. Start clean.
@@ -190,6 +194,9 @@ export async function fetchEncryptedAssetChunked(
       appendOrCreate(contentFile, chunkBytes, false);
       const whole = contentFile.bytesSync();
       discardPartialDownload(bookId); // the file we just wrote is now the RETURNED buffer, not a partial
+      // This path never sees a 206/Content-Range, so the loop below's per-chunk onProgress never
+      // fires — without this, a caller on a non-Range server gets no progress signal at all.
+      options.onProgress?.(whole.length, whole.length);
       return whole;
     }
 

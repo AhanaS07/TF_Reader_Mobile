@@ -3,13 +3,14 @@
 // The reader screen: WebView + Prev/Next/Contents controls + a visible error
 // banner, reading decrypted bytes through the ContentProvider seam.
 //
-// Colours are inline for the same reason App.tsx's are: src/theme/ has not landed
-// yet. Replace with tokens when it does.
+// Colours are inline for the same reason the navigation screens' (src/navigation/) are: src/theme/
+// has not landed yet. Replace with tokens when it does.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,10 +21,15 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { TtsControls } from '@/features/accessibility/tts/TtsControls';
+import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
+import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { AppearanceEnv, ReaderAppearance } from '@/features/personalization/readerAppearance';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -43,9 +49,14 @@ import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import {
+  createEpubReaderTextProvider,
+  UNAVAILABLE_READER_TEXT_PROVIDER,
+  type EpubReaderTextProvider,
+} from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
-import { ContentFailure } from '@/shared/contracts';
-import type { BookId, ContentFormat } from '@/shared/contracts';
+import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
+import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
 interface ReaderError {
   code: ReaderErrorCode;
@@ -130,6 +141,22 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
   });
 }
 
+/**
+ * `toReaderAppearance`'s own `customFontUri` is a straight passthrough of `FontPrefs.customFontUri`
+ * — a separate, still-unused upload-path field (see readerAppearance.ts). This overlays it with the
+ * loaded bundled-font data URI for `prefs.font.family` instead (or `null` for `'system'`/unknown) —
+ * Reader's chosen meaning for this field on the bridge, per CUSTOM_FONTS_WIRING.md. Both send sites
+ * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
+ * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
+ */
+async function buildAppearanceWithFont(
+  prefs: SharedPrefs,
+  env: AppearanceEnv,
+): Promise<ReaderAppearance> {
+  const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
+  return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
+}
+
 interface ReaderScreenProps {
   /**
    * Identifies the ContentStore session `getBook(bookId)` opens and
@@ -148,13 +175,54 @@ interface ReaderScreenProps {
    * Contents button. Remounting resets all of it in one move, which is why this is a key
    * rather than a pile of resets in the effect below — React forbids those anyway
    * (`react-hooks/set-state-in-effect`), and it is the wrong idiom for "reset on prop
-   * change". A navigator gives each route its own instance and satisfies this for free;
-   * App.tsx's temporary dev picker has to do it by hand.
+   * change". `src/navigation/RootNavigator.tsx` has now landed, and a navigator gives each route
+   * its own instance for free on a genuinely new push — `ReaderRouteScreen.tsx` still passes this
+   * key explicitly as defense-in-depth (a `navigate('Reader', ...)` to an already-mounted Reader
+   * screen would otherwise reuse the instance rather than remount it).
    */
   bookId: BookId;
+
+  /**
+   * Where to `goTo` once, right after this open's first `rendered` — the resume half of session
+   * progress (`sessionProgress.ts`). Read ONCE, at mount: this component is already keyed on
+   * `bookId` (see above), so a genuinely new target means a remount, not a prop change on a live
+   * instance. Omit it and the book opens at its normal default location, same as before this prop
+   * existed.
+   *
+   * NOT this component's concern to source or persist — same division as `onRelocated` below. A
+   * caller (`ReaderRouteScreen.tsx`) reads `sessionProgress.getSessionPosition` and converts it via
+   * `targetFromPosition`; this file just knows how to seek once, having no opinion on where the
+   * target came from.
+   */
+  initialTarget?: ReaderTarget;
+
+  /**
+   * Mirrors every `relocated` position outward, so a caller can keep `sessionProgress` current
+   * without this component knowing that store exists. Fired from the SAME `relocated` branch that
+   * already updates local `position` state — additive, not a second subscription.
+   */
+  onRelocated?: (position: ReaderPosition) => void;
+
+  /**
+   * Rendered as the LAST child of the toolbar row (after Search and, when shown, TTS), so it lands
+   * rightmost — nearest the screen edge — with the built-in icons to its left, all in one row.
+   *
+   * A slot rather than this file importing `DevPreferencesMenu` directly: that component is
+   * `ReaderRouteScreen.tsx`'s temp scaffolding, not this screen's concern (see its own header
+   * note). It used to float as an absolutely-positioned overlay from that caller instead, which put
+   * it on TOP of this exact row rather than IN it — sharing the row's own flex layout is what
+   * guarantees the two can never overlap, on any format, without either file hard-coding the
+   * other's width.
+   */
+  toolbarExtra?: React.ReactNode;
 }
 
-export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
+export function ReaderScreen({
+  bookId,
+  initialTarget,
+  onRelocated,
+  toolbarExtra,
+}: ReaderScreenProps): React.JSX.Element {
   /**
    * The book's format and its matching shell — TAGGED WITH THE bookId THEY BELONG TO,
    * and set as ONE value so they can never disagree.
@@ -196,6 +264,19 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [position, setPosition] = useState<ReaderPosition | null>(null);
 
   /**
+   * The edges of the current position, as last reported on `relocated` — carried separately from
+   * `position` because both shells send them on every relocation regardless of format, where
+   * `position` itself is discriminated. Used to disable Prev/Next at the ends: `next`/`prev` already
+   * no-op at a boundary WebView-side (both entries clamp against it), so this is a UI-only
+   * refinement — no behavior changes if it is wrong, only whether the button LOOKS tappable.
+   *
+   * Defaults to `atStart: true` because that is what "nothing has relocated yet" actually means —
+   * the book opens on its first page/CFI, so Prev is correctly disabled before the first
+   * `relocated` ever arrives, matching `send === null`'s own disablement over the same window.
+   */
+  const [bounds, setBounds] = useState({ atStart: true, atEnd: false });
+
+  /**
    * The page-jump field: null when closed, the typed text when open.
    *
    * A STRING, not a number, and deliberately: the field has to be able to hold '' while the user
@@ -204,6 +285,54 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showTts, setShowTts] = useState(false);
+
+  /**
+   * TTS is EPUB-only (readerTextProvider.ts's segmentation model is CFI-based) and gated on
+   * Accessibility's one exported boolean — `useTtsEnabled()` is deliberately the ONLY check;
+   * `useTtsSession`'s `play()` does not re-check it, on the grounds that mounting the controls IS
+   * the decision (see TTS_PROVIDER.md's "one boolean that crosses" section).
+   *
+   * A `useMemo`, not state-in-an-effect — same reasoning as `panResponder` below: constructing a
+   * provider has no side effect of its own (it sends nothing until a method is called), so it can
+   * be recomputed as a plain function of its deps rather than pushed through setState.
+   */
+  const ttsEnabled = useTtsEnabled();
+  const ttsProvider = useMemo<EpubReaderTextProvider | null>(() => {
+    if (!ttsEnabled || format !== 'EPUB' || send === null) return null;
+    return createEpubReaderTextProvider(bookId, send);
+  }, [bookId, format, send, ttsEnabled]);
+
+  /**
+   * `handleMessage` and the closeBook effect below reach for THIS, not `ttsProvider` directly — a
+   * ref because neither needs a re-render when it changes, only the latest value at the moment a
+   * message or teardown arrives. Kept in sync via the same ref-mirroring pattern `appearanceEnvRef`
+   * already uses in this file.
+   */
+  const ttsProviderRef = useRef(ttsProvider);
+  useEffect(() => {
+    ttsProviderRef.current = ttsProvider;
+  }, [ttsProvider]);
+
+  // useTtsSession cannot be called conditionally (Rules of Hooks), so this always has SOME
+  // provider — the inert singleton while TTS isn't active, the real one once it is. TtsControls is
+  // only ever rendered once `ttsProvider` is non-null (see below), so the inert session is never
+  // shown, only ever briefly held.
+  const ttsSession = useTtsSession(ttsProvider ?? UNAVAILABLE_READER_TEXT_PROVIDER);
+
+  /**
+   * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
+   * `scrollEnabled` below can read it without an async round trip on every render.
+   *
+   * The TOGGLE UI for this lives in `DevPreferencesMenu.tsx` (the temp hamburger prefs menu, floated
+   * over this screen's own body from `src/navigation/ReaderRouteScreen.tsx`) — this file only needs
+   * to know the CURRENT value, not
+   * offer a second way to set it. Seeded from DEFAULT_PREFS.layout until the initial `getPrefs()`
+   * below resolves, and kept current by the SAME `prefsStore.subscribe` effect that already
+   * re-sends `applyAppearance` (trigger B) — this is additive to that effect, not a second
+   * subscription.
+   */
+  const [layoutPrefs, setLayoutPrefs] = useState<LayoutPrefs>(DEFAULT_PREFS.layout);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
 
@@ -272,6 +401,25 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   const openSentAtRef = useRef<number | null>(null);
 
   /**
+   * The resume target, read ONCE at mount (lazy initialiser) — see `initialTarget`'s own prop doc
+   * for why a prop change on a live instance is not a case this needs to handle. Cleared to null
+   * once sent, so a second `rendered` (there is at most one per mount, but nothing enforces that
+   * upstream) cannot re-seek.
+   */
+  const initialTargetRef = useRef<ReaderTarget | null>(initialTarget ?? null);
+
+  /**
+   * `onRelocated` mirrored into a ref for the same reason `appearanceEnvRef` is: `handleMessage`
+   * below is memoised with an empty dep array (its identity must stay stable across the whole
+   * lifetime — see its own note), so it reads the LATEST callback via a ref rather than closing over
+   * a stale one. Synced every render, same pattern as `appearanceEnvRef`.
+   */
+  const onRelocatedRef = useRef(onRelocated);
+  useEffect(() => {
+    onRelocatedRef.current = onRelocated;
+  });
+
+  /**
    * Covers the rendered book while the app is not frontmost.
    *
    * NOT cosmetic — this closes a measured leak. iOS writes a full-screen capture of the app into
@@ -331,10 +479,13 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    * fallback this failure leaves it at.
    */
   const applyAppearanceWith = useCallback(
-    async (sender: (command: ReaderCommand) => void, env = appearanceEnvRef.current): Promise<void> => {
+    async (
+      sender: (command: ReaderCommand) => void,
+      env = appearanceEnvRef.current,
+    ): Promise<void> => {
       try {
         const prefs = await prefsStore.getPrefs();
-        sender({ type: 'applyAppearance', appearance: toReaderAppearance(prefs, env) });
+        sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
       } catch {
         // Best-effort — see the note above.
       }
@@ -417,6 +568,11 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
   // nothing useful to show the user — the screen is already gone.
   useEffect(() => {
     return () => {
+      // BEFORE closeBook, same cleanup, so the ordering is guaranteed rather than dependent on
+      // React's cross-effect cleanup order (which is not the same on an in-place book switch as on
+      // a full unmount). A no-op while TTS was never active (ref is null).
+      ttsProviderRef.current?.notifyClosed();
+
       void (async () => {
         try {
           await closeBook(bookId);
@@ -449,7 +605,10 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           // rendered WebView. Checked rather than asserted because a non-null
           // assertion here would be a promise the type system cannot keep.
           if (format === null) {
-            raiseError('UNSUPPORTED_FORMAT', 'The reader became ready before its format was known.');
+            raiseError(
+              'UNSUPPORTED_FORMAT',
+              'The reader became ready before its format was known.',
+            );
             return;
           }
 
@@ -536,10 +695,27 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
    */
   useEffect(() => {
     return prefsStore.subscribe((freshPrefs) => {
+      setLayoutPrefs(freshPrefs.layout);
       if (send === null) return;
-      send({ type: 'applyAppearance', appearance: toReaderAppearance(freshPrefs, appearanceEnvRef.current) });
+      void (async () => {
+        const appearance = await buildAppearanceWithFont(freshPrefs, appearanceEnvRef.current);
+        send({ type: 'applyAppearance', appearance });
+      })();
     });
   }, [send]);
+
+  // Seed `layoutPrefs` once at mount — the subscribe effect above only fires on a SUBSEQUENT
+  // savePrefs/resetPrefs, so without this the toggle and the swipe overlay would see the
+  // DEFAULT_PREFS.layout fallback until the user's first edit, rather than their stored preference.
+  useEffect(() => {
+    let cancelled = false;
+    void prefsStore.getPrefs().then((prefs) => {
+      if (!cancelled) setLayoutPrefs(prefs.layout);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * Trigger C (READER_PREFS_APPLICATION.md §5): an OS-level change (system dark mode, Dynamic Type,
@@ -566,6 +742,12 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         break;
       case 'relocated':
         setPosition(message.position);
+        setBounds({ atStart: message.atStart, atEnd: message.atEnd });
+        // Every real `relocated` is a navigation signal — epub.js never fires it for
+        // setSpokenRange, which only touches annotations — so this is the one call site needed,
+        // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
+        ttsProviderRef.current?.notifyRelocated();
+        onRelocatedRef.current?.(message.position);
         break;
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
@@ -585,6 +767,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           logSpan('open -> error', openSentAtRef.current, { code: message.code });
         }
         setError({ code: message.code, message: message.message });
+        break;
+      case 'ttsSentence':
+        ttsProviderRef.current?.handleReply(message);
         break;
     }
   }, []);
@@ -606,6 +791,21 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
     setShowSearch(false);
     send({ type: 'goTo', target });
   }, [send]);
+
+  /**
+   * Flush the resume target once, after the FIRST `rendered` — not merely once `send` exists,
+   * because a `goTo` before the rendition itself exists fails `NOT_READY` (both shells guard exactly
+   * that in their own `goTo`). In practice `send` is already non-null by the time `rendered` arrives
+   * (it is set synchronously in `handleReady`, before the awaited open-and-render sequence below it),
+   * so the `send === null` guard here is a belt-and-braces ordering check, not the expected path.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null) return;
+    const target = initialTargetRef.current;
+    if (target === null) return;
+    initialTargetRef.current = null;
+    send({ type: 'goTo', target });
+  }, [isRendered, send]);
 
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
@@ -715,6 +915,55 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
   const isBusy = htmlUri === null || (!isRendered && error === null);
 
+  /**
+   * Swipe-to-turn-page. INSTANT, NO ANIMATION — reuses the exact `next`/`prev` commands the
+   * Prev/Next buttons already send, so there is no WebView-side change for either format.
+   *
+   * `useMemo` keyed on `send`, NOT a ref: `send` only ever transitions null -> non-null exactly once
+   * (see its own state comment above), so this recreates at most once in practice, and closing over
+   * a plain reactive value rather than a ref is what keeps this out of the "may read a ref during
+   * render" class of bug — a real one for a PanResponder, since `.panHandlers` is spread into JSX
+   * below, which is inherently a render-time read.
+   *
+   * Claims the responder only once a clearly HORIZONTAL drag is under way
+   * (`onMoveShouldSetPanResponder`), so it never fights a vertical scroll gesture — relevant once
+   * continuous scroll exists, even though the overlay itself is not mounted in that flow (see the
+   * render condition below).
+   */
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gestureState) =>
+          Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
+        onPanResponderRelease: (_evt, gestureState) => {
+          if (Math.abs(gestureState.dx) <= SWIPE_MIN_DISTANCE_PX) return;
+          send?.({ type: gestureState.dx < 0 ? 'next' : 'prev' });
+        },
+      }),
+    [send],
+  );
+
+  // Paginated-only: in continuous scroll, native scrolling IS the navigation, and a swipe catcher
+  // sitting over the WebView would block it. Also gated on every overlay that already claims full
+  // priority over touches once visible, matching their own render conditions.
+  const swipeEnabled =
+    send !== null &&
+    !showToc &&
+    !showSearch &&
+    !showTts &&
+    !isBusy &&
+    !isObscured &&
+    layoutPrefs.flow === 'paginated';
+
+  // Prev/Next are BUTTON-driven, discrete-page-turn controls, and neither concept applies in
+  // continuous scroll: navigation there is native scrolling, same reasoning as swipeEnabled above.
+  // `bounds` is the UI-only refinement on top of that — `next`/`prev` already no-op at an edge
+  // WebView-side, so disabling here only stops the button LOOKING tappable past the end; it changes
+  // no behaviour if `bounds` is ever behind the WebView's own state.
+  const isScrolling = layoutPrefs.flow === 'scrolled-doc';
+  const prevDisabled = send === null || isScrolling || bounds.atStart;
+  const nextDisabled = send === null || isScrolling || bounds.atEnd;
+
   return (
     <View style={styles.container}>
       {error !== null && (
@@ -732,16 +981,38 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           // finds buttons by accessible name.
           accessibilityLabel="Search this book"
           onPress={() => {
-            // Mutual exclusion with Contents. Not cosmetic: both panels' toggles read
+            // Mutual exclusion with Contents (and TTS). Not cosmetic: both panels' toggles read
             // "Close" when open, and two buttons with that name make every
             // getByRole('button', { name: 'Close' }) ambiguous.
             setShowToc(false);
+            setShowTts(false);
             setShowSearch((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔍</Text>
         </Pressable>
+
+        {/* EPUB-only (readerTextProvider.ts is CFI-based) and gated on Accessibility's one
+            exported boolean — see ttsEnabled's own note above. */}
+        {ttsEnabled && format === 'EPUB' && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Listen to this book"
+            onPress={() => {
+              setShowToc(false);
+              setShowSearch(false);
+              setShowTts((open) => !open);
+            }}
+            style={styles.toolbarButton}
+          >
+            <Text style={styles.toolbarIcon}>🔊</Text>
+          </Pressable>
+        )}
+
+        {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
+            the rightmost item in the row rather than a floating overlay on top of it. */}
+        {toolbarExtra}
       </View>
 
       <View style={styles.viewer}>
@@ -761,6 +1032,29 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             onMessage={handleMessage}
             onHostError={raiseError}
             onReady={handleReady}
+            scrollEnabled={layoutPrefs.flow === 'scrolled-doc'}
+          />
+        )}
+
+        {/*
+          THE SWIPE CATCHER. A sibling View ON TOP of the WebView, not a wrapper around it — a
+          PanResponder wrapping a native WebView does not reliably see touches at all, because the
+          WebView's own native gesture handling intercepts them before RN's JS responder system does.
+          A plain overlay above it has no such problem: RN hit-tests overlapping siblings by z-order,
+          so every other overlay below (rendered later in this file, hence higher z) still gets first
+          claim on touches within its own bounds once visible.
+
+          Necessarily swallows every touch in the viewer while mounted — there is no existing in-book
+          tap interaction to preserve underneath it; navigation is fully blocked by
+          ReaderWebView.tsx's allow-list already, and everything interactive today is RN-button- or
+          panel-driven.
+        */}
+        {swipeEnabled && (
+          <View
+            style={FILL}
+            {...panResponder.panHandlers}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
           />
         )}
 
@@ -830,22 +1124,43 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
                   // duplicate-key warning on device. Targets are not unique in the wild, so they
                   // cannot be identity here — and a PDF outline repeats page numbers by design, since
                   // several sections legitimately open on the same page.
-                  toc.map((item, index) => (
-                    <Pressable
-                      key={`${index}-${targetKey(item.target)}`}
-                      onPress={() => {
-                        goTo(item.target);
-                      }}
-                      // Indent, do not inset the row: paddingLeft keeps the whole
-                      // width tappable at every depth, where marginLeft would shrink
-                      // the touch target of the entries that are already hardest to
-                      // hit. `depth` is clamped by parseReaderMessage, so this cannot
-                      // run away.
-                      style={[styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]}
-                    >
-                      <Text style={styles.tocItemText}>{item.label}</Text>
-                    </Pressable>
-                  ))
+                  toc.map((item, index) => {
+                    // A nav point with no href (epubOutline.ts's flattenToc keeps a grouping
+                    // heading rather than dropping it, as `{kind:'href', href:''}`) has nothing to
+                    // navigate to. `disabled` stops onPress from firing at all, so this never
+                    // reaches goTo -> epub.entry.ts's `rendition.display('')`, whose behavior is
+                    // otherwise unverified.
+                    const isNavigable = item.target.kind !== 'href' || item.target.href !== '';
+                    return (
+                      <Pressable
+                        key={`${index}-${targetKey(item.target)}`}
+                        disabled={!isNavigable}
+                        accessibilityState={{ disabled: !isNavigable }}
+                        onPress={() => {
+                          goTo(item.target);
+                        }}
+                        // Indent, do not inset the row: paddingLeft keeps the whole
+                        // width tappable at every depth, where marginLeft would shrink
+                        // the touch target of the entries that are already hardest to
+                        // hit. `depth` is clamped by parseReaderMessage, so this cannot
+                        // run away.
+                        // Two elements when navigable, matching every row before this change
+                        // (pinned by the depth-indent test) — the disabled style only extends the
+                        // array for a grouping heading, which that test never covers.
+                        style={
+                          isNavigable
+                            ? [styles.tocItem, { paddingLeft: item.depth * TOC_INDENT_PX }]
+                            : [
+                                styles.tocItem,
+                                { paddingLeft: item.depth * TOC_INDENT_PX },
+                                styles.tocItemDisabled,
+                              ]
+                        }
+                      >
+                        <Text style={styles.tocItemText}>{item.label}</Text>
+                      </Pressable>
+                    );
+                  })
                 )}
               </ScrollView>
 
@@ -927,6 +1242,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
             onStep={stepHit}
             onOpenResults={() => {
               setShowToc(false);
+              setShowTts(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
@@ -949,12 +1265,19 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
         )}
       </View>
 
+      {/* Docked below the viewer rather than an absolute overlay like the TOC/Search panels — its
+          own styling already assumes ordinary document flow (a border-top separator, not a floating
+          panel with fades). Rendered only once `ttsProvider` is real: while it's null the session
+          passed to useTtsSession is the inert singleton (see ttsProvider's own note), which must
+          never be shown as if it were a working session. */}
+      {showTts && ttsProvider !== null && <TtsControls session={ttsSession} />}
+
       <View style={styles.controls}>
         <Pressable
           accessibilityRole="button"
-          disabled={send === null}
+          disabled={prevDisabled}
           onPress={() => send?.({ type: 'prev' })}
-          style={[styles.button, send === null && styles.buttonDisabled]}
+          style={[styles.button, prevDisabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonText}>‹ Prev</Text>
         </Pressable>
@@ -964,6 +1287,7 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
           disabled={toc.length === 0}
           onPress={() => {
             setShowSearch(false); // mutual exclusion — see the toolbar button above
+            setShowTts(false);
             setShowToc((open) => !open);
           }}
           style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -1022,9 +1346,9 @@ export function ReaderScreen({ bookId }: ReaderScreenProps): React.JSX.Element {
 
         <Pressable
           accessibilityRole="button"
-          disabled={send === null}
+          disabled={nextDisabled}
           onPress={() => send?.({ type: 'next' })}
-          style={[styles.button, send === null && styles.buttonDisabled]}
+          style={[styles.button, nextDisabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonText}>Next ›</Text>
         </Pressable>
@@ -1049,6 +1373,9 @@ function targetKey(target: ReaderTarget): string {
  * flattens it and carries a `depth`, so this is the only place the tree is visible.
  */
 const TOC_INDENT_PX = 16;
+
+/** Horizontal drag distance, in points, that counts as a deliberate page-turn swipe. */
+const SWIPE_MIN_DISTANCE_PX = 50;
 
 /**
  * Slack, in points, before an edge counts as "scrolled away from".
@@ -1093,8 +1420,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
   viewer: { flex: 1 },
 
-  // Right-aligned so the icon falls under the thumb rather than next to App.tsx's
-  // temporary title. 44pt is the minimum comfortable touch target.
+  // Right-aligned so the icon falls under the thumb rather than next to the native-stack header's
+  // own title/back button above it. 44pt is the minimum comfortable touch target.
   toolbar: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -1154,6 +1481,8 @@ const styles = StyleSheet.create({
   tocEmpty: { fontSize: 14, color: '#777777' },
   tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   tocItemText: { fontSize: 15, color: '#111111' },
+  // A grouping heading with no href — see the note at the TOC row's `isNavigable` check.
+  tocItemDisabled: { opacity: 0.5 },
 
   // FULLY OPAQUE is the whole point — a translucent cover still photographs the text underneath.
   privacyCover: {

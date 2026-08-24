@@ -187,6 +187,247 @@ ${text}`;
     post({ type: "ready" });
   }
 
+  // src/features/reader/tts/readerTextProvider.ts
+  var TTS_MAX_SENTENCE_CHARS = 400;
+
+  // src/features/reader/webview/src/ttsSegmentation.ts
+  var SENTENCE_BOUNDARY = /[.!?]+["')\]]*(?=\s|$)/g;
+  function isWhitespaceChar(ch) {
+    return ch !== void 0 && /\s/.test(ch);
+  }
+  function pushCapped(text, start, end, into) {
+    let trimmedStart = start;
+    let trimmedEnd = end;
+    while (trimmedStart < trimmedEnd && isWhitespaceChar(text[trimmedStart])) trimmedStart++;
+    while (trimmedEnd > trimmedStart && isWhitespaceChar(text[trimmedEnd - 1])) trimmedEnd--;
+    if (trimmedEnd <= trimmedStart) return;
+    let pieceStart = trimmedStart;
+    while (trimmedEnd - pieceStart > TTS_MAX_SENTENCE_CHARS) {
+      const windowEnd = Math.min(pieceStart + TTS_MAX_SENTENCE_CHARS + 1, trimmedEnd);
+      const window2 = text.slice(pieceStart, windowEnd);
+      const lastSpace = window2.lastIndexOf(" ");
+      const cut = lastSpace > 0 ? pieceStart + lastSpace : pieceStart + TTS_MAX_SENTENCE_CHARS;
+      let pieceEnd = cut;
+      while (pieceEnd > pieceStart && isWhitespaceChar(text[pieceEnd - 1])) pieceEnd--;
+      into.push({ start: pieceStart, end: pieceEnd });
+      let next = cut;
+      while (next < trimmedEnd && isWhitespaceChar(text[next])) next++;
+      pieceStart = next;
+    }
+    if (trimmedEnd > pieceStart) into.push({ start: pieceStart, end: trimmedEnd });
+  }
+  function splitIntoSentences(text) {
+    const spans = [];
+    let cursor = 0;
+    SENTENCE_BOUNDARY.lastIndex = 0;
+    let match;
+    while ((match = SENTENCE_BOUNDARY.exec(text)) !== null) {
+      const boundaryEnd = match.index + match[0].length;
+      pushCapped(text, cursor, boundaryEnd, spans);
+      cursor = boundaryEnd;
+    }
+    if (cursor < text.length) pushCapped(text, cursor, text.length, spans);
+    return spans;
+  }
+  var SKIPPABLE_TAG_NAMES = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+  function isSkippableTagName(tagName) {
+    return SKIPPABLE_TAG_NAMES.has(tagName.toUpperCase());
+  }
+  var SKIPPABLE_ROLES = /* @__PURE__ */ new Set(["presentation", "none", "doc-pagebreak"]);
+  function isSkippableByAttributes(ariaHidden, role) {
+    if (ariaHidden === "true") return true;
+    return role !== null && SKIPPABLE_ROLES.has(role);
+  }
+
+  // src/features/reader/webview/src/epubTtsResolver.ts
+  async function loadSectionDocument(section) {
+    await section.load();
+    return section.document;
+  }
+  function spineGet(book2, target) {
+    return book2.spine.get(target);
+  }
+  function renditionGetRange(rendition2, cfi) {
+    return rendition2.getRange(cfi);
+  }
+  function findRenderedContents(rendition2, spineIndex) {
+    const all = rendition2.getContents();
+    return all.find((contents) => contents.sectionIndex === spineIndex) ?? null;
+  }
+  function isTextNodeSpeakable(node) {
+    let el = node.parentElement;
+    while (el) {
+      if (isSkippableTagName(el.tagName)) return false;
+      if (isSkippableByAttributes(el.getAttribute("aria-hidden"), el.getAttribute("role"))) return false;
+      el = el.parentElement;
+    }
+    return true;
+  }
+  function buildRuns(root) {
+    const runs = [];
+    let concatenated = "";
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const text = node;
+        if (text.data.trim().length === 0) return NodeFilter.FILTER_REJECT;
+        return isTextNodeSpeakable(text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    let current = walker.nextNode();
+    while (current) {
+      const textNode = current;
+      if (runs.length > 0) concatenated += " ";
+      runs.push({ node: textNode, text: textNode.data, concatStart: concatenated.length });
+      concatenated += textNode.data;
+      current = walker.nextNode();
+    }
+    return { runs, concatenated };
+  }
+  function locate(runs, globalOffset) {
+    let lo = 0;
+    let hi = runs.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = lo + hi >> 1;
+      if (runs[mid].concatStart <= globalOffset) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (found === -1) return null;
+    const run = runs[found];
+    const localOffset = globalOffset - run.concatStart;
+    if (localOffset <= run.text.length) return { node: run.node, offset: localOffset };
+    const next = runs[found + 1];
+    return next ? { node: next.node, offset: 0 } : { node: run.node, offset: run.text.length };
+  }
+  function rangeForSpan(doc, runs, span) {
+    const start = locate(runs, span.start);
+    const end = locate(runs, span.end);
+    if (!start || !end) return null;
+    const range = doc.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    return range;
+  }
+  function segmentDocument(doc, mintCfi) {
+    const root = doc.body ?? doc.documentElement;
+    if (!root) return [];
+    const { runs, concatenated } = buildRuns(root);
+    if (runs.length === 0) return [];
+    const sentences = [];
+    for (const span of splitIntoSentences(concatenated)) {
+      const range = rangeForSpan(doc, runs, span);
+      if (!range) continue;
+      const text = range.toString().replace(/\s+/g, " ").trim();
+      if (text.length === 0) continue;
+      sentences.push({
+        text,
+        cfi: mintCfi(range),
+        sentenceIndex: sentences.length,
+        lastInSection: false
+      });
+    }
+    const last = sentences[sentences.length - 1];
+    if (last) last.lastInSection = true;
+    return sentences;
+  }
+  var sectionCache = /* @__PURE__ */ new Map();
+  var cfiIndex = /* @__PURE__ */ new Map();
+  function resetTtsState() {
+    sectionCache.clear();
+    cfiIndex.clear();
+  }
+  async function resolveSection(book2, rendition2, spineIndex) {
+    const cached = sectionCache.get(spineIndex);
+    if (cached) return cached;
+    const section = spineGet(book2, spineIndex);
+    if (!section) return null;
+    if (!section.linear) {
+      const empty = { sentences: [] };
+      sectionCache.set(spineIndex, empty);
+      return empty;
+    }
+    const renderedContents = findRenderedContents(rendition2, spineIndex);
+    const doc = renderedContents ? renderedContents.document : await loadSectionDocument(section);
+    const mintCfi = renderedContents ? (range) => renderedContents.cfiFromRange(range) : (range) => section.cfiFromRange(range);
+    const sentences = segmentDocument(doc, mintCfi);
+    const result = { sentences };
+    sectionCache.set(spineIndex, result);
+    for (const sentence of sentences) {
+      cfiIndex.set(sentence.cfi, { spineIndex, sentenceIndex: sentence.sentenceIndex });
+    }
+    return result;
+  }
+  async function firstSentenceFrom(book2, rendition2, spineIndex, sentenceIndex) {
+    const section = await resolveSection(book2, rendition2, spineIndex);
+    if (section === null) return null;
+    const sentence = section.sentences[sentenceIndex];
+    if (sentence) return { spineIndex, sentence };
+    return firstSentenceFrom(book2, rendition2, spineIndex + 1, 0);
+  }
+  function toTtsSentence(found) {
+    return {
+      text: found.sentence.text,
+      cfi: found.sentence.cfi,
+      spineIndex: found.spineIndex,
+      sentenceIndex: found.sentence.sentenceIndex,
+      lastInSection: found.sentence.lastInSection
+    };
+  }
+  function ok(found) {
+    return { status: "ok", sentence: toTtsSentence(found) };
+  }
+  async function resolveFromLivePosition(book2, rendition2, lastCfi2) {
+    if (lastCfi2 === null) {
+      const found2 = await firstSentenceFrom(book2, rendition2, 0, 0);
+      return found2 ? ok(found2) : { status: "endOfBook" };
+    }
+    const anchorSection = spineGet(book2, lastCfi2);
+    if (!anchorSection || !anchorSection.linear) {
+      const startIndex = anchorSection ? anchorSection.index + 1 : 0;
+      const found2 = await firstSentenceFrom(book2, rendition2, startIndex, 0);
+      return found2 ? ok(found2) : { status: "endOfBook" };
+    }
+    const cached = await resolveSection(book2, rendition2, anchorSection.index);
+    if (!cached || cached.sentences.length === 0) {
+      const found2 = await firstSentenceFrom(book2, rendition2, anchorSection.index + 1, 0);
+      return found2 ? ok(found2) : { status: "endOfBook" };
+    }
+    const pointRange = renditionGetRange(rendition2, lastCfi2);
+    if (!pointRange) {
+      return ok({ spineIndex: anchorSection.index, sentence: cached.sentences[0] });
+    }
+    for (const sentence of cached.sentences) {
+      const sentenceRange = renditionGetRange(rendition2, sentence.cfi);
+      if (!sentenceRange) continue;
+      if (sentenceRange.comparePoint(pointRange.startContainer, pointRange.startOffset) !== 1) {
+        return ok({ spineIndex: anchorSection.index, sentence });
+      }
+    }
+    const found = await firstSentenceFrom(book2, rendition2, anchorSection.index + 1, 0);
+    return found ? ok(found) : { status: "endOfBook" };
+  }
+  async function resolveCurrent(book2, rendition2, from, lastCfi2) {
+    if (from === null) return resolveFromLivePosition(book2, rendition2, lastCfi2);
+    const anchor = cfiIndex.get(from);
+    if (!anchor) return { status: "invalidAnchor" };
+    const section = await resolveSection(book2, rendition2, anchor.spineIndex);
+    const sentence = section?.sentences[anchor.sentenceIndex];
+    return sentence ? ok({ spineIndex: anchor.spineIndex, sentence }) : { status: "invalidAnchor" };
+  }
+  async function resolveNext(book2, rendition2, after) {
+    const anchor = cfiIndex.get(after);
+    if (!anchor) return { status: "invalidAnchor" };
+    const section = await resolveSection(book2, rendition2, anchor.spineIndex);
+    const nextInSection = section?.sentences[anchor.sentenceIndex + 1];
+    if (nextInSection) return ok({ spineIndex: anchor.spineIndex, sentence: nextInSection });
+    const found = await firstSentenceFrom(book2, rendition2, anchor.spineIndex + 1, 0);
+    return found ? ok(found) : { status: "endOfBook" };
+  }
+
   // src/features/reader/readerBridge.ts
   var MAX_TOC_DEPTH = 6;
 
@@ -203,6 +444,29 @@ ${text}`;
       flattenToc(item.subitems, Math.min(depth + 1, MAX_TOC_DEPTH), into);
     }
     return into;
+  }
+
+  // src/features/reader/webview/src/highlightNaming.ts
+  function annotationType(owner) {
+    return `tf-hl-${owner}`;
+  }
+  function annotationClassName(owner, variant) {
+    return `tf-hl-${owner}--${variant}`;
+  }
+
+  // src/features/reader/webview/src/highlightSeam.ts
+  function add(rendition2, owner, cfiRange, variant, styles) {
+    rendition2.annotations.add(
+      annotationType(owner),
+      cfiRange,
+      {},
+      void 0,
+      annotationClassName(owner, variant),
+      styles
+    );
+  }
+  function remove(rendition2, owner, cfiRange) {
+    rendition2.annotations.remove(cfiRange, annotationType(owner));
   }
 
   // src/shared/contracts/accessibility.ts
@@ -305,8 +569,16 @@ ${text}`;
   function baselineCss(m, appearance = {}, flow = READER_FLOW) {
     const f = m.fontPx;
     const l = m.linePx;
-    const { fg, bg, link, fontFamily, letterSpacingPx } = appearance;
+    const { fg, bg, link, fontFamily, letterSpacingPx, fontFaceDataUri } = appearance;
+    const fontFaceRule = fontFamily && fontFaceDataUri ? [
+      "@font-face {",
+      `  font-family: ${fontFamily};`,
+      `  src: url("${fontFaceDataUri}");`,
+      "  font-display: swap;",
+      "}"
+    ] : [];
     let css = [
+      ...fontFaceRule,
       // The iframe inherits nothing from the host document, so the host's own -webkit-text-size-adjust
       // does not reach it. Without this, WKWebView inflates text inside a fixed-height column:
       // clipped rows, phantom pages.
@@ -413,12 +685,26 @@ ${text}`;
     const families = trimmed.split(",").map((part) => part.trim()).filter((part) => part !== "").map((part) => part.includes(" ") ? `"${part}"` : part);
     return families.join(", ");
   }
+  var FONT_DATA_URI_ALLOWED = /^data:font\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/;
+  function sanitizeFontDataUri(raw) {
+    if (raw === null) return "";
+    const trimmed = raw.trim();
+    if (trimmed === "" || !FONT_DATA_URI_ALLOWED.test(trimmed)) return "";
+    return trimmed;
+  }
   function isForcedBreak(value) {
     return value === "always" || value === "page" || value === "left" || value === "right" || value === "recto" || value === "verso";
   }
   function isMultiColumnCount(value) {
     const count = Number.parseInt(value, 10);
     return Number.isFinite(count) && count >= 2;
+  }
+  var MAX_INDENT_FRACTION = 0.2;
+  function isExcessiveIndent(marginPx, viewportWidthPx) {
+    return Number.isFinite(marginPx) && marginPx > viewportWidthPx * MAX_INDENT_FRACTION;
+  }
+  function cappedIndent(viewportWidthPx) {
+    return viewportWidthPx * MAX_INDENT_FRACTION;
   }
   function columnOverrideCss() {
     return [
@@ -440,6 +726,10 @@ ${text}`;
   var currentCss = "";
   var currentAppearance = null;
   var lastCfi = null;
+  var currentSpokenCfi = null;
+  var TTS_OWNER = "tts";
+  var TTS_SPOKEN_VARIANT = "spoken";
+  var TTS_SPOKEN_STYLES = { backgroundColor: "rgba(255, 213, 0, 0.4)" };
   function currentTypography() {
     if (!currentAppearance) return void 0;
     return {
@@ -453,16 +743,24 @@ ${text}`;
   }
   function appearanceCssOptions() {
     if (!currentAppearance) return {};
+    const fontFamily = sanitizeFontFamily(currentAppearance.fontFamily);
+    const fontFaceDataUri = sanitizeFontDataUri(currentAppearance.customFontUri);
     return {
       fg: currentAppearance.fg,
       bg: currentAppearance.bg,
       link: currentAppearance.link,
-      fontFamily: sanitizeFontFamily(currentAppearance.fontFamily),
-      letterSpacingPx: currentAppearance.letterSpacingPx
+      fontFamily,
+      letterSpacingPx: currentAppearance.letterSpacingPx,
+      // Only meaningful alongside a non-empty fontFamily — baselineCss's @font-face declares itself
+      // under that exact name, so a URI with nothing to attach it to is dropped rather than passed.
+      ...fontFamily && fontFaceDataUri ? { fontFaceDataUri } : {}
     };
   }
   function mapSpread(spread) {
     return spread === "double" ? "auto" : "none";
+  }
+  function mapManager(flow) {
+    return flow === "paginated" ? "default" : "continuous";
   }
   function insertStylesheet(contents, css) {
     contents.addStylesheetCss(
@@ -517,6 +815,24 @@ ${text}`;
     }
     return applied;
   }
+  function capExcessiveIndents(doc, viewportWidthPx) {
+    if (!doc?.body || !doc.defaultView) return;
+    const win = doc.defaultView;
+    const nodes = doc.body.querySelectorAll(BREAK_CANDIDATE_SELECTOR);
+    const limit = Math.min(nodes.length, MAX_BREAK_CANDIDATES);
+    for (let i = 0; i < limit; i++) {
+      const el = nodes[i];
+      const computed = win.getComputedStyle(el);
+      const marginLeft = Number.parseFloat(computed.marginLeft);
+      if (isExcessiveIndent(marginLeft, viewportWidthPx)) {
+        el.style.setProperty("margin-left", `${cappedIndent(viewportWidthPx)}px`, "important");
+      }
+      const marginRight = Number.parseFloat(computed.marginRight);
+      if (isExcessiveIndent(marginRight, viewportWidthPx)) {
+        el.style.setProperty("margin-right", `${cappedIndent(viewportWidthPx)}px`, "important");
+      }
+    }
+  }
   function hasAuthoredColumns(doc) {
     if (!doc?.body || !doc.defaultView) return false;
     const win = doc.defaultView;
@@ -529,8 +845,43 @@ ${text}`;
     return false;
   }
   function finalCssFor(doc) {
-    return isPaginated() && hasAuthoredColumns(doc) ? `${currentCss}
+    return isPaginated(currentFlow()) && hasAuthoredColumns(doc) ? `${currentCss}
 ${columnOverrideCss()}` : currentCss;
+  }
+  function createRendition() {
+    if (!book) throw new Error("createRendition() called before a book was opened");
+    rendition = book.renderTo("viewer", {
+      flow: currentFlow(),
+      manager: mapManager(currentFlow()),
+      // '100%' AS STRINGS, NOT NUMBERS — see the note this carried before extraction: Stage.onResize
+      // only attaches a window resize listener when width/height are NOT numeric (stage.js:147-153).
+      // Pinned by readerTemplate.test.ts.
+      width: "100%",
+      height: "100%",
+      spread: currentAppearance ? mapSpread(currentAppearance.spread) : "none"
+    });
+    applyBaselineCss();
+    rendition.hooks.content.register((contents) => {
+      if (isPaginated(currentFlow())) applyAuthoredBreaks(contents.document);
+      capExcessiveIndents(contents.document, viewportSize().width);
+      insertStylesheet(contents, finalCssFor(contents.document));
+    });
+    rendition.on("resized", () => {
+      applyBaselineCss();
+    });
+    rendition.on("relocated", (location) => {
+      lastCfi = location?.start?.cfi ?? null;
+      post({
+        type: "relocated",
+        // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
+        // the whole reason ReaderPosition is discriminated by format rather than carrying both shapes
+        // flat with one of them always null.
+        position: { kind: "cfi", cfi: lastCfi },
+        atStart: !!location?.atStart,
+        atEnd: !!location?.atEnd
+      });
+    });
+    return rendition;
   }
   var api = {
     /**
@@ -557,48 +908,13 @@ ${columnOverrideCss()}` : currentCss;
       }
       void (async () => {
         try {
+          resetTtsState();
+          currentSpokenCfi = null;
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
-          rendition = book.renderTo("viewer", {
-            // The current appearance's flow/spread if applyAppearance already landed (the host sends
-            // it before openEpub), falling back to the pre-payload default otherwise — see
-            // currentAppearance's own note.
-            flow: currentFlow(),
-            // '100%' AS STRINGS, NOT NUMBERS — this is what makes the reader survive a rotation.
-            // Stage.onResize only attaches a window resize listener when width/height are NOT numeric
-            // (stage.js:147-153), and that listener is the whole of our resize handling: it lands in
-            // Rendition.onResized, which re-lays out and re-displays the current CFI
-            // (rendition.js:479-481). Pass pixel numbers here and rotation silently stops re-flowing.
-            // Pinned by readerTemplate.test.ts.
-            width: "100%",
-            height: "100%",
-            // 'none' (single) keeps one page per screen; the default ('auto') shows two side-by-side
-            // on wide screens, which makes next/prev look like it is skipping pages. Prefs-driven once
-            // currentAppearance exists.
-            spread: currentAppearance ? mapSpread(currentAppearance.spread) : "none"
-          });
-          applyBaselineCss();
-          rendition.hooks.content.register((contents) => {
-            if (isPaginated()) applyAuthoredBreaks(contents.document);
-            insertStylesheet(contents, finalCssFor(contents.document));
-          });
-          rendition.on("resized", () => {
-            applyBaselineCss();
-          });
-          rendition.on("relocated", (location) => {
-            lastCfi = location?.start?.cfi ?? null;
-            post({
-              type: "relocated",
-              // A CFI, not a page: this book is reflowable, so there is no stable page to report. That
-              // is the whole reason ReaderPosition is discriminated by format rather than carrying both
-              // shapes flat with one of them always null.
-              position: { kind: "cfi", cfi: lastCfi },
-              atStart: !!location?.atStart,
-              atEnd: !!location?.atEnd
-            });
-          });
-          await rendition.display();
+          const newRendition = createRendition();
+          await newRendition.display();
           post({ type: "rendered" });
           const navigation = await book.loaded.navigation;
           post({ type: "toc", items: flattenToc(navigation?.toc ?? [], 0, []) });
@@ -658,22 +974,76 @@ ${columnOverrideCss()}` : currentCss;
      * Theme colours ride the SAME `addStylesheetCss` path as typography, not `rendition.themes.*` —
      * see `baselineCss`'s own note on why themes cannot carry this at all for chapters loaded later.
      *
-     * `flow` is the one change that needs epub.js to re-layout rather than just re-style: changing it
-     * without re-displaying leaves the rendition paginating in the OLD mode against the NEW CSS.
-     * Skipped when the flow is unchanged so an unrelated theme-only appearance update never triggers a
-     * layout flash. `spread` needs no such guard — `rendition.spread()` is cheap and idempotent.
+     * `flow` is the one change that needs more than re-styling, and more than `rendition.flow()`
+     * alone can give it: a flow change that crosses the `mapManager()` boundary (paginated <->
+     * anything else) needs a DIFFERENT epub.js manager, and the manager is fixed at construction —
+     * there is no public API to hot-swap it. So instead of calling `rendition.flow()`, this destroys
+     * the current rendition and rebuilds one from scratch via `createRendition()`, redisplaying at the
+     * last known CFI. Skipped when the flow is unchanged so an unrelated theme-only appearance update
+     * never triggers a rebuild. `spread` needs no such guard — `rendition.spread()` is cheap and
+     * idempotent, and is not epub.js's manager choice.
      */
     applyAppearance: (appearance) => {
       const previousFlow = currentAppearance?.flow;
       currentAppearance = appearance;
-      applyBaselineCss();
       if (!rendition) return;
-      rendition.spread(mapSpread(appearance.spread));
       if (previousFlow !== void 0 && previousFlow !== appearance.flow) {
-        rendition.flow(appearance.flow);
-        rendition.display(lastCfi ?? void 0).catch((error) => {
+        const cfi = lastCfi;
+        rendition.destroy();
+        createRendition().display(cfi ?? void 0).then(() => {
+          if (currentSpokenCfi !== null && rendition) {
+            add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+          }
+        }).catch((error) => {
           fail("NAVIGATION_FAILED", error);
         });
+        return;
+      }
+      applyBaselineCss();
+      rendition.spread(mapSpread(appearance.spread));
+    },
+    /**
+     * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
+     * async resolve work starts and used throughout it, rather than re-read from the module-locals —
+     * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
+     * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
+     * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
+     * per-book provider instance is what actually discards a stale reply, not this shell.
+     */
+    requestTtsSentence: ({ requestId, from, mode }) => {
+      const activeBook = book;
+      const activeRendition = rendition;
+      if (!activeBook || !activeRendition) {
+        post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
+        return;
+      }
+      void (async () => {
+        try {
+          const result = mode === "current" ? await resolveCurrent(activeBook, activeRendition, from, lastCfi) : await resolveNext(activeBook, activeRendition, from ?? "");
+          post({ type: "ttsSentence", requestId, result });
+        } catch (error) {
+          post({
+            type: "ttsSentence",
+            requestId,
+            result: { status: "error", message: error instanceof Error ? error.message : String(error) }
+          });
+        }
+      })();
+    },
+    /**
+     * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
+     * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
+     * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
+     * cannot be painted must not be able to interrupt speech, so this never posts a message and never
+     * throws out of the try.
+     */
+    setSpokenRange: (cfi) => {
+      try {
+        if (!rendition) return;
+        if (currentSpokenCfi !== null) remove(rendition, TTS_OWNER, currentSpokenCfi);
+        currentSpokenCfi = cfi;
+        if (cfi !== null) add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+      } catch {
       }
     }
   };

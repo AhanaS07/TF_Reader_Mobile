@@ -31,6 +31,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
+import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { AppearanceEnv } from '@/features/personalization/readerAppearance';
@@ -73,6 +74,28 @@ jest.mock('@/features/reader/readerAssets', () => {
 
 jest.mock('@/features/encryption/contentProvider', () => ({
   closeBook: jest.fn(() => Promise.resolve()),
+}));
+
+/**
+ * The TTS native-module seam. `ReaderScreen` now calls `useTtsSession` unconditionally (Rules of
+ * Hooks — see its own note), and `useTtsSession` imports `@iternio/react-native-tts` via
+ * `ttsEngine.ts`. That package ships ES module syntax Jest's default transform does not parse, so
+ * every test here needs this mocked regardless of whether it exercises TTS — same seam
+ * `useTtsSession.test.ts` mocks, at the same path, for the same reason.
+ */
+jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
+  __esModule: true,
+  default: {
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    speak: jest.fn(() => Promise.resolve('utterance-1')),
+    stop: jest.fn(() => Promise.resolve(true)),
+    pause: jest.fn(() => Promise.resolve(true)),
+    resume: jest.fn(() => Promise.resolve(true)),
+    setDefaultRate: jest.fn(() => Promise.resolve(true)),
+    setDefaultPitch: jest.fn(() => Promise.resolve(true)),
+    setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    voices: jest.fn(() => Promise.resolve([])),
+  },
 }));
 
 /**
@@ -133,6 +156,18 @@ jest.mock('@/features/reader/useAppearanceEnv', () => ({
   useAppearanceEnv: jest.fn(),
 }));
 
+/**
+ * The custom-font byte-loading seam. Mocked for the same reason `readerAssets` is: the real
+ * implementation is native (expo-asset/expo-file-system), and its own contract ("null for
+ * 'system'/unknown, a data: URI otherwise, never throws") is this mock's job to honour, not to
+ * re-verify — that's fontFaceLoader's own concern. Defaults to `null`, matching every test's default
+ * `font.family: 'system'`, so the existing `applyAppearance` assertions below (which compare against
+ * `toReaderAppearance` directly) are unaffected unless a test opts into a real family.
+ */
+jest.mock('@/features/personalization/fontFaceLoader', () => ({
+  loadFontFaceSrc: jest.fn(() => Promise.resolve(null)),
+}));
+
 const LIGHT_ENV: AppearanceEnv = {
   osColorScheme: 'light',
   osFontScale: 1,
@@ -161,6 +196,7 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
 beforeEach(() => {
   jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+  jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
 });
 
 /**
@@ -286,6 +322,136 @@ describe('a PDF Contents row', () => {
 
     expect(screen.getByText('Section A')).toBeTruthy();
     expect(screen.getByText('Section B')).toBeTruthy();
+  });
+});
+
+describe('an EPUB grouping heading with no href', () => {
+  // epubOutline.ts's flattenToc keeps a nav point with no href rather than dropping it (a heading
+  // that only groups its subitems), emitting `{kind:'href', href:''}` so the row still appears and
+  // its children keep their depth. Tapping it must not reach goTo -> epub.entry.ts's
+  // `rendition.display('')`, whose behavior is unverified — the row has nothing to navigate to.
+  it('does not navigate when tapped', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+    const before = __injectJavaScript.mock.calls.length;
+
+    await fireEvent.press(screen.getByText('Grouping heading'));
+
+    expect(__injectJavaScript.mock.calls.length).toBe(before);
+  });
+
+  it('is marked disabled for assistive tech, unlike a real chapter row', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents(2);
+
+    expect(screen.getByText('Grouping heading').parent?.props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+    expect(screen.getByText('Chapter 1').parent?.props.accessibilityState).not.toMatchObject({
+      disabled: true,
+    });
+  });
+});
+
+describe('Prev/Next navigation controls', () => {
+  function prevButton() {
+    return screen.getByRole('button', { name: '‹ Prev' });
+  }
+
+  function nextButton() {
+    return screen.getByRole('button', { name: 'Next ›' });
+  }
+
+  async function relocate(atStart: boolean, atEnd: boolean): Promise<void> {
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart,
+      atEnd,
+    });
+  }
+
+  // Same reasoning as ReaderWebView's own READY_TIMEOUT window: before the first `relocated`
+  // arrives, "the book opens on its first page" is what Prev being disabled already means, and
+  // this is the state a fresh open sits in for however long the WebView takes to report it.
+  it('disables Prev before any position has arrived, matching a book opening on its first page', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+  });
+
+  it('disables Prev at the start and Next at the end, independently', async () => {
+    await mountReader();
+    await reportReady();
+
+    await relocate(true, false);
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+
+    await relocate(false, true);
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('re-enables both once neither edge applies any more', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(true, false);
+
+    await relocate(false, false);
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
+  });
+
+  // CONTINUOUS SCROLL IS NAVIGATED BY SCROLLING, NOT BY THESE BUTTONS — so both are disabled
+  // unconditionally in that flow, independent of atStart/atEnd (which the WebView still reports,
+  // scrolled by whatever "one screenful" means there — see epub.entry.ts/pdf.entry.ts).
+  it('disables both in continuous scroll, regardless of position', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(false, false); // clearly not at either edge
+
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+    });
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: true });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('re-enables on returning to paginated flow, honouring the last reported edges', async () => {
+    await mountReader();
+    await reportReady();
+    await relocate(false, false);
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+    });
+
+    await act(async () => {
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+    });
+
+    expect(prevButton().props.accessibilityState).toMatchObject({ disabled: false });
+    expect(nextButton().props.accessibilityState).toMatchObject({ disabled: false });
   });
 });
 
@@ -788,6 +954,11 @@ describe('applyAppearance — the prefs-application wiring', () => {
     // act tracking was mid-flight from the preceding reportReady()).
     const changed = makePrefs({ theme: 'dark' });
     __emitPrefsChange(changed);
+    // The listener's send is now behind two microtask hops (buildAppearanceWithFont's own await of
+    // loadFontFaceSrc, then the listener's await of buildAppearanceWithFont itself) — a bare double
+    // await, not act(), per the note above.
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(__injectJavaScript).toHaveBeenCalledWith(
       buildCommandScript({ type: 'applyAppearance', appearance: toReaderAppearance(changed, LIGHT_ENV) }),
@@ -837,6 +1008,49 @@ describe('applyAppearance — the prefs-application wiring', () => {
     __emitPrefsChange(makePrefs({ theme: 'dark' }));
 
     expect(__injectJavaScript).not.toHaveBeenCalled();
+  });
+
+  it('overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance\'s own passthrough', async () => {
+    const fontDataUri = 'data:font/ttf;base64,AAAA';
+    jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
+    const withInter = makePrefs({ font: { family: 'Inter' } });
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withInter);
+
+    await mountReader();
+    await reportReady();
+
+    // toReaderAppearance's own resolveFont carries customFontUri through unresolved (undefined on
+    // this prefs record) — the sent payload must have the LOADED bytes instead, not that passthrough.
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: { ...toReaderAppearance(withInter, LIGHT_ENV), customFontUri: fontDataUri },
+      }),
+    );
+    expect(jest.mocked(loadFontFaceSrc)).toHaveBeenCalledWith('Inter');
+  });
+
+  it('overlays the loaded font-face bytes on the prefs-subscribe re-apply too', async () => {
+    await mountReader();
+    await reportReady();
+    __injectJavaScript.mockClear();
+
+    const fontDataUri = 'data:font/ttf;base64,BBBB';
+    jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
+    const withPoppins = makePrefs({ font: { family: 'Poppins' } });
+
+    // Not act()-wrapped — see the note on the theme-change test above; two microtask hops, same
+    // reasoning as there.
+    __emitPrefsChange(withPoppins);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: { ...toReaderAppearance(withPoppins, LIGHT_ENV), customFontUri: fontDataUri },
+      }),
+    );
   });
 });
 
@@ -1333,6 +1547,46 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.getByText('Match 2 of 3')).toBeTruthy();
     expect(__injectJavaScript).toHaveBeenLastCalledWith(
       buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 7 } }),
+    );
+  });
+
+  // THE MATCH BAR'S ARROWS USED TO BE PERMANENTLY DISABLED FOR AN ALL-PDF RESULT SET, even though
+  // every hit was genuinely navigable. `hasNavigableFrom` (useBookSearch.ts) checked an EPUB-only
+  // unwrap that returns null for every PDF locator, so a mixed EPUB+PDF list (the other tests above)
+  // still found an EPUB hit and reported navigable — the bug was invisible there. A PDF-only book
+  // failed every check, so `canStepBack`/`canStepForward` were false from the first render. Asserting
+  // on `accessibilityState.disabled` is the point: the earlier tests only checked that pressing the
+  // button worked, and RNTL's fireEvent.press does not itself respect a `disabled` prop the way a
+  // real device's Pressable does — so this is the check that would actually have caught it.
+  it('does not disable the match bar arrows for an all-PDF result set', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([
+      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 3 }, snippet: '…one…' },
+      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 7 }, snippet: '…two…' },
+    ]);
+
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+
+    expect(
+      screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: false });
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+
+    expect(screen.getByText('Match 1 of 2')).toBeTruthy();
+    // Landed on the FIRST hit — "Previous" is correctly disabled (nothing before it), but "Next"
+    // must still be enabled since there is a second PDF hit ahead of it.
+    expect(
+      screen.getByRole('button', { name: 'Previous match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+    expect(
+      screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
+    ).toMatchObject({ disabled: false });
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 3 } }),
     );
   });
 

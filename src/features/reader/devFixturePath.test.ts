@@ -187,9 +187,9 @@ describe('the fixture path seeds the format it was asked for', () => {
 // ─── the per-format fixture paths (2026-08-20) ──────────────────────────────
 // WHY THESE EXIST. The single EXPO_PUBLIC_READER_FIXTURE_PATH above is crossed with DEV_FORMAT, so
 // exactly ONE large book existed per bundle and comparing the 20 MB EPUB against the 15 MB PDF meant
-// restarting Metro with a different env var. App.tsx now offers all four fixtures as tabs at once,
-// which is only honest if both large books can be populated in the same run — that is the property
-// this block pins.
+// restarting Metro with a different env var. BookListScreen (src/navigation/) now offers all four
+// fixtures as rows at once, which is only honest if both large books can be populated in the same
+// run — that is the property this block pins.
 describe('the per-format fixture paths are independent', () => {
   it('reaches BOTH large books in one run, each seeded as its own format', async () => {
     const epubPath = writeFixture('big.epub', 'PK not a parseable archive');
