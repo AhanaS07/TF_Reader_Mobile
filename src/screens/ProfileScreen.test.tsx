@@ -59,6 +59,39 @@ afterEach(() => {
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
 });
 
+describe('ProfileScreen account header', () => {
+  // The avatar is a generic glyph in the mockup, not a photograph, so it needs
+  // no data and is drawn as designed. The name and email do need data, and have
+  // none — see the header comment on ProfileScreen.tsx.
+  it('draws the avatar', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByTestId('profile-avatar', { includeHiddenElements: true })).toBeTruthy();
+  });
+
+  // Asserted as the outcome rather than as the prop spelling: RTL's default
+  // queries skip elements hidden from the accessibility tree, so not finding it
+  // IS the guarantee. `includeHiddenElements` above is what makes the pair
+  // meaningful — the glyph is drawn, and it is not announced.
+  it('keeps the decorative avatar out of the accessibility tree', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.queryByTestId('profile-avatar')).toBeNull();
+  });
+
+  it('says so rather than inventing a name', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Not signed in')).toBeTruthy();
+  });
+
+  // Selecting an institution is not signing in — CAP-3 picks the institution
+  // before any session exists (resolveAccess.ts states this directly). The
+  // header must not start claiming an identity because a crest appeared.
+  it('still says so once an institution is selected', async () => {
+    selectInstitution(OXFORD);
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Not signed in')).toBeTruthy();
+  });
+});
+
 describe('ProfileScreen institution, from the store', () => {
   it('renders the selected institution name', async () => {
     await render(<ProfileScreen />);

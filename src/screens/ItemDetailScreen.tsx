@@ -28,7 +28,16 @@
 // independent of them. Same shape as InstitutionDetailScreen: a skeleton while
 // the fetch is in flight, ErrorState on rejection, the content once resolved. No
 // ActivityIndicator — skeletons replace spinners.
-import { useCallback, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
@@ -50,7 +59,7 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { ActionId, Publication, WorkType } from '@model/types';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
-import { color, radius, space, type as typeScale } from '@theme/tokens';
+import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
 
 interface ItemDetailRouteProps {
   route: { params: { itemId: string } };
@@ -85,82 +94,139 @@ const GENERIC_MESSAGE = "We couldn't load this title.";
 // below is — a test can render it directly from a hand-built `ItemDetail`
 // without going through the fetch — not because anything outside this file is
 // meant to import it.
+//
+// THE COVER IS CENTRED; NOTHING ELSE IS. The mockup centres the jacket in the
+// column and ranges every line beneath it off the left margin — title, edition,
+// author, copyright, the price pair, the badge and the metadata list all share
+// one edge. The whole column used to be centred, which gave the metadata rows a
+// ragged left edge and no relationship to the title above them. Same left-ranged
+// rule the article layout follows and the Monday branding pass is applying to
+// the empty and error screens.
+//
+// THE ACTION BAR IS PINNED, NOT SCROLLED — same as the article layout, and for
+// the same reason: the mockup fixes Read and Download to the bottom of the
+// viewport, and this screen is a full jacket plus a description, so a bar at the
+// end of the scroll is a bar the reader has to work for.
 export function renderBookContent(
   detail: ItemDetail,
   onAction: (action: ActionId) => void,
 ): ReactElement {
   return (
-    <ScrollView contentContainerStyle={styles.content}>
-      {detail.coverUrl !== undefined && (
-        <Image
-          source={{ uri: detail.coverUrl }}
-          style={styles.cover}
-          resizeMode="contain"
-          accessibilityLabel={`${detail.title} cover`}
-        />
-      )}
+    <>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+        {detail.coverUrl !== undefined && (
+          <Image
+            source={{ uri: detail.coverUrl }}
+            style={styles.cover}
+            resizeMode="contain"
+            accessibilityLabel={`${detail.title} cover`}
+          />
+        )}
 
-      <Text style={styles.title}>{detail.title}</Text>
+        <Text style={styles.title}>{detail.title}</Text>
 
-      {detail.subtitle !== undefined && <Text style={styles.subtitle}>{detail.subtitle}</Text>}
+        {detail.subtitle !== undefined && <Text style={styles.subtitle}>{detail.subtitle}</Text>}
 
-      {detail.authors.length > 0 && (
-        <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
-      )}
+        {/* "By" carried in the primary text colour with the names themselves in
+          the link colour, which is how the mockup sets this line. Nested rather
+          than two siblings so the names wrap under the "By" as one sentence
+          instead of forming a second column. Nothing navigates — there is no
+          author route — so it takes the mockup's colour and not its behaviour,
+          the same note as the article layout's author line. */}
+        {detail.authors.length > 0 && (
+          <Text style={styles.byLine}>
+            By <Text style={styles.byLineNames}>{detail.authors.join(', ')}</Text>
+          </Text>
+        )}
 
-      {/* The one confirmed format, shown once as a plain strip — the contract
+        {/* The one confirmed format, shown once as a plain strip — the contract
           says every title has exactly one, so there is nothing to switch
           between (index.html: "it becomes a single-format display strip
           rather than a control"). Absent only when normalize.ts could not
           derive one (a `subscribe` rel carries no file), same "leave gaps
           blank" rule as everything else here. */}
-      {detail.format !== undefined && <FormatStrip format={detail.format} />}
+        {detail.format !== undefined && <FormatStrip format={detail.format} />}
 
-      {/* The mockup fuses a price pair into the same control as the format
+        {/* The mockup fuses a price pair into the same control as the format
           toggle, but price is a separate, unconfirmed fact — neither contract
           has a price field, and printing a number would misrepresent real
           commerce data rather than merely omit it. Shown, muted, not
           invented, same rule as citation and the type label on screen 04. */}
-      <UnavailableTag label="Price unavailable" />
+        <UnavailableTag label="Price unavailable" />
 
-      <AccessTierBadge tier={detail.access.tier} />
+        <AccessTierBadge tier={detail.access.tier} />
 
-      {/* Publisher, published date, ISBN and page count are each shown only
+        {/* Publisher, published date, ISBN and page count are each shown only
           when the feed actually supplied them — "render whatever fields are
           present; leave gaps blank rather than blocking" applies here exactly
-          as it does in `renderArticleContent` below. */}
-      <View style={styles.metaBlock}>
-        {detail.publisher !== undefined && (
-          <Text style={styles.metaRow}>Publisher · {detail.publisher}</Text>
-        )}
-        {detail.published !== undefined && (
-          <Text style={styles.metaRow}>Published · {detail.published}</Text>
-        )}
-        {detail.isbn !== undefined && <Text style={styles.metaRow}>ISBN · {detail.isbn}</Text>}
-        {detail.numberOfPages !== undefined && (
-          <Text style={styles.metaRow}>{detail.numberOfPages} pages</Text>
-        )}
-      </View>
+          as it does in `renderArticleContent` below. The mockup fences this
+          list off with a rule above it and gives each row its own glyph, which
+          is what turns four bare strings into a spec block.
 
-      {detail.description !== undefined && (
-        <Text style={styles.description}>{detail.description}</Text>
-      )}
+          PUBLISHER AND DATE SHARE A LINE when both arrived — "Published <date>
+          by <publisher>", the mockup's own phrasing. Either one alone still
+          gets its own row, because half that sentence is not a sentence. */}
+        <View style={styles.metaBlock}>
+          <View style={styles.rule} />
 
-      {/* "Table of Contents" — a real mockup row with no data behind it; no
-          endpoint returns a chapter list. No chevron and no Pressable: the
-          mockup's chevron promises an expand interaction that does not exist,
-          the same half-measure the article branch's tab row already avoids
-          for its own four dead tabs. */}
-      <UnavailableTag label="Table of Contents" />
+          {detail.isbn !== undefined && (
+            <MetaRow icon="book-open-variant" text={`ISBN ${detail.isbn}`} />
+          )}
 
-      {/* ActionBar sets no width of its own (CONVENTIONS §8 — the screen that
-          places it owns that), and `styles.content`'s `alignItems: 'center'`
-          would otherwise shrink it to its content instead of letting it fill
-          the row the way ActionBar's own row/slot layout expects. */}
-      <View style={styles.actionBarWrapper}>
-        <ActionBar actions={detail.access.actions} onAction={onAction} />
-      </View>
-    </ScrollView>
+          {detail.numberOfPages !== undefined && (
+            <MetaRow icon="file-document-outline" text={`${detail.numberOfPages} pages`} />
+          )}
+
+          {detail.published !== undefined && detail.publisher !== undefined && (
+            <MetaRow
+              icon="calendar-blank-outline"
+              text={`Published ${detail.published} by ${detail.publisher}`}
+            />
+          )}
+          {detail.published !== undefined && detail.publisher === undefined && (
+            <MetaRow icon="calendar-blank-outline" text={`Published ${detail.published}`} />
+          )}
+          {detail.published === undefined && detail.publisher !== undefined && (
+            <MetaRow icon="domain" text={`Publisher ${detail.publisher}`} />
+          )}
+        </View>
+
+        {detail.description !== undefined && (
+          <Text style={styles.description}>{detail.description}</Text>
+        )}
+
+        {/* "Table of Contents" — a real mockup row with no data behind it; no
+          endpoint returns a chapter list. It takes the mockup's full-width row
+          and its list glyph, but NOT its trailing chevron and NOT a Pressable:
+          the chevron promises an expand interaction that does not exist, the
+          same half-measure the article branch's tab row already avoids for its
+          own four dead tabs. */}
+        <UnavailableTag label="Table of Contents" variant="row" icon="format-list-bulleted" />
+      </ScrollView>
+
+      {/* Outside the ScrollView — see the header comment. ActionBar pads itself
+          and draws its own top border, so it needs no wrapper of its own here. */}
+      <ActionBar actions={detail.access.actions} onAction={onAction} />
+    </>
+  );
+}
+
+// One metadata row: a muted glyph and the line it belongs to. The icon is
+// decorative — the text beside it already says everything, so it is never the
+// only thing a screen reader is given, and the row keeps `Text`'s own default
+// role rather than claiming to be an image.
+function MetaRow({
+  icon,
+  text,
+}: {
+  icon: ComponentProps<typeof MaterialCommunityIcons>['name'];
+  text: string;
+}): ReactElement {
+  return (
+    <View style={styles.metaRowLine}>
+      <MaterialCommunityIcons name={icon} size={typeScale.meta.size} color={color.textSecondary} />
+      <Text style={[styles.metaRow, styles.metaRowText]}>{text}</Text>
+    </View>
   );
 }
 
@@ -191,7 +257,13 @@ function FormatStrip({ format }: { format: ContentFormat }): ReactElement {
 // elements" gap list. Real mockup names, not invented ones — only the CONTENT
 // behind four of them is missing. PDF is left inert alongside the rest; see the
 // comment on the tab row below for why it is not made the exception.
-const ARTICLE_TAB_LABELS = ['Full Article', 'Figures & data', 'Citations', 'Metrics', 'PDF'] as const;
+const ARTICLE_TAB_LABELS = [
+  'Full Article',
+  'Figures & data',
+  'Citations',
+  'Metrics',
+  'PDF',
+] as const;
 
 // A mockup element the current contract has no data for — shown, not hidden,
 // and honestly labelled as unavailable. Same principle FilterChip's own
@@ -208,9 +280,23 @@ const ARTICLE_TAB_LABELS = ['Full Article', 'Figures & data', 'Citations', 'Metr
 // disabled Pressable would promise an interaction that does not exist.
 // `AccessTierBadge` sets the same precedent one line above every call site: a
 // resolved value that is looked at, not pressed.
+//
+// THREE SHAPES, ONE MEANING. The two mockups draw their unavailable elements
+// differently, so `variant` follows the mockup being built rather than forcing
+// one screen into the other's furniture:
+//
+//   pill   — screen 05's price, a bordered chip among the badges
+//   inline — screen 04's eyebrow and citation link: plain muted text
+//   row     — screen 05's Table of Contents, a full-width ruled row
+//
+// All three stay muted, all three keep `accessibilityRole="text"`, and all three
+// keep the same testID — the honesty is in the muting and the missing tap, not
+// in the border.
 function UnavailableTag({
   label,
   accessibilityLabel,
+  variant = 'pill',
+  icon,
 }: {
   label: string;
   /**
@@ -222,15 +308,41 @@ function UnavailableTag({
    * this prop existed.
    */
   accessibilityLabel?: string;
+  variant?: 'pill' | 'inline' | 'row';
+  /**
+   * Leading glyph, for the one call site whose mockup draws one — the quote
+   * mark against "Download citation". Decorative: the label beside it already
+   * carries the meaning, so it is never the only thing announced.
+   */
+  icon?: ComponentProps<typeof MaterialCommunityIcons>['name'];
 }): ReactElement {
+  const boxStyle =
+    variant === 'inline'
+      ? styles.unavailableInline
+      : variant === 'row'
+        ? styles.unavailableRow
+        : styles.unavailableTag;
+
+  // The row variant carries the mockup's own weight for this line — it reads as
+  // a section heading there, not as a caption — while the other two stay small.
+  const labelStyle =
+    variant === 'pill' ? styles.unavailableTagLabel : styles.unavailableInlineLabel;
+
   return (
     <View
       testID="unavailable-tag"
-      style={styles.unavailableTag}
+      style={boxStyle}
       accessibilityRole="text"
       accessibilityLabel={accessibilityLabel ?? label}
     >
-      <Text style={styles.unavailableTagLabel} numberOfLines={1}>
+      {icon !== undefined && (
+        <MaterialCommunityIcons
+          name={icon}
+          size={variant === 'row' ? typeScale.sectionHeader.size : typeScale.smallLabel.size}
+          color={color.textSecondary}
+        />
+      )}
+      <Text style={variant === 'row' ? styles.unavailableRowLabel : labelStyle} numberOfLines={1}>
         {label}
       </Text>
     </View>
@@ -254,16 +366,26 @@ function UnavailableTag({
 // inert row instead of the interactive component wearing a disabled coat of
 // paint (CONVENTIONS §7 — `Tabs` is not modified to grow a state it does not
 // otherwise need).
+// ONE LINE THAT SCROLLS, NOT A WRAPPING BLOCK. The mockup draws all five
+// labels on a single line under the metadata. At `type.button`'s 15pt they
+// wrapped onto two lines on a phone, which read as a paragraph of links rather
+// than a tab strip; at `type.smallLabel` they fit, and the horizontal scroll
+// covers the narrowest devices and the largest accessibility text sizes without
+// the row ever reflowing.
 function InertTabRow({ labels }: { labels: readonly string[] }): ReactElement {
   return (
     <View style={styles.tabRow}>
-      <View style={styles.tabRowLabels}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.tabRowLabels}
+      >
         {labels.map((label) => (
           <Text key={label} style={styles.tabRowLabel} numberOfLines={1}>
             {label}
           </Text>
         ))}
-      </View>
+      </ScrollView>
       <View style={styles.tabRowDivider} />
     </View>
   );
@@ -287,69 +409,100 @@ function InertTabRow({ labels }: { labels: readonly string[] }): ReactElement {
 // content-type label ARE the other three gaps, and they render below as
 // `UnavailableTag`/`InertTabRow` — visible, muted, not invented — rather than
 // left absent.
+// LEFT-ALIGNED, NOT CENTRED, AND IN THE MOCKUP'S OWN ORDER. Screen 04 is a
+// reading surface: an eyebrow, a title that runs to three lines, an author line,
+// a metadata line, then the tab strip and the abstract, all ranged left off a
+// single margin. Centring a 24pt title over a left-ranged abstract gives the
+// block two competing edges, and it is what the Monday branding pass is
+// stripping out of the empty and error screens for the same reason. Screen 05
+// keeps its centred column — a cover-led layout has a real axis to centre on;
+// this one does not.
+//
+// THE ACTION BAR IS PINNED, NOT SCROLLED. The mockup fixes Read and Download to
+// the bottom of the viewport, and an abstract is long enough that a bar at the
+// end of the scroll is a bar the reader never reaches. It sits outside the
+// ScrollView, which is why this returns a fragment rather than a single
+// ScrollView the way `renderBookContent` still does.
 export function renderArticleContent(
   detail: ItemDetail,
   onAction: (action: ActionId) => void,
 ): ReactElement {
   return (
-    <ScrollView contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{detail.title}</Text>
+    <>
+      <ScrollView style={styles.articleScroll} contentContainerStyle={styles.articleContent}>
+        {/* Title block — the four lines the mockup groups tightly together, on
+            xs gaps, so they read as one unit against the md gaps separating the
+            sections below. */}
+        <View style={styles.articleHeader}>
+          {/* The CONTENT type, not to be confused with the access tier badge
+              below — the two are unrelated axes. "Research article" is the real
+              mockup string (index.html: "Screen 04 — four elements"), kept
+              rather than paraphrased — the same "keep the real name, mark it
+              disabled" rule screen 12's unsupported filter rows already follow.
+              wokay's published `@type` enum only confirms Book and Audiobook
+              (see the file header), so it takes the mockup's eyebrow POSITION
+              but not its live link colour: muted, and a screen reader is told
+              explicitly that the classification is not confirmed. A sighted
+              reader gets that from the styling alone; an assistive-tech user
+              needs it said. workType is NOT derived from `@type` anywhere here;
+              this label is display-only. */}
+          <UnavailableTag
+            label="Research article"
+            accessibilityLabel="Research article — not confirmed by the current contract"
+            variant="inline"
+          />
 
-      {detail.authors.length > 0 && (
-        <Text style={styles.authors}>{detail.authors.join(', ')}</Text>
-      )}
+          <Text style={styles.articleTitle}>{detail.title}</Text>
 
-      <AccessTierBadge tier={detail.access.tier} />
+          {detail.authors.length > 0 && (
+            <Text style={styles.articleAuthors}>{detail.authors.join(', ')}</Text>
+          )}
 
-      {/* The CONTENT type, not to be confused with the access tier badge
-          above — the two are unrelated axes. "Research article" is the real
-          mockup string (index.html: "Screen 04 — four elements"), kept rather
-          than paraphrased — the same "keep the real name, mark it disabled"
-          rule screen 12's unsupported filter rows already follow. wokay's
-          published `@type` enum only confirms Book and Audiobook (see the file
-          header), so the visible text is muted rather than live teal, and a
-          screen reader is told explicitly that the classification is not
-          confirmed — a sighted reader gets that from the styling alone, an
-          assistive-tech user needs it said. workType is NOT derived from
-          `@type` anywhere here; this label is display-only. */}
-      <UnavailableTag
-        label="Research article"
-        accessibilityLabel="Research article — not confirmed by the current contract"
-      />
-
-      {/* None of the five is made an exception, PDF included. A tab's whole
-          point is switching to what it names, and there is nothing behind the
-          other four to switch to — one live tab among four dead ones would
-          still be the half-measure this file is avoiding, and PDF's own file
-          is already Read/Download on the action bar below, not a second
-          entry point worth building. */}
-      <InertTabRow labels={ARTICLE_TAB_LABELS} />
-
-      {detail.published !== undefined && (
-        <Text style={styles.metaRow}>Published · {detail.published}</Text>
-      )}
-
-      {/* The abstract is `ItemDetail.description` under the label this screen
-          uses for it. Absent entirely — no heading, no empty block — when the
-          feed did not supply one, same "leave gaps blank" rule as everywhere
-          else on this screen. */}
-      {detail.description !== undefined && (
-        <View style={styles.abstractBlock}>
-          <SectionHeader title="Abstract" />
-          <Text style={styles.abstractText}>{detail.description}</Text>
+          {/* The mockup pairs a page range with the date on this line. There is
+              no page range to pair — see the header comment — so the date holds
+              the line alone rather than being padded out with an invented
+              second half. */}
+          {detail.published !== undefined && (
+            <Text style={styles.metaRow}>Published · {detail.published}</Text>
+          )}
         </View>
-      )}
 
-      {/* "Download citation" — a real mockup action with no citation data
-          behind it (no endpoint, no format, nothing to build a file from).
-          Shown inert rather than removed, same rule as the tabs above. */}
-      <UnavailableTag label="Download citation" />
+        {/* "Download citation" — a real mockup action with no citation data
+            behind it (no endpoint, no format, nothing to build a file from).
+            Shown inert rather than removed, same rule as the tabs below, and in
+            the mockup's own position: the row under the metadata, quote glyph
+            included. The mockup's other half of this row was the DOI link,
+            which is a settled removal and leaves no gap behind it. */}
+        <UnavailableTag label="Download citation" variant="inline" icon="format-quote-close" />
 
-      {/* Same stretch fix as renderBookContent's ActionBar — see the comment there. */}
-      <View style={styles.actionBarWrapper}>
-        <ActionBar actions={detail.access.actions} onAction={onAction} />
-      </View>
-    </ScrollView>
+        {/* None of the five is made an exception, PDF included. A tab's whole
+            point is switching to what it names, and there is nothing behind the
+            other four to switch to — one live tab among four dead ones would
+            still be the half-measure this file is avoiding, and PDF's own file
+            is already Read/Download on the action bar below, not a second
+            entry point worth building. */}
+        <InertTabRow labels={ARTICLE_TAB_LABELS} />
+
+        <AccessTierBadge tier={detail.access.tier} />
+
+        {/* The abstract is `ItemDetail.description` under the label this screen
+            uses for it. Absent entirely — no heading, no empty block — when the
+            feed did not supply one, same "leave gaps blank" rule as everywhere
+            else on this screen. */}
+        {detail.description !== undefined && (
+          <View style={styles.abstractBlock}>
+            <SectionHeader title="Abstract" />
+            <Text style={styles.abstractText}>{detail.description}</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Outside the ScrollView — see the header comment. ActionBar pads itself
+          and draws its own top border, so no wrapper is needed here; the
+          `actionBarWrapper` stretch fix exists only for the book layout, whose
+          centring column would otherwise shrink it. */}
+      <ActionBar actions={detail.access.actions} onAction={onAction} />
+    </>
   );
 }
 
@@ -449,9 +602,15 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       // the action bar updates to reflect the new loan or hold.
       const source = getLicenceSource();
       if (action === 'read' || action === 'download') {
-        source.borrow(itemId).then(() => refresh()).catch(() => {});
+        source
+          .borrow(itemId)
+          .then(() => refresh())
+          .catch(() => {});
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
-        source.returnLoan(loan.loanId).then(() => refresh()).catch(() => {});
+        source
+          .returnLoan(loan.loanId)
+          .then(() => refresh())
+          .catch(() => {});
       } else if (action === 'grantAccess') {
         // Elite path: attempt borrow first. Only fall through to placeHold on
         // NO_COPIES_AVAILABLE — a network error or any other refusal should not
@@ -471,9 +630,15 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
           .then(() => refresh())
           .catch(() => {});
       } else if (action === 'acceptOffer' && hold?.holdId !== undefined) {
-        source.acceptOffer(hold.holdId).then(() => refresh()).catch(() => {});
+        source
+          .acceptOffer(hold.holdId)
+          .then(() => refresh())
+          .catch(() => {});
       } else if (action === 'rejectOffer' && hold?.holdId !== undefined) {
-        source.cancelHold(hold.holdId).then(() => refresh()).catch(() => {});
+        source
+          .cancelHold(hold.holdId)
+          .then(() => refresh())
+          .catch(() => {});
       }
     },
     [navigation, detail, itemId, loan, hold, refresh],
@@ -531,6 +696,13 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 }
 
 const styles = StyleSheet.create({
+  // WHITE, NOT `surface`. `surface` was doing this job when it was #F8F9FA and
+  // read as near-white; the brand palette makes it #EBF0FF Cornflower Neutral,
+  // which is a card tint and not a page. Both mockups draw a white page with
+  // tinted furniture on top, so the page takes `white` and `surface` goes back
+  // to what tokens.ts says it is for — cards and section backgrounds, including
+  // ActionBar's own footer band, which now separates from the page instead of
+  // disappearing into it.
   screen: {
     flex: 1,
     backgroundColor: color.white,
@@ -545,17 +717,55 @@ const styles = StyleSheet.create({
     padding: space.lg,
     gap: space.md,
   },
+  // Screen 05. LEFT-RANGED, not centred: the cover centres itself (see `cover`)
+  // and everything under it shares the left margin. The extra bottom padding
+  // clears the pinned ActionBar so the last row can be scrolled out from behind
+  // it. No `alignItems` — the default `stretch` is what lets the rules and the
+  // Table of Contents row run the full column width.
   content: {
-    alignItems: 'center',
     padding: space.lg,
+    paddingBottom: space.xl,
     gap: space.sm,
   },
+  // Both scroll regions. `flex: 1` is what leaves the pinned ActionBar below the
+  // scroll the rest of the height instead of pushing it off-screen.
+  scroll: {
+    flex: 1,
+  },
+  articleScroll: {
+    flex: 1,
+  },
+  // NO `alignItems` OVERRIDE, deliberately. The default `stretch` is what lets
+  // the tab divider and the abstract run the full column width; text is
+  // left-ranged by default, so left alignment needs no property at all. The two
+  // children that must not stretch — the badge and the inline tags — set their
+  // own `alignSelf`, which is the rule AccessTierBadge already follows.
+  //
+  // The extra bottom padding clears the pinned ActionBar, so the last line of a
+  // long abstract can still be scrolled clear of it.
+  articleContent: {
+    padding: space.lg,
+    paddingBottom: space.xl,
+    gap: space.md,
+  },
+  // Eyebrow, title, authors and date as one tight unit — xs against the md
+  // gaps between the sections below it.
+  articleHeader: {
+    gap: space.xs,
+  },
+  // `alignSelf` rather than the parent centring everything: the jacket is the
+  // one element on this screen with an axis worth centring on. Elevation from
+  // the token set, so the cover sits ON the white page the way the mockup draws
+  // it rather than being a flat rectangle cut out of it.
   cover: {
+    alignSelf: 'center',
     width: COVER_WIDTH,
     height: COVER_HEIGHT,
     borderRadius: radius.card,
     backgroundColor: color.border,
-    marginBottom: space.sm,
+    marginBottom: space.md,
+    ...elevation.card.ios,
+    ...elevation.card.android,
   },
   title: {
     fontWeight: typeScale.pageTitle.weight,
@@ -563,7 +773,6 @@ const styles = StyleSheet.create({
     fontSize: typeScale.pageTitle.size,
     lineHeight: typeScale.pageTitle.lineHeight,
     color: color.textPrimary,
-    textAlign: 'center',
   },
   subtitle: {
     fontWeight: typeScale.body.weight,
@@ -571,26 +780,56 @@ const styles = StyleSheet.create({
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textSecondary,
-    textAlign: 'center',
   },
-  authors: {
+  // "By" in the body colour; the names nested inside it take the link colour.
+  byLine: {
     fontWeight: typeScale.body.weight,
     fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
+    color: color.textSecondary,
+  },
+  byLineNames: {
+    color: color.primary,
+  },
+  // Screen 04's title and author line. Same tokens as `title`/`authors` above,
+  // minus the centring.
+  articleTitle: {
+    fontWeight: typeScale.pageTitle.weight,
+    fontSize: typeScale.pageTitle.size,
+    lineHeight: typeScale.pageTitle.lineHeight,
     color: color.textPrimary,
-    textAlign: 'center',
+  },
+  // PRIMARY, NOT `textPrimary`. The mockup sets the author line in its link
+  // colour, and an author IS a destination on the web original. Nothing here
+  // navigates yet — there is no author endpoint — so this is the one place the
+  // screen takes a mockup colour without the mockup's behaviour. It reads as
+  // emphasis rather than as a promise because it carries no chevron, no
+  // underline and no `accessibilityRole="link"`; the moment an author route
+  // exists this becomes a Pressable and nothing about the colour changes.
+  articleAuthors: {
+    fontWeight: typeScale.body.weight,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.primary,
   },
   metaBlock: {
-    alignSelf: 'stretch',
     gap: space.xs,
     marginTop: space.sm,
   },
-  // Only override needed for a `styles.content` child: `alignItems: 'center'`
-  // would otherwise shrink ActionBar to its content instead of the full row
-  // width its own row/slot layout expects.
-  actionBarWrapper: {
-    alignSelf: 'stretch',
+  // The hairline that fences the metadata list off from the badge above it, as
+  // the mockup draws it. `border` rather than a tint, and hairline rather than
+  // 1px, so it stays a division and not a line to read.
+  rule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: color.border,
+    marginBottom: space.sm,
+  },
+  // Glyph and text on one row.
+  metaRowLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
   },
   metaRow: {
     fontWeight: typeScale.meta.weight,
@@ -598,6 +837,13 @@ const styles = StyleSheet.create({
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
+  },
+  // Only inside `metaRowLine`, never on the article layout's standalone date —
+  // `flex: 1` here wraps a long "Published … by …" under itself instead of
+  // pushing past the right margin, but in a column parent it would stretch the
+  // line vertically instead.
+  metaRowText: {
+    flex: 1,
   },
   description: {
     alignSelf: 'stretch',
@@ -608,10 +854,10 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
     marginTop: space.sm,
   },
+  // Article-only. No `marginTop` any more: `articleContent`'s own `gap` spaces
+  // it off the badge above, and the old margin stacked on top of that.
   abstractBlock: {
-    alignSelf: 'stretch',
     gap: space.xs,
-    marginTop: space.sm,
   },
   // No marginTop of its own: abstractBlock's own gap already spaces it under
   // the SectionHeader, and description's margin would double it up.
@@ -625,7 +871,11 @@ const styles = StyleSheet.create({
   // Same box shape as `unavailableTag`, deliberately, so the two read as
   // siblings — but full opacity and primary-coloured text, because this one
   // is confirmed data rather than a gap.
+  // `alignSelf` now that `content` no longer centres its children — same one
+  // line AccessTierBadge sets on itself, and for the same reason: a chip that
+  // stretches to the column width stops looking like a chip.
   formatStrip: {
+    alignSelf: 'flex-start',
     paddingHorizontal: space.sm,
     paddingVertical: space.xs,
     borderRadius: radius.pill,
@@ -645,6 +895,7 @@ const styles = StyleSheet.create({
   // the component itself (a filter dimension and an unavailable mockup element
   // are different things wearing a similar look).
   unavailableTag: {
+    alignSelf: 'flex-start',
     paddingHorizontal: space.sm,
     paddingVertical: space.xs,
     borderRadius: radius.pill,
@@ -660,24 +911,76 @@ const styles = StyleSheet.create({
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
   },
+  // Screen 04's shape: no border, no fill, no box — a row of muted text with an
+  // optional glyph, which is how its mockup draws both call sites. `alignSelf`
+  // keeps it to its content width against `articleContent`'s stretch default,
+  // the same line AccessTierBadge sets on itself for the same reason.
+  //
+  // Muted by colour alone, with NO `opacity`. The pill above can afford opacity
+  // because its border fades with it and the whole chip recedes together; here
+  // there is nothing but text, and dimming 12pt text a second time after it is
+  // already on the secondary colour puts it under AA on white.
+  unavailableInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: space.xs,
+  },
+  unavailableInlineLabel: {
+    fontWeight: typeScale.smallLabel.weight,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.textSecondary,
+  },
+  // Screen 05's Table of Contents shape: the mockup's full-width ruled row with
+  // a leading glyph. Stretches rather than hugging its label, and takes a rule
+  // above it the same way the metadata block does, so it reads as the section
+  // heading the mockup makes it — minus the chevron, which is the whole point.
+  //
+  // Vertical padding rather than a fixed height, so a large accessibility text
+  // size grows the row instead of clipping the label inside it.
+  unavailableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.md,
+    marginTop: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: color.border,
+  },
+  // `sectionHeader`, matching the weight the mockup gives this line and the
+  // weight SectionHeader gives "Abstract" on screen 04 — but on the secondary
+  // colour, because there is still nothing behind it.
+  unavailableRowLabel: {
+    fontWeight: typeScale.sectionHeader.weight,
+    fontSize: typeScale.sectionHeader.size,
+    lineHeight: typeScale.sectionHeader.lineHeight,
+    color: color.textSecondary,
+  },
   // Plain text and a divider, matching the mockup's own tab strip shape —
   // deliberately not chips. See the header comment on `InertTabRow`.
   tabRow: {
     alignSelf: 'stretch',
   },
+  // No `flexWrap`: this is the horizontal ScrollView's content container now, so
+  // the row runs off the edge and scrolls rather than folding onto a second line.
   tabRowLabels: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: space.md,
   },
-  // Secondary colour throughout, on every label — no active one, no teal, no
+  // Secondary colour throughout, on every label — no active one, no accent, no
   // underline. See `InertTabRow`'s header comment for why marking one active
   // would overclaim.
+  //
+  // `smallLabel`, down from `button`. Regular weight at 12pt is what fits all
+  // five on the mockup's single line; it is also the honest weight here, since
+  // the mockup's bold is reserved for the active tab and this row has none.
   tabRowLabel: {
-    fontWeight: typeScale.button.weight,
-    fontFamily: typeScale.button.fontFamily,
-    fontSize: typeScale.button.size,
-    lineHeight: typeScale.button.lineHeight,
+    fontWeight: typeScale.smallLabel.weight,
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
   },
   tabRowDivider: {
