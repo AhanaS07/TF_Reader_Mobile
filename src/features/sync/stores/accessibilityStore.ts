@@ -3,13 +3,38 @@ import { getDatabase, nowIso, toInt } from '../localDb/database';
 import { accessibilityMapper } from '../localDb/mappers';
 import type { AccessibilityRow } from '../localDb/types';
 import { USER_ID } from '../syncConfig';
+import { parseFieldTimestamps, stampChangedFields, stringifyFieldTimestamps } from './fieldTimestamps';
 import { createSyncableTable, withWriteLock } from './syncableTable';
+
+/** Every column `update()` can independently change - see the identical note on personalizationStore.ts. */
+export const ACCESSIBILITY_MERGE_FIELDS = [
+  'dyslexia_font',
+  'respect_os_font_scale',
+  'bold_text',
+  'reduce_motion',
+  'tts_enabled',
+  'tts_voice_id',
+  'tts_rate',
+  'tts_pitch',
+  'tts_highlight_mode',
+  'tts_auto_continue_chapter',
+  'tts_background_playback',
+  'font_scale_multiplier',
+  'readable_spacing',
+  'high_contrast',
+  'large_touch_targets',
+  'large_audio_controls',
+  'announce_page_changes',
+  'announce_chapter_changes',
+  'screen_reader_hints',
+] as const;
 
 export const accessibilityTable = createSyncableTable<AccessibilityRow>({
   table: 'accessibility',
   entityType: 'accessibility',
   toServer: accessibilityMapper.toServer,
   toRow: accessibilityMapper.toRow,
+  mergeFields: ACCESSIBILITY_MERGE_FIELDS,
 });
 
 /**
@@ -49,6 +74,7 @@ const defaults = (): AccessibilityRow => ({
   updated_at: nowIso(),
   is_deleted: 0,
   synced: 0,
+  field_updated_at: '{}',
 });
 
 /** Accessibility is user scoped only - there is no book_id on this table. */
@@ -74,14 +100,18 @@ export const accessibilityStore = {
     return withWriteLock(async () => {
       const existing = await this.current();
       const base = existing ?? defaults();
+      const now = nowIso();
       const row: AccessibilityRow = {
         ...base,
         ...patch,
         id: base.id,
         user_id: USER_ID,
-        updated_at: nowIso(),
+        updated_at: now,
         is_deleted: 0,
         synced: 0,
+        field_updated_at: stringifyFieldTimestamps(
+          stampChangedFields(parseFieldTimestamps(base.field_updated_at), patch, ACCESSIBILITY_MERGE_FIELDS, now),
+        ),
       };
       return accessibilityTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', {
         locked: true,
