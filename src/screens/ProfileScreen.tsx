@@ -1,23 +1,35 @@
 // Screen 10 — Profile and settings.
 //
-// THE ACCOUNT HEADER IS ABSENT, AND THAT IS THE FINDING RATHER THAN AN OMISSION.
-// The plan says "name, email and avatar from flambeau's GET /api/v1/auth/me".
-// Two separate things stop that, and neither is fixable from this file:
+// THE ACCOUNT HEADER IS BUILT, BUT ITS NAME AND EMAIL ARE NOT AVAILABLE, and the
+// difference between those two statements is the whole of this comment. The plan
+// says "name, email and avatar from flambeau's GET /api/v1/auth/me". Taking that
+// apart against what actually exists:
 //
-//   1. THE CONTRACT HAS NO SUCH FIELDS. `AuthMeResponse` in
-//      `docs/contracts/flambeau-api.yaml` requires exactly
-//      `userId, type, roles, collections, expiresAt, serverTime, token`, with an
-//      optional `institutionId`. There is no name, no email and no avatar
-//      anywhere in it, and the endpoint's own description says every field is
-//      copied from the validated token. A display name cannot be derived from
-//      `user_9c2`. That is a question for flambeau, not grounds to invent one.
-//   2. THERE IS NO SESSION. No auth client, no session store, and nothing that
-//      holds a bearer token — `config/licence.ts` and `access/resolveAccess.ts`
-//      both record the session store as unbuilt, and `SignInScreen`'s handoff is
-//      still a stub pending flambeau's Question 5. A call to `/auth/me` today
-//      would be an unauthenticated one, which is a 401 by design.
+//   THE AVATAR NEEDS NO DATA. The mockup's avatar is a generic person glyph on a
+//   teal disc, not a photograph — there is no avatar URL in it to fetch. So it is
+//   drawn here as designed, and nothing is faked by drawing it.
 //
-// So the header is not built and not faked. Everything below it is real.
+//   THE NAME AND EMAIL HAVE NO SOURCE, for two independent reasons:
+//     1. THE CONTRACT HAS NO SUCH FIELDS. `AuthMeResponse` in
+//        `docs/contracts/flambeau-api.yaml` requires exactly
+//        `userId, type, roles, collections, expiresAt, serverTime, token`, with
+//        an optional `institutionId`. There is no name, no email and no avatar
+//        anywhere in it, and the endpoint's own description says every field is
+//        copied from the validated token. A display name cannot be derived from
+//        `user_9c2`. That is a question for flambeau, not grounds to invent one.
+//     2. THERE IS NO SESSION. No auth client, no session store, and nothing that
+//        holds a bearer token — `config/licence.ts` and `access/resolveAccess.ts`
+//        both record the session store as unbuilt, and `SignInScreen`'s handoff
+//        is still a stub pending flambeau's Question 5. A call to `/auth/me`
+//        today would be an unauthenticated one, which is a 401 by design.
+//
+// So the block renders its signed-out state: the avatar as drawn, and one honest
+// line where the name goes. WHEN THE SESSION LANDS, the edit is to swap that line
+// for the real name and add the email beneath it — the layout does not move.
+//
+// IT IS LAID OUT INLINE RATHER THAN AS A COMPONENT. It has exactly one caller and
+// no variants, so a shared component would be the speculative one CONVENTIONS §10
+// rules out, and a screen-local copy is what §7 forbids. Screen composition it is.
 import { useCallback } from 'react';
 import { useNavigation, type NavigationProp, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -28,7 +40,7 @@ import { InstitutionRow } from '@components/InstitutionRow';
 import { ListRow } from '@components/ListRow';
 import { useInstitutionStore } from '@store/institutionStore';
 import type { RootStackParamList, RootTabParamList } from '@navigation/types';
-import { color, space, type } from '@theme/tokens';
+import { color, radius, space, type } from '@theme/tokens';
 
 // CompositeNavigationProp lets this screen navigate to both the root stack
 // (Gallery) and to nested screens in sibling tabs (InstitutionList in Catalogue).
@@ -42,6 +54,11 @@ type Nav = CompositeNavigationProp<
 // `HEIGHT = space.xl + space.md` in ActionButton. The value is unchanged; it is
 // now traceable to the scale.
 const SETTING_ICON_SIZE = space.md + space.xs;
+
+// Avatar sizes composed from the spacing scale rather than written as numbers,
+// the way InstitutionRow composes its own CREST_SIZE.
+const AVATAR_SIZE = space.xl * 2 + space.md;
+const AVATAR_GLYPH_SIZE = space.xl + space.sm;
 
 export default function ProfileScreen() {
   const navigation = useNavigation<Nav>();
@@ -76,6 +93,26 @@ export default function ProfileScreen() {
     // Scrolls because the row count is fixed and already taller than a small
     // handset — the settings block, sign out and the dev entry cannot all fit.
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {/* Account header — see the note at the top of this file for why the name
+          slot reads the way it does and why there is no email line yet. */}
+      <View style={styles.account}>
+        {/* Decorative: a generic glyph standing in for a person, carrying no
+            information a screen reader needs. Hidden from the accessibility
+            tree on both platforms, the way VoiceOverlay hides its own. */}
+        <View
+          testID="profile-avatar"
+          style={styles.avatar}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
+          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.surface} />
+        </View>
+
+        <View style={styles.accountText}>
+          <Text style={styles.accountName}>Not signed in</Text>
+        </View>
+      </View>
+
       <View style={styles.section}>
         <Text style={styles.groupLabel}>Institution</Text>
         {selectedInstitution !== null ? (
@@ -228,6 +265,38 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: space.xl,
+  },
+  account: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.lg,
+    backgroundColor: color.surface,
+    // The divider the mockup draws under this block. Sections below it are
+    // separated by their own top margin, which is the existing layout.
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: color.border,
+  },
+  avatar: {
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    // A fixed-size square at pill radius is a circle; React Native clamps the
+    // radius to half the side, so this needs no derived number.
+    borderRadius: radius.pill,
+    backgroundColor: color.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountText: {
+    flex: 1,
+    gap: space.xs,
+  },
+  accountName: {
+    fontWeight: type.pageTitle.weight,
+    fontSize: type.pageTitle.size,
+    lineHeight: type.pageTitle.lineHeight,
+    color: color.textPrimary,
   },
   section: {
     marginTop: space.lg,
