@@ -30,6 +30,14 @@ import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { AppearanceEnv, ReaderAppearance } from '@/features/personalization/readerAppearance';
+import {
+  addCurrentEpubBookmark,
+  addCurrentPdfBookmark,
+  loadBookmarks,
+  removeBookmark,
+} from '@/features/personalization/readerBookmarks';
+import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import { BookmarksPanel } from '@/features/reader/BookmarksPanel';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
   getBookBase64,
@@ -286,6 +294,39 @@ export function ReaderScreen({
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showTts, setShowTts] = useState(false);
+  const [showBookmarks, setShowBookmarks] = useState(false);
+
+  /**
+   * The bookmarks panel's own state — loaded once, after the first `rendered`, then kept current by
+   * every add/remove call-site's returned fresh set (readerBookmarks.ts's own contract: each call
+   * returns the authoritative full set, so this never needs to merge a delta in by hand).
+   *
+   * `bookmarksLoaded` distinguishes "still reading from storage" from "read storage and it's empty" —
+   * without it, the panel would flash "No bookmarks yet" before the real list arrives.
+   */
+  const [bookmarks, setBookmarks] = useState<ReaderBookmark[]>([]);
+  const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
+  const [skippedBookmarkCount, setSkippedBookmarkCount] = useState(0);
+
+  /**
+   * Whether the "Page Bookmarked" tooltip should show, driven by TWO independent triggers:
+   *
+   * 1. `onHoverIn`/`onHoverOut` — a real mouse/trackpad hover. VERIFIED AGAINST RN's OWN SOURCE
+   *    (`node_modules/react-native/Libraries/Pressability/{Pressability,HoverState}.js`), not assumed:
+   *    with this RN version's default feature flags, `Pressable`'s hover callbacks route through the
+   *    legacy `onMouseEnter`/`onMouseLeave` path, and `HoverState.isHoverEnabled()` is hard-coded to
+   *    stay `false` unless `Platform.OS === 'web'` — it is NEVER set on native iOS/Android, regardless
+   *    of an iPad trackpad, Apple Pencil hover, or Mac Catalyst. So on every platform this app
+   *    currently ships to, this trigger is inert; it exists for if/when this app gets a web target, or
+   *    RN turns on real W3C Pointer Events for hover, and is otherwise proven only by the Jest test
+   *    that calls it directly.
+   * 2. `onLongPress`/`onPressOut` — a press-and-hold, which IS a real touch gesture and the one that
+   *    actually shows this on a phone, an iPad, or the simulator today. Not `onPress`: a plain tap
+   *    must stay inert (see the badge's own note on why it is not a button), so revealing the tooltip
+   *    needs a deliberately longer gesture than a tap, the same distinction iOS's own "peek" pattern
+   *    makes.
+   */
+  const [showBookmarkTooltip, setShowBookmarkTooltip] = useState(false);
 
   /**
    * TTS is EPUB-only (readerTextProvider.ts's segmentation model is CFI-based) and gated on
@@ -812,10 +853,124 @@ export function ReaderScreen({
   const goTo = useCallback(
     (target: ReaderTarget): void => {
       setShowToc(false);
+      setShowBookmarks(false);
       send?.({ type: 'goTo', target });
     },
     [send],
   );
+
+  /**
+   * CALL-SITE 1, per READER_BOOKMARKS_WIRING.md: load this book's bookmarks once, after the first
+   * `rendered` — matching the resume-target flush effect above, and for the same reason: nothing
+   * downstream needs them before there is a page on screen, and `isRendered` only ever goes
+   * false -> true once per mount (this component is keyed on `bookId`, see its own prop doc).
+   */
+  useEffect(() => {
+    if (!isRendered) return;
+    let cancelled = false;
+    void loadBookmarks().then(({ bookmarks: loaded, skippedIds }) => {
+      if (cancelled) return;
+      setBookmarks(loaded);
+      setSkippedBookmarkCount(skippedIds.length);
+      setBookmarksLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isRendered]);
+
+  /**
+   * Tap a bookmark: dismiss the panel and `goTo` its target — the whole navigation path, already
+   * proven by TOC entries and search hits. A dedicated handler rather than reusing `goTo` because that
+   * one closes the CONTENTS panel; this needs to close the BOOKMARKS one instead.
+   */
+  const selectBookmark = useCallback(
+    (bookmark: ReaderBookmark): void => {
+      setShowBookmarks(false);
+      send?.({ type: 'goTo', target: bookmark.target });
+    },
+    [send],
+  );
+
+  /**
+   * Whether the current position can be bookmarked. False before the first `relocated` — EPUB's `cfi`
+   * starts `null` until epub.js resolves a location (same nullability `sessionProgress.ts` guards) —
+   * and while the WebView is not ready, matching `submitPageJump`'s own guards on `send`.
+   */
+  const canAddCurrentBookmark =
+    send !== null && position !== null && (position.kind === 'page' || position.cfi !== null);
+
+  /**
+   * CALL-SITE 2 (both formats): bookmark the current position, under the label the user typed in
+   * `BookmarksPanel`'s add field (or `undefined` for a blank one, which falls through to
+   * `labelFor`'s own fallback). `position` is exactly what the last `relocated` reported, so no
+   * separate read of the WebView's state is needed — the same reasoning TTS's `ttsProvider` and the
+   * page-jump control already lean on.
+   */
+  const addCurrentBookmark = useCallback(
+    (name?: string): void => {
+      if (position === null) return;
+      const add =
+        position.kind === 'page'
+          ? addCurrentPdfBookmark(position.page, name)
+          : position.cfi !== null
+            ? addCurrentEpubBookmark(position.cfi, undefined, name)
+            : null;
+      if (add === null) return;
+
+      void add.then(({ bookmarks: fresh, skippedIds }) => {
+        setBookmarks(fresh);
+        setSkippedBookmarkCount(skippedIds.length);
+      });
+    },
+    [position],
+  );
+
+  /** CALL-SITE 3: tap-to-delete, by stored id. Re-renders from the returned fresh set. */
+  const deleteBookmark = useCallback((id: string): void => {
+    void removeBookmark(id).then(({ bookmarks: fresh, skippedIds }) => {
+      setBookmarks(fresh);
+      setSkippedBookmarkCount(skippedIds.length);
+    });
+  }, []);
+
+  /**
+   * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
+   * own `bookmarkStore`/`readerBookmarks.ts` and are expected to add a proper update-in-place op there
+   * later. This function exists so the UI can demonstrate renaming NOW, without Reader adding write
+   * capability to a store it does not own — replace the body with a single call to their update op
+   * once it ships, and delete this note.
+   *
+   * WHY NOT JUST ADD THE UPDATE OP HERE: `readerBookmarks.ts` is deliberately create-and-delete-only
+   * — see `removeBookmark`'s own note — because that is what lets a plain last-write-wins field
+   * (`updatedAt`) behave as a UNION across devices rather than a real merge. Whether an in-place
+   * rename can be added without breaking that guarantee is a sync-model decision, not a UI one, so it
+   * needs Personalization/Sync's sign-off rather than Reader guessing at it — outside Reader's
+   * ownership per CLAUDE.md.
+   *
+   * THE WORKAROUND, until then: compose the two calls Reader already has — create a new bookmark at
+   * the SAME target (so it appears in the same place) under the new name, then delete the old id. The
+   * new row gets a fresh id, which is invisible to the panel — it re-renders from whatever
+   * `readerBookmarks.ts` reports as the current authoritative set either way. This is NOT what the
+   * real fix should look like on the wire (it is two writes and two sync-outbox entries for what is
+   * conceptually one edit); it is what proves the feature works while the real op is pending.
+   *
+   * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
+   * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
+   */
+  const renameBookmark = useCallback((bookmark: ReaderBookmark, name?: string): void => {
+    const add =
+      bookmark.target.kind === 'page'
+        ? addCurrentPdfBookmark(bookmark.target.page, name)
+        : addCurrentEpubBookmark(bookmark.target.href, undefined, name);
+
+    void add
+      .then(() => removeBookmark(bookmark.id))
+      .then(({ bookmarks: fresh, skippedIds }) => {
+        setBookmarks(fresh);
+        setSkippedBookmarkCount(skippedIds.length);
+      });
+  }, []);
 
   /**
    * Jump to a typed page, or refuse without navigating.
@@ -875,11 +1030,13 @@ export function ReaderScreen({
         pendingSeekRef.current = target;
         setAwaitingSeek(true);
         setShowToc(false);
+        setShowBookmarks(false);
         setShowSearch(true);
         return;
       }
 
       setShowSearch(false);
+      setShowBookmarks(false);
       send({ type: 'goTo', target });
     },
     [search, send],
@@ -914,6 +1071,66 @@ export function ReaderScreen({
   );
 
   const isBusy = htmlUri === null || (!isRendered && error === null);
+
+  /**
+   * `bookmarks`, narrowed to the ones that could even BELONG to the book currently open — a PARTIAL
+   * mitigation for a real defect, not the fix, and that distinction matters enough to spell out.
+   *
+   * THE DEFECT: `bookmarkStore.add()` (Sync's, `src/features/sync/stores/bookmarkStore.ts`) stamps
+   * every bookmark with the single hardcoded `BOOK_ID` from `syncConfig.ts`, not the id of whichever
+   * book was actually open when it was created — and `bookmarkStore.list()` filters by that same
+   * singleton. So `loadBookmarks()` returns every bookmark ever created, for every book, always; the
+   * per-book identity this screen would need to filter on correctly does not exist anywhere in the
+   * data it gets back. Fixing that means threading a real `bookId` through `bookmarkStore.ts` AND
+   * `readerBookmarks.ts` (Personalization's) — both outside Reader's ownership per CLAUDE.md, and
+   * deliberately NOT done here; see `READER_BOOKMARKS_WIRING.md`'s open items for the real fix.
+   *
+   * THE MITIGATION: `target.kind` DOES distinguish EPUB (`'href'`) from PDF (`'page'`) addressing, and
+   * that much Reader already knows for certain from `format` — a PDF book can never navigate to an
+   * href, an EPUB can never navigate to a bare page number, so a bookmark of the wrong kind for the
+   * open book is provably not reachable here regardless of which book it actually belongs to. This
+   * catches the two-book split the dev fixtures already exercise (`DEV_FIXTURES`: two EPUB ids, two
+   * PDF ids) — opening the PDF sample no longer lists the EPUB sample's bookmarks, or vice versa.
+   *
+   * WHAT THIS DOES NOT FIX: two books of the SAME format (e.g. the bundled sample EPUB and the "Big"
+   * EPUB fixture) still see each other's bookmarks — `target.kind` cannot tell them apart, and nothing
+   * else in the returned data can either. That case needs the real per-book fix above.
+   */
+  const bookmarksForOpenBook = useMemo(() => {
+    if (format === null) return bookmarks;
+    return bookmarks.filter((b) => (format === 'PDF' ? b.target.kind === 'page' : b.target.kind === 'href'));
+  }, [bookmarks, format]);
+
+  /**
+   * Whether the CURRENT position has a bookmark on it, for the corner badge below.
+   *
+   * PDF matches by PAGE — the same whole-page granularity `addCurrentPdfBookmark` already writes at,
+   * so "this page has a bookmark" is exactly what was asked for. EPUB matches by exact CFI, which is
+   * an honest narrower claim: a CFI addresses a point, not a page, so the badge lights up only at the
+   * precise spot that was bookmarked, not "somewhere in this pagination" — the same "exactness over a
+   * comforting approximation" the search hints elsewhere in this file already commit to.
+   *
+   * Reads `bookmarksForOpenBook`, not raw `bookmarks` — same reasoning as the panel list: a same-format
+   * bookmark from a DIFFERENT book landing on the identical CFI/page would otherwise light this up for
+   * the wrong book, and while `target.kind` can't fully solve that (see the note above), there is no
+   * reason to skip the filter it CAN apply here just because the panel already applies it too.
+   *
+   * `useMemo`, not state-in-an-effect: this is a pure function of `bookmarksForOpenBook` and
+   * `position`, both of which are already reactive state — nothing here has a side effect to push
+   * through `setState`.
+   */
+  const isCurrentPositionBookmarked = useMemo(() => {
+    if (position === null) return false;
+    if (position.kind === 'page') {
+      return bookmarksForOpenBook.some(
+        (b) => b.target.kind === 'page' && b.target.page === position.page,
+      );
+    }
+    return (
+      position.cfi !== null &&
+      bookmarksForOpenBook.some((b) => b.target.kind === 'href' && b.target.href === position.cfi)
+    );
+  }, [bookmarksForOpenBook, position]);
 
   /**
    * Swipe-to-turn-page. INSTANT, NO ANIMATION — reuses the exact `next`/`prev` commands the
@@ -951,6 +1168,7 @@ export function ReaderScreen({
     !showToc &&
     !showSearch &&
     !showTts &&
+    !showBookmarks &&
     !isBusy &&
     !isObscured &&
     layoutPrefs.flow === 'paginated';
@@ -981,16 +1199,31 @@ export function ReaderScreen({
           // finds buttons by accessible name.
           accessibilityLabel="Search this book"
           onPress={() => {
-            // Mutual exclusion with Contents (and TTS). Not cosmetic: both panels' toggles read
-            // "Close" when open, and two buttons with that name make every
+            // Mutual exclusion with Contents, Bookmarks (and TTS). Not cosmetic: every panel's
+            // toggle reads "Close" when open, and two buttons with that name make every
             // getByRole('button', { name: 'Close' }) ambiguous.
             setShowToc(false);
             setShowTts(false);
+            setShowBookmarks(false);
             setShowSearch((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔍</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Bookmarks"
+          onPress={() => {
+            setShowToc(false);
+            setShowSearch(false);
+            setShowTts(false);
+            setShowBookmarks((open) => !open);
+          }}
+          style={styles.toolbarButton}
+        >
+          <Text style={styles.toolbarIcon}>🔖</Text>
         </Pressable>
 
         {/* EPUB-only (readerTextProvider.ts is CFI-based) and gated on Accessibility's one
@@ -1002,6 +1235,7 @@ export function ReaderScreen({
             onPress={() => {
               setShowToc(false);
               setShowSearch(false);
+              setShowBookmarks(false);
               setShowTts((open) => !open);
             }}
             style={styles.toolbarButton}
@@ -1056,6 +1290,68 @@ export function ReaderScreen({
             accessibilityElementsHidden
             importantForAccessibility="no-hide-descendants"
           />
+        )}
+
+        {/*
+          THE BOOKMARK BADGE — a PURELY VISUAL marker, the way Word marks a bookmarked location with
+          an icon in the margin rather than a control: it does not open the panel, does not toggle
+          anything, and is not a button — there is no `onPress`. Confirmed with the user rather than
+          assumed — an earlier version made this tappable (opening BookmarksPanel), which is the wrong
+          affordance here; the panel is reached from the toolbar, this is only the "you are somewhere
+          you bookmarked" cue. Long-press reveals a "Page Bookmarked" tooltip; a plain tap still does
+          nothing, which is the point of using `onLongPress` rather than `onPress` for that.
+
+          `accessibilityRole="image"`, NOT `accessibilityElementsHidden` — unlike the swipe catcher and
+          the privacy cover just below (which really are inert chrome with nothing to announce), this
+          DOES carry information a screen reader user needs ("you are somewhere you bookmarked"), so it
+          stays discoverable and announced; only its non-interactivity is what changed.
+
+          NO `pointerEvents="none"` HERE, UNLIKE THE FIRST VERSION — both triggers need this View to
+          actually receive touch/pointer events. The tradeoff: a finger tap landing exactly on this
+          30x30 corner is swallowed rather than reaching a swipe gesture underneath it — accepted as
+          negligible given the badge's size and inset placement, and a plain tap still does nothing
+          either way (no `onPress`).
+
+          A small corner ribbon, not a full-width banner, and deliberately inset from both edges
+          rather than flush into the corner: a book's own typography already keeps its top margin
+          clear, so an 8pt inset small badge sits in that margin rather than over the text underneath
+          it. Rendered BEFORE isBusy/every panel below, so it is naturally hidden behind them by RN's
+          sibling z-order the same way the swipe catcher's own note describes — no zIndex needed, and
+          none is set, to stay consistent with how the rest of this screen stacks overlays.
+        */}
+        {isCurrentPositionBookmarked && (
+          <View style={styles.bookmarkBadgeWrap}>
+            <Pressable
+              testID="reader-bookmark-badge"
+              accessibilityRole="image"
+              accessibilityLabel="This page is bookmarked"
+              onHoverIn={() => {
+                setShowBookmarkTooltip(true);
+              }}
+              onHoverOut={() => {
+                setShowBookmarkTooltip(false);
+              }}
+              onLongPress={() => {
+                setShowBookmarkTooltip(true);
+              }}
+              onPressOut={() => {
+                // Also the natural end of a plain (non-long) tap — harmless no-op there, since the
+                // tooltip was never shown by one.
+                setShowBookmarkTooltip(false);
+              }}
+              style={styles.bookmarkBadge}
+            >
+              <Text style={styles.bookmarkBadgeIcon}>🔖</Text>
+            </Pressable>
+
+            {/* `pointerEvents="none"`: a tooltip must never be what a pointer is hovering OVER, or
+                moving onto it would fire the badge's own onHoverOut and make it flicker. */}
+            {showBookmarkTooltip && (
+              <View style={styles.bookmarkTooltip} pointerEvents="none">
+                <Text style={styles.bookmarkTooltipText}>Page Bookmarked</Text>
+              </View>
+            )}
+          </View>
         )}
 
         {isBusy && (
@@ -1243,11 +1539,30 @@ export function ReaderScreen({
             onOpenResults={() => {
               setShowToc(false);
               setShowTts(false);
+              setShowBookmarks(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
               cancelPendingSeek();
               search.clear();
+            }}
+          />
+        )}
+
+        {/* Same overlay treatment as Contents/Search, for the same reason — see the note above
+            SearchPanel. */}
+        {showBookmarks && (
+          <BookmarksPanel
+            bookmarks={bookmarksForOpenBook}
+            loaded={bookmarksLoaded}
+            skippedBookmarkCount={skippedBookmarkCount}
+            onSelect={selectBookmark}
+            onDelete={deleteBookmark}
+            onRename={renameBookmark}
+            onAddCurrent={addCurrentBookmark}
+            canAddCurrent={canAddCurrentBookmark}
+            onClose={() => {
+              setShowBookmarks(false);
             }}
           />
         )}
@@ -1288,6 +1603,7 @@ export function ReaderScreen({
           onPress={() => {
             setShowSearch(false); // mutual exclusion — see the toolbar button above
             setShowTts(false);
+            setShowBookmarks(false);
             setShowToc((open) => !open);
           }}
           style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -1441,6 +1757,44 @@ const styles = StyleSheet.create({
   // export only `absoluteFill`, so the *Object form is a typecheck error here.
   busy: { ...FILL, alignItems: 'center', justifyContent: 'center' },
   busyText: { marginTop: 8, fontSize: 13, color: '#555555' },
+
+  // Inset from both edges, deliberately — see the note at the JSX for why this stays clear of the
+  // text. Positioned on the WRAP, not the badge itself, so the tooltip below can be a normal sibling
+  // laid out relative to it rather than a second independently-positioned absolute element.
+  bookmarkBadgeWrap: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end' },
+  // A warm gold ribbon colour, not white-on-white: the badge needs to read as a DIFFERENT surface
+  // from the page underneath it at a glance, on both the light and (eventually) dark reading themes
+  // this file cannot yet see (src/theme/ has not landed — see the header note on inline colours). The
+  // shadow does the same job on Android, where a flat gold circle over a busy page can still blend in
+  // without one; `elevation` is Android's equivalent of the iOS shadow* props below it.
+  bookmarkBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#ffd54f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e0a800',
+    shadowColor: '#000000',
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 3,
+  },
+  bookmarkBadgeIcon: { fontSize: 15 },
+
+  // Dark-on-light rather than matching the badge's own gold, so it reads as a SEPARATE floating label
+  // (the standard tooltip convention) instead of an extension of the badge shape. `alignSelf` on the
+  // wrap keeps this right-aligned under the badge regardless of the tooltip's own text width.
+  bookmarkTooltip: {
+    marginTop: 6,
+    backgroundColor: 'rgba(17, 17, 17, 0.92)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  bookmarkTooltipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
 
   errorBanner: {
     backgroundColor: '#fdf2f2',
