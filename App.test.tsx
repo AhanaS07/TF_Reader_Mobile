@@ -45,6 +45,7 @@ jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
     setDefaultRate: jest.fn(() => Promise.resolve(true)),
     setDefaultPitch: jest.fn(() => Promise.resolve(true)),
     setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    setIgnoreSilentSwitch: jest.fn(() => Promise.resolve(true)),
     voices: jest.fn(() => Promise.resolve([])),
   },
 }));

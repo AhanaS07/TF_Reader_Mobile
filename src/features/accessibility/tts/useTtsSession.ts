@@ -131,7 +131,13 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
       if (opts?.clearHighlight !== false) clearHighlight();
-      void Tts.stop().catch(noop);
+      // Wrapped in try-catch because the native stop() takes a bool* parameter that can
+      // throw synchronously under the new-arch interop layer when called with undefined.
+      try {
+        void Tts.stop().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be stopped.
+      }
     }
 
     function speakSentence(sentence: TtsSentence, myGeneration: number): void {
@@ -288,7 +294,11 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
 
     pauseRef.current = () => {
       if (!PAUSE_RESUME_SUPPORTED) return;
-      void Tts.pause().catch(noop);
+      try {
+        void Tts.pause().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be paused.
+      }
     };
 
     stopRef.current = () => stopInternal();
@@ -338,6 +348,13 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
 
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
 
+    // iOS defaults to SoloAmbient audio session, which obeys the hardware mute switch and
+    // routes speech to the receiver. "ignore" switches to Playback so TTS always produces
+    // audible output regardless of the mute switch position.
+    if (Platform.OS === 'ios') {
+      void Tts.setIgnoreSilentSwitch('ignore').catch(noop);
+    }
+
     const unsubscribeInterrupted = provider.onInterrupted((reason) => {
       if (reason === 'navigated') {
         // Not a teardown, and Reader already cleared the highlight itself. Just drop any
@@ -367,7 +384,11 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       unsubscribeInterrupted();
       generation += 1;
       clearHighlight();
-      void Tts.stop().catch(noop);
+      try {
+        void Tts.stop().catch(noop);
+      } catch {
+        // Best-effort — the engine may already be stopped.
+      }
     };
   }, [provider]);
 
