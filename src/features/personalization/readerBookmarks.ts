@@ -79,14 +79,21 @@ export function toReaderBookmarks(rows: BookmarkRow[]): LoadedBookmarks {
   return { bookmarks, skippedIds };
 }
 
-/** list -> navigable rows. Shared by every call-site below. */
-async function reload(): Promise<LoadedBookmarks> {
-  return toReaderBookmarks(await bookmarkStore.list());
+/**
+ * list (scoped to THIS book) -> navigable rows. Shared by every call-site below.
+ *
+ * `bookId` is passed explicitly rather than letting `bookmarkStore.list` fall back to the single
+ * hardcoded `BOOK_ID` — that fallback is why every book used to show every other book's bookmarks.
+ * `list(undefined, bookId)` keeps the store's `userId` default (single-user prototype) while pinning
+ * the book. Now multi-book capable: the reader passes the id of whichever book is open.
+ */
+async function reload(bookId: string): Promise<LoadedBookmarks> {
+  return toReaderBookmarks(await bookmarkStore.list(undefined, bookId));
 }
 
-/** CALL-SITE 1 — on open: load the book's bookmarks for the panel. */
-export function loadBookmarks(): Promise<LoadedBookmarks> {
-  return reload();
+/** CALL-SITE 1 — on open: load THIS book's bookmarks for the panel. */
+export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
+  return reload(bookId);
 }
 
 /**
@@ -95,18 +102,23 @@ export function loadBookmarks(): Promise<LoadedBookmarks> {
  * `cfi` is the current reading position the reader already reports on `relocated`.
  */
 export async function addCurrentEpubBookmark(
+  bookId: string,
   cfi: string,
   chapterId?: string,
   name?: string,
 ): Promise<LoadedBookmarks> {
-  await bookmarkStore.addForCfi(cfi, chapterId, name);
-  return reload();
+  await bookmarkStore.addForCfi(cfi, chapterId, name, bookId);
+  return reload(bookId);
 }
 
 /** CALL-SITE 2b — user bookmarks the current PDF page. */
-export async function addCurrentPdfBookmark(page: number, name?: string): Promise<LoadedBookmarks> {
-  await bookmarkStore.addForPage(page, name);
-  return reload();
+export async function addCurrentPdfBookmark(
+  bookId: string,
+  page: number,
+  name?: string,
+): Promise<LoadedBookmarks> {
+  await bookmarkStore.addForPage(page, name, bookId);
+  return reload(bookId);
 }
 
 /**
@@ -114,7 +126,7 @@ export async function addCurrentPdfBookmark(page: number, name?: string): Promis
  * (soft-delete tombstone), the same create-and-delete-only model as highlights — which is what lets
  * plain LWW behave as union across devices. Returns the fresh set, the deleted id absent from it.
  */
-export async function removeBookmark(id: string): Promise<LoadedBookmarks> {
+export async function removeBookmark(bookId: string, id: string): Promise<LoadedBookmarks> {
   await bookmarkStore.remove(id);
-  return reload();
+  return reload(bookId);
 }

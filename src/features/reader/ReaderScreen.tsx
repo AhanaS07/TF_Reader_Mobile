@@ -868,7 +868,7 @@ export function ReaderScreen({
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadBookmarks().then(({ bookmarks: loaded, skippedIds }) => {
+    void loadBookmarks(bookId).then(({ bookmarks: loaded, skippedIds }) => {
       if (cancelled) return;
       setBookmarks(loaded);
       setSkippedBookmarkCount(skippedIds.length);
@@ -877,7 +877,8 @@ export function ReaderScreen({
     return () => {
       cancelled = true;
     };
-  }, [isRendered]);
+    // bookId: bookmarks are now scoped to the open book (was the global BOOK_ID constant).
+  }, [isRendered, bookId]);
 
   /**
    * Tap a bookmark: dismiss the panel and `goTo` its target — the whole navigation path, already
@@ -912,9 +913,9 @@ export function ReaderScreen({
       if (position === null) return;
       const add =
         position.kind === 'page'
-          ? addCurrentPdfBookmark(position.page, name)
+          ? addCurrentPdfBookmark(bookId, position.page, name)
           : position.cfi !== null
-            ? addCurrentEpubBookmark(position.cfi, undefined, name)
+            ? addCurrentEpubBookmark(bookId, position.cfi, undefined, name)
             : null;
       if (add === null) return;
 
@@ -923,16 +924,19 @@ export function ReaderScreen({
         setSkippedBookmarkCount(skippedIds.length);
       });
     },
-    [position],
+    [position, bookId],
   );
 
   /** CALL-SITE 3: tap-to-delete, by stored id. Re-renders from the returned fresh set. */
-  const deleteBookmark = useCallback((id: string): void => {
-    void removeBookmark(id).then(({ bookmarks: fresh, skippedIds }) => {
-      setBookmarks(fresh);
-      setSkippedBookmarkCount(skippedIds.length);
-    });
-  }, []);
+  const deleteBookmark = useCallback(
+    (id: string): void => {
+      void removeBookmark(bookId, id).then(({ bookmarks: fresh, skippedIds }) => {
+        setBookmarks(fresh);
+        setSkippedBookmarkCount(skippedIds.length);
+      });
+    },
+    [bookId],
+  );
 
   /**
    * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
@@ -958,19 +962,22 @@ export function ReaderScreen({
    * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
    * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
    */
-  const renameBookmark = useCallback((bookmark: ReaderBookmark, name?: string): void => {
-    const add =
-      bookmark.target.kind === 'page'
-        ? addCurrentPdfBookmark(bookmark.target.page, name)
-        : addCurrentEpubBookmark(bookmark.target.href, undefined, name);
+  const renameBookmark = useCallback(
+    (bookmark: ReaderBookmark, name?: string): void => {
+      const add =
+        bookmark.target.kind === 'page'
+          ? addCurrentPdfBookmark(bookId, bookmark.target.page, name)
+          : addCurrentEpubBookmark(bookId, bookmark.target.href, undefined, name);
 
-    void add
-      .then(() => removeBookmark(bookmark.id))
-      .then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
-  }, []);
+      void add
+        .then(() => removeBookmark(bookId, bookmark.id))
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        });
+    },
+    [bookId],
+  );
 
   /**
    * Jump to a typed page, or refuse without navigating.

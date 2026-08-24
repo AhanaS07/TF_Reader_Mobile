@@ -14,10 +14,12 @@ A pure mapper plus the three host call-sites, fully unit-tested (`readerHighligh
 | Export | Role |
 | ------ | ---- |
 | `toReaderHighlights(paintable)` | pure: `HighlightPaint[]` → `{ epub, pdf }`, **stripping the `format` discriminant** |
-| `loadReaderHighlights()` | call-site 1 — on open: `list()` → `toPaintable` → payload (+ `skippedIds`) |
-| `addEpubHighlight(startCfi, endCfi, color?)` | call-site 2a — user highlights an EPUB selection |
-| `addPdfHighlight(selection, color?)` | call-site 2b — user highlights a PDF selection (per-page) |
-| `removeHighlight(id)` | call-site 3 — tap-to-delete, **by stored id** |
+| `loadReaderHighlights(bookId)` | call-site 1 — on open: `list(this book)` → `toPaintable` → payload (+ `skippedIds`) |
+| `addEpubHighlight(bookId, startCfi, endCfi, color?)` | call-site 2a — user highlights an EPUB selection |
+| `addPdfHighlight(bookId, selection, color?)` | call-site 2b — user highlights a PDF selection (per-page) |
+| `removeHighlight(bookId, id)` | call-site 3 — tap-to-delete, **by stored id** (`bookId` re-lists the right book) |
+
+Every call is scoped to `bookId` (2026-08-24), mirroring `readerBookmarks.ts` — see the resolved open item.
 
 Every `add*`/`remove` persists through `highlightStore` (which enqueues the sync outbox in the same
 transaction — offline-safe) and returns the **fresh, full, authoritative set**, so the caller always
@@ -61,9 +63,15 @@ change (the same way `applyAppearance` was). The pieces:
    they cannot collide with TTS (`'tts'`) or search (`'search'`). The payload deliberately does not
    carry an owner — it is fixed for this call-site. See `HIGHLIGHT_LAYERS.md`.
 
-## Open item (unchanged, pre-ship — Karthik/joint)
+## Open item — per-book scoping RESOLVED 2026-08-24
 
-`highlightStore.list()` filters by the single hard-coded `USER_ID`/`BOOK_ID` in `syncConfig.ts`, so a
+`highlightStore.list()`/`add*` used to key off the single hard-coded `BOOK_ID`, so every book would show
+every other book's highlights (same defect as bookmarks). Fixed: Karthik's stores take `bookId` (commit
+`25cd740`) and `readerHighlights.ts` now threads a real `bookId` through every call
+(`list(undefined, bookId)`). Note the applies-half isn't wired in `ReaderScreen` yet, so this is ready
+for whenever painting lands — the seam is already per-book. Only `USER_ID` stays single-user prototype.
+
+Historic note (superseded): `highlightStore.list()` filtered by the single hard-coded `USER_ID`/`BOOK_ID`, so a
 second book won't load its own highlights until identity takes a book list. Not this stage's fix —
 same limit the whole sync prototype carries.
 

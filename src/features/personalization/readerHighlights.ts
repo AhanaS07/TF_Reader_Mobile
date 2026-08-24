@@ -102,9 +102,16 @@ export function toReaderHighlights(paintable: HighlightPaint[]): ReaderHighlight
   return { epub, pdf };
 }
 
-/** list -> paintable -> format-free payload, surfacing skipped rows. Shared by every call-site below. */
-async function reload(): Promise<LoadedHighlights> {
-  const rows = await highlightStore.list();
+/**
+ * list (scoped to THIS book) -> paintable -> format-free payload, surfacing skipped rows. Shared by
+ * every call-site below.
+ *
+ * `bookId` is passed explicitly rather than letting `highlightStore.list` fall back to the single
+ * hardcoded `BOOK_ID` — that fallback is why every book would show every other book's highlights.
+ * `list(undefined, bookId)` keeps the store's single-user default while pinning the open book.
+ */
+async function reload(bookId: string): Promise<LoadedHighlights> {
+  const rows = await highlightStore.list(undefined, bookId);
   const { paintable, skipped } = toPaintable(rows);
   return {
     highlights: toReaderHighlights(paintable),
@@ -116,8 +123,8 @@ async function reload(): Promise<LoadedHighlights> {
  * CALL-SITE 1 — on open. The reader calls this once the shell is ready and paints the returned set
  * (see READER_HIGHLIGHTS_WIRING.md for exactly when). This is the `list()`-on-open half of the task.
  */
-export function loadReaderHighlights(): Promise<LoadedHighlights> {
-  return reload();
+export function loadReaderHighlights(bookId: string): Promise<LoadedHighlights> {
+  return reload(bookId);
 }
 
 /**
@@ -127,21 +134,23 @@ export function loadReaderHighlights(): Promise<LoadedHighlights> {
  * paint idempotent and matches the reader keeping an `id -> painted-range` map it diffs against.
  */
 export async function addEpubHighlight(
+  bookId: string,
   startCfi: string,
   endCfi: string,
   color?: string,
 ): Promise<LoadedHighlights> {
-  await highlightStore.addFromCfi(startCfi, endCfi, color);
-  return reload();
+  await highlightStore.addFromCfi(startCfi, endCfi, color, bookId);
+  return reload(bookId);
 }
 
 /** CALL-SITE 2b — user highlights a PDF selection (per-page; a `SelectionRange` is single-page). */
 export async function addPdfHighlight(
+  bookId: string,
   selection: SelectionRange,
   color?: string,
 ): Promise<LoadedHighlights> {
-  await highlightStore.addFromSelection(selection, color);
-  return reload();
+  await highlightStore.addFromSelection(selection, color, bookId);
+  return reload(bookId);
 }
 
 /**
@@ -150,7 +159,7 @@ export async function addPdfHighlight(
  * Returns the fresh set; the id just removed is absent from it, so the reader un-paints it as part of
  * the same diff every repaint does.
  */
-export async function removeHighlight(id: string): Promise<LoadedHighlights> {
+export async function removeHighlight(bookId: string, id: string): Promise<LoadedHighlights> {
   await highlightStore.remove(id);
-  return reload();
+  return reload(bookId);
 }
