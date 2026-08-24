@@ -1,12 +1,13 @@
 // Owner: Accessibility (Hruthik).
 //
 // TEMP: bound to the fake reader-text provider until Reader ships the real ReaderTextProvider
-// (TTS_PROVIDER.md step 5/6 — "UNBLOCKED, not started" as of 2026-08-21). This is App.tsx's
-// "TTS Demo" tab: a standalone screen so the already-built TtsControls/useTtsSession can be
-// exercised on a device, including the one thing TtsControls itself doesn't show — which fake
-// sentence is currently speaking. Replace the provider (not this screen's layout) once the real
-// one lands; see TTS_PROVIDER.md's deletion table, which this file is now the call site for
-// instead of App.tsx's old TtsDemo.
+// (TTS_PROVIDER.md step 5/6 — "UNBLOCKED, not started" as of 2026-08-21). This is the "TTS Demo"
+// route (`src/navigation/TtsDemoScreen.tsx`, a thin wrapper with no behaviour of its own): a
+// standalone screen so the already-built TtsControls/useTtsSession can be exercised on a device,
+// including the one thing TtsControls itself doesn't show — which fake sentence is currently
+// speaking. Replace the provider (not this screen's layout) once the real one lands; see
+// TTS_PROVIDER.md's deletion table, which this file is now the call site for instead of App.tsx's
+// old inline TtsDemo (App.tsx mounted this directly before RootNavigator landed).
 
 import { useEffect, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';

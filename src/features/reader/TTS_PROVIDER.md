@@ -157,9 +157,10 @@ side is one import changing. That only holds while nothing depends on the test-o
 `ReaderTextProvider` cannot reach them; that is the intended pressure.
 
 The one production call site today is `src/features/accessibility/tts/TtsReadingScreen.tsx` — the
-"TTS Demo" tab in `App.tsx`, standing in for a real mount point until step 5 lands. It renders the
-sentence currently speaking (`session.currentSentence.text`) alongside `TtsControls`, so the demo
-shows what's being "read," not just transport controls.
+"TTS Demo" route (`src/navigation/TtsDemoScreen.tsx`, reached from BookListScreen), standing in for
+a real mount point until step 5 lands. It renders the sentence currently speaking
+(`session.currentSentence.text`) alongside `TtsControls`, so the demo shows what's being "read," not
+just transport controls.
 
 Delete together, when step 5 lands:
 
