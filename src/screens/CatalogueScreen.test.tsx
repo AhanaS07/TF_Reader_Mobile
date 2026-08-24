@@ -425,9 +425,10 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
   });
 
   // Accents cycle by POSITION, never by shelf identity (see the ACCENTS comment
-  // in CatalogueScreen.tsx) — there are 5 tokens and this feed sends 7 entries,
-  // so the 6th and 7th cards must wrap back to the 1st and 2nd token rather than
-  // reuse the 5th or throw past the end of the array.
+  // in CatalogueScreen.tsx) — there are 4 tokens and this feed sends 7 entries,
+  // so the 5th card onward must wrap back to the 1st token rather than reuse the
+  // last one or throw past the end of the array.
+  //
   it('cycles accent colors by position and wraps once entries outnumber accent tokens', async () => {
     const titles = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
     setCatalogueSource(fakeSource(async () => catalogueWithNavigation(titles)));
@@ -443,11 +444,11 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
     expect(backgrounds).toEqual([
       color.primary,
       color.navy,
-      color.success,
-      color.subscription,
-      color.elite,
+      color.blueBright,
+      color.blueDeep,
       color.primary,
       color.navy,
+      color.blueBright,
     ]);
   });
 

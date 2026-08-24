@@ -98,6 +98,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     marginTop: space.xs / 2, // =2 — fine-grained icon-to-label gap

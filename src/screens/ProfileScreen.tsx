@@ -217,6 +217,7 @@ const styles = StyleSheet.create({
   },
   sectionLabel: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,
@@ -228,6 +229,7 @@ const styles = StyleSheet.create({
   },
   devLabel: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,

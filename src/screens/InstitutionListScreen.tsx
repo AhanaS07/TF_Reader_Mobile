@@ -371,6 +371,7 @@ const styles = StyleSheet.create({
     paddingTop: space.md,
     paddingBottom: space.sm,
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,

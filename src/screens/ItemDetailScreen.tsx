@@ -559,6 +559,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: typeScale.pageTitle.weight,
+    fontFamily: typeScale.pageTitle.fontFamily,
     fontSize: typeScale.pageTitle.size,
     lineHeight: typeScale.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -566,6 +567,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textSecondary,
@@ -573,6 +575,7 @@ const styles = StyleSheet.create({
   },
   authors: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
@@ -591,6 +594,7 @@ const styles = StyleSheet.create({
   },
   metaRow: {
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
@@ -598,6 +602,7 @@ const styles = StyleSheet.create({
   description: {
     alignSelf: 'stretch',
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
@@ -612,6 +617,7 @@ const styles = StyleSheet.create({
   // the SectionHeader, and description's margin would double it up.
   abstractText: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
@@ -629,6 +635,7 @@ const styles = StyleSheet.create({
   },
   formatStripLabel: {
     fontWeight: typeScale.smallLabel.weight,
+    fontFamily: typeScale.smallLabel.fontFamily,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textPrimary,
@@ -648,6 +655,7 @@ const styles = StyleSheet.create({
   },
   unavailableTagLabel: {
     fontWeight: typeScale.smallLabel.weight,
+    fontFamily: typeScale.smallLabel.fontFamily,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
@@ -667,6 +675,7 @@ const styles = StyleSheet.create({
   // would overclaim.
   tabRowLabel: {
     fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
     fontSize: typeScale.button.size,
     lineHeight: typeScale.button.lineHeight,
     color: color.textSecondary,

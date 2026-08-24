@@ -88,6 +88,7 @@ const styles = StyleSheet.create({
   },
   pinnedLabel: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.primary,
@@ -113,6 +114,7 @@ const styles = StyleSheet.create({
   },
   initialsText: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.textSecondary,
@@ -123,12 +125,14 @@ const styles = StyleSheet.create({
   },
   name: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
   },
   country: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,

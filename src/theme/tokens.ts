@@ -5,8 +5,10 @@
 // against each colour so a value can be traced back to the source. Where this file
 // and the brand reference disagree, the brand reference wins.
 
+import { resolveFont } from './resolveFont';
+
 // Shape of one entry in the type scale.
-export type TextStyle = { weight: string; size: number; lineHeight: number };
+export type TextStyle = { weight: string; size: number; lineHeight: number; fontFamily: string };
 
 // The only three weights in the T&F brand: Light, Regular, Bold.
 // 500 and 600 are NOT brand weights. The type scale below references this object
@@ -21,6 +23,18 @@ export const weight = {
 export const color = {
   primary: '#003CB2', // Ultramarine — primary buttons, active tabs, links
   navy: '#002244', // Indigo — top navigation, dark overlays
+
+  // Two intermediate blues that fill out the ramp between Indigo and
+  // Ultramarine and just past it. DECORATIVE ONLY — they carry no meaning, and
+  // exist so the category strip can cycle more than two shades without reaching
+  // for a status colour. Named relative to `primary`: blueDeep is darker,
+  // blueBright lighter.
+  //
+  // Cornflower (#505AFF) would have been the natural fourth, but white text on
+  // it measures 4.94:1 and the strip's count line renders at 0.85 opacity,
+  // which lands ~4.20:1 — under AA. Both of these clear it: 12.56:1 and 6.70:1.
+  blueDeep: '#002E7A',
+  blueBright: '#1E50D2',
   textPrimary: '#283857', // Carbon — headings, body text
   textSecondary: '#3C4E69', // Slate — metadata, subtitles, disabled
   surface: '#EBF0FF', // Cornflower Neutral — cards, section backgrounds
@@ -61,16 +75,16 @@ export const font = {
   fallback: 'System',
 } as const;
 
-// The six text styles. Map weight/size onto fontWeight/fontSize at the call site.
+// The six text styles. Map weight/size/fontFamily onto the RN Text style at the call site.
 export const type = {
   // PENDING. The brand guide specifies Regular (400) for titles; this stays Bold
   // until the team confirms — brand reference §6.5.
-  pageTitle: { weight: weight.bold, size: 24, lineHeight: 32 },
-  sectionHeader: { weight: weight.bold, size: 18, lineHeight: 24 },
-  body: { weight: weight.regular, size: 15, lineHeight: 22 },
-  meta: { weight: weight.light, size: 13, lineHeight: 18 },
-  button: { weight: weight.bold, size: 15, lineHeight: 20 },
-  smallLabel: { weight: weight.regular, size: 12, lineHeight: 16 },
+  pageTitle: { weight: weight.bold, size: 24, lineHeight: 32, fontFamily: resolveFont('primary', weight.bold) },
+  sectionHeader: { weight: weight.bold, size: 18, lineHeight: 24, fontFamily: resolveFont('primary', weight.bold) },
+  body: { weight: weight.regular, size: 15, lineHeight: 22, fontFamily: resolveFont('primary', weight.regular) },
+  meta: { weight: weight.light, size: 13, lineHeight: 18, fontFamily: resolveFont('primary', weight.light) },
+  button: { weight: weight.bold, size: 15, lineHeight: 20, fontFamily: resolveFont('primary', weight.bold) },
+  smallLabel: { weight: weight.regular, size: 12, lineHeight: 16, fontFamily: resolveFont('primary', weight.regular) },
 } as const satisfies Record<string, TextStyle>;
 
 // Spacing scale for every gap, padding and inset. Not brand-specified.

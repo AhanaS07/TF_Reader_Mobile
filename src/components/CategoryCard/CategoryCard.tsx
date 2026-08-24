@@ -14,6 +14,20 @@
 // there. Tinting the whole card turns the colour into the content instead of
 // padding around it.
 //
+// THE ACCENT IS A RAMP OF BLUES, NOT A SET OF HUES. `success`, `subscription`
+// and `elite` used to be cycled here too. All three are SEMANTIC in Design Spec
+// §2.1: Mint Dark means Open Access, Cornflower means Subscription, and Elite
+// has no brand purple at all (PENDING — the old #7C3AED is outside the brand
+// palette). AccessTierBadge renders those exact colours on the ContentCards
+// directly below this strip, so a shelf tinted Mint Dark read as "Open Access"
+// while meaning nothing of the sort.
+//
+// The four here are one tonal family instead — Indigo, Ultramarine and two
+// intermediate blues (tokens.ts `blueDeep`/`blueBright`). A ramp reads as
+// deliberate where a spread of unrelated hues reads as random, it satisfies
+// "blue must always be present" and "do not mix secondary tonal ranges", and
+// every step clears AA for white text including the count's 0.85 opacity.
+//
 // IT HAS NO PER-CATEGORY VARIANT, ON PURPOSE. A union like
 // `variant: 'ebooks' | 'audiobooks' | 'openAccess'` would bake one institution's
 // shelf names into a type. There is no such vocabulary to bake: an administrator
@@ -24,15 +38,11 @@
 // It sets no width — the strip that lays it out owns that (CONVENTIONS §8).
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { color, elevation, radius, space, type } from '@theme/tokens';
+import { color, elevation, radius, space, type, weight } from '@theme/tokens';
 
-// Which tokens may tint a category.
-//
-// A SUBSET OF ColorToken, NOT ALL OF IT. `wait` and `error` are status colours —
-// amber and red carry "something is wrong", which is a lie on a category, and
-// amber cannot hold light text legibly anyway. The remaining five are all dark
-// enough for `color.white` text to read cleanly.
-export type CategoryAccent = 'primary' | 'navy' | 'success' | 'subscription' | 'elite';
+// Which tokens may tint a category. All four are blues carrying no semantic
+// meaning elsewhere in the app — see the header for why the status colours went.
+export type CategoryAccent = 'primary' | 'navy' | 'blueDeep' | 'blueBright';
 
 // `error` and `offline` belong to the screen that owns the feed request, not to
 // one card in the strip (CONVENTIONS §6).
@@ -77,11 +87,12 @@ export default function CategoryCard({
       accessibilityRole={pressable ? 'button' : undefined}
       accessibilityLabel={pressable ? title : undefined}
     >
-      {/* Two translucent circles bleeding off the top corner. They give the tint
-          some depth so a saturated card does not read as a flat swatch, and cost
-          nothing — no image asset, no icon font (none is installed). */}
-      <View style={styles.blobLarge} pointerEvents="none" />
-      <View style={styles.blobSmall} pointerEvents="none" />
+      {/* One translucent circle bleeding off the top corner, filling the space
+          the bottom-aligned content leaves empty. It gives the tint some depth
+          so a saturated card does not read as a flat swatch, and costs nothing —
+          no image asset. There were two of these; the second sat on the opposite
+          edge and only made the card busier. */}
+      <View style={styles.blob} pointerEvents="none" />
 
       {loading ? (
         <View testID="category-card-skeleton" style={styles.body}>
@@ -90,7 +101,7 @@ export default function CategoryCard({
         </View>
       ) : (
         <View style={styles.body}>
-          <Text testID="category-card-title" style={styles.title} numberOfLines={2}>
+          <Text testID="category-card-title" style={styles.title} numberOfLines={1}>
             {title}
           </Text>
 
@@ -110,55 +121,60 @@ export default function CategoryCard({
   );
 }
 
-// Card height, the decorative circles, and the chevron box. All composed from the
+// Card height, the decorative circle, and the chevron box. All composed from the
 // spacing scale so no bare number reaches the stylesheet (CONVENTIONS §5).
-const CARD_HEIGHT = space.xl * 5;
-const BLOB_LARGE = space.xl * 4;
-const BLOB_SMALL = space.xl * 2;
+//
+// The height budgets one line of the (now smaller) title (22) above the count
+// line (18) with a gap between — 48 inside padding, plus a little extra room
+// (space.lg over space.md) so the card doesn't read as cramped around that
+// compact text. The title used to be sectionHeader-sized across up to two
+// lines (48 on its own), which read as the text crowding the card; a single
+// compact line with slightly more breathing room around it is the balance.
+const CARD_HEIGHT = space.xl * 3;
+const BLOB = space.xl * 2 + space.md;
 const CHEVRON = space.sm;
 
 const styles = StyleSheet.create({
   card: {
     height: CARD_HEIGHT,
     borderRadius: radius.card,
-    // Content sits at the bottom; the circles fill the space above it.
+    // Content sits at the bottom; the circle fills the space above it.
     justifyContent: 'flex-end',
-    // Keeps the circles from spilling past the rounded corners.
+    // Keeps the circle from spilling past the rounded corners.
     overflow: 'hidden',
     ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
   },
 
   // Positioned off the corner so only an arc shows, which reads as a highlight
   // rather than a shape someone forgot to finish.
-  blobLarge: {
+  blob: {
     position: 'absolute',
-    width: BLOB_LARGE,
-    height: BLOB_LARGE,
+    width: BLOB,
+    height: BLOB,
     borderRadius: radius.pill,
     backgroundColor: color.white,
     opacity: 0.12,
-    top: -BLOB_LARGE / 3,
-    right: -BLOB_LARGE / 4,
-  },
-  blobSmall: {
-    position: 'absolute',
-    width: BLOB_SMALL,
-    height: BLOB_SMALL,
-    borderRadius: radius.pill,
-    backgroundColor: color.white,
-    opacity: 0.1,
-    top: BLOB_SMALL / 2,
-    left: -BLOB_SMALL / 3,
+    top: -BLOB / 3,
+    right: -BLOB / 4,
   },
 
   body: {
     padding: space.md,
-    gap: space.xs,
+    // A touch more than before (space.xs) — now that the title is one compact
+    // line, a slightly bigger gap keeps it visually separate from the count
+    // instead of the two reading as a single dense block.
+    gap: space.sm,
   },
   title: {
-    fontWeight: type.pageTitle.weight,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
+    // Bold stays — it is still the card's heading — but at the body size rather
+    // than sectionHeader's. sectionHeader (18px, up to 2 lines) is what read as
+    // "too much text" on a 160-wide card; body size keeps the same bold family
+    // (weight is baked into the font file, not this fontWeight value) while
+    // taking meaningfully less room.
+    fontWeight: weight.bold,
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
     // The light token, since the card behind it is saturated.
     color: color.white,
   },
@@ -171,6 +187,7 @@ const styles = StyleSheet.create({
   },
   count: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.white,
@@ -197,6 +214,6 @@ const styles = StyleSheet.create({
   },
   // Each bar stands at the height of the line it replaces, so nothing shifts
   // when the real data arrives.
-  barTitle: { height: type.sectionHeader.lineHeight, width: '70%' },
+  barTitle: { height: type.body.lineHeight, width: '70%' },
   barCount: { height: type.meta.lineHeight, width: '40%' },
 });

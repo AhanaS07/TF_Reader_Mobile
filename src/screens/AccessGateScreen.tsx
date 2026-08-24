@@ -212,6 +212,7 @@ const styles = StyleSheet.create({
   },
   heading: {
     fontWeight: typeScale.sectionHeader.weight,
+    fontFamily: typeScale.sectionHeader.fontFamily,
     fontSize: typeScale.sectionHeader.size,
     lineHeight: typeScale.sectionHeader.lineHeight,
     color: color.textPrimary,
@@ -221,18 +222,21 @@ const styles = StyleSheet.create({
   },
   itemLabel: {
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
   },
   itemTitle: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
   },
   itemAuthors: {
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
@@ -255,12 +259,14 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
   },
   cardSubtitle: {
     fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
@@ -271,6 +277,7 @@ const styles = StyleSheet.create({
   },
   laterLabel: {
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textSecondary,

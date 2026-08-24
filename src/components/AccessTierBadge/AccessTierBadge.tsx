@@ -61,6 +61,7 @@ const styles = StyleSheet.create({
   md: { paddingHorizontal: space.md, paddingVertical: space.xs },
   label: {
     fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
     color: color.white,

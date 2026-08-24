@@ -39,6 +39,7 @@ const styles = StyleSheet.create({
   page: { padding: space.md, gap: space.lg },
   heading: {
     fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
@@ -46,6 +47,7 @@ const styles = StyleSheet.create({
   group: { gap: space.sm },
   caption: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,

@@ -221,6 +221,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     textAlign: 'center',

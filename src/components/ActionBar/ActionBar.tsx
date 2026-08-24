@@ -189,6 +189,7 @@ const styles = StyleSheet.create({
     // Shrinks so a long message wraps instead of pushing Retry off the bar.
     flex: 1,
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
@@ -203,6 +204,7 @@ const styles = StyleSheet.create({
   },
   retryLabel: {
     fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.primary,

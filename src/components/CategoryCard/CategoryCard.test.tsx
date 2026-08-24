@@ -71,6 +71,7 @@ describe('CategoryCard accent', () => {
   // type or a branch anywhere" — a `variant: 'ebooks' | 'audiobooks'` union here
   // would hardcode shelf names that belong to one institution's administrator
   // (AGENTS.md L-5, settled 16 Aug 2026).
+  //
   // The accent fills the whole card rather than a panel inside it, so the tint
   // lands on the card itself.
   it('tints the card with the accent token it is given', async () => {

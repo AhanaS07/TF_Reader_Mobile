@@ -36,7 +36,9 @@
     "typescript": "~6.0.3"
   },
   "dependencies": {
-    "@expo-google-fonts/inter": "^0.4.2",
+    "@expo-google-fonts/aleo": "^0.4.2",
+    "@expo-google-fonts/noto-sans": "^0.4.2",
+    "@expo-google-fonts/open-sans": "^0.4.2",
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/netinfo": "12.0.1",
@@ -47,6 +49,7 @@
     "expo-dev-client": "~57.0.11",
     "expo-font": "~57.0.1",
     "expo-speech-recognition": "^56.0.1",
+    "expo-splash-screen": "~57.0.8",
     "expo-system-ui": "~57.0.2",
     "react": "19.2.3",
     "react-native": "0.86.2",

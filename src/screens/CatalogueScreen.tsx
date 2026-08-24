@@ -55,7 +55,12 @@ type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 // Cycled by POSITION, never by shelf name — types.ts: "NAVIGATION IS DATA, NOT
 // CODE ... no shelf is named in a type or a branch anywhere". There are already
 // more shelves than accents, so the cycle wraps rather than running out.
-const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'success', 'subscription', 'elite'];
+//
+// A ramp of blues, ordered so adjacent cards alternate light and dark rather
+// than putting two near-identical shades side by side. The status and
+// access-tier colours that used to be in this cycle are semantic — see the
+// CategoryCard header.
+const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'blueBright', 'blueDeep'];
 
 // How many skeleton rows/cards to show before the first real payload arrives.
 // Arbitrary — there is no data yet to size it from.
@@ -264,12 +269,14 @@ const styles = StyleSheet.create({
   institutionName: {
     flex: 1,
     fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.textPrimary,
   },
   institutionChange: {
     fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
     fontSize: typeScale.button.size,
     lineHeight: typeScale.button.lineHeight,
     color: color.primary,

@@ -228,6 +228,7 @@ const styles = StyleSheet.create({
   },
   loadMoreLabel: {
     fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
     fontSize: typeScale.button.size,
     lineHeight: typeScale.button.lineHeight,
     color: color.primary,

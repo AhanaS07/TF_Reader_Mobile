@@ -104,7 +104,7 @@ export default function ContentCard({
               {title}
             </Text>
             {publisher !== undefined && (
-              <Text testID="content-card-publisher" style={styles.publisher} numberOfLines={2}>
+              <Text testID="content-card-publisher" style={styles.publisher} numberOfLines={1}>
                 {publisher}
               </Text>
             )}
@@ -139,7 +139,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
-    padding: space.sm,
+    padding: space.xs,
     backgroundColor: color.white,
     borderRadius: radius.card,
     // A hairline keeps adjacent rows separable on a white screen where the
@@ -159,7 +159,11 @@ const styles = StyleSheet.create({
   },
   thumb: {
     width: THUMB,
-    height: THUMB,
+    minHeight: THUMB,
+    // Stretches to match whatever height the text column ends up at, so the
+    // cover fills the row's full height instead of leaving a gap around a
+    // fixed-size square when the text stack is taller than THUMB.
+    alignSelf: 'stretch',
     borderRadius: radius.card,
     backgroundColor: color.border,
   },
@@ -171,12 +175,14 @@ const styles = StyleSheet.create({
   },
   title: {
     fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
   },
   publisher: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -185,6 +191,7 @@ const styles = StyleSheet.create({
   // to know whether the other is present.
   format: {
     fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
     color: color.textSecondary,
@@ -192,7 +199,7 @@ const styles = StyleSheet.create({
   badge: {
     // Shrinks to its content instead of stretching across the row.
     alignSelf: 'flex-start',
-    paddingTop: space.xs,
+    marginBottom: space.xs,
   },
   // Two borders on a rotated square: a chevron without an icon font, since none
   // is installed.
