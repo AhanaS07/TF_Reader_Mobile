@@ -35,6 +35,7 @@ import {
   DEV_FIXTURE_EPUB_BOOK_ID,
   DEV_FIXTURE_PDF_BOOK_ID,
   DEV_SAMPLE_AUDIO_BOOK_ID,
+  DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID,
   DEV_SAMPLE_EPUB_BOOK_ID,
   DEV_SAMPLE_PDF_BOOK_ID,
 } from '@/features/reader/devContentSeed';
@@ -57,6 +58,10 @@ const DEV_FIXTURES: readonly DevFixture[] = [
   // path EPUB/PDF use. AUDIO PHASE 3 gave it a real destination: see this file's onPress below,
   // which routes AUDIO to the AudioPlayer route instead of Reader.
   { label: 'Audiobook', bookId: DEV_SAMPLE_AUDIO_BOOK_ID, format: 'AUDIO' },
+  // Encrypted counterpart, added 2026-08-25 when Abhinav/Encryption overrode shared.md's "audio is
+  // never encrypted" for this one dev fixture (devContentSeed.ts's `audioEncrypted` flag) — this
+  // row exercises the same real on-device RSA-OAEP+AES-GCM decrypt EPUB/PDF already use, for audio.
+  { label: 'Audiobook (Encrypted)', bookId: DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID, format: 'AUDIO' },
 ];
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookList'>;
