@@ -40,6 +40,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { InstitutionRow } from '@components/InstitutionRow';
 import { ListRow } from '@components/ListRow';
 import { useInstitutionStore } from '@store/institutionStore';
+import { useSessionStore } from '@store/sessionStore';
 import type {
   ProfileStackParamList,
   RootStackParamList,
@@ -78,6 +79,7 @@ export default function ProfileScreen() {
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const clearSelectedInstitution = useInstitutionStore((s) => s.clearSelectedInstitution);
+  const clearSession = useSessionStore((s) => s.clearSession);
 
   const handleChangeInstitution = useCallback(() => {
     // Screen 06 is the institution list, and it lives in the Catalogue stack as
@@ -94,19 +96,14 @@ export default function ProfileScreen() {
   }, [navigation]);
 
   const handleSignOut = useCallback(() => {
-    // WHAT SIGN-OUT CAN HONESTLY DO TODAY. There is no session to clear — see
-    // the note at the top of this file — so this is not "clear the session"
-    // pending a store that does not exist. It drops the institution selection,
-    // which is the state the catalogue actually re-scopes on (CatalogueScreen
-    // reads `selectedInstitution`), and then lands the reader on the catalogue
-    // in that state. That is the sign-out half of A7 as far as the app can
-    // currently express it; the token half is Keshav's session store.
-    //
-    // ORDER MATTERS ONLY ONE WAY ROUND: clear first, then navigate, so the
-    // catalogue mounts already re-scoped rather than re-rendering after arrival.
+    // ORDER: session first, institution second, then navigate.
+    // clearSession() drops the access token immediately so any in-flight request
+    // that resolves after this sees no token. clearSelectedInstitution() rescopes
+    // the catalogue before it mounts, so it never flashes the wrong institution.
+    clearSession();
     clearSelectedInstitution();
     navigation.navigate('Catalogue', { screen: 'CatalogueHome' });
-  }, [clearSelectedInstitution, navigation]);
+  }, [clearSession, clearSelectedInstitution, navigation]);
 
   return (
     // Scrolls because the row count is fixed and already taller than a small

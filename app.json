@@ -6,7 +6,9 @@
     "orientation": "portrait",
     "scheme": "tfreader",
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": ["assets/**/*"],
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
@@ -23,7 +25,8 @@
           "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone so you can search the catalogue by voice.",
           "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to turn what you say into text so you can search the catalogue by voice."
         }
-      ]
+      ],
+      "expo-secure-store"
     ]
   }
 }
