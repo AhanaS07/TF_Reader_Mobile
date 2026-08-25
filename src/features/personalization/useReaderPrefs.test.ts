@@ -203,6 +203,153 @@ describe('useReaderPrefs font', () => {
   });
 });
 
+describe('useReaderPrefs typography', () => {
+  // Same load-bearing rule as the font group above: `typography` carries four
+  // fields, and a patch built from only the one that changed would drop the
+  // other three.
+  it('spreads the existing typography group when the text size changes', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onSelectTextSize(20);
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 20, lineHeight: 1.5, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('spreads the existing typography group when the line height changes', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeLineHeight(1.8);
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.8, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('spreads the existing typography group when letter spacing changes', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeLetterSpacing(2.5);
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 2.5, margins: 16 },
+    });
+  });
+
+  it('spreads the existing typography group when page margins change', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeMargins(32);
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 0, margins: 32 },
+    });
+  });
+
+  // THE RANGES ARE ENFORCED HERE, NOT BY THE STORE — see the note above these
+  // callbacks in useReaderPrefs.ts. Each field is clamped on both ends so a
+  // section (or a future caller) cannot write a value the control could never
+  // have produced honestly.
+  // A CLAMP IS NOT ENOUGH HERE — text size is six fixed presets, not a range,
+  // so a value between two presets must snap to one of them rather than pass
+  // through unchanged. Only `Tabs` can call this in practice, and it can only
+  // ever emit a preset id, but the callback stays correct for any caller.
+  it('snaps text size to the nearest preset, both in range and past either end', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onSelectTextSize(20);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 20 }) }),
+    );
+
+    await act(async () => {
+      result.current.onSelectTextSize(17);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 16 }) }),
+    );
+
+    await act(async () => {
+      result.current.onSelectTextSize(30);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 24 }) }),
+    );
+
+    await act(async () => {
+      result.current.onSelectTextSize(2);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 14 }) }),
+    );
+  });
+
+  it('clamps line height to 1.0-2.0', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeLineHeight(3);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ lineHeight: 2.0 }) }),
+    );
+
+    await act(async () => {
+      result.current.onChangeLineHeight(0);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ lineHeight: 1.0 }) }),
+    );
+  });
+
+  it('clamps letter spacing to 0-4px', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeLetterSpacing(10);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ spacing: 4 }) }),
+    );
+
+    await act(async () => {
+      result.current.onChangeLetterSpacing(-1);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ spacing: 0 }) }),
+    );
+  });
+
+  it('clamps page margins to 0-48px', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onChangeMargins(100);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ margins: 48 }) }),
+    );
+
+    await act(async () => {
+      result.current.onChangeMargins(-10);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ margins: 0 }) }),
+    );
+  });
+});
+
 describe('useReaderPrefs restore defaults', () => {
   it('calls resetPrefs once rather than saving each group separately', async () => {
     const { result, source } = await renderReady();

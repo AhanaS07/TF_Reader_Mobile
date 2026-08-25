@@ -38,3 +38,16 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 // surface and the event stream) and nothing else — a test states the permission
 // answer and the events, because those are exactly what a real device decides.
 jest.mock('expo-speech-recognition', () => require('./src/search/MockSpeechRecognition'));
+
+// @react-native-community/slider is a native (Fabric) component with the same
+// problem: no official jest mock ships with it, so it resolves to nothing under
+// Jest and throws at import time. Anything that renders the shared Slider —
+// starting with the Typography section — would take its whole suite down.
+//
+// The fake is a plain View carrying every prop straight through, so
+// `fireEvent(slider, 'slidingComplete', value)` reaches `onSlidingComplete`
+// exactly as a real thumb release would.
+jest.mock('@react-native-community/slider', () => {
+  const { View } = require('react-native');
+  return { __esModule: true, default: View };
+});

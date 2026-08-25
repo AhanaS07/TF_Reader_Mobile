@@ -26,7 +26,7 @@
 //   —                    accept an offer        acceptOffer
 //   —                    cancel a hold          cancelHold
 import type { BookId } from '@/shared/types/primitives';
-import type { Hold, Loan } from '@model/types';
+import type { Changes, Hold, Loan } from '@model/types';
 
 // Everything a licence call rejects with.
 //
@@ -168,6 +168,14 @@ export interface LicenceSource {
   // After a cold start `returnLoan` and `acceptOffer` have nothing to name, so this
   // is what makes the rest of the interface usable rather than a nicety on top.
   getLibrary(): Promise<Library>;
+
+  // The sync feed. `GET /api/v1/loans/changes`, DRAFT.
+  //
+  // `since` is the previous call's `nextCursor`; omit it for everything the feed has.
+  // D16's whole use for this is noticing a `HOLD_PROMOTED` entry and then reading the
+  // real offer off `getLibrary` — see `src/features/queue`. The other seven reasons on
+  // `ChangeReason` are not acted on by anything yet.
+  getChanges(since?: string): Promise<Changes>;
 
   // Permission to fetch the bytes. `POST /api/v1/reading-sessions`, FROZEN.
   //

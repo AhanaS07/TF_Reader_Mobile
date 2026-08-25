@@ -20,7 +20,7 @@
 // flambeau's real mechanism is polling `GET /loans/changes`; that is D16, and it does not
 // change this file.
 import type { BookId } from '@/shared/types/primitives';
-import type { Hold, Loan } from '@model/types';
+import type { ChangeEntry, Changes, Hold, Loan } from '@model/types';
 import {
   LicenceError,
   LicenceFailure,
@@ -49,6 +49,12 @@ export class MockLicenceClient implements LicenceSource {
   private readonly contended: Set<string>;
   private readonly now: () => Date;
   private readonly loanDays: number;
+  // ONLY `HOLD_PROMOTED` IS EVER RECORDED HERE, matching the note on
+  // `LicenceSource.getChanges`: D16 is the one thing reading this feed so far, and it
+  // only ever asks about promotions. `promoteHold` is the sole writer. If a later task
+  // needs the other seven reasons on `ChangeReason`, its own mutating method is where
+  // that entry gets pushed — not invented ahead of a caller that wants it.
+  private readonly changeLog: ChangeEntry[] = [];
   // PER INSTANCE, not module scope, and both halves of that matter. As a module counter
   // it meant minting an id on one client moved another client's `cursor` — and
   // `resetLicenceSource`, whose whole job is keeping one test's state out of the next,
@@ -255,7 +261,32 @@ export class MockLicenceClient implements LicenceSource {
       ...(hold.queueLength !== undefined ? { queueLength: hold.queueLength } : {}),
     };
     this.holds.set(itemId, offered);
+    // The change feed's whole reason to exist for D16: this is what the poll in
+    // `src/features/queue` is watching for. Its own `sequence` tick, separate from the
+    // id just minted for `offerId` above — a promotion on a hold that already had a
+    // `holdId` would otherwise mint nothing and produce two entries sharing one number.
+    this.changeLog.push({
+      sequence: ++this.sequence,
+      reason: 'HOLD_PROMOTED',
+      itemId,
+      holdId: offered.holdId,
+      occurredAt: offered.serverTime ?? at.toISOString(),
+    });
     return offered;
+  }
+
+  async getChanges(since?: string): Promise<Changes> {
+    const sinceSequence = since === undefined ? 0 : Number(since);
+    const changes = this.changeLog.filter((entry) => entry.sequence > sinceSequence);
+    return {
+      changes,
+      // The counter itself, not the last entry's sequence — so a poll that finds
+      // nothing new still advances past ids minted by an unrelated call (a borrow, a
+      // placeHold) rather than re-scanning the same range forever.
+      nextCursor: String(this.sequence),
+      hasMore: false,
+      serverTime: this.now().toISOString(),
+    };
   }
 
   // Everything this reader holds, live rows and dead ones. For assertions and for the

@@ -20,14 +20,14 @@
 // IT SHARES `normalizeLicence.ts` WITH THE MOCK, so the two cannot disagree about the
 // shape they produce — only about where the bytes came from.
 import type { BookId } from '@/shared/types/primitives';
-import type { Hold, Loan } from '@model/types';
+import type { Changes, Hold, Loan } from '@model/types';
 import {
   LicenceError,
   LicenceFailure,
   type Library,
   type LicenceSource,
 } from './LicenceSource';
-import { normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
+import { normalizeChanges, normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
 
 // Only the parts of Response this client touches. Structural rather than the DOM type,
 // so tests hand over a plain object and nothing here depends on which fetch React
@@ -112,6 +112,15 @@ export class ApiLicenceClient implements LicenceSource {
   async getLibrary(): Promise<Library> {
     const body = await this.send('GET', '/api/v1/library');
     return normalizeLibrary(body);
+  }
+
+  async getChanges(since?: string): Promise<Changes> {
+    // `since` rides in the query string rather than the body — this is a GET, and
+    // flambeau's own instruction is to hand `nextCursor` back unparsed, so it is
+    // encoded and forwarded exactly as received.
+    const query = since === undefined ? '' : `?since=${encodeURIComponent(since)}`;
+    const body = await this.send('GET', `/api/v1/loans/changes${query}`);
+    return normalizeChanges(body);
   }
 
   async openReadingSession(itemId: BookId): Promise<never> {

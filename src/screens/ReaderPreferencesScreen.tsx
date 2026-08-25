@@ -54,24 +54,23 @@ import { useReaderPrefs, type PrefsSource } from '@/features/personalization/use
 import FontSection from './ReaderPreferencesScreen.FontSection';
 import LayoutSection from './ReaderPreferencesScreen.LayoutSection';
 import ThemeSection from './ReaderPreferencesScreen.ThemeSection';
+import TypographySection from './ReaderPreferencesScreen.TypographySection';
 
 const READ_FAILED_MESSAGE = "We couldn't load your reading preferences.";
 const SAVE_FAILED_MESSAGE = "That change didn't save. Try again.";
 
-// Three bars standing in for a header and its control, at roughly the height one
+// Four bars standing in for a header and its control, at roughly the height one
 // section occupies, repeated per section so the page does not shorten when the
 // values land.
-const SKELETON_SECTIONS = ['theme', 'font', 'layout'] as const;
+const SKELETON_SECTIONS = ['theme', 'font', 'layout', 'typography'] as const;
 
 export interface ReaderPreferencesScreenProps {
   /**
-   * TEMPORARY SEAM, and the only reason this screen takes a prop at all.
+   * TEST SEAM, and the only reason this screen takes a prop at all.
    *
-   * `prefsStore` does not exist yet, so the hook falls back to an in-memory stub
-   * when this is absent. It is here so a test can inject a fake source — and so
-   * that wiring the real store is one argument in one place. Once
-   * `useReaderPrefs` defaults to the real store, this prop can go and the screen
-   * becomes propless like every other tab screen.
+   * `useReaderPrefs` defaults to the real `prefsStore` when this is absent, so
+   * every real navigation into this screen is propless. It is here so a test
+   * can inject a fake source instead of touching AsyncStorage.
    */
   prefsSource?: PrefsSource;
 }
@@ -87,6 +86,10 @@ export default function ReaderPreferencesScreen({
     onSelectFontFamily,
     onSelectFlow,
     onSelectSpread,
+    onSelectTextSize,
+    onChangeLineHeight,
+    onChangeLetterSpacing,
+    onChangeMargins,
     onRestoreDefaults,
     onRetry,
   } = useReaderPrefs({ source: prefsSource });
@@ -141,14 +144,14 @@ export default function ReaderPreferencesScreen({
           onSelectSpread={onSelectSpread}
         />
 
-        {/* ── 4 · Typography — Prayas ───────────────────────────────────────
-            Text size, line height, letter spacing and page margins, from
-            `prefs.typography`. Same rule: your own file, one line here.
-
-            Two things the hook does not do for you yet, because nothing renders
-            them today: clamping a slider to its range before saving, and saving
-            on release rather than per drag tick. Both belong in your section or
-            as new callbacks on the hook — not in a component. */}
+        {/* ── 4 · Typography — Prayas ────────────────────────────────────── */}
+        <TypographySection
+          typography={prefs.typography}
+          onSelectTextSize={onSelectTextSize}
+          onChangeLineHeight={onChangeLineHeight}
+          onChangeLetterSpacing={onChangeLetterSpacing}
+          onChangeMargins={onChangeMargins}
+        />
 
         {/* ── Restore defaults ──────────────────────────────────────────────
             LAST, AND DELIBERATELY BELOW EVERY SECTION. It resets all eight
@@ -195,12 +198,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // `lg` between sections: each section already spaces its own header from its
-  // control by `sm`, so anything tighter here would read as one long list rather
-  // than four groups.
+  // `lg` between sections — each is its own distinct control (Theme, Font,
+  // Layout, Typography, Restore), and a gap this size is what keeps them
+  // reading as separate items rather than one continuous list.
   content: {
     padding: space.md,
-    paddingBottom: space.xl,
+    paddingBottom: space.lg,
     gap: space.lg,
   },
   skeletonSection: {

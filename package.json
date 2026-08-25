@@ -12,13 +12,26 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
-    "test:ci": "jest --ci --passWithNoTests"
+    "test:ci": "jest --ci --coverage"
   },
   "jest": {
     "preset": "jest-expo",
     "setupFilesAfterEnv": [
       "<rootDir>/jest.setup.js"
-    ]
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx}",
+      "!src/**/*.test.{ts,tsx}",
+      "!src/shared/contracts/**"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 60,
+        "functions": 60,
+        "lines": 60,
+        "statements": 60
+      }
+    }
   },
   "devDependencies": {
     "@testing-library/react-native": "^14.0.1",
@@ -42,6 +55,7 @@
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/netinfo": "12.0.1",
+    "@react-native-community/slider": "5.2.0",
     "@react-navigation/bottom-tabs": "^7.18.16",
     "@react-navigation/native": "^7.3.16",
     "@react-navigation/native-stack": "^7.18.8",

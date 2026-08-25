@@ -619,6 +619,53 @@ export interface Hold {
   serverTime?: string;
 }
 
+// Why one entry on the change feed (`GET /api/v1/loans/changes`) happened. flambeau's
+// contract lists eight; D16 only ever reads `HOLD_PROMOTED` off this today — the queue
+// offer poll is the one thing that needs the feed so far. The other seven are declared
+// so a `ChangeEntry.reason` from the wire is a value in this union rather than an
+// unchecked string, not because anything here reacts to them yet.
+export type ChangeReason =
+  | 'LOAN_CREATED'
+  | 'LOAN_RETURNED'
+  | 'LOAN_EXPIRED'
+  | 'HOLD_PLACED'
+  | 'HOLD_CANCELLED'
+  | 'HOLD_PROMOTED'
+  | 'HOLD_OFFER_EXPIRED'
+  | 'ENTITLEMENT_REVOKED';
+
+// One row of the change feed. `holdId`/`loanId` are each present only for the reasons
+// that name a hold or a loan — a `HOLD_PROMOTED` entry carries `holdId`, never `loanId`.
+//
+// NO OFFER DETAIL HERE. flambeau's `ChangeEntry` schema does not carry `offerId` or an
+// expiry — only that a hold changed, and which one. So `HOLD_PROMOTED` is a trigger to
+// go read the real offer (`getLibrary`), never a `Hold` by itself; see the poll in
+// `src/features/queue`.
+export interface ChangeEntry {
+  sequence: number;
+  reason: ChangeReason;
+  itemId: string;
+  loanId?: string;
+  holdId?: string;
+  occurredAt: string;
+}
+
+// A page of the change feed, oldest first. Same shape-of-a-response pattern as
+// `Library` above: a cursor for the next call and the server's clock alongside the
+// data, never the device's.
+export interface Changes {
+  changes: ChangeEntry[];
+  // Opaque — flambeau's own instruction is not to parse or construct one, only to hand
+  // it back as the next call's `since`.
+  nextCursor: string;
+  // True when this page did not reach the end of the feed. The poll in
+  // `src/features/queue` does not currently loop on this — a 60-second cadence catches
+  // up on the next tick regardless — but it is read rather than discarded so that is a
+  // choice, not an oversight.
+  hasMore: boolean;
+  serverTime: string;
+}
+
 // The three things that identify one reader's relationship to one title, which is
 // what every licence-bearing call takes — DECIDED 16 Aug, and it is deliberately
 // not a loan id.

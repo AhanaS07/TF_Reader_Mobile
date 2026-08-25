@@ -8,6 +8,7 @@ import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation
 
 import { useInstitutionStore } from '@store/institutionStore';
 import { color } from '@theme/tokens';
+import QueueNotificationHost from '../features/queue/QueueNotificationHost';
 
 import { TopAppBar } from '../components/TopAppBar';
 import { BottomTabBar } from '../components/BottomTabBar';
@@ -38,6 +39,7 @@ import type {
 
 const styles = StyleSheet.create({
   splash: { flex: 1, backgroundColor: color.white },
+  root: { flex: 1 },
 });
 
 // ─── Navigator instances ──────────────────────────────────────────────────────
@@ -221,17 +223,23 @@ export default function RootNavigator() {
   }
 
   return (
-    <RootStack.Navigator screenOptions={{ headerShown: false }}>
-      <RootStack.Screen name="Main" component={TabNavigator} />
-      <RootStack.Screen
-        name="Gallery"
-        component={GalleryScreen}
-        options={{
-          headerShown: true,
-          header: (props) => <AppHeader {...props} />,
-          title: 'State Gallery',
-        }}
-      />
-    </RootStack.Navigator>
+    <View style={styles.root}>
+      <RootStack.Navigator screenOptions={{ headerShown: false }}>
+        <RootStack.Screen name="Main" component={TabNavigator} />
+        <RootStack.Screen
+          name="Gallery"
+          component={GalleryScreen}
+          options={{
+            headerShown: true,
+            header: (props) => <AppHeader {...props} />,
+            title: 'State Gallery',
+          }}
+        />
+      </RootStack.Navigator>
+      {/* D16 — global queue-offer banner. Sits above every screen so an offer is
+          answerable from wherever the reader is, not only from the item's own
+          detail screen. See QueueNotificationHost for why it lives here. */}
+      <QueueNotificationHost />
+    </View>
   );
 }

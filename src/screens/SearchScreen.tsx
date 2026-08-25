@@ -33,9 +33,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { ActionButton } from '@components/ActionButton';
 import { handToggledSession } from '@access/handToggledSession';
-import { offersQueue, QUEUE_ACTION, useQueueRequest } from '@/licence/queueRequest';
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { EmptyState } from '@components/EmptyState';
@@ -119,9 +117,6 @@ function noopSort() {
 
 export default function SearchScreen() {
   const navigation = useNavigation<Nav>();
-
-  // D12 — one queue request at a time across the whole result list.
-  const queue = useQueueRequest();
 
   // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
   // where the fixture-vs-api choice gets made — by config, never by this file.
@@ -375,16 +370,8 @@ export default function SearchScreen() {
               publisher={publication.publisher}
               imageUrl={publication.coverUrl}
               badge={<AccessTierBadge tier={access.tier} />}
-              // D12 — the Elite queue button on a search result row.
-              action={
-                offersQueue(access) ? (
-                  <ActionButton
-                    action={QUEUE_ACTION}
-                    state={queue.pendingItemId === publication.id ? 'loading' : 'idle'}
-                    onPress={() => queue.requestQueue(publication.id)}
-                  />
-                ) : undefined
-              }
+              // No `action`: the Elite queue button ("Grant access") is
+              // ItemDetailScreen only, not on this search result row.
               onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
             />
           );

@@ -85,9 +85,9 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   note: {
-    fontWeight: typeScale.meta.weight,
-    fontSize: typeScale.meta.size,
-    lineHeight: typeScale.meta.lineHeight,
+    fontWeight: typeScale.smallLabel.weight,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
   },
 });

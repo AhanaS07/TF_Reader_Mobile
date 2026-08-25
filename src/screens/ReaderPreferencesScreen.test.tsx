@@ -16,7 +16,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { PrefsSource, PrefsValues } from '@/features/personalization/useReaderPrefs';
-import { FONT_FAMILY_OPTIONS, THEME_OPTIONS } from '@/features/personalization/prefsOptions';
+import {
+  FONT_FAMILY_OPTIONS,
+  TEXT_SIZE_OPTIONS,
+  THEME_OPTIONS,
+} from '@/features/personalization/prefsOptions';
 
 import ReaderPreferencesScreen from './ReaderPreferencesScreen';
 
@@ -56,29 +60,21 @@ async function renderReady(source: PrefsSource) {
 // at screen level. Every option assertion below scopes to its own section.
 const themeSection = () => within(screen.getByTestId('theme-section'));
 const fontSection = () => within(screen.getByTestId('font-section'));
+const typographySection = () => within(screen.getByTestId('typography-section'));
 
 afterEach(() => {
   mockIsOnline.mockReturnValue(true);
 });
 
 describe('ReaderPreferencesScreen structure', () => {
-  it('renders Theme, Font and Layout sections', async () => {
+  it('renders Theme, Font, Layout and Typography sections', async () => {
     await renderReady(fakeSource());
 
     expect(screen.getByText('Theme')).toBeTruthy();
     expect(screen.getByText('Font')).toBeTruthy();
     expect(screen.getByText('Reading style')).toBeTruthy();
     expect(screen.getByText('Page view')).toBeTruthy();
-  });
-
-  // Typography is Prayas's and lands as its own file. This test is the honest
-  // record that it is NOT here yet — it fails the day it arrives, which is the
-  // point: whoever adds the section updates the screen's own contract.
-  it('renders the Layout section and not yet Typography', async () => {
-    await renderReady(fakeSource());
-
-    expect(screen.getByTestId('layout-section')).toBeTruthy();
-    expect(screen.queryByText('Typography')).toBeNull();
+    expect(screen.getByTestId('typography-section')).toBeTruthy();
   });
 
   // Never rendered: identity and sync plumbing, plus zoom and the accessibility
@@ -150,24 +146,43 @@ describe('ReaderPreferencesScreen theme section', () => {
 });
 
 describe('ReaderPreferencesScreen font section', () => {
-  it('offers exactly the seven provisional font options', async () => {
+  // The seven options live inside a `BottomSheet`, which renders nothing
+  // until opened — see BottomSheet.test.tsx. `waitFor` covers its own
+  // setTimeout(0)-then-animate open, the same way ShelfScreen.test.tsx waits
+  // out FilterSortSheet.
+  async function openFontPicker() {
+    fireEvent.press(fontSection().getByTestId('font-picker-trigger'));
+    await waitFor(() => expect(screen.getByTestId('font-picker-sheet')).toBeTruthy());
+  }
+
+  it('shows the stored family on the trigger', async () => {
     await renderReady(fakeSource());
 
-    for (const option of FONT_FAMILY_OPTIONS) {
-      expect(fontSection().getByTestId(`tabs-tab-${option.id}`)).toBeTruthy();
-    }
+    expect(fontSection().getByText('Lora')).toBeTruthy();
   });
 
+  // Scoped to the section — Typography carries its own "EPUB only" hint too,
+  // so an unscoped query here would be ambiguous.
   it('says the choice is EPUB only', async () => {
     await renderReady(fakeSource());
 
-    expect(screen.getByText(/EPUB only/i)).toBeTruthy();
+    expect(fontSection().getByText(/EPUB only/i)).toBeTruthy();
+  });
+
+  it('offers exactly the seven provisional font options once opened', async () => {
+    await renderReady(fakeSource());
+    await openFontPicker();
+
+    for (const option of FONT_FAMILY_OPTIONS) {
+      expect(screen.getByTestId(`font-option-${option.id}`)).toBeTruthy();
+    }
   });
 
   it('marks the stored family as the selected option', async () => {
     await renderReady(fakeSource());
+    await openFontPicker();
 
-    expect(fontSection().getByTestId('tabs-tab-Lora').props.accessibilityState.selected).toBe(true);
+    expect(screen.getByTestId('font-option-Lora').props.accessibilityState.selected).toBe(true);
   });
 
   // The screen's half of the hook's spread rule: the write must carry the
@@ -175,12 +190,22 @@ describe('ReaderPreferencesScreen font section', () => {
   it('writes the picked family through the seam without dropping customFontUri', async () => {
     const source = fakeSource();
     await renderReady(source);
+    await openFontPicker();
 
-    fireEvent.press(fontSection().getByText('Merriweather'));
+    fireEvent.press(screen.getByTestId('font-option-Merriweather'));
 
     expect(source.savePrefs).toHaveBeenCalledWith({
       font: { family: 'Merriweather', customFontUri: 'file:///fonts/custom.ttf' },
     });
+  });
+
+  it('closes the sheet once a font is picked', async () => {
+    await renderReady(fakeSource());
+    await openFontPicker();
+
+    fireEvent.press(screen.getByTestId('font-option-Merriweather'));
+
+    await waitFor(() => expect(screen.queryByTestId('font-picker-sheet')).toBeNull());
   });
 
   it('selects nothing and names the current face when it is not an option', async () => {
@@ -189,12 +214,126 @@ describe('ReaderPreferencesScreen font section', () => {
     });
     await renderReady(source);
 
+    // Exact match: the note below also mentions "Georgia" in a sentence, and
+    // an exact string match does not confuse the two.
+    expect(fontSection().getByText('Georgia')).toBeTruthy();
+    expect(fontSection().getByText(/is not one of these options/i)).toBeTruthy();
+
+    await openFontPicker();
     for (const option of FONT_FAMILY_OPTIONS) {
       expect(
-        fontSection().getByTestId(`tabs-tab-${option.id}`).props.accessibilityState.selected,
+        screen.getByTestId(`font-option-${option.id}`).props.accessibilityState.selected,
       ).toBe(false);
     }
-    expect(screen.getByText(/Georgia/)).toBeTruthy();
+  });
+});
+
+describe('ReaderPreferencesScreen typography section', () => {
+  it('offers exactly the six text size presets', async () => {
+    await renderReady(fakeSource());
+
+    for (const option of TEXT_SIZE_OPTIONS) {
+      expect(typographySection().getByTestId(`tabs-tab-${option.id}`)).toBeTruthy();
+    }
+  });
+
+  it('says the choice is EPUB only', async () => {
+    await renderReady(fakeSource());
+
+    expect(typographySection().getByText(/EPUB only/i)).toBeTruthy();
+  });
+
+  it('marks the stored text size as the selected preset', async () => {
+    await renderReady(fakeSource());
+
+    // STORED carries DEFAULT_PREFS.typography, so size 16.
+    expect(
+      typographySection().getByTestId('tabs-tab-16').props.accessibilityState.selected,
+    ).toBe(true);
+  });
+
+  // A value from outside the six presets — another device, or a value this
+  // picker predates. Same handling as Theme's `highContrast` case.
+  it('selects nothing and explains itself when the stored text size is not a preset', async () => {
+    const source = fakeSource({
+      getPrefs: jest.fn(() =>
+        Promise.resolve({ ...STORED, typography: { ...STORED.typography, size: 15 } }),
+      ),
+    });
+    await renderReady(source);
+
+    for (const option of TEXT_SIZE_OPTIONS) {
+      expect(
+        typographySection().getByTestId(`tabs-tab-${option.id}`).props.accessibilityState.selected,
+      ).toBe(false);
+    }
+    expect(screen.getByText(/set elsewhere/i)).toBeTruthy();
+  });
+
+  it('writes the picked text size through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent.press(typographySection().getByText('20pt'));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 20, lineHeight: 1.5, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('renders a slider for line height, letter spacing and page margins', async () => {
+    await renderReady(fakeSource());
+
+    expect(typographySection().getByTestId('typography-line-height-slider')).toBeTruthy();
+    expect(typographySection().getByTestId('typography-letter-spacing-slider')).toBeTruthy();
+    expect(typographySection().getByTestId('typography-margins-slider')).toBeTruthy();
+  });
+
+  // Save-on-release: the section wires the slider's release event straight to
+  // the seam, spreading the rest of the typography group.
+  it('writes the released line height through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-line-height-slider'),
+      'slidingComplete',
+      1.8,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.8, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('writes the released letter spacing through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-letter-spacing-slider'),
+      'slidingComplete',
+      2,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 2, margins: 16 },
+    });
+  });
+
+  it('writes the released page margins through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-margins-slider'),
+      'slidingComplete',
+      32,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 0, margins: 32 },
+    });
   });
 });
 
@@ -227,9 +366,9 @@ describe('ReaderPreferencesScreen restore defaults', () => {
         true,
       ),
     );
-    expect(fontSection().getByTestId('tabs-tab-system').props.accessibilityState.selected).toBe(
-      true,
-    );
+    // Font's own control is a picker trigger, not a `Tabs` bar — the reset
+    // shows up as the trigger's displayed value rather than a selected segment.
+    expect(fontSection().getByText('System')).toBeTruthy();
   });
 });
 

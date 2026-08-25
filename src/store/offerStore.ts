@@ -36,7 +36,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import storage from '@storage/storage';
-import { isOfferLapsed, lapseOffer } from '@access/offerLapse';
+import { isOfferLapsed, isOffered, lapseOffer } from '@access/offerLapse';
 import type { Hold } from '@model/types';
 import type { Timestamp } from '@/shared/types/primitives';
 
@@ -132,8 +132,12 @@ function consume(
 
   if (!isLiveOffer(offer, receivedAt, now)) {
     // Dead on arrival: free the slot so the next offer is not refused, but
-    // there is nothing left to hand the caller.
-    set({ offer: lapseOffer(offer), receivedAt: null });
+    // there is nothing left to hand the caller. Only an 'offered' hold has
+    // anything to lapse — isOffered narrows for lapseOffer's benefit; any
+    // other state passes through untouched, same conservative stance as
+    // isOfferLapsed itself.
+    const clearedOffer = isOffered(offer) ? lapseOffer(offer) : offer;
+    set({ offer: clearedOffer, receivedAt: null });
     return null;
   }
 
