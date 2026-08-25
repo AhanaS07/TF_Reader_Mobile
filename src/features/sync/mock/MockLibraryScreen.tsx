@@ -1,0 +1,140 @@
+// src/features/sync/mock/ — throwaway scaffolding, NOT part of the real app surface.
+//
+// Exists only to visually exercise the sync layer's local reads before any real library screen
+// consumes them: tap "Downloaded" to read expo-sqlite's `downloads` table via downloadTable, tap
+// "Bookmarked" to read `bookmarks` via bookmarkTable - both straight from local SQLite, no network,
+// exactly what a real screen would call. DELETE THIS WHOLE FOLDER once a real library/bookmarks UI
+// lands - it exists so "does the local read side actually work" can be seen on a device today.
+//
+// Deliberately reads every book for the user (`listActive(USER_ID)`, no bookId), not just the
+// prototype's single hard-coded BOOK_ID - this predates a real book picker, so showing everything
+// the device has is the only way to prove downloadStore/bookmarkStore's local reads work at all.
+
+import { useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
+import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
+import { downloadTable } from '@/features/sync/stores/downloadStore';
+import { USER_ID } from '@/features/sync/syncConfig';
+
+type Tab = 'downloaded' | 'bookmarked';
+
+export function MockLibraryScreen(): React.JSX.Element {
+  const [tab, setTab] = useState<Tab | null>(null);
+  const [downloads, setDownloads] = useState<DownloadRow[]>([]);
+  const [bookmarks, setBookmarks] = useState<BookmarkRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const showDownloaded = async () => {
+    setTab('downloaded');
+    setLoading(true);
+    setDownloads(await downloadTable.listActive(USER_ID));
+    setLoading(false);
+  };
+
+  const showBookmarked = async () => {
+    setTab('bookmarked');
+    setLoading(true);
+    setBookmarks(await bookmarkTable.listActive(USER_ID));
+    setLoading(false);
+  };
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.banner}>
+        Sync mock - reads local SQLite directly. Delete src/features/sync/mock/ when a real screen
+        replaces this.
+      </Text>
+
+      <View style={styles.tabs}>
+        <Pressable
+          onPress={showDownloaded}
+          style={[styles.tabButton, tab === 'downloaded' && styles.tabButtonActive]}
+        >
+          <Text style={[styles.tabLabel, tab === 'downloaded' && styles.tabLabelActive]}>
+            Downloaded
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={showBookmarked}
+          style={[styles.tabButton, tab === 'bookmarked' && styles.tabButtonActive]}
+        >
+          <Text style={[styles.tabLabel, tab === 'bookmarked' && styles.tabLabelActive]}>
+            Bookmarked
+          </Text>
+        </Pressable>
+      </View>
+
+      {loading && <Text style={styles.status}>Loading from local SQLite…</Text>}
+
+      {tab === 'downloaded' && !loading && (
+        <FlatList
+          data={downloads}
+          keyExtractor={(row) => row.id}
+          contentContainerStyle={downloads.length === 0 && styles.emptyContainer}
+          ListEmptyComponent={
+            <Text style={styles.empty}>No rows in the local `downloads` table.</Text>
+          }
+          renderItem={({ item }) => (
+            <View style={styles.row}>
+              <Text style={styles.rowTitle}>{item.book_id}</Text>
+              <Text style={styles.rowSubtitle}>
+                {item.format} · {item.status ?? 'unknown status'} ·{' '}
+                {item.is_valid ? 'valid' : 'locked'}
+              </Text>
+            </View>
+          )}
+        />
+      )}
+
+      {tab === 'bookmarked' && !loading && (
+        <FlatList
+          data={bookmarks}
+          keyExtractor={(row) => row.id}
+          contentContainerStyle={bookmarks.length === 0 && styles.emptyContainer}
+          ListEmptyComponent={
+            <Text style={styles.empty}>No rows in the local `bookmarks` table.</Text>
+          }
+          renderItem={({ item }) => (
+            <View style={styles.row}>
+              <Text style={styles.rowTitle}>{item.name ?? item.chapter_id ?? item.id}</Text>
+              <Text style={styles.rowSubtitle}>book: {item.book_id}</Text>
+            </View>
+          )}
+        />
+      )}
+
+      {tab === null && !loading && (
+        <Text style={styles.status}>Tap a tab above to read from local SQLite.</Text>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#ffffff', padding: 16 },
+  banner: { fontSize: 11, color: '#a15c00', marginBottom: 12 },
+  tabs: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c8c8c8',
+    alignItems: 'center',
+  },
+  tabButtonActive: { backgroundColor: '#111111', borderColor: '#111111' },
+  tabLabel: { fontSize: 14, fontWeight: '600', color: '#444444' },
+  tabLabelActive: { color: '#ffffff' },
+  status: { color: '#666666', textAlign: 'center', marginTop: 24 },
+  empty: { color: '#888888', textAlign: 'center' },
+  emptyContainer: { flexGrow: 1, justifyContent: 'center' },
+  row: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eeeeee',
+  },
+  rowTitle: { fontSize: 15, fontWeight: '600', color: '#111111' },
+  rowSubtitle: { fontSize: 12, color: '#666666', marginTop: 2 },
+});

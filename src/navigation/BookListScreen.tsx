@@ -117,6 +117,15 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
       >
         <Text style={styles.rowLabel}>TTS Demo</Text>
       </Pressable>
+
+      {/* TEMP, with src/features/sync/mock/ — remove this row when that whole folder goes. */}
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => navigation.navigate('MockLibrary')}
+        style={styles.row}
+      >
+        <Text style={styles.rowLabel}>Sync Mock (Downloaded / Bookmarked)</Text>
+      </Pressable>
     </ScrollView>
   );
 }

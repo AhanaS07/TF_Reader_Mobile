@@ -42,6 +42,17 @@ const SERVER_TIME = '2026-08-13T10:00:00.000Z';
 
 const ok = <T>(data: T) => Promise.resolve({ data, serverTime: SERVER_TIME });
 
+/**
+ * A timestamp guaranteed to be after whatever a real `personalizationStore.update()` call in
+ * this test stamps "now" as - NOT a fixed calendar date. A brand-new row's `server_updated_at`
+ * is null, so the field-merge fallback compares against its real `updated_at`, and a fixed
+ * "future" date stops being future the moment a long-lived session actually reaches it (this
+ * file's own history: a hard-coded "2026-08-25" broke exactly this way).
+ */
+function future(ms = 60 * 60 * 1000): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
 function progressRow(id: string, offset: number, updatedAt: string): ProgressRow {
   return {
     id,
@@ -345,6 +356,7 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
     await personalizationStore.update({ zoom: 5 });
     mockApi.create.mockRejectedValue(new ApiError('bad payload', 400));
 
+    const remoteTime = future();
     mockApi.list.mockImplementation(
       (path: string) =>
         (path === 'personalization'
@@ -362,9 +374,9 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
                 layoutFlow: 'paginated',
                 layoutSpread: 'single',
                 zoom: 1, // stale relative to our local edit - must NOT override it
-                updatedAt: '2026-08-25T00:00:00.000Z',
+                updatedAt: remoteTime,
                 isDeleted: false,
-                fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+                fieldUpdatedAt: { theme: remoteTime },
               },
             ])
           : ok([])) as any,
@@ -385,12 +397,13 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
     expect(payload.zoom).toBe(5);
     expect(payload.theme).toBe('dark');
     expect(payload.fieldUpdatedAt.zoom).toBeDefined();
-    expect(payload.fieldUpdatedAt.theme).toBe('2026-08-25T00:00:00.000Z');
+    expect(payload.fieldUpdatedAt.theme).toBe(remoteTime);
   });
 
   it("syncEngine.run() pushes the merged union to the server on the next attempt", async () => {
     await personalizationStore.update({ zoom: 5 });
     mockApi.create.mockRejectedValueOnce(new ApiError('bad payload', 400));
+    const remoteTime = future();
     mockApi.list.mockImplementation(
       (path: string) =>
         (path === 'personalization'
@@ -408,9 +421,9 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
                 layoutFlow: 'paginated',
                 layoutSpread: 'single',
                 zoom: 1,
-                updatedAt: '2026-08-25T00:00:00.000Z',
+                updatedAt: remoteTime,
                 isDeleted: false,
-                fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+                fieldUpdatedAt: { theme: remoteTime },
               },
             ])
           : ok([])) as any,

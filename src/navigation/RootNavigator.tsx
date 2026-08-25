@@ -11,6 +11,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import type { BookId, ContentFormat } from '@/shared/contracts';
+import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
 
 import { BookListScreen } from './BookListScreen';
 import { ReaderRouteScreen } from './ReaderRouteScreen';
@@ -24,6 +25,8 @@ export type RootStackParamList = {
   // anything, to gate DevPreferencesMenu's format-specific sections.
   Reader: { bookId: BookId; format: ContentFormat };
   TtsDemo: undefined;
+  // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
+  MockLibrary: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -55,6 +58,12 @@ export function RootNavigator(): React.JSX.Element {
           options={{ gestureEnabled: false }}
         />
         <Stack.Screen name="TtsDemo" component={TtsDemoScreen} options={{ title: 'TTS Demo' }} />
+        {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
+        <Stack.Screen
+          name="MockLibrary"
+          component={MockLibraryScreen}
+          options={{ title: 'Sync Mock' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

@@ -12,6 +12,15 @@ import { accessibilityId, accessibilityStore, accessibilityTable } from './acces
 const USER = 'user-001';
 const SERVER_TIME = '2026-08-20T10:00:00.000Z';
 
+/**
+ * A timestamp guaranteed to be after whatever `accessibilityStore.update()` stamps "now" as
+ * during this test run - NOT a fixed calendar date, which a long-lived session can outlive (see
+ * the identical helper in personalizationStore.fieldMerge.test.ts for why this bit once already).
+ */
+function future(ms = 60 * 60 * 1000): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
 function serverRecord(overrides: Record<string, unknown> = {}) {
   return {
     id: accessibilityId(USER),
@@ -81,11 +90,12 @@ describe('same-field Last-Write-Wins', () => {
     );
     await accessibilityStore.update({ tts_enabled: 1 });
 
+    const remoteTime = future();
     const applied = await accessibilityTable.applyServerRecord(
       serverRecord({
         ttsEnabled: false,
-        updatedAt: '2026-08-25T00:00:00.000Z',
-        fieldUpdatedAt: { tts_enabled: '2026-08-25T00:00:00.000Z' },
+        updatedAt: remoteTime,
+        fieldUpdatedAt: { tts_enabled: remoteTime },
       }),
     );
 
