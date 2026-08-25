@@ -41,6 +41,24 @@ export interface ContentCardProps {
   format?: string;
   // Already-resolved access UI. Never derived here — see the file header.
   badge?: ReactNode;
+  /**
+   * The row's access ACTION, already resolved — D12's Elite queue button.
+   *
+   * A SLOT, FOR THE SAME REASON `badge` IS ONE. This card must not decide that
+   * an Elite title with nothing held earns a "Grant access" button; that is
+   * `resolveAccess`'s answer and the screen's to render (Design Spec §5.1,
+   * CONVENTIONS §3). Handing it a node keeps this file unable to reach for
+   * `acquisition.actionId` even by accident — the same reason it imports nothing
+   * from `@model`.
+   *
+   * WHY IT DOES NOT BREAK THE CARD'S OWN TAP. It renders inside the card's
+   * Pressable, and a nested Pressable claims the touch itself, so the button
+   * fires without also navigating. Both stay reachable to assistive tech —
+   * verified, because a default-accessible Pressable CAN collapse its children
+   * into one element (see the note in SignInScreen) and that would have hidden
+   * this button. It does not here.
+   */
+  action?: ReactNode;
   state?: ContentCardState;
   // Absent means the row is not a navigation target, so it is not announced as a
   // button and no chevron is drawn.
@@ -53,6 +71,7 @@ export default function ContentCard({
   imageUrl,
   format,
   badge,
+  action,
   state = 'idle',
   onPress,
 }: ContentCardProps) {
@@ -118,6 +137,15 @@ export default function ContentCard({
                 {badge}
               </View>
             )}
+            {/* Beneath the badge rather than beside the chevron: the two say
+                different things about the same row — the badge is the tier, the
+                action is what this reader can do about it — and a 48pt button in
+                the horizontal band would squeeze the title column on a phone. */}
+            {action !== undefined && (
+              <View testID="content-card-action" style={styles.action}>
+                {action}
+              </View>
+            )}
           </View>
 
           {pressable && <View testID="content-card-chevron" style={styles.chevron} />}
@@ -172,6 +200,11 @@ const styles = StyleSheet.create({
     // instead of pushing the chevron off the card.
     flex: 1,
     gap: space.xs,
+  },
+  // A little more air above the action than the `xs` the text stack uses, so the
+  // button reads as a separate affordance rather than a fourth line of metadata.
+  action: {
+    marginTop: space.xs,
   },
   title: {
     fontWeight: type.body.weight,

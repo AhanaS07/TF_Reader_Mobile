@@ -33,6 +33,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
+import { ActionButton } from '@components/ActionButton';
+import { handToggledSession } from '@access/handToggledSession';
+import { offersQueue, QUEUE_ACTION, useQueueRequest } from '@/licence/queueRequest';
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { EmptyState } from '@components/EmptyState';
@@ -116,6 +119,9 @@ function noopSort() {
 
 export default function SearchScreen() {
   const navigation = useNavigation<Nav>();
+
+  // D12 — one queue request at a time across the whole result list.
+  const queue = useQueueRequest();
 
   // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
   // where the fixture-vs-api choice gets made — by config, never by this file.
@@ -344,13 +350,22 @@ export default function SearchScreen() {
         )}
 
         {search.publications.map((publication) => {
-          // No loan/hold/session on a list row, same as CatalogueScreen and
-          // ItemDetailScreen — resolveAccess's own header says this is exactly
-          // what lets a row resolve from feed data alone.
+          // SESSION PASSED, NOT NULL — corrected for D12. This used to pass
+          // `session: null` and say it matched CatalogueScreen and
+          // ItemDetailScreen; both actually pass `handToggledSession`, so this
+          // row was the outlier. It mattered: `resolveAccess` §4 answers
+          // `requires_signin` for ANY licensed tier when the session is null, so
+          // the Elite branch was unreachable here and a search result could
+          // never offer the queue. resolveAccess's own §5 states the goal this
+          // restores — "an Elite row resolving identically on a list and on a
+          // detail screen".
+          //
+          // Still no loan/hold: a search result carries no holdings, and
+          // "nothing held" is what makes an Elite row resolve to the queue.
           const access = resolveAccess({
             item: publication,
             institutionId: PLACEHOLDER_INSTITUTION_ID,
-            session: null,
+            session: handToggledSession(PLACEHOLDER_INSTITUTION_ID),
           });
 
           return (
@@ -360,6 +375,16 @@ export default function SearchScreen() {
               publisher={publication.publisher}
               imageUrl={publication.coverUrl}
               badge={<AccessTierBadge tier={access.tier} />}
+              // D12 — the Elite queue button on a search result row.
+              action={
+                offersQueue(access) ? (
+                  <ActionButton
+                    action={QUEUE_ACTION}
+                    state={queue.pendingItemId === publication.id ? 'loading' : 'idle'}
+                    onPress={() => queue.requestQueue(publication.id)}
+                  />
+                ) : undefined
+              }
               onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
             />
           );

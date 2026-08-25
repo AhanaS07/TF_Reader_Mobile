@@ -57,6 +57,7 @@ import type {
 import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
+import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
@@ -67,6 +68,7 @@ import type { Publication, Shelf, SortOrder } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import type { BrowseFilters } from '@search/browseLink';
 import { color, radius, space, type as typeScale } from '../theme/tokens';
+import { offersQueue, QUEUE_ACTION, useQueueRequest } from '@/licence/queueRequest';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'Shelf'>;
 
@@ -83,6 +85,10 @@ const SKELETON_COUNT = 3;
 export default function ShelfScreen({ route }: Props) {
   const { shelfId, institutionId } = route.params;
   const navigation = useNavigation<Nav>();
+
+  // D12 — one queue request at a time for the whole shelf, however many pages
+  // have been loaded. See useQueueRequest for why the guard is list-wide.
+  const queue = useQueueRequest();
 
   // The shelf's IDENTITY, taken from the first page and then left alone: title
   // and totalItems describe the whole shelf, not the page that carried them.
@@ -261,27 +267,38 @@ export default function ShelfScreen({ route }: Props) {
           {/* No heading here — the app bar already shows this shelf's name, set
               by RootNavigator from route.params.title. */}
           <View style={styles.list}>
-            {publications.map((publication) => (
-              <ContentCard
-                key={publication.id}
-                title={publication.title}
-                publisher={publication.publisher}
-                imageUrl={publication.coverUrl}
-                format={publication.format}
-                badge={
-                  <AccessTierBadge
-                    tier={
-                      resolveAccess({
-                        item: publication,
-                        institutionId,
-                        session: handToggledSession(institutionId),
-                      }).tier
-                    }
-                  />
-                }
-                onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
-              />
-            ))}
+            {publications.map((publication) => {
+              // Hoisted out of the `badge` prop: D12 needs the resolved ACTIONS
+              // as well as the tier, and resolving twice per row would be two
+              // answers to one question.
+              const access = resolveAccess({
+                item: publication,
+                institutionId,
+                session: handToggledSession(institutionId),
+              });
+              return (
+                <ContentCard
+                  key={publication.id}
+                  title={publication.title}
+                  publisher={publication.publisher}
+                  imageUrl={publication.coverUrl}
+                  format={publication.format}
+                  badge={<AccessTierBadge tier={access.tier} />}
+                  // D12 — the Elite queue button on a shelf row. Rendered only
+                  // when the resolve offers it.
+                  action={
+                    offersQueue(access) ? (
+                      <ActionButton
+                        action={QUEUE_ACTION}
+                        state={queue.pendingItemId === publication.id ? 'loading' : 'idle'}
+                        onPress={() => queue.requestQueue(publication.id)}
+                      />
+                    ) : undefined
+                  }
+                  onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+                />
+              );
+            })}
           </View>
 
           {/* Server-reported total, so the count stays honest across pages.

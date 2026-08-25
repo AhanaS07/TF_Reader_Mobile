@@ -60,6 +60,19 @@ export type SearchStackParamList = {
   InstitutionList: undefined;
 };
 
-/** Single-screen stacks — no pushed screens in Week 1. */
+/** Single-screen stack — no pushed screens in Week 1. */
 export type LibraryStackParamList = { LibraryHome: undefined };
-export type ProfileStackParamList = { ProfileHome: undefined };
+
+/** Profile stack — screen 10, plus the settings screens it pushes. */
+export type ProfileStackParamList = {
+  ProfileHome: undefined;
+  // Reader preferences — theme, font, layout and typography, pushed from the
+  // "Reading Preferences" row on screen 10.
+  //
+  // NO PARAMS, and that is the contract rather than a simplification: prefs are
+  // a per-user SINGLETON applied across every book, not scoped per book (see
+  // `src/shared/contracts/prefs.ts`, which removed `bookId` for exactly this
+  // reason). There is no id to pass, so a caller cannot reach this screen with
+  // the wrong one.
+  ReaderPreferences: undefined;
+};

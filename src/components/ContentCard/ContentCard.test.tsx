@@ -21,6 +21,7 @@
 import { Text } from 'react-native';
 import { fireEvent, render, screen } from '@testing-library/react-native';
 
+import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '@components/ContentCard';
 
 describe('ContentCard content', () => {
@@ -168,5 +169,58 @@ describe('ContentCard loading state', () => {
     );
 
     expect(screen.queryByText('Open Access')).toBeNull();
+  });
+});
+
+// D12 — the row's resolved access action. A slot, like `badge`: the card renders
+// whatever node it is handed and decides nothing about entitlement itself.
+describe('ContentCard action slot', () => {
+  it('renders no action area when none is supplied', async () => {
+    await render(<ContentCard title="Rights for Robots" />);
+
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  it('renders the action it is handed', async () => {
+    await render(<ContentCard title="Rights for Robots" action={<Text>Grant access</Text>} />);
+
+    expect(screen.getByTestId('content-card-action')).toBeTruthy();
+    expect(screen.getByText('Grant access')).toBeTruthy();
+  });
+
+  // The skeleton stands in for a publication whose entitlement is not known yet,
+  // so it must not offer an action — same rule the badge already follows.
+  it('renders no action while the row is a skeleton', async () => {
+    await render(
+      <ContentCard state="loading" title="Rights for Robots" action={<Text>Grant access</Text>} />,
+    );
+
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  // The reason the slot can hold a button at all: a nested Pressable claims its
+  // own touch, and both stay in the accessibility tree. A default-accessible
+  // Pressable CAN collapse its children into one element (see SignInScreen's
+  // note), which would have hidden the queue button entirely — so this is the
+  // regression test for that, not a restatement of RN behaviour.
+  it('keeps a nested pressable action reachable, and separate from the row', async () => {
+    const onPress = jest.fn();
+    const onAction = jest.fn();
+    await render(
+      <ContentCard
+        title="Rights for Robots"
+        onPress={onPress}
+        action={<ActionButton action="grantAccess" onPress={onAction} />}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Grant access' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rights for Robots' })).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onPress).not.toHaveBeenCalled();
   });
 });

@@ -22,6 +22,20 @@ import { useRecentSearchesStore } from '@store/recentSearchesStore';
 
 import SearchScreen from './SearchScreen';
 
+// D12 — pressing the Elite queue button on a result row borrows through
+// `@config/licence`. Nothing in this suite touched that seam before, so it is
+// faked here rather than left to resolve to the real (unmockable) module.
+const mockBorrow = jest.fn();
+const mockPlaceHold = jest.fn();
+const mockGetLibrary = jest.fn();
+jest.mock('@config/licence', () => ({
+  getLicenceSource: () => ({
+    borrow: (...args: [string]) => mockBorrow(...args),
+    placeHold: (...args: [string]) => mockPlaceHold(...args),
+    getLibrary: () => mockGetLibrary(),
+  }),
+}));
+
 const mockNavigate = jest.fn();
 
 // The screen calls `useNavigation`, which needs a navigation container it has no
@@ -1254,5 +1268,84 @@ describe('voice search', () => {
 
     expect(screen.getByText('No speech was heard. Try again.')).toBeTruthy();
     expect(pipeline.searchCalls).toHaveLength(0);
+  });
+});
+
+// ── D12 — the Elite queue button on a search result row ──────────────────────
+//
+// The second of the three card surfaces, and the one that needed a fix beyond
+// rendering: this screen used to pass `session: null` to resolveAccess, which
+// answers `requires_signin` for any licensed tier, so the Elite branch was
+// unreachable and a result row could never offer the queue. It now passes
+// `handToggledSession`, matching CatalogueScreen and ShelfScreen.
+//
+// Pending semantics are covered in queueRequest.test.ts; this proves the button
+// reaches this surface and delegates.
+describe('SearchScreen — D12 Elite queue button', () => {
+  beforeEach(() => {
+    mockBorrow.mockResolvedValue({
+      loanId: 'loan_1',
+      itemId: 'item_elite',
+      state: 'active',
+      expiresAt: 9_999,
+    });
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  });
+
+  afterEach(() => {
+    mockBorrow.mockReset();
+    mockPlaceHold.mockReset();
+    mockGetLibrary.mockReset();
+  });
+
+  it('offers Grant access on an Elite result row', async () => {
+    setSearchPipeline(
+      stub(() =>
+        Promise.resolve(
+          feed({ publications: [publication('item_elite', 'An Elite Title', 'Routledge', 'ELITE')] }),
+        ),
+      ),
+    );
+    await render(<SearchScreen />);
+
+    await submit('elite');
+
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+  });
+
+  // An open access result resolves to Read, which belongs on the detail screen,
+  // so the row grows no button.
+  it('draws no queue button on a non-Elite result row', async () => {
+    setSearchPipeline(
+      stub(() =>
+        Promise.resolve(
+          feed({ publications: [publication('item_oa', 'An Open Title', 'Routledge')] }),
+        ),
+      ),
+    );
+    await render(<SearchScreen />);
+
+    await submit('open');
+
+    await waitFor(() => expect(screen.getByText('An Open Title')).toBeTruthy());
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  it('borrows the pressed result, without navigating away', async () => {
+    setSearchPipeline(
+      stub(() =>
+        Promise.resolve(
+          feed({ publications: [publication('item_elite', 'An Elite Title', 'Routledge', 'ELITE')] }),
+        ),
+      ),
+    );
+    await render(<SearchScreen />);
+    await submit('elite');
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_elite'));
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

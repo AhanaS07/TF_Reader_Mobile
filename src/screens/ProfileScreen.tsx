@@ -33,20 +33,33 @@
 import { useCallback } from 'react';
 import { useNavigation, type NavigationProp, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { InstitutionRow } from '@components/InstitutionRow';
 import { ListRow } from '@components/ListRow';
 import { useInstitutionStore } from '@store/institutionStore';
-import type { RootStackParamList, RootTabParamList } from '@navigation/types';
+import type {
+  ProfileStackParamList,
+  RootStackParamList,
+  RootTabParamList,
+} from '@navigation/types';
 import { color, radius, space, type } from '@theme/tokens';
 
-// CompositeNavigationProp lets this screen navigate to both the root stack
-// (Gallery) and to nested screens in sibling tabs (InstitutionList in Catalogue).
+// This screen navigates in three directions, so the type composes three props.
+// Same shape as SearchScreen, which has the same problem: its own stack first,
+// then the tab and root props.
+//
+//   ProfileStack   ReaderPreferences, pushed onto this screen's own stack
+//   Tab            nested screens in sibling tabs (InstitutionList in Catalogue)
+//   RootStack      the dev Gallery, which sits above the tabs
 type Nav = CompositeNavigationProp<
-  BottomTabNavigationProp<RootTabParamList, 'Profile'>,
-  NavigationProp<RootStackParamList>
+  NativeStackNavigationProp<ProfileStackParamList, 'ProfileHome'>,
+  CompositeNavigationProp<
+    BottomTabNavigationProp<RootTabParamList, 'Profile'>,
+    NavigationProp<RootStackParamList>
+  >
 >;
 
 // Composed from the spacing scale rather than written as 20, so no bare number
@@ -72,6 +85,12 @@ export default function ProfileScreen() {
     // Navigation resolves cross-tab routes by switching to the owning tab first,
     // then pushing the screen.
     navigation.navigate('Catalogue', { screen: 'InstitutionList' });
+  }, [navigation]);
+
+  // Pushed onto this screen's own stack, so no tab or nested target is named —
+  // unlike `handleChangeInstitution` above, which crosses into Catalogue.
+  const handleReadingPreferences = useCallback(() => {
+    navigation.navigate('ReaderPreferences');
   }, [navigation]);
 
   const handleSignOut = useCallback(() => {
@@ -105,7 +124,7 @@ export default function ProfileScreen() {
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
         >
-          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.surface} />
+          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.white} />
         </View>
 
         <View style={styles.accountText}>
@@ -141,13 +160,17 @@ export default function ProfileScreen() {
         )}
       </View>
 
-      {/* EVERY ROW HERE IS DISABLED, AND EVERY ROW HERE IS STILL DRAWN. Same
+      {/* ONE ROW LEADS SOMEWHERE; THE REST ARE DISABLED AND STILL DRAWN. Same
           rule the screen 12 filter sheet already follows: a row with nothing
           behind it is greyed and announced as disabled rather than dropped, so
           the settings list does not read as complete when it is not.
 
-            · Reading Preferences and Download Settings belong to t4targaryen's
-              reader. There is no sub-screen on our side to push.
+            · Reading Preferences NOW HAS A DESTINATION — `ReaderPreferences` on
+              this screen's own stack. The values it writes are consumed by
+              t4targaryen's reader, but the screen that writes them is ours, so
+              this row is live. It was disabled while there was nothing to push.
+            · Download Settings still belongs to t4targaryen's reader, and there
+              is no sub-screen on our side for it.
             · Notifications has no backing setting anywhere in the app.
             · Privacy & Security has no destination.
             · About T&F Reader has no destination either, and its version string
@@ -160,7 +183,7 @@ export default function ProfileScreen() {
           title="Reading Preferences"
           subtitle="Font size, theme"
           variant="chevron"
-          disabled
+          onPress={handleReadingPreferences}
           icon={<Ionicons name="book-outline" size={SETTING_ICON_SIZE} color={color.primary} />}
         />
         <ListRow
