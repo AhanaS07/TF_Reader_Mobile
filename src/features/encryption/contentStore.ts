@@ -118,6 +118,26 @@ function assertLengthInvariant(pkg: EncryptedPackage): void {
   }
 }
 
+// Mirrors the read-side check at loadPersisted()/decryptBook() (MAX_DECRYPTED_BYTES), on the
+// write side instead. Without this, store() would accept a book the read path can never open:
+// isAvailableOffline() reports true, the caller believes the download succeeded, and the failure
+// only surfaces the first time something calls getBook() on it — a silent-until-tapped failure.
+// AUDIO_MEMORY_REPORT.md measured this exact gap (a 150 MB package accepted by store(), then
+// DECRYPTION_FAILED on every read) before this check existed. Same error code as the read-side
+// checks — this is not actually a decryption failure, but neither is theirs, and the frozen
+// ContentError enum has no dedicated "too large" code to add without a Gate conversation.
+function assertWithinRamBudget(pkg: EncryptedPackage): void {
+  if (pkg.originalLength > MAX_DECRYPTED_BYTES) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      pkg.bookId,
+      new Error(
+        `book is ${pkg.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget — refusing to store it`
+      )
+    );
+  }
+}
+
 function assertLicenceMatchesPackage(pkg: EncryptedPackage): void {
   // An encrypted package with NO licence at all would never have an expiry (or anything else)
   // enforced: isLicenceExpired() short-circuits to "not expired" when pkg.licence is null, so
@@ -221,11 +241,13 @@ async function invalidateStaleCachedKeyIfRotated(pkg: EncryptedPackage): Promise
 
 /**
  * Persist an EncryptedPackage exactly as received (Subscription) or cache it in memory only
- * (Elite). Asserts the content-length and licence/bookId invariants the frozen contract requires
- * — a violation is a loud ContentFailure(INTEGRITY_FAILED | LICENCE_INVALID), never silent.
+ * (Elite). Asserts the content-length, RAM-budget and licence/bookId invariants the frozen
+ * contract requires — a violation is a loud ContentFailure(INTEGRITY_FAILED | DECRYPTION_FAILED |
+ * LICENCE_INVALID), never silent.
  */
 async function store(pkg: EncryptedPackage): Promise<void> {
   assertLengthInvariant(pkg);
+  assertWithinRamBudget(pkg);
   assertLicenceMatchesPackage(pkg);
 
   // Elite never touches the keychain (see resolveRawKey) — nothing there to invalidate, and

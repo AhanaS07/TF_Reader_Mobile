@@ -210,21 +210,26 @@ describe('contentStore — Subscription (persisted, real AES-256-GCM)', () => {
     }
   });
 
-  it('rejects ContentFailure when the book exceeds the RAM budget', async () => {
-    const bookId = 'sub-book-too-big';
-    const key = randomKey();
+  it('rejects store() itself when the book exceeds the RAM budget, before anything is persisted', async () => {
     // Genuinely over budget — not a lied-about length field, an actually oversized plaintext, so
     // this proves the check against real data rather than a fixture that's inconsistent with
     // itself (store()'s own length-invariant check would otherwise catch that first, for the
     // right reason but the wrong test).
+    //
+    // This pins the write/read asymmetry fix: store() used to ACCEPT this package (writing 25MB+
+    // to disk, reporting isAvailableOffline() === true) and only decryptBook() would ever reject
+    // it — a silent-until-tapped failure. AUDIO_MEMORY_REPORT.md measured exactly this gap against
+    // a 150MB audio package. store() must now fail closed at write time instead.
+    const bookId = 'sub-book-too-big';
+    const key = randomKey();
     const plaintext = plaintextOf(MAX_DECRYPTED_BYTES + 1, 'too big for the RAM budget');
     const pkg = await buildEncryptedPackage(bookId, plaintext, key);
     await storeBek(bookId, key);
 
-    await contentStore.store(pkg);
-    await contentStore.openSession(bookId);
-
-    await expect(contentStore.decryptBook(bookId)).rejects.toThrow(ContentFailure);
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.DECRYPTION_FAILED,
+    });
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
   });
 
   it('rejects store() with ContentFailure(INTEGRITY_FAILED) on a cipherLength mismatch', async () => {
