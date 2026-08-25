@@ -149,22 +149,23 @@ describe('Stage 1: whole-book RAM budget and per-hop cost', () => {
     180_000
   );
 
-  it('a book one byte over MAX_DECRYPTED_BYTES is refused, and refused before the bytes are read', async () => {
+  it('a book one byte over MAX_DECRYPTED_BYTES is refused at store(), before it is ever persisted', async () => {
+    // Was: store() accepted it and only getBook() refused it afterward — the write/read asymmetry
+    // AUDIO_MEMORY_REPORT.md measured against a real 150MB audio package (accepted on disk,
+    // isAvailableOffline() === true, then a permanent decrypt failure on every read). store() now
+    // enforces the same budget the read path always has, so this fails at write time instead —
+    // nothing is ever persisted for getBook() to reject afterward.
     const bookId = 'budget-probe-over-cap';
     const key = randomKey();
     const plaintext = plaintextOf(MAX_DECRYPTED_BYTES + 1, 'one byte over the cap');
 
-    try {
-      const pkg = await buildEncryptedPackage(bookId, plaintext, key);
-      await storeBek(bookId, key);
-      await contentStore.store(pkg);
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key);
+    await storeBek(bookId, key);
 
-      await expect(getBook(bookId)).rejects.toMatchObject({
-        code: ContentError.DECRYPTION_FAILED,
-      });
-    } finally {
-      await contentStore.destroy(bookId);
-    }
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.DECRYPTION_FAILED,
+    });
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
   }, 180_000);
 
   afterAll(() => {

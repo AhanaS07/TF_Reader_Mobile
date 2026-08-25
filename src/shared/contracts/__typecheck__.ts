@@ -198,6 +198,25 @@ createDefaultAccessibilityPrefs() satisfies AccessibilityPrefs;
   },
 }) satisfies ReadingSessionResponse;
 
+// --- ReadingSessionResponse: the real backend's licenceId/licenceModel/canPersist ------------
+// Confirmed live against tf_reader_backend_temp (2026-08-23) — the real response carries these
+// directly, which is what lets checkLicense.ts skip a separate borrow/loan call. See this file's
+// header on ReadingSessionResponse.
+({
+  sessionId: 'sess_1',
+  licenceId: 'loan_1',
+  itemId: 'book_1',
+  accessLevel: 'ENTITLED_UNLIMITED',
+  licenceModel: 'SUBSCRIPTION',
+  canPersist: true,
+  expiresAt: '2026-08-14T00:05:00Z',
+  serverTime: '2026-08-14T00:00:00Z',
+  content: {
+    url: 'https://example.com/signed',
+    expiresAt: '2026-08-14T00:10:00Z',
+  },
+}) satisfies ReadingSessionResponse;
+
 // --- FlambeauErrorCode wires through the barrel (sample, not exhaustive) ---
 'NO_ACTIVE_LOAN' satisfies FlambeauErrorCode;
 'DEVICE_LIMIT_REACHED' satisfies FlambeauErrorCode;

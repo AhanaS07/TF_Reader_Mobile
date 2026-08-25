@@ -31,7 +31,20 @@ path. **Update in the same change** that closes an item, and strike it in
 
 ## Ordered by what actually blocks you
 
-### 1. `B1` 🔴 — there is no auth. At all.
+### 1. `B1` 🟡 — narrowed 2026-08-23: real-backend calls now carry a bearer token, but this is not a sign-in flow
+
+**Update 2026-08-23:** `readingSessionClient.ts` now attaches `Authorization: Bearer <token>` to
+both flambeau calls when `AUTH_REQUIRED` (`config.ts`, i.e. `EXPO_PUBLIC_USE_REAL_BACKEND=true`).
+The token comes from `devAuthToken.ts`, a thin cached client for the real backend's own dev-only
+`POST /api/v1/auth/dev-token` (`tf_reader_backend_temp`'s `AuthController.java`) — confirmed live:
+`POST /api/v1/reading-sessions` with this token returns `201`, not `401`.
+
+**This closes the header-shaped half of `B1`, not the feature.** `devAuthToken.ts` is scaffolding
+in the same spirit as `devContentSeed.ts` — it exists only because the real backend happens to ship
+a dev shortcut, has no equivalent on the mock, and must be deleted once a real token source exists.
+Steps 1–3 below (institution discovery, method selection, the actual SAML/OIDC round trip) are
+still entirely unbuilt, and `C6` — how a native app receives the token after that round trip — is
+still unanswered. Was, before this change:
 
 `git grep -in "authorization\|bearer\|accessToken" -- src` returns **zero hits**. Both flambeau
 calls send only `Content-Type`.
@@ -72,12 +85,18 @@ wokay feed.
 decision before anyone writes code, not after.
 
 **Done when:** a real `POST /api/v1/reading-sessions` succeeds against `:8080` with a `tf-app`
-token obtained through the real flow, and an expired token clears the keychain and re-authenticates
-instead of surfacing as a generic download failure.
+token obtained through the real flow (not `dev-token`), and an expired token clears the keychain
+and re-authenticates instead of surfacing as a generic download failure.
 
 ---
 
-### 2. `B2` 🔴 — one base URL, and it should be `:8080`
+### 2. `B2` 🟡 — one base URL, and it should be `:8080`
+
+**Update 2026-08-23:** the app now points at the real backend by default in local dev —
+`EXPO_PUBLIC_USE_REAL_BACKEND=true` is set in `.env` (gitignored). This flips `config.ts`'s
+`API_BASE_URL` to `:8080`, but it is still a per-directory flag, not the cross-capability
+unification this item actually asks for — Sync (`:9000`/`:8090`) is untouched. Narrower half
+closed, not the item.
 
 `config.ts:31` resolves to `http://<lan-host>:4000`, overridable by `EXPO_PUBLIC_MOCK_BACKEND_URL`.
 Both contracts specify `http://localhost:8080` for everyone. Three coexist today:
@@ -109,27 +128,68 @@ to `:8080`, and `mock-backend/` is either tracked or unreferenced.
 
 ---
 
-### 3. `C7` 💬 — confirm the fingerprint recipe with wokay *before* integration week
+### 3. `C7` ✅ — CLOSED 2026-08-23, confirmed against the running real backend
 
-`84f2476` closed `B3` properly: `downloadManager.ts:244` now sets `licence.keyFingerprint` from
-`publicKeyFingerprint(publicKey)`, so `contentStore.ts:150`'s comparison finally compares two
-independently derived values. Right fix.
+See `encryption/API_CONTRACT_NOTES.md` §1 for the full evidence. Short version:
+`publicKeyFingerprint()`'s guess (SHA-256 of raw DER bytes, literal `sha256:` prefix, full 64-char
+hex) is exactly what the real backend computes, confirmed both by reading its source
+(`ContentAccessGrantImpl.fingerprintOf()`) and by a live round trip. No code change needed here.
 
-The consequence nobody has closed: **that check fails closed, and the recipe is a guess.**
-`publicKeyFingerprint()` chose SHA-256 over the **raw DER bytes**, a literal **`sha256:`** prefix,
-and **full 64-char** hex. wokay's only example is `"sha256:d5e91261"` — eight hex characters, so a
-truncated illustration that confirms none of the three. If any one differs,
-`contentStore.store()` throws `LICENCE_INVALID` on **100% of encrypted downloads**, permanently.
-
-Before `84f2476` a mismatch was structurally impossible, so this went from a documentation question
-to a hard blocker in the same commit that fixed the security hole. Ask wokay: digest over the DER
-bytes or over the base64 string? Is the prefix literally `sha256:`? What hex length?
-
-**Cheap improvement while you're there:** the comparison currently happens inside
-`contentStore.store()` — *after* `fetchEncryptedAsset` has pulled up to 25 MB.
+**The cheap improvement below is still open and still worth doing:** the comparison currently
+happens inside `contentStore.store()` — *after* `fetchEncryptedAsset` has pulled up to 25 MB.
 `session.encryption.keyFingerprint` is available the instant `openReadingSession` returns.
 Comparing there fails in milliseconds instead of after a full download, and gives you a
 `DownloadError` at the right layer rather than a `ContentFailure` from Encryption.
+
+---
+
+### 3a. `B18` 🔴 — NEW 2026-08-23: the real backend has no `POST /api/v1/loans` at all
+
+`licenseCheck.ts:91` calls `borrowLoan(bookId)` — `POST /api/v1/loans` — as step one of every real
+download, per `B5` below. Against the running real backend this returns **`405`**, not a licence:
+`tf_reader_backend_temp`'s `LoanController` (`loan/controller/`) implements only
+
+```java
+@GetMapping
+public LoanPage list(@AuthenticationPrincipal CurrentUser caller, PageQuery page, ...)
+```
+
+with a comment saying, in full: *"No borrow/return endpoints: in the adopted design a licence is
+created when a reading session opens (D-020), not by a call to this controller."* Confirmed live
+with a valid bearer token — `POST /api/v1/reading-sessions` alone (no prior borrow call) succeeds
+with `201` and returns a full `content`/`index`/`encryption` grant, including a `licenceId` field
+(`loan_55c5cbc4` in the observed response) that the published `ReadingSessionResponse` schema does
+not document at all (it documents `loanId`, not `licenceId`, and no `accessLevel`/`licenceModel`/
+`canPersist` at the top level either — all four appeared in the live response).
+
+**This is not this app's guess to fix.** `flambeau-api.yaml` still marks `POST /api/v1/loans`
+**FROZEN**, so either the real backend has silently dropped a frozen endpoint (a bug, and the
+published contract is now stale), or the design genuinely moved to "borrow happens implicitly at
+session-open" (`D-020`) and the contract file just was never updated to match. Either way this
+needs flambeau's ruling, not a client-side workaround — removing the `borrowLoan()` step here would
+be reacting to one prototype's current behaviour, not to a decided contract.
+
+**Ask:** is `POST /api/v1/loans` coming back, or is the borrow step gone for good? If gone, what
+does `ReadingSessionResponse` actually look like now (`licenceId`/`accessLevel`/`licenceModel`/
+`canPersist` need to be documented, and `B5`'s hold-queue/`NO_COPIES_AVAILABLE` handling needs to
+know where copy-limit refusal now surfaces if not at borrow).
+
+---
+
+### 3b. `B19` 🟡 — NEW 2026-08-23: `GET /api/v1/auth/methods` doesn't exist on the real backend
+
+Not this app's bug, and not blocking (the app doesn't call this endpoint yet — it's still on the
+`B1` step-2 list). Recorded for whoever raises it with the backend team.
+
+`flambeau-api.yaml` specifies `security: []` (public, no token) for `GET /api/v1/auth/methods`, but
+`tf_reader_backend_temp`'s `AuthController.java` has no `/methods` mapping at all — only `/me`,
+`/saml/start` and `/dev-token`. An unmapped path under `/api/v1/**` falls through Spring Security's
+ordered filter chains to the final deny-all chain (`SecurityConfig.java`'s `@Order(100)`), which
+returns `401 UNAUTHENTICATED`/`TOKEN_MISSING` instead of a `404`. Confirmed live — `saml/start` and
+`oidc/start` (same controller, same "no token" contract requirement) both correctly return `200`
+with no token, so this is specific to the missing `/methods` mapping, not a general auth
+misconfiguration. Misleading error code aside, the practical effect is the same: sign-in method
+discovery is unimplemented server-side.
 
 ---
 
@@ -321,7 +381,8 @@ best value-per-line on this list.
 | --- | --- | --- |
 | `C6` | flambeau: how does the app get its token after SAML? | `B1` cannot be built |
 | `A5` | flambeau: `aud: tf-app` on the app token | even a correct `B1` is rejected by wokay's filter chain |
-| `C7` | wokay: fingerprint digest recipe | every encrypted download fails closed if we guessed wrong |
+| `B17` | wokay: fix the real backend's RSA-OAEP wrap (MGF1 defaults to SHA-1) | every encrypted download fails to unwrap its BEK, today |
+| `B18` | flambeau: is `POST /api/v1/loans` coming back, or is borrow gone for good (`D-020`)? | `borrowLoan()` gets `405` on every real-backend call |
 | `A10` | flambeau: `/loans/changes` vs `/changes` | `B6` gets built twice |
 | `A9` | flambeau: does `OPEN_ACCESS` write a loan? | `downloadManager.ts` borrows unconditionally and reads `canPersist`/`dueAt` off the result — fine under the prose reading, broken under the table reading |
 | `B11` | wokay: is there a maximum ingest size? | `MAX_DECRYPTED_BYTES` is 25 MB and no contract bounds book size, so an operator can publish a 40 MB book this client can never open, with no signal at either end |

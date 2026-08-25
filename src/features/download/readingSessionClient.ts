@@ -17,8 +17,19 @@
 
 import type { BookId, BorrowRequest, Loan, ReadingFormat, ReadingSessionRequest, ReadingSessionResponse, FlambeauError } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, AUTH_REQUIRED } from './config';
+import { getAuthToken } from './devAuthToken';
 import { DownloadError, DownloadFailure } from './errors';
+
+// Real-backend calls need a bearer token or the `tf-app` resource-server chain 401s before
+// routing runs (see devAuthToken.ts). The mock backend has no `/api/v1/auth/*` routes at all, so
+// this must stay conditional on AUTH_REQUIRED rather than always fetching one.
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!AUTH_REQUIRED) {
+    return {};
+  }
+  return { Authorization: `Bearer ${await getAuthToken()}` };
+}
 
 export { fetchEncryptedAsset } from './contentLicenceClient';
 
@@ -89,7 +100,7 @@ export async function borrowLoan(bookId: BookId): Promise<Loan> {
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/loans`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -135,7 +146,7 @@ export async function openReadingSession(
   try {
     response = await fetch(`${API_BASE_URL}/api/v1/reading-sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -171,12 +182,21 @@ export async function openReadingSession(
 // THIS device cannot read right now). See API_CONTRACT_NOTES.md B7. Never fail closed for
 // network-level failures, and never for NO_ACTIVE_LOAN/CONTENT_NOT_READY (state-not-found reads
 // as "can't confirm", not "confirmed denied").
-const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
+//
+// Exported — reused by `licenseCheck.ts` for the same online-fail-closed logic, so the set
+// stays defined in ONE place.
+export const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
   DownloadError.NO_ENTITLEMENT,
   DownloadError.ENTITLEMENT_EXPIRED,
   DownloadError.ENTITLEMENT_SUSPENDED,
   DownloadError.INSTITUTION_INACTIVE,
   DownloadError.DEVICE_LIMIT_REACHED,
+  // DOWNLOAD_NOT_PERMITTED: an ELITE title refused intent:DOWNLOAD. The loan already said
+  // canPersist: false, and the server enforced it. This device cannot download this book —
+  // fail closed rather than fall through to the offline fallback, which would mask the real
+  // problem with a stale local licence (or OFFLINE_LICENSE_UNAVAILABLE for a never-downloaded
+  // book). Added for the unified license gate (licenseCheck.ts).
+  DownloadError.DOWNLOAD_NOT_PERMITTED,
 ]);
 
 /**

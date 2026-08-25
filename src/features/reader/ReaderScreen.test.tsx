@@ -101,6 +101,7 @@ jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
     setDefaultRate: jest.fn(() => Promise.resolve(true)),
     setDefaultPitch: jest.fn(() => Promise.resolve(true)),
     setDefaultVoice: jest.fn(() => Promise.resolve(true)),
+    setIgnoreSilentSwitch: jest.fn(() => Promise.resolve(true)),
     voices: jest.fn(() => Promise.resolve([])),
   },
 }));
@@ -1797,6 +1798,7 @@ describe('ReaderScreen bookmarks panel', () => {
     // A blank label field is `undefined`, not `''` — falls through to `labelFor`'s own fallback
     // rather than this panel inventing a second empty-label convention.
     expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+      'test-book',
       'epubcfi(/6/4[chap01]!/4/2/2)',
       undefined,
       undefined,
@@ -1822,6 +1824,7 @@ describe('ReaderScreen bookmarks panel', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
 
     expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+      'test-book',
       'epubcfi(/6/4[chap01]!/4/2/2)',
       undefined,
       'The good bit',
@@ -1850,7 +1853,7 @@ describe('ReaderScreen bookmarks panel', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
 
-    expect(addCurrentPdfBookmark).toHaveBeenCalledWith(7, undefined);
+    expect(addCurrentPdfBookmark).toHaveBeenCalledWith('test-book', 7, undefined);
     expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
   });
 
@@ -1868,7 +1871,7 @@ describe('ReaderScreen bookmarks panel', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: 'Delete bookmark: To be deleted' }));
 
-    expect(removeBookmark).toHaveBeenCalledWith('victim');
+    expect(removeBookmark).toHaveBeenCalledWith('test-book', 'victim');
     await screen.findByText('Still here');
     expect(screen.queryByText('To be deleted')).toBeNull();
   });
@@ -1925,9 +1928,14 @@ describe('ReaderScreen bookmarks panel', () => {
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
 
       // Add happens at the SAME target, under the new name, BEFORE the old id is removed.
-      expect(addCurrentEpubBookmark).toHaveBeenCalledWith('epubcfi(/6/10)', undefined, 'Renamed');
+      expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+        'test-book',
+        'epubcfi(/6/10)',
+        undefined,
+        'Renamed',
+      );
       await screen.findByText('Renamed');
-      expect(removeBookmark).toHaveBeenCalledWith('old');
+      expect(removeBookmark).toHaveBeenCalledWith('test-book', 'old');
       expect(screen.queryByText('Untitled')).toBeNull();
     });
 
@@ -1962,7 +1970,7 @@ describe('ReaderScreen bookmarks panel', () => {
       );
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Page 7' }));
 
-      expect(addCurrentPdfBookmark).toHaveBeenCalledWith(7, 'Turning point');
+      expect(addCurrentPdfBookmark).toHaveBeenCalledWith('test-book', 7, 'Turning point');
       expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
       await screen.findByText('Turning point');
     });
@@ -2000,6 +2008,7 @@ describe('ReaderScreen bookmarks panel', () => {
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
 
       expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+        'test-book',
         'epubcfi(/6/4[chap01]!/4/2/2)',
         undefined,
         undefined,

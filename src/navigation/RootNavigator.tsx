@@ -10,9 +10,11 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
+import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
 
+import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 import { BookListScreen } from './BookListScreen';
 import { ReaderRouteScreen } from './ReaderRouteScreen';
 import { TtsDemoScreen } from './TtsDemoScreen';
@@ -24,6 +26,12 @@ export type RootStackParamList = {
   // DevFixture table in App.tsx), and ReaderRouteScreen needs it before ReaderScreen has resolved
   // anything, to gate DevPreferencesMenu's format-specific sections.
   Reader: { bookId: BookId; format: ContentFormat };
+  // AUDIO PHASE 3. No `format` param — this route only ever hosts AUDIO, so there's nothing to
+  // gate the way ReaderRouteScreen gates DevPreferencesMenu's sections. `title` is fixture
+  // metadata BookListScreen already has statically, same reasoning `format` was passed for
+  // Reader. BookListScreen decides AUDIO vs Reader at tap time — this route never receives an
+  // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
+  AudioPlayer: { bookId: BookId; title: string };
   TtsDemo: undefined;
   // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
   MockLibrary: undefined;
@@ -32,6 +40,13 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator(): React.JSX.Element {
+  // Mounted here (the always-present app root) so the sync engine actually runs: it fires
+  // syncEngine.run() on app open and on every offline->online reconnect, draining the SQLite
+  // outbox to Mongo and pulling back. Without this call the whole sync layer was built but never
+  // triggered. Edge-triggered on connectivity, NOT on edits — an edit made while already online
+  // still waits for the next reconnect/app-open unless a per-edit push is added separately.
+  useAutoSync();
+
   return (
     <NavigationContainer>
       <Stack.Navigator initialRouteName="BookList">
@@ -57,6 +72,9 @@ export function RootNavigator(): React.JSX.Element {
           component={ReaderRouteScreen}
           options={{ gestureEnabled: false }}
         />
+        {/* No gestureEnabled: false here — AudioPlayerScreen has no competing PanResponder-style
+            swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
+        <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
         <Stack.Screen name="TtsDemo" component={TtsDemoScreen} options={{ title: 'TTS Demo' }} />
         {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
         <Stack.Screen

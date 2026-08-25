@@ -22,7 +22,6 @@ import { fromByteArray } from 'react-native-quick-base64';
 
 import { getBook, getFormat } from '@/features/encryption/contentProvider';
 import { verifyReadingAccess } from '@/features/download/readingSessionClient';
-import { ensureSeeded } from '@/features/reader/devContentSeed';
 import { logSpan, now } from '@/features/reader/readerTiming';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
@@ -100,14 +99,13 @@ export class UnsupportedFormatError extends Error {
 }
 
 /**
- * Seed if needed, then report which format this book is — the value that decides
- * which shell to load and which open command to send.
+ * Report which format this book is — the value that decides which shell to load
+ * and which open command to send.
  *
- * ORDER IS A REAL DEPENDENCY, NOT A STYLE CHOICE. `getFormat` opens a ContentStore
- * session, and `openSession` rejects with DECRYPTION_FAILED if nothing has been
- * stored for this book yet — so the seed has to have run first. Keeping both calls
- * here means the ordering lives in ONE place, and it is the same place that has to
- * be unpicked when `devContentSeed.ts` goes away.
+ * The package must already be stored before this is called — either by
+ * `openBook()` (ephemeral in-memory for Elite), `downloadBook()` (persisted),
+ * or `devContentSeed.ts`'s `ensureSeeded()` for dev fixtures. Without a stored
+ * package, `getFormat` → `openSession` rejects with DECRYPTION_FAILED.
  *
  * `getFormat` DOES NOT DECRYPT — but it is only cheap WARM. `openSession` resolves the package,
  * and on a cold resolve (`packageCache` miss) `contentStore.loadPersisted` reads the whole
@@ -117,17 +115,8 @@ export class UnsupportedFormatError extends Error {
  * WebView is mounted. That is Encryption's trade-off to own (CLAUDE.md records it against
  * `close()`), but the cost lands HERE, so do not read this call as free and do not move it onto a
  * path where a frame is waiting on it.
- *
- * `ensureSeeded` is TEMPORARY and goes away with devContentSeed.ts. It is also
- * called again inside `getBookBase64`, which is not redundant work — it
- * short-circuits on `isAvailableOffline()` plus a seed-version marker, so the second
- * call is a fast no-op.
  */
 export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
-  const seedStartedAt = now();
-  await ensureSeeded(bookId);
-  logSpan('seed', seedStartedAt);
-
   const formatStartedAt = now();
   const format = await getFormat(bookId);
   logSpan('format', formatStartedAt, { format });
@@ -142,9 +131,9 @@ export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
  * reach past it into ContentStore/aesGcm/keyStorage/deviceKeypair — that
  * restriction is contentProvider.ts's entire reason for existing.
  *
- * `ensureSeeded` is TEMPORARY, and goes away with devContentSeed.ts. It stands in
- * for the download pass: without something having called ContentStore.store()
- * first, openSession() throws DECRYPTION_FAILED and getBook() can only reject.
+ * The package must already be stored before this is called — either by
+ * `openBook()`, `downloadBook()`, or `devContentSeed.ts`'s `ensureSeeded()`.
+ * Without a stored package, `getBook()` rejects with DECRYPTION_FAILED.
  *
  * TWO CONSTRAINTS:
  *  1. PLAINTEXT NEVER TOUCHES DISK. The route is RAM -> base64 -> bridge. The
@@ -185,13 +174,12 @@ export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
  * revocation, which is deliberately fatal to opening the book — same as any other error below,
  * caught by ReaderScreen's existing catch-and-raiseError.
  *
- * `format` is now a PARAMETER rather than a hardcoded `'EPUB'`, supplied by `prepareBook` above
- * from `SessionHandle.format`. That closes the Reader half of finding `B12`
- * (`src/shared/contracts/CONTRACT_ALIGNMENT.md`) but NOT the finding itself: the value is only as
- * true as whatever called `ContentStore.store()`, which today is the dev seed. The real source is
- * wokay's book metadata (`contentType` on the catalogue/OPDS record) and there is still no
- * catalogue client to read it from — `C3`, unowned. So a real book downloaded through
- * `downloadBook()` gets whatever format that call was passed, which itself defaults to `'EPUB'`.
+ * `format` is a PARAMETER rather than a hardcoded `'EPUB'`, supplied by `prepareBook` from
+ * `getFormat(bookId)`. The value is only as true as whatever called `ContentStore.store()`, which
+ * today is either `openBook()`, `downloadBook()`, or the dev seed. The real source is wokay's book
+ * metadata (`contentType` on the catalogue/OPDS record) and there is still no catalogue client to
+ * read it from — `C3`, unowned. So a real book downloaded through `downloadBook()` gets whatever
+ * format that call was passed, which itself defaults to `'EPUB'`.
  *
  * When a catalogue client lands, note that `ReadingSessionRequest.format` selects an ASSET format,
  * which wokay distinguishes from the book's own `contentType` — one book can carry a PDF asset
@@ -203,13 +191,6 @@ export async function getBookBase64(bookId: BookId, format: ContentFormat): Prom
   const verifyStartedAt = now();
   await verifyReadingAccess(bookId, format);
   logSpan('verifyAccess', verifyStartedAt);
-
-  // Idempotent, and a fast no-op after prepareBook's call — see the note there.
-  // Kept rather than removed so this function still stands alone: it is the one
-  // place that guarantees bytes exist before getBook is asked for them.
-  const seedStartedAt = now();
-  await ensureSeeded(bookId);
-  logSpan('seed', seedStartedAt);
 
   // Split from the encode below so the two costs can be attributed separately: getBook is
   // Encryption's decrypt (which itself base64s twice around a string-only native API — see

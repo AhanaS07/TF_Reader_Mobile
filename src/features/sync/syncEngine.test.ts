@@ -315,8 +315,8 @@ describe('field-merge push (personalization)', () => {
         ok(
           personalizationRecord({
             theme: 'dark',
-            updatedAt: '2026-08-25T00:00:00.000Z',
-            fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+            updatedAt: '2099-08-25T00:00:00.000Z',
+            fieldUpdatedAt: { theme: '2099-08-25T00:00:00.000Z' },
           }),
         ) as any,
     );
@@ -324,7 +324,7 @@ describe('field-merge push (personalization)', () => {
     let sentPayload: any = null;
     mockApi.update.mockImplementation((_path, _id, body: any) => {
       sentPayload = body;
-      return ok({ ...body, updatedAt: '2026-08-25T00:00:01.000Z' }) as any;
+      return ok({ ...body, updatedAt: '2099-08-25T00:00:01.000Z' }) as any;
     });
 
     const report = await syncEngine.run();
@@ -352,6 +352,10 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
   // failure, so push() marks it FAILED and moves on rather than throwing and skipping pull()
   // entirely) - the row stays synced: 0 into the pull phase, which is the scenario
   // mergeFieldLevel's synced-preservation and pull()'s outbox-refresh both exist for.
+  //
+  // The remote records below use 2099, not 2026, for "far in the future, newer than the local
+  // edit regardless of exactly when this test runs" - 2026-08-25 stopped being the future on
+  // 2026-08-25.
   it('pull-merge automatically queues a re-push carrying the complete merged state', async () => {
     await personalizationStore.update({ zoom: 5 });
     mockApi.create.mockRejectedValue(new ApiError('bad payload', 400));
@@ -435,7 +439,7 @@ describe('pull-merge convergence (personalization/accessibility)', () => {
     let sentPayload: any = null;
     mockApi.update.mockImplementation((_path, _id, body: any) => {
       sentPayload = body;
-      return ok({ ...body, updatedAt: '2026-08-25T00:00:01.000Z' }) as any;
+      return ok({ ...body, updatedAt: '2099-08-25T00:00:01.000Z' }) as any;
     });
     mockApi.list.mockImplementation(() => ok([]) as any); // nothing new on the second run
 

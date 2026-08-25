@@ -26,6 +26,8 @@ import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
 import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { startAccessMonitor } from '@/features/download/readingAccessMonitor';
+import type { AccessMonitorHandle } from '@/features/download/readingAccessMonitor';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -435,6 +437,12 @@ export function ReaderScreen({
     setFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
   }, []);
 
+  // The running periodic access re-check for the CURRENTLY OPEN book — started once
+  // `getBookBase64` succeeds (readingAccessMonitor.ts's own doc comment on why it does not need an
+  // immediate first tick), stopped by the same teardown effect that already calls closeBook(). A
+  // ref, not state: nothing here should re-render off it, only read/replace the current handle.
+  const accessMonitorRef = useRef<AccessMonitorHandle | null>(null);
+
   // When the `open` command was handed to injectJavaScript. A ref, not state: it is written on the
   // bridge path and read in the message handler, and re-rendering on it would perturb the very
   // interval being measured. `rendered - openSentAt` is the only view we get of bridge transfer +
@@ -483,6 +491,18 @@ export function ReaderScreen({
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       setIsObscured(nextState !== 'active');
+
+      // Pause the periodic access re-check while backgrounded — nobody is reading, and a timer
+      // firing while the app can't render a fresh error banner would either be wasted or, worse,
+      // resolve into a revocation the reader never sees delivered. Resuming restarts a FULL
+      // interval (readingAccessMonitor.ts's own doc comment on why: not a resumed partial one) —
+      // a book that was safe to read when it backgrounded does not need re-checking the instant
+      // it returns to the foreground. A no-op before the monitor has started (ref still null).
+      if (nextState === 'active') {
+        accessMonitorRef.current?.resume();
+      } else {
+        accessMonitorRef.current?.pause();
+      }
     });
 
     return () => {
@@ -609,6 +629,13 @@ export function ReaderScreen({
   // nothing useful to show the user — the screen is already gone.
   useEffect(() => {
     return () => {
+      // Stop the periodic access re-check FIRST — same reasoning as the TTS teardown right below:
+      // once the session is closing, a tick that landed mid-teardown has nothing left to act on
+      // (raiseError on an unmounting/switching screen), and closeBook() below is about to make the
+      // whole question moot anyway. A no-op before the monitor ever started (ref still null).
+      accessMonitorRef.current?.stop();
+      accessMonitorRef.current = null;
+
       // BEFORE closeBook, same cleanup, so the ordering is guaranteed rather than dependent on
       // React's cross-effect cleanup order (which is not the same on an in-place book switch as on
       // a full unmount). A no-op while TTS was never active (ref is null).
@@ -663,6 +690,21 @@ export function ReaderScreen({
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length, format });
 
+          // Start re-verifying access on a timer NOW that the book has actually opened —
+          // getBookBase64 above already ran the one-time open-time check (verifyReadingAccess),
+          // this is what covers everything after it for as long as the book stays open. Stop any
+          // prior monitor first: `handleReady` is a WebView `ready` handler, not a mount effect, so
+          // nothing rules out a second `ready` (e.g. a WebView reload) firing before this screen
+          // unmounts, and starting a second interval without stopping the first would leak it.
+          accessMonitorRef.current?.stop();
+          accessMonitorRef.current = startAccessMonitor(bookId, format, (failure) => {
+            raiseError(
+              'ACCESS_REVOKED',
+              `Access to this book was revoked while reading: ${failure.code}. ` +
+                `(${String(failure.cause ?? failure.message)})`,
+            );
+          });
+
           // EXHAUSTIVE ON PURPOSE. This switch is the entire seam where
           // ContentFormat becomes a bridge command, and the `never` default is what
           // makes adding a fourth ContentFormat member a COMPILE error here rather
@@ -676,8 +718,18 @@ export function ReaderScreen({
               sender({ type: 'openPdf', base64 });
               break;
             case 'AUDIO':
-              // Unreachable: getReaderHtmlUri already refused this format, so no
-              // WebView exists to be ready. Handled anyway so the switch is total.
+              // UNREACHABLE IN PRACTICE, TWICE OVER, AND KEPT ANYWAY — AUDIO PHASE 3.
+              // getReaderHtmlUri already refused this format before any WebView could exist to be
+              // ready (readerAssets.ts's READER_HTML_MODULES has no AUDIO entry), and — since
+              // Phase 3 — BookListScreen's onPress now routes AUDIO to the AudioPlayer route at
+              // tap time, so ReaderScreen never even mounts for an audio book on the path that
+              // matters. This case is a deliberate BACKSTOP, not stale leftovers: the switch is
+              // exhaustive on purpose (see the note above), and removing this arm would either
+              // reintroduce a non-exhaustive switch or force a `never`-typed default to somehow
+              // handle a real ContentFormat member. If some future caller ever DOES reach
+              // ReaderScreen with an audio bookId (a hand-built deep link, a bug in a future
+              // catalogue-driven routing decision), this is what stands between it and a blank
+              // WebView instead of an explicit, understandable error.
               raiseError(
                 'UNSUPPORTED_FORMAT',
                 `This book is ${format} content, which this reader cannot open yet.`,
@@ -868,7 +920,7 @@ export function ReaderScreen({
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadBookmarks().then(({ bookmarks: loaded, skippedIds }) => {
+    void loadBookmarks(bookId).then(({ bookmarks: loaded, skippedIds }) => {
       if (cancelled) return;
       setBookmarks(loaded);
       setSkippedBookmarkCount(skippedIds.length);
@@ -877,7 +929,8 @@ export function ReaderScreen({
     return () => {
       cancelled = true;
     };
-  }, [isRendered]);
+    // bookId: bookmarks are now scoped to the open book (was the global BOOK_ID constant).
+  }, [isRendered, bookId]);
 
   /**
    * Tap a bookmark: dismiss the panel and `goTo` its target — the whole navigation path, already
@@ -912,9 +965,9 @@ export function ReaderScreen({
       if (position === null) return;
       const add =
         position.kind === 'page'
-          ? addCurrentPdfBookmark(position.page, name)
+          ? addCurrentPdfBookmark(bookId, position.page, name)
           : position.cfi !== null
-            ? addCurrentEpubBookmark(position.cfi, undefined, name)
+            ? addCurrentEpubBookmark(bookId, position.cfi, undefined, name)
             : null;
       if (add === null) return;
 
@@ -923,16 +976,19 @@ export function ReaderScreen({
         setSkippedBookmarkCount(skippedIds.length);
       });
     },
-    [position],
+    [position, bookId],
   );
 
   /** CALL-SITE 3: tap-to-delete, by stored id. Re-renders from the returned fresh set. */
-  const deleteBookmark = useCallback((id: string): void => {
-    void removeBookmark(id).then(({ bookmarks: fresh, skippedIds }) => {
-      setBookmarks(fresh);
-      setSkippedBookmarkCount(skippedIds.length);
-    });
-  }, []);
+  const deleteBookmark = useCallback(
+    (id: string): void => {
+      void removeBookmark(bookId, id).then(({ bookmarks: fresh, skippedIds }) => {
+        setBookmarks(fresh);
+        setSkippedBookmarkCount(skippedIds.length);
+      });
+    },
+    [bookId],
+  );
 
   /**
    * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
@@ -958,19 +1014,22 @@ export function ReaderScreen({
    * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
    * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
    */
-  const renameBookmark = useCallback((bookmark: ReaderBookmark, name?: string): void => {
-    const add =
-      bookmark.target.kind === 'page'
-        ? addCurrentPdfBookmark(bookmark.target.page, name)
-        : addCurrentEpubBookmark(bookmark.target.href, undefined, name);
+  const renameBookmark = useCallback(
+    (bookmark: ReaderBookmark, name?: string): void => {
+      const add =
+        bookmark.target.kind === 'page'
+          ? addCurrentPdfBookmark(bookId, bookmark.target.page, name)
+          : addCurrentEpubBookmark(bookId, bookmark.target.href, undefined, name);
 
-    void add
-      .then(() => removeBookmark(bookmark.id))
-      .then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
-  }, []);
+      void add
+        .then(() => removeBookmark(bookId, bookmark.id))
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        });
+    },
+    [bookId],
+  );
 
   /**
    * Jump to a typed page, or refuse without navigating.
