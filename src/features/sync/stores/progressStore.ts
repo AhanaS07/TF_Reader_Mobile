@@ -1,5 +1,5 @@
 import { getDatabase, newId, nowIso } from '../localDb/database';
-import { progressMapper } from '../localDb/mappers';
+import { parseLocator, progressMapper } from '../localDb/mappers';
 import type { Locator, ProgressRow } from '../localDb/types';
 import { BOOK_ID, USER_ID } from '../syncConfig';
 import { createSyncableTable, withWriteLock } from './syncableTable';
@@ -60,7 +60,15 @@ export const progressStore = {
         id: existing?.id ?? newId(),
         user_id: userId,
         book_id: bookId,
-        offset: locator.type === 'PDF' ? locator.page : (existing?.offset ?? 0),
+        // AUDIO has no page and must not inherit a stale/leftover offset from a prior locator on
+        // this row - see the AUDIO variant's own comment in annotations.ts. EPUB has no true
+        // offset either, but keeps the fallback: `offset` is a lower bound for it, not garbage.
+        offset:
+          locator.type === 'PDF'
+            ? locator.page
+            : locator.type === 'AUDIO'
+              ? 0
+              : (existing?.offset ?? 0),
         locator: JSON.stringify(locator),
         updated_at: nowIso(),
         is_deleted: 0,
@@ -77,12 +85,15 @@ export const progressStore = {
 
   /**
    * The stored position, preferring the Locator and falling back to `offset` for rows written
-   * before the column existed (where a PDF page is all there ever was).
+   * before the column existed (where a PDF page is all there ever was) - and for a `locator`
+   * that fails to parse as one of today's shapes, which gets the same treatment rather than
+   * handing a caller raw untyped JSON. `parseLocator` does the validation; a bare `JSON.parse`
+   * cast would trust the column's shape at compile time even though nothing enforces it on the
+   * data actually sitting in SQLite.
    */
   async currentLocator(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<Locator | null> {
     const row = await this.current(userId, bookId);
     if (!row) return null;
-    if (row.locator) return JSON.parse(row.locator) as Locator;
-    return { type: 'PDF', page: row.offset };
+    return parseLocator(row.locator) ?? { type: 'PDF', page: row.offset };
   },
 };

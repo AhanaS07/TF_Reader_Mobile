@@ -118,6 +118,13 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
     } catch (error) {
       const message =
         error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
+      // TEMP diagnostic - DownloadFailure.cause carries the real underlying detail (HTTP status,
+      // parsed FlambeauError body, or the raw fetch failure) that the Alert below never shows.
+      // Remove once the real cause is surfaced properly.
+      console.error(
+        'openBook failed:',
+        error instanceof DownloadFailure ? error.cause : error,
+      );
       Alert.alert('Cannot open book', message);
     }
   };

@@ -42,7 +42,10 @@ const stringifyJson = (value: unknown): string => JSON.stringify(value ?? null);
  * old rows keep rendering and get rewritten in the new casing the next time they are saved.
  *
  * Returns null for a locator that is corrupt or of an unknown type, so callers can decide
- * whether to skip it rather than having it silently vanish.
+ * whether to skip it rather than having it silently vanish. This is also why AUDIO is
+ * validated here (`positionMs` must actually be a number) rather than trusted with a bare
+ * cast - a locator read back off disk or off the wire is untyped JSON no matter what the
+ * `Locator` union says at compile time.
  */
 export function parseLocator(json: string | null): Locator | null {
   if (json == null) return null;
@@ -62,6 +65,11 @@ export function parseLocator(json: string | null): Locator | null {
   }
   if (type === 'EPUB' && typeof raw.cfi === 'string') {
     return { type: 'EPUB', cfi: raw.cfi };
+  }
+  if (type === 'AUDIO' && typeof raw.positionMs === 'number') {
+    return typeof raw.trackId === 'string'
+      ? { type: 'AUDIO', positionMs: raw.positionMs, trackId: raw.trackId }
+      : { type: 'AUDIO', positionMs: raw.positionMs };
   }
   return null;
 }

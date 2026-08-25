@@ -2,7 +2,7 @@
 // function. `syncConfig.ts` computes API_BASE_URL once at module load, so each scenario needs a
 // fresh module registry with `expo-constants` mocked before the import.
 
-const BACKEND_PORT = 9000;
+const BACKEND_PORT = 8080;
 
 function loadApiBaseUrl(constantsShape: Record<string, unknown>): string {
   const original = process.env.EXPO_PUBLIC_API_URL;
