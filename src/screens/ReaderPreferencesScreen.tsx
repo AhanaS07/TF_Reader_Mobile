@@ -52,6 +52,7 @@ import { color, space, type as typeScale } from '@theme/tokens';
 import { useReaderPrefs, type PrefsSource } from '@/features/personalization/useReaderPrefs';
 
 import FontSection from './ReaderPreferencesScreen.FontSection';
+import LayoutSection from './ReaderPreferencesScreen.LayoutSection';
 import ThemeSection from './ReaderPreferencesScreen.ThemeSection';
 
 const READ_FAILED_MESSAGE = "We couldn't load your reading preferences.";
@@ -60,7 +61,7 @@ const SAVE_FAILED_MESSAGE = "That change didn't save. Try again.";
 // Three bars standing in for a header and its control, at roughly the height one
 // section occupies, repeated per section so the page does not shorten when the
 // values land.
-const SKELETON_SECTIONS = ['theme', 'font'] as const;
+const SKELETON_SECTIONS = ['theme', 'font', 'layout'] as const;
 
 export interface ReaderPreferencesScreenProps {
   /**
@@ -84,6 +85,8 @@ export default function ReaderPreferencesScreen({
     saveFailed,
     onSelectTheme,
     onSelectFontFamily,
+    onSelectFlow,
+    onSelectSpread,
     onRestoreDefaults,
     onRetry,
   } = useReaderPrefs({ source: prefsSource });
@@ -131,10 +134,12 @@ export default function ReaderPreferencesScreen({
         {/* ── 2 · Font — Khushi ─────────────────────────────────────────── */}
         <FontSection family={prefs.font.family} onSelectFontFamily={onSelectFontFamily} />
 
-        {/* ── 3 · Layout — Keshav ───────────────────────────────────────────
-            Reading style (paginated / scrolled-doc) and page view (single /
-            double), from `prefs.layout`. Add the import and one line here; do
-            not edit the sections above. */}
+        {/* ── 3 · Layout — Keshav ────────────────────────────────────────── */}
+        <LayoutSection
+          layout={prefs.layout}
+          onSelectFlow={onSelectFlow}
+          onSelectSpread={onSelectSpread}
+        />
 
         {/* ── 4 · Typography — Prayas ───────────────────────────────────────
             Text size, line height, letter spacing and page margins, from

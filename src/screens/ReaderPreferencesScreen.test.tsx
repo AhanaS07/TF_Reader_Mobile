@@ -62,21 +62,22 @@ afterEach(() => {
 });
 
 describe('ReaderPreferencesScreen structure', () => {
-  it('renders the Theme and Font sections it owns', async () => {
+  it('renders Theme, Font and Layout sections', async () => {
     await renderReady(fakeSource());
 
     expect(screen.getByText('Theme')).toBeTruthy();
     expect(screen.getByText('Font')).toBeTruthy();
+    expect(screen.getByText('Reading style')).toBeTruthy();
+    expect(screen.getByText('Page view')).toBeTruthy();
   });
 
-  // Layout is Keshav's and Typography is Prayas's, and both land as their own
-  // file. This test is the honest record that they are NOT here yet — it fails
-  // the day one of them arrives, which is the point: whoever adds a section
-  // updates the screen's own contract about what it contains.
-  it('does not yet render the Layout or Typography sections', async () => {
+  // Typography is Prayas's and lands as its own file. This test is the honest
+  // record that it is NOT here yet — it fails the day it arrives, which is the
+  // point: whoever adds the section updates the screen's own contract.
+  it('renders the Layout section and not yet Typography', async () => {
     await renderReady(fakeSource());
 
-    expect(screen.queryByText('Layout')).toBeNull();
+    expect(screen.getByTestId('layout-section')).toBeTruthy();
     expect(screen.queryByText('Typography')).toBeNull();
   });
 

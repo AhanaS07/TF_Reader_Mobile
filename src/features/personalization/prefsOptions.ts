@@ -12,7 +12,7 @@
 // these arrays is therefore already the shape the control accepts, and `id` is
 // the value written to the store while `label` is the only thing on screen.
 import type { TabItem } from '@components/Tabs';
-import type { Theme } from '@/shared/contracts';
+import type { LayoutPrefs, Theme } from '@/shared/contracts';
 
 // ─── Theme ───────────────────────────────────────────────────────────────────
 
@@ -76,3 +76,20 @@ export const FONT_FAMILY_OPTIONS = [
   { id: 'Lora', label: 'Lora' },
   { id: 'Montserrat', label: 'Montserrat' },
 ] as const satisfies readonly TabItem[];
+
+// ─── Layout ──────────────────────────────────────────────────────────────────
+
+// `id` typed against the contract so a rename to the union member is a compile
+// error here instead of a silent mismatch with the epub.js rendition API.
+type FlowOption = TabItem & { id: LayoutPrefs['flow'] };
+type SpreadOption = TabItem & { id: LayoutPrefs['spread'] };
+
+export const FLOW_OPTIONS = [
+  { id: 'paginated', label: 'Paginated' },
+  { id: 'scrolled-doc', label: 'Scrolled' },
+] as const satisfies readonly FlowOption[];
+
+export const SPREAD_OPTIONS = [
+  { id: 'single', label: 'Single' },
+  { id: 'double', label: 'Double' },
+] as const satisfies readonly SpreadOption[];

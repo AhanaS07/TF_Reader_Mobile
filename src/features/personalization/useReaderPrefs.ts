@@ -56,7 +56,7 @@
 // migration to write and no stale data to clear.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { DEFAULT_PREFS, type SharedPrefs, type Theme } from '@/shared/contracts';
+import { DEFAULT_PREFS, type LayoutPrefs, type SharedPrefs, type Theme } from '@/shared/contracts';
 
 // ─── The values, without the plumbing ────────────────────────────────────────
 
@@ -181,6 +181,8 @@ export interface UseReaderPrefs {
    * contract — the reader accepts faces our picker does not list.
    */
   onSelectFontFamily: (family: string) => void;
+  onSelectFlow: (flow: LayoutPrefs['flow']) => void;
+  onSelectSpread: (spread: LayoutPrefs['spread']) => void;
   onRestoreDefaults: () => void;
   /** Re-reads after a failed read. */
   onRetry: () => void;
@@ -306,6 +308,24 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     [prefs, write],
   );
 
+  const onSelectFlow = useCallback(
+    (flow: LayoutPrefs['flow']) => {
+      if (prefs === null) return;
+      // SPREAD FIRST — same rule as onSelectFontFamily: `layout` also carries
+      // `spread`, and a patch of `{ layout: { flow } }` would drop it.
+      write({ layout: { ...prefs.layout, flow } });
+    },
+    [prefs, write],
+  );
+
+  const onSelectSpread = useCallback(
+    (spread: LayoutPrefs['spread']) => {
+      if (prefs === null) return;
+      write({ layout: { ...prefs.layout, spread } });
+    },
+    [prefs, write],
+  );
+
   const onRestoreDefaults = useCallback(() => {
     const previous = prefs;
     if (previous === null) return;
@@ -338,6 +358,8 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     saveFailed,
     onSelectTheme,
     onSelectFontFamily,
+    onSelectFlow,
+    onSelectSpread,
     onRestoreDefaults,
     onRetry,
   };
