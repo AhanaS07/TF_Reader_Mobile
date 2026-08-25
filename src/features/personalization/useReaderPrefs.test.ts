@@ -259,8 +259,26 @@ describe('useReaderPrefs typography', () => {
   // callbacks in useReaderPrefs.ts. Each field is clamped on both ends so a
   // section (or a future caller) cannot write a value the control could never
   // have produced honestly.
-  it('clamps text size to the 14-24pt preset range', async () => {
+  // A CLAMP IS NOT ENOUGH HERE — text size is six fixed presets, not a range,
+  // so a value between two presets must snap to one of them rather than pass
+  // through unchanged. Only `Tabs` can call this in practice, and it can only
+  // ever emit a preset id, but the callback stays correct for any caller.
+  it('snaps text size to the nearest preset, both in range and past either end', async () => {
     const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onSelectTextSize(20);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 20 }) }),
+    );
+
+    await act(async () => {
+      result.current.onSelectTextSize(17);
+    });
+    expect(source.savePrefs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ typography: expect.objectContaining({ size: 16 }) }),
+    );
 
     await act(async () => {
       result.current.onSelectTextSize(30);

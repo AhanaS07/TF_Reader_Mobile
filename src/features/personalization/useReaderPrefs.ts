@@ -1,30 +1,19 @@
 // src/features/personalization/useReaderPrefs.ts
-// The one seam between the reader-preferences screen and the store that will
-// eventually back it.
+// The one seam between the reader-preferences screen and `prefsStore`.
 //
 // ─── WHY THIS FILE EXISTS AT ALL ─────────────────────────────────────────────
 //
-// `prefsStore` does not exist yet — Keshav builds it Tuesday to Wednesday, and
-// `src/features/personalization/` holds nothing but a `.gitkeep` as this lands.
-// The screen is built now regardless, so it needs something to read and write
-// through. That something is `PrefsSource` below: an interface THIS file owns,
-// which the real store will satisfy structurally.
-//
-// NOTHING ABOVE THIS FILE IMPORTS THE STORE. Not the screen, not either section.
-// They call the hook, the hook calls whatever `PrefsSource` it was handed. So
-// when the store lands, the change is one argument at one call site — see
-// "WIRING THE REAL STORE" at the bottom of this comment block.
-//
-// THE STORE'S API IS NOT INVENTED HERE. The four members below are the four the
-// Week 3 plan states Keshav is building — `getPrefs`, `savePrefs`, `resetPrefs`,
-// `subscribe` — and nothing else. If his signatures differ, the fix is an
-// adapter object literal in this file, and nothing above it moves.
+// The screen never imports `prefsStore` directly. It calls this hook, and the
+// hook calls whatever `PrefsSource` it was handed — `PrefsSource` below is an
+// interface THIS file owns, which `prefsStore` satisfies structurally (same
+// four function names, same signatures, no shared base type).
 //
 // INJECTED, NOT IMPORTED, and the reason is the one `useCatalogueSearch` already
 // gives for injecting its pipeline: "so a test or a gallery entry can drive this
 // with latency, an injected failure, or a stub, without touching a process-wide
-// singleton." Every test in useReaderPrefs.test.ts is a fake source; none of
-// them touches storage.
+// singleton." Every test in useReaderPrefs.test.ts passes a fake source; none of
+// them touches AsyncStorage. The default below is the real store — see
+// `UseReaderPrefsOptions.source`.
 //
 // ─── WHAT THE HOOK GUARANTEES, SO NO SECTION HAS TO ──────────────────────────
 //
@@ -42,21 +31,13 @@
 // value moves immediately and rolls back if the write rejects, with `saveFailed`
 // raised for the screen to report. The alternative — awaiting each write — makes
 // every tap feel like a network call for data that never leaves the device.
-//
-// ─── WIRING THE REAL STORE (Keshav) ──────────────────────────────────────────
-//
-// 1. Delete `IN_MEMORY_STUB` and the `?? IN_MEMORY_STUB` fallback below.
-// 2. Make `source` required in `UseReaderPrefsOptions`, or default it to the
-//    real store: `source = prefsStore`.
-// 3. Nothing else in this file changes, and nothing outside it changes at all
-//    unless step 2 is skipped — in which case the single call site in
-//    ReaderPreferencesScreen.tsx passes the store in.
-//
-// There is deliberately no third path. The stub does not persist, so there is no
-// migration to write and no stale data to clear.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DEFAULT_PREFS, type LayoutPrefs, type SharedPrefs, type Theme } from '@/shared/contracts';
+
+import * as prefsStore from './prefsStore';
+
+import { TEXT_SIZE_OPTIONS } from './prefsOptions';
 
 // ─── The values, without the plumbing ────────────────────────────────────────
 
@@ -76,6 +57,18 @@ export type PrefsValues = Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isD
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+// Text size is not a free-range value, so a min/max clamp is not enough — a
+// clamp alone would still let 15 or 21.5 through, and the picker can never
+// produce either. The numbers come from `TEXT_SIZE_OPTIONS`, the same list
+// `TypographySection` renders, so the two cannot drift apart.
+const TEXT_SIZE_PRESETS = TEXT_SIZE_OPTIONS.map((option) => Number(option.id));
+
+function nearestTextSizePreset(size: number) {
+  return TEXT_SIZE_PRESETS.reduce((closest, preset) =>
+    Math.abs(preset - size) < Math.abs(closest - size) ? preset : closest,
+  );
 }
 
 // ─── The seam ────────────────────────────────────────────────────────────────
@@ -102,57 +95,14 @@ export interface PrefsSource {
   subscribe: (listener: (next: PrefsValues) => void) => () => void;
 }
 
-// ─── The stub ────────────────────────────────────────────────────────────────
-
-/**
- * TEMPORARY. Delete when `prefsStore` lands — see "WIRING THE REAL STORE".
- *
- * IN MEMORY AND NOWHERE ELSE. No AsyncStorage, no `zustand/persist`, no
- * `updatedAt` stamping, no sync flags. Values live in this module for the life
- * of the JS context and are gone on reload.
- *
- * THAT IS THE POINT, NOT A SHORTCUT. A stub that persisted would make the screen
- * look finished and let the missing store go unnoticed; one that forgets on
- * reload is obvious the first time anybody uses it. It exists so the screen
- * compiles, renders, and can be driven in a dev build — not so it can ship.
- *
- * It does not fail, delay, or reject. Failure paths are exercised by fake
- * sources in the tests, which is where an injected failure belongs.
- */
-const IN_MEMORY_STUB: PrefsSource = (() => {
-  let values: PrefsValues = { ...DEFAULT_PREFS };
-  const listeners = new Set<(next: PrefsValues) => void>();
-
-  const emit = () => {
-    listeners.forEach((listener) => listener(values));
-  };
-
-  return {
-    getPrefs: () => Promise.resolve(values),
-    savePrefs: (patch) => {
-      values = { ...values, ...patch };
-      emit();
-      return Promise.resolve();
-    },
-    resetPrefs: () => {
-      values = { ...DEFAULT_PREFS };
-      emit();
-      return Promise.resolve();
-    },
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
-})();
-
 // ─── The hook ────────────────────────────────────────────────────────────────
 
 export interface UseReaderPrefsOptions {
   /**
-   * The store to read and write through. Optional only while `prefsStore` does
-   * not exist; it becomes required (or defaulted to the real store) the moment
-   * it does.
+   * The store to read and write through. Defaults to the real `prefsStore`
+   * (AsyncStorage-backed, LWW on `updatedAt`) — pass a fake here only in a
+   * test or a gallery entry that needs to drive this with latency, an
+   * injected failure, or a stub, without touching real storage.
    */
   source?: PrefsSource;
 }
@@ -187,7 +137,7 @@ export interface UseReaderPrefs {
   onSelectFontFamily: (family: string) => void;
   onSelectFlow: (flow: LayoutPrefs['flow']) => void;
   onSelectSpread: (spread: LayoutPrefs['spread']) => void;
-  /** Clamped to the six fixed presets (14–24pt) before it is saved. */
+  /** Snapped to the nearest of the six fixed presets (14–24pt) before it is saved. */
   onSelectTextSize: (size: number) => void;
   /** Clamped to 1.0–2.0 before it is saved. */
   onChangeLineHeight: (lineHeight: number) => void;
@@ -209,7 +159,7 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
   // that builds one inline (`source={{ getPrefs: ... }}`) re-subscribes on every
   // render. Every real caller passes a module singleton — the store, or one fake
   // built once per test — so this is a documented requirement, not a trap.
-  const activeSource = source ?? IN_MEMORY_STUB;
+  const activeSource = source ?? prefsStore;
 
   const [prefs, setPrefs] = useState<PrefsValues | null>(null);
   const [state, setState] = useState<UseReaderPrefs['state']>('loading');
@@ -340,13 +290,16 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
 
   // THE RANGES ARE ENFORCED HERE, NOT BY THE STORE. `savePrefs` accepts any
   // number the caller hands it — the Week 3 plan is explicit that the UI is
-  // the only guard, so each Typography callback clamps before it writes rather
-  // than trusting the section (or a future caller of this hook) to have done
-  // so already.
+  // the only guard, so each Typography callback constrains its value before
+  // writing rather than trusting the section (or a future caller of this
+  // hook) to have done so already. Text size snaps to the nearest preset,
+  // because it is a fixed set rather than a range; the three sliders clamp
+  // to their min/max, because a slider's own `step` already keeps them on
+  // the grid.
   const onSelectTextSize = useCallback(
     (size: number) => {
       if (prefs === null) return;
-      write({ typography: { ...prefs.typography, size: clamp(size, 14, 24) } });
+      write({ typography: { ...prefs.typography, size: nearestTextSizePreset(size) } });
     },
     [prefs, write],
   );

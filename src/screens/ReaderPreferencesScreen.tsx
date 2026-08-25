@@ -66,13 +66,11 @@ const SKELETON_SECTIONS = ['theme', 'font', 'layout', 'typography'] as const;
 
 export interface ReaderPreferencesScreenProps {
   /**
-   * TEMPORARY SEAM, and the only reason this screen takes a prop at all.
+   * TEST SEAM, and the only reason this screen takes a prop at all.
    *
-   * `prefsStore` does not exist yet, so the hook falls back to an in-memory stub
-   * when this is absent. It is here so a test can inject a fake source — and so
-   * that wiring the real store is one argument in one place. Once
-   * `useReaderPrefs` defaults to the real store, this prop can go and the screen
-   * becomes propless like every other tab screen.
+   * `useReaderPrefs` defaults to the real `prefsStore` when this is absent, so
+   * every real navigation into this screen is propless. It is here so a test
+   * can inject a fake source instead of touching AsyncStorage.
    */
   prefsSource?: PrefsSource;
 }

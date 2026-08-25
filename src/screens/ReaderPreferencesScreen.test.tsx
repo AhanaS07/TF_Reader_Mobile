@@ -220,6 +220,24 @@ describe('ReaderPreferencesScreen typography section', () => {
     ).toBe(true);
   });
 
+  // A value from outside the six presets — another device, or a value this
+  // picker predates. Same handling as Theme's `highContrast` case.
+  it('selects nothing and explains itself when the stored text size is not a preset', async () => {
+    const source = fakeSource({
+      getPrefs: jest.fn(() =>
+        Promise.resolve({ ...STORED, typography: { ...STORED.typography, size: 15 } }),
+      ),
+    });
+    await renderReady(source);
+
+    for (const option of TEXT_SIZE_OPTIONS) {
+      expect(
+        typographySection().getByTestId(`tabs-tab-${option.id}`).props.accessibilityState.selected,
+      ).toBe(false);
+    }
+    expect(screen.getByText(/set elsewhere/i)).toBeTruthy();
+  });
+
   it('writes the picked text size through the seam, spreading the group', async () => {
     const source = fakeSource();
     await renderReady(source);

@@ -13,9 +13,9 @@
 //
 // All four exported functions match the PrefsSource interface in useReaderPrefs.ts
 // exactly: async getPrefs/savePrefs/resetPrefs and a subscribe that passes the
-// new values to its listener. This is what lets the hook swap from IN_MEMORY_STUB
-// to this store by changing one argument — see "WIRING THE REAL STORE" in the
-// hook file. That wiring happens Wednesday morning when Khushi and Prayas pull.
+// new values to its listener. `useReaderPrefs` imports this module as its
+// default `PrefsSource` — every real screen is wired to this store already;
+// only tests pass a fake source instead.
 //
 // ─── WRITES ARE SYNCHRONOUS, PROMISE WRAPPING IS FOR THE SEAM ───────────────
 //

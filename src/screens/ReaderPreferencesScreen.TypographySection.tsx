@@ -14,13 +14,17 @@
 //
 // TEXT SIZE IS SIX FIXED PRESETS, NOT A FREE SLIDER — the one point the Week 3
 // plan calls out explicitly. It uses `Tabs`, the same segmented control Theme,
-// Font and Layout already use, rather than a new one (§10).
+// Font and Layout already use, rather than a new one (§10). A stored value
+// outside the six presets is handled the same way Theme handles `highContrast`
+// and Font handles an unlisted face: nothing highlighted, plus a note saying
+// so, rather than a picker that looks broken.
 //
 // THE OTHER THREE ARE SLIDERS THAT SAVE ON RELEASE ONLY. `Slider` exposes only
 // `onSlidingComplete`, so there is no per-tick handler here to wire by mistake.
-// Clamping the value to its range happens in the hook's callbacks, not here —
-// see the note above them in useReaderPrefs.ts — so this file only forwards
-// what the control reports.
+// Constraining the value — snapping text size to its nearest preset, clamping
+// each slider to its range — happens in the hook's callbacks, not here — see
+// the note above them in useReaderPrefs.ts — so this file only forwards what
+// the control reports.
 import { StyleSheet, Text, View } from 'react-native';
 
 import { SectionHeader } from '@components/SectionHeader';
@@ -46,6 +50,15 @@ export default function TypographySection({
   onChangeLetterSpacing,
   onChangeMargins,
 }: TypographySectionProps) {
+  // A value from outside the six presets — another device, or a value this
+  // picker predates. Same handling as Theme's `highContrast` and Font's
+  // unlisted faces: `Tabs` already renders nothing active, which is honest,
+  // but a picker with no selection and no explanation reads as broken rather
+  // than as "your current size lives somewhere else."
+  const unmatchedTextSize = !TEXT_SIZE_OPTIONS.some(
+    (option) => option.id === String(typography.size),
+  );
+
   return (
     <View style={styles.section} testID="typography-section">
       <SectionHeader title="Typography" />
@@ -59,6 +72,11 @@ export default function TypographySection({
           variant="segmented"
           onChange={(id) => onSelectTextSize(Number(id))}
         />
+        {unmatchedTextSize && (
+          <Text style={styles.note}>
+            Your current text size was set elsewhere and is not one of these presets.
+          </Text>
+        )}
       </View>
 
       <View style={styles.group}>
@@ -116,6 +134,12 @@ const styles = StyleSheet.create({
   },
   group: {
     gap: space.sm,
+  },
+  note: {
+    fontWeight: typeScale.meta.weight,
+    fontSize: typeScale.meta.size,
+    lineHeight: typeScale.meta.lineHeight,
+    color: color.textSecondary,
   },
   readout: {
     fontWeight: typeScale.smallLabel.weight,
