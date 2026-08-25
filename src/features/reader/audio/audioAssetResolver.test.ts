@@ -13,15 +13,19 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { openBook } from '@/features/download/openBook';
-import { closeBook } from '@/features/encryption/contentProvider';
+import { closeBook, getMimeType } from '@/features/encryption/contentProvider';
 import { audioAssetResolver, clearAudioScratch } from '@/features/reader/audio/audioAssetResolver';
 import type { BookId } from '@/shared/contracts';
 
 jest.mock('@/features/download/openBook', () => ({ openBook: jest.fn() }));
-jest.mock('@/features/encryption/contentProvider', () => ({ closeBook: jest.fn() }));
+jest.mock('@/features/encryption/contentProvider', () => ({
+  closeBook: jest.fn(),
+  getMimeType: jest.fn(),
+}));
 
 const mockOpenBook = openBook as jest.MockedFunction<typeof openBook>;
 const mockCloseBook = closeBook as jest.MockedFunction<typeof closeBook>;
+const mockGetMimeType = getMimeType as jest.MockedFunction<typeof getMimeType>;
 
 const BOOK = 'dev-sample-audio-encrypted' as BookId;
 const OTHER_BOOK = 'some-other-audiobook' as BookId;
@@ -42,6 +46,7 @@ describe('audioAssetResolver', () => {
   beforeEach(() => {
     mockOpenBook.mockResolvedValue(wavBytes());
     mockCloseBook.mockResolvedValue(undefined);
+    mockGetMimeType.mockResolvedValue('audio/wav');
     clearAudioScratch(null);
   });
 
@@ -97,6 +102,49 @@ describe('audioAssetResolver', () => {
     expect(uri).not.toContain('tf-reader-content');
   });
 
+  it('derives the extension from the stored MIME type, not a hardcoded one', async () => {
+    mockGetMimeType.mockResolvedValue('audio/mpeg');
+
+    const uri = await audioAssetResolver.resolveAudioAssetUri(BOOK);
+
+    expect(uri).toMatch(/\.mp3$/);
+  });
+
+  it('falls back to .bin for a MIME type it does not recognise, rather than guessing', async () => {
+    mockGetMimeType.mockResolvedValue('audio/some-future-codec');
+
+    const uri = await audioAssetResolver.resolveAudioAssetUri(BOOK);
+
+    expect(uri).toMatch(/\.bin$/);
+  });
+
+  it('reads the MIME type AFTER acquiring, since a streamed book has no meta.json before that', async () => {
+    // The accessor's first call site issued both together with Promise.all. That races on the
+    // ONLINE path: getMimeType reads the persisted meta.json, which for an ephemeral package does
+    // not exist until openBook() has stored it.
+    await audioAssetResolver.resolveAudioAssetUri(BOOK);
+
+    expect(mockOpenBook.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetMimeType.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('sweeps a book\'s previous file even when the extension changed between resolves', async () => {
+    // The sweep matches on the bookId prefix, not the filename, precisely so a book re-stored under
+    // a different MIME type does not leave its old file behind. Reachable for real: the backend's
+    // catalogue says audio/wav while its grant says audio/mpeg for the same asset.
+    mockGetMimeType.mockResolvedValue('audio/wav');
+    const wavUri = await audioAssetResolver.resolveAudioAssetUri(BOOK);
+    expect(new File(wavUri).exists).toBe(true);
+
+    mockGetMimeType.mockResolvedValue('audio/mpeg');
+    const mp3Uri = await audioAssetResolver.resolveAudioAssetUri(BOOK);
+
+    expect(new File(mp3Uri).exists).toBe(true);
+    expect(new File(wavUri).exists).toBe(false);
+    expect(SCRATCH_DIR.list()).toHaveLength(1);
+  });
+
   it('propagates a licence failure instead of writing a file', async () => {
     mockOpenBook.mockRejectedValueOnce(new Error('LICENSE_DENIED'));
 
@@ -113,6 +161,7 @@ describe('audioAssetResolver — scratch directory does not accumulate', () => {
   beforeEach(() => {
     mockOpenBook.mockResolvedValue(wavBytes());
     mockCloseBook.mockResolvedValue(undefined);
+    mockGetMimeType.mockResolvedValue('audio/wav');
     clearAudioScratch(null);
   });
 

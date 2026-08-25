@@ -47,13 +47,13 @@
 //    (`<bookId>.content.bin` under its own directory). The only way this file reaches the bytes is
 //    the public `openBook()` call below. This guard is why the copy exists, and it is the reason
 //    the copy is worth its cost rather than an accident of sequencing.
-//  - A real audio extension on the returned URI, not `.bin`/octet-stream. See AUDIO_EXTENSION's
-//    own comment — it is hardcoded, that is a real limitation, and it is the one open item here.
+//  - A real audio extension on the returned URI, not `.bin`/octet-stream — derived from the stored
+//    MIME type via `ContentProvider.getMimeType()`, no longer hardcoded. See MIME_TO_EXTENSION.
 
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { openBook } from '@/features/download/openBook';
-import { closeBook } from '@/features/encryption/contentProvider';
+import { closeBook, getMimeType } from '@/features/encryption/contentProvider';
 import type { BookId } from '@/shared/contracts';
 
 /**
@@ -72,32 +72,59 @@ export interface AudioAssetResolver {
 
 const SCRATCH_DIR = new Directory(Paths.cache, 'tf-reader-audio-scratch');
 
-// HARDCODED, AND THIS IS THE OPEN ITEM IN THIS FILE — not a placeholder waiting on a contracts
-// change (that change was withdrawn; see this file's header), but a limitation with no owner yet.
+// DERIVED FROM THE STORED MIME TYPE, not hardcoded — closed 2026-08-25 by Abhinav's
+// `ContentProvider.getMimeType()`, which reads `PersistedMeta.mimeType` (set at store() time by the
+// download pass). This file used to assert `wav` because no accessor existed and the alternatives
+// were sniffing magic bytes or guessing contentStore's private layout, both of which it refuses to
+// do. There is now a real source of truth, so it asks.
 //
-// Every audio package this serves today is WAV: the backend's `dev-sample-audio-encrypted` carries
-// `mimeType: "audio/wav"` on its asset and resolves to `sample-small.wav.enc`, and nothing else
-// supplies audio. Neither `openBook()` nor `ContentProvider` hands back a mimeType alongside the
-// bytes, so there is no source of truth this function can read a container from — and sniffing
-// magic bytes, or guessing contentStore's private layout, are both things this file deliberately
-// does not do. So the extension is asserted rather than derived.
+// Audio callers need a real extension for OS-level media handling (share sheets, file pickers,
+// debug tools) — expo-audio's own decoders sniff the container header, but those tools trust the
+// extension. Falls back to 'bin' for an unmapped type rather than guessing.
 //
-// A teammate is adding a mimeType accessor; this is deliberately NOT worked around here in the
-// meantime. Note the backend has its own inconsistency waiting on the other side of it: the
-// catalogue asset says `audio/wav` while the grant's `mimeTypeFor()` hardcodes `audio/mpeg` for
-// AUDIO, so whoever wires the accessor must decide which one is authoritative
-// (AUDIO_ENCRYPTION_RECON.md tracks it).
-//
-// WHAT BREAKS, CONCRETELY: the first mp3 or AAC audiobook to reach this function is written out as
-// `.wav`. expo-audio's decoders sniff the container and are expected to play it anyway, so this is
-// likely cosmetic — but "likely" is doing real work in that sentence and nothing has tested it.
-// The fix is a mimeType accessor on ContentProvider (`PersistedMeta` already carries `mimeType`,
-// so the data exists and is one small additive method away — Encryption's call, not Reader's).
-// Worth doing before any non-WAV audio ships; not worth doing before then.
-const AUDIO_EXTENSION = 'wav';
+// WORTH KNOWING WHICH VALUE ARRIVES: the backend's catalogue asset for the audio fixture says
+// `audio/wav`, but its grant's `mimeTypeFor()` hardcodes `audio/mpeg` for AUDIO — so a downloaded
+// book may be stored with either, and the same bytes can land as `.wav` or `.mp3`. That mismatch is
+// the backend's (tracked in AUDIO_ENCRYPTION_RECON.md); this table maps both to something sane, and
+// nothing here depends on which one wins, because the sweep matches on bookId rather than filename.
+const MIME_TO_EXTENSION: Record<string, string> = {
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/aac': 'm4a',
+  'audio/ogg': 'ogg',
+  'audio/flac': 'flac',
+  'audio/webm': 'weba',
+  'application/octet-stream': 'bin',
+};
 
-function scratchFileFor(bookId: BookId): File {
-  return new File(SCRATCH_DIR, `${encodeURIComponent(bookId)}.${AUDIO_EXTENSION}`);
+function extensionForMimeType(mimeType: string): string {
+  return MIME_TO_EXTENSION[mimeType] ?? 'bin';
+}
+
+/**
+ * The filename prefix every scratch file for `bookId` shares, whatever its extension.
+ *
+ * THE EXTENSION IS NO LONGER KNOWABLE WITHOUT AN ASYNC LOOKUP, which is what makes this necessary:
+ * the sweep and the targeted delete below both have to identify "this book's file" and neither can
+ * await `getMimeType()` — one runs from a synchronous app-state handler, and both must keep working
+ * for a book whose stored package has already been destroyed (the case the delete exists for).
+ * Matching on the bookId prefix answers the question without needing the mime type at all, and it
+ * cleans up correctly if a book is ever re-stored under a different type — the stale `.wav` beside a
+ * new `.mp3` is still that book's file.
+ */
+function scratchNamePrefix(bookId: BookId): string {
+  return `${encodeURIComponent(bookId)}.`;
+}
+
+/** Last path segment of a file:// URI — the filename, for prefix matching against the above. */
+function fileNameOf(uri: string): string {
+  return uri.slice(uri.lastIndexOf('/') + 1);
+}
+
+function scratchFileFor(bookId: BookId, extension: string): File {
+  return new File(SCRATCH_DIR, `${scratchNamePrefix(bookId)}${extension}`);
 }
 
 /**
@@ -122,10 +149,23 @@ function scratchFileFor(bookId: BookId): File {
  * regardless (revocation). See each call site.
  */
 export function clearAudioScratch(exceptBookId: BookId | null): void {
+  const keepPrefix = exceptBookId === null ? null : scratchNamePrefix(exceptBookId);
+  deleteScratchEntries((name) => keepPrefix !== null && name.startsWith(keepPrefix));
+}
+
+/**
+ * Deletes everything in the scratch directory except the entries `keep` approves, by filename.
+ *
+ * The three callers want three different notions of "this book's file", which is why the predicate
+ * is a parameter rather than a bookId: the app-state sweep keeps a whole book's prefix (it cannot
+ * know the extension without an async lookup), the targeted delete removes a whole prefix, and the
+ * resolve path keeps exactly ONE filename — sparing the prefix there would leave a stale `.wav`
+ * beside a newly-written `.mp3` for the same book.
+ */
+function deleteScratchEntries(keep: (fileName: string) => boolean): void {
   if (!SCRATCH_DIR.exists) return;
-  const keepUri = exceptBookId === null ? null : scratchFileFor(exceptBookId).uri;
   for (const entry of SCRATCH_DIR.list()) {
-    if (entry.uri !== keepUri) {
+    if (!keep(fileNameOf(entry.uri))) {
       entry.delete();
     }
   }
@@ -142,10 +182,8 @@ export function clearAudioScratch(exceptBookId: BookId | null): void {
  * belongs to the player, not to a file sweep; see audioScratchReclaimer.ts's note on it.
  */
 export function deleteAudioScratchFor(bookId: BookId): void {
-  const file = scratchFileFor(bookId);
-  if (file.exists) {
-    file.delete();
-  }
+  const prefix = scratchNamePrefix(bookId);
+  deleteScratchEntries((name) => !name.startsWith(prefix));
 }
 
 /**
@@ -176,7 +214,6 @@ export function deleteAudioScratchFor(bookId: BookId): void {
  *     that would have to change first if full-length audiobooks ever come into scope — see
  *     AUDIO_PLAYER_DECISION.md Part 2, which records why the alternative was withdrawn and what
  *     would have to be true to revive it.
- *  4. A HARDCODED EXTENSION — see AUDIO_EXTENSION's own comment.
  *
  * CLOSES THE SESSION IMMEDIATELY AFTER WRITING, deliberately, rather than leaving it open for
  * some later caller to close: once the scratch file exists, this function has no further use for
@@ -203,7 +240,14 @@ async function resolveAudioAssetUri(bookId: BookId): Promise<string> {
   // where the process was killed and relaunched.
   const bytes = await openBook(bookId, 'AUDIO');
 
-  const file = scratchFileFor(bookId);
+  // AFTER openBook(), not alongside it. `getMimeType()` reads the persisted meta.json, which for a
+  // STREAMED book does not exist until openBook() has stored the ephemeral package — so issuing
+  // both together (as the accessor's first call site did, with Promise.all) would race, and lose,
+  // on the online path. Sequential is also nearly free here: this is a small metadata read next to
+  // a whole-book decrypt.
+  const extension = extensionForMimeType(await getMimeType(bookId));
+
+  const file = scratchFileFor(bookId, extension);
   if (!SCRATCH_DIR.exists) {
     SCRATCH_DIR.create({ intermediates: true });
   }
@@ -211,7 +255,9 @@ async function resolveAudioAssetUri(bookId: BookId): Promise<string> {
   // Safe against a still-playing outgoing book by construction, not by luck: AudioPlayerScreen
   // calls getAudioPlayerFor() during RENDER, which releases the previous book's player, and only
   // then does its effect call this function.
-  clearAudioScratch(bookId);
+  // Spares exactly THIS file, not the whole bookId prefix: a book re-stored under a different MIME
+  // type writes a new extension, and sparing the prefix would leave the old one behind.
+  deleteScratchEntries((name) => name === fileNameOf(file.uri));
   if (file.exists) {
     file.delete();
   }

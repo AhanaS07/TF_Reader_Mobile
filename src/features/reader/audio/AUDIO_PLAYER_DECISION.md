@@ -280,11 +280,13 @@ someone-else's-proposal problems, and they should be read that way:
   singleton and clearing the lock-screen card — a product decision about cutting someone off
   mid-sentence, and `offline-lock.ts` is explicit that Sync's signals are advisory. Recorded, not
   fixed.
-- **The extension is hardcoded to `wav`.** See `AUDIO_EXTENSION` in `audioAssetResolver.ts`. The
-  withdrawn proposal would have carried `mimeType` along with the path; without it, the first
-  non-WAV audiobook is written out under the wrong extension. Probably cosmetic — expo-audio's
-  decoders sniff the container — but untested, and the honest fix (a `mimeType` accessor on
-  `ContentProvider`) is small and additive whenever it is wanted.
+- ~~**The extension is hardcoded to `wav`.**~~ **Fixed 2026-08-25 by Abhinav**, with exactly the
+  accessor this predicted: `ContentProvider.getMimeType()` reads `PersistedMeta.mimeType`, and
+  `MIME_TO_EXTENSION` in `audioAssetResolver.ts` maps it, falling back to `.bin` rather than
+  guessing. Two things had to change on merge: the mime read moved to AFTER `openBook()` (a streamed
+  book has no `meta.json` until the ephemeral package is stored, so issuing both together races and
+  loses on the online path), and the scratch sweep now matches on the bookId prefix rather than a
+  fixed filename, so a book re-stored under a different type does not leave its old file behind.
 
 ---
 

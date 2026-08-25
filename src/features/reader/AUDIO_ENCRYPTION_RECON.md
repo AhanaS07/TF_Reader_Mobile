@@ -144,6 +144,12 @@ decrypted file outliving the licence that authorised it.
 - ✅ **`AUDIO` grant returned an EPUB** — `resolveFixture` has a real `case AUDIO`.
 - ✅ **Backend audio work unmerged** — merged to `main` (`225230e`).
 - ✅ **Encrypted audio unreachable** — catalogue item seeded, SUBSCRIPTION, id matches the client's.
+- ✅ **Client-side hardcoded `.wav` extension** — closed by Abhinav's `ContentProvider.getMimeType()`
+  (PR #85); the resolver derives the extension from the stored MIME type via `MIME_TO_EXTENSION`.
+  **The BACKEND half is still open and is not ours:** the catalogue asset says `audio/wav` while the
+  grant's `mimeTypeFor()` hardcodes `audio/mpeg` for AUDIO, so the same bytes can be stored under
+  either. The client maps both to something sane and the sweep matches on bookId rather than
+  filename, so nothing breaks either way — but the backend still contradicts itself.
 - ✅ **Audio never touches the backend** (was #1) — `audioAssetResolver` now acquires through
   `openBook(bookId, 'AUDIO')`, the same licence gate EPUB/PDF use, which serves the streaming and
   the downloaded path in one call. The audio dev seed, its WAV fixture and its generator are
@@ -174,11 +180,10 @@ decrypted file outliving the licence that authorised it.
 | 2 | 🟡 **Delete-after-open REJECTED for Android** — unlinking the scratch file once the player holds a descriptor would cut exposure to milliseconds, but media3's `FileDataSource` reopens **by path** on every unbuffered seek, so seek breaks. iOS (AVURLAsset) looks fine. **Source-analysis only — the device test was not run.** Full reasoning + the retest recipe in `AUDIO_PLAYER_DECISION.md` Part 4 | library architecture, not our code | Reader, if revisited |
 | 3 | 🟡 **iOS `NSFileProtectionComplete` not applied** — `expo-file-system`'s new File/Directory API exposes no file-attribute surface; would need a native call, which is out of scope. Default is `CompleteUntilFirstUserAuthentication` | library gap | documented, not fixed |
 | 4 | 🔴 `closeBook()` is terminal for an `openBook`-acquired audiobook | CLAUDE.md open item 1, new route | **Abhinav** |
-| 5 | 🟡 **Backend contradicts itself on mime type** — the catalogue asset says `"mimeType": "audio/wav"` (correct), but `mimeTypeFor()` hardcodes `case AUDIO -> "audio/mpeg"`, so the grant advertises MP3 for WAV bytes | grant switches on format instead of reading the asset | **backend**; client-side `AUDIO_EXTENSION` is the mirror of it |
-| 6 | 🟡 **No automated test exercises the REAL encrypted audio path** — `audioAssetResolver.test.ts` mocks `openBook`, so fetch → unwrap → decrypt → play is only ever proven by hand. Inherent to needing a live backend and a device keypair; the manual steps are in `AUDIO_PLAYER_DECISION.md` Part 3 | was "nothing references `audioEncrypted`", which is now deleted | Reader |
-| 7 | 🟡 stale "audio is never encrypted" claims | Reader-owned ones are now **all corrected** (`readerAssets.ts`, `readerBridge.ts`, `audioAssetResolver.ts`, `devContentSeed.ts`, `AUDIO_PLAYER_DECISION.md`). What remains is outside Reader: `primitives.ts:25` and `reading-session.ts:60` are **frozen**, and `downloadManager.ts:263` ("both contracts agree audio is never encrypted regardless of tier") + `contentStore.ts:482` ("open access / audio: already plaintext") are Abhinav's | Reader ✅; the rest → **Abhinav** |
-| 8 | 🟡 `MAX_DECRYPTED_BYTES` mis-cited — encrypted audio still gets `MAX_AUDIO_DECRYPTED_BYTES` (20 MB), not 25 MB; `maxDecryptedBytesFor` keys off **format** (`contentStore.ts:74`) | | one-word fix, both repos |
-| 9 | 🟡 Encrypted-audio memory unmeasured | `AUDIO_MEMORY_REPORT.md` measured the **plaintext** path (2 copies, ~+40 MB). Encrypted audio takes the EPUB/PDF decrypt path — CLAUDE.md open item 2 puts that at ~6 copies, order ~120 MB transient at the cap | Reader |
+| 5 | 🟡 **No automated test exercises the REAL encrypted audio path** — `audioAssetResolver.test.ts` mocks `openBook`, so fetch → unwrap → decrypt → play is only ever proven by hand. Inherent to needing a live backend and a device keypair; the manual steps are in `AUDIO_PLAYER_DECISION.md` Part 3 | was "nothing references `audioEncrypted`", which is now deleted | Reader |
+| 6 | 🟡 stale "audio is never encrypted" claims | Reader-owned ones are now **all corrected** (`readerAssets.ts`, `readerBridge.ts`, `audioAssetResolver.ts`, `devContentSeed.ts`, `AUDIO_PLAYER_DECISION.md`). What remains is outside Reader: `primitives.ts:25` and `reading-session.ts:60` are **frozen**, and `downloadManager.ts:263` ("both contracts agree audio is never encrypted regardless of tier") + `contentStore.ts:482` ("open access / audio: already plaintext") are Abhinav's | Reader ✅; the rest → **Abhinav** |
+| 7 | 🟡 `MAX_DECRYPTED_BYTES` mis-cited — encrypted audio still gets `MAX_AUDIO_DECRYPTED_BYTES` (20 MB), not 25 MB; `maxDecryptedBytesFor` keys off **format** (`contentStore.ts:74`) | | one-word fix, both repos |
+| 8 | 🟡 Encrypted-audio memory unmeasured | `AUDIO_MEMORY_REPORT.md` measured the **plaintext** path (2 copies, ~+40 MB). Encrypted audio takes the EPUB/PDF decrypt path — CLAUDE.md open item 2 puts that at ~6 copies, order ~120 MB transient at the cap | Reader |
 
 ### Not issues
 Memory headroom (closed by the 20 MB cap). `contentStore` decrypt (already format-blind).
