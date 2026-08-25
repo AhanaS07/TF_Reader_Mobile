@@ -14,32 +14,30 @@
 // split is what makes this component testable without navigation test scaffolding, same reason
 // ReaderScreen.test.tsx doesn't need one either.
 //
-// OWN SEEDING STEP, MIRRORING readerAssets.ts's prepareBook/getBookBase64 — NOT inherited from
-// ReaderScreen. Since BookListScreen now routes AUDIO here instead of into the WebView reader (see
-// that file's onPress), ReaderScreen's own ensureSeeded() call never runs for an audio book
-// anymore. audioAssetResolver.resolveAudioAssetUri() requires the book to already be stored
-// (openSession throws DECRYPTION_FAILED otherwise) — so this screen calls ensureSeeded() itself,
-// the same TEMPORARY stand-in readerAssets.ts already depends on, before ever calling the
-// resolver. It goes away on the same day devContentSeed.ts does (CLAUDE.md's scaffolding table),
-// not before.
+// NO SEEDING STEP, AND NO ACQUISITION STEP EITHER. This screen used to call `ensureSeeded()` before
+// resolving, because the resolver assumed the book was already stored. It is not that any more: the
+// audio dev seed was deleted on 2026-08-25 and `audioAssetResolver` acquires from the backend
+// itself, through `openBook()` — the same licence gate `BookListScreen` runs for EPUB/PDF, serving
+// the downloaded and the streaming cases through one call. Everything this screen has to know about
+// that is contained in "await a URI, or render the error".
 //
 // RESOLVER, NOT A BUNDLED ASSET — this is the one thing that makes this the REAL player rather
 // than a rerun of Phase 2's smoke test. No require(), no contentStore import, no aesGcm: this file
 // depends on the audioAssetResolver.AudioAssetResolver INTERFACE only (see that file's own header
-// on why), so swapping the stopgap for the Contracts-Gate accessor later is a wiring change in
-// audioAssetResolver.ts alone.
+// on why), so how a URI gets produced can change without this file changing — a property already
+// proven once, when the player library was swapped underneath it (AUDIO_PLAYER_DECISION.md Part 1).
+// A wiring change in audioAssetResolver.ts alone.
 //
 // FORMAT-AGNOSTIC ON PURPOSE: nothing here assumes WAV. The resolved `file://` URI's container is
-// whatever audioAssetResolver.ts decided (today: always .wav, a KNOWN, already-documented stopgap
-// limitation — see that file's STOPGAP_AUDIO_EXTENSION comment). expo-audio's native decoders
-// handle mp3/AAC/wav identically from this file's point of view.
+// whatever audioAssetResolver.ts decided (today: always .wav, a KNOWN limitation documented at that
+// file's AUDIO_EXTENSION constant). expo-audio's native decoders handle mp3/AAC/wav identically from
+// this file's point of view.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { ensureSeeded } from '@/features/reader/devContentSeed';
 import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
@@ -157,8 +155,10 @@ export function AudioPlayerScreen({
         // audio-mode call must not turn into "couldn't load this audiobook" when playback itself
         // would still work.
         await ensureAudioModeConfigured().catch(() => undefined);
-        // TEMPORARY stand-in for Download's real pass — see this file's own header note.
-        await ensureSeeded(bookId);
+        // NO ensureSeeded() ANY MORE. The audio dev seed was deleted on 2026-08-25; the resolver
+        // acquires from the backend through openBook() instead, which serves the downloaded and the
+        // streaming cases alike. That call is also the licence gate, so a revoked or unentitled
+        // audiobook now fails HERE, into `loadError` below, rather than playing from a local seed.
         const resolvedUri = await audioAssetResolver.resolveAudioAssetUri(bookId);
         if (!cancelled) setUri(resolvedUri);
       } catch (error) {

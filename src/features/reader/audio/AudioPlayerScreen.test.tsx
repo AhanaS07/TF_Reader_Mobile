@@ -4,9 +4,9 @@
 // error, and loaded states), transport wiring (play/pause, skip ±15s, speed), and the lock-screen/
 // position-change side effects — against a fully controllable fake player, not the generic
 // "proves reachable" root mock (__mocks__/expo-audio.js) that file's own header says is NOT meant
-// to prove correctness. ensureSeeded/audioAssetResolver/audioPlayerInstance are mocked too — this
+// to prove correctness. audioAssetResolver/audioPlayerInstance are mocked too — this
 // is a unit test of AudioPlayerScreen's own wiring, not of the acquisition path
-// (devContentSeed.audio.test.ts and audioAssetResolver.test.ts already cover that, for real,
+// (audioAssetResolver.test.ts already covers that, for real,
 // against real contentStore/file I/O).
 //
 // audioPlayerInstance.getAudioPlayerFor IS MOCKED, NOT expo-audio's useAudioPlayer — a REAL-DEVICE
@@ -34,7 +34,6 @@ import { AudioPlayerScreen } from './AudioPlayerScreen';
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception — see ReaderRouteScreen.test.tsx
 // for the same convention.
-const mockEnsureSeeded = jest.fn();
 const mockResolveAudioAssetUri = jest.fn();
 let mockIsNewAudioPlayer = true;
 
@@ -68,9 +67,6 @@ const mockFakePlayer = {
   remove: jest.fn(),
 };
 
-jest.mock('@/features/reader/devContentSeed', () => ({
-  ensureSeeded: (...args: unknown[]) => mockEnsureSeeded(...args),
-}));
 
 jest.mock('./audioAssetResolver', () => ({
   audioAssetResolver: {
@@ -109,7 +105,6 @@ describe('AudioPlayerScreen', () => {
     // a mid-test re-render step (see this file's header).
     fakePlayer.isLoaded = true;
     fakePlayer.playbackRate = 1;
-    mockEnsureSeeded.mockResolvedValue(undefined);
     mockResolveAudioAssetUri.mockResolvedValue('file:///tf-reader-audio-scratch/book.wav');
   });
 
@@ -125,16 +120,20 @@ describe('AudioPlayerScreen', () => {
     await waitFor(() => expect(getByText('Loading My Audiobook…')).toBeTruthy());
   });
 
-  it('shows an error state, not a blank screen, when ensureSeeded rejects', async () => {
-    mockEnsureSeeded.mockRejectedValue(new Error('DECRYPTION_FAILED for dev-sample-audio'));
+  it('shows an error state, not a blank screen, when acquisition is refused', async () => {
+    // The resolver runs openBook() — the licence gate — so an unentitled or revoked audiobook now
+    // fails HERE rather than playing from a local seed. This screen's job is to render that refusal
+    // instead of a silent blank player.
+    mockResolveAudioAssetUri.mockRejectedValue(
+      new Error('LICENSE_DENIED for dev-sample-audio-encrypted'),
+    );
 
     const { getByText } = await render(
-      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+      <AudioPlayerScreen bookId="dev-sample-audio-encrypted" title="My Audiobook" />,
     );
 
     await waitFor(() => expect(getByText("Couldn't load this audiobook")).toBeTruthy());
-    expect(getByText('DECRYPTION_FAILED for dev-sample-audio')).toBeTruthy();
-    expect(mockResolveAudioAssetUri).not.toHaveBeenCalled();
+    expect(getByText('LICENSE_DENIED for dev-sample-audio-encrypted')).toBeTruthy();
   });
 
   it('shows an error state when the resolver itself rejects', async () => {
@@ -147,14 +146,14 @@ describe('AudioPlayerScreen', () => {
     await waitFor(() => expect(getByText('resolver exploded')).toBeTruthy());
   });
 
-  it('seeds then resolves via audioAssetResolver, never a bundled require()', async () => {
-    await render(<AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />);
+  it('resolves via audioAssetResolver alone — no seeding step, never a bundled require()', async () => {
+    // There used to be an ensureSeeded() call before this one. The audio dev seed is gone; the
+    // resolver acquires from the backend itself, so this screen has exactly one dependency for
+    // getting playable bytes and no ordering constraint to get wrong.
+    await render(<AudioPlayerScreen bookId="dev-sample-audio-encrypted" title="My Audiobook" />);
 
-    await waitFor(() => expect(mockResolveAudioAssetUri).toHaveBeenCalledWith('dev-sample-audio'));
-    expect(mockEnsureSeeded).toHaveBeenCalledWith('dev-sample-audio');
-    // Order matters: resolveAudioAssetUri requires the book to already be stored.
-    expect(mockEnsureSeeded.mock.invocationCallOrder[0]).toBeLessThan(
-      mockResolveAudioAssetUri.mock.invocationCallOrder[0],
+    await waitFor(() =>
+      expect(mockResolveAudioAssetUri).toHaveBeenCalledWith('dev-sample-audio-encrypted'),
     );
   });
 

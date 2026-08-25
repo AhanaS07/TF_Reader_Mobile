@@ -86,6 +86,8 @@ jest.mock('../encryption/contentStore', () => ({
     destroy: jest.fn().mockResolvedValue(undefined),
   },
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
+  MAX_AUDIO_DECRYPTED_BYTES: 20 * 1024 * 1024,
+  maxDecryptedBytesFor: (format: string) => (format === 'AUDIO' ? 20 * 1024 * 1024 : 25 * 1024 * 1024),
 }));
 
 jest.mock('./licenseCheck', () => ({

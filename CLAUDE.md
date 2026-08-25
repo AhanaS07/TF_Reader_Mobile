@@ -177,6 +177,13 @@ that file's design — but it is a shared mock, so it is recorded here rather th
 halves arrived on separate branches and collided on rebase; the resolution keeps every passthrough
 and names both consumers, because the next such edit will collide the same way.
 
+`__mocks__/expo-file-system.js` gained `Directory.list()` on 2026-08-25, for
+`audioAssetResolver.ts`'s scratch-directory sweep. Same rules as the mock above and the same reason
+for recording it here: it is shared (`contentStore.ts` is its other consumer). It mirrors the real
+`Directory.list()` including the part that matters — it **throws** when the directory does not
+exist, rather than returning `[]`, so a caller that stops guarding on `.exists` fails in the test
+run instead of silently passing.
+
 ### Known open items — both are Abhinav's call
 
 This list used to have four. **The stale keychain-cached BEK is fixed:** `store()` now clears the
