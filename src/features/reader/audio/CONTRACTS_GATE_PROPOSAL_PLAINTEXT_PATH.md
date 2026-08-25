@@ -5,6 +5,10 @@ Abhinav and Contracts-Gate, not something already agreed. Nothing in `src/shared
 been touched to produce this; the diffs below are proposed, not applied.
 
 **Author:** Ahana (Reader), AUDIO_PHASE0_FINDINGS.md / Phase 1.
+**Reframed 2026-08-25** after AUDIO PHASE 5's measurements (`AUDIO_MEMORY_REPORT.md`). §1 used to
+argue efficiency. It was measured, and efficiency turned out to be the *weakest* argument for this
+change — the real one is that audiobooks cannot ship without it. Everything technical below (§2–§6)
+is unchanged except for one correction in §3 that the same measurement forced.
 **Touches:** `src/shared/contracts/content-provider.ts` (frozen), `src/shared/contracts/errors.ts`
 (frozen, co-owned Reader+Encryption already), `src/shared/contracts/__typecheck__.ts` (canary),
 and — once the contract shape is agreed — `src/features/encryption/contentStore.ts` and
@@ -12,19 +16,88 @@ and — once the contract shape is agreed — `src/features/encryption/contentSt
 
 ---
 
-## 1. Problem
+## 1. Problem — this is a gating dependency, not an efficiency win
 
-Phase 0 (`AUDIO_PHASE0_FINDINGS.md`, §2) established: `ContentProvider` exposes exactly one method,
-`getBook(bookId): Promise<Bytes>` — whole-book bytes in RAM. `contentStore.ts` DOES write a real
-plaintext file to disk for never-encrypted content (`contentFile(bookId)`, in its own directory),
-but nothing in the frozen contract exposes that path. A native audio player needs a `file://` URI,
-not a `Uint8Array`.
+**Without this change, this app cannot play an audiobook longer than about 26 minutes. Real
+audiobooks are 8–15 hours.** That is the argument. Everything else in this section is detail.
 
-Phase 1's stopgap (`src/features/reader/audio/audioAssetResolver.ts`) works around this entirely
-within Reader's own scope: call `getBook()`, write a second copy to a Reader-owned scratch file,
-return its URI. It works, but it is explicitly a bridge, not the design — it duplicates a file that
-already exists on disk and pays a whole-file RAM copy for a format that never needed one. This
-proposal is the fix that removes both costs.
+### The mechanism, measured
+
+`ContentProvider` exposes exactly one method, `getBook(bookId): Promise<Bytes>` — whole-book bytes in
+RAM. Loading a whole book into a `Uint8Array` is precisely the operation `MAX_DECRYPTED_BYTES`
+(`contentStore.ts:41`, **25 MB**) exists to bound, and that cap is **format-blind**:
+
+| Check | Where | Applies to audio? |
+| --- | --- | --- |
+| `parsed.originalLength > MAX_DECRYPTED_BYTES` | `contentStore.ts:275` (`loadPersisted`, cold read) | **yes** |
+| `pkg.originalLength > MAX_DECRYPTED_BYTES` | `contentStore.ts:409` | **yes** — checked *before* the `if (!pkg.encryption)` audio branch at `:418` |
+| `plaintext.length > MAX_DECRYPTED_BYTES` | `contentStore.ts:439` | **yes** |
+
+Nothing exempts never-encrypted content. So every route into `getBook` refuses a book over 25 MB —
+and the stopgap resolver's only way to obtain bytes *is* `getBook`.
+
+Measured against real packages (AUDIO PHASE 5, reproducible byte-identically across three runs):
+
+```
+150 MB audio package -> getBook()
+  ContentFailure(DECRYPTION_FAILED):
+  "book is 157286400 bytes, exceeds the 26214400-byte RAM budget"
+```
+
+25 MB is roughly **26 minutes** of 128 kbps audio, or ~52 minutes at 64 kbps mono. Against an 8–15
+hour audiobook that is one to two orders of magnitude short.
+
+### Why the accessor fixes it, rather than merely improving it
+
+`getPlaintextPath` returns a path. It never constructs a whole-book `Uint8Array`, so **it is not
+subject to `MAX_DECRYPTED_BYTES` at all** — not because it is exempted, but because the cap bounds an
+operation it does not perform. A 2 GB audiobook costs the same as a 2 MB one: a metadata read and a
+string.
+
+This is why the change is a *gating dependency*. There is no version of the stopgap, however
+optimised, that plays a 10-hour audiobook. Raising the cap is not the alternative either: the cap is
+correct for what it guards, and widening it to 2 GB to accommodate audio would remove a real
+protection from EPUB/PDF to solve a problem audio should never have had.
+
+### What this section used to say, and why it undersold the ask
+
+The original framing: the stopgap "duplicates a file that already exists on disk and pays a
+whole-file RAM copy for a format that never needed one." Both true. Both now measured — and small:
+
+| | Measured |
+| --- | --- |
+| Resolve-step JS-heap spike, at the 25 MB ceiling | **+50 MB, transient** (2 full-size copies) |
+| Retained after GC | **+0.0 MB** |
+| Sustained-playback JS heap | **+0.0 MB** (the player holds a 126-byte URI string) |
+
+50 MB transient on a path with no WebView is immaterial. **Had efficiency been the only argument,
+this measurement would have argued for closing this proposal, not advancing it.** It is recorded here
+so the Gate does not re-derive it and reach that conclusion by looking at only half the picture.
+
+### The write/read asymmetry — a second defect the same accessor resolves
+
+The cap is enforced on the **read** path only. The **write** path has no equivalent check. Measured:
+
+| Step, 150 MB audio package | Result |
+| --- | --- |
+| `contentStore.store()` | **ACCEPTED** — writes all 150 MB to disk |
+| `contentStore.isAvailableOffline()` | **`true`** |
+| `getBook()` / the resolver | `DECRYPTION_FAILED`, *"exceeds the ... RAM budget"* |
+
+So the user-visible behaviour today, for any real audiobook, is: it downloads to completion, occupies
+150 MB of disk, reports itself available offline, and then **fails to play — permanently — with a
+decryption error, for content that was never encrypted.** Every word of that error is wrong about
+what happened.
+
+This is a defect in the current contract surface and it is **Abhinav's area, flagged not fixed**. Two
+things follow:
+
+1. It should be decided independently of this proposal — `store()` accepting what the read path will
+   always refuse is a trap for every format, not only audio. Failing at `store()` costs the same and
+   tells the truth when it is knowable.
+2. **The accessor resolves it as a side effect** for the audio case, which is the relevant point
+   here: with `getPlaintextPath` there is no size at which the read path refuses what the write path
+   accepted, so the two stop disagreeing.
 
 ## 2. What's being asked for
 
@@ -96,25 +169,45 @@ What the design DOES get from types:
    ```ts
    // src/features/encryption/contentStore.ts (implementation, once 3a/3b below are agreed)
    async function getPlaintextPath(bookId: BookId): Promise<string> {
-     const pkg = resolvePackage(bookId);
-     if (!pkg) {
-       throw new ContentFailure(ContentError.DECRYPTION_FAILED, bookId,
-         new Error('no stored package for this book — call store() first'));
-     }
-     if (pkg.encryption !== null) {
-       throw new ContentFailure(ContentError.NOT_PLAINTEXT, bookId,
-         new Error('getPlaintextPath is for never-encrypted content only — this package is encrypted'));
-     }
-     if (isElite(pkg)) {
+     // METADATA ONLY — deliberately NOT resolvePackage(). See the note below this block.
+     const cached = packageCache.get(bookId);
+     if (cached && isElite(cached)) {
        throw new ContentFailure(ContentError.NOT_PLAINTEXT, bookId,
          new Error('Elite content has no on-disk copy to return a path to'));
      }
-     if (isLicenceExpired(pkg)) {
+
+     const meta = metaFile(bookId);
+     if (!meta.exists) {
+       throw new ContentFailure(ContentError.DECRYPTION_FAILED, bookId,
+         new Error('no stored package for this book — call store() first'));
+     }
+     const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+
+     if (parsed.encryption !== null) {
+       throw new ContentFailure(ContentError.NOT_PLAINTEXT, bookId,
+         new Error('getPlaintextPath is for never-encrypted content only — this package is encrypted'));
+     }
+     if (isLicenceExpired(parsed)) {
        throw new ContentFailure(ContentError.LICENCE_EXPIRED, bookId);
      }
      return contentFile(bookId).uri; // the SAME path store() already wrote to — no new file
    }
    ```
+
+   > **CORRECTION, 2026-08-25 — this sketch previously called `resolvePackage(bookId)` and that
+   > would have defeated the entire proposal.** `resolvePackage` falls through to `loadPersisted`
+   > on any cold read (`contentStore.ts:302`), and `loadPersisted` throws
+   > `DECRYPTION_FAILED` for `originalLength > MAX_DECRYPTED_BYTES` at `contentStore.ts:275` —
+   > *before* it reads any bytes. An accessor built on `resolvePackage` would therefore still refuse
+   > every book over 25 MB, i.e. still refuse every real audiobook, while appearing to solve the
+   > problem. Reading `metaFile` directly avoids the cap because it avoids the operation the cap
+   > guards.
+   >
+   > This is worth stating loudly for the implementation: **`getPlaintextPath` must not route through
+   > `resolvePackage`, `loadPersisted`, or `openSession`.** Every guard it needs — `encryption`,
+   > `licence`, `format`, `mimeType` — is already in `PersistedMeta` (`contentStore.ts:262-297`), so
+   > the metadata read is sufficient as well as necessary. The one thing the cache is still consulted
+   > for is Elite detection, since Elite packages are memory-only and have no `metaFile` at all.
 
    This is fail-closed in the same style `errors.ts`'s own header already requires of every
    `ContentStore` method ("FAIL-CLOSED. Every code is a hard DENY"), and it is Abhinav's file to
@@ -232,10 +325,19 @@ point of naming the stopgap a stopgap. Only its implementation swaps:
 ```
 
 No duplicate file, no whole-file RAM copy, no `closeBook` bookkeeping (there was never a session to
-close). The `STOPGAP_AUDIO_EXTENSION` hardcode also stops being necessary IF `getPlaintextPath` (or
-a small follow-up) also exposes `mimeType` — worth deciding in the same Gate conversation whether
-that's a second return field here or a separate `getMimeType`-style accessor; not resolved by this
-proposal, flagged so it doesn't get lost.
+close).
+
+**And, the reason this matters most: no `MAX_DECRYPTED_BYTES` ceiling.** The replacement never builds
+a whole-book `Uint8Array`, so the 25 MB cap that today makes audiobooks over ~26 minutes unplayable
+(§1) simply does not apply to it. That is the change from "audio works for the 60-second fixture" to
+"audio works for an actual audiobook" — and it is a one-line diff in one Reader-owned file.
+
+The `STOPGAP_AUDIO_EXTENSION` hardcode also stops being necessary, and §3's metadata-only correction
+makes this cheaper than originally thought: `PersistedMeta` **already carries `mimeType`**
+(`contentStore.ts:262-297`), so the guard read has it in hand at no extra cost. The open question
+narrows from "how would we ever get the mime type" to the much smaller "should `getPlaintextPath`
+return `{ path, mimeType }` rather than a bare string" — still worth deciding in the same Gate
+conversation, but no longer a possible follow-up piece of work.
 
 ## 6. Open question for the Gate conversation, not resolved here
 
