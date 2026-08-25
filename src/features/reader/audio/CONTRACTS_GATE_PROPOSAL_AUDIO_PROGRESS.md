@@ -38,7 +38,7 @@ at Gate pace rather than under delivery pressure.
 
 The tempting shortcut is to write seconds (or milliseconds) into the existing `offset: number`.
 **Do not.** `offset` is already spoken for — it is the PDF page number
-(`progressStore.ts:53`, `progressStore.ts:76`), and the freeze documents it as "still authoritative
+(`progressStore.ts:63`, `progressStore.ts:86`), and the freeze documents it as "still authoritative
 for PDF". Putting a second, incompatible meaning behind the same integer gives two addressing
 schemes distinguished by nothing a reader can inspect, which is precisely the failure `Locator` was
 introduced to fix for EPUB. It must be its own variant.
@@ -159,7 +159,7 @@ predicted its own breakage, and the compiler enforced it.
 
 **Non-exhaustive sites — the compiler does NOT catch these. This is the real hazard.**
 
-`progressStore.ts:53` (Karthik) already has an `else`, so it keeps compiling and starts being wrong:
+`progressStore.ts:63` (Karthik) already has an `else`, so it keeps compiling and starts being wrong:
 
 ```ts
 offset: locator.type === 'PDF' ? locator.page : (existing?.offset ?? 0),
@@ -168,7 +168,7 @@ offset: locator.type === 'PDF' ? locator.page : (existing?.offset ?? 0),
 An AUDIO locator would take the `else` branch and write a stale/zero `offset` while the real position
 lives in the `locator` column. Whether that is acceptable (the `locator` column *is* authoritative)
 or needs an explicit AUDIO branch is Karthik's call — flagged, not assumed. Same for
-`progressStore.ts:76`, whose legacy fallback `return { type: 'PDF', page: row.offset }` would keep
+`progressStore.ts:86`, whose legacy fallback `return { type: 'PDF', page: row.offset }` would keep
 claiming PDF for a row that never was one.
 
 **Forward compatibility, and it is asymmetric.** `mappers.ts`'s `parseLocator` returns `null` for an
