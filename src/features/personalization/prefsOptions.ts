@@ -93,3 +93,19 @@ export const SPREAD_OPTIONS = [
   { id: 'single', label: 'Single' },
   { id: 'double', label: 'Double' },
 ] as const satisfies readonly SpreadOption[];
+
+// ─── Typography — text size ─────────────────────────────────────────────────
+
+// SIX FIXED PRESETS, NOT A FREE SLIDER — the Week 3 plan is explicit on this
+// point alone among the four Typography controls. `Tabs` takes a string `id`,
+// so each preset's point size is stored as its string form and parsed back to
+// a number at the call site, the same way `LayoutSection` casts a `Tabs`
+// `onChange` id back to its contract union.
+export const TEXT_SIZE_OPTIONS = [
+  { id: '14', label: '14pt' },
+  { id: '16', label: '16pt' },
+  { id: '18', label: '18pt' },
+  { id: '20', label: '20pt' },
+  { id: '22', label: '22pt' },
+  { id: '24', label: '24pt' },
+] as const satisfies readonly TabItem[];

@@ -16,7 +16,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { PrefsSource, PrefsValues } from '@/features/personalization/useReaderPrefs';
-import { FONT_FAMILY_OPTIONS, THEME_OPTIONS } from '@/features/personalization/prefsOptions';
+import {
+  FONT_FAMILY_OPTIONS,
+  TEXT_SIZE_OPTIONS,
+  THEME_OPTIONS,
+} from '@/features/personalization/prefsOptions';
 
 import ReaderPreferencesScreen from './ReaderPreferencesScreen';
 
@@ -56,29 +60,21 @@ async function renderReady(source: PrefsSource) {
 // at screen level. Every option assertion below scopes to its own section.
 const themeSection = () => within(screen.getByTestId('theme-section'));
 const fontSection = () => within(screen.getByTestId('font-section'));
+const typographySection = () => within(screen.getByTestId('typography-section'));
 
 afterEach(() => {
   mockIsOnline.mockReturnValue(true);
 });
 
 describe('ReaderPreferencesScreen structure', () => {
-  it('renders Theme, Font and Layout sections', async () => {
+  it('renders Theme, Font, Layout and Typography sections', async () => {
     await renderReady(fakeSource());
 
     expect(screen.getByText('Theme')).toBeTruthy();
     expect(screen.getByText('Font')).toBeTruthy();
     expect(screen.getByText('Reading style')).toBeTruthy();
     expect(screen.getByText('Page view')).toBeTruthy();
-  });
-
-  // Typography is Prayas's and lands as its own file. This test is the honest
-  // record that it is NOT here yet — it fails the day it arrives, which is the
-  // point: whoever adds the section updates the screen's own contract.
-  it('renders the Layout section and not yet Typography', async () => {
-    await renderReady(fakeSource());
-
-    expect(screen.getByTestId('layout-section')).toBeTruthy();
-    expect(screen.queryByText('Typography')).toBeNull();
+    expect(screen.getByTestId('typography-section')).toBeTruthy();
   });
 
   // Never rendered: identity and sync plumbing, plus zoom and the accessibility
@@ -158,10 +154,12 @@ describe('ReaderPreferencesScreen font section', () => {
     }
   });
 
+  // Scoped to the section — Typography carries its own "EPUB only" hint too,
+  // so an unscoped query here would be ambiguous.
   it('says the choice is EPUB only', async () => {
     await renderReady(fakeSource());
 
-    expect(screen.getByText(/EPUB only/i)).toBeTruthy();
+    expect(fontSection().getByText(/EPUB only/i)).toBeTruthy();
   });
 
   it('marks the stored family as the selected option', async () => {
@@ -195,6 +193,97 @@ describe('ReaderPreferencesScreen font section', () => {
       ).toBe(false);
     }
     expect(screen.getByText(/Georgia/)).toBeTruthy();
+  });
+});
+
+describe('ReaderPreferencesScreen typography section', () => {
+  it('offers exactly the six text size presets', async () => {
+    await renderReady(fakeSource());
+
+    for (const option of TEXT_SIZE_OPTIONS) {
+      expect(typographySection().getByTestId(`tabs-tab-${option.id}`)).toBeTruthy();
+    }
+  });
+
+  it('says the choice is EPUB only', async () => {
+    await renderReady(fakeSource());
+
+    expect(typographySection().getByText(/EPUB only/i)).toBeTruthy();
+  });
+
+  it('marks the stored text size as the selected preset', async () => {
+    await renderReady(fakeSource());
+
+    // STORED carries DEFAULT_PREFS.typography, so size 16.
+    expect(
+      typographySection().getByTestId('tabs-tab-16').props.accessibilityState.selected,
+    ).toBe(true);
+  });
+
+  it('writes the picked text size through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent.press(typographySection().getByText('20pt'));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 20, lineHeight: 1.5, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('renders a slider for line height, letter spacing and page margins', async () => {
+    await renderReady(fakeSource());
+
+    expect(typographySection().getByTestId('typography-line-height-slider')).toBeTruthy();
+    expect(typographySection().getByTestId('typography-letter-spacing-slider')).toBeTruthy();
+    expect(typographySection().getByTestId('typography-margins-slider')).toBeTruthy();
+  });
+
+  // Save-on-release: the section wires the slider's release event straight to
+  // the seam, spreading the rest of the typography group.
+  it('writes the released line height through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-line-height-slider'),
+      'slidingComplete',
+      1.8,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.8, spacing: 0, margins: 16 },
+    });
+  });
+
+  it('writes the released letter spacing through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-letter-spacing-slider'),
+      'slidingComplete',
+      2,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 2, margins: 16 },
+    });
+  });
+
+  it('writes the released page margins through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent(
+      typographySection().getByTestId('typography-margins-slider'),
+      'slidingComplete',
+      32,
+    );
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      typography: { size: 16, lineHeight: 1.5, spacing: 0, margins: 32 },
+    });
   });
 });
 

@@ -74,6 +74,10 @@ import { DEFAULT_PREFS, type LayoutPrefs, type SharedPrefs, type Theme } from '@
  */
 export type PrefsValues = Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>;
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 // ─── The seam ────────────────────────────────────────────────────────────────
 
 /**
@@ -183,6 +187,14 @@ export interface UseReaderPrefs {
   onSelectFontFamily: (family: string) => void;
   onSelectFlow: (flow: LayoutPrefs['flow']) => void;
   onSelectSpread: (spread: LayoutPrefs['spread']) => void;
+  /** Clamped to the six fixed presets (14–24pt) before it is saved. */
+  onSelectTextSize: (size: number) => void;
+  /** Clamped to 1.0–2.0 before it is saved. */
+  onChangeLineHeight: (lineHeight: number) => void;
+  /** Clamped to 0–4px before it is saved. */
+  onChangeLetterSpacing: (spacing: number) => void;
+  /** Clamped to 0–48px before it is saved. */
+  onChangeMargins: (margins: number) => void;
   onRestoreDefaults: () => void;
   /** Re-reads after a failed read. */
   onRetry: () => void;
@@ -326,6 +338,43 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     [prefs, write],
   );
 
+  // THE RANGES ARE ENFORCED HERE, NOT BY THE STORE. `savePrefs` accepts any
+  // number the caller hands it — the Week 3 plan is explicit that the UI is
+  // the only guard, so each Typography callback clamps before it writes rather
+  // than trusting the section (or a future caller of this hook) to have done
+  // so already.
+  const onSelectTextSize = useCallback(
+    (size: number) => {
+      if (prefs === null) return;
+      write({ typography: { ...prefs.typography, size: clamp(size, 14, 24) } });
+    },
+    [prefs, write],
+  );
+
+  const onChangeLineHeight = useCallback(
+    (lineHeight: number) => {
+      if (prefs === null) return;
+      write({ typography: { ...prefs.typography, lineHeight: clamp(lineHeight, 1.0, 2.0) } });
+    },
+    [prefs, write],
+  );
+
+  const onChangeLetterSpacing = useCallback(
+    (spacing: number) => {
+      if (prefs === null) return;
+      write({ typography: { ...prefs.typography, spacing: clamp(spacing, 0, 4) } });
+    },
+    [prefs, write],
+  );
+
+  const onChangeMargins = useCallback(
+    (margins: number) => {
+      if (prefs === null) return;
+      write({ typography: { ...prefs.typography, margins: clamp(margins, 0, 48) } });
+    },
+    [prefs, write],
+  );
+
   const onRestoreDefaults = useCallback(() => {
     const previous = prefs;
     if (previous === null) return;
@@ -360,6 +409,10 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     onSelectFontFamily,
     onSelectFlow,
     onSelectSpread,
+    onSelectTextSize,
+    onChangeLineHeight,
+    onChangeLetterSpacing,
+    onChangeMargins,
     onRestoreDefaults,
     onRetry,
   };

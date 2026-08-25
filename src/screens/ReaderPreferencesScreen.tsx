@@ -54,14 +54,15 @@ import { useReaderPrefs, type PrefsSource } from '@/features/personalization/use
 import FontSection from './ReaderPreferencesScreen.FontSection';
 import LayoutSection from './ReaderPreferencesScreen.LayoutSection';
 import ThemeSection from './ReaderPreferencesScreen.ThemeSection';
+import TypographySection from './ReaderPreferencesScreen.TypographySection';
 
 const READ_FAILED_MESSAGE = "We couldn't load your reading preferences.";
 const SAVE_FAILED_MESSAGE = "That change didn't save. Try again.";
 
-// Three bars standing in for a header and its control, at roughly the height one
+// Four bars standing in for a header and its control, at roughly the height one
 // section occupies, repeated per section so the page does not shorten when the
 // values land.
-const SKELETON_SECTIONS = ['theme', 'font', 'layout'] as const;
+const SKELETON_SECTIONS = ['theme', 'font', 'layout', 'typography'] as const;
 
 export interface ReaderPreferencesScreenProps {
   /**
@@ -87,6 +88,10 @@ export default function ReaderPreferencesScreen({
     onSelectFontFamily,
     onSelectFlow,
     onSelectSpread,
+    onSelectTextSize,
+    onChangeLineHeight,
+    onChangeLetterSpacing,
+    onChangeMargins,
     onRestoreDefaults,
     onRetry,
   } = useReaderPrefs({ source: prefsSource });
@@ -141,14 +146,14 @@ export default function ReaderPreferencesScreen({
           onSelectSpread={onSelectSpread}
         />
 
-        {/* ── 4 · Typography — Prayas ───────────────────────────────────────
-            Text size, line height, letter spacing and page margins, from
-            `prefs.typography`. Same rule: your own file, one line here.
-
-            Two things the hook does not do for you yet, because nothing renders
-            them today: clamping a slider to its range before saving, and saving
-            on release rather than per drag tick. Both belong in your section or
-            as new callbacks on the hook — not in a component. */}
+        {/* ── 4 · Typography — Prayas ────────────────────────────────────── */}
+        <TypographySection
+          typography={prefs.typography}
+          onSelectTextSize={onSelectTextSize}
+          onChangeLineHeight={onChangeLineHeight}
+          onChangeLetterSpacing={onChangeLetterSpacing}
+          onChangeMargins={onChangeMargins}
+        />
 
         {/* ── Restore defaults ──────────────────────────────────────────────
             LAST, AND DELIBERATELY BELOW EVERY SECTION. It resets all eight
