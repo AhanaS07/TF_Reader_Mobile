@@ -1243,8 +1243,11 @@ export function ReaderScreen({
 
   return (
     <View style={styles.container}>
+      {/* `alert` and the live region are both needed: the role is what iOS reads, the live region
+          is what Android acts on. Together they are the one place in this screen allowed to
+          interrupt — an error is the thing a reader must act on. */}
       {error !== null && (
-        <View style={styles.errorBanner} accessibilityLiveRegion="polite">
+        <View style={styles.errorBanner} accessibilityRole="alert" accessibilityLiveRegion="polite">
           <Text style={styles.errorCode}>{error.code}</Text>
           <Text style={styles.errorMessage}>{error.message}</Text>
         </View>
@@ -1253,14 +1256,15 @@ export function ReaderScreen({
       <View style={styles.toolbar}>
         <Pressable
           accessibilityRole="button"
-          // The repo's first accessibilityLabel, and required rather than stylistic: a
-          // glyph child gives a screen reader nothing to say, and every existing test
-          // finds buttons by accessible name.
+          // Required rather than stylistic: a glyph child gives a screen reader nothing to say,
+          // and every existing test finds buttons by accessible name.
           accessibilityLabel="Search this book"
           onPress={() => {
-            // Mutual exclusion with Contents, Bookmarks (and TTS). Not cosmetic: every panel's
-            // toggle reads "Close" when open, and two buttons with that name make every
-            // getByRole('button', { name: 'Close' }) ambiguous.
+            // Mutual exclusion with Contents, Bookmarks (and TTS). A UI decision — one panel's
+            // worth of the viewer is all there is room for. It no longer also carries the job of
+            // keeping "Close" unambiguous: each panel now names its own ("Close search",
+            // "Close bookmarks", "Close contents"), so the exclusion is free to change on its
+            // own merits without renaming a control out from under the test suite.
             setShowToc(false);
             setShowTts(false);
             setShowBookmarks(false);
@@ -1647,8 +1651,14 @@ export function ReaderScreen({
       {showTts && ttsProvider !== null && <TtsControls session={ttsSession} />}
 
       <View style={styles.controls}>
+        {/* Explicit label because the glyph carries no accessible name — "‹ Prev" reads as the
+            guillemet plus an abbreviation. `accessibilityState` is explicit for the same reason it
+            is on Next and Contents: `disabled` alone leaves it to the platform to synthesise, and
+            this row's disabled states are load-bearing (see `prevDisabled`). */}
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="Previous page"
+          accessibilityState={{ disabled: prevDisabled }}
           disabled={prevDisabled}
           onPress={() => send?.({ type: 'prev' })}
           style={[styles.button, prevDisabled && styles.buttonDisabled]}
@@ -1656,8 +1666,20 @@ export function ReaderScreen({
           <Text style={styles.buttonText}>‹ Prev</Text>
         </Pressable>
 
+        {/*
+          THE COUNT STAYS OUT OF THE ACCESSIBLE NAME. The visible text carries it, but a name that
+          changes from "Contents (0)" to "Contents (37)" when the `toc` message lands renames a
+          control the user may already have focused. The name is stable; the count is decoration.
+
+          `expanded` IS OMITTED WHEN THERE IS NO TOC, rather than reported as `false`. A control
+          that can never open is not "collapsed" — pairing `expanded: false` with `disabled: true`
+          invites VoiceOver's "collapsed, expandable" phrasing for a button that will never expand.
+          Disabled is the whole truth in that state; expanded is the whole truth in the other.
+        */}
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={showToc ? 'Close contents' : 'Contents'}
+          accessibilityState={toc.length === 0 ? { disabled: true } : { expanded: showToc }}
           disabled={toc.length === 0}
           onPress={() => {
             setShowSearch(false); // mutual exclusion — see the toolbar button above
@@ -1721,6 +1743,8 @@ export function ReaderScreen({
 
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="Next page"
+          accessibilityState={{ disabled: nextDisabled }}
           disabled={nextDisabled}
           onPress={() => send?.({ type: 'next' })}
           style={[styles.button, nextDisabled && styles.buttonDisabled]}

@@ -1,17 +1,21 @@
 // Owner: Reader (Ahana).
 //
-// AUDIO PHASE 1 (see /AUDIO_PHASE0_FINDINGS.md). Proves the stopgap resolver's own contract: given
-// a seeded AUDIO book, it returns a file:// URI pointing at REAL, valid, playable audio bytes —
-// "verify the file, not playback" per this phase's acceptance criteria, since no player exists
-// yet (Phase 2). Also pins the caveats audioAssetResolver.ts's header names explicitly, so they
-// stay true rather than becoming stale prose the next time this file changes.
+// Proves the resolver's own contract: given a seeded AUDIO book, it returns a file:// URI pointing
+// at REAL, valid, playable audio bytes. Written as "verify the file, not playback" because no player
+// existed when it was first added; kept that way because it is the right level — the player has its
+// own tests, and these should keep passing whichever player is wired in.
+//
+// Also pins the costs audioAssetResolver.ts's header names explicitly, so they stay true rather than
+// becoming stale prose the next time that file changes. Those costs are accepted properties of the
+// design, not defects awaiting a rewrite, which makes pinning them more important rather than less.
 
 import * as path from 'path';
 
-import { File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 
 import * as aesGcm from '@/features/encryption/aesGcm';
 import { contentStore } from '@/features/encryption/contentStore';
+import type { BookId, EncryptedPackage } from '@/shared/contracts';
 import { audioAssetResolver } from '@/features/reader/audio/audioAssetResolver';
 import { DEV_SAMPLE_AUDIO_BOOK_ID, ensureSeeded } from '@/features/reader/devContentSeed';
 
@@ -31,7 +35,7 @@ jest.mock('expo-asset', () => ({
   },
 }));
 
-describe('audioAssetResolver (stopgap)', () => {
+describe('audioAssetResolver', () => {
   beforeEach(async () => {
     await ensureSeeded(DEV_SAMPLE_AUDIO_BOOK_ID);
   });
@@ -66,8 +70,10 @@ describe('audioAssetResolver (stopgap)', () => {
   it('writes a SECOND, distinct file rather than pointing at contentStore\'s own copy', async () => {
     // Documents the "duplicate file" caveat in audioAssetResolver.ts's header as an observable
     // fact, not just prose: the resolver's URI must not be indistinguishable from whatever
-    // ContentProvider handed back internally, precisely because this stopgap does NOT (and, per
-    // the guard in this phase's brief, must NOT) reach into contentStore's own storage layout.
+    // ContentProvider handed back internally, precisely because the resolver does NOT (and must
+    // NOT) reach into contentStore's own storage layout. The duplicate file is the cost of that
+    // boundary — see audioAssetResolver.ts's cost list — so this test is what keeps the boundary
+    // observable rather than merely asserted in a comment.
     const uri = await audioAssetResolver.resolveAudioAssetUri(DEV_SAMPLE_AUDIO_BOOK_ID);
 
     expect(uri).toContain('tf-reader-audio-scratch');
@@ -85,5 +91,70 @@ describe('audioAssetResolver (stopgap)', () => {
     await expect(
       audioAssetResolver.resolveAudioAssetUri(DEV_SAMPLE_AUDIO_BOOK_ID),
     ).resolves.toMatch(/^file:\/\//);
+  });
+});
+
+// The scratch directory used to be append-only: every book resolved left a full-size copy behind
+// forever, because the resolver only ever replaced the file belonging to the book it was resolving.
+// Four audiobooks meant four copies. These pin the sweep that fixes it — and, just as importantly,
+// pin that it sweeps OTHER books rather than everything, since deleting the file being resolved
+// would break the very thing the resolver exists to produce.
+describe('audioAssetResolver — scratch directory does not accumulate', () => {
+  const SCRATCH_DIR = new Directory(Paths.cache, 'tf-reader-audio-scratch');
+  const SECOND_AUDIO_BOOK_ID = 'scratch-sweep-second-audio-book' as BookId;
+
+  // A second AUDIO book, stored directly rather than seeded: devContentSeed ships exactly one audio
+  // fixture, and the leak being tested only appears with TWO distinct bookIds.
+  function secondAudioPackage(): EncryptedPackage {
+    const content = new Uint8Array(2048).fill(7);
+    return {
+      bookId: SECOND_AUDIO_BOOK_ID,
+      format: 'AUDIO',
+      content,
+      encryption: null,
+      licence: null,
+      cipherLength: content.length,
+      originalLength: content.length,
+      mimeType: 'audio/wav',
+    };
+  }
+
+  beforeEach(async () => {
+    await ensureSeeded(DEV_SAMPLE_AUDIO_BOOK_ID);
+    await contentStore.store(secondAudioPackage());
+  });
+
+  afterEach(async () => {
+    await contentStore.destroy(DEV_SAMPLE_AUDIO_BOOK_ID);
+    await contentStore.destroy(SECOND_AUDIO_BOOK_ID);
+  });
+
+  it('deletes the previous book\'s scratch file when a different book is resolved', async () => {
+    const firstUri = await audioAssetResolver.resolveAudioAssetUri(DEV_SAMPLE_AUDIO_BOOK_ID);
+    expect(new File(firstUri).exists).toBe(true);
+
+    const secondUri = await audioAssetResolver.resolveAudioAssetUri(SECOND_AUDIO_BOOK_ID);
+
+    expect(new File(secondUri).exists).toBe(true);
+    expect(new File(firstUri).exists).toBe(false);
+    expect(SCRATCH_DIR.list()).toHaveLength(1);
+  });
+
+  it('leaves the resolved book\'s own file in place — the sweep spares its target', async () => {
+    // The failure this guards against is a sweep written as "empty the directory, then write",
+    // which passes the accumulation test above and returns a URI to a file that does not exist.
+    const uri = await audioAssetResolver.resolveAudioAssetUri(SECOND_AUDIO_BOOK_ID);
+
+    const bytes = new File(uri).bytesSync();
+    expect(bytes.length).toBe(2048);
+    expect(bytes[0]).toBe(7);
+  });
+
+  it('re-resolving the SAME book does not accumulate either, and still yields valid bytes', async () => {
+    await audioAssetResolver.resolveAudioAssetUri(SECOND_AUDIO_BOOK_ID);
+    const uri = await audioAssetResolver.resolveAudioAssetUri(SECOND_AUDIO_BOOK_ID);
+
+    expect(SCRATCH_DIR.list()).toHaveLength(1);
+    expect(new File(uri).bytesSync().length).toBe(2048);
   });
 });

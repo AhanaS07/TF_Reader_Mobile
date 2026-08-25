@@ -18,7 +18,13 @@ import { encrypt } from './aesGcm';
 import { NONCE_BYTES } from './cipherLayout';
 import { getBek, storeBek } from './keyStorage';
 import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
-import { contentStore, invalidateLicence, getPersistedLicenceStatus, MAX_DECRYPTED_BYTES } from './contentStore';
+import {
+  contentStore,
+  invalidateLicence,
+  getPersistedLicenceStatus,
+  MAX_DECRYPTED_BYTES,
+  MAX_AUDIO_DECRYPTED_BYTES,
+} from './contentStore';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
 
@@ -75,16 +81,24 @@ async function buildEncryptedPackage(
   };
 }
 
-function openAccessPackage(bookId: string, plaintext: Uint8Array): EncryptedPackage {
+// `format` is a parameter because the RAM budget is per-format (maxDecryptedBytesFor) — the
+// AUDIO-cap block at the bottom of this file needs an unencrypted EPUB to prove the 20 MB bound
+// applies to audio ALONE, and building one any other way would mean paying real AES-GCM over
+// 20 MB just to exercise a length check.
+function openAccessPackage(
+  bookId: string,
+  plaintext: Uint8Array,
+  format: EncryptedPackage['format'] = 'AUDIO'
+): EncryptedPackage {
   return {
     bookId,
-    format: 'AUDIO',
+    format,
     content: plaintext,
     encryption: null,
     licence: null,
     cipherLength: plaintext.length,
     originalLength: plaintext.length,
-    mimeType: 'audio/mpeg',
+    mimeType: format === 'AUDIO' ? 'audio/mpeg' : 'application/epub+zip',
   };
 }
 
@@ -99,6 +113,47 @@ describe('contentStore — open access (no encryption)', () => {
 
     expect(Buffer.from(decrypted).equals(Buffer.from(plaintext))).toBe(true);
   });
+});
+
+// The audio cap is 20 MB where every other format gets 25 MB, and the difference is a CATALOGUE
+// agreement (the OPDS team stores prototype audio at 20 MB or under), not a RAM measurement —
+// see MAX_AUDIO_DECRYPTED_BYTES' own comment in contentStore.ts. These tests pin the two caps
+// apart: without the middle case, dropping the whole budget to 20 MB would pass just as well,
+// and that is a different, much wider change.
+describe('contentStore — the 20 MB AUDIO cap', () => {
+  it('refuses an AUDIO book over 20 MB at store(), before anything is persisted', async () => {
+    const bookId = 'audio-over-cap';
+    const plaintext = plaintextOf(MAX_AUDIO_DECRYPTED_BYTES + 1, 'one byte over the audio cap');
+
+    await expect(contentStore.store(openAccessPackage(bookId, plaintext))).rejects.toMatchObject({
+      code: ContentError.DECRYPTION_FAILED,
+    });
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+  }, 60_000);
+
+  it('accepts a non-AUDIO book of the SAME size — the cap is audio-only, not a global tightening', async () => {
+    const bookId = 'epub-between-the-caps';
+    const plaintext = plaintextOf(MAX_AUDIO_DECRYPTED_BYTES + 1, 'over 20 MB but under 25 MB');
+
+    await contentStore.store(openAccessPackage(bookId, plaintext, 'EPUB'));
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+
+    expect(decrypted.length).toBe(MAX_AUDIO_DECRYPTED_BYTES + 1);
+    await contentStore.destroy(bookId);
+  }, 60_000);
+
+  it('accepts an AUDIO book exactly AT 20 MB (off-by-one check: > not >=)', async () => {
+    const bookId = 'audio-at-cap';
+    const plaintext = plaintextOf(MAX_AUDIO_DECRYPTED_BYTES, 'exactly at the audio cap');
+
+    await contentStore.store(openAccessPackage(bookId, plaintext));
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+
+    expect(decrypted.length).toBe(MAX_AUDIO_DECRYPTED_BYTES);
+    await contentStore.destroy(bookId);
+  }, 60_000);
 });
 
 describe('contentStore — Subscription (persisted, real AES-256-GCM)', () => {

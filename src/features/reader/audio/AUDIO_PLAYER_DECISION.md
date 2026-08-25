@@ -1,8 +1,17 @@
-# Audio player: react-native-track-player → expo-audio
+# Audio decisions: the player, and how the player gets its bytes
 
-**Status: decided.** Recorded here because anyone reviewing the audio work will reasonably ask
-"why not RNTP" — it's the obvious, most-featureful choice for background audio in RN, and it's
-what AUDIO_PHASE0_FINDINGS.md's own Phase 2 plan originally called for. This answers it once.
+**Status: both decided.** This file exists for the questions anyone reviewing the audio work will
+reasonably ask, so they get answered once instead of re-argued. There are two:
+
+1. **Why not react-native-track-player?** — the obvious, most-featureful choice for background
+   audio in RN, and what AUDIO_PHASE0_FINDINGS.md's own Phase 2 plan originally called for.
+2. **Why does the resolver copy the whole file instead of returning the path contentStore already
+   has?** — the copy looks redundant, and a contracts change to remove it was drafted, reviewed,
+   and withdrawn. That is the second half of this file.
+
+---
+
+# Part 1 — the player: react-native-track-player → expo-audio
 
 ## What happened
 
@@ -59,13 +68,16 @@ to byte-identical with its pre-Phase-2 state — expo-audio has no root/headless
 registration to make; its background service is wired entirely by the config plugin at prebuild
 time, not by a runtime call).
 
-**Everything player-agnostic from Phases 1–2 is untouched**: `audioAssetResolver.ts` (interface +
-stopgap), `devContentSeed.ts`'s `buildAudioPackage`, the sample WAV fixture and its generator
-script, `CONTRACTS_GATE_PROPOSAL_PLAINTEXT_PATH.md`, the `BookListScreen` audiobook row, and every
-frozen contract / `contentStore.ts` / `downloadManager.ts`. None of that code named RNTP or made
-any assumption about which player library would eventually consume `resolveAudioAssetUri()`'s
-`file://` URI — which is exactly why swapping the player underneath it needed no changes to any
-of it.
+**Everything player-agnostic from Phases 1–2 is untouched**: `audioAssetResolver.ts`,
+`devContentSeed.ts`'s `buildAudioPackage`, the sample WAV fixture and its generator script, the
+`BookListScreen` audiobook row, and every frozen contract / `contentStore.ts` / `downloadManager.ts`.
+None of that code named RNTP or made any assumption about which player library would eventually
+consume `resolveAudioAssetUri()`'s `file://` URI — which is exactly why swapping the player
+underneath it needed no changes to any of it.
+
+That property is worth naming, because it is the argument for the `AudioAssetResolver` interface
+surviving a decision (Part 2) that removed its original justification: a seam earns its keep the
+first time something on one side of it is replaced, and this one already has.
 
 ## Known upstream issue, DEFERRED: iOS lock screen / Now Playing card doesn't appear
 
@@ -156,3 +168,85 @@ something to work around in this repo.
 
 `useAudioPlayerSetup.ts` keeps its filename and hook name across the swap — `App.tsx`'s call site
 was never touched twice; only the hook's own implementation changed.
+
+---
+
+# Part 2 — why the resolver copies bytes instead of returning a path
+
+**Status: decided 2026-08-25. The copy is the design.** A Contracts-Gate proposal to replace it
+(`CONTRACTS_GATE_PROPOSAL_PLAINTEXT_PATH.md`) was drafted, measured, revised, and then **withdrawn
+before review**. That file is deleted; this section is what remains of it, and it is deliberately
+enough to reconstruct the decision without it.
+
+## What the proposal asked for
+
+A new frozen interface, `PlaintextAssetProvider`, with one method — `getPlaintextPath(bookId):
+Promise<string>` — returning the path `contentStore` had *already* written, plus a new
+`ContentError.NOT_PLAINTEXT` to reject any caller who aimed it at an encrypted package. Reader's
+side of the change was one line: `resolveAudioAssetUri` would have returned
+`file://${await getPlaintextPath(bookId)}` and stopped copying.
+
+## Why it was withdrawn
+
+**The problem it solved does not arise at the sizes this app serves.** The argument for it was never
+efficiency — that was measured and came out immaterial (~+40 MB transient, fully reclaimed, on a
+path with no WebView). The argument was a size ceiling: `getBook()` builds a whole-book
+`Uint8Array`, that operation is what the RAM budget bounds, and so **this design cannot play an
+audiobook longer than about 21 minutes** at the 20 MB audio cap.
+
+That ceiling is real and has not moved. What changed is that it stopped being a *blocker* and became
+a *bound the product is designed around*: the OPDS/catalogue team stores prototype audio at 20 MB or
+under, so no audiobook this app can be served will exceed it. An accessor that lifts a ceiling
+nothing can reach buys nothing — while costing two frozen-file changes (`content-provider.ts`,
+`errors.ts`), a new error code, a canary update, and cross-capability review time.
+
+Withdrawing it also takes the whole plaintext-path question off Contracts-Gate's agenda. **The audio
+work still needs a Gate conversation** — `CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md`, the time-based
+`Locator` variant for durable cross-device position — but that one is Karthik's and Vaishnavi's, and
+it is now the only audio item on the agenda.
+
+## The one condition that reopens this
+
+**If full-length audiobooks come into scope, this decision must be revisited before any other audio
+work is planned** — and it will not announce itself. The failure is not subtle at runtime (an
+over-cap book is refused loudly at download and at `store()`, since 2026-08-25), but the *planning*
+failure is: it is easy to read "audio works" off a green test suite and a playing fixture, and not
+notice that every fixture is under 20 MB.
+
+Three things to know if that day comes, so the argument is not re-derived from scratch:
+
+1. **Raising the cap is not the fix and never was.** The cap bounds a whole-book-into-RAM operation.
+   A 10-hour audiobook is ~500 MB; there is no value of that constant that makes it work on a phone.
+   Anyone proposing "just raise it to 100 MB" has misread the problem.
+2. **The fix is an accessor that never builds the array** — the withdrawn proposal, recoverable in
+   full from git history: it was last present at `b93b0ef`, so
+   `git show b93b0ef:src/features/reader/audio/CONTRACTS_GATE_PROPOSAL_PLAINTEXT_PATH.md` prints it.
+   Its two non-obvious findings are worth knowing before redrafting: the guard must key off
+   `pkg.encryption === null`, **not** `format === 'AUDIO'` (an EPUB can legitimately be open access,
+   and `contentStore.test.ts` already exercises that); and the implementation must read `metaFile`
+   directly rather than routing through `resolvePackage`/`loadPersisted`/`openSession`, all of which
+   enforce the very cap it is trying to escape.
+3. **The 20 MB number is a catalogue agreement, not a device measurement.** It comes from what the
+   OPDS team will store for the prototype. So "can we ship longer audio?" is a question for them
+   first and for this repo second — and if their answer changes, this section is the thing that
+   should change with it.
+
+## What this decision does NOT excuse
+
+The resolver's remaining rough edges are now permanent-code problems rather than
+someone-else's-proposal problems, and they should be read that way:
+
+- ~~**Nothing clears `tf-reader-audio-scratch/`.**~~ **Fixed 2026-08-25.**
+  `deleteOtherScratchFiles()` sweeps the directory on every resolve, so it holds at most the book
+  being resolved — one file, <=20 MB, instead of one per book ever played. It sweeps at resolve time
+  rather than on `closeBook()` or screen unmount because both of those are wrong here: `closeBook()`
+  runs inside the resolver moments after the write (the file would be gone before the player opened
+  it), and unmount is a supported state for a *still-playing* book, so deleting there would pull the
+  file out from under a live player. Resolve time is safe by construction —
+  `AudioPlayerScreen` releases the outgoing player during render, before the effect that resolves —
+  and self-healing, since a crash leaves at most one stale file for the next resolve to remove.
+- **The extension is hardcoded to `wav`.** See `AUDIO_EXTENSION` in `audioAssetResolver.ts`. The
+  withdrawn proposal would have carried `mimeType` along with the path; without it, the first
+  non-WAV audiobook is written out under the wrong extension. Probably cosmetic — expo-audio's
+  decoders sniff the container — but untested, and the honest fix (a `mimeType` accessor on
+  `ContentProvider`) is small and additive whenever it is wanted.

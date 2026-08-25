@@ -26,13 +26,14 @@
 // RESOLVER, NOT A BUNDLED ASSET — this is the one thing that makes this the REAL player rather
 // than a rerun of Phase 2's smoke test. No require(), no contentStore import, no aesGcm: this file
 // depends on the audioAssetResolver.AudioAssetResolver INTERFACE only (see that file's own header
-// on why), so swapping the stopgap for the Contracts-Gate accessor later is a wiring change in
-// audioAssetResolver.ts alone.
+// on why), so how a URI gets produced can change without this file changing — a property already
+// proven once, when the player library was swapped underneath it (AUDIO_PLAYER_DECISION.md Part 1).
+// A wiring change in audioAssetResolver.ts alone.
 //
 // FORMAT-AGNOSTIC ON PURPOSE: nothing here assumes WAV. The resolved `file://` URI's container is
-// whatever audioAssetResolver.ts decided (today: always .wav, a KNOWN, already-documented stopgap
-// limitation — see that file's STOPGAP_AUDIO_EXTENSION comment). expo-audio's native decoders
-// handle mp3/AAC/wav identically from this file's point of view.
+// whatever audioAssetResolver.ts decided (today: always .wav, a KNOWN limitation documented at that
+// file's AUDIO_EXTENSION constant). expo-audio's native decoders handle mp3/AAC/wav identically from
+// this file's point of view.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 

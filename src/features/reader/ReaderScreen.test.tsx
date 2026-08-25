@@ -284,11 +284,15 @@ async function mountReader(): Promise<void> {
  * Text: `press` needs the element that owns the touch responder, and the label is
  * a child of it.
  */
-async function openContents(count: number): Promise<void> {
+async function openContents(): Promise<void> {
   // `fireEvent` is awaitable in @testing-library/react-native v14 — it does its own
   // act() wrapping and returns a promise, so dropping the await is a lint error
   // here (no-floating-promises is on for this directory) as well as a race.
-  await fireEvent.press(screen.getByRole('button', { name: `Contents (${count})` }));
+  //
+  // No chapter count in the query: the count lives in the visible text but deliberately not in
+  // the accessible name, so that the name does not change under a focused control when the `toc`
+  // message lands. See the Contents button in ReaderScreen.tsx.
+  await fireEvent.press(screen.getByRole('button', { name: 'Contents' }));
 }
 
 function flatToc(count: number): ReaderTocItem[] {
@@ -317,7 +321,7 @@ describe('a PDF Contents row', () => {
     await mountReader();
     await reportReady();
     await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
-    await openContents(3);
+    await openContents();
 
     await fireEvent.press(screen.getByText('Page 12'));
 
@@ -339,7 +343,7 @@ describe('a PDF Contents row', () => {
         { label: 'Section B', target: { kind: 'page', page: 2 }, depth: 1 },
       ],
     });
-    await openContents(2);
+    await openContents();
 
     expect(screen.getByText('Section A')).toBeTruthy();
     expect(screen.getByText('Section B')).toBeTruthy();
@@ -361,7 +365,7 @@ describe('an EPUB grouping heading with no href', () => {
         { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
       ],
     });
-    await openContents(2);
+    await openContents();
     const before = __injectJavaScript.mock.calls.length;
 
     await fireEvent.press(screen.getByText('Grouping heading'));
@@ -379,7 +383,7 @@ describe('an EPUB grouping heading with no href', () => {
         { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
       ],
     });
-    await openContents(2);
+    await openContents();
 
     expect(screen.getByText('Grouping heading').parent?.props.accessibilityState).toMatchObject({
       disabled: true,
@@ -392,11 +396,11 @@ describe('an EPUB grouping heading with no href', () => {
 
 describe('Prev/Next navigation controls', () => {
   function prevButton() {
-    return screen.getByRole('button', { name: '‹ Prev' });
+    return screen.getByRole('button', { name: 'Previous page' });
   }
 
   function nextButton() {
-    return screen.getByRole('button', { name: 'Next ›' });
+    return screen.getByRole('button', { name: 'Next page' });
   }
 
   async function relocate(atStart: boolean, atEnd: boolean): Promise<void> {
@@ -1081,7 +1085,7 @@ describe('ReaderScreen Contents panel', () => {
     await deliver({ type: 'toc', items: flatToc(40) });
 
     // The count in the label is the only signal that the TOC arrived at all.
-    await openContents(40);
+    await openContents();
 
     // The LAST entry, not the first: a clipped list still renders its head.
     expect(screen.getByText('Chapter 40')).toBeTruthy();
@@ -1100,7 +1104,7 @@ describe('ReaderScreen Contents panel', () => {
         { label: 'Section 1.1', target: { kind: 'href', href: 'ch1.xhtml#s1' }, depth: 2 },
       ],
     });
-    await openContents(3);
+    await openContents();
 
     // Present at all — the point of the flatten.
     expect(screen.getByText('Section 1.1')).toBeTruthy();
@@ -1119,7 +1123,7 @@ describe('ReaderScreen Contents panel', () => {
     // than a convenient one.
     await mountReader();
     await deliver({ type: 'toc', items: flatToc(40) });
-    await openContents(40);
+    await openContents();
 
     const list = screen.getByTestId('reader-toc-list');
     // Awaited individually rather than batched inside act(): fireEvent does its own
@@ -1143,7 +1147,7 @@ describe('ReaderScreen Contents panel', () => {
     // onLayout/onContentSizeChange — and it is the common one: most books' TOCs fit.
     await mountReader();
     await deliver({ type: 'toc', items: flatToc(3) });
-    await openContents(3);
+    await openContents();
 
     const list = screen.getByTestId('reader-toc-list');
     await fireEvent(list, 'layout', { nativeEvent: { layout: { height: 600 } } });
@@ -1158,9 +1162,35 @@ describe('ReaderScreen Contents panel', () => {
 
     // A book with no navigation document is legitimate; the panel must not be
     // openable onto an empty list.
+    expect(screen.getByRole('button', { name: 'Contents' }).props.accessibilityState).toMatchObject(
+      { disabled: true },
+    );
+  });
+
+  it('reports disabled WITHOUT expanded while there is no TOC, and expanded once there is', async () => {
+    // A control that can never open is not "collapsed" — reporting `expanded: false` alongside
+    // `disabled: true` is what makes a screen reader offer "collapsed, expandable" for a button
+    // that will never expand. Each state is the whole truth in its own case.
+    await mountReader();
+
+    // `undefined`, not `false`. Pressable normalises its accessibilityState so every key is
+    // present, so the assertion is on the VALUE — undefined is what RN's bridge drops on the way
+    // to the platform, and `false` is what it would forward as a real "collapsed".
     expect(
-      screen.getByRole('button', { name: 'Contents (0)' }).props.accessibilityState,
-    ).toMatchObject({ disabled: true });
+      screen.getByRole('button', { name: 'Contents' }).props.accessibilityState.expanded,
+    ).toBeUndefined();
+
+    await deliver({ type: 'toc', items: flatToc(3) });
+
+    expect(screen.getByRole('button', { name: 'Contents' }).props.accessibilityState).toMatchObject(
+      { expanded: false },
+    );
+
+    await openContents();
+
+    expect(
+      screen.getByRole('button', { name: 'Close contents' }).props.accessibilityState,
+    ).toMatchObject({ expanded: true });
   });
 });
 
@@ -1195,21 +1225,23 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     expect(screen.getByTestId('reader-search-input')).toBeTruthy();
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
     expect(screen.queryByTestId('reader-search-input')).toBeNull();
   });
 
   it('keeps Contents and Search mutually exclusive', async () => {
-    // Both toggles render a "Close" affordance when open. If they could be open at
-    // once, every getByRole('button', { name: 'Close' }) in this file would become
-    // ambiguous — so the exclusion is load-bearing for the suite, not just for looks.
+    // A UI decision, tested on its own merits: there is one panel's worth of room over the
+    // viewer. It used to be load-bearing for this suite as well, because both toggles read
+    // "Close" and two of them would have made every `name: 'Close'` query ambiguous. Each panel
+    // now names its own close affordance, so that second job is gone and this test covers only
+    // what it says.
     await mountReader();
     await deliver({ type: 'toc', items: flatToc(3) });
 
     await openSearch();
     expect(screen.getByTestId('reader-search-input')).toBeTruthy();
 
-    await openContents(3);
+    await openContents();
     expect(screen.queryByTestId('reader-search-input')).toBeNull();
     expect(screen.getByTestId('reader-toc-list')).toBeTruthy();
 
@@ -1331,7 +1363,7 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
 
     // The book itself is untouched by a search failure.
-    await openContents(3);
+    await openContents();
     expect(screen.getByTestId('reader-toc-list')).toBeTruthy();
   });
 
@@ -1431,7 +1463,7 @@ describe('ReaderScreen in-book search', () => {
 
     expect(screen.getByTestId('reader-search-awaiting-seek')).toBeTruthy();
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
     await reportReady();
 
     expect(__injectJavaScript).not.toHaveBeenCalledWith(
@@ -1492,7 +1524,7 @@ describe('ReaderScreen in-book search', () => {
 
     // Dismiss the panel to get at the match bar — stepping is something you do while
     // looking at the page, which is why the arrows live there and not in the results.
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
 
     // Nothing selected yet, so the count reads as a total rather than a position.
     expect(screen.getByText('3 matches')).toBeTruthy();
@@ -1560,7 +1592,7 @@ describe('ReaderScreen in-book search', () => {
     await reportReady();
     await openSearch();
     await runSearch('wolf');
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
 
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
@@ -1589,7 +1621,7 @@ describe('ReaderScreen in-book search', () => {
     await reportReady();
     await openSearch();
     await runSearch('wolf');
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
 
     expect(
       screen.getByRole('button', { name: 'Next match' }).props.accessibilityState,
@@ -1652,7 +1684,7 @@ describe('ReaderScreen in-book search', () => {
     await mountReader();
     await openSearch();
     await runSearch('wolf');
-    await fireEvent.press(screen.getByRole('button', { name: 'Close' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
 
     await fireEvent.press(screen.getByRole('button', { name: 'Dismiss search' }));
 
@@ -1884,8 +1916,8 @@ describe('ReaderScreen bookmarks panel', () => {
     await openBookmarks();
     expect(screen.getByText('No bookmarks yet. Add one from the button above.')).toBeTruthy();
 
-    await openContents(3);
-    expect(screen.queryByRole('button', { name: 'Close' })).toBeTruthy();
+    await openContents();
+    expect(screen.queryByRole('button', { name: 'Close contents' })).toBeTruthy();
     // Bookmarks' own "Bookmark this page" affordance is gone once Contents took over the panel.
     expect(screen.queryByRole('button', { name: 'Bookmark this page' })).toBeNull();
 

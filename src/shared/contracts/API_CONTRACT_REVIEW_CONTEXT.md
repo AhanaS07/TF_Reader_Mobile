@@ -999,6 +999,14 @@ notes the simulator has no jetsam — so 25 MB is not arbitrary, it is close to 
 the client a way to know that before download (`hasSearchIndex` has a precedent for exactly this kind
 of capability hint).
 
+> **Update 2026-08-25 (this section is the evidence as reviewed; the ledger has the current status).**
+> The client cap is now **per-format** — `maxDecryptedBytesFor()`: 25 MB for EPUB/PDF,
+> **20 MB for AUDIO**, the latter being the OPDS team's agreed prototype storage limit rather than a
+> RAM figure. It is enforced on the write side too (`store()`), not only on read. The finding itself
+> is unchanged: *neither* number appears in any contract, so the ask above stands for both, and the
+> 40 MB-book scenario is still reachable. See `CONTRACT_ALIGNMENT.md` `B11` and
+> `encryption/API_CONTRACT_NOTES.md` §4.
+
 ---
 
 ### B12 — 🟡 `format` is hardcoded `'EPUB'` at the read path, and there is no source for the real value

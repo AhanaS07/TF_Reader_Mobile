@@ -2,9 +2,15 @@
 //
 // AUDIO PHASE 4, TASK A. Durable, LOCAL, UNSYNCED playback position for audio.
 //
-// THIS IS A BRIDGE, exactly like audioAssetResolver.ts's stopgap, and for the same kind of reason:
-// the thing it stands in for is a frozen-contract change that is not Reader's to make. See
-// CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md (this directory) for the proposal that retires it.
+// THIS IS A BRIDGE: the thing it stands in for is a frozen-contract change that is not Reader's to
+// make. See CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md (this directory) for the proposal that retires
+// it — still live, and now the ONLY audio item on the Contracts-Gate agenda.
+//
+// It used to cite audioAssetResolver.ts as a fellow stand-in. That comparison is gone on purpose:
+// the resolver's proposal was withdrawn and its round trip is now simply the design
+// (AUDIO_PLAYER_DECISION.md Part 2), so pointing at it would suggest this file is equally settled.
+// It is not. The difference is that a *cross-device* audio position cannot be expressed at all
+// today, whereas the resolver's ceiling only bounds content the catalogue will never serve.
 //
 // WHY THIS FILE EXISTS RATHER THAN A progress.ts ROW: `Progress` addresses position through
 // `Locator`, a union of `{type:'EPUB'; cfi}` and `{type:'PDF'; page}` (contracts/annotations.ts).
