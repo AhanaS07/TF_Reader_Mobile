@@ -18,6 +18,7 @@ import CatalogueHomeScreen from '../screens/CatalogueHomeScreen';
 import SearchScreen from '../screens/SearchScreen';
 import LibraryScreen from '../screens/LibraryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import ReaderPreferencesScreen from '../screens/ReaderPreferencesScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
 import InstitutionListScreen from '../screens/InstitutionListScreen';
@@ -180,6 +181,15 @@ function ProfileNavigator() {
         name="ProfileHome"
         component={ProfileScreen}
         options={{ title: 'Profile' }}
+      />
+      {/* Pushed from the "Reading Preferences" row on screen 10. The title
+          matches that row's own label, so the header echoes the thing that was
+          tapped. `AppHeader` supplies the back chevron because this is a pushed
+          screen rather than a tab root. */}
+      <ProfileStack.Screen
+        name="ReaderPreferences"
+        component={ReaderPreferencesScreen}
+        options={{ title: 'Reading Preferences' }}
       />
     </ProfileStack.Navigator>
   );
