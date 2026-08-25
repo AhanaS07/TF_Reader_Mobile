@@ -244,6 +244,54 @@ describe('getLibrary', () => {
   });
 });
 
+describe('getChanges', () => {
+  it('is empty before any hold has ever been promoted', async () => {
+    const page = await client().getChanges();
+    expect(page.changes).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.serverTime).toBe(T0);
+  });
+
+  it('carries a HOLD_PROMOTED entry for a promoted hold', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    const offered = c.promoteHold(CONTENDED);
+
+    const page = await c.getChanges();
+    expect(page.changes).toHaveLength(1);
+    expect(page.changes[0]).toMatchObject({
+      reason: 'HOLD_PROMOTED',
+      itemId: CONTENDED,
+      holdId: offered.holdId,
+    });
+  });
+
+  // `since` is the previous call's own `nextCursor` — the poll's whole reason for
+  // existing is not re-reading a promotion it already acted on.
+  it('omits a promotion already read past `since`', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    c.promoteHold(CONTENDED);
+
+    const first = await c.getChanges();
+    const second = await c.getChanges(first.nextCursor);
+    expect(second.changes).toEqual([]);
+  });
+
+  it('still reports a later promotion after `since` catches up', async () => {
+    const c = client();
+    await c.placeHold(CONTENDED);
+    c.promoteHold(CONTENDED, -1); // lapsed immediately, so it may be promoted again
+
+    const first = await c.getChanges();
+    c.promoteHold(CONTENDED);
+    const second = await c.getChanges(first.nextCursor);
+
+    expect(second.changes).toHaveLength(1);
+    expect(second.changes[0]?.reason).toBe('HOLD_PROMOTED');
+  });
+});
+
 describe('openReadingSession', () => {
   // Present and refusing, rather than absent. A missing method is a mystery; this says
   // why, and names the question.

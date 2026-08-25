@@ -11,7 +11,7 @@
 // `Hold.state` each carry a `'none'` they never send, and `Hold.state` carries an
 // `'expired'` they never send either. Every one of those gaps is deliberate and
 // commented at the point it matters below.
-import type { Hold, Loan } from '@model/types';
+import type { ChangeEntry, ChangeReason, Changes, Hold, Loan } from '@model/types';
 import { LicenceError, LicenceFailure, type Library } from './LicenceSource';
 
 type Json = Record<string, unknown>;
@@ -40,6 +40,16 @@ function optString(value: unknown): string | undefined {
 
 function optNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function reqNumber(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw malformed(`missing ${what}`);
+  return value;
+}
+
+function reqBoolean(value: unknown, what: string): boolean {
+  if (typeof value !== 'boolean') throw malformed(`missing ${what}`);
+  return value;
 }
 
 // `dueAt` → `Loan.expiresAt`, which is epoch milliseconds rather than the ISO string
@@ -232,4 +242,49 @@ export function normalizeLibrary(value: unknown): Library {
 function asArray(value: unknown, what: string): unknown[] {
   if (!Array.isArray(value)) throw malformed(`${what} is not an array`);
   return value;
+}
+
+const CHANGE_REASONS: ChangeReason[] = [
+  'LOAN_CREATED',
+  'LOAN_RETURNED',
+  'LOAN_EXPIRED',
+  'HOLD_PLACED',
+  'HOLD_CANCELLED',
+  'HOLD_PROMOTED',
+  'HOLD_OFFER_EXPIRED',
+  'ENTITLEMENT_REVOKED',
+];
+
+function toChangeReason(raw: string): ChangeReason {
+  if ((CHANGE_REASONS as string[]).includes(raw)) return raw as ChangeReason;
+  // Loud rather than dropped: a reason this file does not recognise is a contract
+  // change nobody here has agreed to yet, not a row to silently skip.
+  throw malformed(`unknown change reason: ${raw}`);
+}
+
+function normalizeChangeEntry(value: unknown): ChangeEntry {
+  const entry = asRecord(value, 'change entry');
+  const loanId = optString(entry.loanId);
+  const holdId = optString(entry.holdId);
+
+  return {
+    sequence: reqNumber(entry.sequence, 'sequence'),
+    reason: toChangeReason(reqString(entry.reason, 'reason')),
+    itemId: reqString(entry.itemId, 'change itemId'),
+    ...(loanId !== undefined ? { loanId } : {}),
+    ...(holdId !== undefined ? { holdId } : {}),
+    occurredAt: reqTimestamp(entry.occurredAt, 'occurredAt'),
+  };
+}
+
+export function normalizeChanges(value: unknown): Changes {
+  const body = asRecord(value, 'changes');
+  const changes = asArray(body.changes, 'changes');
+
+  return {
+    changes: changes.map((entry) => normalizeChangeEntry(entry)),
+    nextCursor: reqString(body.nextCursor, 'nextCursor'),
+    hasMore: reqBoolean(body.hasMore, 'hasMore'),
+    serverTime: reqTimestamp(body.serverTime, 'serverTime'),
+  };
 }

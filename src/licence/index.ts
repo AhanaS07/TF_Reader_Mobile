@@ -13,7 +13,7 @@ export {
   type LicenceSource,
 } from './LicenceSource';
 
-export { normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
+export { normalizeChanges, normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
 
 export { ApiLicenceClient, type ApiLicenceClientOptions } from './ApiLicenceClient';
 export { MockLicenceClient, type MockLicenceOptions } from './MockLicenceClient';

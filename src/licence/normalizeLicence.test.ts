@@ -3,7 +3,7 @@
 // docs/contracts/flambeau-api.yaml, not invented. A normalizer tested against fixtures
 // we wrote ourselves only proves we agree with ourselves.
 import { LicenceError, isLicenceFailure } from './LicenceSource';
-import { normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
+import { normalizeChanges, normalizeHold, normalizeLibrary, normalizeLoan } from './normalizeLicence';
 
 // From `POST /api/v1/loans`, the 200 example.
 const LOAN = {
@@ -247,5 +247,60 @@ describe('normalizeLibrary', () => {
     const library = normalizeLibrary({ serverTime: '2026-08-13T10:00:00Z' });
     expect(library.loans).toEqual([]);
     expect(library.holds).toEqual([]);
+  });
+});
+
+// The contract's own worked example (docs/contracts/flambeau-api.yaml, getChanges).
+describe('normalizeChanges', () => {
+  const CHANGES = {
+    changes: [
+      {
+        sequence: 1188,
+        reason: 'HOLD_PROMOTED',
+        itemId: 'item_42',
+        holdId: 'hold_5d1',
+        occurredAt: '2026-08-13T09:30:00Z',
+      },
+      {
+        sequence: 1189,
+        reason: 'ENTITLEMENT_REVOKED',
+        itemId: 'item_77',
+        occurredAt: '2026-08-13T09:45:00Z',
+      },
+    ],
+    nextCursor: '1189',
+    hasMore: false,
+    serverTime: '2026-08-13T10:00:00Z',
+  };
+
+  it('reads every entry, the cursor, hasMore and the clock', () => {
+    const page = normalizeChanges(CHANGES);
+    expect(page.changes).toHaveLength(2);
+    expect(page.nextCursor).toBe('1189');
+    expect(page.hasMore).toBe(false);
+    expect(page.serverTime).toBe('2026-08-13T10:00:00Z');
+  });
+
+  it('carries holdId on a hold reason and omits it on one that names none', () => {
+    const [promoted, revoked] = normalizeChanges(CHANGES).changes;
+    expect(promoted?.holdId).toBe('hold_5d1');
+    expect(revoked?.holdId).toBeUndefined();
+  });
+
+  it('rejects a reason outside the contract’s enum', () => {
+    const withBadReason = {
+      ...CHANGES,
+      changes: [{ ...CHANGES.changes[0], reason: 'SOMETHING_NEW' }],
+    };
+    expect(() => normalizeChanges(withBadReason)).toThrow();
+  });
+
+  it('rejects a response missing hasMore', () => {
+    const withoutHasMore = {
+      changes: CHANGES.changes,
+      nextCursor: CHANGES.nextCursor,
+      serverTime: CHANGES.serverTime,
+    };
+    expect(() => normalizeChanges(withoutHasMore)).toThrow();
   });
 });

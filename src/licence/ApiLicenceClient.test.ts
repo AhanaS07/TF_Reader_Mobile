@@ -17,6 +17,21 @@ const LOAN = {
   serverTime: '2026-08-13T10:00:00Z',
 };
 
+const CHANGES = {
+  changes: [
+    {
+      sequence: 1188,
+      reason: 'HOLD_PROMOTED',
+      itemId: 'item_42',
+      holdId: 'hold_5d1',
+      occurredAt: '2026-08-13T09:30:00Z',
+    },
+  ],
+  nextCursor: '1189',
+  hasMore: false,
+  serverTime: '2026-08-13T10:00:00Z',
+};
+
 interface Call {
   url: string;
   init: Parameters<LicenceFetch>[1];
@@ -131,6 +146,19 @@ describe('the requests', () => {
     expect(calls[0]?.url).toBe('https://flambeau.test/api/v1/holds/hold%2F..%2F..%2Fadmin');
   });
 
+  it('reads the change feed from the beginning when since is omitted', async () => {
+    const { calls, fetch } = spy({ json: async () => CHANGES });
+    await client(fetch).getChanges();
+    expect(calls[0]?.url).toBe('https://flambeau.test/api/v1/loans/changes');
+    expect(calls[0]?.init.method).toBe('GET');
+  });
+
+  it('forwards since as a query parameter, encoded', async () => {
+    const { calls, fetch } = spy({ json: async () => CHANGES });
+    await client(fetch).getChanges('1189');
+    expect(calls[0]?.url).toBe('https://flambeau.test/api/v1/loans/changes?since=1189');
+  });
+
   it('sends the bearer token', async () => {
     const { calls, fetch } = spy({ status: 201 });
     await client(fetch).borrow(ITEM);
@@ -153,6 +181,21 @@ describe('the replies', () => {
     const loan = await client(fetch).borrow(ITEM);
     expect(loan.loanId).toBe('loan_3b8');
     expect(loan.state).toBe('active');
+  });
+
+  it('normalizes the change feed into a page the poll can read', async () => {
+    const { fetch } = spy({ json: async () => CHANGES });
+    const page = await client(fetch).getChanges('1187');
+    expect(page.changes).toEqual([
+      {
+        sequence: 1188,
+        reason: 'HOLD_PROMOTED',
+        itemId: 'item_42',
+        holdId: 'hold_5d1',
+        occurredAt: '2026-08-13T09:30:00Z',
+      },
+    ]);
+    expect(page.nextCursor).toBe('1189');
   });
 
   // 204 has no body. Reading one would throw on the empty string and turn a successful
