@@ -53,12 +53,19 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   return (
     <View style={styles.container}>
       {session.status === 'error' && session.errorMessage !== null && (
-        <Text style={styles.error}>{session.errorMessage}</Text>
+        <Text
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          style={styles.error}
+        >
+          {session.errorMessage}
+        </Text>
       )}
 
       <View style={styles.transportRow}>
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={transportLabel}
           onPress={handleTransportPress}
           style={styles.button}
         >
@@ -67,6 +74,8 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
 
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="Stop"
+          accessibilityState={{ disabled: session.status === 'idle' }}
           disabled={session.status === 'idle'}
           onPress={session.stop}
           style={[styles.button, session.status === 'idle' && styles.buttonDisabled]}
@@ -76,6 +85,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
 
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel="Choose voice"
           onPress={() => {
             session.reloadVoices();
             setVoicePickerOpen(true);
@@ -93,6 +103,8 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           return (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={`${rate}x speed`}
+              accessibilityState={{ selected }}
               key={rate}
               onPress={() => session.setRate(rate)}
               style={[styles.chip, selected && styles.chipSelected]}
@@ -110,6 +122,8 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           return (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={`${pitch}x pitch`}
+              accessibilityState={{ selected }}
               key={pitch}
               onPress={() => session.setPitch(pitch)}
               style={[styles.chip, selected && styles.chipSelected]}
