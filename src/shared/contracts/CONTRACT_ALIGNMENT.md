@@ -1,6 +1,6 @@
 # CONTRACT_ALIGNMENT.md — where we stand against wokay + flambeau
 
-**Owner: Ahana (lead, `src/shared/contracts/`). Status as of `83f4e2e` (2026-08-17).**
+**Owner: Ahana (lead, `src/shared/contracts/`). Status as of 2026-08-25.**
 
 This is the **status ledger** for the API contract review. It says, for every finding, whether it
 is closed, who has to close it, and what breaks if nobody does. It is the index; the per-capability
@@ -89,11 +89,11 @@ because the app has already picked a side on two of them.
 | `B8` | 🟠 `POST /device/register-key` doesn't exist; flambeau rejects the concept | ❌ | Abhinav + Ahana (barrel) | `download/` |
 | `B9` | 🟡 `AccessTier` was a fourth tier spelling | ✅ **now an alias for `LicenceModel`** (`tier.ts`). Full deletion is still a Gate item | Ahana | done here |
 | `B10` | 🟡 `INVALID_DEVICE_PUBLIC_KEY` in no contract; auth codes unmapped | 🟡 **documented** in `reading-session.ts`; the mapping work is open | Abhinav | `download/` |
-| `B11` | 🟡 25 MB client ceiling, no contract bound | ❌ | wokay question | `encryption/` |
+| `B11` | 🟡 Client-side size ceiling, no contract bound | 🟡 **audio half answered 2026-08-25**: the cap is now per-format (`maxDecryptedBytesFor`) — 25 MB EPUB/PDF, **20 MB AUDIO**, the latter being the OPDS team's agreed prototype storage limit rather than a RAM figure. Enforced at `store()`, on the cold read, and before both fetches. The EPUB/PDF half is unchanged and still open: no contract bounds book size, so a 40 MB EPUB is still publishable and still unopenable. **Neither number is published by wokay** — ask them to state both | wokay question | `encryption/` §4 |
 | `B12` | 🟡 `format` hardcoded `'EPUB'` | 🟡 **Reader half CLOSED** — routed from `SessionHandle.format` via `getFormat()`; the *source* is still `C3` | partly done | Reader |
 | `B13` | 🟢 `reachableAssetUrl` port rewrite, hazardous after `B2` | ❌ | Abhinav | `download/` |
 | `B14` | 🟢 Wrong `wantSearchIndex` default in a comment | ✅ **fixed** | Ahana | done here |
-| `B15` | 🟢 Subscription audio would persist with no licence or expiry | ❌ | Abhinav | `download/` |
+| `B15` | 🟢 Subscription audio would persist with no licence or expiry | ✅ **closed 2026-08-25** — `downloadManager.ts`'s `needsLicence` is now `license.mode !== 'open-access'` (resolved from the session's own `licenceModel`), not `session.encryption != null`, so a SUBSCRIPTION/ELITE audiobook now reaches `store()` with its licence attached and `isElite()`/`isLicenceExpired()` answer correctly for it | Abhinav | `download/`, `encryption/` §3 |
 | `B16` | 🟢 Dangling `flambeau-contract-comparison.md` citations ×4 | 🟡 **2 of 4 repointed** (both in this directory); 2 remain in `download/` | Abhinav for the rest | — |
 | `B17` | 🔴 **NEW 2026-08-23** — real backend's RSA-OAEP wrap ties MGF1 to SHA-1 while the OAEP digest is SHA-256 (`Cipher.getInstance("...OAEPWithSHA-256AndMGF1Padding")` with no `OAEPParameterSpec`, a `SunJCE` default gotcha); this app correctly does true RSA-OAEP-256 (both SHA-256). Every encrypted download fails to unwrap its BEK against this backend, today | ❌ **backend fix, not ours** — needs `OAEPParameterSpec(SHA-256, MGF1ParameterSpec.SHA256, PSpecified.DEFAULT)` on their `Cipher.init` | wokay (backend) | `encryption/` — see §1a |
 | `B18` | 🔴 **NEW 2026-08-23** — real backend has no `POST /api/v1/loans` at all; `LoanController` implements only `GET /api/v1/loans` (list), with a comment saying "a licence is created when a reading session opens (D-020), not by a call to this controller." `flambeau-api.yaml` still marks `POST /api/v1/loans` **FROZEN**. `borrowLoan()` (called from `licenseCheck.ts`) gets `405` on every call | ❌ **contract/backend mismatch — needs flambeau's ruling**: either implement the FROZEN endpoint, or confirm the borrow step is gone and tell the app to stop calling it | flambeau (backend) | `download/` — see §B18 |
@@ -135,10 +135,45 @@ review doc predates.
 
 **Introduced:**
 
-1. **`C7` became a blocker** — see the top of this file.
-2. **`FORMAT_MIME_TYPES` added an `AUDIO` row while `B15` is unfixed**, so the audio path now reads
+1. **`C7` became a blocker** — see the top of this file. Since closed.
+2. ~~**`FORMAT_MIME_TYPES` added an `AUDIO` row while `B15` is unfixed**, so the audio path now reads
    as more supported than it is. A subscription audiobook still persists forever with no licence
-   and no expiry.
+   and no expiry.~~ **Resolved 2026-08-25 with `B15` itself** — the audio path is now as supported as
+   it reads.
+
+---
+
+## The audio path, as of 2026-08-25 — what is closed and what is still blocking
+
+Recorded here rather than only in `reader/audio/` because three capabilities' findings meet on it and
+each one alone reads as smaller than the whole.
+
+**Closed, all by Abhinav:**
+
+| | Was |
+| --- | --- |
+| `B15` | A SUBSCRIPTION/ELITE audiobook persisted forever, unlicensed — `licence` was keyed off `encryption`, which is null for *all* audio regardless of tier |
+| The write/read asymmetry | `store()` accepted a book the read path always refused: 150 MB on disk, `isAvailableOffline() === true`, then `DECRYPTION_FAILED` on every open, for content that was unencrypted at the time it was measured (audio has since become encrypted like every other format). Measured in `reader/audio/AUDIO_MEMORY_REPORT.md`; `assertWithinRamBudget()` now fails at write time |
+| The licence gate for unencrypted content | `checkLicense()` resolves open-access from the session's `licenceModel` rather than from the absence of an `encryption` block, so "unencrypted" and "unlicensed" are finally two different questions — which is the distinction the whole audio tier turns on |
+
+**Not blocking — SCOPED OUT, 2026-08-25.** `ContentProvider` exposes only `getBook(): Promise<Bytes>`,
+so the only way to hand a native player a URI is to load the whole book into RAM and write a second
+copy to disk. That bounds audio to the cap in `B11`: ~21 minutes, against 8–15 hours for a real
+audiobook. A Gate proposal for a path accessor (touching `content-provider.ts` and `errors.ts`) was
+drafted and then **withdrawn before review** — the catalogue stores prototype audio at 20 MB or
+under, so the ceiling it lifted is one nothing can reach. **This is off the Gate agenda and off
+Abhinav's review queue.**
+
+What that means for planning, stated here because a ledger is where someone will look for it:
+**full-length audiobooks are out of scope for the prototype.** Audio works, completely, for what the
+catalogue serves. If that changes, the accessor is the first thing to revisit and **raising the cap
+is not a substitute** — no value that constant can hold makes a 10-hour audiobook fit. The decision,
+the two non-obvious findings any redraft would need, and the recovery path for the withdrawn document
+are in `reader/audio/AUDIO_PLAYER_DECISION.md` Part 2.
+
+**The one audio item still ON the Gate agenda** is cross-device *position*: `Locator` has no
+time-based variant (`reader/audio/CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md` — Karthik + Vaishnavi).
+Single-device resume already ships and is not waiting on it.
 
 ---
 

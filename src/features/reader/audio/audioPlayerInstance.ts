@@ -62,6 +62,62 @@ export function commitCurrentPlayerPosition(): void {
  * `isNew` tells the caller whether this is a brand-new player, safe to seek to a resume position,
  * or a reused, possibly-still-playing one that must NOT be seeked — see this file's header.
  */
+/**
+ * The book the singleton is currently holding, or `null` if nothing has been opened this run.
+ *
+ * Exists so callers that clean up per-book resources can spare whatever is actually playing.
+ * Background playback means "a book is live" and "a screen is mounted" are independent facts, so
+ * the singleton is the only thing that can answer this — see audioScratchReclaimer.ts, its one
+ * consumer.
+ *
+ * Reports the book the player was created FOR, not whether it is still playing: a paused or
+ * finished player still holds its source open, so treating it as live is the conservative answer
+ * for anything deciding whether a file is safe to delete.
+ */
+export function currentAudioBookId(): BookId | null {
+  return current?.bookId ?? null;
+}
+
+/**
+ * Whether the singleton is actually producing sound right now.
+ *
+ * The distinction from `currentAudioBookId()` is the whole point: that one reports the book the
+ * player HOLDS (paused and finished included), this one reports whether anything would break if its
+ * source file vanished. `audioScratchReclaimer.ts` needs the second question, because the decrypted
+ * audio in the scratch directory is worth keeping for exactly as long as something is reading it
+ * and not one moment longer.
+ *
+ * False when nothing is loaded, so a player mid-`replace()` is treated as "not playing" — the
+ * conservative answer for a cleanup decision, since a source that has not loaded yet is one the
+ * resolver is about to rewrite anyway.
+ */
+export function isAudioPlaying(): boolean {
+  return current !== null && current.player.isLoaded && current.player.playing;
+}
+
+/**
+ * Stops playback and drops the native player, if there is one.
+ *
+ * The ONE caller today is entitlement loss (`audioScratchReclaimer.ts`, on Sync's `content.lock`),
+ * and that is deliberate rather than incidental: this file's header is explicit that there is no
+ * general "stop and release" path in scope, because the player is meant to outlive every screen.
+ * Losing the right to the content is the exception — carrying on playing a book whose licence was
+ * revoked is the one case where continuing is worse than stopping.
+ *
+ * Commits the position first, for the same reason the book-swap path does: `remove()` is terminal,
+ * so this is the last moment the position can be read at all. Local progress for a book the user
+ * can no longer open is harmless, and losing it while keeping every other book's would be a
+ * confusing inconsistency.
+ *
+ * Idempotent, and safe to call when nothing is playing.
+ */
+export function releaseCurrentAudioPlayer(): void {
+  if (!current) return;
+  commitCurrentPlayerPosition();
+  current.player.remove();
+  current = null;
+}
+
 export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew: boolean } {
   if (current && current.bookId === bookId) {
     return { player: current.player, isNew: false };

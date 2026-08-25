@@ -56,9 +56,11 @@ cut both directions:
 - A **real, image-heavy PDF** at `samples/fixtures/`. `15mb_PDF.pdf` (14.66 MB, 50 pages) is what the
   results below use. It is **smaller** than the ~20 MB EPUB baseline, which is why every comparison
   below is stated **per MB of book** rather than as a raw peak. Three constraints:
-  - **≤ 25 MB.** `MAX_DECRYPTED_BYTES` (`contentStore.ts:41`) is checked against the persisted
-    `originalLength` _before the bytes are read_ (`:275-280`), so an oversized book is refused rather
-    than measured.
+  - **≤ 25 MB.** The whole-book budget (`maxDecryptedBytesFor()`, `contentStore.ts`) is checked
+    against the persisted `originalLength` _before the bytes are read_, so an oversized book is
+    refused rather than measured. 25 MB is the EPUB/PDF figure — **AUDIO is capped at 20 MB**
+    (`MAX_AUDIO_DECRYPTED_BYTES`, the OPDS team's prototype storage limit), which does not affect
+    this procedure since neither renderer path takes audio.
   - **With an outline, if you can find one.** `15mb_PDF.pdf` has none, which is why H7 below is
     untested. A PDF carrying a few hundred bookmarks is the missing fixture.
   - **Not synthetic.** A real PDF is 20 MB because of embedded images and fonts, and that is what

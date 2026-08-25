@@ -34,8 +34,6 @@ import { DownloadFailure } from '@/features/download/errors';
 import {
   DEV_FIXTURE_EPUB_BOOK_ID,
   DEV_FIXTURE_PDF_BOOK_ID,
-  DEV_SAMPLE_AUDIO_BOOK_ID,
-  DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID,
   DEV_SAMPLE_EPUB_BOOK_ID,
   DEV_SAMPLE_PDF_BOOK_ID,
 } from '@/features/reader/devContentSeed';
@@ -49,19 +47,29 @@ interface DevFixture {
   format: ContentFormat;
 }
 
+/**
+ * The audiobook's id is a REAL BACKEND CATALOGUE ID, not a seeded one — which is why it is declared
+ * here rather than imported from `devContentSeed.ts` like every other row.
+ *
+ * It matches `_id: "dev-sample-audio-encrypted"` in the backend's `demo-dataset.json` (SUBSCRIPTION
+ * tier, publisher `pub_rtlg`, covered by entitlement `ent_imp2`), whose content grant resolves to
+ * an encrypted `sample-small.wav.enc`. Nothing on the device seeds it: tapping the row acquires it
+ * through `openBook()` (stream) or the row's own Download button (persist).
+ *
+ * If this id and the backend's ever drift apart, the symptom is a licence check that fails rather
+ * than anything subtle — the catalogue simply has no such item.
+ */
+const BACKEND_AUDIO_BOOK_ID = 'dev-sample-audio-encrypted' as BookId;
+
 const DEV_FIXTURES: readonly DevFixture[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
   { label: 'Big EPUB', bookId: DEV_FIXTURE_EPUB_BOOK_ID, format: 'EPUB' },
   { label: 'Big PDF', bookId: DEV_FIXTURE_PDF_BOOK_ID, format: 'PDF' },
-  // AUDIO PHASE 1 (AUDIO_PHASE0_FINDINGS.md) seeded this fixture through the same acquisition
-  // path EPUB/PDF use. AUDIO PHASE 3 gave it a real destination: see this file's onPress below,
-  // which routes AUDIO to the AudioPlayer route instead of Reader.
-  { label: 'Audiobook', bookId: DEV_SAMPLE_AUDIO_BOOK_ID, format: 'AUDIO' },
-  // Encrypted counterpart, added 2026-08-25 when Abhinav/Encryption overrode shared.md's "audio is
-  // never encrypted" for this one dev fixture (devContentSeed.ts's `audioEncrypted` flag) — this
-  // row exercises the same real on-device RSA-OAEP+AES-GCM decrypt EPUB/PDF already use, for audio.
-  { label: 'Audiobook (Encrypted)', bookId: DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID, format: 'AUDIO' },
+  // The one row backed by the REAL BACKEND rather than a local seed. Tapping it routes to the
+  // AudioPlayer route (see onPress below); the row's Download button persists it for offline
+  // playback through the same `useDownloadProgress` hook every other row uses.
+  { label: 'Audiobook (Encrypted)', bookId: BACKEND_AUDIO_BOOK_ID, format: 'AUDIO' },
 ];
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookList'>;
@@ -142,12 +150,19 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
             // only thing standing between an audio book and a blank screen) is INTENTIONALLY left
             // in place as a backstop — see that file's updated comment.
             //
-            // AUDIO SKIPS handleOpen()/openBook() ENTIRELY, unlike every other format below —
-            // AudioPlayerScreen resolves its own asset via audioAssetResolver.resolveAudioAssetUri,
-            // which calls the frozen getBook() directly and assumes the book is already stored
-            // (today, only via devContentSeed's own seeding). That is a real gap, not a design
-            // choice made here: audio has no licence gate yet. Tracked as part of the
-            // plaintext-path Gate proposal, not fixed in this tap-time branch.
+            // AUDIO DOES NOT CALL handleOpen() HERE, and — unlike when this comment first said so
+            // — that is no longer a gap. `audioAssetResolver.resolveAudioAssetUri` now calls
+            // `openBook()` itself, on every resolve, so audio runs the SAME licence gate every other
+            // format does; it just runs it a moment later, inside the player screen.
+            //
+            // Deliberately not called twice. Doing it here as well would gate correctly and then
+            // immediately be undone: the resolver's `closeBook()` is terminal for a streamed
+            // (ephemeral) package, so a tap-time `openBook()` would be discarded before the player
+            // ever saw it, and re-entry would need the resolver to re-acquire anyway. One call, in
+            // the one place that can guarantee the bytes are still live when the file is written.
+            //
+            // The visible consequence: a licence failure for audio surfaces in the player screen's
+            // own error state rather than as this screen's alert.
             //
             // KNOWN LIMITATION, not solved here: this assumes one bookId maps to exactly one
             // format, decided statically per DevFixture row. B12 (CONTRACT_ALIGNMENT.md) already

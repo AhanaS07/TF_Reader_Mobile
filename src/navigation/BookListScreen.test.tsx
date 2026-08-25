@@ -42,7 +42,8 @@ describe('BookListScreen', () => {
     expect(getByText('PDF')).toBeTruthy();
     expect(getByText('Big EPUB')).toBeTruthy();
     expect(getByText('Big PDF')).toBeTruthy();
-    expect(getByText('Audiobook')).toBeTruthy();
+    // The one row NOT backed by a local seed — it names the backend's catalogue item.
+    expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
     expect(getByText('TTS Demo')).toBeTruthy();
   });
 
@@ -82,17 +83,21 @@ describe('BookListScreen', () => {
 
   // AUDIO PHASE 3: the one row that does NOT navigate to Reader — pins the open-path diversion
   // this phase added (BookListScreen.tsx's onPress), the one thing standing between an audio book
-  // and the (now backstop-only) UNSUPPORTED_FORMAT banner. Also the one row that does NOT go
-  // through openBook() — see BookListScreen.tsx's onPress comment on why not.
-  it('tapping Audiobook navigates to AudioPlayer, not Reader, and does not call openBook', async () => {
+  // and the (now backstop-only) UNSUPPORTED_FORMAT banner.
+  //
+  // It does not call openBook() HERE, and that is no longer a gap in the licence gate: the resolver
+  // calls openBook() itself on every resolve, inside the player screen. Calling it here too would be
+  // undone immediately — the resolver's closeBook() is terminal for a streamed package — so the gate
+  // runs once, in the place that can guarantee the bytes are still live when the file is written.
+  it('tapping Audiobook navigates to AudioPlayer, not Reader, and does not call openBook here', async () => {
     const navigate = jest.fn();
     const { getByText } = await renderBookList(navigate);
 
-    fireEvent.press(getByText('Audiobook'));
+    fireEvent.press(getByText('Audiobook (Encrypted)'));
 
     expect(navigate).toHaveBeenCalledWith('AudioPlayer', {
-      bookId: 'dev-sample-audio',
-      title: 'Audiobook',
+      bookId: 'dev-sample-audio-encrypted',
+      title: 'Audiobook (Encrypted)',
     });
     expect(navigate).not.toHaveBeenCalledWith('Reader', expect.anything());
     expect(openBook).not.toHaveBeenCalled();

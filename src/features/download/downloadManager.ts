@@ -72,7 +72,7 @@
 
 import * as Crypto from 'expo-crypto';
 import type { BookId, ContentFormat, EncryptedPackage, ReadingSessionResponse } from '@/shared/contracts';
-import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
+import { contentStore, maxDecryptedBytesFor } from '../encryption/contentStore';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { withWriteLock } from '../sync/stores/syncableTable';
@@ -223,11 +223,13 @@ export async function downloadBook(
   const isEncrypted = session.encryption != null;
 
   // Chunked + resumable (docs/superpowers/specs/2026-08-17-resumable-chunked-download-scoping.md):
-  // MAX_DECRYPTED_BYTES is a budget on the DECRYPTED size; the fetcher deals in ciphertext bytes,
-  // which are 28 bytes larger (nonce + tag) for encrypted content and identical for open access/
-  // audio. Converting here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely —
-  // it only ever sees "a byte budget", not why that number is what it is.
-  const maxCipherBytes = MAX_DECRYPTED_BYTES + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
+  // the budget is on the DECRYPTED size; the fetcher deals in ciphertext bytes, which are 28 bytes
+  // larger (nonce + tag) for encrypted content and identical for open access/audio. Converting
+  // here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely — it only ever sees
+  // "a byte budget", not why that number is what it is. Per-format since the 20 MB audio cap
+  // landed (maxDecryptedBytesFor) — reading MAX_DECRYPTED_BYTES directly here would let an
+  // oversized audiobook pull 25 MB before store() refused it at 20.
+  const maxCipherBytes = maxDecryptedBytesFor(format) + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
   let bytes: Uint8Array;
   try {
     bytes = await fetchEncryptedAssetChunked(bookId, session.content.url, {
@@ -287,18 +289,20 @@ export async function downloadBook(
     );
   }
 
-  // Reject an over-budget book BEFORE store(): contentStore.ts enforces MAX_DECRYPTED_BYTES only
-  // on the read paths (loadPersisted/decryptBook), so an oversized book would otherwise download
-  // "successfully", occupy one of the BOOK_LIMIT offline slots, and then throw on every single
-  // attempt to open it. Fail here instead, while nothing has been persisted yet.
+  // Reject an over-budget book BEFORE store(), with a DownloadFailure the download UI can speak
+  // rather than the ContentFailure store() would throw. contentStore enforces the same budget on
+  // both sides now, so this is no longer the only thing standing between an oversized book and
+  // disk — but reaching store() would still mean the whole body was fetched first, and the error
+  // the caller got back would be about decryption rather than about the download.
   const originalLength = session.content.originalLength ?? expectedOriginalLength;
-  if (originalLength > MAX_DECRYPTED_BYTES) {
+  const budget = maxDecryptedBytesFor(format);
+  if (originalLength > budget) {
     throw new DownloadFailure(
       DownloadError.BOOK_TOO_LARGE,
       bookId,
       new Error(
-        `book decrypts to ${originalLength} bytes, over contentStore's ${MAX_DECRYPTED_BYTES}-byte ` +
-          `RAM budget — it could never be opened, so it is not stored`,
+        `book decrypts to ${originalLength} bytes, over contentStore's ${budget}-byte budget for ` +
+          `${format} — it could never be opened, so it is not stored`,
       ),
     );
   }

@@ -43,6 +43,8 @@ jest.mock('../encryption/contentStore', () => ({
   getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false, revoked: false }),
   invalidateLicence: jest.fn().mockResolvedValue(undefined),
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
+  MAX_AUDIO_DECRYPTED_BYTES: 20 * 1024 * 1024,
+  maxDecryptedBytesFor: (format: string) => (format === 'AUDIO' ? 20 * 1024 * 1024 : 25 * 1024 * 1024),
 }));
 
 // Mock downloadStore.isBookValid — the offline fallback's pull-based revocation check.

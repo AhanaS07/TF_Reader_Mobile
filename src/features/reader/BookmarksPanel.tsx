@@ -124,7 +124,13 @@ export function BookmarksPanel({
     <View style={styles.panel}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>Bookmarks</Text>
-        <Pressable accessibilityRole="button" onPress={onClose} style={styles.action}>
+        {/* Named for the same reason SearchPanel's is — see the note there. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close bookmarks"
+          onPress={onClose}
+          style={styles.action}
+        >
           <Text style={styles.actionText}>Close</Text>
         </Pressable>
       </View>

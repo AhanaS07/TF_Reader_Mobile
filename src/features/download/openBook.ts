@@ -12,7 +12,7 @@
 // seam is proven before the Reader-side boundary is crossed.
 
 import type { BookId, ContentFormat, EncryptedPackage } from '@/shared/contracts';
-import { contentStore, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
+import { contentStore, maxDecryptedBytesFor } from '../encryption/contentStore';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
 import { checkLicense } from './licenseCheck';
@@ -71,7 +71,7 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
   // completes, defeating the purpose of the RAM budget for Open-path books that aren't
   // already on disk.
   const isEncrypted = session.encryption != null;
-  const maxCipherBytes = MAX_DECRYPTED_BYTES + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
+  const maxCipherBytes = maxDecryptedBytesFor(format) + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
 
   let bytes: Uint8Array;
   try {
@@ -116,13 +116,12 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
 
   const originalLength = session.content.originalLength ?? expectedOriginalLength;
 
-  if (originalLength > MAX_DECRYPTED_BYTES) {
+  const budget = maxDecryptedBytesFor(format);
+  if (originalLength > budget) {
     throw new DownloadFailure(
       DownloadError.BOOK_TOO_LARGE,
       bookId,
-      new Error(
-        `book decrypts to ${originalLength} bytes, over the ${MAX_DECRYPTED_BYTES}-byte RAM budget`,
-      ),
+      new Error(`book decrypts to ${originalLength} bytes, over the ${budget}-byte budget for ${format}`),
     );
   }
 
