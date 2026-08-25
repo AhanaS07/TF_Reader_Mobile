@@ -153,7 +153,7 @@ each one alone reads as smaller than the whole.
 | | Was |
 | --- | --- |
 | `B15` | A SUBSCRIPTION/ELITE audiobook persisted forever, unlicensed — `licence` was keyed off `encryption`, which is null for *all* audio regardless of tier |
-| The write/read asymmetry | `store()` accepted a book the read path always refused: 150 MB on disk, `isAvailableOffline() === true`, then `DECRYPTION_FAILED` on every open, for content that was never encrypted. Measured in `reader/audio/AUDIO_MEMORY_REPORT.md`; `assertWithinRamBudget()` now fails at write time |
+| The write/read asymmetry | `store()` accepted a book the read path always refused: 150 MB on disk, `isAvailableOffline() === true`, then `DECRYPTION_FAILED` on every open, for content that was unencrypted at the time it was measured (audio has since become encrypted like every other format). Measured in `reader/audio/AUDIO_MEMORY_REPORT.md`; `assertWithinRamBudget()` now fails at write time |
 | The licence gate for unencrypted content | `checkLicense()` resolves open-access from the session's `licenceModel` rather than from the absence of an `encryption` block, so "unencrypted" and "unlicensed" are finally two different questions — which is the distinction the whole audio tier turns on |
 
 **Not blocking — SCOPED OUT, 2026-08-25.** `ContentProvider` exposes only `getBook(): Promise<Bytes>`,

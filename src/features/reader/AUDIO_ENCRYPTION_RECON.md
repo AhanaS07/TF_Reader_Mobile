@@ -57,7 +57,7 @@ Authority: `content/service/ContentAccessGrantImpl.java`. Now at `225230e` (`Mer
 
 | File | State |
 | --- | --- |
-| `devContentSeed.ts` | ✅ `DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID` + `DevFixture.audioEncrypted` |
+| `devContentSeed.ts` | ✅ **no longer seeds audio at all** — `DEV_SAMPLE_AUDIO_*`, `DevFixture.audioEncrypted` and `buildAudioPackage` were deleted 2026-08-25 when audio was wired to the backend. The id now lives in `BookListScreen.tsx` as a catalogue id |
 | `navigation/BookListScreen.tsx:61` | ✅ `Audiobook (Encrypted)` row |
 | `shared/contracts/content-provider.ts` | ✅ relaxed by `343ec81` |
 | `encryption/contentStore.ts` | ✅ decrypt branch is format-blind; correctly needed no change |
@@ -160,12 +160,14 @@ decrypted file outliving the licence that authorised it.
   sweeps `SCRATCH_DIR` on both app-state edges and deletes a book's copy on Sync's `content.lock`
   signal, for `revoked` **and** `expired`. The live book is spared on the app-state sweeps only —
   background playback is a supported state — but never on a lock, since the licence is gone.
-- ✅ **No test covered the encrypted audio fixture** (was #4) — `devContentSeed.audio.test.ts` gained
-  an `ENCRYPTED` block alongside the plaintext one, deliberately in the same file so the two
-  `aesGcm.encrypt` spies read against each other. Pins the full round trip (encrypt on seed → cold
-  read → real `unwrapBek` + tag-verified decrypt → byte-identical WAV), the 28 bytes of GCM
-  overhead, that the two fixtures are separate packages rather than one id seeded twice, and that
-  re-seeding does not re-encrypt.
+- ⚠️ **No test covered the encrypted audio fixture** (was #4) — resolved once, then **un-resolved by
+  the backend wiring.** It was closed by an `ENCRYPTED` block in `devContentSeed.audio.test.ts`,
+  which pinned the full seed-side round trip (encrypt on seed → cold read → real `unwrapBek` +
+  tag-verified decrypt → byte-identical WAV). That file was deleted with the audio seed on
+  2026-08-25, because the thing it tested — seeding audio locally — no longer happens. Nothing
+  regressed; the coverage simply stopped being about anything real. **What is actually untested now
+  is the backend path, which is row 5 below.** Recorded rather than deleted so the same finding is
+  not re-opened as new.
   **Residual, now a player problem not a file one:** unlinking does not stop a native player that
   already has the file open, so a book revoked mid-playback plays on until the player is released.
   Stopping it means releasing the singleton and clearing the lock-screen card — a product call, and

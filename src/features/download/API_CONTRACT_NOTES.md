@@ -328,7 +328,10 @@ wokay's prose says a short key "is rejected" but names no code. It is documented
 
 Both contracts state audio is never encrypted — wokay: "A book is encrypted unless it is
 `OPEN_ACCESS`, or unless it is audio", and `Encryption` is "null for open access and for all
-audio." `downloadManager.ts` used to key persistence off encryption alone
+audio." (Still what the contracts SAY; the backend overrode it in practice on 2026-08-25 and audio
+is now encrypted like every other format. That override does not resurrect this bug — the fix below
+keys off the licence model, not off encryption — but it does mean the quoted rule can no longer be
+relied on anywhere else.) `downloadManager.ts` used to key persistence off encryption alone
 (`licence: isEncrypted ? licence : null`), so a `SUBSCRIPTION`-tier **audio** title arrived with
 `encryption: null` → `licence: null` → `contentStore` treated it as open access and
 `isLicenceExpired()` short-circuited to "not expired". It sat on the device permanently, outliving

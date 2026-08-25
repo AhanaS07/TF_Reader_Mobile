@@ -83,12 +83,17 @@ to byte-identical with its pre-Phase-2 state — expo-audio has no root/headless
 registration to make; its background service is wired entirely by the config plugin at prebuild
 time, not by a runtime call).
 
-**Everything player-agnostic from Phases 1–2 is untouched**: `audioAssetResolver.ts`,
+**Everything player-agnostic from Phases 1–2 was untouched**: `audioAssetResolver.ts`,
 `devContentSeed.ts`'s `buildAudioPackage`, the sample WAV fixture and its generator script, the
 `BookListScreen` audiobook row, and every frozen contract / `contentStore.ts` / `downloadManager.ts`.
 None of that code named RNTP or made any assumption about which player library would eventually
 consume `resolveAudioAssetUri()`'s `file://` URI — which is exactly why swapping the player
 underneath it needed no changes to any of it.
+
+> Three items in that list no longer exist: `buildAudioPackage`, the sample WAV and its generator
+> were deleted on 2026-08-25 when audio was wired to the real backend (Part 3). The sentence is left
+> as written because it is a record of what the RNTP→expo-audio swap did and did not touch, and
+> rewriting it would destroy the evidence for the claim it supports.
 
 That property is worth naming, because it is the argument for the `AudioAssetResolver` interface
 surviving a decision (Part 2) that removed its original justification: a seam earns its keep the

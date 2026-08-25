@@ -1249,7 +1249,11 @@ The one path where mobile and the contracts genuinely meet. Read `A7` before tru
 | — | — | — | mobile `AccessTier` = `OA`/`Subscribed`/`Elite` | — | — | — | — | 🔴 `B9`, unused |
 
 ¹ Disputed within flambeau's own document — `A9`.
-² Except audio, which is never encrypted — and that is the `B15` hole.
+² Except audio, which is never encrypted — and that is the `B15` hole. **Both halves of that
+footnote are now out of date** (it is the evidence as reviewed, so it is annotated rather than
+rewritten): `B15` was closed 2026-08-25, and audio is no longer unencrypted — the backend
+overrode its own "never encrypted" rule the same day, so audio takes the same AES-256-GCM path
+as EPUB/PDF. See `CONTRACT_ALIGNMENT.md` and `reader/AUDIO_ENCRYPTION_RECON.md`.
 
 ---
 
