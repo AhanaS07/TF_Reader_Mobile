@@ -14,7 +14,37 @@ import { setCatalogueSource } from '@config/catalogue';
 import type { Shelf } from '@model/types';
 import type { CatalogueStackParamList } from '@navigation/types';
 
+import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
+
 import ShelfScreen from './ShelfScreen';
+
+// D12 — pressing the queue button makes a real borrow through `@config/licence`,
+// so that seam is faked here the same way ItemDetailScreen.test.tsx fakes it.
+const mockQueueBorrow = jest.fn();
+const mockQueuePlaceHold = jest.fn();
+const mockQueueGetLibrary = jest.fn();
+jest.mock('@config/licence', () => ({
+  getLicenceSource: () => ({
+    borrow: (...args: [string]) => mockQueueBorrow(...args),
+    placeHold: (...args: [string]) => mockQueuePlaceHold(...args),
+    getLibrary: () => mockQueueGetLibrary(),
+    returnLoan: jest.fn(),
+    acceptOffer: jest.fn(),
+    cancelHold: jest.fn(),
+  }),
+}));
+
+const ELITE_LOAN = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999 };
+const ELITE_HOLD = {
+  holdId: 'hold_1',
+  itemId: 'item_42',
+  state: 'queued' as const,
+  position: 2,
+  queueLength: 4,
+  serverTime: '',
+};
+const noCopiesFailure = () =>
+  new LicenceFailure(LicenceError.REFUSED, { errorCode: 'NO_COPIES_AVAILABLE' });
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
 // referencing out-of-scope variables whose name starts with "mock".
@@ -534,6 +564,190 @@ describe('ShelfScreen filter & sort', () => {
       contentType: undefined,
       accessTier: undefined,
       sort: undefined,
+    });
+  });
+});
+
+// ── D12 — the Elite queue button on a shelf row ───────────────────────────────
+//
+// The button is `resolveAccess`'s answer rendered, not a decision this screen
+// makes: an Elite title with nothing held resolves to `['grantAccess']`, and that
+// is the one action D12 puts on a card. Everything else resolves to something a
+// card deliberately does not offer, so the row draws no button.
+//
+// WHAT IS TESTED HERE VERSUS IN queueRequest.test.ts. This block covers what the
+// SCREEN owns — that the row offers the action, that pressing it reaches the real
+// licence source, and that the button ends up idle again either way. The pending
+// semantics themselves (one request at a time, second press ignored, second ROW
+// ignored, clears on failure) belong to `useQueueRequest` and are tested there
+// against a fake source, which is both more thorough and not subject to the
+// act()-scope fragility that a screen test holding a promise open runs into.
+describe('ShelfScreen — D12 Elite queue button', () => {
+  function eliteShelf(...ids: string[]): Shelf {
+    return {
+      id: 'ebooks',
+      title: 'eBooks',
+      publications: ids.map((id) => {
+        const base = publication(id, `Elite ${id}`);
+        return { ...base, acquisition: { ...base.acquisition, licenceModel: 'ELITE' as const } };
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    mockQueueBorrow.mockResolvedValue(ELITE_LOAN);
+    mockQueuePlaceHold.mockResolvedValue(ELITE_HOLD);
+    mockQueueGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  });
+
+  afterEach(() => {
+    mockQueueBorrow.mockReset();
+    mockQueuePlaceHold.mockReset();
+    mockQueueGetLibrary.mockReset();
+  });
+
+  it('offers Grant access on an Elite row', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+  });
+
+  it('offers it on every Elite row, not just the first', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42', 'item_99')));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getAllByText('Grant access')).toHaveLength(2));
+  });
+
+  // A SUBSCRIPTION row resolves to read/download, which belong on the detail
+  // screen — so no card button. This is what stops D12 becoming "a button on
+  // every row".
+  it('draws no queue button on a non-Elite row', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  // The row is still a navigation target; D12 adds a button, it does not replace
+  // the tap that opens the detail screen.
+  it('keeps the row itself tappable alongside the button', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByText('Elite item_42'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+
+  it('borrows the pressed item through the existing licence source', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(mockQueueBorrow).toHaveBeenCalledWith('item_42'));
+    // Navigating to the detail screen is NOT part of pressing the button — the
+    // whole point of D12 is that the reader does not have to go there.
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('presses the right row when several are on screen', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42', 'item_99')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getAllByText('Grant access')).toHaveLength(2));
+
+    fireEvent.press(screen.getAllByTestId('action-button-grantAccess')[1]);
+
+    await waitFor(() => expect(mockQueueBorrow).toHaveBeenCalledWith('item_99'));
+  });
+
+  it('queues instead when no copy is free', async () => {
+    mockQueueBorrow.mockRejectedValue(noCopiesFailure());
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(mockQueuePlaceHold).toHaveBeenCalledWith('item_42'));
+  });
+
+  it('invalidates the holdings cache after the request', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(mockQueueGetLibrary).toHaveBeenCalled());
+  });
+
+  it('leaves the button idle and pressable again after a success', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+    await waitFor(() => expect(mockQueueGetLibrary).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('action-button-grantAccess').props.accessibilityState,
+      ).toEqual({ disabled: false, busy: false }),
+    );
+  });
+
+  // A stuck spinner is the worst failure mode here, so failure gets its own test.
+  it('leaves the button idle and pressable again after a failure', async () => {
+    mockQueueBorrow.mockRejectedValue(new Error('boom'));
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+    await waitFor(() => expect(mockQueueGetLibrary).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('action-button-grantAccess').props.accessibilityState,
+      ).toEqual({ disabled: false, busy: false }),
+    );
+    expect(screen.queryByTestId('action-button-spinner')).toBeNull();
+  });
+
+  // LAST IN THE FILE, DELIBERATELY. This is the only test that holds the borrow
+  // open, which is the only way to render the busy state — and an unresolved
+  // promise at teardown is what corrupts a following render, so nothing follows.
+  it('shows the button busy, and inert, while the request is in flight', async () => {
+    mockQueueBorrow.mockReturnValue(new Promise(() => {}));
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(screen.getByTestId('action-button-spinner')).toBeTruthy());
+    // `disabled: true` is the duplicate-press guard, applied by ActionButton
+    // itself — see its `inert`. `busy` is what a screen reader needs.
+    expect(screen.getByTestId('action-button-grantAccess').props.accessibilityState).toEqual({
+      disabled: true,
+      busy: true,
     });
   });
 });
