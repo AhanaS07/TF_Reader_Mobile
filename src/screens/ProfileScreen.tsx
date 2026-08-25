@@ -124,7 +124,7 @@ export default function ProfileScreen() {
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
         >
-          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.surface} />
+          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.white} />
         </View>
 
         <View style={styles.accountText}>
