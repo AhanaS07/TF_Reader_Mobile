@@ -22,7 +22,7 @@ import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } fro
 import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
 import { verifyLicenceSignature } from '../encryption/licenceSignature';
 import { openReadingSession } from './readingSessionClient';
-import { DownloadError, DownloadFailure } from './errors';
+import { DownloadError, DownloadFailure, UnmappedServerResponse } from './errors';
 import { downloadStore } from '../sync/stores/downloadStore';
 
 // Far-future placeholder for `expiresAt` — covers both open-access (no real due date) and
@@ -49,18 +49,25 @@ export type LicenseCheckResult =
 // ── helpers ───────────────────────────────────────────────────────────────
 
 function isGenuineNetworkError(error: DownloadFailure): boolean {
-  // LOAN_FAILED / SESSION_FETCH_FAILED cover BOTH genuine network errors (fetch rejected
-  // with a TypeError for DNS failure/offline, or an AbortError when readingSessionClient's
-  // own 8s AbortController timer fires — see REQUEST_TIMEOUT_MS) AND server responses that
-  // weren't shaped as a FlambeauError (a 404 with a plain HTML body, a 500 with no JSON at
-  // all). Only the former should trigger the offline fallback — a server that actually
-  // answered (even with an error) is reachable, and falling back to a stale local licence
-  // would mask a real server-side problem.
-  return (
-    (error.code === DownloadError.LOAN_FAILED || error.code === DownloadError.SESSION_FETCH_FAILED) &&
-    error.cause instanceof Error &&
-    (error.cause instanceof TypeError || error.cause.name === 'AbortError')
-  );
+  // LOAN_FAILED / SESSION_FETCH_FAILED cover BOTH genuine network errors (fetch/AbortController
+  // rejected before any Response arrived) AND server responses that weren't shaped as a
+  // FlambeauError (a 404 with a plain HTML body, a 500 with no JSON at all — see
+  // readingSessionClient.ts's UnmappedServerResponse). Only the former should trigger the offline
+  // fallback — a server that actually answered (even with an error) is reachable, and falling
+  // back to a stale local licence would mask a real server-side problem.
+  //
+  // NOT narrowed to `error.cause instanceof TypeError` (what the Fetch spec documents for a
+  // network-level rejection) — that used to be the check here, and device testing (2026-08-25)
+  // found it unreliable: a genuine connection-refused on a real iOS simulator did not reliably
+  // produce that exact constructor, so a real "book is downloaded, server is unreachable, open it
+  // offline" case silently fell through to the explicit-denial branch instead of the fallback.
+  // `UnmappedServerResponse` is the one shape that positively means "reached the server" — every
+  // other Error reaching here means the request never got a response at all, regardless of which
+  // concrete Error subclass the platform's fetch implementation happened to throw.
+  if (error.code !== DownloadError.LOAN_FAILED && error.code !== DownloadError.SESSION_FETCH_FAILED) {
+    return false;
+  }
+  return error.cause instanceof Error && !(error.cause instanceof UnmappedServerResponse);
 }
 
 // The real backend exposes no long-term loan due-date anywhere (confirmed: `GET /api/v1/loans`

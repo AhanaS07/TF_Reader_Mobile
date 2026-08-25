@@ -258,6 +258,63 @@ describe('checkLicense', () => {
     expect(result.mode).toBe('offline-license');
   });
 
+  it('falls back to offline on a plain Error, not just TypeError/AbortError', async () => {
+    // Pins the actual bug: device testing (2026-08-25) found that a real connection-refused on a
+    // real iOS simulator does not reliably reject with `instanceof TypeError` — a downloaded
+    // SUBSCRIPTION book failed to reopen offline because of exactly this narrowing. Any Error that
+    // isn't readingSessionClient.ts's UnmappedServerResponse must count as "genuinely unreachable".
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'old-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        canPersist: true,
+        rights: { print: false },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('offline-license');
+  });
+
+  it('does NOT fall back to offline when the server responds, just not in a FlambeauError shape', async () => {
+    // The reachable-but-unparseable case (readingSessionClient.ts's UnmappedServerResponse) must
+    // stay an explicit denial — the server answered, so a stale local licence would mask a real
+    // server-side problem, not route around an outage.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'old-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        canPersist: true,
+        rights: { print: false },
+        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response('<html>not json</html>', { status: 500 }),
+    );
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.SESSION_FETCH_FAILED);
+  });
+
   it('returns OFFLINE_LICENSE_UNAVAILABLE when offline and never downloaded', async () => {
     jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
       licence: null,

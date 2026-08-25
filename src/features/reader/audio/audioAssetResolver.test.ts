@@ -44,6 +44,7 @@ describe('audioAssetResolver (stopgap)', () => {
   it('returns a file:// URI to a real, valid, correctly-extensioned WAV file', async () => {
     const uri = await audioAssetResolver.resolveAudioAssetUri(DEV_SAMPLE_AUDIO_BOOK_ID);
 
+    // Extension is derived from the stored MIME type ('audio/wav' → 'wav'), not hardcoded.
     expect(uri).toMatch(/^file:\/\/.*\.wav$/);
 
     const bytes = new File(uri).bytesSync();
