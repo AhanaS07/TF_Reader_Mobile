@@ -20,8 +20,14 @@ export interface SelectionRange {
 export const highlightStore = {
   ...highlightTable,
 
-  list(): Promise<HighlightRow[]> {
-    return highlightTable.listActive(USER_ID, BOOK_ID);
+  /**
+   * `userId`/`bookId` default to the prototype's single hardcoded constants - every current
+   * caller gets identical behaviour to before. A caller that actually knows the signed-in user
+   * and/or the open book (multi-user/multi-book capable) should pass them explicitly instead of
+   * relying on the defaults.
+   */
+  list(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<HighlightRow[]> {
+    return highlightTable.listActive(userId, bookId);
   },
 
   /**
@@ -33,6 +39,8 @@ export const highlightStore = {
   async addFromSelection(
     selection: SelectionRange,
     color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
   ): Promise<HighlightRow> {
     const startLocator: Locator = {
       type: 'PDF',
@@ -44,7 +52,7 @@ export const highlightStore = {
       page: selection.page,
       offset: selection.endOffset,
     };
-    return this.add(startLocator, endLocator, color);
+    return this.add(startLocator, endLocator, color, bookId, userId);
   },
 
   /**
@@ -54,8 +62,20 @@ export const highlightStore = {
    * locators, so a reflowable book could not record a highlight even though the contract has
    * always described one.
    */
-  addFromCfi(startCfi: string, endCfi: string, color = 'yellow'): Promise<HighlightRow> {
-    return this.add({ type: 'EPUB', cfi: startCfi }, { type: 'EPUB', cfi: endCfi }, color);
+  addFromCfi(
+    startCfi: string,
+    endCfi: string,
+    color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<HighlightRow> {
+    return this.add(
+      { type: 'EPUB', cfi: startCfi },
+      { type: 'EPUB', cfi: endCfi },
+      color,
+      bookId,
+      userId,
+    );
   },
 
   /**
@@ -72,6 +92,8 @@ export const highlightStore = {
     startLocator: Locator,
     endLocator: Locator,
     color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
   ): Promise<HighlightRow> {
     const startJson = JSON.stringify(startLocator);
     const endJson = JSON.stringify(endLocator);
@@ -82,15 +104,15 @@ export const highlightStore = {
         WHERE user_id = ? AND book_id = ? AND start_locator = ? AND end_locator = ?
           AND is_deleted = 0
         LIMIT 1`,
-      [USER_ID, BOOK_ID, startJson, endJson],
+      [userId, bookId, startJson, endJson],
     );
     if (existing) return existing;
 
     const now = nowIso();
     const row: HighlightRow = {
       id: newId(),
-      user_id: USER_ID,
-      book_id: BOOK_ID,
+      user_id: userId,
+      book_id: bookId,
       start_locator: startJson,
       end_locator: endJson,
       color,

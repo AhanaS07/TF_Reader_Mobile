@@ -10,6 +10,7 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
+import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
 import { BookListScreen } from './BookListScreen';
@@ -29,6 +30,13 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator(): React.JSX.Element {
+  // Mounted here (the always-present app root) so the sync engine actually runs: it fires
+  // syncEngine.run() on app open and on every offline->online reconnect, draining the SQLite
+  // outbox to Mongo and pulling back. Without this call the whole sync layer was built but never
+  // triggered. Edge-triggered on connectivity, NOT on edits — an edit made while already online
+  // still waits for the next reconnect/app-open unless a per-edit push is added separately.
+  useAutoSync();
+
   return (
     <NavigationContainer>
       <Stack.Navigator initialRouteName="BookList">

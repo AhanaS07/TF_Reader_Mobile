@@ -62,6 +62,7 @@ jest.mock('@/features/sync/sharedPrefs', () => ({
 // real, typed surface, which is why this needs a cast rather than a normal import.
 const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine') as {
   default: {
+    addListener: jest.Mock;
     speak: jest.Mock;
     stop: jest.Mock;
     pause: jest.Mock;
@@ -395,5 +396,19 @@ describe('useTtsSession', () => {
     expect(result.current.prefs.voiceId).toBe('com.test.voice');
     expect(mockTts.setDefaultPitch).toHaveBeenCalledWith(1.5);
     expect(mockTts.setDefaultVoice).toHaveBeenCalledWith('com.test.voice');
+  });
+
+  // Pins the iOS side of the platform gap: @iternio/react-native-tts's iOS `supportedEvents`
+  // (TextToSpeech.m) never declares 'tts-error', and RCTEventEmitter.addListener throws
+  // synchronously for an undeclared event name. This file already runs at the default (iOS)
+  // Platform.OS — see the pause() test above — so never calling addListener('tts-error', ...)
+  // here is exactly the guard in useTtsSession.ts being exercised, not assumed.
+  // useTtsSession.android.test.ts pins the other side: Android still subscribes and still
+  // reaches handleTtsError.
+  it('never subscribes to tts-error on iOS, so it cannot throw against the real native module', async () => {
+    const provider = createFakeReaderTextProvider();
+    await renderHook(() => useTtsSession(provider));
+
+    expect(mockTts.addListener).not.toHaveBeenCalledWith('tts-error', expect.any(Function));
   });
 });

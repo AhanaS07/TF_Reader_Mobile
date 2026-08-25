@@ -111,10 +111,14 @@ afterEach(() => {
 
 describe('loadReaderHighlights', () => {
   it('turns stored rows into the format-free payload on open', async () => {
-    jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'a' }), pdfRow('b')]);
+    const list = jest
+      .spyOn(highlightStore, 'list')
+      .mockResolvedValue([row({ id: 'a' }), pdfRow('b')]);
 
-    const { highlights, skippedIds } = await loadReaderHighlights();
+    const { highlights, skippedIds } = await loadReaderHighlights('book-42');
 
+    // Scoped to THIS book, not the global BOOK_ID constant (undefined keeps the store's user default).
+    expect(list).toHaveBeenCalledWith(undefined, 'book-42');
     expect(highlights.epub.map((h) => h.id)).toEqual(['a']);
     expect(highlights.pdf).toEqual([{ id: 'b', page: 2, startOffset: 1, endOffset: 8, color: 'green' }]);
     expect(skippedIds).toEqual([]);
@@ -124,7 +128,7 @@ describe('loadReaderHighlights', () => {
     const corrupt = row({ id: 'bad', start_locator: 'not json', end_locator: 'not json' });
     jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'ok' }), corrupt]);
 
-    const { highlights, skippedIds } = await loadReaderHighlights();
+    const { highlights, skippedIds } = await loadReaderHighlights('book-42');
 
     expect(highlights.epub.map((h) => h.id)).toEqual(['ok']);
     expect(skippedIds).toEqual(['bad']);
@@ -136,9 +140,9 @@ describe('add / remove call-sites', () => {
     const add = jest.spyOn(highlightStore, 'addFromCfi').mockResolvedValue({} as HighlightRow);
     jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'new' })]);
 
-    const { highlights } = await addEpubHighlight('startCfi', 'endCfi', 'pink');
+    const { highlights } = await addEpubHighlight('book-42', 'startCfi', 'endCfi', 'pink');
 
-    expect(add).toHaveBeenCalledWith('startCfi', 'endCfi', 'pink');
+    expect(add).toHaveBeenCalledWith('startCfi', 'endCfi', 'pink', 'book-42');
     expect(highlights.epub.map((h) => h.id)).toEqual(['new']);
   });
 
@@ -147,16 +151,16 @@ describe('add / remove call-sites', () => {
     jest.spyOn(highlightStore, 'list').mockResolvedValue([pdfRow('new')]);
 
     const selection = { page: 2, startOffset: 1, endOffset: 8 };
-    await addPdfHighlight(selection, 'green');
+    await addPdfHighlight('book-42', selection, 'green');
 
-    expect(add).toHaveBeenCalledWith(selection, 'green');
+    expect(add).toHaveBeenCalledWith(selection, 'green', 'book-42');
   });
 
   it('deletes by id and returns a set no longer containing it', async () => {
     const remove = jest.spyOn(highlightStore, 'remove').mockResolvedValue();
     jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'survivor' })]);
 
-    const { highlights } = await removeHighlight('victim');
+    const { highlights } = await removeHighlight('book-42', 'victim');
 
     expect(remove).toHaveBeenCalledWith('victim');
     expect(highlights.epub.map((h) => h.id)).toEqual(['survivor']);

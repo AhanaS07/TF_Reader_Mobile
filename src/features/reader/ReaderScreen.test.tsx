@@ -35,6 +35,13 @@ import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { AppearanceEnv } from '@/features/personalization/readerAppearance';
+import {
+  addCurrentEpubBookmark,
+  addCurrentPdfBookmark,
+  loadBookmarks,
+  removeBookmark,
+} from '@/features/personalization/readerBookmarks';
+import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -110,6 +117,19 @@ jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
  */
 jest.mock('@/features/search/queryBookIndex', () => ({
   queryBookIndex: jest.fn(() => Promise.resolve([])),
+}));
+
+/**
+ * The BOOKMARKS SEAM (Personalization's readerBookmarks.ts), not the sync store behind it — same
+ * reasoning as mocking queryBookIndex above rather than getIndex: this file is chrome coverage, and
+ * bookmarkStore's own SQLite round-tripping has its own tests in readerBookmarks.test.ts. Every call
+ * defaults to an empty set; individual tests override with mockResolvedValueOnce/mockResolvedValue.
+ */
+jest.mock('@/features/personalization/readerBookmarks', () => ({
+  loadBookmarks: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  addCurrentEpubBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
 }));
 
 /**
@@ -1640,5 +1660,580 @@ describe('ReaderScreen in-book search', () => {
     // Reopening the panel starts clean rather than restoring the dismissed hits.
     await openSearch();
     expect(screen.queryByText('…the grey wolf number 1 moved…')).toBeNull();
+  });
+});
+
+describe('ReaderScreen bookmarks panel', () => {
+  function bookmark(overrides: Partial<ReaderBookmark> = {}): ReaderBookmark {
+    return {
+      id: 'b1',
+      label: 'Chapter 1',
+      target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.mocked(loadBookmarks).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest
+      .mocked(addCurrentEpubBookmark)
+      .mockReset()
+      .mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest
+      .mocked(addCurrentPdfBookmark)
+      .mockReset()
+      .mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    // EXPLICIT, not relying on the top-level factory default: `bookmarksForOpenBook` (ReaderScreen.tsx)
+    // now filters the panel's list by `format`, so a PDF override left behind by an earlier test in
+    // this file (nothing here resets it automatically — there is no global mock-reset config) would
+    // silently filter out every EPUB-shaped `bookmark()` fixture below. Reset here rather than adding
+    // one to every individual PDF test, so this describe block cannot inherit stale state from
+    // whatever ran before it.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    __injectJavaScript.mockClear();
+  });
+
+  async function openBookmarks(): Promise<void> {
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+  }
+
+  async function relocateCfi(cfi: string | null): Promise<void> {
+    await deliver({ type: 'relocated', position: { kind: 'cfi', cfi }, atStart: true, atEnd: false });
+  }
+
+  it('does not load until the book has rendered', async () => {
+    await mountReader();
+    await openBookmarks();
+
+    expect(loadBookmarks).not.toHaveBeenCalled();
+    expect(screen.getByText('Loading bookmarks…')).toBeTruthy();
+  });
+
+  it('loads once the book renders and lists what came back', async () => {
+    jest
+      .mocked(loadBookmarks)
+      .mockResolvedValue({ bookmarks: [bookmark({ id: 'a', label: 'The good bit' })], skippedIds: [] });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    expect(loadBookmarks).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('The good bit')).toBeTruthy();
+  });
+
+  it('reports rows it could not read rather than silently shrinking the list', async () => {
+    jest
+      .mocked(loadBookmarks)
+      .mockResolvedValue({ bookmarks: [bookmark({ id: 'a' })], skippedIds: ['bad-1', 'bad-2'] });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    expect(screen.getByText('2 bookmarks could not be read and were left out.')).toBeTruthy();
+  });
+
+  it('shows an empty state once loaded with nothing stored', async () => {
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    expect(screen.getByText('No bookmarks yet. Add one from the button above.')).toBeTruthy();
+  });
+
+  it('navigates to a tapped bookmark and closes the panel — the same goTo every TOC entry and search hit uses', async () => {
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'a', label: 'Chapter 3', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    await fireEvent.press(screen.getByText('Chapter 3'));
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+    );
+    expect(screen.queryByTestId('reader-bookmarks-list')).toBeNull();
+  });
+
+  it('disables adding the current position until a real location has arrived', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    // Before the first `relocated`: no position at all.
+    expect(
+      screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+
+    // epub.js's own null-until-resolved CFI (see sessionProgress.ts's identical guard).
+    await relocateCfi(null);
+    expect(
+      screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
+    ).toMatchObject({ disabled: true });
+
+    await relocateCfi('epubcfi(/6/4[chap01]!/4/2/2)');
+    expect(
+      screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
+    ).toMatchObject({ disabled: false });
+  });
+
+  it('bookmarks the current EPUB position and re-renders from the returned fresh set', async () => {
+    jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'new', label: 'Just added' })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await relocateCfi('epubcfi(/6/4[chap01]!/4/2/2)');
+    await openBookmarks();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    // A blank label field is `undefined`, not `''` — falls through to `labelFor`'s own fallback
+    // rather than this panel inventing a second empty-label convention.
+    expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+      'test-book',
+      'epubcfi(/6/4[chap01]!/4/2/2)',
+      undefined,
+      undefined,
+    );
+    await screen.findByText('Just added');
+  });
+
+  it('carries the typed label through to the EPUB add call-site, trimmed', async () => {
+    jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'new', label: 'The good bit' })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await relocateCfi('epubcfi(/6/4[chap01]!/4/2/2)');
+    await openBookmarks();
+
+    await fireEvent.changeText(
+      screen.getByTestId('reader-bookmark-label-input'),
+      '  The good bit  ',
+    );
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+      'test-book',
+      'epubcfi(/6/4[chap01]!/4/2/2)',
+      undefined,
+      'The good bit',
+    );
+    // The field clears once used, rather than re-offering the just-submitted text for the next add.
+    expect(screen.getByTestId('reader-bookmark-label-input').props.value).toBe('');
+  });
+
+  it('bookmarks the current PDF page through addCurrentPdfBookmark, not the EPUB call-site', async () => {
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    jest
+      .mocked(addCurrentPdfBookmark)
+      .mockResolvedValue({ bookmarks: [bookmark({ id: 'new', label: 'Page 7' })], skippedIds: [] });
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page: 7, pageCount: 100 },
+      atStart: false,
+      atEnd: false,
+    });
+    await openBookmarks();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(addCurrentPdfBookmark).toHaveBeenCalledWith('test-book', 7, undefined);
+    expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
+  });
+
+  it('deletes by id and re-renders from the returned fresh set', async () => {
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'victim', label: 'To be deleted' })],
+      skippedIds: [],
+    });
+    jest
+      .mocked(removeBookmark)
+      .mockResolvedValue({ bookmarks: [bookmark({ id: 'survivor', label: 'Still here' })], skippedIds: [] });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await openBookmarks();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete bookmark: To be deleted' }));
+
+    expect(removeBookmark).toHaveBeenCalledWith('test-book', 'victim');
+    await screen.findByText('Still here');
+    expect(screen.queryByText('To be deleted')).toBeNull();
+  });
+
+  it('keeps Bookmarks mutually exclusive with Contents and Search', async () => {
+    await mountReader();
+    await deliver({ type: 'toc', items: flatToc(3) });
+    await deliver({ type: 'rendered' });
+
+    await openBookmarks();
+    expect(screen.getByText('No bookmarks yet. Add one from the button above.')).toBeTruthy();
+
+    await openContents(3);
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeTruthy();
+    // Bookmarks' own "Bookmark this page" affordance is gone once Contents took over the panel.
+    expect(screen.queryByRole('button', { name: 'Bookmark this page' })).toBeNull();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+    expect(screen.queryByTestId('reader-toc-list')).toBeNull();
+  });
+
+  describe('renaming a bookmark', () => {
+    // THE WHOLE POINT: readerBookmarks.ts is create-and-delete-only by design (plain LWW needs it to
+    // stay a union across devices), so a "rename" cannot be a single update call. These tests pin
+    // that ReaderScreen gets the user-visible rename by composing the add/remove call-sites it
+    // already has, in that order — add-before-remove, so a failed add never leaves neither copy.
+    it('re-creates the bookmark at the same EPUB target under the new name, then removes the old id', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+        ],
+        skippedIds: [],
+      });
+      jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+        ],
+        skippedIds: [],
+      });
+      jest.mocked(removeBookmark).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Untitled' }));
+      await fireEvent.changeText(
+        screen.getByTestId('reader-bookmark-edit-input-old'),
+        'Renamed',
+      );
+      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
+
+      // Add happens at the SAME target, under the new name, BEFORE the old id is removed.
+      expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+        'test-book',
+        'epubcfi(/6/10)',
+        undefined,
+        'Renamed',
+      );
+      await screen.findByText('Renamed');
+      expect(removeBookmark).toHaveBeenCalledWith('test-book', 'old');
+      expect(screen.queryByText('Untitled')).toBeNull();
+    });
+
+    it('re-creates a PDF bookmark through addCurrentPdfBookmark, by page', async () => {
+      // A page-shaped bookmark only survives `bookmarksForOpenBook`'s format filter for a PDF book.
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+      jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } })],
+        skippedIds: [],
+      });
+      jest.mocked(addCurrentPdfBookmark).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } }),
+          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+        ],
+        skippedIds: [],
+      });
+      jest.mocked(removeBookmark).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } })],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Page 7' }));
+      await fireEvent.changeText(
+        screen.getByTestId('reader-bookmark-edit-input-old'),
+        'Turning point',
+      );
+      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Page 7' }));
+
+      expect(addCurrentPdfBookmark).toHaveBeenCalledWith('test-book', 7, 'Turning point');
+      expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
+      await screen.findByText('Turning point');
+    });
+
+    it('discards the edit on Cancel without calling either write', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'a', label: 'Original' })],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Original' }));
+      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), 'Changed my mind');
+      await fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
+
+      expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
+      expect(removeBookmark).not.toHaveBeenCalled();
+      expect(screen.getByText('Original')).toBeTruthy();
+      expect(screen.queryByTestId('reader-bookmark-edit-input-a')).toBeNull();
+    });
+
+    it('clearing the field back to blank resets to the fallback label, not an empty string', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'a', label: 'Custom name' })],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Custom name' }));
+      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
+      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
+
+      expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
+        'test-book',
+        'epubcfi(/6/4[chap01]!/4/2/2)',
+        undefined,
+        undefined,
+      );
+    });
+  });
+
+  describe("filtering by the open book's format", () => {
+    // THE PARTIAL MITIGATION, NOT THE FIX. `bookmarkStore.list()` returns every bookmark ever
+    // created, for every book — see `bookmarksForOpenBook`'s own note in ReaderScreen.tsx. These
+    // tests pin what Reader CAN do about that without touching Sync's/Personalization's files: an
+    // href-shaped bookmark can never be reached from a PDF, and a page-shaped one never from an EPUB,
+    // so those get filtered — a same-format cross-book leak (two different EPUBs) is NOT covered.
+    it('hides page-shaped (PDF) bookmarks while an EPUB is open', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'epub-1', label: 'Epub spot', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({ id: 'pdf-1', label: 'Foreign PDF page', target: { kind: 'page', page: 3 } }),
+        ],
+        skippedIds: [],
+      });
+      await mountReader(); // defaults to EPUB, per this describe's beforeEach
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      expect(screen.getByText('Epub spot')).toBeTruthy();
+      expect(screen.queryByText('Foreign PDF page')).toBeNull();
+    });
+
+    it('hides href-shaped (EPUB) bookmarks while a PDF is open', async () => {
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+      jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'pdf-1', label: 'Pdf spot', target: { kind: 'page', page: 3 } }),
+          bookmark({
+            id: 'epub-1',
+            label: 'Foreign EPUB spot',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+        ],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      expect(screen.getByText('Pdf spot')).toBeTruthy();
+      expect(screen.queryByText('Foreign EPUB spot')).toBeNull();
+    });
+  });
+});
+
+describe('ReaderScreen bookmark badge', () => {
+  beforeEach(() => {
+    jest.mocked(loadBookmarks).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    // See the identical reset in "ReaderScreen bookmarks panel" — `bookmarksForOpenBook` filters by
+    // `format`, so a PDF override left behind by an earlier test would filter out every EPUB-shaped
+    // `bookmark()` fixture below unless this describe block starts from a known format each time.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+  });
+
+  function bookmark(overrides: Partial<ReaderBookmark> = {}): ReaderBookmark {
+    return {
+      id: 'b1',
+      label: 'Chapter 1',
+      target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      ...overrides,
+    };
+  }
+
+  it('shows no badge until the current position matches a stored bookmark', async () => {
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    // A DIFFERENT CFI — same book, not the bookmarked spot.
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/20)' },
+      atStart: false,
+      atEnd: false,
+    });
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    // The EXACT bookmarked CFI.
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/10)' },
+      atStart: false,
+      atEnd: false,
+    });
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+  });
+
+  it('matches a PDF bookmark by page, not by exact locator', async () => {
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ target: { kind: 'page', page: 12 } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page: 5, pageCount: 100 },
+      atStart: false,
+      atEnd: false,
+    });
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page: 12, pageCount: 100 },
+      atStart: false,
+      atEnd: false,
+    });
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+  });
+
+  it('is purely visual — tapping it does not open the panel or navigate', async () => {
+    // THE WHOLE POINT: an earlier version made this a Pressable that opened BookmarksPanel. The
+    // user asked for the opposite — a marker like Word's, not a control — so this pins that
+    // pressing it does nothing, and it is not even findable by button role.
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ label: 'Here', target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    // An image, not a button — only the toolbar's own "Bookmarks" toggle is a button.
+    expect(screen.getByTestId('reader-bookmark-badge').props.accessibilityRole).toBe('image');
+
+    await fireEvent.press(screen.getByTestId('reader-bookmark-badge'));
+
+    expect(screen.queryByText('Here')).toBeNull();
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+  });
+
+  it('shows a "Page Bookmarked" tooltip via onHoverIn/onHoverOut', async () => {
+    // THIS PROVES THE STATE TRANSITION, NOT THAT A REAL HOVER CAN REACH IT ON THIS APP TODAY.
+    // Checked against RN's own source (Pressability.js/HoverState.js): with this RN version's default
+    // feature flags, Pressable's hover callbacks route through the legacy onMouseEnter/onMouseLeave
+    // path, and HoverState.isHoverEnabled() is hard-coded to stay false unless Platform.OS === 'web'
+    // — never on native iOS/Android, regardless of an iPad trackpad or Mac Catalyst. This app has no
+    // web target configured. `onLongPress`, tested below, is the trigger that actually fires on a
+    // phone, an iPad, or the simulator right now.
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.queryByText('Page Bookmarked')).toBeNull();
+
+    await fireEvent(screen.getByTestId('reader-bookmark-badge'), 'hoverIn');
+    expect(screen.getByText('Page Bookmarked')).toBeTruthy();
+
+    await fireEvent(screen.getByTestId('reader-bookmark-badge'), 'hoverOut');
+    expect(screen.queryByText('Page Bookmarked')).toBeNull();
+  });
+
+  it('shows the same tooltip on a long-press, and hides it when the press ends', async () => {
+    // THE TRIGGER THAT ACTUALLY WORKS ON A TOUCHSCREEN, unlike hover — see the note above.
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    await fireEvent(screen.getByTestId('reader-bookmark-badge'), 'longPress');
+    expect(screen.getByText('Page Bookmarked')).toBeTruthy();
+
+    await fireEvent(screen.getByTestId('reader-bookmark-badge'), 'pressOut');
+    expect(screen.queryByText('Page Bookmarked')).toBeNull();
+  });
+
+  it('a plain tap (pressOut with no long-press) never shows the tooltip', async () => {
+    // Guards the distinction onLongPress exists to make: a quick tap must stay inert, same as the
+    // rest of this badge's "not a button" behaviour.
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    await fireEvent.press(screen.getByTestId('reader-bookmark-badge'));
+
+    expect(screen.queryByText('Page Bookmarked')).toBeNull();
   });
 });

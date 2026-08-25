@@ -14,18 +14,27 @@ export const downloadTable = createSyncableTable<DownloadRow>({
 export const downloadStore = {
   ...downloadTable,
 
-  list(): Promise<DownloadRow[]> {
-    return downloadTable.listActive(USER_ID, BOOK_ID);
+  /**
+   * `userId`/`bookId` default to the prototype's single hardcoded constants - every current
+   * caller gets identical behaviour to before. A caller that actually knows the signed-in user
+   * and/or the open book (multi-user/multi-book capable) should pass them explicitly instead of
+   * relying on the defaults.
+   */
+  list(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<DownloadRow[]> {
+    return downloadTable.listActive(userId, bookId);
   },
 
-  async currentForBook(): Promise<DownloadRow | null> {
+  async currentForBook(
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<DownloadRow | null> {
     const db = await getDatabase();
     return db.getFirstAsync<DownloadRow>(
       `SELECT * FROM downloads
         WHERE user_id = ? AND book_id = ? AND is_deleted = 0
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [USER_ID, BOOK_ID],
+      [userId, bookId],
     );
   },
 
@@ -33,14 +42,19 @@ export const downloadStore = {
    * Records a completed download. `localPath` is stored here and only here -
    * the outbox payload omits it because the path means nothing on another device.
    */
-  async recordCompleted(localPath: string, format = 'PDF'): Promise<DownloadRow> {
+  async recordCompleted(
+    localPath: string,
+    format = 'PDF',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<DownloadRow> {
     return withWriteLock(async () => {
-      const existing = await this.currentForBook();
+      const existing = await this.currentForBook(bookId, userId);
       const now = nowIso();
       const row: DownloadRow = {
         id: existing?.id ?? newId(),
-        user_id: USER_ID,
-        book_id: BOOK_ID,
+        user_id: userId,
+        book_id: bookId,
         format,
         local_path: localPath,
         status: 'COMPLETED',
@@ -75,13 +89,13 @@ export const downloadStore = {
    * Returns whether anything actually changed, which is how the caller tells a revocation worth
    * announcing from a re-confirmation of what it already knew.
    */
-  async setValidity(bookId: string, isValid: boolean): Promise<boolean> {
+  async setValidity(bookId: string, isValid: boolean, userId: string = USER_ID): Promise<boolean> {
     const db = await getDatabase();
     const flag = toInt(isValid);
     const result = await db.runAsync(
       `UPDATE downloads SET is_valid = ?
         WHERE user_id = ? AND book_id = ? AND is_valid IS NOT ?`,
-      [flag, USER_ID, bookId, flag],
+      [flag, userId, bookId, flag],
     );
     return (result?.changes ?? 0) > 0;
   },
@@ -97,24 +111,24 @@ export const downloadStore = {
    * point: this used to be "the column the reader gates on", and it is now "the column the
    * reader explains itself with".
    */
-  async isBookValid(bookId = BOOK_ID): Promise<boolean> {
+  async isBookValid(bookId: string = BOOK_ID, userId: string = USER_ID): Promise<boolean> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<DownloadRow>(
       `SELECT * FROM downloads
         WHERE user_id = ? AND book_id = ? AND is_deleted = 0
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [USER_ID, bookId],
+      [userId, bookId],
     );
     return row ? row.is_valid !== 0 : true;
   },
 
-  /** Book ids this device actually holds - the feed is filtered to these. */
-  async downloadedBookIds(): Promise<string[]> {
+  /** Book ids this user's device actually holds - what `syncEngine.ts`'s pull() loops over. */
+  async downloadedBookIds(userId: string = USER_ID): Promise<string[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<{ book_id: string }>(
       `SELECT DISTINCT book_id FROM downloads WHERE user_id = ? AND is_deleted = 0`,
-      [USER_ID],
+      [userId],
     );
     return rows.map((r) => r.book_id);
   },

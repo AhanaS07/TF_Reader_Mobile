@@ -10,7 +10,7 @@ import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
 import { accessibilityTable } from './stores/accessibilityStore';
 import { bookmarkTable } from './stores/bookmarkStore';
-import { downloadTable } from './stores/downloadStore';
+import { downloadStore, downloadTable } from './stores/downloadStore';
 import { highlightTable } from './stores/highlightStore';
 import { outboxStore } from './stores/outboxStore';
 import { personalizationTable } from './stores/personalizationStore';
@@ -421,42 +421,65 @@ async function serverHasDiverged(
  * tombstones, a record deleted on another device would come back to life here.
  */
 async function pull(report: SyncReport): Promise<void> {
-  // NOTE: userBook entities are filtered by the single hard-coded BOOK_ID, so this pulls one
-  // book and one book only - a second book on the same device would never sync. That is a
-  // deliberate prototype limitation, not an oversight, but the reader is multi-book by
-  // construction, so this loop and BOOK_ID both have to take a book list before it ships.
   const since = SUPPORTS_UPDATED_AFTER
     ? await syncMetadataStore.get(SYNC_KEYS.LAST_PULL_TOKEN)
     : null;
 
   let checkpoint: string | null = null;
 
+  // Every book this device has a local `downloads` row for - NOT discovered from the server.
+  // A book only ever enters this list by being downloaded on this device first; pull() refreshes
+  // metadata (bookmarks, highlights, progress, is_valid) for books already held, it does not
+  // discover new ones. Computed once, up front: `downloads` is itself userBook-scoped and gets
+  // pulled inside the same loop below, but its own book list doesn't need to observe that pull's
+  // results - a book pulled in via someone else's `downloads` write was, definitionally, already
+  // downloaded on THIS device first (see above), so it is already in this list.
+  const bookIds = await downloadStore.downloadedBookIds(USER_ID);
+
   for (const entityType of Object.keys(TABLES) as EntityType[]) {
     const table = TABLES[entityType];
-    const response = await api.list<any>(ENTITY_PATHS[entityType], {
-      userId: USER_ID,
-      bookId: SCOPE[entityType] === 'userBook' ? BOOK_ID : undefined,
-      updatedAfter: since ?? undefined,
-    });
+    const targets: (string | undefined)[] = SCOPE[entityType] === 'userBook' ? bookIds : [undefined];
 
-    // The first response's clock is a lower bound for the whole pull, so a
-    // record written while we were mid-pull lands inside the next window rather
-    // than being skipped.
-    if (checkpoint === null) checkpoint = response.serverTime;
+    for (const bookId of targets) {
+      const response = await api.list<any>(ENTITY_PATHS[entityType], {
+        userId: USER_ID,
+        bookId,
+        updatedAfter: since ?? undefined,
+      });
 
-    for (const record of response.data ?? []) {
-      report.pulled += 1;
-      // Last-Write-Wins, and device-local columns (local_path) are preserved. `downloads` goes
-      // through applyDownloadRecord instead of the table directly - same LWW guard underneath,
-      // but it also diffs isValid and emits content.lock/content.unlock on a real change (B6).
-      const applied =
-        entityType === 'downloads'
-          ? await applyDownloadRecord(record)
-          : await table.applyServerRecord(record);
-      if (applied) report.applied += 1;
+      // The first response's clock is a lower bound for the whole pull, so a
+      // record written while we were mid-pull lands inside the next window rather
+      // than being skipped.
+      if (checkpoint === null) checkpoint = response.serverTime;
+
+      for (const record of response.data ?? []) {
+        report.pulled += 1;
+        // Last-Write-Wins, and device-local columns (local_path) are preserved. `downloads` goes
+        // through applyDownloadRecord instead of the table directly - same LWW guard underneath,
+        // but it also diffs isValid and emits content.lock/content.unlock on a real change (B6).
+        const applied =
+          entityType === 'downloads'
+            ? await applyDownloadRecord(record)
+            : await table.applyServerRecord(record);
+        if (applied) report.applied += 1;
+
+        // Field-merge tables (personalization, accessibility) only: a pending local edit
+        // (synced: 0) survives this merge unchanged - see mergeFieldLevel - but the OUTBOX
+        // entry that edit already queued was captured before this merge ran, so it does not yet
+        // carry whatever field this pull just adopted from the server. Refresh it to the merged
+        // state, or the next push sends the stale pre-merge snapshot and silently reverts that
+        // field. Only for a pure pull; serverHasDiverged's own call to applyServerRecord (mid-
+        // push, same row) is excluded by construction - see that function's own outbox handling.
+        if (applied && table.mergeFields) {
+          const fresh = await table.findById(record.id);
+          if (fresh && (fresh as { synced: number }).synced === 0) {
+            await outboxStore.enqueue(entityType, record.id, 'UPDATE', table.toServerPayload(fresh));
+          }
+        }
+      }
+
+      if (entityType === 'downloads') await recordEntitlementCheck();
     }
-
-    if (entityType === 'downloads') await recordEntitlementCheck();
   }
 
   // The checkpoint moves only once everything above has landed in SQLite.

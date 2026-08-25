@@ -334,13 +334,16 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
-      // tts-error is Android-only — the iOS native module does not list it in
-      // supportedEvents, so subscribing on iOS triggers a "not supported" warning
-      // and the handler would never fire anyway. On iOS, synthesis failures surface
-      // as a tts-cancel event instead.
-      ...(Platform.OS === 'android'
-        ? [Tts.addListener('tts-error', handleTtsError)]
-        : []),
+      // 'tts-error' is absent from @iternio/react-native-tts's iOS `supportedEvents`
+      // (TextToSpeech.m declares only start/finish/pause/resume/progress/cancel, and never calls
+      // sendEventWithName:@"tts-error" — AVSpeechSynthesizerDelegate has no error callback for the
+      // library to wire it from; Android's tts-error comes from UtteranceProgressListener.onError,
+      // which has no iOS equivalent). RCTEventEmitter's addListener throws synchronously for an
+      // event name outside supportedEvents, so this has to be skipped BEFORE calling addListener,
+      // not caught after. CONSEQUENCE, not silently patched over: on iOS, handleTtsError never
+      // fires — an engine failure leaves the session in 'speaking' with no error surfaced, rather
+      // than transitioning to 'error'. No iOS signal exists to restore parity here.
+      ...(Platform.OS === 'ios' ? [] : [Tts.addListener('tts-error', handleTtsError)]),
     ];
 
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);

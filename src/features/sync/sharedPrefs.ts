@@ -42,7 +42,7 @@ import type {
   SharedPrefs,
   Theme,
 } from '@/shared/contracts';
-import { nowIso, toBool, toInt } from './localDb/database';
+import { toBool, toInt } from './localDb/database';
 import type { AccessibilityRow, PersonalizationRow } from './localDb/types';
 import { accessibilityId, accessibilityStore } from './stores/accessibilityStore';
 import { personalizationId, personalizationStore } from './stores/personalizationStore';
@@ -206,20 +206,43 @@ export function mergeSharedPrefs(
 }
 
 /**
+ * The columns whose value differs from the row already stored (all of them when there is no row
+ * yet). Only these are handed to `update()` - see the note on writeSharedPrefs.
+ */
+function changedColumns<TRow>(current: TRow | null, desired: Partial<TRow>): Partial<TRow> {
+  if (!current) return desired;
+  const patch: Partial<TRow> = {};
+  for (const key of Object.keys(desired) as (keyof TRow)[]) {
+    if (current[key] !== desired[key]) patch[key] = desired[key];
+  }
+  return patch;
+}
+
+/**
  * Splits a contract prefs object back across the two tables.
  *
  * Both halves go through the normal `update` path, so each gets its own outbox entry and each
  * is pushed and resolved independently - which is the whole point of keeping them as two
  * records. Written sequentially rather than in parallel: they share one SQLite connection, and
  * `withWriteLock` serialises them anyway.
+ *
+ * GRANULAR WRITE (2026-08-24, Vaishnavi - needs Karthik's sign-off, his file): only the columns
+ * whose value actually CHANGED are handed to `update()`, and an unchanged half is skipped entirely
+ * (no updated_at bump, no outbox op, no sync). This is load-bearing for the field-level merge added
+ * in d8fcb67: `update()` stamps `field_updated_at` for exactly the fields in its patch, so writing
+ * the whole row every time would stamp all ten personalization fields on every save and collapse
+ * per-field merge back to whole-row LWW - device A's theme silently lost to device B's later font
+ * edit. Diffing here keeps each edit's stamp isolated, which is what makes the merge work end to end.
  */
 export async function writeSharedPrefs(
   prefs: Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>,
 ): Promise<void> {
-  const updatedAt = nowIso();
+  const [currentP, currentA] = await Promise.all([
+    personalizationStore.current(),
+    accessibilityStore.current(),
+  ]);
 
-  await personalizationStore.update({
-    id: personalizationId(USER_ID),
+  const personalizationPatch = changedColumns<PersonalizationRow>(currentP, {
     theme: prefs.theme,
     font_family: prefs.font.family,
     custom_font_uri: prefs.font.customFontUri ?? null,
@@ -230,12 +253,13 @@ export async function writeSharedPrefs(
     layout_flow: prefs.layout.flow,
     layout_spread: prefs.layout.spread,
     zoom: prefs.zoom.level,
-    updated_at: updatedAt,
   });
+  if (Object.keys(personalizationPatch).length > 0) {
+    await personalizationStore.update({ id: personalizationId(USER_ID), ...personalizationPatch });
+  }
 
   const a11y = prefs.accessibility;
-  await accessibilityStore.update({
-    id: accessibilityId(USER_ID),
+  const accessibilityPatch = changedColumns<AccessibilityRow>(currentA, {
     dyslexia_font: toInt(a11y.text.dyslexiaFont),
     respect_os_font_scale: toInt(a11y.text.respectOsFontScale),
     font_scale_multiplier: a11y.text.fontScaleMultiplier,
@@ -255,8 +279,10 @@ export async function writeSharedPrefs(
     announce_page_changes: toInt(a11y.announce.pageChanges),
     announce_chapter_changes: toInt(a11y.announce.chapterChanges),
     screen_reader_hints: toInt(a11y.screenReaderHints),
-    updated_at: updatedAt,
   });
+  if (Object.keys(accessibilityPatch).length > 0) {
+    await accessibilityStore.update({ id: accessibilityId(USER_ID), ...accessibilityPatch });
+  }
 }
 
 /** Reset to the frozen defaults. Deep-copies, per the warning on DEFAULT_ACCESSIBILITY_PREFS. */
