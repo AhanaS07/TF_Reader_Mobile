@@ -17,8 +17,7 @@
 // `setActiveForLockScreen` — that is a PER-PLAYER method (`AudioPlayer.setActiveForLockScreen`,
 // confirmed against this installed version's AudioModule.types.d.ts), not a global one, so it has
 // no meaning here, where no player exists yet. It is called wherever a player actually gets
-// created instead — for this phase, that is audioSmokeTest.ts; for the real feature, that will be
-// Phase 3's player screen.
+// created instead — AudioPlayerScreen.tsx.
 //
 // `interruptionMode: 'doNotMix'` is REQUIRED, not just a preference, for setActiveForLockScreen to
 // work reliably — expo-audio's own doc comment on that method: "the OS might not associate lock
@@ -37,8 +36,6 @@
 import { useEffect } from 'react';
 
 import { setAudioModeAsync } from 'expo-audio';
-
-import { runAudioSmokeTestIfEnabled } from './audioSmokeTest';
 
 let setupPromise: Promise<void> | null = null;
 
@@ -59,25 +56,15 @@ function ensureAudioModeConfigured(): Promise<void> {
 
 export function useAudioPlayerSetup(): void {
   useEffect(() => {
-    let cancelled = false;
-
     void (async () => {
       try {
         await ensureAudioModeConfigured();
-        if (!cancelled) {
-          await runAudioSmokeTestIfEnabled();
-        }
       } catch (error) {
-        // Without this, a rejection anywhere in this chain (setAudioModeAsync, the smoke test)
-        // became a silent unhandled-promise-rejection — indistinguishable from "nothing played
-        // because nothing tried to." Loud on purpose; this is the one thing standing between "no
-        // sound" and "no sound AND no idea why."
+        // Without this, a rejection here becomes a silent unhandled-promise-rejection —
+        // indistinguishable from "nothing played because nothing tried to." Loud on purpose; this
+        // is the one thing standing between "no sound" and "no sound AND no idea why."
         console.error('[useAudioPlayerSetup] audio bootstrap failed:', error);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 }

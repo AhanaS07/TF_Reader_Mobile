@@ -11,13 +11,12 @@
 //
 // UNLIKE expo-crypto.js/react-native-quick-crypto.js in this same directory, there is no Node
 // equivalent to back this with real behavior — audio playback has no server-side analogue. This
-// is a plain stub: it proves the JS call sites (useAudioPlayerSetup's memoization, the smoke
-// test's player creation) are reachable and don't throw, NOT that expo-audio itself behaves
-// correctly. That confirmation is manual, on a real device — see AUDIO_PLAYER_DECISION.md and the
-// smoke test's own header.
+// is a plain stub: it proves the JS call sites (useAudioPlayerSetup's memoization,
+// AudioPlayerScreen's player creation) are reachable and don't throw, NOT that expo-audio itself
+// behaves correctly. That confirmation is manual, on a real device — see AUDIO_PLAYER_DECISION.md.
 //
 // Only the members this repo's code actually references (useAudioPlayerSetup.ts,
-// audioSmokeTest.ts, AudioPlayerScreen.tsx) — not the full real module surface.
+// AudioPlayerScreen.tsx) — not the full real module surface.
 function createAudioPlayer() {
   return {
     playing: false,
