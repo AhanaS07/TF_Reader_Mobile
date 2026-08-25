@@ -13,6 +13,16 @@ import { personalizationId, personalizationStore, personalizationTable } from '.
 
 const USER = 'user-001';
 
+/**
+ * A timestamp guaranteed to be after whatever `personalizationStore.update()` stamps "now" as
+ * during this test run - a FIXED calendar date is not safe here, since these tests run for real
+ * against the real clock and a long-lived session can outlive any date picked in advance (this
+ * file's own history: a hard-coded "2026-08-25" broke the moment the session actually reached it).
+ */
+function future(ms = 60 * 60 * 1000): string {
+  return new Date(Date.now() + ms).toISOString();
+}
+
 async function resetTable(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(`DELETE FROM personalization; DELETE FROM outbox;`);
@@ -83,13 +93,12 @@ describe('same-field Last-Write-Wins', () => {
     );
     await personalizationStore.update({ theme: 'dark' }); // local edit at "now"
 
+    const remoteTime = future();
     const applied = await personalizationTable.applyServerRecord(
       serverRecord({
         theme: 'system',
-        // Deliberately far in the future, so it is newer than the local edit regardless of
-        // exactly when this test runs (2026-08-25 stopped being "the future" on 2026-08-25).
-        updatedAt: '2099-08-25T00:00:00.000Z',
-        fieldUpdatedAt: { theme: '2099-08-25T00:00:00.000Z' },
+        updatedAt: remoteTime,
+        fieldUpdatedAt: { theme: remoteTime },
       }),
     );
 
@@ -150,12 +159,10 @@ describe('stale updates', () => {
       serverRecord({
         theme: 'system', // stale - must be rejected
         zoom: 5, // genuinely newer - must land
-        // 2099, not 2026: this needs to be genuinely newer than the local edit regardless of
-        // exactly when this test runs, and 2026-08-25 stopped being "the future" on 2026-08-25.
-        updatedAt: '2099-08-25T00:00:00.000Z',
+        updatedAt: future(),
         fieldUpdatedAt: {
           theme: '2026-08-01T00:00:00.000Z',
-          zoom: '2099-08-25T00:00:00.000Z',
+          zoom: future(),
         },
       }),
     );

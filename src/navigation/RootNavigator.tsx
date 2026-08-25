@@ -12,6 +12,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
+import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
 
 import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 import { BookListScreen } from './BookListScreen';
@@ -32,6 +33,8 @@ export type RootStackParamList = {
   // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
   AudioPlayer: { bookId: BookId; title: string };
   TtsDemo: undefined;
+  // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
+  MockLibrary: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -73,6 +76,12 @@ export function RootNavigator(): React.JSX.Element {
             swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
         <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
         <Stack.Screen name="TtsDemo" component={TtsDemoScreen} options={{ title: 'TTS Demo' }} />
+        {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
+        <Stack.Screen
+          name="MockLibrary"
+          component={MockLibraryScreen}
+          options={{ title: 'Sync Mock' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );
