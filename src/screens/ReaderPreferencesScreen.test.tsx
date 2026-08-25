@@ -146,12 +146,19 @@ describe('ReaderPreferencesScreen theme section', () => {
 });
 
 describe('ReaderPreferencesScreen font section', () => {
-  it('offers exactly the seven provisional font options', async () => {
+  // The seven options live inside a `BottomSheet`, which renders nothing
+  // until opened — see BottomSheet.test.tsx. `waitFor` covers its own
+  // setTimeout(0)-then-animate open, the same way ShelfScreen.test.tsx waits
+  // out FilterSortSheet.
+  async function openFontPicker() {
+    fireEvent.press(fontSection().getByTestId('font-picker-trigger'));
+    await waitFor(() => expect(screen.getByTestId('font-picker-sheet')).toBeTruthy());
+  }
+
+  it('shows the stored family on the trigger', async () => {
     await renderReady(fakeSource());
 
-    for (const option of FONT_FAMILY_OPTIONS) {
-      expect(fontSection().getByTestId(`tabs-tab-${option.id}`)).toBeTruthy();
-    }
+    expect(fontSection().getByText('Lora')).toBeTruthy();
   });
 
   // Scoped to the section — Typography carries its own "EPUB only" hint too,
@@ -162,10 +169,20 @@ describe('ReaderPreferencesScreen font section', () => {
     expect(fontSection().getByText(/EPUB only/i)).toBeTruthy();
   });
 
+  it('offers exactly the seven provisional font options once opened', async () => {
+    await renderReady(fakeSource());
+    await openFontPicker();
+
+    for (const option of FONT_FAMILY_OPTIONS) {
+      expect(screen.getByTestId(`font-option-${option.id}`)).toBeTruthy();
+    }
+  });
+
   it('marks the stored family as the selected option', async () => {
     await renderReady(fakeSource());
+    await openFontPicker();
 
-    expect(fontSection().getByTestId('tabs-tab-Lora').props.accessibilityState.selected).toBe(true);
+    expect(screen.getByTestId('font-option-Lora').props.accessibilityState.selected).toBe(true);
   });
 
   // The screen's half of the hook's spread rule: the write must carry the
@@ -173,12 +190,22 @@ describe('ReaderPreferencesScreen font section', () => {
   it('writes the picked family through the seam without dropping customFontUri', async () => {
     const source = fakeSource();
     await renderReady(source);
+    await openFontPicker();
 
-    fireEvent.press(fontSection().getByText('Merriweather'));
+    fireEvent.press(screen.getByTestId('font-option-Merriweather'));
 
     expect(source.savePrefs).toHaveBeenCalledWith({
       font: { family: 'Merriweather', customFontUri: 'file:///fonts/custom.ttf' },
     });
+  });
+
+  it('closes the sheet once a font is picked', async () => {
+    await renderReady(fakeSource());
+    await openFontPicker();
+
+    fireEvent.press(screen.getByTestId('font-option-Merriweather'));
+
+    await waitFor(() => expect(screen.queryByTestId('font-picker-sheet')).toBeNull());
   });
 
   it('selects nothing and names the current face when it is not an option', async () => {
@@ -187,12 +214,17 @@ describe('ReaderPreferencesScreen font section', () => {
     });
     await renderReady(source);
 
+    // Exact match: the note below also mentions "Georgia" in a sentence, and
+    // an exact string match does not confuse the two.
+    expect(fontSection().getByText('Georgia')).toBeTruthy();
+    expect(fontSection().getByText(/is not one of these options/i)).toBeTruthy();
+
+    await openFontPicker();
     for (const option of FONT_FAMILY_OPTIONS) {
       expect(
-        fontSection().getByTestId(`tabs-tab-${option.id}`).props.accessibilityState.selected,
+        screen.getByTestId(`font-option-${option.id}`).props.accessibilityState.selected,
       ).toBe(false);
     }
-    expect(screen.getByText(/Georgia/)).toBeTruthy();
   });
 });
 
@@ -334,9 +366,9 @@ describe('ReaderPreferencesScreen restore defaults', () => {
         true,
       ),
     );
-    expect(fontSection().getByTestId('tabs-tab-system').props.accessibilityState.selected).toBe(
-      true,
-    );
+    // Font's own control is a picker trigger, not a `Tabs` bar — the reset
+    // shows up as the trigger's displayed value rather than a selected segment.
+    expect(fontSection().getByText('System')).toBeTruthy();
   });
 });
 

@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   },
   tabSegmented: {
     paddingVertical: space.sm,
-    paddingHorizontal: space.md,
+    paddingHorizontal: space.sm,
     borderRadius: radius.pill,
   },
   tabSegmentedActive: {
@@ -141,11 +141,15 @@ const styles = StyleSheet.create({
     // than its inactive neighbours when the underline appears.
     paddingTop: space.sm,
   },
+  // `smallLabel`, not `button`: every current caller (Theme, Layout,
+  // Typography's presets) is an option label read at a glance, not a button
+  // someone reads word-for-word — safe to size down while this component has
+  // no other consumer yet (see the file header's planned screens 01/04/09).
   label: {
-    fontWeight: type.button.weight,
-    fontFamily: type.button.fontFamily,
-    fontSize: type.button.size,
-    lineHeight: type.button.lineHeight,
+    fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,
   },
   labelActive: {

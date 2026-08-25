@@ -59,7 +59,9 @@ export default function LayoutSection({ layout, onSelectFlow, onSelectSpread }: 
 }
 
 const styles = StyleSheet.create({
-  // No outer margin — the screen owns where the section sits (§8).
+  // No outer margin — the screen owns where the section sits (§8). `md`, not
+  // `sm`: "Reading style" and "Page view" are two distinct pickers, not one
+  // control split in two, so they need real separation between them.
   section: {
     gap: space.md,
   },

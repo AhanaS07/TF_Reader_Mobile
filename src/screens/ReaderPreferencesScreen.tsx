@@ -198,12 +198,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // `lg` between sections: each section already spaces its own header from its
-  // control by `sm`, so anything tighter here would read as one long list rather
-  // than four groups.
+  // `lg` between sections — each is its own distinct control (Theme, Font,
+  // Layout, Typography, Restore), and a gap this size is what keeps them
+  // reading as separate items rather than one continuous list.
   content: {
     padding: space.md,
-    paddingBottom: space.xl,
+    paddingBottom: space.lg,
     gap: space.lg,
   },
   skeletonSection: {

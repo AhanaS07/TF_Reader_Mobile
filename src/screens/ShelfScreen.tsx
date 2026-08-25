@@ -57,7 +57,6 @@ import type {
 import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
@@ -68,7 +67,6 @@ import type { Publication, Shelf, SortOrder } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import type { BrowseFilters } from '@search/browseLink';
 import { color, radius, space, type as typeScale } from '../theme/tokens';
-import { offersQueue, QUEUE_ACTION, useQueueRequest } from '@/licence/queueRequest';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'Shelf'>;
 
@@ -85,10 +83,6 @@ const SKELETON_COUNT = 3;
 export default function ShelfScreen({ route }: Props) {
   const { shelfId, institutionId } = route.params;
   const navigation = useNavigation<Nav>();
-
-  // D12 — one queue request at a time for the whole shelf, however many pages
-  // have been loaded. See useQueueRequest for why the guard is list-wide.
-  const queue = useQueueRequest();
 
   // The shelf's IDENTITY, taken from the first page and then left alone: title
   // and totalItems describe the whole shelf, not the page that carried them.
@@ -284,17 +278,8 @@ export default function ShelfScreen({ route }: Props) {
                   imageUrl={publication.coverUrl}
                   format={publication.format}
                   badge={<AccessTierBadge tier={access.tier} />}
-                  // D12 — the Elite queue button on a shelf row. Rendered only
-                  // when the resolve offers it.
-                  action={
-                    offersQueue(access) ? (
-                      <ActionButton
-                        action={QUEUE_ACTION}
-                        state={queue.pendingItemId === publication.id ? 'loading' : 'idle'}
-                        onPress={() => queue.requestQueue(publication.id)}
-                      />
-                    ) : undefined
-                  }
+                  // No `action`: the Elite queue button ("Grant access") is
+                  // ItemDetailScreen only, not on this shelf row.
                   onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
                 />
               );

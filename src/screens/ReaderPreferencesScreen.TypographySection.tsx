@@ -122,29 +122,32 @@ export default function TypographySection({
 }
 
 const styles = StyleSheet.create({
-  // No outer margin — the screen owns where the section sits (§8).
+  // No outer margin — the screen owns where the section sits (§8). `md`, not
+  // `sm`: text size, line height, letter spacing and page margins are four
+  // distinct controls, not one control split in four, so they need real
+  // separation between them.
   section: {
     gap: space.md,
   },
   hint: {
-    fontWeight: typeScale.meta.weight,
-    fontSize: typeScale.meta.size,
-    lineHeight: typeScale.meta.lineHeight,
+    fontWeight: typeScale.smallLabel.weight,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
   },
   group: {
     gap: space.sm,
   },
   note: {
-    fontWeight: typeScale.meta.weight,
-    fontSize: typeScale.meta.size,
-    lineHeight: typeScale.meta.lineHeight,
-    color: color.textSecondary,
-  },
-  readout: {
     fontWeight: typeScale.smallLabel.weight,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.textSecondary,
+  },
+  readout: {
+    fontWeight: typeScale.meta.weight,
+    fontSize: typeScale.meta.size,
+    lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
   },
 });
