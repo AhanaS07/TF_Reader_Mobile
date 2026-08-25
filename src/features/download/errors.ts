@@ -88,6 +88,20 @@ export enum DownloadError {
    * for any caller that reaches `contentStore.store()` directly, e.g. `devContentSeed.ts`), but
    * for the real download path this member fails in milliseconds instead of after up to 25MB. */
   KEY_SUBSTITUTION = 'KEY_SUBSTITUTION',
+
+  // --- offline fallback, added for the unified license gate (licenseCheck.ts) ---
+  /** The device is offline and no persisted licence exists for this book (never downloaded, or the
+   * licence was destroyed). Distinct from the server-side denial codes above: the server was never
+   * contacted. A previously-downloaded book with a valid persisted licence succeeds via
+   * `contentStore.getPersistedLicenceStatus()` instead — this code is specifically the "no local
+   * fallback available" case. */
+  OFFLINE_LICENSE_UNAVAILABLE = 'OFFLINE_LICENSE_UNAVAILABLE',
+  /** 403 ENTITLEMENT_REVOKED — the entitlement has been administratively revoked (not merely
+   * expired). The server-side licence is void; the local copy must be invalidated. Distinct from
+   * ENTITLEMENT_EXPIRED: revocation is immediate and discretionary (a librarian pulled access back),
+   * whereas expiry is a natural lapse of a time-bounded grant. The offline fallback's `is_valid`
+   * check raises this on a pull-based revocation signal. */
+  ENTITLEMENT_REVOKED = 'ENTITLEMENT_REVOKED',
 }
 
 export class DownloadFailure extends Error {

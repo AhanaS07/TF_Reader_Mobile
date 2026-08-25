@@ -49,3 +49,9 @@ const REAL_BACKEND_URL = process.env.EXPO_PUBLIC_REAL_BACKEND_URL ?? `http://loc
 const USE_REAL_BACKEND = process.env.EXPO_PUBLIC_USE_REAL_BACKEND === 'true';
 
 export const API_BASE_URL = USE_REAL_BACKEND ? REAL_BACKEND_URL : MOCK_BACKEND_URL;
+
+// The mock backend has no auth at all (see B1) and no `/api/v1/auth/*` routes, so attaching a
+// bearer token there would just add a header nobody checks. Real-backend calls DO get rejected
+// (401 UNAUTHENTICATED) without one — see devAuthToken.ts. Exported rather than duplicating the
+// `EXPO_PUBLIC_USE_REAL_BACKEND` read, so the two never drift apart.
+export const AUTH_REQUIRED = USE_REAL_BACKEND;

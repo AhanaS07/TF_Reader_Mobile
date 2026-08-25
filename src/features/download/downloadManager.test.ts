@@ -12,7 +12,7 @@
 
 import * as crypto from 'crypto';
 import * as Keychain from 'react-native-keychain';
-import { downloadBook, BOOK_LIMIT } from './downloadManager';
+import { downloadBook } from './downloadManager';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { USER_ID } from '../sync/syncConfig';
 import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
@@ -64,21 +64,35 @@ function sessionFor(
   };
 }
 
-// Mocks fetch across all the URLs downloadBook now hits: borrow, session, the main asset, and
-// (if `session.index` is set) the index asset. Same "one jest.fn switching on url" shape the old
-// two-URL mockFetchFor used, extended to three/four destinations instead of two.
+// Mocks fetch across all the URLs downloadBook now hits: session, the main asset, and (if
+// `session.index` is set) the index asset. `/api/v1/loans` is mocked too but never actually
+// requested — checkLicense.ts no longer calls it (the real backend has no POST for it; see its
+// header, D-020) — kept only so a stray call fails loudly with a real response instead of a
+// silent 404, if that ever regresses.
+//
+// `loan`'s `licenceModel`/`canPersist`/`loanId` are merged onto the served session UNLESS the
+// test's own `session` already set them explicitly (via `sessionFor`'s `overrides`) — the real
+// backend puts these fields on `ReadingSessionResponse` itself now (reading-session.ts's header),
+// so this is what keeps every existing `openAccessLoanFor(bookId, {...})` call driving the same
+// behavior it did before, without touching every call site individually.
 function mockFetchFor(
   loan: Loan,
   session: ReadingSessionResponse,
   content: Uint8Array<ArrayBuffer>,
   indexBytes?: Uint8Array<ArrayBuffer>,
 ) {
+  const servedSession: ReadingSessionResponse = {
+    licenceId: loan.loanId,
+    licenceModel: loan.licenceModel,
+    canPersist: loan.canPersist,
+    ...session,
+  };
   return jest.fn().mockImplementation(async (url: string) => {
     if (url === `${API_BASE_URL}/api/v1/loans`) {
       return new Response(JSON.stringify(loan), { status: 200 });
     }
     if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
-      return new Response(JSON.stringify(session), { status: 200 });
+      return new Response(JSON.stringify(servedSession), { status: 200 });
     }
     if (url === session.content.url) {
       return new Response(content, { status: 200 });
@@ -294,157 +308,46 @@ describe('downloadBook — the ELITE (online-only) path, for real', () => {
     await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
   });
 
-  // `loan.canPersist: false` is the whole point of this test: it proves `intent` comes out
-  // 'STREAM' (not hardcoded 'DOWNLOAD', which the real backend would refuse for ELITE with
-  // 403 DOWNLOAD_NOT_PERMITTED — see downloadManager.ts's header) AND that the flow still
-  // succeeds end-to-end for it — contentStore.ts's `isElite` (licence.canPersist === false)
-  // handles the "writes nothing to disk/keychain" part, unchanged by this migration.
-  it('requests intent STREAM for canPersist:false and still fetches, decrypts, but never persists to disk', async () => {
+  // BEHAVIOR CHANGE (2026-08-23): this used to prove downloadManager.ts auto-downgraded
+  // `intent: 'DOWNLOAD'` to `'STREAM'` for a canPersist:false loan (known ahead of the reading-
+  // session call, from a separate borrow step) and succeeded anyway, non-persisted. There is no
+  // borrow step anymore (checkLicense.ts calls openReadingSession() only — see its header,
+  // D-020), so canPersist isn't known until that call already returns, and there is nothing left
+  // to downgrade against beforehand. `downloadBook()` now sends 'DOWNLOAD' as requested and lets
+  // the real server's refusal (403 DOWNLOAD_NOT_PERMITTED for ELITE) surface as a real failure —
+  // the caller should use `openBook()` (`'STREAM'`) for this book instead. This proves the intent
+  // sent really is 'DOWNLOAD' (not silently downgraded) AND that nothing persists on the refusal.
+  it('rejects with DOWNLOAD_NOT_PERMITTED for an ELITE (canPersist:false) book, intent sent as DOWNLOAD', async () => {
     const bookId = 'elite-online-only-book';
-    const plaintext = new Uint8Array([21, 22, 23, 24, 25]);
-    const bek = new Uint8Array(crypto.randomBytes(32));
-
-    const { publicKey } = await generateDeviceKeypair();
-    const wrappedBek = await wrapBek(bek, publicKey);
-    const payload = await encrypt(plaintext, bek);
-    const encryptedBytes = new Uint8Array(payload.content);
-
-    // Same reasoning as the SUBSCRIPTION test above: must match the real fingerprint of the
-    // device key `publicKey` wraps the BEK under, not an arbitrary literal.
-    const keyFingerprint = await publicKeyFingerprint(publicKey);
     let requestedIntent: string | undefined;
-    const loan = openAccessLoanFor(bookId, {
-      licenceModel: 'ELITE',
-      canPersist: false,
-      dueAt: new Date(Date.now() + 86_400_000).toISOString(),
-    });
-    const session = sessionFor(bookId, encryptedBytes, {
-      content: {
-        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
-        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-        cipherLength: encryptedBytes.length,
-        originalLength: plaintext.length,
-        mimeType: 'application/epub+zip',
-      },
-      encryption: {
-        algorithm: 'AES-256-GCM',
-        layout: 'nonce(12) || ciphertext || tag(16)',
-        wrappedBek,
-        wrapAlgorithm: 'RSA-OAEP-256',
-        keyId: 'master-v1',
-        keyFingerprint,
-      },
-    });
 
     global.fetch = jest.fn().mockImplementation(async (url: string, init?: { body?: string }) => {
-      if (url === `${API_BASE_URL}/api/v1/loans`) {
-        return new Response(JSON.stringify(loan), { status: 200 });
-      }
       if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
         requestedIntent = init?.body ? (JSON.parse(init.body) as { intent?: string }).intent : undefined;
-        return new Response(JSON.stringify(session), { status: 200 });
-      }
-      if (url === session.content.url) {
-        return new Response(encryptedBytes, { status: 200 });
+        return new Response(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            status: 403,
+            code: 'DOWNLOAD_NOT_PERMITTED',
+            message: 'ELITE titles are online-only',
+            path: '/api/v1/reading-sessions',
+          }),
+          { status: 403 },
+        );
       }
       return new Response(null, { status: 404 });
     });
 
-    await expect(downloadBook(bookId)).resolves.toBeUndefined();
-    expect(requestedIntent).toBe('STREAM');
+    await expect(downloadBook(bookId)).rejects.toMatchObject({
+      code: DownloadError.DOWNLOAD_NOT_PERMITTED,
+      bookId,
+    });
+    expect(requestedIntent).toBe('DOWNLOAD');
 
-    // Elite writes nothing to disk/keychain (contentStore.ts's own "Elite writes nothing" rule) —
-    // isAvailableOffline stays false even though the download itself succeeded.
+    // Nothing persisted, and no row for a download that never happened.
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
-
-    // Found in review (D-18): this used to write a `status: 'COMPLETED'` downloads row and burn
-    // one of the 5 offline slots for a book that was never actually persisted. An ELITE (STREAM)
-    // read must leave the downloads table exactly as it found it — nothing to track, since
-    // nothing was written.
     const rows = await downloadTable.listActive(USER_ID);
     expect(rows.find((row) => row.book_id === bookId)).toBeUndefined();
-
-    await contentStore.openSession(bookId);
-    const decrypted = await contentStore.decryptBook(bookId);
-    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
-    await contentStore.close(bookId);
-  });
-
-  // Found in review (D-18), the other half of the same fix: the fast-fail cap check used to run
-  // BEFORE borrowLoan(), so it couldn't tell an ELITE (never-persisted) read apart from a real
-  // download. A reader already at the 5-book cap on real downloads would get a bogus
-  // BOOK_LIMIT_REACHED trying to just READ an ELITE book online, even though doing so was never
-  // going to consume a slot. This proves the gate now checks `loan.canPersist` (post-borrow),
-  // not just book count, before rejecting.
-  it('reading an ELITE book succeeds even when already at the 5-book cap on real downloads', async () => {
-    const eliteBookId = 'elite-at-cap-book';
-    const plaintext = new Uint8Array([31, 32, 33]);
-    const bek = new Uint8Array(crypto.randomBytes(32));
-    const { publicKey } = await generateDeviceKeypair();
-    const wrappedBek = await wrapBek(bek, publicKey);
-    const payload = await encrypt(plaintext, bek);
-    const encryptedBytes = new Uint8Array(payload.content);
-    const keyFingerprint = await publicKeyFingerprint(publicKey);
-
-    // Fill the cap with real (open-access, canPersist: true) downloads. Topped up RELATIVE to
-    // whatever is already active, not from an assumed-empty table — other describe blocks in
-    // this file share this same real, un-reset downloadTable and don't all clean up after
-    // themselves (see the search-index block's own comment on the identical trap), so a literal
-    // "start from 0" assumption here would be fragile to run order.
-    const before = (await downloadTable.listActive(USER_ID)).length;
-    const fillerIds: string[] = [];
-    for (let i = before; i < BOOK_LIMIT; i++) {
-      const bookId = `elite-at-cap-filler-${i}`;
-      fillerIds.push(bookId);
-      const content = new Uint8Array([i, i + 1, i + 2]);
-      const loan = openAccessLoanFor(bookId);
-      const session = sessionFor(bookId, content);
-      global.fetch = mockFetchFor(loan, session, content);
-      await downloadBook(bookId);
-    }
-    const atCap = (await downloadTable.listActive(USER_ID)).length;
-    expect(atCap).toBeGreaterThanOrEqual(BOOK_LIMIT);
-
-    const eliteLoan = openAccessLoanFor(eliteBookId, { licenceModel: 'ELITE', canPersist: false });
-    const eliteSession = sessionFor(eliteBookId, encryptedBytes, {
-      content: {
-        url: `http://localhost:4000/fixtures/${eliteBookId}.epub.enc`,
-        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-        cipherLength: encryptedBytes.length,
-        originalLength: plaintext.length,
-        mimeType: 'application/epub+zip',
-      },
-      encryption: {
-        algorithm: 'AES-256-GCM',
-        layout: 'nonce(12) || ciphertext || tag(16)',
-        wrappedBek,
-        wrapAlgorithm: 'RSA-OAEP-256',
-        keyId: 'master-v1',
-        keyFingerprint,
-      },
-    });
-    global.fetch = jest.fn().mockImplementation(async (url: string) => {
-      if (url === `${API_BASE_URL}/api/v1/loans`) return new Response(JSON.stringify(eliteLoan), { status: 200 });
-      if (url === `${API_BASE_URL}/api/v1/reading-sessions`)
-        return new Response(JSON.stringify(eliteSession), { status: 200 });
-      if (url === eliteSession.content.url) return new Response(encryptedBytes, { status: 200 });
-      return new Response(null, { status: 404 });
-    });
-
-    await expect(downloadBook(eliteBookId)).resolves.toBeUndefined();
-    // Count unchanged — the ELITE read didn't add a row, and wasn't blocked by the cap already there.
-    expect((await downloadTable.listActive(USER_ID)).length).toBe(atCap);
-
-    // Soft-delete only the filler rows THIS test created — this file's `downloadTable` is real
-    // and un-reset across tests (see the search-index describe block's own comment on the
-    // identical trap), so leaving them would trip BOOK_LIMIT_REACHED in every test that runs
-    // after this one.
-    for (const bookId of fillerIds) {
-      const rows = await downloadTable.listActive(USER_ID, bookId);
-      for (const row of rows) {
-        await downloadTable.softDeleteLocal(row.id);
-      }
-    }
   });
 });
 
@@ -586,15 +489,16 @@ describe('downloadBook — failure branches', () => {
     expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
   });
 
-  // Renamed from "rejects with LICENCE_FETCH_FAILED when content-licence 404s": borrowLoan() is
-  // now the FIRST network call downloadBook makes, and a 404 with no FlambeauError-shaped body
-  // (tryParseFlambeauError finds no `code` field) falls back to the generic LOAN_FAILED, same
-  // fallback role LICENCE_FETCH_FAILED used to play for the old single-endpoint mock.
-  it('rejects with LOAN_FAILED when the loan request 404s', async () => {
+  // Renamed from "rejects with LOAN_FAILED when the loan request 404s": there is no loan request
+  // anymore (checkLicense.ts calls openReadingSession() only — see its header, D-020), so
+  // openReadingSession() is the FIRST and ONLY network call downloadBook makes, and a 404 with no
+  // FlambeauError-shaped body (tryParseFlambeauError finds no `code` field) falls back to the
+  // generic SESSION_FETCH_FAILED.
+  it('rejects with SESSION_FETCH_FAILED when the reading-session request 404s', async () => {
     global.fetch = jest.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'not_found' }), { status: 404 }));
 
     await expect(downloadBook('missing-book')).rejects.toMatchObject({
-      code: DownloadError.LOAN_FAILED,
+      code: DownloadError.SESSION_FETCH_FAILED,
     });
   });
 });
@@ -619,11 +523,14 @@ describe('downloadBook — flambeau error code mapping', () => {
     };
   }
 
-  it('rejects with NO_ENTITLEMENT when the loan request 403s with that flambeau code', async () => {
+  it('rejects with NO_ENTITLEMENT when the reading-session request 403s with that flambeau code', async () => {
     const bookId = 'no-entitlement-book';
     global.fetch = jest.fn().mockImplementation(async (url: string) => {
-      if (url === `${API_BASE_URL}/api/v1/loans`) {
-        return new Response(JSON.stringify(flambeauError('NO_ENTITLEMENT', '/api/v1/loans')), { status: 403 });
+      if (url === `${API_BASE_URL}/api/v1/reading-sessions`) {
+        return new Response(
+          JSON.stringify(flambeauError('NO_ENTITLEMENT', '/api/v1/reading-sessions')),
+          { status: 403 },
+        );
       }
       return new Response(null, { status: 404 });
     });
@@ -731,8 +638,9 @@ describe('downloadBook — search index delivery', () => {
 
     await downloadBook(bookId);
 
-    // Exactly 3 requests: loan, reading-session, then the main asset. No fourth URL was ever built.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Exactly 2 requests: reading-session, then the main asset. No loan call (checkLicense.ts no
+    // longer makes one — see its header, D-020) and no index URL was ever built.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

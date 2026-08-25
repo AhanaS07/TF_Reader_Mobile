@@ -86,10 +86,10 @@ describe('same-field Last-Write-Wins', () => {
     const applied = await personalizationTable.applyServerRecord(
       serverRecord({
         theme: 'system',
-        updatedAt: '2026-08-25T00:00:00.000Z',
         // Deliberately far in the future, so it is newer than the local edit regardless of
-        // exactly when this test runs.
-        fieldUpdatedAt: { theme: '2026-08-25T00:00:00.000Z' },
+        // exactly when this test runs (2026-08-25 stopped being "the future" on 2026-08-25).
+        updatedAt: '2099-08-25T00:00:00.000Z',
+        fieldUpdatedAt: { theme: '2099-08-25T00:00:00.000Z' },
       }),
     );
 
@@ -150,10 +150,12 @@ describe('stale updates', () => {
       serverRecord({
         theme: 'system', // stale - must be rejected
         zoom: 5, // genuinely newer - must land
-        updatedAt: '2026-08-25T00:00:00.000Z',
+        // 2099, not 2026: this needs to be genuinely newer than the local edit regardless of
+        // exactly when this test runs, and 2026-08-25 stopped being "the future" on 2026-08-25.
+        updatedAt: '2099-08-25T00:00:00.000Z',
         fieldUpdatedAt: {
           theme: '2026-08-01T00:00:00.000Z',
-          zoom: '2026-08-25T00:00:00.000Z',
+          zoom: '2099-08-25T00:00:00.000Z',
         },
       }),
     );

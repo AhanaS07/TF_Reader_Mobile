@@ -16,48 +16,78 @@ contracts do not support. Nothing here has been changed in your code.
 
 ---
 
-## 1. `C7` 💬 — the fingerprint recipe is a guess, and it now fails closed
+## 1. `C7` ✅ — CLOSED 2026-08-23: the fingerprint recipe was confirmed, not guessed wrong
 
-**This is the highest-priority item in this directory, and it is a question for wokay, not a code
-change.**
+`tf_reader_backend_temp` (the real backend) is now running locally (`:8080`) and testable directly,
+not just readable-as-a-spec. Its `ContentAccessGrantImpl.fingerprintOf()`
+(`content/service/ContentAccessGrantImpl.java`) is:
 
-`84f2476` closed `B3` properly. `publicKeyFingerprint()` (`deviceKeypair.ts:168`) derives the
-fingerprint from the device's own public key, `downloadManager.ts` uses it for
-`SignedLicence.keyFingerprint`, and so `assertLicenceMatchesPackage()`'s check at
-`contentStore.ts:150` finally compares **our** derivation against **the server's claim** instead of
-a value against itself. That is exactly the anti-key-substitution guarantee wokay mandates:
+```java
+byte[] digest = MessageDigest.getInstance("SHA-256").digest(devicePublicKey);
+return "sha256:" + HexFormat.of().formatHex(digest);
+```
 
-> `keyFingerprint*` — SHA-256 of the device public key this key was wrapped for. **Required, and the
-> reader must compare it against its own key and refuse if it differs. That comparison is what
-> proves nobody in the chain substituted a key, so it cannot be optional.**
+— over the same raw SPKI DER bytes the request's `devicePublicKey` field carries. That is exactly
+`publicKeyFingerprint()`'s (`deviceKeypair.ts:168`) guess, on all three axes:
 
-The problem is what happens if the recipe is wrong. `publicKeyFingerprint()` picks:
-
-| Decision | We chose | Could also be |
+| Decision | We chose | Confirmed against the real backend |
 | --- | --- | --- |
-| Digest input | the raw DER bytes (same bytes `publicKeyToRawBase64()` sends) | the base64 SPKI string |
-| Prefix | literal `sha256:` | absent, or another label |
-| Output | full 64-char lowercase hex | truncated, or base64 |
+| Digest input | the raw DER bytes | ✅ same bytes, digested server-side |
+| Prefix | literal `sha256:` | ✅ literal, lowercase |
+| Output | full 64-char lowercase hex | ✅ `HexFormat.formatHex` on a 32-byte digest |
 
-wokay's only published example is `"sha256:d5e91261"` — **eight** hex characters, so a truncated
-illustration that settles none of the three. If any one differs, `contentStore.store()` throws
-`ContentError.LICENCE_INVALID` on **every encrypted download**, permanently, from the first real
-server contact.
+**Verified live, not just read**: generated a real RSA-2048 keypair, sent its raw SPKI DER as
+`devicePublicKey` in a real `POST /api/v1/reading-sessions` call (with a bearer token from
+`/api/v1/auth/dev-token` — see `download/devAuthToken.ts`), and the response's
+`encryption.keyFingerprint` matched an independent `sha256:` + `SHA256(raw DER).hex()` computed in
+Python, byte for byte. No code change needed — `publicKeyFingerprint()` is correct as written.
 
-Before `84f2476` the two sides both came from the server, so a mismatch was structurally
-impossible. The same commit that fixed the security hole turned `C7` from a documentation question
-into a hard integration blocker. **Get the answer from wokay before integration week.**
+Struck in `src/shared/contracts/CONTRACT_ALIGNMENT.md` in the same change.
 
-Two things to fix regardless of the answer:
+---
 
-- **The check runs after the download.** `session.encryption.keyFingerprint` is available the
-  instant `openReadingSession` returns; the comparison happens inside `store()`, after
-  `fetchEncryptedAsset` has pulled up to 25 MB. Comparing early fails in milliseconds and raises a
-  `DownloadError` at the right layer instead of a `ContentFailure` surfacing out of Encryption.
-- **The failure code is generic.** `LICENCE_INVALID` covers expiry, itemId mismatch, malformed
-  dates and now key substitution. A dedicated `KEY_SUBSTITUTION` would make the one case that means
-  "someone tampered with the chain" distinguishable from "this licence is stale" in logs and in the
-  UI. `shared/contracts/errors.ts` is frozen, so that's a Gate conversation.
+## 1a. `B17` 🔴 — NEW 2026-08-23: the wrapped BEK does not actually decrypt (backend bug)
+
+**This is now the highest-priority item in this directory — it isn't a guess, it's a reproduced
+failure, and closing `C7` above only makes it more visible: the fingerprint check now correctly
+passes, and the very next step (`unwrapBek()`) fails.**
+
+The real backend's wrap (`ContentAccessGrantImpl.wrapBekForDevice()`) is:
+
+```java
+Cipher cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+```
+
+No `OAEPParameterSpec` is passed. This is a well-known `SunJCE` gotcha: the transformation string's
+`...AndMGF1Padding` suffix only names the **OAEP** digest (SHA-256 here); the **MGF1** mask digest
+defaults separately to **SHA-1** unless an explicit `OAEPParameterSpec` with
+`MGF1ParameterSpec.SHA256` is supplied. So the real on-wire wrap is OAEP-SHA256 / MGF1-SHA1 — a
+Java-specific combination — not "true" RSA-OAEP-256 (SHA-256 for both), which is what
+`wrapAlgorithm: 'RSA-OAEP-256'` implies and what every other common implementation (WebCrypto,
+OpenSSL's own EVP defaults when both are set explicitly) means by that name.
+
+This app's `unwrapBek()` (`deviceKeypair.ts:219`, via `react-native-quick-crypto`) passes one
+`oaepHash` option that the library ties to **both** the OAEP digest and MGF1 at the native/OpenSSL
+layer (`HybridRsaCipher.cpp`, confirmed by reading the C++: the same `md` is set for both
+`EVP_PKEY_CTX_set_rsa_oaep_md` and `EVP_PKEY_CTX_set_rsa_mgf1_md`). There is no way to request
+mismatched digests through this app's crypto library, and there shouldn't be — matching digests is
+the correct, standard behaviour.
+
+**Verified empirically** (RSA-2048 keypair, real `wrappedBek` pulled from a live
+`POST /api/v1/reading-sessions` response): decrypting with OAEP-SHA256/MGF1-**SHA1** recovers the
+real 32-byte BEK and the fetched ciphertext then decrypts to a valid PDF. Decrypting with
+OAEP-SHA256/MGF1-**SHA256** (what this app does, and what "RSA-OAEP-256" should mean) throws.
+
+**This is not something to work around client-side.** Weakening this app's OAEP to
+MGF1-SHA1-to-match would make it interoperate with this one prototype backend's bug and break
+compatibility with any correctly-implemented RSA-OAEP-256 backend (including whatever wokay ships
+for real). **The fix belongs on the backend**: pass an explicit
+`OAEPParameterSpec(new PSource.PSpecified(...))` with `MGF1ParameterSpec.SHA256` to `cipher.init`.
+Flag this with wokay/whoever owns `content/service/` in `tf_reader_backend_temp` — it is a one-line
+fix on their side.
+
+**Done when:** the same live-decrypt check above succeeds with matching SHA-256/SHA-256.
 
 ---
 

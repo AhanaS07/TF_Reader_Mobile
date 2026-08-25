@@ -84,8 +84,10 @@ describe('same-field Last-Write-Wins', () => {
     const applied = await accessibilityTable.applyServerRecord(
       serverRecord({
         ttsEnabled: false,
-        updatedAt: '2026-08-25T00:00:00.000Z',
-        fieldUpdatedAt: { tts_enabled: '2026-08-25T00:00:00.000Z' },
+        // Deliberately far in the future, so it is newer than the local edit regardless of
+        // exactly when this test runs (2026-08-25 stopped being "the future" on 2026-08-25).
+        updatedAt: '2099-08-25T00:00:00.000Z',
+        fieldUpdatedAt: { tts_enabled: '2099-08-25T00:00:00.000Z' },
       }),
     );
 

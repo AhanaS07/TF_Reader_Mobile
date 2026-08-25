@@ -19,25 +19,26 @@
 // `Loan.canPersist` (not tier, not licenceModel) is what actually gates whether `intent: DOWNLOAD`
 // will be honoured — the server refuses it for ELITE regardless of what the UI offered.
 //
-// WHY A LOAN STEP EXISTS HERE AT ALL, WHEN NOTHING IN THIS REPO MODELED ONE BEFORE: the real
-// backend requires an active loan before a reading session succeeds (`409 NO_ACTIVE_LOAN`
-// otherwise), except open access. No capability in this repo owns "borrow" UI yet (CAP-4, if it
-// exists, is outside CAP-7's scope) — `downloadManager.ts` calls `borrowLoan()` itself, silently,
-// as the first step of a download. That is a pragmatic stand-in, not a claim that Download now
-// owns the borrow UX; tracked as B5 in `CONTRACT_ALIGNMENT.md` (this directory). Note the other
-// half of possession is still missing entirely: nothing in this repo ever calls
-// `POST /api/v1/loans/{id}/return`, so every ELITE copy this client takes stays taken until the
-// server's own sweep closes it.
+// THERE IS NO BORROW STEP ON THE REAL BACKEND — `POST /api/v1/loans` DOES NOT EXIST (confirmed
+// against `tf_reader_backend_temp`: only `GET /api/v1/loans`, a list, is mapped; `POST` 405s).
+// `LoanController.java`'s own javadoc: "a licence is created when a reading session opens (D-020),
+// not by a call to this controller." `BorrowRequest`/`borrowLoan()` below are kept for the mock
+// backend and for any published contract that still describes a separate borrow step, but
+// `checkLicense.ts` (download/) no longer calls them — `licenceId`/`licenceModel`/`canPersist` now
+// come off `ReadingSessionResponse` directly, in the SAME call that fetches content. `Loan`/
+// `LoanPage`/`ReturnRequest`/`ReturnResponse` are unused by app code today for the same reason;
+// left in place rather than deleted because a published contract may still require them and
+// deleting a type this app never calls is a no-op locally, not a proof nothing needs it.
 //
 // `licence: SignedLicence` DOES NOT EXIST ON THE REAL RESPONSE — content-provider.ts's frozen
 // `EncryptedPackage`/`ContentStore.store()` require one (with `expiresAt`/`canPersist`/`rights`/
 // `signature`) to decide Subscription-vs-Elite persistence, but the real backend never sends
-// anything shaped like it. `downloadManager.ts` synthesizes one locally from `Loan.canPersist` +
-// `Loan.dueAt` (the actual multi-week offline-reopen window) — NOT from `ReadingSessionResponse
-// .expiresAt` (only ~5 minutes, meant for the signed URL/grant, not for gating an offline reopen
-// weeks later). Keeping those two `expiresAt`s apart is the subtlest thing in the two published
-// contracts and this is where it gets resolved — conflating them would expire every offline book
-// five minutes after download.
+// anything shaped like it. `checkLicense.ts` synthesizes one locally from `canPersist` (now on
+// this response) — the real backend exposes NO long-term loan due-date at all (confirmed: the
+// `GET /api/v1/loans` list returns `dueAt: null` for every seeded loan), so every synthesized
+// licence gets the same far-future placeholder `expiresAt`, regardless of `licenceModel`. This is
+// unresolved, not a design choice: without a due-date field anywhere on the real backend, an
+// offline SUBSCRIPTION licence cannot expire until the backend adds one.
 // `signature` has no real-backend counterpart at all (RS256 licence signing isn't part of this
 // spec) — synthesized as an empty/unverified placeholder, matching `contentStore.ts`'s own
 // already-documented, pre-existing gap (RS256 verification was never implemented, real or mock).
@@ -112,11 +113,45 @@ export interface IndexUrl {
   termCount?: number;
 }
 
+/** Where the reader stands for a copy-limited (ELITE) title. Absent for open access and
+ * subscription — those tiers have no queue. `position: 0` means a copy is free now; the
+ * `content` URL on the response carrying this will have expired by the time a queued reader is
+ * promoted, so the app must call again rather than cache it. `estimatedAt` is a guess, named like
+ * one — it knows nothing about early returns. */
+export interface QueueState {
+  queueId: string;
+  position: number;
+  queueLength: number;
+  readNow: boolean;
+  estimatedAt?: string;
+}
+
 export interface ReadingSessionResponse {
   /** For correlating logs. Not a credential, never presented back to the server. */
   sessionId: string;
+  /** The licence this read was authorised against — what the real backend actually calls it.
+   * Confirmed against `tf_reader_backend_temp`'s `ReadingSessionResponse` record; the published
+   * flambeau spec this file originally modeled calls the same concept `loanId` (below), which the
+   * real backend's response never sends. Absent for open access. */
+  licenceId?: string;
   itemId: BookId;
-  /** The loan this read was authorised against. Absent for open access. */
+  /** What the entitlement check returned: `OPEN_ACCESS`, `ENTITLED_UNLIMITED`,
+   * `ENTITLED_CONCURRENT`. Present on the real backend; kept loose (not a union) since neither
+   * published contract documents this field's exact value set. */
+  accessLevel?: string;
+  /** Same vocabulary the app already speaks from the catalogue feeds. Present on the real
+   * backend's response — this is what lets `checkLicense.ts` skip a separate borrow/loan call
+   * entirely (see this file's header). */
+  licenceModel?: LicenceModel;
+  /** THE download-button gate — not `licenceModel`. False for ELITE; the server refuses a
+   * DOWNLOAD-intent reading session regardless of what the UI showed. Present on the real
+   * backend's response, same field the old `Loan.canPersist` carried. */
+  canPersist?: boolean;
+  /** Present only for a copy-limited (ELITE) title with no copy free right now. */
+  queue?: QueueState;
+  /** @deprecated Never sent by the real backend (confirmed) — it sends `licenceId` (above)
+   * instead. Kept only because the published flambeau spec this file originally modeled names it;
+   * nothing in this app reads it. */
   loanId?: string;
   /** ~5 minutes. This is the SESSION's expiry, not the licence's — see this file's header. */
   expiresAt: string;

@@ -26,6 +26,8 @@ import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
 import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
 import { closeBook } from '@/features/encryption/contentProvider';
 import { DownloadFailure } from '@/features/download/errors';
+import { startAccessMonitor } from '@/features/download/readingAccessMonitor';
+import type { AccessMonitorHandle } from '@/features/download/readingAccessMonitor';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -435,6 +437,12 @@ export function ReaderScreen({
     setFades((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
   }, []);
 
+  // The running periodic access re-check for the CURRENTLY OPEN book — started once
+  // `getBookBase64` succeeds (readingAccessMonitor.ts's own doc comment on why it does not need an
+  // immediate first tick), stopped by the same teardown effect that already calls closeBook(). A
+  // ref, not state: nothing here should re-render off it, only read/replace the current handle.
+  const accessMonitorRef = useRef<AccessMonitorHandle | null>(null);
+
   // When the `open` command was handed to injectJavaScript. A ref, not state: it is written on the
   // bridge path and read in the message handler, and re-rendering on it would perturb the very
   // interval being measured. `rendered - openSentAt` is the only view we get of bridge transfer +
@@ -483,6 +491,18 @@ export function ReaderScreen({
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       setIsObscured(nextState !== 'active');
+
+      // Pause the periodic access re-check while backgrounded — nobody is reading, and a timer
+      // firing while the app can't render a fresh error banner would either be wasted or, worse,
+      // resolve into a revocation the reader never sees delivered. Resuming restarts a FULL
+      // interval (readingAccessMonitor.ts's own doc comment on why: not a resumed partial one) —
+      // a book that was safe to read when it backgrounded does not need re-checking the instant
+      // it returns to the foreground. A no-op before the monitor has started (ref still null).
+      if (nextState === 'active') {
+        accessMonitorRef.current?.resume();
+      } else {
+        accessMonitorRef.current?.pause();
+      }
     });
 
     return () => {
@@ -609,6 +629,13 @@ export function ReaderScreen({
   // nothing useful to show the user — the screen is already gone.
   useEffect(() => {
     return () => {
+      // Stop the periodic access re-check FIRST — same reasoning as the TTS teardown right below:
+      // once the session is closing, a tick that landed mid-teardown has nothing left to act on
+      // (raiseError on an unmounting/switching screen), and closeBook() below is about to make the
+      // whole question moot anyway. A no-op before the monitor ever started (ref still null).
+      accessMonitorRef.current?.stop();
+      accessMonitorRef.current = null;
+
       // BEFORE closeBook, same cleanup, so the ordering is guaranteed rather than dependent on
       // React's cross-effect cleanup order (which is not the same on an in-place book switch as on
       // a full unmount). A no-op while TTS was never active (ref is null).
@@ -662,6 +689,21 @@ export function ReaderScreen({
           const base64 = await withOpenTimeout(getBookBase64(bookId, format));
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length, format });
+
+          // Start re-verifying access on a timer NOW that the book has actually opened —
+          // getBookBase64 above already ran the one-time open-time check (verifyReadingAccess),
+          // this is what covers everything after it for as long as the book stays open. Stop any
+          // prior monitor first: `handleReady` is a WebView `ready` handler, not a mount effect, so
+          // nothing rules out a second `ready` (e.g. a WebView reload) firing before this screen
+          // unmounts, and starting a second interval without stopping the first would leak it.
+          accessMonitorRef.current?.stop();
+          accessMonitorRef.current = startAccessMonitor(bookId, format, (failure) => {
+            raiseError(
+              'ACCESS_REVOKED',
+              `Access to this book was revoked while reading: ${failure.code}. ` +
+                `(${String(failure.cause ?? failure.message)})`,
+            );
+          });
 
           // EXHAUSTIVE ON PURPOSE. This switch is the entire seam where
           // ContentFormat becomes a bridge command, and the `never` default is what

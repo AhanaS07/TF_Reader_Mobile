@@ -29,29 +29,27 @@ instead of restating the problem.
 
 ## Read this first: the one that will stop integration
 
-**`C7` — nobody has confirmed with wokay what a `keyFingerprint` actually is, and the code now
-fails closed on getting it wrong.**
+**`C7` is now ✅ CLOSED (2026-08-23) — confirmed against a running instance of the real backend,
+not just read.** `tf_reader_backend_temp` (the real Spring Boot backend, running locally on
+`:8080`) is now up and testable. Its `ContentAccessGrantImpl.fingerprintOf()`
+(`content/service/`) is `"sha256:" + HexFormat.of().formatHex(SHA-256(devicePublicKey))` over the
+raw SPKI DER bytes — exactly `publicKeyFingerprint()`'s (`deviceKeypair.ts:168`) guess, on all
+three axes. Verified live: a real `POST /api/v1/reading-sessions` call came back with
+`encryption.keyFingerprint` matching, byte for byte, an independent SHA-256 computed in Python over
+the same device public key. No code change needed. See `encryption/API_CONTRACT_NOTES.md` §1 for
+the full trail.
 
-Commit `84f2476` correctly closed `B3`: `SignedLicence.keyFingerprint` is now derived from the
-device's own public key (`deviceKeypair.ts`'s `publicKeyFingerprint()`) rather than copied from the
-server's claim, so `contentStore.ts`'s comparison is a real anti-key-substitution check instead of
-a value against itself. That is the right fix.
-
-But the digest recipe is a **guess in three independent ways**, and wokay's only published example
-is `"sha256:d5e91261"` — eight hex characters, so a truncated illustration that settles none of
-them:
-
-| Guess | What we chose | What else it could be |
-| --- | --- | --- |
-| Digest input | the raw DER bytes | the base64 SPKI string |
-| Prefix | literal `sha256:` | absent, or another label |
-| Length | full 64-char hex | truncated, or base64 |
-
-If any one of the three differs, `contentStore.store()` throws `LICENCE_INVALID` on **every
-encrypted download**, permanently, the first time this app talks to a real server. Before
-`84f2476` a mismatch was structurally impossible, so this went from a documentation question to a
-hard blocker in the same commit that fixed the security hole. **Ask wokay before integration
-week, not during it.**
+**What replaces it as the integration blocker: `B17` — the wrapped BEK does not actually decrypt.**
+The real backend's RSA-OAEP wrap (`ContentAccessGrantImpl.wrapBekForDevice()`) uses
+`Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding")` with no `OAEPParameterSpec` —
+Java's `SunJCE` provider then defaults the **MGF1** digest to SHA-1 while the **OAEP** digest is
+SHA-256. This app's `unwrapBek()` (`react-native-quick-crypto`, confirmed at the native/OpenSSL
+layer) ties both to the same digest — true RSA-OAEP-256, matching the WebCrypto convention and what
+`wrapAlgorithm: 'RSA-OAEP-256'` should mean. Verified empirically: a wrapped BEK from the running
+backend only decrypts with OAEP-SHA256/MGF1-SHA1; it fails with both-SHA256. **Every encrypted
+download against this backend fails at the unwrap step, today**, independent of auth or the
+fingerprint. This is a backend bug (missing `OAEPParameterSpec` with `MGF1ParameterSpec.SHA256`),
+not something to work around client-side — see `encryption/API_CONTRACT_NOTES.md` §1a.
 
 ---
 
@@ -81,9 +79,9 @@ because the app has already picked a side on two of them.
 
 | # | Finding | Status | Owner | Detail |
 | --- | --- | --- | --- | --- |
-| `B1` | 🔴 No `Authorization` header, no token, no auth flow at all | ❌ | Abhinav + CAP-6 | `download/` |
-| `B2` | 🔴 Base URL is an untracked mock on `:4000`, not `:8080` | ❌ | Abhinav | `download/` |
-| `B3` | 🔴 `keyFingerprint` never compared to the device key | ✅ **closed by `84f2476`** — but see `C7` above | Abhinav | `encryption/` |
+| `B1` | 🔴 No `Authorization` header, no token, no auth flow at all | 🟡 **narrowed 2026-08-23**: real-backend calls now send a bearer token (`download/devAuthToken.ts`, `POST /api/v1/auth/dev-token`) — but that endpoint is a dev-only shortcut on the real backend, not a real sign-in. Steps 1–3 of the real flow (institution discovery, method selection, SAML/OIDC round trip) are still unbuilt; `C6` still blocks them | Abhinav + CAP-6 | `download/` |
+| `B2` | 🔴 Base URL is an untracked mock on `:4000`, not `:8080` | 🟡 **switch flipped locally** (`EXPO_PUBLIC_USE_REAL_BACKEND=true` in `.env`) — the cross-capability unification (one shared constant) is still undone | Abhinav | `download/` |
+| `B3` | 🔴 `keyFingerprint` never compared to the device key | ✅ **closed by `84f2476`**, and `C7` below is now closed too — the check is real and the recipe is confirmed correct | Abhinav | `encryption/` |
 | `B4` | 🔴 `SignedLicence` exists in no contract; synthesized with an empty signature | ❌ **contract comment corrected so it no longer claims a guarantee we don't have**; the type itself still needs a Gate decision | Ahana + Abhinav | this file's §B4 below |
 | `B5` | 🟠 Loans borrowed, never returned; no holds/library/availability | ❌ | CAP-4 boundary | `download/` |
 | `B6` | 🟠 Change feed unimplemented — the designed revocation channel | 🟡 **Mechanism replaced, Sync half implemented**: the licence side now writes `isValid` directly onto `downloads` (Mongo) instead of via a feed, so `sync/loanChanges.ts` is deleted and `sync/offlineLock.ts` instead diffs `downloads.isValid` on every pull and emits `content.lock`/`content.unlock`. Encryption's subscriber (destroy the BEK on `reason: 'revoked'`) is still **not** written — that half is still Abhinav's. **Needs Abhinav's sign-off on two things, not just notice**: (1) `src/shared/contracts/offline-lock.ts`'s own open question 3 says entitlement "must not be a synced column" — this design is exactly that, just server-written instead of device-written, and that file was never re-visited before this shipped; (2) a bare `isValid: boolean` carries no `reason`, so every invalidation now emits `reason: 'revoked'` (destroys the BEK) — including cases the old feed would have mapped to the non-destructive `'expired'` | Abhinav/Karthik | `download/`, `sync/` |
@@ -97,6 +95,9 @@ because the app has already picked a side on two of them.
 | `B14` | 🟢 Wrong `wantSearchIndex` default in a comment | ✅ **fixed** | Ahana | done here |
 | `B15` | 🟢 Subscription audio would persist with no licence or expiry | ❌ | Abhinav | `download/` |
 | `B16` | 🟢 Dangling `flambeau-contract-comparison.md` citations ×4 | 🟡 **2 of 4 repointed** (both in this directory); 2 remain in `download/` | Abhinav for the rest | — |
+| `B17` | 🔴 **NEW 2026-08-23** — real backend's RSA-OAEP wrap ties MGF1 to SHA-1 while the OAEP digest is SHA-256 (`Cipher.getInstance("...OAEPWithSHA-256AndMGF1Padding")` with no `OAEPParameterSpec`, a `SunJCE` default gotcha); this app correctly does true RSA-OAEP-256 (both SHA-256). Every encrypted download fails to unwrap its BEK against this backend, today | ❌ **backend fix, not ours** — needs `OAEPParameterSpec(SHA-256, MGF1ParameterSpec.SHA256, PSpecified.DEFAULT)` on their `Cipher.init` | wokay (backend) | `encryption/` — see §1a |
+| `B18` | 🔴 **NEW 2026-08-23** — real backend has no `POST /api/v1/loans` at all; `LoanController` implements only `GET /api/v1/loans` (list), with a comment saying "a licence is created when a reading session opens (D-020), not by a call to this controller." `flambeau-api.yaml` still marks `POST /api/v1/loans` **FROZEN**. `borrowLoan()` (called from `licenseCheck.ts`) gets `405` on every call | ❌ **contract/backend mismatch — needs flambeau's ruling**: either implement the FROZEN endpoint, or confirm the borrow step is gone and tell the app to stop calling it | flambeau (backend) | `download/` — see §B18 |
+| `B19` | 🟡 **NEW 2026-08-23** — real backend has no `GET /api/v1/auth/methods` controller at all (contract says `security: []`, i.e. public); an unmapped path falls through Spring Security's deny-all chain and returns `401 UNAUTHENTICATED`/`TOKEN_MISSING` instead of a `404`. Misleading, not blocking — user is raising this with the backend team directly | ❌ tracked for awareness, not Abhinav's to fix | flambeau (backend) | `download/` — see §B19 |
 
 ### Register C — gaps
 
@@ -108,7 +109,7 @@ because the app has already picked a side on two of them.
 | `C4` | `items:batch` 100-id cap interacts with `GET /library`'s non-pagination | ❌ | whoever builds the shelf |
 | `C5` | `availability` endpoint has a documented consumer, no implementation | ❌ | flambeau |
 | `C6` | 🔴 **No contract says how the app receives its token after the SAML browser round trip** | 💬 **highest-value open question in the whole review** — `B1` cannot be built until it is answered | flambeau |
-| `C7` | `keyFingerprint` digest input/length unspecified | 💬 **now blocking** — see the top of this file | wokay |
+| `C7` | `keyFingerprint` digest input/length unspecified | ✅ **closed 2026-08-23** — confirmed against the running real backend, all three guesses correct. See the top of this file | wokay |
 | `C8` | Untracked artefacts referenced by tracked code | 🟡 the review doc itself is now committed; `mock-backend/` still is not | Abhinav |
 
 ---
