@@ -167,12 +167,12 @@ describe('ProfileScreen sign out', () => {
 describe('ProfileScreen rows with nothing behind them', () => {
   // Drawn, not dropped — the screen 12 rule. Each is announced as disabled so a
   // screen reader gets the same answer the greying gives a sighted reader.
-  const UNAVAILABLE = [
-    'Reading Preferences',
-    'Download Settings',
-    'Privacy & Security',
-    'About T&F Reader',
-  ];
+  //
+  // 'Reading Preferences' HAS LEFT THIS LIST. It was here only because there was
+  // no screen to push; `ReaderPreferences` now exists on the Profile stack, so
+  // the row is live and its own test sits in the describe below. The remaining
+  // four still have no destination.
+  const UNAVAILABLE = ['Download Settings', 'Privacy & Security', 'About T&F Reader'];
 
   it.each(UNAVAILABLE)('renders %s and announces it as disabled', async (title) => {
     await render(<ProfileScreen />);
@@ -193,6 +193,31 @@ describe('ProfileScreen rows with nothing behind them', () => {
     }
     fireEvent.press(screen.getByRole('switch', { name: 'Notifications' }));
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProfileScreen reading preferences', () => {
+  // The row was disabled until `ReaderPreferences` existed. These three are what
+  // stop it silently reverting: it must be enabled, it must push, and it must
+  // push THAT route by name — a rename in navigation/types.ts strands this row
+  // otherwise, the same reason the Change institution tests assert by name.
+  it('offers Reading Preferences as an enabled row', async () => {
+    await render(<ProfileScreen />);
+    const row = screen.getByRole('button', { name: 'Reading Preferences' });
+    expect(row.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('pushes ReaderPreferences when the row is tapped', async () => {
+    await render(<ProfileScreen />);
+    fireEvent.press(screen.getByRole('button', { name: 'Reading Preferences' }));
+    // No params and no tab target: prefs are a per-user singleton, and the route
+    // sits on this screen's own stack rather than in a sibling tab.
+    expect(mockNavigate).toHaveBeenCalledWith('ReaderPreferences');
+  });
+
+  it('keeps its subtitle and chevron, so only the destination changed', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Font size, theme')).toBeTruthy();
   });
 });
 
