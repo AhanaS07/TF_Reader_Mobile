@@ -34,6 +34,7 @@ import EmptyState from '@/components/EmptyState';
 import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
+import { ActionButton } from '@components/ActionButton';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
@@ -49,6 +50,7 @@ import { useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import OfflineBanner from '@/components/OfflineBanner';
 import { useLibraryStore } from '@store/libraryStore';
+import { offersQueue, QUEUE_ACTION, useQueueRequest } from '@/licence/queueRequest';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
@@ -88,6 +90,10 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   // One fetch per mount — not one per card.
   const loans = useLibraryStore((s) => s.loans);
   const holds = useLibraryStore((s) => s.holds);
+
+  // D12 — one queue request at a time for the whole feed. Held at screen level
+  // rather than per row so a second tap anywhere is ignored while one is live.
+  const queue = useQueueRequest();
   const refresh = useLibraryStore((s) => s.refresh);
 
   // A7 — keyed on the institution, not one shared offset: signing out swaps this
@@ -207,6 +213,16 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                 {shelf.publications.map((publication) => {
                   const pubLoan = loans.find((l) => l.itemId === publication.id);
                   const pubHold = holds.find((h) => h.itemId === publication.id);
+                  // Hoisted out of the `badge` prop: D12 needs the resolved
+                  // ACTIONS as well as the tier, and resolving twice per row
+                  // would be two answers to one question.
+                  const access = resolveAccess({
+                    item: publication,
+                    institutionId,
+                    session: handToggledSession(institutionId),
+                    loan: pubLoan,
+                    hold: pubHold,
+                  });
                   return (
                     <ContentCard
                       key={publication.id}
@@ -214,18 +230,18 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                       publisher={publication.publisher}
                       imageUrl={publication.coverUrl}
                       format={publication.format}
-                      badge={
-                        <AccessTierBadge
-                          tier={
-                            resolveAccess({
-                              item: publication,
-                              institutionId,
-                              session: handToggledSession(institutionId),
-                              loan: pubLoan,
-                              hold: pubHold,
-                            }).tier
-                          }
-                        />
+                      badge={<AccessTierBadge tier={access.tier} />}
+                      // D12 — the Elite queue button on a shelf row, not just on
+                      // the detail screen. Rendered only when the resolve offers
+                      // it, so a row this reader cannot queue for draws nothing.
+                      action={
+                        offersQueue(access) ? (
+                          <ActionButton
+                            action={QUEUE_ACTION}
+                            state={queue.pendingItemId === publication.id ? 'loading' : 'idle'}
+                            onPress={() => queue.requestQueue(publication.id)}
+                          />
+                        ) : undefined
                       }
                       onPress={() =>
                         navigation.navigate('ItemDetail', { itemId: publication.id })

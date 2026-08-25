@@ -51,7 +51,7 @@ import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
-import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
+import { borrowOrPlaceHold } from '@/licence/queueRequest';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -110,6 +110,10 @@ const GENERIC_MESSAGE = "We couldn't load this title.";
 export function renderBookContent(
   detail: ItemDetail,
   onAction: (action: ActionId) => void,
+  // The action waiting on flambeau, if any. Optional so the existing two-argument
+  // callers keep working; `undefined` is the same "nothing in flight" ActionBar
+  // already defaults to.
+  pending?: ActionId,
 ): ReactElement {
   return (
     <>
@@ -206,7 +210,7 @@ export function renderBookContent(
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
           and draws its own top border, so it needs no wrapper of its own here. */}
-      <ActionBar actions={detail.access.actions} onAction={onAction} />
+      <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
 }
@@ -426,6 +430,8 @@ function InertTabRow({ labels }: { labels: readonly string[] }): ReactElement {
 export function renderArticleContent(
   detail: ItemDetail,
   onAction: (action: ActionId) => void,
+  /** See renderBookContent. */
+  pending?: ActionId,
 ): ReactElement {
   return (
     <>
@@ -501,7 +507,7 @@ export function renderArticleContent(
           and draws its own top border, so no wrapper is needed here; the
           `actionBarWrapper` stretch fix exists only for the book layout, whose
           centring column would otherwise shrink it. */}
-      <ActionBar actions={detail.access.actions} onAction={onAction} />
+      <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
 }
@@ -533,6 +539,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   const [publication, setPublication] = useState<Publication | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  // The licence call currently waiting on flambeau — handed to ActionBar so the
+  // tapped button goes busy. `undefined` is "nothing in flight".
+  const [pendingAction, setPendingAction] = useState<ActionId | undefined>(undefined);
   const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
 
   // Recomputed whenever the publication or the reader's holdings change. Pure and
@@ -584,8 +593,44 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     fetchItem();
   }, [fetchItem]);
 
+  // ONE LICENCE CALL IN FLIGHT, AND THE BAR SAYS SO. Every branch below used to
+  // be fire-and-forget: the button stayed idle, so Read or Grant access could be
+  // tapped four times while the first borrow was still open and each tap made
+  // another call. `pendingAction` is what ActionBar's own `pending` prop was
+  // built for — it renders that one button `loading`, and ActionButton makes a
+  // loading button `disabled`, so the tapped control stops accepting presses on
+  // its own. The state check below closes the same door for the OTHER buttons in
+  // the bar, which stay visually idle.
+  //
+  // NO REF GUARD, DELIBERATELY. A synchronous `inFlight` ref would be captured by
+  // `handleAction`, which is handed to `renderBookContent` — a function called
+  // during render — and `react-hooks/refs` rejects that for a real reason: a ref
+  // read during render does not re-render when it changes. The disabled Pressable
+  // is the guard the component library already provides, and it is the one the
+  // rest of this app relies on (see ActionButton's `inert`).
+  const runLicenceCall = useCallback(
+    (action: ActionId, call: () => Promise<unknown>) => {
+      setPendingAction(action);
+
+      call()
+        // Caught before the refresh so a failed call still invalidates the cache
+        // — a borrow that threw may still have created the loan. D13 owns turning
+        // the refusal into a message; this only stops the button spinning forever.
+        .catch(() => {})
+        .then(() => refresh())
+        .catch(() => {})
+        .finally(() => setPendingAction(undefined));
+    },
+    [refresh],
+  );
+
   const handleAction = useCallback(
     (action: ActionId) => {
+      // Nothing while a licence call is open. `signIn` is exempt below only
+      // because it is navigation, not a call — and it cannot coexist with one
+      // anyway, since resolveAccess never returns signIn beside the four.
+      if (pendingAction !== undefined) return;
+
       if (action === 'signIn') {
         if (detail !== null) {
           navigation.navigate('AccessGate', {
@@ -599,49 +644,29 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 
       // The four licence calls. Each mutates server state, so the holdings cache is
       // invalidated immediately after — refresh() re-fetches GET /api/v1/library and
-      // the action bar updates to reflect the new loan or hold.
+      // the action bar updates to reflect the new loan or hold. All four now run
+      // through `runLicenceCall`, which owns the pending state and the guard.
       const source = getLicenceSource();
       if (action === 'read' || action === 'download') {
-        source
-          .borrow(itemId)
-          .then(() => refresh())
-          .catch(() => {});
+        runLicenceCall(action, () => source.borrow(itemId));
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
-        source
-          .returnLoan(loan.loanId)
-          .then(() => refresh())
-          .catch(() => {});
+        const loanId = loan.loanId;
+        runLicenceCall(action, () => source.returnLoan(loanId));
       } else if (action === 'grantAccess') {
-        // Elite path: attempt borrow first. Only fall through to placeHold on
-        // NO_COPIES_AVAILABLE — a network error or any other refusal should not
-        // silently enqueue the reader for a title they may already hold elsewhere.
-        source
-          .borrow(itemId)
-          .catch((err: unknown) => {
-            if (
-              isLicenceFailure(err) &&
-              err.code === LicenceError.REFUSED &&
-              err.errorCode === 'NO_COPIES_AVAILABLE'
-            ) {
-              return source.placeHold(itemId);
-            }
-            return Promise.reject(err);
-          })
-          .then(() => refresh())
-          .catch(() => {});
+        // Elite path: borrow first, queue only on NO_COPIES_AVAILABLE. The rule
+        // now lives in `borrowOrPlaceHold` because D12 gives it four more callers
+        // on the card surfaces — see src/licence/queueRequest.ts. Behaviour is
+        // unchanged; this is the same two calls in the same order.
+        runLicenceCall(action, () => borrowOrPlaceHold(source, itemId));
       } else if (action === 'acceptOffer' && hold?.holdId !== undefined) {
-        source
-          .acceptOffer(hold.holdId)
-          .then(() => refresh())
-          .catch(() => {});
+        const holdId = hold.holdId;
+        runLicenceCall(action, () => source.acceptOffer(holdId));
       } else if (action === 'rejectOffer' && hold?.holdId !== undefined) {
-        source
-          .cancelHold(hold.holdId)
-          .then(() => refresh())
-          .catch(() => {});
+        const holdId = hold.holdId;
+        runLicenceCall(action, () => source.cancelHold(holdId));
       }
     },
-    [navigation, detail, itemId, loan, hold, refresh],
+    [navigation, detail, itemId, loan, hold, pendingAction, runLicenceCall],
   );
 
   let body: ReactNode;
@@ -681,8 +706,8 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // side is exercised directly in tests rather than left unwritten.
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction)
-        : renderBookContent(detail, handleAction);
+        ? renderArticleContent(detail, handleAction, pendingAction)
+        : renderBookContent(detail, handleAction, pendingAction);
   }
 
   return (
