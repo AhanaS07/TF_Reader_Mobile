@@ -82,9 +82,14 @@ jest.mock('./audioPlayerInstance', () => ({
   getAudioPlayerFor: () => ({ player: mockFakePlayer, isNew: mockIsNewAudioPlayer }),
 }));
 
+// setAudioModeAsync is here because AudioPlayerScreen now imports ensureAudioModeConfigured
+// (useAudioPlayerSetup.ts) to order itself after the global audio-session config — that module
+// reaches expo-audio for this one call, so a factory returning only useAudioPlayerStatus would
+// throw "not a function" the moment the load effect runs.
 jest.mock('expo-audio', () => ({
   __esModule: true,
   useAudioPlayerStatus: (player: typeof mockFakePlayer) => ({ ...player }),
+  setAudioModeAsync: jest.fn(() => Promise.resolve()),
 }));
 
 function getFakePlayer() {

@@ -103,5 +103,56 @@ patch and the diagnostic logging were reverted; `node_modules/expo-audio` is sto
 - Before restarting this investigation, check `expo-audio`'s CHANGELOG for a released fix first —
   #40919 shipping (or an equivalent fix) may make this moot without any patch of ours.
 
+### 2026-08-25 follow-up: #40919 is a DEAD END for this app — do not re-patch it
+
+Re-investigated against the installed `57.0.4` native source. **The reverted patch could never have
+worked, and the reason is not the one assumed above.**
+
+`MediaController.swift` in 57.0.4 contains no `setCategory` and no `setActive` call anywhere — so
+#40919's fix is genuinely absent from the installed version (the CHANGELOG confirms no lock-screen
+fix in any `57.0.x`; #40919 remains unshipped). **But re-asserting the category there is redundant
+regardless**, because `AudioModule.setAudioMode` already sets exactly the call the patch adds. With
+this app's mode (`playsInSilentMode: true`, `allowsRecording: false`, `interruptionMode: 'doNotMix'`)
+the native branch resolves to `category = .playback` and `sessionOptions = []`
+(`AudioModule.swift:789`, `792-799`), reaching `session.setCategory(.playback, mode: .default)` at
+`AudioModule.swift:818` — the identical call, with the identical arguments, that the patch
+re-asserted. The session category was already correct before the patch, during it, and after the
+revert. That is why it changed nothing.
+
+Two more candidates were ruled out by reading native source rather than by inference:
+
+- **NaN in `nowPlayingInfo`** (a classic cause of iOS silently dropping the whole dictionary) is
+  impossible here: `AudioPlayer.duration` and `.currentTime` both coerce NaN to `0.0`
+  (`AudioPlayer.swift:57-65`) before `applyPlaybackInfo` ever reads them.
+- **A silently-rejected audio mode** is impossible: `AudioUtils.validateAudioMode` throws only on
+  three `playsInSilentMode == false` combinations (`AudioUtils.swift:178-188`), and this app sets it
+  `true`.
+
+**The JS call chain is intact.** `setActiveForLockScreen` runs on the live module singleton (there is
+exactly one `createAudioPlayer` call site, `audioPlayerInstance.ts`; the smoke-test player that could
+once have contended for the lock screen was deleted in `bc01731`), gated on `status.isLoaded`, so
+after a source is loaded. No orphaned reference survived the `useAudioPlayer` → singleton migration.
+
+**Root cause is still NOT established.** Steps 1-3 of this pass eliminated the audio-mode config, the
+native category, and the singleton wiring without finding it. Two real defects WERE found and fixed
+(below), but neither explains a card that never appears at all — only one that disappears. If the
+card still does not appear on a rebuild, this is an `expo-audio` version/upstream escalation, not
+something to work around in this repo.
+
+### Fixed in the same pass — real, evidenced, but NOT proven to be the root cause
+
+1. **`keepAudioSessionActive: true`** (`audioPlayerInstance.ts`). It defaults to `false`, and at that
+   default expo-audio's `Function("pause")` calls `deactivateSession()` on every pause
+   (`AudioModule.swift:244-249`), as does the constructor's `onPlaybackComplete` at end of track
+   (`AudioModule.swift:135-139`). Deactivating the session tears the Now Playing card down. Wrong for
+   an audiobook, where pausing is constant and the card must survive it. **Explains a card that
+   vanishes on pause; does not explain one that never appears.**
+2. **Ordering made explicit** (`useAudioPlayerSetup.ts` exports `ensureAudioModeConfigured`;
+   `AudioPlayerScreen.tsx` awaits it before resolving the URI). `setActiveForLockScreen` only
+   associates the OS lock screen with a player if the session category is already `.playback`.
+   App.tsx's mount-time hook call made that true in practice; awaiting the same memoized promise
+   makes it true by construction rather than by navigation timing. **Hardening — no evidence this
+   was ever actually violated at runtime.**
+
 `useAudioPlayerSetup.ts` keeps its filename and hook name across the swap — `App.tsx`'s call site
 was never touched twice; only the hook's own implementation changed.

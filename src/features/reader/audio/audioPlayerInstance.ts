@@ -46,7 +46,13 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
   }
 
   current?.player.remove();
-  const player = createAudioPlayer(null, { updateInterval: 250 });
+  // `keepAudioSessionActive: true` is LOCK-SCREEN CORRECTNESS, not a performance knob. Left at its
+  // default of `false`, expo-audio's own `Function("pause")` calls `deactivateSession()` on every
+  // pause, and the constructor's `onPlaybackComplete` does the same at end of track
+  // (AudioModule.swift). Deactivating the AVAudioSession tears down the Now Playing card, so an
+  // audiobook — where pausing is constant and the card must survive it — must opt out. iOS-only
+  // per expo-audio's own types; a no-op elsewhere.
+  const player = createAudioPlayer(null, { updateInterval: 250, keepAudioSessionActive: true });
   current = { bookId, player };
   return { player, isNew: true };
 }

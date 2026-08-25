@@ -39,7 +39,13 @@ import { setAudioModeAsync } from 'expo-audio';
 
 let setupPromise: Promise<void> | null = null;
 
-function ensureAudioModeConfigured(): Promise<void> {
+/** Exported so a screen that is about to claim the lock screen can ORDER itself after the global
+ * audio-session config rather than assume it. `setActiveForLockScreen` only associates the OS lock
+ * screen with a player when the session category is already `.playback` — which is set here, by
+ * `setAudioModeAsync`, and nowhere else. App.tsx calling this hook at mount makes that ordering
+ * true in practice today; awaiting the same memoized promise makes it true by construction.
+ * Idempotent: every caller shares the one in-flight/settled promise. */
+export function ensureAudioModeConfigured(): Promise<void> {
   if (!setupPromise) {
     setupPromise = setAudioModeAsync({
       playsInSilentMode: true,

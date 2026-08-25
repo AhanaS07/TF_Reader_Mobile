@@ -44,6 +44,7 @@ import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
 import { getAudioPlayerFor } from './audioPlayerInstance';
+import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 const SKIP_SECONDS = 15;
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
@@ -143,6 +144,13 @@ export function AudioPlayerScreen({
 
     void (async () => {
       try {
+        // ORDERING, not setup: the global audio session must already be `.playback` before this
+        // screen claims the lock screen further down. Gating the URI on it transitively gates
+        // `status.isLoaded` — and so `setActiveForLockScreen` — without a second async effect.
+        // Rejection is swallowed on purpose: useAudioPlayerSetup already logs it, and a failed
+        // audio-mode call must not turn into "couldn't load this audiobook" when playback itself
+        // would still work.
+        await ensureAudioModeConfigured().catch(() => undefined);
         // TEMPORARY stand-in for Download's real pass — see this file's own header note.
         await ensureSeeded(bookId);
         const resolvedUri = await audioAssetResolver.resolveAudioAssetUri(bookId);
@@ -208,8 +216,11 @@ export function AudioPlayerScreen({
   // showSeekForward/showSeekBackward (not next/prev-track — this module has no such option for a
   // single AudioPlayer) is what keeps the lock screen's remote commands audiobook-appropriate.
   // Re-asserted every mount (including for a reused player) rather than only for `isNew`: harmless
-  // if already active, and correctly reclaims lock-screen control if the smoke test or some other
-  // player briefly took it in between.
+  // if already active, and correctly reclaims lock-screen control if another player took it in
+  // between. audioPlayerInstance.ts is the only thing in this app that constructs a player, so
+  // "another player" today means only the one a previous book left behind — releasing that one
+  // calls setActivePlayer(nil) natively (AudioPlayer.sharedObjectWillRelease), which clears the
+  // card, so re-claiming here is what puts it back.
   useEffect(() => {
     if (status.isLoaded && !hasSetLockScreenRef.current) {
       hasSetLockScreenRef.current = true;
