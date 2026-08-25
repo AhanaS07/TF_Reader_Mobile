@@ -35,13 +35,14 @@ describe('BookListScreen', () => {
     jest.mocked(openBook).mockResolvedValue(new Uint8Array());
   });
 
-  it('lists all four book fixtures plus the TTS demo', async () => {
+  it('lists all five book fixtures plus the TTS demo', async () => {
     const { getByText } = await renderBookList(jest.fn());
 
     expect(getByText('EPUB')).toBeTruthy();
     expect(getByText('PDF')).toBeTruthy();
     expect(getByText('Big EPUB')).toBeTruthy();
     expect(getByText('Big PDF')).toBeTruthy();
+    expect(getByText('Audiobook')).toBeTruthy();
     expect(getByText('TTS Demo')).toBeTruthy();
   });
 
@@ -77,6 +78,24 @@ describe('BookListScreen', () => {
 
     expect(openBook).toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // AUDIO PHASE 3: the one row that does NOT navigate to Reader — pins the open-path diversion
+  // this phase added (BookListScreen.tsx's onPress), the one thing standing between an audio book
+  // and the (now backstop-only) UNSUPPORTED_FORMAT banner. Also the one row that does NOT go
+  // through openBook() — see BookListScreen.tsx's onPress comment on why not.
+  it('tapping Audiobook navigates to AudioPlayer, not Reader, and does not call openBook', async () => {
+    const navigate = jest.fn();
+    const { getByText } = await renderBookList(navigate);
+
+    fireEvent.press(getByText('Audiobook'));
+
+    expect(navigate).toHaveBeenCalledWith('AudioPlayer', {
+      bookId: 'dev-sample-audio',
+      title: 'Audiobook',
+    });
+    expect(navigate).not.toHaveBeenCalledWith('Reader', expect.anything());
+    expect(openBook).not.toHaveBeenCalled();
   });
 
   it('tapping TTS Demo navigates to the TtsDemo route', async () => {

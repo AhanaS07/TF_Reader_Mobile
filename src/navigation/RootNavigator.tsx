@@ -13,6 +13,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
+import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 import { BookListScreen } from './BookListScreen';
 import { ReaderRouteScreen } from './ReaderRouteScreen';
 import { TtsDemoScreen } from './TtsDemoScreen';
@@ -24,6 +25,12 @@ export type RootStackParamList = {
   // DevFixture table in App.tsx), and ReaderRouteScreen needs it before ReaderScreen has resolved
   // anything, to gate DevPreferencesMenu's format-specific sections.
   Reader: { bookId: BookId; format: ContentFormat };
+  // AUDIO PHASE 3. No `format` param — this route only ever hosts AUDIO, so there's nothing to
+  // gate the way ReaderRouteScreen gates DevPreferencesMenu's sections. `title` is fixture
+  // metadata BookListScreen already has statically, same reasoning `format` was passed for
+  // Reader. BookListScreen decides AUDIO vs Reader at tap time — this route never receives an
+  // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
+  AudioPlayer: { bookId: BookId; title: string };
   TtsDemo: undefined;
 };
 
@@ -62,6 +69,9 @@ export function RootNavigator(): React.JSX.Element {
           component={ReaderRouteScreen}
           options={{ gestureEnabled: false }}
         />
+        {/* No gestureEnabled: false here — AudioPlayerScreen has no competing PanResponder-style
+            swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
+        <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
         <Stack.Screen name="TtsDemo" component={TtsDemoScreen} options={{ title: 'TTS Demo' }} />
       </Stack.Navigator>
     </NavigationContainer>

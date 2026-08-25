@@ -20,11 +20,16 @@
 // note).
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { useAudioPlayerSetup } from '@/features/reader/audio/useAudioPlayerSetup';
 import { useAutoSync } from '@/features/sync/useAutoSync';
 import { RootNavigator } from '@/navigation/RootNavigator';
 
 export default function App() {
   useAutoSync();
+  // AUDIO PHASE 2: bootstraps expo-audio's global audio session once, app-wide — see that hook's
+  // own header for why this lives here (mirrors useAutoSync's placement) rather than in
+  // ReaderScreen.
+  useAudioPlayerSetup();
 
   return (
     <SafeAreaProvider>
