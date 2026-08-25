@@ -28,7 +28,7 @@
 // interaction, for the same reason: chaining "press A, observe, press B" needs a re-render between
 // them, and manufacturing one safely turned out not to be possible here.
 
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { AudioPlayerScreen } from './AudioPlayerScreen';
 
@@ -305,5 +305,96 @@ describe('AudioPlayerScreen', () => {
     );
 
     await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(7));
+  });
+
+  // AUDIO PHASE 4. onPositionCommit marks the edges where the next tick may never arrive. These
+  // stay one-interaction-per-test, per this file's header — unmount() is not rerender() and is not
+  // affected by the instability that rule exists for.
+
+  it('commits the position on pause, not just on the next tick', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.playing = true;
+    fakePlayer.currentTime = 63;
+    const onPositionCommit = jest.fn();
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+
+    await fireEvent.press(await findByLabelText('Pause'));
+    expect(onPositionCommit).toHaveBeenCalledWith(63);
+  });
+
+  it('commits the seeked-to position on skip, not the position it skipped from', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.currentTime = 30;
+    const onPositionCommit = jest.fn();
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+
+    await fireEvent.press(await findByLabelText('Skip forward 15 seconds'));
+    expect(onPositionCommit).toHaveBeenCalledWith(45);
+  });
+
+  it('commits the live player position on unmount, not the last rendered status', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.currentTime = 12;
+    const onPositionCommit = jest.fn();
+
+    const { unmount } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+    await waitFor(() => expect(fakePlayer.replace).toHaveBeenCalled());
+
+    // Playback continues in the background after the screen goes away, so the player has moved on
+    // from whatever the last render saw. Committing the stale rendered value would lose it.
+    fakePlayer.currentTime = 99;
+    // act(), not a bare unmount(): unmount alone does not flush effect CLEANUPS synchronously here,
+    // so the assertion ran before the teardown it is about (confirmed — the cleanup fired after the
+    // failure). This is the same class of problem as this file's header note on rerender(), and the
+    // same shape of answer: let React finish rather than assert into the middle of it.
+    await act(async () => {
+      await unmount();
+    });
+
+    expect(onPositionCommit).toHaveBeenCalledWith(99);
+  });
+
+  it('does not commit a position on unmount when nothing ever loaded', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.isLoaded = false;
+    mockResolveAudioAssetUri.mockReturnValue(new Promise(() => {}));
+    const onPositionCommit = jest.fn();
+
+    const { unmount, getByText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+    await waitFor(() => expect(getByText('Loading My Audiobook…')).toBeTruthy());
+
+    await act(async () => {
+      await unmount();
+    });
+
+    // currentTime on an unloaded player is 0; persisting it would overwrite a real stored position
+    // with the top of the book just because the user opened and immediately left.
+    expect(onPositionCommit).not.toHaveBeenCalled();
   });
 });

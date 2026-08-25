@@ -30,7 +30,29 @@ import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
 
 import type { BookId } from '@/shared/contracts';
 
+import { flushAudioSessionPosition, setAudioSessionPosition } from './audioSessionProgress';
+
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
+
+/**
+ * AUDIO PHASE 4. Records the LIVE player's position for whichever book it is holding, and writes it
+ * through immediately.
+ *
+ * Reads the singleton rather than taking a position argument on purpose: the callers that need this
+ * (backgrounding, switching books) run when no `AudioPlayerScreen` is necessarily mounted, so there
+ * is no component-held `status.currentTime` to trust — background playback outlives the screen, and
+ * the position it has reached is only knowable from the player itself.
+ *
+ * A no-op when nothing is playing or the source has not loaded, so callers need no guard of their
+ * own; `currentTime` on an unloaded player is 0, and persisting that would overwrite a real stored
+ * position with the top of the book.
+ */
+export function commitCurrentPlayerPosition(): void {
+  if (current && current.player.isLoaded) {
+    setAudioSessionPosition(current.bookId, current.player.currentTime);
+  }
+  flushAudioSessionPosition();
+}
 
 /**
  * Returns the player for `bookId` — the existing one if it's already the active book (still
@@ -45,6 +67,11 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
     return { player: current.player, isNew: false };
   }
 
+  // AUDIO PHASE 4: the outgoing book's position is captured from the LIVE player before it is
+  // released, not left to whatever the last 250ms tick happened to record. `remove()` is terminal
+  // (it drops the native object), so this is the last moment its position can be read at all — and
+  // switching books is precisely when no screen is mounted to notice on its behalf.
+  commitCurrentPlayerPosition();
   current?.player.remove();
   // `keepAudioSessionActive: true` is LOCK-SCREEN CORRECTNESS, not a performance knob. Left at its
   // default of `false`, expo-audio's own `Function("pause")` calls `deactivateSession()` on every

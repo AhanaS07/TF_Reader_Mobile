@@ -57,13 +57,18 @@ export interface AudioPlayerScreenProps {
   bookId: BookId;
   title: string;
   /** Seconds into the track to resume at, or undefined for "start from the top." Read once on
-   * mount — see AudioPlayerRouteScreen.tsx for where this comes from (session-only, this app run
-   * only; see audioSessionProgress.ts). */
+   * mount — see AudioPlayerRouteScreen.tsx for where this comes from. */
   initialPosition?: number;
-  /** Called on every status tick once loaded, so the caller can keep a session-position cache
-   * warm. Deliberately NOT this component's own concern where that goes — same boundary
+  /** Called on every status tick once loaded, so the caller can keep a position cache warm.
+   * Deliberately NOT this component's own concern where that goes — same boundary
    * ReaderScreen.tsx's onRelocated draws. */
   onPositionChange?: (positionSeconds: number) => void;
+  /** AUDIO PHASE 4. Called at the edges where the next tick may never come — pause, seek, and
+   * unmount — meaning "this position is worth committing NOW, don't let it sit in a throttle."
+   * Separate from onPositionChange rather than folded into it precisely because the distinction is
+   * about URGENCY, not about a different value: a caller that persists nothing can ignore it, and
+   * this component still does not know whether anything is persisted at all. */
+  onPositionCommit?: (positionSeconds: number) => void;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -126,6 +131,7 @@ export function AudioPlayerScreen({
   title,
   initialPosition,
   onPositionChange,
+  onPositionCommit,
 }: AudioPlayerScreenProps): React.JSX.Element {
   const [uri, setUri] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -247,11 +253,40 @@ export function AudioPlayerScreen({
     }
   }, [status.isLoaded, status.currentTime, onPositionChange]);
 
+  // AUDIO PHASE 4. Held in a ref so the unmount effect below can stay `[player]`-scoped: reading
+  // the prop directly would put `onPositionCommit` in that effect's deps, and a caller passing an
+  // inline arrow would then re-run its CLEANUP on every render — committing a position (and, one
+  // layer down, writing a file) on renders where nothing was unmounted at all.
+  // Synced in an effect, not assigned during render: this repo's react-hooks/refs rule rejects
+  // touching `.current` in a render body outright.
+  const positionCommitRef = useRef(onPositionCommit);
+  useEffect(() => {
+    positionCommitRef.current = onPositionCommit;
+  }, [onPositionCommit]);
+
+  /** The pause/seek/unmount edges: a tick may never arrive to report this position. */
+  const commitPosition = useCallback((positionSeconds: number) => {
+    positionCommitRef.current?.(positionSeconds);
+  }, []);
+
+  // Commit on unmount — navigating back to BookList. Reads the PLAYER, not `status`: this runs
+  // during teardown, where the last rendered status can be up to one tick (250ms) stale, and the
+  // player is the singleton that outlives this component anyway.
+  useEffect(() => {
+    return () => {
+      if (player.isLoaded) {
+        positionCommitRef.current?.(player.currentTime);
+      }
+    };
+  }, [player]);
+
   const skip = useCallback(
     (deltaSeconds: number) => {
-      void player.seekTo(clamp(status.currentTime + deltaSeconds, 0, status.duration));
+      const target = clamp(status.currentTime + deltaSeconds, 0, status.duration);
+      void player.seekTo(target);
+      commitPosition(target);
     },
-    [player, status.currentTime, status.duration],
+    [player, status.currentTime, status.duration, commitPosition],
   );
 
   if (loadError) {
@@ -283,7 +318,10 @@ export function AudioPlayerScreen({
       <Scrubber
         positionSeconds={status.currentTime}
         durationSeconds={status.duration}
-        onSeek={(seconds) => void player.seekTo(seconds)}
+        onSeek={(seconds) => {
+          void player.seekTo(seconds);
+          commitPosition(seconds);
+        }}
       />
 
       <View style={styles.transportRow}>
@@ -299,7 +337,16 @@ export function AudioPlayerScreen({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={status.playing ? 'Pause' : 'Play'}
-          onPress={() => (status.playing ? player.pause() : player.play())}
+          onPress={() => {
+            if (status.playing) {
+              player.pause();
+              // Pause is the edge most likely to be followed by nothing at all — no further ticks,
+              // and possibly no further foreground time before the OS reclaims the process.
+              commitPosition(status.currentTime);
+            } else {
+              player.play();
+            }
+          }}
           style={[styles.transportButton, styles.playButton]}
         >
           <Text style={styles.playButtonLabel}>{status.playing ? 'Pause' : 'Play'}</Text>

@@ -36,6 +36,9 @@
 import { useEffect } from 'react';
 
 import { setAudioModeAsync } from 'expo-audio';
+import { AppState } from 'react-native';
+
+import { commitCurrentPlayerPosition } from './audioPlayerInstance';
 
 let setupPromise: Promise<void> | null = null;
 
@@ -72,5 +75,24 @@ export function useAudioPlayerSetup(): void {
         console.error('[useAudioPlayerSetup] audio bootstrap failed:', error);
       }
     })();
+  }, []);
+
+  // AUDIO PHASE 4: persist the playing book's position when the app leaves the foreground.
+  //
+  // THIS LIVES APP-WIDE, NOT IN AudioPlayerScreen, because that is the whole point of the
+  // background-playback design: audio outlives the screen, so at the moment the app is backgrounded
+  // there may be no player screen mounted to react to it — and backgrounding is the last reliable
+  // callback before the OS may terminate the process without one. commitCurrentPlayerPosition()
+  // reads the singleton, so it does not need a screen to tell it what is playing.
+  //
+  // Hosted in this hook rather than a new one so App.tsx (outside Reader's ownership) needs no
+  // change; this is already the app-wide audio-lifecycle hook it calls.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        commitCurrentPlayerPosition();
+      }
+    });
+    return () => subscription.remove();
   }, []);
 }
