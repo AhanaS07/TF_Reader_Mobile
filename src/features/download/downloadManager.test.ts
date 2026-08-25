@@ -246,6 +246,65 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
     await contentStore.close(bookId);
   });
 
+  // The other real case `needsLicence` has to get right, and the one that was still wrong until
+  // 2026-08-25: a dev fixture whose `licenceModel` is OPEN_ACCESS but whose grant still carries
+  // `encryption` (tf_reader_backend_temp's dev-sample-epub — a documented quirk, since real
+  // OPEN_ACCESS should never be encrypted). Gating solely on `license.mode !== 'open-access'`
+  // left `pkg.licence` null here while `pkg.encryption` was not, and contentStore.ts's
+  // assertLicenceMatchesPackage() correctly rejects exactly that combination with
+  // LICENCE_INVALID — confirmed via device testing, on every single download of that fixture.
+  it('an OPEN_ACCESS book that is still encrypted gets a licence attached, not LICENCE_INVALID', async () => {
+    const bookId = 'open-access-but-encrypted-book';
+    const plaintext = new Uint8Array([7, 8, 9, 10, 11, 12]);
+    const bek = new Uint8Array(crypto.randomBytes(32));
+
+    const { publicKey } = await generateDeviceKeypair();
+    const wrappedBek = await wrapBek(bek, publicKey);
+    const payload = await encrypt(plaintext, bek);
+    const encryptedBytes = new Uint8Array(payload.content);
+    const keyFingerprint = await publicKeyFingerprint(publicKey);
+
+    const loan = openAccessLoanFor(bookId, { canPersist: true }); // licenceModel stays OPEN_ACCESS
+    const session = sessionFor(bookId, encryptedBytes, {
+      content: {
+        url: `http://localhost:4000/fixtures/${bookId}.epub.enc`,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        cipherLength: encryptedBytes.length,
+        originalLength: plaintext.length,
+        mimeType: 'application/epub+zip',
+      },
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek,
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint,
+      },
+    });
+    global.fetch = mockFetchFor(loan, session, encryptedBytes);
+
+    await expect(downloadBook(bookId)).resolves.toBeUndefined();
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+
+    // Round trip proves a real licence was attached and matched the encryption block — store()
+    // would have thrown LICENCE_INVALID on the old `needsLicence` before this can even resolve.
+    await contentStore.openSession(bookId);
+    const decrypted = await contentStore.decryptBook(bookId);
+    expect(Array.from(decrypted)).toEqual(Array.from(plaintext));
+    await contentStore.close(bookId);
+
+    // Clean up the persisted row this test adds — this file's later tests (the 5-book-limit
+    // block especially) count real rows in the shared downloadTable, and this test's own
+    // successful persist would otherwise silently eat one of their budget.
+    await contentStore.destroy(bookId);
+    const rows = await downloadTable.listActive(USER_ID);
+    const row = rows.find((r) => r.book_id === bookId);
+    if (row) {
+      await downloadTable.softDeleteLocal(row.id);
+    }
+  });
+
   // The end-to-end wiring for the anti-key-substitution check, not just contentStore's own unit
   // coverage of it: downloadManager.ts derives `licence.keyFingerprint` from THIS device's own
   // key (`publicKeyFingerprint()`), independently of whatever `encryption.keyFingerprint` the

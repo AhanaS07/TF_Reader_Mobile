@@ -189,7 +189,30 @@ export async function downloadBook(
     throw new DownloadFailure(DownloadError.SESSION_FETCH_FAILED, bookId);
   }
   const session: ReadingSessionResponse = license.session;
-  const licence = license.mode !== 'open-access' ? license.licence : null;
+  // Moved up from further below — needed here now to decide whether a licence is attached at
+  // all, not just to size the chunked fetch's RAM-budget ceiling later. Meaning unchanged:
+  // session.encryption != null.
+  const isEncrypted = session.encryption != null;
+  // A licence is needed whenever EITHER is true: the package is actually encrypted (regardless
+  // of what the licence model claims), or the licence model itself isn't open-access (regardless
+  // of whether the bytes happen to be encrypted). Neither alone is right:
+  //   - `license.mode !== 'open-access'` alone missed a real case: a dev fixture whose
+  //     `licenceModel` is OPEN_ACCESS but whose grant still carries `encryption` (a documented
+  //     tf_reader_backend_temp quirk — real OPEN_ACCESS should never be encrypted, but this dev
+  //     fixture is). That left `licence` null while `pkg.encryption` below is not, and
+  //     contentStore.ts's assertLicenceMatchesPackage() correctly rejects exactly that
+  //     combination with LICENCE_INVALID — confirmed via device testing, 2026-08-25
+  //     (dev-sample-epub), on every single download of that fixture. openBook.ts's STREAM path
+  //     never hit this, because it always attaches the licence unconditionally — exactly why
+  //     "opening the same book worked while downloading it didn't" was so confusing to spot.
+  //   - `isEncrypted` alone would make a SUBSCRIPTION/ELITE *audio* book (unencrypted by design,
+  //     both contracts agree "encryption is null for open access and for all audio")
+  //     indistinguishable from real open access: `licence` would end up null,
+  //     `isElite()`/`isLicenceExpired()` (contentStore.ts) both read off `pkg.licence`, and a
+  //     null licence makes both answer "no restriction" — an Elite audiobook would persist to
+  //     disk forever instead of staying memory-only, and a Subscription audiobook's local copy
+  //     would never expire.
+  const licence = (isEncrypted || license.mode !== 'open-access') ? (license.licence ?? null) : null;
   // `session.canPersist` is optional on the type (a published contract might not send it — see
   // reading-session.ts) — default true, same as synthesiseLicence()'s own default (licenseCheck.ts)
   // does for the licence it hands back. Reading `session.canPersist` raw here would disagree with
@@ -216,11 +239,6 @@ export async function downloadBook(
   // fails in milliseconds instead of after pulling up to 25MB. contentStore's own
   // assertLicenceMatchesPackage still runs too — defense in depth for any direct store() caller
   // (e.g. devContentSeed.ts).
-
-  // Moved up from below the fetch — needed here now to size the chunked fetch's own RAM-budget
-  // ceiling (maxCipherBytes) BEFORE requesting a single byte, not just to classify the response
-  // afterward. Meaning unchanged from its original spot: session.encryption != null.
-  const isEncrypted = session.encryption != null;
 
   // Chunked + resumable (docs/superpowers/specs/2026-08-17-resumable-chunked-download-scoping.md):
   // MAX_DECRYPTED_BYTES is a budget on the DECRYPTED size; the fetcher deals in ciphertext bytes,
@@ -257,18 +275,6 @@ export async function downloadBook(
   // blamed a field the response never carried. Only cross-check when the server actually sent a
   // value; when it didn't, `computeOriginalLength` IS the value, not just a defense-in-depth
   // check against one.
-  // Whether this download NEEDS a licence at all — deliberately NOT the same test as `isEncrypted`
-  // above. Both contracts agree audio is never encrypted regardless of tier ("Encryption is null
-  // for open access and for all audio"), so `encryption == null` means "unencrypted", not "open
-  // access, no rights to enforce". Gating the licence on `isEncrypted` (as this used to) made a
-  // SUBSCRIPTION or ELITE *audio* book indistinguishable from real open access: `licence` ended up
-  // null, `isElite()`/`isLicenceExpired()` (contentStore.ts) both read off `pkg.licence`, and a null
-  // licence makes both answer "no restriction" — an Elite audiobook would persist to disk forever
-  // instead of staying memory-only, and a Subscription audiobook's local copy would never expire.
-  // `license.mode === 'open-access'` is the real test for "no rights to attach" — checkLicense
-  // already resolved it from the session's own `licenceModel`, independent of the session's
-  // encryption block (see checkLicense.ts's header).
-  const needsLicence = license.mode !== 'open-access';
   const expectedOriginalLength = computeOriginalLength(bytes.length, isEncrypted);
   if (
     session.content.originalLength !== undefined &&
@@ -333,10 +339,9 @@ export async function downloadBook(
     content: bytes,
     index: indexBytes,
     encryption: session.encryption ?? null,
-    // NOT tied to `encryption` being non-null (see `needsLicence` above) — an unencrypted
-    // SUBSCRIPTION/ELITE audio book still needs its licence attached to enforce expiry/canPersist;
-    // only genuine OPEN_ACCESS content ships with no licence at all.
-    licence: needsLicence ? licence : null,
+    // `licence` is already correctly null-or-not (see its derivation, just above `canPersist`
+    // near the top of this function) — not re-decided here.
+    licence,
     cipherLength: bytes.length,
     originalLength,
     mimeType: session.content.mimeType ?? FORMAT_MIME_TYPES[format],
@@ -347,7 +352,7 @@ export async function downloadBook(
   // Defense-in-depth, not the primary gate: an ELITE (canPersist:false) book now fails earlier,
   // at checkLicense(), with DOWNLOAD_NOT_PERMITTED (see this file's header) — the server refuses
   // intent:'DOWNLOAD' for it outright, so `canPersist` should always be true by this line. Kept
-  // rather than assumed, same reasoning as `needsLicence` above: `contentStore.store()` already
+  // rather than assumed, same defense-in-depth reasoning as elsewhere here: `contentStore.store()` already
   // declines to persist a canPersist:false package regardless, and skipping the block below for
   // one avoids writing a `status: 'COMPLETED'` downloads row and burning one of the 5 offline
   // slots for a book that was never actually persisted (found in review, D-18).
