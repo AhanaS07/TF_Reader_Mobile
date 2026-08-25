@@ -164,6 +164,13 @@ export const DEV_FIXTURE_PDF_BOOK_ID: BookId = 'dev-fixture-pdf';
  * is not this phase's job.
  */
 export const DEV_SAMPLE_AUDIO_BOOK_ID: BookId = 'dev-sample-audio';
+/**
+ * Same bundled WAV as DEV_SAMPLE_AUDIO_BOOK_ID, seeded ENCRYPTED instead — see this file's
+ * `audioEncrypted` fixture flag. A distinct id, not a flag on the existing one, for the same
+ * reason every other fixture here gets its own id: two different packages must never share a
+ * cache key.
+ */
+export const DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID: BookId = 'dev-sample-audio-encrypted';
 
 /**
  * The book App.tsx opens on launch, when nothing has been picked yet — the DEFAULT only. Every
@@ -204,6 +211,14 @@ interface DevFixture {
    * default.
    */
   searchIndex: unknown | null;
+  /**
+   * AUDIO only. Default (undefined/false) keeps `buildAudioPackage`'s plaintext-only path — see
+   * that function's own doc comment for why audio is unencrypted by default. `true` routes this
+   * fixture through `buildPackage()` instead (the same real on-device RSA-OAEP + AES-GCM encrypt
+   * every other format uses), overriding that default for this one bookId. See
+   * `content-provider.ts`'s `EncryptedPackage.encryption` comment for why that override exists.
+   */
+  audioEncrypted?: boolean;
 }
 
 /**
@@ -264,6 +279,14 @@ const DEV_FIXTURES: Readonly<Record<string, DevFixture>> = {
     // search.ts's BookSearchIndex.format excludes AUDIO outright — no index exists for this
     // format, on any book, ever. Not "not built yet" the way the PDF fixtures' null once was.
     searchIndex: null,
+  },
+  [DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID]: {
+    format: 'AUDIO',
+    mimeType: AUDIO_MIME_TYPE,
+    assetModule: SAMPLE_AUDIO_MODULE,
+    name: 'sample-plaintext.wav (encrypted)',
+    searchIndex: null,
+    audioEncrypted: true,
   },
 };
 
@@ -509,9 +532,10 @@ export async function ensureSeeded(bookId: BookId): Promise<void> {
 
   await contentStore.destroy(bookId);
   const bytes = await sampleBookBytes(bookId);
-  // AUDIO never goes through buildPackage/aesGcm — see buildAudioPackage's own doc comment.
+  // AUDIO skips buildPackage/aesGcm by default — see buildAudioPackage's own doc comment — unless
+  // this specific fixture opts into the encrypted override (DevFixture.audioEncrypted).
   const pkg =
-    fixtureFor(bookId).format === 'AUDIO'
+    fixtureFor(bookId).format === 'AUDIO' && !fixtureFor(bookId).audioEncrypted
       ? buildAudioPackage(bookId, bytes)
       : await buildPackage(bookId, bytes);
   await contentStore.store(pkg);
