@@ -80,10 +80,16 @@ export interface SignedLicence {
 export interface EncryptedPackage {
   // INVARIANT: same book as licence.itemId above (when licence is present).
   bookId: BookId;
-  format: ContentFormat; // audio is never encrypted, so in practice PDF | EPUB
+  format: ContentFormat;
   content: Bytes; // nonce(12)||ct||tag(16), as received. Never decrypted to disk.
   index?: Bytes; // bundled search index ciphertext (same BEK, its OWN nonce)
-  encryption: EncryptionDescriptor | null; // null ⇒ open access / audio (plaintext)
+  // null ⇒ open access (plaintext). AUDIO can be either: the backend's default is unencrypted
+  // (whole-file encryption cannot seek — see tf_reader_backend_temp's shared.md), overridden for
+  // one dev-only fixture (2026-08-25) so encrypted audio exercises the same whole-file RAM-decrypt
+  // path as EPUB/PDF, under the same MAX_DECRYPTED_BYTES cap — short-form only, not a streaming
+  // design. contentStore.ts's decrypt branch is already format-blind, so this needed no code
+  // change here, only this comment no longer being wrong.
+  encryption: EncryptionDescriptor | null;
   licence: SignedLicence | null; // null ⇒ open access (no licence)
 
   // BOTH length fields ship — option (b), decided by Abhinav, who owns the

@@ -14,10 +14,14 @@
 // — no call site does.
 //
 // GUARDS THIS FILE HOLDS ITSELF TO (see AUDIO_PHASE0_FINDINGS.md's Phase 1 section):
-//  - Audio is NEVER encrypted. This file never imports aesGcm, deviceKeypair or keyStorage, and
-//    never will — getBook()/decryptBook() already skip all of that for `pkg.encryption === null`
-//    (contentStore.ts's own "open access / audio" branch), so there is nothing for this file to
-//    route around; it just must not reach for that machinery itself either.
+//  - CORRECTION, 2026-08-25: "audio is never encrypted" (tf_reader_backend_temp's shared.md) was
+//    overridden by Abhinav/Encryption for one dev fixture (dev-sample-audio-encrypted) so encrypted
+//    audio exercises the same whole-file decrypt as EPUB/PDF, under the same MAX_DECRYPTED_BYTES
+//    cap. This does NOT change anything below: this file still never imports aesGcm, deviceKeypair
+//    or keyStorage, and still never will — getBook()/decryptBook() already handle decrypt
+//    generically for ANY `pkg.encryption` value, encrypted or not, so there was nothing here to
+//    change, only this claim to stop overstating. See content-provider.ts's EncryptedPackage.encryption
+//    comment for the corrected contract-level statement.
 //  - No reconstructing contentStore's private storage layout by convention. This file does not
 //    know, and must never guess, the path `contentStore.ts`'s `contentFile()` writes to
 //    (`<bookId>.content.bin` under its own directory) — that is exactly the hidden coupling
