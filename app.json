@@ -14,7 +14,13 @@
       "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
     },
     "android": {
-      "package": "com.taylorandfrancis.tfreader.dev"
+      "package": "com.taylorandfrancis.tfreader.dev",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "plugins": [
       "expo-dev-client",
@@ -30,7 +36,21 @@
       ],
       "react-native-quick-crypto",
       "expo-sqlite",
-      "./plugins/withAndroidTtsQueries"
-    ]
+      "./plugins/withAndroidTtsQueries",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f9f29b18-124e-4bdf-8d35-abb3a27abacf"
+      }
+    }
   }
 }

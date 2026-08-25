@@ -13,6 +13,7 @@
     "reader:build-sample": "npx tsx src/features/reader/scripts/generateSampleEpub.ts",
     "reader:build-sample-index": "npx tsx src/features/reader/scripts/buildSampleSearchIndex.ts",
     "reader:build-sample-pdf": "npx tsx src/features/reader/scripts/generateSamplePdf.ts",
+    "reader:build-sample-audio": "npx tsx src/features/reader/scripts/generateSampleAudio.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
@@ -67,6 +68,7 @@
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
+    "@expo/ngrok": "^4.1.3",
     "@iternio/react-native-tts": "^5.0.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/netinfo": "12.0.1",
@@ -75,6 +77,7 @@
     "@react-navigation/native-stack": "^7.18.8",
     "expo": "^57.0.12",
     "expo-asset": "~57.0.10",
+    "expo-audio": "~57.0.4",
     "expo-build-properties": "~57.0.10",
     "expo-constants": "~57.0.10",
     "expo-crypto": "~57.0.1",
