@@ -34,9 +34,13 @@ import type { BookId, ContentFormat } from '@/shared/contracts';
  * analysed by Metro and would not be bundled at all.
  *
  * AUDIO is absent on purpose rather than mapped to a placeholder. It is a real
- * member of the frozen enum and never encrypted, so it can reach this reader — and
- * `Partial` is what makes `formatFor()` below have to handle that instead of
- * silently loading an EPUB shell for an audiobook.
+ * member of the frozen enum, so it can reach this reader — and `Partial` is what
+ * makes `formatFor()` below have to handle that instead of silently loading an
+ * EPUB shell for an audiobook. (This used to add "and never encrypted" as if that
+ * were part of the reason. It was never load-bearing here, and it is no longer
+ * true either: audio is AES-256-GCM encrypted like every other format as of
+ * 2026-08-25. Audio reaches this file because the enum has three members and this
+ * map has two, which is the whole argument.)
  */
 const READER_HTML_MODULES: Partial<Record<ContentFormat, number>> = {
   EPUB: require('../../../assets/reader/reader-epub.html') as number,

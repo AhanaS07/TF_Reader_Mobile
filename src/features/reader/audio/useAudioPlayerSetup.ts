@@ -39,6 +39,7 @@ import { setAudioModeAsync } from 'expo-audio';
 import { AppState } from 'react-native';
 
 import { commitCurrentPlayerPosition } from './audioPlayerInstance';
+import { installAudioScratchReclaimer } from './audioScratchReclaimer';
 
 let setupPromise: Promise<void> | null = null;
 
@@ -95,4 +96,13 @@ export function useAudioPlayerSetup(): void {
     });
     return () => subscription.remove();
   }, []);
+
+  // Reclaims the decrypted-audio scratch directory on the edges that revoke access to a book —
+  // app-state changes and Sync's offline lock. See audioScratchReclaimer.ts for why those files
+  // need their own sweeper at all (nothing outside audioAssetResolver.ts knows the directory
+  // exists, so destroy()/expiry/revocation all miss it).
+  //
+  // Hosted here for the same reason as the effect above: this is already the app-wide audio
+  // lifecycle hook App.tsx calls, and App.tsx is outside Reader's ownership.
+  useEffect(() => installAudioScratchReclaimer(), []);
 }

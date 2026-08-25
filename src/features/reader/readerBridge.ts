@@ -176,8 +176,10 @@ export const HOST_ERROR_CODES = [
   'BRIDGE_PARSE_FAILED',
   'BLOCKED_NAVIGATION',
   // The book's ContentFormat has no renderer here. Today that means AUDIO, which is
-  // a real member of the frozen enum and never encrypted — so it can reach this
-  // reader and must be refused with something better than a blank page. Raised
+  // a real member of the frozen enum — so it can reach this reader and must be
+  // refused with something better than a blank page. (Said "and never encrypted"
+  // until 2026-08-25; audio is encrypted now, and that clause was never part of why
+  // this code exists anyway.) Raised
   // BEFORE any WebView is mounted (ReaderScreen picks the template by format), which
   // is why it is host-side: there is no WebView to raise it from.
   'UNSUPPORTED_FORMAT',
