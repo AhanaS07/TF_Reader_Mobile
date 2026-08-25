@@ -56,7 +56,7 @@
 //   const bytes = await getBook(bookId);     // decrypt, once the template is chosen
 
 import type { BookId, Bytes, ContentFormat, ContentProvider } from '@/shared/contracts';
-import { contentStore, decryptSearchIndex } from './contentStore';
+import { contentStore, decryptSearchIndex, getMimeType as getMimeTypeFromStore } from './contentStore';
 
 export async function getBook(bookId: BookId): Promise<Bytes> {
   await contentStore.openSession(bookId);
@@ -73,7 +73,11 @@ export async function getFormat(bookId: BookId): Promise<ContentFormat> {
   return handle.format;
 }
 
-export const contentProvider: ContentProvider = { getBook };
+export async function getMimeType(bookId: BookId): Promise<string> {
+  return getMimeTypeFromStore(bookId);
+}
+
+export const contentProvider: ContentProvider = { getBook, getMimeType };
 
 export async function closeBook(bookId: BookId): Promise<void> {
   return contentStore.close(bookId);

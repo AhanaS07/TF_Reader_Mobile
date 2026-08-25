@@ -70,8 +70,10 @@ const SAMPLE_PDF_MODULE = require('../../../assets/reader/sample-plaintext.pdf')
  * compressed format.
  *
  * UNLIKE THE EPUB/PDF FIXTURES ABOVE, this one seeds through `buildAudioPackage` below, not
- * `buildPackage` — audio is never encrypted (primitives.ts, content-provider.ts), so there is no
- * BEK/wrap step to run for it at all.
+ * `buildPackage` — audio's default is unencrypted (primitives.ts, content-provider.ts), so there
+ * is no BEK/wrap step to run for it at all. DEV_SAMPLE_AUDIO_ENCRYPTED_BOOK_ID is the one fixture
+ * that opts out of this default (see DevFixture.audioEncrypted) and goes through `buildPackage`
+ * instead, sharing this same bundled asset.
  *
  * Also needs no metro.config.js entry: `.wav` is already in Expo's default assetExts.
  */

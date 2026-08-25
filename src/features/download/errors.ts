@@ -120,3 +120,27 @@ export class DownloadFailure extends Error {
     Object.setPrototypeOf(this, DownloadFailure.prototype);
   }
 }
+
+/**
+ * readingSessionClient.ts's marker for "a `Response` came back, but its body didn't parse as a
+ * `FlambeauError`" — used ONLY as the synthetic `cause` on that one fallback path, never thrown
+ * or caught directly.
+ *
+ * WHY THIS EXISTS: licenseCheck.ts's `isGenuineNetworkError()` has to tell "the server answered
+ * (even with a shape we don't recognise)" apart from "fetch/AbortController rejected before any
+ * response arrived" — the whole reason the offline fallback exists is to trigger on the second
+ * case only. It used to do this by checking `cause instanceof TypeError` (what the Fetch spec
+ * documents for a network-level rejection) — confirmed by device testing, 2026-08-25, to be
+ * unreliable: a genuine connection-refused on a real iOS simulator did not reliably produce that
+ * exact constructor, so the offline fallback silently never fired for the one case it exists to
+ * handle. This class makes the distinction explicit at the two throw sites that actually know it,
+ * instead of trying to reverse-engineer it later from whatever error shape the platform's fetch
+ * implementation happens to throw.
+ */
+export class UnmappedServerResponse extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnmappedServerResponse';
+    Object.setPrototypeOf(this, UnmappedServerResponse.prototype);
+  }
+}

@@ -20,8 +20,7 @@
 import type { BookId, Bytes, Timestamp, ContentFormat } from '../types/primitives';
 
 // The `encryption` block from the grant (source-of-truth §10/§11). Names EXACT.
-// null for open access and ALL audio (plain file, no key). PROVISIONAL —
-// co-freeze with Abhinav on Day 3.
+// null for open access and ALL audio (plain file, no key).
 export interface EncryptionDescriptor {
   algorithm: 'AES-256-GCM';
   layout: 'nonce(12) || ciphertext || tag(16)';
@@ -83,12 +82,14 @@ export interface EncryptedPackage {
   format: ContentFormat;
   content: Bytes; // nonce(12)||ct||tag(16), as received. Never decrypted to disk.
   index?: Bytes; // bundled search index ciphertext (same BEK, its OWN nonce)
-  // null ⇒ open access (plaintext). AUDIO can be either: the backend's default is unencrypted
-  // (whole-file encryption cannot seek — see tf_reader_backend_temp's shared.md), overridden for
-  // one dev-only fixture (2026-08-25) so encrypted audio exercises the same whole-file RAM-decrypt
-  // path as EPUB/PDF, under the same MAX_DECRYPTED_BYTES cap — short-form only, not a streaming
-  // design. contentStore.ts's decrypt branch is already format-blind, so this needed no code
-  // change here, only this comment no longer being wrong.
+  // null ⇒ open access (plaintext). AUDIO's default is also null (whole-file encryption cannot
+  // seek — see tf_reader_backend_temp's shared.md), but that default is OVERRIDDEN by
+  // Abhinav/Encryption, 2026-08-25: audiobooks are meant to be encrypted the entire time they are
+  // stored, decrypted only transiently into RAM to play — the same whole-file decrypt EPUB/PDF
+  // already use, under the same MAX_DECRYPTED_BYTES cap. contentStore.ts's decrypt branch is
+  // already format-blind (it branches on `encryption`, not `format`), so this needed no code
+  // change there — only this comment no longer asserting "always null for audio" as if it were
+  // still true.
   encryption: EncryptionDescriptor | null;
   licence: SignedLicence | null; // null ⇒ open access (no licence)
 
@@ -169,4 +170,12 @@ export interface ContentProvider {
   // warm-up), add a separate `peekBook(bookId): Bytes` that throws ContentFailure
   // when not yet decrypted — don't make this one synchronous.
   getBook(bookId: BookId): Promise<Bytes>;
+
+  // MIME type of the stored package's content (e.g. "audio/wav", "application/pdf").
+  // Read from PersistedMeta.mimeType, which the download pass (or devContentSeed) sets at
+  // store() time. Audio callers use this to derive a file extension for the scratch URI
+  // (audioAssetResolver.ts), replacing the hardcoded 'wav' stopgap. EPUB/PDF callers
+  // already know their format from getFormat() and do not need this, but exposing it is
+  // additive and costs nothing at the ContentStore level — PersistedMeta already carries it.
+  getMimeType(bookId: BookId): Promise<string>;
 }

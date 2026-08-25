@@ -719,6 +719,25 @@ export async function getPersistedLicenceStatus(
 }
 
 /**
+ * Return the persisted MIME type for a stored book. Read from PersistedMeta.mimeType, set at
+ * store() time by the download pass (or devContentSeed). Used by audio callers to derive a file
+ * extension for the scratch URI instead of hardcoding one. Throws ContentFailure if the book has
+ * never been stored (no meta.json exists).
+ */
+export async function getMimeType(bookId: BookId): Promise<string> {
+  const meta = metaFile(bookId);
+  if (!meta.exists) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      bookId,
+      new Error('no stored package for this book — call store() first')
+    );
+  }
+  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  return parsed.mimeType;
+}
+
+/**
  * True iff ciphertext + a currently-valid wrapped key are ON DISK. Always false for Elite —
  * Elite never persists, so its metadata file never exists. Also false for the post-revocation
  * shape (licence stripped by invalidateLicence(), ciphertext still on disk) — the book has
