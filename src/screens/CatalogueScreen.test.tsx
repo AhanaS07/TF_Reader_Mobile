@@ -27,9 +27,18 @@ import CatalogueScreen from './CatalogueScreen';
 
 // Controls what the licence source returns for the holdings cache.
 // Defaults to empty so existing tests are unaffected.
+//
+// `borrow` and `placeHold` joined this mock for D12: pressing the Elite queue
+// button on a shelf row makes a real borrow through this same seam.
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
+const mockBorrow = jest.fn();
+const mockPlaceHold = jest.fn();
 jest.mock('@config/licence', () => ({
-  getLicenceSource: () => ({ getLibrary: () => mockGetLibrary() }),
+  getLicenceSource: () => ({
+    getLibrary: () => mockGetLibrary(),
+    borrow: (...args: [string]) => mockBorrow(...args),
+    placeHold: (...args: [string]) => mockPlaceHold(...args),
+  }),
 }));
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
@@ -694,5 +703,80 @@ describe('CatalogueScreen — list-level holdings cache', () => {
     await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
     // Screen rendered without error and the card is present — the holding was joined.
     expect(screen.getByText('Rights for Robots')).toBeTruthy();
+  });
+});
+
+// ── D12 — the Elite queue button on a home shelf row ─────────────────────────
+//
+// The third of the three card surfaces. Full coverage of the pending semantics
+// lives in queueRequest.test.ts and ShelfScreen.test.tsx; this block proves the
+// button reaches THIS surface and delegates to the real licence source.
+describe('CatalogueScreen — D12 Elite queue button', () => {
+  const ELITE_CATALOGUE: Catalogue = {
+    ...FAKE_CATALOGUE,
+    shelves: [
+      {
+        id: 'elite',
+        title: 'Elite titles',
+        publications: [
+          {
+            id: 'item_elite',
+            title: 'An Elite Title',
+            publisher: 'Routledge',
+            authors: [],
+            subjects: [],
+            format: 'EPUB',
+            acquisition: {
+              actionId: 'borrow',
+              href: 'https://x/loan/item_elite',
+              licenceModel: 'ELITE',
+              encryption: null,
+              hasSearchIndex: false,
+              canPersist: true,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    mockBorrow.mockResolvedValue({
+      loanId: 'loan_1',
+      itemId: 'item_elite',
+      state: 'active',
+      expiresAt: 9_999,
+    });
+  });
+
+  it('offers Grant access on an Elite shelf row', async () => {
+    setCatalogueSource(fakeSource(async () => ELITE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+  });
+
+  // The existing shelves are SUBSCRIPTION and OPEN_ACCESS, whose actions belong
+  // on the detail screen — so the default feed grows no buttons.
+  it('draws no queue button on non-Elite shelves', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  it('borrows the pressed item, without navigating away', async () => {
+    setCatalogueSource(fakeSource(async () => ELITE_CATALOGUE));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId('action-button-grantAccess'));
+
+    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_elite'));
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
