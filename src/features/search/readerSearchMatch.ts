@@ -75,7 +75,13 @@ export function toReaderSearchMatch(hit: SearchHit, term: string): ReaderSearchM
   if (locator.type === 'EPUB') {
     return { epub: { startCfi: locator.cfi, matchText }, pdf: null };
   }
-  return { epub: null, pdf: { page: locator.page, startOffset: locator.offset ?? 0, matchText } };
+  if (locator.type === 'PDF') {
+    return { epub: null, pdf: { page: locator.page, startOffset: locator.offset ?? 0, matchText } };
+  }
+  // AUDIO is unreachable here - BookSearchIndex.format never includes it, so no SearchHit ever
+  // carries one - but this keeps the function total over the Locator union. CLEAR is the correct
+  // fallback per this file's own "both null = CLEAR" convention above.
+  return NO_SEARCH_MATCH;
 }
 
 /**
