@@ -1,5 +1,5 @@
 import { act, render, screen } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { Animated, Text } from 'react-native';
 import BottomSheet from './BottomSheet';
 
 // BottomSheet wraps everything in a Modal. The Modal only mounts children once
@@ -64,5 +64,53 @@ describe('BottomSheet dismissible prop', () => {
     await renderOpen(false);
     const backdrop = findNode(screen.toJSON(), n => n.props.testID === 'bottom-sheet-backdrop');
     expect(backdrop?.props.accessible).toBe(false);
+  });
+});
+
+describe('BottomSheet dismiss behaviour', () => {
+  // The real Animated.timing uses the native driver and does not fire its
+  // callback synchronously in Jest. Spy on it so the callback fires immediately,
+  // letting us assert that slideOut → onDismiss is wired correctly.
+  let timingSpy: jest.SpyInstance;
+  beforeEach(() => {
+    timingSpy = jest.spyOn(Animated, 'timing').mockImplementation(
+      (_value, _config) => ({
+        start: (callback?: (result: { finished: boolean }) => void) => {
+          callback?.({ finished: true });
+        },
+        stop: jest.fn(),
+        reset: jest.fn(),
+        _startNativeLoop: jest.fn(),
+        _isUsingNativeDriver: () => false,
+      }),
+    );
+  });
+  afterEach(() => {
+    timingSpy.mockRestore();
+  });
+
+  // Pressable's onPress is handled by the gesture system and does not appear in
+  // toJSON(), so we trigger slideOut via a visible-prop change — the same path
+  // the parent takes when it decides to close the sheet programmatically.
+  it('calls onDismiss when visible changes from true to false', async () => {
+    const onDismiss = jest.fn();
+    const { rerender } = await render(
+      <BottomSheet visible onDismiss={onDismiss}>
+        <Text>Sheet content</Text>
+      </BottomSheet>,
+    );
+    await act(async () => { jest.runAllTimers(); });
+
+    // visible=false → useEffect calls slideOut → mocked Animated.timing fires
+    // the callback synchronously with { finished: true } → onDismiss is called.
+    await act(async () => {
+      rerender(
+        <BottomSheet visible={false} onDismiss={onDismiss}>
+          <Text>Sheet content</Text>
+        </BottomSheet>,
+      );
+    });
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 });
