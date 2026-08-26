@@ -10,7 +10,7 @@
 // showed "Failed to load app from http://<ip>:8081" with no other diagnostics.)
 //
 // RootNavigator (src/navigation/) has now landed — see its own header note for what it hosts
-// (BookList/Reader/TtsDemo) and CLAUDE.md's "Temporary scaffolding" section for what is still
+// (BookList/Reader/AudioPlayer) and CLAUDE.md's "Temporary scaffolding" section for what is still
 // dev-only underneath it. This file is back to what its own header always said it should be:
 // proving the toolchain boots, plus `useAutoSync()`, which is app-wide and unrelated to routing.
 //

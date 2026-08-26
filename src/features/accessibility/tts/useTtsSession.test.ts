@@ -70,6 +70,7 @@ const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine
     setDefaultRate: jest.Mock;
     setDefaultPitch: jest.Mock;
     setDefaultVoice: jest.Mock;
+    setIgnoreSilentSwitch: jest.Mock;
   };
   __fire: (event: string, payload?: unknown) => void;
 };
@@ -410,5 +411,79 @@ describe('useTtsSession', () => {
     await renderHook(() => useTtsSession(provider));
 
     expect(mockTts.addListener).not.toHaveBeenCalledWith('tts-error', expect.any(Function));
+  });
+});
+
+describe('a null provider — there is no book to read yet', () => {
+  // ReaderScreen passes null while TTS is switched off, the book is a PDF, or the bridge is not up.
+  // The hook cannot be called conditionally, so "do nothing" has to be a state it supports. It used
+  // to be handed an inert stand-in provider instead, which built a full session that could never
+  // speak and then replaced it the moment the real provider arrived.
+  it('sets nothing up at all', async () => {
+    const { result } = await renderHook(() => useTtsSession(null));
+
+    expect(mockTts.addListener).not.toHaveBeenCalled();
+    expect(mockTts.setIgnoreSilentSwitch).not.toHaveBeenCalled();
+    expect(readSharedPrefsMock).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('idle');
+  });
+
+  it('subscribes exactly once when the provider arrives, not twice', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { rerender } = await renderHook(
+      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: null as ReturnType<typeof createFakeReaderTextProvider> | null } },
+    );
+
+    await act(async () => {
+      rerender({ p: provider });
+    });
+
+    const startSubscriptions = mockTts.addListener.mock.calls.filter(
+      ([event]: [string, unknown]) => event === 'tts-start',
+    );
+    expect(startSubscriptions).toHaveLength(1);
+  });
+
+  it('returns to idle when the provider goes away mid-read, not just silent', async () => {
+    // THE BUG THIS PINS: the cleanup stopped the engine but left `status` at 'speaking'. Anything
+    // rendering a "reading aloud" indicator off this hook — ReaderScreen paints one on the page —
+    // would keep showing it over a book that had been cut off mid-sentence.
+    const provider = createFakeReaderTextProvider();
+    const { result, rerender } = await renderHook(
+      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: provider as ReturnType<typeof createFakeReaderTextProvider> | null } },
+    );
+
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+
+    await act(async () => {
+      rerender({ p: null });
+    });
+
+    expect(mockTts.stop).toHaveBeenCalled();
+    expect(result.current.status).toBe('idle');
+    expect(result.current.currentSentence).toBeNull();
+  });
+
+  it('ignores a play() that arrives after the provider went away', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result, rerender } = await renderHook(
+      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: provider as ReturnType<typeof createFakeReaderTextProvider> | null } },
+    );
+
+    await act(async () => {
+      rerender({ p: null });
+    });
+    mockTts.speak.mockClear();
+
+    // The returned actions are stable trampolines, so a caller can still hold and call one.
+    await act(() => result.current.play());
+
+    expect(mockTts.speak).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('idle');
   });
 });

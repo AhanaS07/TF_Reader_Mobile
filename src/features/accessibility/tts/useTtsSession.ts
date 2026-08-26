@@ -78,7 +78,7 @@ const PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios';
 
 const noop = (): void => undefined;
 
-export function useTtsSession(provider: ReaderTextProvider): TtsSession {
+export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
   const [status, setStatus] = useState<TtsSessionStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSentence, setCurrentSentence] = useState<TtsSentence | null>(null);
@@ -97,6 +97,24 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
   const setAutoContinueChapterRef = useRef<(value: boolean) => void>(noop);
 
   useEffect(() => {
+    // NO PROVIDER, NO SESSION. `useTtsSession` cannot be called conditionally (Rules of Hooks), so
+    // a caller that does not have a book open yet — TTS switched off, a PDF, the bridge not ready —
+    // passes null and this does nothing: no engine listeners, no AppState subscription, no prefs
+    // read, no audio-session call.
+    //
+    // It used to receive an inert stand-in provider instead, which meant the whole body below ran
+    // once against a provider that could never serve a sentence, and then ran AGAIN when the real
+    // one arrived. Harmless at runtime (the first session's cleanup tears itself down correctly),
+    // but it left two live generations of engine listeners in the mock during tests, where the
+    // FIRST `tts-start` handler belongs to the dead session and silently does nothing.
+    //
+    // The trampolines and the React state are already reset by the previous run's cleanup, so
+    // there is nothing to undo here — see the cleanup at the bottom of this effect.
+    if (provider === null) return;
+    // Bound to a const so the narrowing above survives into the nested closures below —
+    // TypeScript will not carry a parameter's narrowing across a function boundary.
+    const source = provider;
+
     let torn = false;
 
     // The only pieces of session state this effect needs synchronously — read from a closure
@@ -120,7 +138,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
     }
 
     function clearHighlight(): void {
-      provider.setSpokenRange(null);
+      source.setSpokenRange(null);
     }
 
     function stopInternal(opts?: { clearHighlight?: boolean; status?: TtsSessionStatus }): void {
@@ -144,7 +162,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       currentlySpeaking = sentence;
       setCurrentSentence(sentence);
       // Prefetch now, while this sentence is still speaking — see the file header.
-      pendingNext = provider.next(sentence.cfi);
+      pendingNext = source.next(sentence.cfi);
       awaitingUtterance = true;
       void Tts.speak(sentence.text).catch(() => {
         if (generation !== myGeneration) return;
@@ -179,7 +197,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
     }
 
     async function beginFrom(from: string | null, myGeneration: number): Promise<void> {
-      const result = await provider.current(from);
+      const result = await source.current(from);
       if (generation !== myGeneration) return;
       applyFetchResult(result, myGeneration);
     }
@@ -188,7 +206,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       if (!awaitingUtterance) return;
       setErrorMessage(null);
       updateStatus('speaking');
-      if (currentlySpeaking) provider.setSpokenRange(currentlySpeaking.cfi);
+      if (currentlySpeaking) source.setSpokenRange(currentlySpeaking.cfi);
     }
 
     async function handleTtsFinish(): Promise<void> {
@@ -348,7 +366,7 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
 
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
 
-    const unsubscribeInterrupted = provider.onInterrupted((reason) => {
+    const unsubscribeInterrupted = source.onInterrupted((reason) => {
       if (reason === 'navigated') {
         // Not a teardown, and Reader already cleared the highlight itself. Just drop any
         // prefetch tied to the position we've now moved away from.
@@ -389,6 +407,25 @@ export function useTtsSession(provider: ReaderTextProvider): TtsSession {
       } catch {
         // Best-effort — the engine may already be stopped.
       }
+
+      // BACK TO IDLE, because the session this state described no longer exists. Stopping the
+      // engine is not enough on its own: `status` is React state and would otherwise keep saying
+      // 'speaking' after the speech was cut off, which is what any caller rendering a "reading
+      // aloud" indicator off this hook would still be showing over a silent book.
+      setStatus('idle');
+      setCurrentSentence(null);
+      setErrorMessage(null);
+
+      // The trampolines close over THIS run's functions. Left in place they would let a late
+      // play() drive a session that has already been torn down.
+      playRef.current = noop;
+      pauseRef.current = noop;
+      stopRef.current = noop;
+      reloadVoicesRef.current = noop;
+      setRateRef.current = noop;
+      setPitchRef.current = noop;
+      setVoiceRef.current = noop;
+      setAutoContinueChapterRef.current = noop;
     };
   }, [provider]);
 

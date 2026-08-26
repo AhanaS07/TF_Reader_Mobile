@@ -11,6 +11,42 @@ real fix — see their own source and `VoicePicker.test.tsx`.
 Every citation below is a point-in-time audit from 2026-08-25. Confirm file/line still matches
 before applying anything here — this doc will drift as `ReaderScreen.tsx` changes.
 
+---
+
+## STATUS, 2026-08-26 — read this before the items below
+
+Reader implemented **1, 3, 4, 7, 8, 9**. Items **2, 5, 6** are deferred, all three on the on-device
+VoiceOver/TalkBack spike (`WEBVIEW_A11Y_SPIKE.md`), which is still the blocking item.
+
+The split is deliberate: focus RESTORATION (4, 7) needs no device evidence — you already know which
+control the user came from. Focus ENTRY (2, 5, 6) is exactly what the spike settles, and item 5 may
+need no code at all.
+
+**Four corrections to the spec, found while implementing it:**
+
+1. **Item 1's TTS toggle no longer exists.** The speaker button was removed — `accessibility.tts.enabled`
+   is now the only switch and mounts the transport directly. Search, Bookmarks and Contents got
+   `expanded`; Contents omits it while disabled, since a control that can never open is not "collapsed".
+2. **Item 8's single wrapper is not possible, and reparenting to create one would be a bug.** The
+   TOC/Search/Bookmarks panels are siblings of `ReaderWebView` *inside* `viewer`, so no existing node
+   holds the background and excludes the panels. Wrapping means reparenting, and changing the viewer's
+   height re-paginates epub.js and invalidates every resolved CFI (`SearchMatchBar.tsx`'s header).
+   Implemented as the same two props applied to the existing background nodes instead — no new nodes,
+   no layout change.
+3. **Item 8 also had a stranding bug.** Hiding the whole background removes the Contents button — which
+   *is* the TOC's close affordance, unlike Search and Bookmarks which close from inside their own
+   panels. The bottom row therefore stays reachable while the TOC is open. Caught by existing tests.
+4. **Item 9's premise was wrong.** `ReaderWebView`'s container had no `accessibilityLabel` at all, so
+   this was real work rather than a no-op. It now has one ("Book content").
+
+**On the `VoicePicker` pattern this doc cites:** it did not exist in the repo when the items were
+written, so Reader established the helper — `src/features/reader/a11yFocus.ts`. `VoicePicker.tsx` and
+`TtsControls.tsx` have since been folded onto it, so there is one implementation of the node
+resolution and null-handling. The `setTimeout` around each stays local to Accessibility: it is Modal
+mount timing, not focusing.
+
+---
+
 Background: `ACCESSIBILITY_ARCHITECTURE_MAP.md` §5/§6 already tracks "no focus trap / restoration
 on TOC, Search, TTS, VoicePicker panels" as a confirmed medium-severity gap. This doc is the
 file-level breakdown of the Reader-owned two-thirds of that gap.
@@ -154,6 +190,7 @@ cross the iframe/content-document boundary predictably) is currently unconfirmed
 
 - VoicePicker's own hidden-background handling: covered by its `accessibilityViewIsModal` fix.
   Nothing in Reader depends on this.
-- VoicePicker's focus entry/restoration: implemented in `TtsControls.tsx`/`VoicePicker.tsx`. Not
-  mounted anywhere yet (`TtsControls.tsx`'s own header note) — wiring it into `ReaderScreen.tsx`'s
-  toolbar is a separate, Reader-owned decision, not part of this handoff.
+- VoicePicker's focus entry/restoration: implemented in `TtsControls.tsx`/`VoicePicker.tsx`, and
+  both now call Reader's shared `focusOn`. **`TtsControls` IS mounted** — `ReaderScreen` renders it
+  whenever TTS is enabled for an EPUB, in place of the page-navigation row. The "not mounted
+  anywhere yet" note this line used to cite is gone from that file.

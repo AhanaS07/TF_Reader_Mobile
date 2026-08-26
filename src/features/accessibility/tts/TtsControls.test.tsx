@@ -1,9 +1,10 @@
 // Owner: Accessibility (Hruthik).
 //
-// TtsControls is "NOT MOUNTED ANYWHERE YET" (see its own header) — this is the only place its
-// pitch row is exercised until Reader mounts it. Takes a hand-built TtsSession rather than
-// useTtsSession itself, mirroring the component's own contract: it only knows how to drive the
-// session it's handed.
+// TtsControls IS mounted — ReaderScreen renders it whenever TTS is enabled for an EPUB, in place
+// of the page-navigation row. (This note used to say "NOT MOUNTED ANYWHERE YET", back when the
+// only way to see it was the since-deleted TTS Demo route.) Still the only place its pitch row is
+// exercised directly. Takes a hand-built TtsSession rather than useTtsSession itself, mirroring
+// the component's own contract: it only knows how to drive the session it's handed.
 
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
 

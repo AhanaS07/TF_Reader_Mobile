@@ -68,7 +68,8 @@ export function formatDiagnosticErrorMessage(error: unknown): string {
 
   const cause = (error as { cause?: unknown }).cause;
   const code = (error as { code?: string }).code;
-  const causeRecord = cause && typeof cause === 'object' ? (cause as Record<string, unknown>) : null;
+  const causeRecord =
+    cause && typeof cause === 'object' ? (cause as Record<string, unknown>) : null;
   const causeCode = typeof causeRecord?.code === 'string' ? causeRecord.code : '';
   const causeMsg =
     cause instanceof Error
@@ -87,6 +88,15 @@ export function formatDiagnosticErrorMessage(error: unknown): string {
     return error.message;
   }
 
+  // A STRUCTURED ERROR OBJECT that is not a throwable — `{ code, message }` shapes parsed off a
+  // wire, of which the reader bridge's `ReaderError` is one. Without this it falls to `String(error)`
+  // below and renders as "[object Object]" in whatever UI shows it, which is exactly what happened
+  // to ReaderScreen's error banner. Checked AFTER `instanceof Error` so a real Error's own message
+  // still wins, and after the code+cause branch so richer detail is preferred when present.
+  const message = (error as { message?: unknown }).message;
+  if (typeof message === 'string' && message !== '') {
+    return code ? `${code}: ${message}` : message;
+  }
+
   return String(error);
 }
-

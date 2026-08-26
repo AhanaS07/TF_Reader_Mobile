@@ -42,6 +42,7 @@ import {
   removeBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import { focusOn } from '@/features/reader/a11yFocus';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -178,6 +179,14 @@ jest.mock('@/features/reader/useAppearanceEnv', () => ({
 }));
 
 /**
+ * Focus movement. Mocked because Jest has no native view tree for `findNodeHandle` to resolve — see
+ * the note in the focus-order describe below for why that would silently invalidate its assertions.
+ */
+jest.mock('@/features/reader/a11yFocus', () => ({
+  focusOn: jest.fn(),
+}));
+
+/**
  * The custom-font byte-loading seam. Mocked for the same reason `readerAssets` is: the real
  * implementation is native (expo-asset/expo-file-system), and its own contract ("null for
  * 'system'/unknown, a data: URI otherwise, never throws") is this mock's job to honour, not to
@@ -256,7 +265,11 @@ const { __injectJavaScript } = jest.requireMock('react-native-webview') as {
  * would reject fails here rather than passing on a hand-made object.
  */
 async function deliver(message: unknown): Promise<void> {
-  const webView = screen.getByTestId('reader-webview');
+  // `includeHiddenElements`: this is the BRIDGE, not a user traversal. While a panel is open the
+  // WebView's container is deliberately hidden from assistive tech (see `anyPanelOpen`), but the
+  // WebView is still mounted and still delivering messages — a `relocated` does not stop arriving
+  // because a screen reader cannot reach the book.
+  const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
   await act(async () => {
     webView.props.onMessage({ nativeEvent: { data: JSON.stringify(message) } });
   });
@@ -292,7 +305,13 @@ async function openContents(): Promise<void> {
   // No chapter count in the query: the count lives in the visible text but deliberately not in
   // the accessible name, so that the name does not change under a focused control when the `toc`
   // message lands. See the Contents button in ReaderScreen.tsx.
-  await fireEvent.press(screen.getByRole('button', { name: 'Contents' }));
+  // `includeHiddenElements`: while Search or Bookmarks is open this button is hidden from assistive
+  // tech (those panels carry their own close, so the row behind them is background) but is still
+  // visible and tappable — which is what a press simulates. That it IS hidden in that state is
+  // asserted on its own, in the background-hiding tests below, rather than implied here.
+  await fireEvent.press(
+    screen.getByRole('button', { name: 'Contents', includeHiddenElements: true }),
+  );
 }
 
 function flatToc(count: number): ReaderTocItem[] {
@@ -539,6 +558,19 @@ describe('the page indicator', () => {
     await relocateTo({ kind: 'page', page: 9, pageCount: 3 });
 
     expect(screen.getByText('BRIDGE_PARSE_FAILED')).toBeTruthy();
+  });
+
+  it('shows the error MESSAGE, not a stringified object', async () => {
+    // This assertion is the one the test above was missing. It asserted only the code, so when the
+    // banner was switched to run `error` through `formatDiagnosticErrorMessage` — a formatter built
+    // for caught throwables, which a structured `{code, message}` is not — it rendered
+    // "[object Object]" underneath a correct-looking code and every suite stayed green.
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'error', code: 'BRIDGE_PARSE_FAILED', message: 'could not parse' });
+
+    expect(screen.getByText('could not parse')).toBeTruthy();
+    expect(screen.queryByText(/\[object Object\]/)).toBeNull();
   });
 });
 
@@ -958,9 +990,7 @@ describe('applyAppearance — the prefs-application wiring', () => {
         appearance: toReaderAppearance(makePrefs(), LIGHT_ENV),
       }),
     );
-    const openIndex = calls.indexOf(
-      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
-    );
+    const openIndex = calls.indexOf(buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }));
 
     // Both must actually have been sent (index -1 would mean "never called", not "called first").
     expect(appearanceIndex).toBeGreaterThanOrEqual(0);
@@ -986,7 +1016,10 @@ describe('applyAppearance — the prefs-application wiring', () => {
     await Promise.resolve();
 
     expect(__injectJavaScript).toHaveBeenCalledWith(
-      buildCommandScript({ type: 'applyAppearance', appearance: toReaderAppearance(changed, LIGHT_ENV) }),
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: toReaderAppearance(changed, LIGHT_ENV),
+      }),
     );
     // NOT a reopen: `openEpub` carries the book's bytes and nothing about a theme change should
     // touch them.
@@ -1035,7 +1068,7 @@ describe('applyAppearance — the prefs-application wiring', () => {
     expect(__injectJavaScript).not.toHaveBeenCalled();
   });
 
-  it('overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance\'s own passthrough', async () => {
+  it("overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance's own passthrough", async () => {
     const fontDataUri = 'data:font/ttf;base64,AAAA';
     jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
     const withInter = makePrefs({ font: { family: 'Inter' } });
@@ -1132,14 +1165,20 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'contentSizeChange', 0, 1054);
 
     // At the top: entries continue below, nothing is hidden above.
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeTruthy();
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeNull();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
 
     // Scrolled to the very end: the mirror image. Getting this wrong leaves a white
     // veil over the last entry, which is the same defect the fade exists to fix.
     await fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 454 } } });
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeTruthy();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true }),
+    ).toBeTruthy();
   });
 
   it('fades neither edge when the whole list fits', async () => {
@@ -1153,8 +1192,10 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'layout', { nativeEvent: { layout: { height: 600 } } });
     await fireEvent(list, 'contentSizeChange', 0, 180);
 
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeNull();
+    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeNull();
   });
 
   it('keeps the Contents button disabled until a TOC arrives', async () => {
@@ -1210,7 +1251,12 @@ describe('ReaderScreen in-book search', () => {
   }
 
   async function openSearch(): Promise<void> {
-    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+    // `includeHiddenElements`, same reasoning as `openContents`: with a panel already open the
+    // toolbar is hidden from assistive tech but remains visible and tappable, and a press is a
+    // touch. The hidden state itself is asserted separately.
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
   }
 
   /** Type a term and press the panel's Search button. */
@@ -1350,7 +1396,9 @@ describe('ReaderScreen in-book search', () => {
     jest
       .mocked(queryBookIndex)
       .mockRejectedValue(
-        new Error('queryBookIndex: failed to decode search index for "test-book" — Unexpected token'),
+        new Error(
+          'queryBookIndex: failed to decode search index for "test-book" — Unexpected token',
+        ),
       );
 
     await mountReader();
@@ -1485,14 +1533,17 @@ describe('ReaderScreen in-book search', () => {
     await mountReader();
     await reportReady();
 
-    const styleBefore = screen.getByTestId('reader-webview').props.style;
+    const styleBefore = screen.getByTestId('reader-webview', { includeHiddenElements: true }).props
+      .style;
 
     await openSearch();
-    expect(screen.getByTestId('reader-webview')).toBeTruthy();
+    expect(screen.getByTestId('reader-webview', { includeHiddenElements: true })).toBeTruthy();
     await runSearch('wolf');
     await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
 
-    expect(screen.getByTestId('reader-webview').props.style).toEqual(styleBefore);
+    expect(
+      screen.getByTestId('reader-webview', { includeHiddenElements: true }).props.style,
+    ).toEqual(styleBefore);
   });
 
   it('reopens the results from the match bar', async () => {
@@ -1613,8 +1664,18 @@ describe('ReaderScreen in-book search', () => {
   // real device's Pressable does — so this is the check that would actually have caught it.
   it('does not disable the match bar arrows for an all-PDF result set', async () => {
     jest.mocked(queryBookIndex).mockResolvedValue([
-      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 3 }, snippet: '…one…' },
-      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 7 }, snippet: '…two…' },
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'PDF', page: 3 },
+        snippet: '…one…',
+      },
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'PDF', page: 7 },
+        snippet: '…two…',
+      },
     ]);
 
     await mountReader();
@@ -1657,10 +1718,7 @@ describe('ReaderScreen in-book search', () => {
 
     const slow = deferred();
     const fast = deferred();
-    jest
-      .mocked(queryBookIndex)
-      .mockReturnValueOnce(slow.promise)
-      .mockReturnValueOnce(fast.promise);
+    jest.mocked(queryBookIndex).mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise);
 
     await mountReader();
     await openSearch();
@@ -1731,7 +1789,12 @@ describe('ReaderScreen bookmarks panel', () => {
   }
 
   async function relocateCfi(cfi: string | null): Promise<void> {
-    await deliver({ type: 'relocated', position: { kind: 'cfi', cfi }, atStart: true, atEnd: false });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi },
+      atStart: true,
+      atEnd: false,
+    });
   }
 
   it('does not load until the book has rendered', async () => {
@@ -1743,9 +1806,10 @@ describe('ReaderScreen bookmarks panel', () => {
   });
 
   it('loads once the book renders and lists what came back', async () => {
-    jest
-      .mocked(loadBookmarks)
-      .mockResolvedValue({ bookmarks: [bookmark({ id: 'a', label: 'The good bit' })], skippedIds: [] });
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'a', label: 'The good bit' })],
+      skippedIds: [],
+    });
     await mountReader();
     await deliver({ type: 'rendered' });
     await openBookmarks();
@@ -1775,7 +1839,9 @@ describe('ReaderScreen bookmarks panel', () => {
 
   it('navigates to a tapped bookmark and closes the panel — the same goTo every TOC entry and search hit uses', async () => {
     jest.mocked(loadBookmarks).mockResolvedValue({
-      bookmarks: [bookmark({ id: 'a', label: 'Chapter 3', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      bookmarks: [
+        bookmark({ id: 'a', label: 'Chapter 3', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+      ],
       skippedIds: [],
     });
     await mountReader();
@@ -1894,9 +1960,10 @@ describe('ReaderScreen bookmarks panel', () => {
       bookmarks: [bookmark({ id: 'victim', label: 'To be deleted' })],
       skippedIds: [],
     });
-    jest
-      .mocked(removeBookmark)
-      .mockResolvedValue({ bookmarks: [bookmark({ id: 'survivor', label: 'Still here' })], skippedIds: [] });
+    jest.mocked(removeBookmark).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'survivor', label: 'Still here' })],
+      skippedIds: [],
+    });
     await mountReader();
     await deliver({ type: 'rendered' });
     await openBookmarks();
@@ -1921,7 +1988,9 @@ describe('ReaderScreen bookmarks panel', () => {
     // Bookmarks' own "Bookmark this page" affordance is gone once Contents took over the panel.
     expect(screen.queryByRole('button', { name: 'Bookmark this page' })).toBeNull();
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
     expect(screen.queryByTestId('reader-toc-list')).toBeNull();
   });
 
@@ -1933,19 +2002,37 @@ describe('ReaderScreen bookmarks panel', () => {
     it('re-creates the bookmark at the same EPUB target under the new name, then removes the old id', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'old',
+            label: 'Untitled',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
         ],
         skippedIds: [],
       });
       jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
-          bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'old',
+            label: 'Untitled',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+          bookmark({
+            id: 'new',
+            label: 'Renamed',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
         ],
         skippedIds: [],
       });
       jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+        bookmarks: [
+          bookmark({
+            id: 'new',
+            label: 'Renamed',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+        ],
         skippedIds: [],
       });
       await mountReader();
@@ -1953,10 +2040,7 @@ describe('ReaderScreen bookmarks panel', () => {
       await openBookmarks();
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Untitled' }));
-      await fireEvent.changeText(
-        screen.getByTestId('reader-bookmark-edit-input-old'),
-        'Renamed',
-      );
+      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-old'), 'Renamed');
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
 
       // Add happens at the SAME target, under the new name, BEFORE the old id is removed.
@@ -1988,7 +2072,9 @@ describe('ReaderScreen bookmarks panel', () => {
         skippedIds: [],
       });
       jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } })],
+        bookmarks: [
+          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+        ],
         skippedIds: [],
       });
       await mountReader();
@@ -2017,7 +2103,10 @@ describe('ReaderScreen bookmarks panel', () => {
       await openBookmarks();
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Original' }));
-      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), 'Changed my mind');
+      await fireEvent.changeText(
+        screen.getByTestId('reader-bookmark-edit-input-a'),
+        'Changed my mind',
+      );
       await fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
 
       expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
@@ -2037,7 +2126,9 @@ describe('ReaderScreen bookmarks panel', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Custom name' }));
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
-      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Save bookmark name: Custom name' }),
+      );
 
       expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
         'test-book',
@@ -2057,7 +2148,11 @@ describe('ReaderScreen bookmarks panel', () => {
     it('hides page-shaped (PDF) bookmarks while an EPUB is open', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'epub-1', label: 'Epub spot', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'epub-1',
+            label: 'Epub spot',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
           bookmark({ id: 'pdf-1', label: 'Foreign PDF page', target: { kind: 'page', page: 3 } }),
         ],
         skippedIds: [],
@@ -2175,7 +2270,9 @@ describe('ReaderScreen bookmark badge', () => {
     // user asked for the opposite — a marker like Word's, not a control — so this pins that
     // pressing it does nothing, and it is not even findable by button role.
     jest.mocked(loadBookmarks).mockResolvedValue({
-      bookmarks: [bookmark({ label: 'Here', target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      bookmarks: [
+        bookmark({ label: 'Here', target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } }),
+      ],
       skippedIds: [],
     });
     await mountReader();
@@ -2267,5 +2364,474 @@ describe('ReaderScreen bookmark badge', () => {
     await fireEvent.press(screen.getByTestId('reader-bookmark-badge'));
 
     expect(screen.queryByText('Page Bookmarked')).toBeNull();
+  });
+});
+
+describe('TTS is driven by the preference, not by a button in the reader', () => {
+  // `useTtsEnabled` seeds from readSharedPrefs then tracks `prefsStore.subscribe`. This file
+  // already mocks the store with a live listener set (`__emitPrefsChange`), so a change here drives
+  // the real hook exactly as the preferences menu's toggle does on device.
+  // This file never clears mocks globally, so `addListener.mock.calls` otherwise accumulates every
+  // session every earlier test mounted — and `startSpeaking` below picks the newest `tts-start`
+  // handler out of it. Without this the helper reaches a handler belonging to a long-unmounted
+  // session, which is inert, and the cue never appears. Scoped to this block rather than made
+  // global: a blanket clearAllMocks here would wipe the module-level defaults the rest of the file
+  // sets up once.
+  beforeEach(() => {
+    // EXPLICIT, because this file never clears mocks between tests and several earlier ones leave
+    // `prepareBook` resolving 'PDF'. TTS is EPUB-only, so an inherited PDF silently means no
+    // transport and every assertion below fails for the wrong reason. Same convention the rest of
+    // the file follows — whoever needs a format states it.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+
+    // `addListener.mock.calls` likewise accumulates every session every earlier test mounted, and
+    // `startSpeaking` below picks the newest `tts-start` handler out of it. Stale handlers belong
+    // to unmounted sessions and are inert, so the cue would never appear.
+    const engine = jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+      default: { addListener: jest.Mock; speak: jest.Mock };
+    };
+    engine.default.addListener.mockClear();
+    engine.default.speak.mockClear();
+  });
+
+  function ttsPrefs(enabled: boolean): SharedPrefs {
+    const prefs = makePrefs();
+    prefs.accessibility.tts.enabled = enabled;
+    return prefs;
+  }
+
+  async function setTtsPref(enabled: boolean): Promise<void> {
+    await act(async () => {
+      __emitPrefsChange(ttsPrefs(enabled));
+    });
+  }
+
+  function navRowShowing(): boolean {
+    return screen.queryByRole('button', { name: 'Next page' }) !== null;
+  }
+
+  /** The `requestId` the provider just put on the wire, read back out of the injected script. */
+  function lastRequestId(): number {
+    const calls = __injectJavaScript.mock.calls;
+    for (let i = calls.length - 1; i >= 0; i -= 1) {
+      // The payload is a JSON object literal in the injected script, not a bare argument —
+      // `window.TFReader.requestTtsSentence({"requestId":1,...})`. See buildCommandScript.
+      const match = /requestTtsSentence\(\{"requestId":(\d+)/.exec(String(calls[i][0]));
+      if (match) return Number(match[1]);
+    }
+    throw new Error('no requestTtsSentence command was sent');
+  }
+
+  /** Drive the session all the way to 'speaking', which is what the on-page cue is gated on. */
+  async function startSpeaking(): Promise<void> {
+    await fireEvent.press(screen.getByRole('button', { name: 'Play' }));
+    await deliver({
+      type: 'ttsSentence',
+      requestId: lastRequestId(),
+      result: {
+        status: 'ok',
+        sentence: {
+          text: 'The grey wolf moved through the trees.',
+          cfi: 'epubcfi(/6/4[chap01]!/4/2,/1:0,/1:37)',
+          spineIndex: 0,
+          sentenceIndex: 0,
+          lastInSection: false,
+        },
+      },
+    });
+    // The engine's tts-start event is what flips the session to 'speaking' — the session is
+    // event-driven rather than action-driven on purpose (see useTtsSession's header).
+    // Let the session's fetch -> speak chain settle: resolving the bridge reply is one microtask,
+    // the session's await continuation another, and Tts.speak is called from the second.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const ttsEngine = (
+      jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+        default: { addListener: jest.Mock };
+      }
+    ).default;
+    // EXACTLY ONE, and asserting that is the point. `useTtsSession` used to be handed an inert
+    // stand-in provider before the real one existed, so it built a whole session that could never
+    // speak and then a second one — leaving two `tts-start` handlers, of which the first was dead.
+    // It now takes null and does nothing until there is a real provider.
+    const starts = ttsEngine.addListener.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'tts-start',
+    );
+    expect(starts).toHaveLength(1);
+    const start = starts[0];
+    await act(async () => {
+      (start[1] as () => void)();
+    });
+  }
+
+  it('shows the transport as soon as the preference goes on, with no button press', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+
+    await setTtsPref(true);
+
+    expect(screen.getByTestId('tts-speed-row')).toBeTruthy();
+    expect(navRowShowing()).toBe(false);
+  });
+
+  it('wires the REAL EPUB provider, so Play goes out over the bridge as requestTtsSentence', async () => {
+    // The chain this pins, end to end: prefsStore notifies -> useTtsEnabled flips -> ReaderScreen's
+    // ttsProvider memo calls createEpubReaderTextProvider(bookId, send) -> useTtsSession drives it.
+    // A wrong link anywhere here (the fake provider, a stale `send`, the old inert stand-in) still
+    // renders a working-looking transport whose Play button does nothing observable, so asserting
+    // the command actually reaches the WebView is what makes the wiring falsifiable.
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+    __injectJavaScript.mockClear();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play' }));
+
+    const script = String(__injectJavaScript.mock.calls.at(-1)?.[0]);
+    expect(script).toContain('window.TFReader.requestTtsSentence(');
+    // `from: null` + `mode: 'current'` is `current(null)` — "start from wherever the reader is",
+    // which is what play() from idle means. Anything else would be resuming from a stale anchor.
+    expect(script).toContain('"from":null');
+    expect(script).toContain('"mode":"current"');
+  });
+
+  it('has no speaker button in the toolbar — the preference is the only switch', async () => {
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+
+    expect(screen.queryByRole('button', { name: 'Listen to this book' })).toBeNull();
+  });
+
+  it('takes the transport away and restores the navigation row when the preference goes off', async () => {
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+    expect(screen.getByTestId('tts-speed-row')).toBeTruthy();
+
+    await setTtsPref(false);
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+  });
+
+  it('never mounts the transport for a PDF, however the preference is set', async () => {
+    // The seam is CFI-based; a PDF has no CFI to segment against.
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+  });
+
+  describe('the on-page "reading aloud" cue', () => {
+    it('appears only while speech is actually playing', async () => {
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+
+      // Enabled but idle: the transport is up, nothing is being read.
+      expect(screen.queryByTestId('reader-tts-cue')).toBeNull();
+
+      await startSpeaking();
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+
+    it('is inert — a visual cue, not a control', async () => {
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+
+      const cue = screen.getByTestId('reader-tts-cue');
+      // No press handlers at all, and pointer events off, so it cannot eat a swipe meant for the
+      // page underneath it. This is the whole difference from the bookmark badge, which does take
+      // touches for its tooltip.
+      expect(cue.props.onPress).toBeUndefined();
+      expect(cue.props.onLongPress).toBeUndefined();
+      expect(cue.props.pointerEvents).toBe('none');
+      expect(cue.props.accessibilityRole).toBe('image');
+    });
+
+    it('drops below the bookmark badge when both are on screen, rather than over it', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [
+          {
+            id: 'b1',
+            label: 'Chapter 1',
+            target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+          },
+        ],
+        skippedIds: [],
+      });
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      await startSpeaking();
+
+      // Not bookmarked yet: the cue takes the corner itself.
+      expect(StyleSheet.flatten(screen.getByTestId('reader-tts-cue').props.style).top).toBe(8);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+        atStart: false,
+        atEnd: false,
+      });
+
+      expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+      // 8 (badge top) + 32 (badge height) + 8 (gap) — clears it exactly.
+      expect(StyleSheet.flatten(screen.getByTestId('reader-tts-cue').props.style).top).toBe(48);
+    });
+  });
+
+  describe('page turns while TTS is running', () => {
+    it('keeps Prev/Next reachable — the transport replaces the row, so navigation moves to swipe', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      await startSpeaking();
+
+      // The button row is gone by design, so the swipe catcher is the page-turn affordance while
+      // listening. It must NOT be disabled by the transport being up — it used to be, because
+      // `swipeEnabled` was gated on the old `showTts` flag alongside the real overlays, which are
+      // the only things that legitimately suppress it.
+      //
+      // `includeHiddenElements`: the catcher carries `accessibilityElementsHidden` on purpose (it
+      // is inert chrome with nothing to announce), and RNTL's queries skip those by default.
+      expect(
+        screen.getByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+      ).toBeTruthy();
+    });
+
+    it('clears the spoken highlight on a page turn without silencing the cue', async () => {
+      // `notifyRelocated` clears the highlight and fires 'navigated', which is NOT a teardown —
+      // speech continues. The cue tracks the session, so it stays up, which is the honest report:
+      // the book is still being read aloud even though the reader has moved.
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/8/2)' },
+        atStart: false,
+        atEnd: false,
+      });
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+  });
+});
+
+describe('screen-reader focus order', () => {
+  // `setAccessibilityFocus` is a native call with no observable effect in jsdom, so it is spied on
+  // rather than mocked wholesale — the rest of AccessibilityInfo (useAppearanceEnv reads
+  // isReduceMotionEnabled) has to keep working.
+  // `focusOn` IS MOCKED, not driven through to AccessibilityInfo, and that is the right seam for
+  // these tests. There is no native view tree under Jest, so the real `findNodeHandle` returns null
+  // for every test instance and `focusOn` would correctly no-op on all of them — every assertion
+  // here would pass for the wrong reason. What ReaderScreen owns is the DECISION (restore focus
+  // after a TOC row, not after Search opens); the native mechanics are `a11yFocus.test.ts`'s.
+  const focusOnMock = jest.mocked(focusOn);
+
+  beforeEach(() => {
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+    focusOnMock.mockClear();
+  });
+
+  // Local copies: the search block's own `openSearch`/`runSearch`/`epubHit` are scoped to that
+  // describe. Kept minimal — this block cares about focus and reachability, not about search.
+  async function openSearchPanel(): Promise<void> {
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
+  }
+
+  function oneHit(): SearchHit {
+    return {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'EPUB', cfi: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      snippet: '…the grey wolf moved…',
+    };
+  }
+
+  describe('toggle buttons report expanded state', () => {
+    it('Search reports collapsed, then expanded, then collapsed again', async () => {
+      await mountReader();
+      const search = (): ReturnType<typeof screen.getByRole> =>
+        screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true });
+
+      expect(search().props.accessibilityState).toMatchObject({ expanded: false });
+      await openSearchPanel();
+      expect(search().props.accessibilityState).toMatchObject({ expanded: true });
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+      expect(search().props.accessibilityState).toMatchObject({ expanded: false });
+    });
+
+    it('Bookmarks reports collapsed, then expanded', async () => {
+      await mountReader();
+      const bookmarks = (): ReturnType<typeof screen.getByRole> =>
+        screen.getByRole('button', { name: 'Bookmarks', includeHiddenElements: true });
+
+      expect(bookmarks().props.accessibilityState).toMatchObject({ expanded: false });
+      await fireEvent.press(bookmarks());
+      expect(bookmarks().props.accessibilityState).toMatchObject({ expanded: true });
+    });
+  });
+
+  describe('the background leaves the focus order while a panel covers it', () => {
+    function hiddenFlags(testID: string): { hidden: unknown; important: unknown } {
+      const node = screen.getByTestId(testID, { includeHiddenElements: true });
+      return {
+        hidden: node.props.accessibilityElementsHidden,
+        important: node.props.importantForAccessibility,
+      };
+    }
+
+    it('leaves the book reachable when no panel is open', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(hiddenFlags('reader-webview-container')).toEqual({
+        hidden: false,
+        important: 'yes',
+      });
+    });
+
+    it('hides the book behind an open panel', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+
+      expect(hiddenFlags('reader-webview-container')).toEqual({
+        hidden: true,
+        important: 'no-hide-descendants',
+      });
+    });
+
+    it('keeps the Contents button reachable while the TOC is open — it is the way out', async () => {
+      // THE ONE ASYMMETRY, and it is deliberate. Search and Bookmarks each close from a button
+      // inside their own panel, so the bottom row behind them is background. Contents does not: the
+      // button in that row IS its close affordance. Hiding the row with everything else left a
+      // screen-reader user inside the TOC with no reachable way out.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+
+      expect(screen.getByRole('button', { name: 'Close contents' })).toBeTruthy();
+    });
+
+    it('hides the bottom row behind Search, which carries its own close', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openSearchPanel();
+
+      expect(screen.queryByRole('button', { name: 'Contents' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Close search' })).toBeTruthy();
+    });
+
+    it('hides the decorative TOC fades from assistive tech', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(40) });
+      await openContents();
+      const list = screen.getByTestId('reader-toc-list');
+      await fireEvent(list, 'layout', { nativeEvent: { layout: { height: 100 } } });
+      await fireEvent(list, 'contentSizeChange', 0, 900);
+
+      expect(hiddenFlags('reader-toc-fade-bottom')).toEqual({
+        hidden: true,
+        important: 'no-hide-descendants',
+      });
+    });
+  });
+
+  describe('focus restoration', () => {
+    it('returns focus to Contents when a TOC row is chosen', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByText('Chapter 2'));
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT move focus when the TOC closes because Search is opening', async () => {
+      // Search does its own entry focus (`autoFocus` on its field). Restoring to Contents here
+      // would race it and pull the user back out of the field they just landed in.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await openSearchPanel();
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT move focus when the TOC closes because Bookmarks is opening', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Bookmarks', includeHiddenElements: true }),
+      );
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('returns focus to the Search button when the panel is closed explicitly', async () => {
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT restore to Search when a result is selected', async () => {
+      // Selecting a result closes the panel too, but the user's journey ends at the book, not back
+      // at the toolbar. Where focus SHOULD land is a separate open question — this pins only that
+      // it is not silently sent backwards.
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
   });
 });

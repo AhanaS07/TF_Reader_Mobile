@@ -2,8 +2,8 @@
 // dev scaffolding rather than a real library screen, and CLAUDE.md's "Temporary scaffolding"
 // section for what that means for deletion later.
 //
-// Replaces App.tsx's old state-swapped `bookId`/`showTtsDemo` picker with real routes: BookList is
-// the initial screen, Reader and TtsDemo are pushed on top of it and pop back to it for free via
+// Replaces App.tsx's old state-swapped `bookId` picker with real routes: BookList is
+// the initial screen, Reader and AudioPlayer are pushed on top of it and pop back to it for free via
 // native-stack's own header back button. Nothing here owns book state any more — each screen reads
 // what it needs from its own route params.
 
@@ -17,7 +17,6 @@ import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
 import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 import { BookListScreen } from './BookListScreen';
 import { ReaderRouteScreen } from './ReaderRouteScreen';
-import { TtsDemoScreen } from './TtsDemoScreen';
 
 export type RootStackParamList = {
   BookList: undefined;
@@ -32,7 +31,6 @@ export type RootStackParamList = {
   // Reader. BookListScreen decides AUDIO vs Reader at tap time — this route never receives an
   // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
   AudioPlayer: { bookId: BookId; title: string };
-  TtsDemo: undefined;
   // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
   MockLibrary: undefined;
 };
@@ -60,7 +58,8 @@ export function RootNavigator(): React.JSX.Element {
           PanResponder, for its next/prev page-turn swipe — see ReaderScreen.tsx's `panResponder`).
           The two compete for the same touch stream. Symptom reported on device: after going back
           from Reader, BookList's own Pressables stopped responding to any tap, with no error — and
-          only after visiting Reader, never from TtsDemo (which has no competing gesture). This is
+          only after visiting Reader, never from the other routes (none has a competing gesture).
+          This is
           the standard fix for that class of bug (a screen with its own horizontal PanResponder
           swipe needs `gestureEnabled: false`, or the OS's edge-swipe-back gesture intermittently
           wins the same touch and leaves RN's responder state stuck) — it has not been re-confirmed
@@ -75,7 +74,6 @@ export function RootNavigator(): React.JSX.Element {
         {/* No gestureEnabled: false here — AudioPlayerScreen has no competing PanResponder-style
             swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
         <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
-        <Stack.Screen name="TtsDemo" component={TtsDemoScreen} options={{ title: 'TTS Demo' }} />
         {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
         <Stack.Screen
           name="MockLibrary"

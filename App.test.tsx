@@ -35,12 +35,12 @@ jest.mock('@react-native-community/netinfo', () => ({
   },
 }));
 
-// RootNavigator statically imports every route, including TtsDemoScreen -> TtsReadingScreen ->
+// RootNavigator statically imports every route, including ReaderRouteScreen -> ReaderScreen ->
 // TtsControls/useTtsSession -> ttsEngine.ts's `import Tts from '@iternio/react-native-tts'` — a
 // real native module. That import runs at REQUIRE time regardless of which route is actually on
-// screen (native-stack lazily RENDERS screens, but the module graph is resolved eagerly, same as
-// it was when App.tsx imported TtsReadingScreen directly). Same mock as useTtsSession.test.ts, so
-// this toolchain smoke test doesn't have to transform the real native module.
+// screen (native-stack lazily RENDERS screens, but the module graph is resolved eagerly). Same mock
+// as useTtsSession.test.ts, so this toolchain smoke test doesn't have to transform the real native
+// module. Still required after the TTS Demo route's removal — the reader itself pulls it in now.
 jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
   __esModule: true,
   default: {
@@ -65,11 +65,12 @@ describe('toolchain', () => {
   it('renders the app root', async () => {
     // NOT 'TF Reader': that text now lives only in native-stack's header CONFIG
     // (`RNSScreenStackHeaderConfig title="TF Reader"`), which RNTL cannot query as text — it is a
-    // prop on a native config component, not a rendered <Text>. 'TTS Demo' is BookListScreen's
-    // own row content, unique among its rows (see BookListScreen.test.tsx), so it proves the
-    // navigator actually mounted and rendered its initial route.
+    // prop on a native config component, not a rendered <Text>. 'Audiobook (Encrypted)' is
+    // BookListScreen's own row content, unique among its rows (see BookListScreen.test.tsx), so it
+    // proves the navigator actually mounted and rendered its initial route. It replaced 'TTS Demo'
+    // when that row and its route were deleted.
     const { getByText } = await render(<App />);
-    expect(getByText('TTS Demo')).toBeTruthy();
+    expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
   });
 
   it('resolves the @/ alias to a runtime value', () => {

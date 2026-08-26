@@ -215,14 +215,6 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
         />
       ))}
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => navigation.navigate('TtsDemo')}
-        style={styles.row}
-      >
-        <Text style={styles.rowLabel}>TTS Demo</Text>
-      </Pressable>
-
       {/* TEMP, with src/features/sync/mock/ — remove this row when that whole folder goes. */}
       <Pressable
         accessibilityRole="button"
