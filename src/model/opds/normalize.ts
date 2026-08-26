@@ -19,6 +19,7 @@ import type {
   Publication,
   SearchFeed,
   Shelf,
+  WorkType,
 } from '@model/types';
 import { ACCESS_TIERS } from '@model/types';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
@@ -207,6 +208,22 @@ function toImages(value: unknown): { coverUrl?: string; thumbnailUrl?: string } 
   };
 }
 
+// Maps wokay's `metadata['@type']` to our WorkType. Both http and https forms
+// are accepted — feeds in the wild use both. Returns undefined for any value not
+// yet in the published contract (journal, article — Q-1b unanswered); callers
+// fall back to BOOK_WORK_TYPE. Adding a mapping here is the only change needed
+// once wokay confirms the missing values.
+const WOKAY_TYPE_MAP: Record<string, WorkType> = {
+  'http://schema.org/Book': 'book',
+  'https://schema.org/Book': 'book',
+  'http://schema.org/Audiobook': 'audiobook',
+  'https://schema.org/Audiobook': 'audiobook',
+};
+
+function toWorkType(value: unknown): WorkType | undefined {
+  return typeof value === 'string' ? WOKAY_TYPE_MAP[value] : undefined;
+}
+
 export function normalizePublication(doc: unknown): Publication {
   const publication = asRecord(doc, 'publication');
   const metadata = asRecord(publication.metadata, 'publication metadata');
@@ -263,6 +280,9 @@ export function normalizePublication(doc: unknown): Publication {
       : { format: toContentFormat(toFileType(acquisitionLink)) }),
     ...toImages(publication.images),
     acquisition,
+    ...(toWorkType(metadata['@type']) !== undefined
+      ? { workType: toWorkType(metadata['@type']) as WorkType }
+      : {}),
   };
 }
 

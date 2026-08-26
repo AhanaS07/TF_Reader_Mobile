@@ -15,8 +15,9 @@
 // kept and tested directly rather than treated as a claim about code that does
 // not exist. `renderArticleContent` below is exported so a test can hand it a
 // hand-built `ItemDetail` with `workType: 'article'` — see
-// ItemDetailScreen.test.tsx. The moment `@type` grows a real value, the only
-// line that changes is the one call to `buildItemDetail` in `fetchItem`.
+// ItemDetailScreen.test.tsx. The normalizer already maps `schema.org/Book` and
+// `schema.org/Audiobook`; the moment wokay confirms journal/article `@type`
+// values (Q-1b), only `WOKAY_TYPE_MAP` in opds/normalize.ts needs extending.
 //
 // ACCESS IS RESOLVED REACTIVELY, NOT ONCE AT FETCH TIME. The publication is stored
 // separately and detail is recomputed whenever loans/holds change (after a borrow,
@@ -42,7 +43,7 @@ import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
 import { handToggledSession } from '@access/handToggledSession';
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ErrorState } from '@components/ErrorState';
@@ -51,12 +52,14 @@ import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
-import { borrowOrPlaceHold } from '@/licence/queueRequest';
+import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
-import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
-import type { ActionId, Publication, WorkType } from '@model/types';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@model/errorCopy';
+import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
+import { ERROR_CODES } from '@model/types';
+import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
@@ -89,6 +92,7 @@ const COVER_WIDTH = space.xl * 3;
 const COVER_HEIGHT = space.xl * 4 + space.md;
 
 const GENERIC_MESSAGE = "We couldn't load this title.";
+const LICENCE_GENERIC_MESSAGE = "That action couldn't be completed. Please try again.";
 
 // Screen 05's presentation. Exported for the same reason `renderArticleContent`
 // below is — a test can render it directly from a hand-built `ItemDetail`
@@ -114,6 +118,8 @@ export function renderBookContent(
   // callers keep working; `undefined` is the same "nothing in flight" ActionBar
   // already defaults to.
   pending?: ActionId,
+  // D13: plain-English message from a failed licence call, shown above the bar.
+  licenceMessage?: string,
 ): ReactElement {
   return (
     <>
@@ -158,7 +164,18 @@ export function renderBookContent(
           invented, same rule as citation and the type label on screen 04. */}
         <UnavailableTag label="Price unavailable" />
 
-        <AccessTierBadge tier={detail.access.tier} />
+        {/* D8 — `not_entitled` renders nothing at all, badge included. `tier`
+            is required on AccessResult, so that state carries an OPEN_ACCESS
+            filler; drawing it would label a title the reader cannot open as
+            free to read. ActionBar already renders null on the empty action
+            set, so the buttons need no gate. */}
+        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+
+        {/* D12 — the `queued` half: "queued shows a position and nothing
+            tappable". `resolveAccess` returns no actions in that state, so
+            ActionBar draws nothing and this line is the entire UI for it —
+            without it a waiting reader sees a detail screen with no answer. */}
+        <QueuePositionLine access={detail.access} />
 
         {/* Publisher, published date, ISBN and page count are each shown only
           when the feed actually supplied them — "render whatever fields are
@@ -206,19 +223,15 @@ export function renderBookContent(
           same half-measure the article branch's tab row already avoids for its
           own four dead tabs. */}
         <UnavailableTag label="Table of Contents" variant="row" icon="format-list-bulleted" />
-
-        {/* Queued has no actions — see resolveAccess's 5c — so this is the only
-            thing a waiting reader is told. `ActionBar` renders nothing for an
-            empty actions list, and a position is a status, not a button. */}
-        {detail.access.state === 'queued' && (
-          <Text style={styles.queuePosition}>
-            You are {detail.access.queuePosition} of {detail.access.queueLength} in the queue
-          </Text>
-        )}
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
           and draws its own top border, so it needs no wrapper of its own here. */}
+      {licenceMessage !== undefined && (
+        <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
+          {licenceMessage}
+        </Text>
+      )}
       <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
@@ -240,6 +253,26 @@ function MetaRow({
       <MaterialCommunityIcons name={icon} size={typeScale.meta.size} color={color.textSecondary} />
       <Text style={[styles.metaRow, styles.metaRowText]}>{text}</Text>
     </View>
+  );
+}
+
+// D12's `queued` state on the detail screen. A status line, not a control.
+//
+// LOCAL TO THIS SCREEN, because this is the ONLY surface the queue appears on.
+// Confirmed team decision, 26 Aug: D12 is item detail only, so there is no card
+// row wanting the same block and nothing to share it with. A shared component
+// for one caller is the speculative one CONVENTIONS §10 rules out.
+//
+// ABSENT IN EVERY OTHER STATE, including `offered`: the position is a fact about
+// waiting, and a reader who has been offered a copy is no longer waiting.
+function QueuePositionLine({ access }: { access: ItemDetail['access'] }): ReactElement | null {
+  const label = queuePositionLabel(access);
+  if (label === undefined) return null;
+
+  return (
+    <Text testID="queue-position" style={styles.queuePosition} accessibilityRole="text">
+      {label}
+    </Text>
   );
 }
 
@@ -441,6 +474,8 @@ export function renderArticleContent(
   onAction: (action: ActionId) => void,
   /** See renderBookContent. */
   pending?: ActionId,
+  /** See renderBookContent. */
+  licenceMessage?: string,
 ): ReactElement {
   return (
     <>
@@ -498,7 +533,18 @@ export function renderArticleContent(
             entry point worth building. */}
         <InertTabRow labels={ARTICLE_TAB_LABELS} />
 
-        <AccessTierBadge tier={detail.access.tier} />
+        {/* D8 — `not_entitled` renders nothing at all, badge included. `tier`
+            is required on AccessResult, so that state carries an OPEN_ACCESS
+            filler; drawing it would label a title the reader cannot open as
+            free to read. ActionBar already renders null on the empty action
+            set, so the buttons need no gate. */}
+        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+
+        {/* D12 — the `queued` half: "queued shows a position and nothing
+            tappable". `resolveAccess` returns no actions in that state, so
+            ActionBar draws nothing and this line is the entire UI for it —
+            without it a waiting reader sees a detail screen with no answer. */}
+        <QueuePositionLine access={detail.access} />
 
         {/* The abstract is `ItemDetail.description` under the label this screen
             uses for it. Absent entirely — no heading, no empty block — when the
@@ -510,19 +556,17 @@ export function renderArticleContent(
             <Text style={styles.abstractText}>{detail.description}</Text>
           </View>
         )}
-
-        {/* See renderBookContent — the same queued-state text, same reason. */}
-        {detail.access.state === 'queued' && (
-          <Text style={styles.queuePosition}>
-            You are {detail.access.queuePosition} of {detail.access.queueLength} in the queue
-          </Text>
-        )}
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
           and draws its own top border, so no wrapper is needed here; the
           `actionBarWrapper` stretch fix exists only for the book layout, whose
           centring column would otherwise shrink it. */}
+      {licenceMessage !== undefined && (
+        <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
+          {licenceMessage}
+        </Text>
+      )}
       <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
@@ -559,6 +603,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // tapped button goes busy. `undefined` is "nothing in flight".
   const [pendingAction, setPendingAction] = useState<ActionId | undefined>(undefined);
   const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
+  // Plain-English message from a failed licence call. Cleared at the start of the
+  // next tap so the reader knows whether the new attempt also failed.
+  const [licenceMessage, setLicenceMessage] = useState<string | undefined>(undefined);
 
   // Recomputed whenever the publication or the reader's holdings change. Pure and
   // fast — no call is made, resolveAccess is synchronous.
@@ -571,7 +618,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       loan,
       hold,
     });
-    return buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access });
+    // Falls back to BOOK_WORK_TYPE until wokay answers Q-1b (journal/article
+    // @type values). Once they do, the normalizer fills publication.workType and
+    // nothing else here changes.
+    return buildItemDetail({ publication, workType: publication.workType ?? BOOK_WORK_TYPE, access });
   }, [publication, institutionId, loan, hold]);
 
   // No synchronous setState in here — only inside the async continuations. Same
@@ -626,13 +676,23 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // rest of this app relies on (see ActionButton's `inert`).
   const runLicenceCall = useCallback(
     (action: ActionId, call: () => Promise<unknown>) => {
+      // Clear any previous message so the reader knows this tap is a fresh attempt.
+      setLicenceMessage(undefined);
       setPendingAction(action);
 
       call()
         // Caught before the refresh so a failed call still invalidates the cache
-        // — a borrow that threw may still have created the loan. D13 owns turning
-        // the refusal into a message; this only stops the button spinning forever.
-        .catch(() => {})
+        // — a borrow that threw may still have created the loan.
+        .catch((err: unknown) => {
+          if (isLicenceFailure(err) && err.code === LicenceError.REFUSED) {
+            const knownCode =
+              err.errorCode !== undefined &&
+              (ERROR_CODES as readonly string[]).includes(err.errorCode)
+                ? (err.errorCode as ErrorCode)
+                : undefined;
+            setLicenceMessage(knownCode !== undefined ? WIRE_ERROR_COPY[knownCode] : LICENCE_GENERIC_MESSAGE);
+          }
+        })
         .then(() => refresh())
         .catch(() => {})
         .finally(() => setPendingAction(undefined));
@@ -670,9 +730,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         runLicenceCall(action, () => source.returnLoan(loanId));
       } else if (action === 'grantAccess') {
         // Elite path: borrow first, queue only on NO_COPIES_AVAILABLE. The rule
-        // now lives in `borrowOrPlaceHold` because D12 gives it four more callers
-        // on the card surfaces — see src/licence/queueRequest.ts. Behaviour is
-        // unchanged; this is the same two calls in the same order.
+        // lives in `borrowOrPlaceHold` — see src/licence/queueRequest.ts. It is
+        // there rather than inline because the refusal rule is easy to get
+        // subtly wrong and dangerous when wrong, so it earns its own tests.
         runLicenceCall(action, () => borrowOrPlaceHold(source, itemId));
       } else if (action === 'acceptOffer' && hold?.holdId !== undefined) {
         const holdId = hold.holdId;
@@ -722,8 +782,8 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // side is exercised directly in tests rather than left unwritten.
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction, pendingAction)
-        : renderBookContent(detail, handleAction, pendingAction);
+        ? renderArticleContent(detail, handleAction, pendingAction, licenceMessage)
+        : renderBookContent(detail, handleAction, pendingAction, licenceMessage);
   }
 
   return (
@@ -872,6 +932,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: space.sm,
   },
+  // D12's queue position: a status line, styled as metadata rather than as an
+  // action, because that is what it is.
+  queuePosition: {
+    fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
+    fontSize: typeScale.meta.size,
+    lineHeight: typeScale.meta.lineHeight,
+    color: color.textSecondary,
+  },
   metaRow: {
     fontWeight: typeScale.meta.weight,
     fontFamily: typeScale.meta.fontFamily,
@@ -885,14 +954,6 @@ const styles = StyleSheet.create({
   // line vertically instead.
   metaRowText: {
     flex: 1,
-  },
-  queuePosition: {
-    fontWeight: typeScale.body.weight,
-    fontFamily: typeScale.body.fontFamily,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textSecondary,
-    marginTop: space.sm,
   },
   description: {
     alignSelf: 'stretch',
@@ -1037,5 +1098,18 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: color.border,
     marginTop: space.sm,
+  },
+  // Sits between the scroll and the action bar — above the tap target, visible
+  // without scrolling, so the reader does not wonder why the button did nothing.
+  // `error` colour matches the established error text pattern (ReaderPreferencesScreen).
+  licenceError: {
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    fontWeight: typeScale.smallLabel.weight,
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.error,
+    backgroundColor: color.white,
   },
 });

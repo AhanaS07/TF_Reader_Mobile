@@ -32,7 +32,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
 import { handToggledSession } from '@access/handToggledSession';
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
@@ -229,7 +229,13 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                       publisher={publication.publisher}
                       imageUrl={publication.coverUrl}
                       format={publication.format}
-                      badge={<AccessTierBadge tier={access.tier} />}
+                      // D8 — `not_entitled` renders nothing at all, badge
+                      // included. `tier` is a required field, so that state
+                      // carries an OPEN_ACCESS filler; drawing it would label a
+                      // title the reader cannot open as free to read.
+                      badge={
+                        isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+                      }
                       // No `action`: the Elite queue button ("Grant access") is
                       // ItemDetailScreen only, not on this shelf row.
                       onPress={() =>

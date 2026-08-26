@@ -28,9 +28,18 @@ import CatalogueScreen from './CatalogueScreen';
 // Controls what the licence source returns for the holdings cache.
 // Defaults to empty so existing tests are unaffected.
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
+// D12 — pressing a queue affordance makes a real call through this same seam.
+const mockBorrow = jest.fn();
+const mockPlaceHold = jest.fn();
+const mockAcceptOffer = jest.fn();
+const mockCancelHold = jest.fn();
 jest.mock('@config/licence', () => ({
   getLicenceSource: () => ({
     getLibrary: () => mockGetLibrary(),
+    borrow: (...args: [string]) => mockBorrow(...args),
+    placeHold: (...args: [string]) => mockPlaceHold(...args),
+    acceptOffer: (...args: [string]) => mockAcceptOffer(...args),
+    cancelHold: (...args: [string]) => mockCancelHold(...args),
   }),
 }));
 
@@ -728,45 +737,184 @@ describe('CatalogueScreen — list-level holdings cache', () => {
   });
 });
 
-// ── D12's Elite queue button is ItemDetailScreen only ─────────────────────────
+// ── D12 — the Elite queue affordance is ItemDetailScreen only ─────────────────
 //
-// It used to also render on this shelf row; moved back to the detail screen
-// only, so a shelf row draws no button regardless of tier.
-describe('CatalogueScreen — no Elite queue button', () => {
-  const ELITE_CATALOGUE: Catalogue = {
-    ...FAKE_CATALOGUE,
-    shelves: [
-      {
-        id: 'elite',
-        title: 'Elite titles',
-        publications: [
-          {
-            id: 'item_elite',
-            title: 'An Elite Title',
-            publisher: 'Routledge',
-            authors: [],
-            subjects: [],
-            format: 'EPUB',
-            acquisition: {
-              actionId: 'borrow',
-              href: 'https://x/loan/item_elite',
-              licenceModel: 'ELITE',
-              encryption: null,
-              hasSearchIndex: false,
-              canPersist: true,
+// CONFIRMED TEAM DECISION, 26 Aug. The Grant access / queue-position /
+// Accept-Reject affordances live on the item detail screen and on no card
+// surface, so a shelf row draws no queue button regardless of tier or holdings.
+//
+// TESTED AT EVERY HOLDING STATE, not just the simple one. An earlier pass put
+// the affordance on this row for all three states, so "no button" has to hold
+// when the reader has nothing, is queued, AND has an offer waiting — those are
+// the three cases that would each have rendered something.
+describe('CatalogueScreen — no Elite queue affordance', () => {
+  function eliteCatalogue(id = 'item_elite'): Catalogue {
+    return {
+      ...FAKE_CATALOGUE,
+      shelves: [
+        {
+          id: 'elite',
+          title: 'Elite titles',
+          publications: [
+            {
+              id,
+              title: 'An Elite Title',
+              publisher: 'Routledge',
+              authors: [],
+              subjects: [],
+              format: 'EPUB',
+              acquisition: {
+                actionId: 'borrow',
+                href: `https://x/loan/${id}`,
+                licenceModel: 'ELITE',
+                encryption: null,
+                hasSearchIndex: false,
+                canPersist: true,
+              },
             },
-          },
-        ],
-      },
-    ],
-  };
+          ],
+        },
+      ],
+    };
+  }
 
-  it('draws no queue button on an Elite shelf row', async () => {
-    setCatalogueSource(fakeSource(async () => ELITE_CATALOGUE));
+  it('draws no Grant access button when the reader holds nothing', async () => {
+    setCatalogueSource(fakeSource(async () => eliteCatalogue()));
 
     await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
 
     await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
     expect(screen.queryByText('Grant access')).toBeNull();
+    // No empty action wrapper either — the row should look untouched.
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  it('draws no queue position when the reader is queued', async () => {
+    const queued = {
+      loans: [],
+      holds: [
+        {
+          holdId: 'hold_1',
+          itemId: 'item_elite',
+          state: 'queued' as const,
+          position: 3,
+          queueLength: 7,
+          serverTime: '2026-08-26T09:00:00Z',
+        },
+      ],
+    };
+    useLibraryStore.setState({ ...queued, loading: false });
+    mockGetLibrary.mockResolvedValue(queued);
+    setCatalogueSource(fakeSource(async () => eliteCatalogue()));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+    expect(screen.queryByText(/in queue/i)).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  it('draws no Accept or Reject pair when a copy is offered', async () => {
+    const offered = {
+      loans: [],
+      holds: [
+        {
+          holdId: 'hold_1',
+          itemId: 'item_elite',
+          state: 'offered' as const,
+          offerExpiresAt: '2099-01-01T00:00:00Z',
+          serverTime: '2026-08-26T09:00:00Z',
+        },
+      ],
+    };
+    useLibraryStore.setState({ ...offered, loading: false });
+    mockGetLibrary.mockResolvedValue(offered);
+    setCatalogueSource(fakeSource(async () => eliteCatalogue()));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+    expect(screen.queryByText('Accept')).toBeNull();
+    expect(screen.queryByText('Reject')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  // The row is still a navigation target — the detail screen is where the queue
+  // lives, so getting there is the whole affordance.
+  it('still navigates to the detail screen, which is where the queue lives', async () => {
+    setCatalogueSource(fakeSource(async () => eliteCatalogue()));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+
+    fireEvent.press(screen.getByText('An Elite Title'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_elite' });
+  });
+});
+
+// ── D8 — the not-entitled state renders no buttons AND no badge ───────────────
+//
+// A publication with no acquisition link. `normalize.ts` rejects these at the
+// adapter boundary, so a real feed cannot produce one — which is exactly why the
+// fake source is handed one directly: the branch exists, `resolveAccess` has a
+// test for it, and the surfaces have to honour it.
+//
+// THE BADGE IS THE HALF THAT NEEDED FIXING. `actions` is `[]` in this state, so
+// nothing tappable was ever drawn; but `tier` is required on AccessResult and
+// carries an OPEN_ACCESS filler, so a screen reading it without checking `state`
+// labelled an unopenable title "Open Access".
+describe('CatalogueScreen — D8 not entitled', () => {
+  const NOT_ENTITLED: Catalogue = {
+    ...FAKE_CATALOGUE,
+    shelves: [
+      {
+        id: 'orphan',
+        title: 'Orphans',
+        publications: [
+          {
+            id: 'item_orphan',
+            title: 'Metadata Only',
+            publisher: 'Routledge',
+            authors: [],
+            subjects: [],
+            // No `acquisition`, and no `format` either — there is no file.
+          } as unknown as Catalogue['shelves'][number]['publications'][number],
+        ],
+      },
+    ],
+  };
+
+  it('still renders the row, because the title is real', async () => {
+    setCatalogueSource(fakeSource(async () => NOT_ENTITLED));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+  });
+
+  it('draws no access badge — not even the OPEN_ACCESS placeholder', async () => {
+    setCatalogueSource(fakeSource(async () => NOT_ENTITLED));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+
+    expect(screen.queryByText('Open Access')).toBeNull();
+    expect(screen.queryByTestId('content-card-badge')).toBeNull();
+  });
+
+  it('draws no tappable action of any kind', async () => {
+    setCatalogueSource(fakeSource(async () => NOT_ENTITLED));
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+    expect(screen.queryByText('Grant access')).toBeNull();
+    expect(screen.queryByText('Read')).toBeNull();
+    expect(screen.queryByText('Download')).toBeNull();
+    expect(screen.queryByText('Sign in')).toBeNull();
+    // No upsell either — index.html: "there is no endpoint behind one".
+    expect(screen.queryByText('Subscribe')).toBeNull();
   });
 });

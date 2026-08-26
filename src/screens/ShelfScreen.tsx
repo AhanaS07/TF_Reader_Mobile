@@ -55,8 +55,9 @@ import type {
 } from '@react-navigation/native-stack';
 
 import { handToggledSession } from '@access/handToggledSession';
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
+import { EmptyState } from '@components/EmptyState';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
@@ -175,6 +176,13 @@ export default function ShelfScreen({ route }: Props) {
     fetchPage(draftFilters, draftSort);
   }, [draftFilters, draftSort, fetchPage]);
 
+  // Whether the CURRENT results were fetched with a filter or sort — the applied
+  // pair, not the draft one, because the draft is whatever is half-typed in the
+  // sheet and says nothing about why the list is empty.
+  const hasActiveFilter =
+    appliedSort !== undefined ||
+    Object.values(appliedFilters).some((value) => value !== undefined);
+
   const clearAllFilters = useCallback(() => {
     setDraftFilters({});
     setDraftSort(undefined);
@@ -260,6 +268,31 @@ export default function ShelfScreen({ route }: Props) {
           <View style={styles.section}>
           {/* No heading here — the app bar already shows this shelf's name, set
               by RootNavigator from route.params.title. */}
+          {/* B10 — the shelf's own empty state, INSIDE the section rather than
+              instead of it, so the "Showing 0 of 0" count below still renders. A
+              reader who filtered to nothing needs both facts: that the filter
+              matched nothing, and that the shelf itself is not broken.
+
+              THIS SCREEN COULD PREVIOUSLY GO BLANK. It carries a filter and sort
+              sheet, so narrowing to zero results is an ordinary thing to do — and
+              with no empty state the list rendered nothing at all, which reads as
+              a failed load rather than as an answer.
+
+              TWO VARIANTS, for the reason SearchScreen distinguishes them:
+              "your filters matched nothing" is a different fact from "this shelf
+              is empty", and only the first has an action worth offering.
+
+              NOT A CONTRADICTION OF THE FEED RULE. index.html's "a shelf with
+              nothing in it is absent from the feed, not empty" is about the HOME
+              screen's preview shelves, which are omitted rather than sent empty.
+              This is the shelf a reader has navigated INTO, where a filtered
+              fetch legitimately returns zero rows. */}
+          {publications.length === 0 ? (
+            <EmptyState
+              variant={hasActiveFilter ? 'no_filter_results' : 'no_content'}
+              onClearFilters={clearAllFilters}
+            />
+          ) : (
           <View style={styles.list}>
             {publications.map((publication) => {
               // Hoisted out of the `badge` prop: D12 needs the resolved ACTIONS
@@ -277,14 +310,20 @@ export default function ShelfScreen({ route }: Props) {
                   publisher={publication.publisher}
                   imageUrl={publication.coverUrl}
                   format={publication.format}
-                  badge={<AccessTierBadge tier={access.tier} />}
-                  // No `action`: the Elite queue button ("Grant access") is
-                  // ItemDetailScreen only, not on this shelf row.
+                  // D8 — `not_entitled` renders nothing at all, badge
+                  // included: `tier` carries an OPEN_ACCESS filler in that
+                  // state, and drawing it would label an unopenable title free.
+                  badge={
+                    isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+                  }
+                  // NO `action` PROP. D12's Elite queue affordance is
+                  // ItemDetailScreen only — confirmed team decision, 26 Aug.
                   onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
                 />
               );
             })}
           </View>
+          )}
 
           {/* Server-reported total, so the count stays honest across pages.
               Rendered only when the feed supplies one — inventing "of 2" from
