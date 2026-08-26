@@ -417,21 +417,22 @@ describe('downloadBook — unencrypted audio under a real tier (B15 regression)'
     await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
   });
 
-  // The backend default is audio unencrypted — `session.encryption` is absent here exactly like a
-  // real audio response, distinguishing "unencrypted because open access" from "unencrypted
-  // because audio, under a real ELITE loan". Before the `needsLicence` fix, `isEncrypted` gated
-  // the licence, so this book got `licence: null` — `contentStore.ts`'s `isElite()` reads
-  // `pkg.licence`, saw null, answered false, and persisted an Elite title permanently: unaccounted
-  // against the 5-book limit and immune to the loan ever expiring.
+  // Regression test for bug B15: the `needsLicence` logic must correctly distinguish Elite
+  // (memory-only) from Subscription (persistable), regardless of encryption. This fixture uses
+  // unencrypted content as a simplification (no nonce/tag overhead to handle), but real audio is
+  // encrypted as of 2026-08-25. Before the `needsLicence` fix, `isEncrypted` gated the licence,
+  // so this Elite audio book got `licence: null` — `contentStore.ts`'s `isElite()` read `pkg.licence`,
+  // saw null, answered false, and persisted an Elite title permanently: unaccounted against the
+  // 5-book limit and immune to licence expiry.
   it('an ELITE audio book is treated as Elite (memory-only), not open access', async () => {
     const bookId = 'elite-audio-book';
-    const plaintext = new Uint8Array([40, 41, 42, 43, 44]); // audio bytes, unencrypted in this fixture
+    const plaintext = new Uint8Array([40, 41, 42, 43, 44]); // unencrypted test content (simplification)
     const loan = openAccessLoanFor(bookId, {
       licenceModel: 'ELITE',
       canPersist: false,
       dueAt: new Date(Date.now() + 86_400_000).toISOString(),
     });
-    // No `encryption` field — matches the real spec's default for audio (unencrypted).
+    // No `encryption` field in this fixture — testing the licensing logic, not encryption.
     const session = sessionFor(bookId, plaintext);
     global.fetch = mockFetchFor(loan, session, plaintext);
 
@@ -451,11 +452,13 @@ describe('downloadBook — unencrypted audio under a real tier (B15 regression)'
     await contentStore.close(bookId);
   });
 
-  // The other half of the same fix: a real Subscription audio book must still persist
-  // (Subscription IS a download tier) — this must not turn EVERY unencrypted book Elite-shaped.
+  // The other half of bug B15: a real Subscription audio book must still persist (Subscription
+  // IS a download tier) — the `needsLicence` fix must not turn EVERY book (encrypted or not)
+  // memory-only just because it's audio. Real audio is encrypted as of 2026-08-25; this fixture
+  // uses unencrypted content as a simplification.
   it('a SUBSCRIPTION audio book still persists, with a real (non-null) licence attached', async () => {
     const bookId = 'subscription-audio-book';
-    const plaintext = new Uint8Array([50, 51, 52, 53, 54]);
+    const plaintext = new Uint8Array([50, 51, 52, 53, 54]); // unencrypted test content (simplification)
     const loan = openAccessLoanFor(bookId, {
       licenceModel: 'SUBSCRIPTION',
       canPersist: true,

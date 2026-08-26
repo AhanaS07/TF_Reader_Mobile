@@ -137,9 +137,10 @@ fallback if the untested Android/large-payload/physical-device cases turn up a r
 - **Plaintext never touches disk.** Decrypted content is `Bytes` (`Uint8Array`), never a path or
   a stream. The type is the enforcement — keep it that way. `epub.js` wants an `ArrayBuffer` for
   `book.open(...)`; get it from `bytes.buffer`.
-- **`ContentFormat` is `'PDF' | 'EPUB' | 'AUDIO'`, taken verbatim from wokay.** `AUDIO` is never
-  encrypted and never has a search index — `BookSearchIndex['format']` excludes it, and the
-  canary pins that.
+- **`ContentFormat` is `'PDF' | 'EPUB' | 'AUDIO'`, taken verbatim from wokay.** Audio is encrypted
+  (as of 2026-08-25), the same AES-256-GCM as EPUB/PDF. Audio never has a search index —
+  `BookSearchIndex['format']` excludes it, and the canary pins that. "Audio is never encrypted"
+  was true through earlier build phases and is REVOKED.
 - **`Timestamp` is epoch milliseconds (client wall-time).** Wire/JSON timestamps from the grant
   and licence are ISO-8601 UTC _strings_ and stay `string`. Don't conflate them.
 
@@ -148,7 +149,8 @@ fallback if the untested Android/large-payload/physical-device cases turn up a r
 Beyond the repo-wide notes in the root README:
 
 - Encrypted fixtures live in `samples/`. Never commit real content — encrypted or not.
-- `AUDIO` paths need no decryption and no index; assert that rather than assuming it.
+- Audio is encrypted (as of 2026-08-25) — same decryption as EPUB/PDF. Audio never has a search
+  index; assert that rather than assuming it.
 
 ### Real-book device runs — `samples/fixtures/`
 
