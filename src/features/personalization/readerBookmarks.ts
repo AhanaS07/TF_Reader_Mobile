@@ -33,9 +33,10 @@ export interface ReaderBookmark {
 }
 
 /**
- * The loaded set, plus the ids of rows that could NOT be turned into a target (corrupt locator JSON).
- * Surfaced rather than swallowed, exactly as `toPaintable`/`loadReaderHighlights` surface theirs — a
- * stored bookmark that cannot be navigated to is a bug worth seeing, not a silently missing row.
+ * The loaded set, plus the ids of rows that could NOT be turned into a target — corrupt locator
+ * JSON, or (since AUDIO shipped) a valid locator with no `ReaderTarget` to reach it. Surfaced rather
+ * than swallowed, exactly as `toPaintable`/`loadReaderHighlights` surface theirs — a stored bookmark
+ * that cannot be navigated to from this panel is worth seeing, not a silently missing row.
  */
 export interface LoadedBookmarks {
   bookmarks: ReaderBookmark[];
@@ -44,12 +45,17 @@ export interface LoadedBookmarks {
 
 /**
  * A stored `Locator` -> the `goTo` target that reaches it. EPUB anchors by CFI, PDF by page — the two
- * addressing schemes `ReaderTarget` exists to carry. Total over the `Locator` union.
+ * addressing schemes `ReaderTarget` exists to carry.
+ *
+ * Returns null for AUDIO: `ReaderTarget` is bridge-local to the WebView reader (`kind: 'href' |
+ * 'page'`, see readerBridge.ts) and an audiobook's position has no destination there — audio never
+ * opens through `goTo`. Not a gap to close in this file; a navigable audio bookmark needs its own
+ * seam into AudioPlayerScreen, which is a call for whoever owns that route.
  */
-function toTarget(locator: Locator): ReaderTarget {
-  return locator.type === 'EPUB'
-    ? { kind: 'href', href: locator.cfi }
-    : { kind: 'page', page: locator.page };
+function toTarget(locator: Locator): ReaderTarget | null {
+  if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
+  if (locator.type === 'PDF') return { kind: 'page', page: locator.page };
+  return null;
 }
 
 /** The label to show, in precedence order: explicit name, then chapter id, then a positional default. */
@@ -73,7 +79,12 @@ export function toReaderBookmarks(rows: BookmarkRow[]): LoadedBookmarks {
       skippedIds.push(row.id);
       continue;
     }
-    bookmarks.push({ id: row.id, label: labelFor(row, locator), target: toTarget(locator) });
+    const target = toTarget(locator);
+    if (!target) {
+      skippedIds.push(row.id);
+      continue;
+    }
+    bookmarks.push({ id: row.id, label: labelFor(row, locator), target });
   }
 
   return { bookmarks, skippedIds };

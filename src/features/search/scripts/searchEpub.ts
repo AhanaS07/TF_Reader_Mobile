@@ -33,7 +33,12 @@ async function main(): Promise<void> {
   console.log(`Search "${term}"  →  ${hits.length} occurrence(s)\n`);
 
   hits.slice(0, MAX_SHOWN).forEach((h, i) => {
-    const where = h.locator.type === 'EPUB' ? h.locator.cfi : `p${h.locator.page}`;
+    const where =
+      h.locator.type === 'EPUB'
+        ? h.locator.cfi
+        : h.locator.type === 'PDF'
+          ? `p${h.locator.page}`
+          : `t${h.locator.positionMs}ms`;
     console.log(`${String(i + 1).padStart(3)}. [${h.chapterId}]  …${h.snippet}…`);
     console.log(`     ${where}`);
   });
