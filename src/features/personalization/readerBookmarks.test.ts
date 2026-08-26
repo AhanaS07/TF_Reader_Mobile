@@ -7,14 +7,24 @@
 
 import type { BookmarkRow } from '@/features/sync/localDb/types';
 import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
+import { syncEngine } from '@/features/sync/syncEngine';
 
 import {
   addCurrentEpubBookmark,
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+  renameBookmark,
   toReaderBookmarks,
 } from './readerBookmarks';
+
+// A write nudges a sync (pushOnEdit.ts's `pushNow`); mock the engine so it neither hits the real DB
+// nor makes a network call here, and so we can assert it fires on writes but never on a read.
+jest.mock('@/features/sync/syncEngine', () => ({ syncEngine: { run: jest.fn() } }));
+
+beforeEach(() => {
+  (syncEngine.run as jest.Mock).mockClear();
+});
 
 function row(overrides: Partial<BookmarkRow>): BookmarkRow {
   return {
@@ -68,6 +78,20 @@ describe('toReaderBookmarks', () => {
     expect(skippedIds).toEqual(['bad']);
   });
 
+  it('sets aside an AUDIO bookmark — it parses fine but has no goTo target in this reader', () => {
+    // Since AUDIO joined the frozen `Locator` union, a bookmark can carry one, but `ReaderTarget` is
+    // bridge-local to the text reader (`kind: 'href' | 'page'`) — an audiobook position has nowhere to
+    // navigate here (that needs its own AudioPlayerScreen seam). So `toTarget` returns null and the row
+    // is set aside, NOT rendered as a dead panel entry. Unreachable today (bookmarks are only minted
+    // from EPUB/PDF reading positions); pinned so the deliberate skip can't silently regress.
+    const { bookmarks, skippedIds } = toReaderBookmarks([
+      row({ id: 'ok' }),
+      row({ id: 'audio', locator: JSON.stringify({ type: 'AUDIO', positionMs: 872_000 }) }),
+    ]);
+    expect(bookmarks.map((b) => b.id)).toEqual(['ok']);
+    expect(skippedIds).toEqual(['audio']);
+  });
+
   it('returns empty for no bookmarks', () => {
     expect(toReaderBookmarks([])).toEqual({ bookmarks: [], skippedIds: [] });
   });
@@ -102,6 +126,8 @@ describe('loadBookmarks', () => {
     expect(bookmarks.map((b) => b.id)).toEqual(['a', 'b']);
     expect(bookmarks[1].target).toEqual({ kind: 'page', page: 7 });
     expect(skippedIds).toEqual([]);
+    // A read changes nothing, so it must not kick a sync — only writes do.
+    expect(syncEngine.run).not.toHaveBeenCalled();
   });
 });
 
@@ -114,6 +140,8 @@ describe('add / remove call-sites', () => {
 
     expect(add).toHaveBeenCalledWith('epubcfi(/6/4)', 'chapter-1', 'Start', 'book-42');
     expect(bookmarks.map((b) => b.id)).toEqual(['new']);
+    // The write nudges a sync so it does not wait for the next reconnect.
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('bookmarks the current PDF page through addForPage', async () => {
@@ -123,6 +151,7 @@ describe('add / remove call-sites', () => {
     await addCurrentPdfBookmark('book-42', 7, 'Chart');
 
     expect(add).toHaveBeenCalledWith(7, 'Chart', 'book-42');
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('deletes by id and returns a set no longer containing it', async () => {
@@ -133,5 +162,26 @@ describe('add / remove call-sites', () => {
 
     expect(remove).toHaveBeenCalledWith('victim');
     expect(bookmarks.map((b) => b.id)).toEqual(['survivor']);
+    // Delete is a write too — the tombstone must propagate now, not on the next reconnect.
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('renames in place by id, keeping the id, and returns the fresh set', async () => {
+    const rename = jest
+      .spyOn(bookmarkStore, 'rename')
+      .mockResolvedValue({} as BookmarkRow);
+    // The reload reflects the new name under the SAME id — id and target are untouched by a rename.
+    jest
+      .spyOn(bookmarkStore, 'list')
+      .mockResolvedValue([row({ id: 'b1', name: 'New name' })]);
+
+    const { bookmarks } = await renameBookmark('book-42', 'b1', 'New name');
+
+    expect(rename).toHaveBeenCalledWith('b1', 'New name');
+    expect(bookmarks).toHaveLength(1);
+    expect(bookmarks[0].id).toBe('b1');
+    expect(bookmarks[0].label).toBe('New name');
+    // A rename is an update-in-place write — one sync nudge, same as add/remove.
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 });

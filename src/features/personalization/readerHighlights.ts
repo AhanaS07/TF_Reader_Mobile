@@ -25,6 +25,7 @@ import {
   type HighlightPaint,
   type SelectionRange,
 } from '@/features/sync/stores/highlightStore';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
 /**
  * One EPUB highlight the reader can paint, format-free. `id` is what tap-to-delete removes by; the
@@ -132,6 +133,10 @@ export function loadReaderHighlights(bookId: string): Promise<LoadedHighlights> 
  * outbox in the same transaction) and returns the FRESH full set, so the caller re-sends one
  * authoritative `paintHighlights`. Returning the whole set rather than the one new highlight keeps
  * paint idempotent and matches the reader keeping an `id -> painted-range` map it diffs against.
+ *
+ * `pushNow()` after the write kicks a sync so a highlight made while already online reaches the server
+ * now, not on the next reconnect — fire-and-forget, never a precondition of the local save. See
+ * pushOnEdit.ts.
  */
 export async function addEpubHighlight(
   bookId: string,
@@ -140,6 +145,7 @@ export async function addEpubHighlight(
   color?: string,
 ): Promise<LoadedHighlights> {
   await highlightStore.addFromCfi(startCfi, endCfi, color, bookId);
+  pushNow();
   return reload(bookId);
 }
 
@@ -150,6 +156,7 @@ export async function addPdfHighlight(
   color?: string,
 ): Promise<LoadedHighlights> {
   await highlightStore.addFromSelection(selection, color, bookId);
+  pushNow();
   return reload(bookId);
 }
 
@@ -161,5 +168,6 @@ export async function addPdfHighlight(
  */
 export async function removeHighlight(bookId: string, id: string): Promise<LoadedHighlights> {
   await highlightStore.remove(id);
+  pushNow();
   return reload(bookId);
 }

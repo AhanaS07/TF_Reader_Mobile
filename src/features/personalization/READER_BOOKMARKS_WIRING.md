@@ -18,6 +18,7 @@ A pure mapper plus the three call-sites, unit-tested (`readerBookmarks.test.ts`,
 | `addCurrentEpubBookmark(bookId, cfi, chapterId?, name?)` | call-site 2a — bookmark the current EPUB position |
 | `addCurrentPdfBookmark(bookId, page, name?)` | call-site 2b — bookmark the current PDF page |
 | `removeBookmark(bookId, id)` | call-site 3 — tap-to-delete, **by stored id** (`bookId` re-lists the right book) |
+| `renameBookmark(bookId, id, name)` | call-site 4 — rename in place, **by stored id**; id + `target` unchanged, only `name` |
 
 Every call is scoped to `bookId` (2026-08-24) — see the resolved open item below.
 
@@ -50,19 +51,17 @@ matching `SearchPanel.tsx`'s split) plus the wiring in `ReaderScreen.tsx`:
    to `addCurrentEpubBookmark`'s/`addCurrentPdfBookmark`'s existing `name` parameter. Blank stays
    `undefined`, so `labelFor`'s own fallback (chapter id, or "Bookmark"/"Page N") still applies rather
    than this panel inventing a second empty-label convention.
-6. **Rename an existing bookmark** — UI landed 2026-08-24, but `ReaderScreen.renameBookmark`'s
-   implementation is a **TEMPORARY STAND-IN, agreed with the user, not a design decision.**
-   `readerBookmarks.ts` is create-and-delete-only on purpose (see `removeBookmark`'s own note: it is
-   what lets plain LWW behave as a union across devices), and whether a real update-in-place op can be
-   added without breaking that guarantee is **Karthik/Vaishnavi's call to make**, not Reader's to
-   assume — outside Reader's ownership per CLAUDE.md. Until they ship it, `renameBookmark` fakes the
-   same user-visible result by composing calls Reader already has: `add*`s a new bookmark at the SAME
-   `target` under the new name, awaits that, THEN `removeBookmark`s the old id — sequenced, not
-   parallel, so a failed add never leaves neither copy. This is two writes and two sync-outbox entries
-   for what is conceptually one edit, which is exactly the kind of thing a real update op should
-   collapse to one — **replace `renameBookmark`'s body with a single call once that op exists**, and
-   remove this item. `BookmarksPanel.tsx`'s `onRename` prop does not change either way — only what
-   `ReaderScreen` does behind it.
+6. **Rename an existing bookmark** — UI landed 2026-08-24. **The real update-in-place op now exists
+   (2026-08-26): `renameBookmark(bookId, id, name)` in `readerBookmarks.ts`** (call-site 4 above),
+   backed by `bookmarkStore.rename(id, name)`. It is one write and one outbox entry, and keeps the id
+   and `target` — only `name` changes. This **replaces** `ReaderScreen.renameBookmark`'s
+   delete-and-recreate stand-in: **Ahana should swap that body to a single `renameBookmark(...)` call**
+   (`BookmarksPanel.tsx`'s `onRename` prop is unchanged — only what `ReaderScreen` does behind it).
+   - The stand-in was create+delete (a new id at the same `target`, then tombstone the old), which kept
+     plain-LWW-as-union trivially because every create has a unique id. The real op is a **same-id
+     UPDATE**, which is safe for the union guarantee EXCEPT the one delete-vs-rename race — see the
+     "real rename op" open item below; that resolution is Karthik's engine call, and the local halves
+     (our facade + his `rename` store method) are already flagged for his confirmation.
 7. **The bookmarked-page badge — PURELY VISUAL, not a control.** `isCurrentPositionBookmarked` (a
    `useMemo` over `bookmarks` and `position`, no store read of its own) drives a small corner badge
    over the viewer, the way Word marks a bookmarked location with an icon rather than a button. It does
@@ -118,10 +117,27 @@ SAME format. **Item 8's `target.kind` mitigation is now redundant** for correctn
 distinguishes books) — it still harmlessly filters by format and can be simplified whenever Reader
 touches it. Only the `USER_ID` half stays single-user prototype (separate identity item).
 
-**New, 2026-08-24 — a real rename op.** See item 6 above: `renameBookmark`'s delete-and-recreate is a
-stand-in, not the intended shape. Needs a decision on whether `readerBookmarks.ts`'s
-create-and-delete-only model can take an update op without breaking the plain-LWW-as-union guarantee,
-and if so, what it looks like on the wire (presumably an `updateBookmark(id, name)` alongside the
-existing three call-sites). Reader will swap `renameBookmark`'s body to call it once it exists.
+**Real rename op — LOCAL HALVES LANDED 2026-08-26, engine resolution still Karthik's.** The op the
+2026-08-24 note asked for now exists: `renameBookmark(bookId, id, name)` (`readerBookmarks.ts`) →
+`bookmarkStore.rename(id, name)` (a same-id UPDATE through the shared `saveLocal` primitive). Both are
+tested and green. What is NOT decided, and is **Karthik's engine call**, is the delete-vs-rename
+cross-device race an update-in-place op reintroduces: under the current uniform whole-row LWW in
+`applyServerRecord`, a rename carrying a later stamp than a delete would **resurrect** a bookmark
+another device deleted. Recommended resolution (ours, per the annotations design): **deletes win**
+(make `is_deleted` sticky in `applyServerRecord` so a tombstone cannot be un-set by a later non-delete
+UPDATE); **rename-vs-rename stays plain LWW** (later name wins — that is fine, no data loss). Until
+Karthik confirms and, if needed, adds that guard, rename works correctly single-device and syncs; the
+only exposed edge is the concurrent delete-vs-rename-on-the-same-id case. `bookmarkStore.rename` and
+this facade both carry a NOTE pointing here. Once resolved, strike this item.
+
+**AUDIO locator — bookmarks skip it, deliberately (2026-08-26).** Since AUDIO joined the frozen
+`Locator` union (Karthik, for future audio-progress sync), a bookmark row can carry one. `toTarget`
+returns null for AUDIO and `toReaderBookmarks` sets the row aside into `skippedIds` — an audiobook
+position has no `ReaderTarget` (`kind: 'href' | 'page'`) to reach in the text reader. Unreachable today
+(bookmarks are only minted from EPUB/PDF reading positions), pinned by a test so the skip can't silently
+regress. A genuinely navigable audio bookmark needs its own seam into `AudioPlayerScreen` — a separate
+future feature for whoever owns that route, NOT this panel. Note: `skippedIds` currently pools this with
+corrupt-locator rows; if audio bookmarks ever become creatable, split the two so a valid-but-audio row
+isn't surfaced as corruption.
 
 See also: `READER_HIGHLIGHTS_WIRING.md` (the highlight sibling), `~/My_Reports/bookmarks-highlights-flow-and-sync.md`.

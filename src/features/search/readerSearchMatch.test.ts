@@ -47,6 +47,15 @@ describe('toReaderSearchMatch', () => {
     expect(toReaderSearchMatch(hit, 'x').pdf).toEqual({ page: 3, startOffset: 0, matchText: 'x' });
   });
 
+  it('clears (no paint) for an AUDIO hit — statically unreachable, pinned deliberately', () => {
+    // A SearchHit's `locator` is the full `Locator` union (frozen contract), but the search pipeline
+    // can never PRODUCE an AUDIO one: `BookSearchIndex.format` is 'EPUB' | 'PDF' (no text to index), so
+    // no AUDIO posting is ever built. This pins the total-function fallback the compiler forces anyway,
+    // so a future audio-search feature has to make an explicit choice here rather than silently paint.
+    const hit: SearchHit = { ...EPUB_HIT, locator: { type: 'AUDIO', positionMs: 872_000 } };
+    expect(toReaderSearchMatch(hit, 'map')).toBe(NO_SEARCH_MATCH);
+  });
+
   it('never lets a ContentFormat value (type/format) into the payload — the bridge rule', () => {
     for (const hit of [EPUB_HIT, PDF_HIT]) {
       const serialized = JSON.stringify(toReaderSearchMatch(hit, 'map'));
