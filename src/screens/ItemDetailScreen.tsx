@@ -206,6 +206,15 @@ export function renderBookContent(
           same half-measure the article branch's tab row already avoids for its
           own four dead tabs. */}
         <UnavailableTag label="Table of Contents" variant="row" icon="format-list-bulleted" />
+
+        {/* Queued has no actions — see resolveAccess's 5c — so this is the only
+            thing a waiting reader is told. `ActionBar` renders nothing for an
+            empty actions list, and a position is a status, not a button. */}
+        {detail.access.state === 'queued' && (
+          <Text style={styles.queuePosition}>
+            You are {detail.access.queuePosition} of {detail.access.queueLength} in the queue
+          </Text>
+        )}
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
@@ -500,6 +509,13 @@ export function renderArticleContent(
             <SectionHeader title="Abstract" />
             <Text style={styles.abstractText}>{detail.description}</Text>
           </View>
+        )}
+
+        {/* See renderBookContent — the same queued-state text, same reason. */}
+        {detail.access.state === 'queued' && (
+          <Text style={styles.queuePosition}>
+            You are {detail.access.queuePosition} of {detail.access.queueLength} in the queue
+          </Text>
         )}
       </ScrollView>
 
@@ -869,6 +885,14 @@ const styles = StyleSheet.create({
   // line vertically instead.
   metaRowText: {
     flex: 1,
+  },
+  queuePosition: {
+    fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textSecondary,
+    marginTop: space.sm,
   },
   description: {
     alignSelf: 'stretch',

@@ -16,31 +16,20 @@
 // real value — the public path — not as a missing one. Reading the store for an
 // id here would break the rule above.
 //
-// ─── D12 — AUDITED, AND DELIBERATELY NOT WIRED HERE ──────────────────────────
+// ─── D12 — item detail only, not wired here ──────────────────────────────────
 //
-// D12 puts the Elite queue button ("Grant access") on card rows rather than only
-// on the item detail screen, and both the Week 3 plan and index.html name three
-// surfaces plus this one. The other three — CatalogueScreen, ShelfScreen and
-// SearchScreen — render it. This screen does not, and that is a decision rather
-// than an omission, so it is written down here where the next person to check
-// will look.
+// D12's Elite queue button ("Grant access") is scoped to the item detail screen
+// only. CatalogueScreen, ShelfScreen and SearchScreen carry the same note and
+// none of them render it either — this is not a special case for this screen.
 //
-// A READER WITH NO INSTITUTION CANNOT JOIN AN INSTITUTION'S QUEUE. That is the
-// whole of it. `resolveAccess` §4 answers `requires_signin` for any licensed
-// tier once the session is null, and this screen's session IS null — necessarily,
-// because it has no institution to derive one from (see the rule above: it may
-// not read `institutionStore`). So `offersQueue` would be false for every row
-// here no matter what the feed contained, and the hook plus the three lines of
-// JSX would be code that can never fire.
+// A SECOND, INDEPENDENT REASON IT COULD NEVER FIRE HERE ANYWAY: a reader with no
+// institution cannot join an institution's queue. `resolveAccess` §4 answers
+// `requires_signin` for any licensed tier once the session is null, and this
+// screen's session IS null — necessarily, because it has no institution to
+// derive one from (see the rule above: it may not read `institutionStore`).
 //
 // IT IS ALSO A LIST OF OPEN ACCESS TITLES, whose resolve is `available` with
 // Read — Elite rows are not what this feed carries in the first place.
-//
-// WHAT WOULD CHANGE THIS: this screen gaining an institution, or flambeau
-// growing a way to queue anonymously. Either makes the queue reachable from the
-// public path, and at that point the fix is the same three lines the other three
-// surfaces use — `offersQueue(access)` guarding an `ActionButton` in
-// ContentCard's `action` slot — not a special case for this screen.
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';

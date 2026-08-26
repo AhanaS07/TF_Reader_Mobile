@@ -296,9 +296,9 @@ describe('offerStore', () => {
           },
         }));
 
-        // eslint-disable-next-line @typescript-eslint/no-require-imports -- a
-        // fresh module instance inside isolateModulesAsync must be required at
+        // A fresh module instance inside isolateModulesAsync must be required at
         // call time; a static import would resolve before the mock is set up.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const fresh = require('./offerStore').useOfferStore as typeof useOfferStore;
         fresh.getState().setHasHydrated(false);
 

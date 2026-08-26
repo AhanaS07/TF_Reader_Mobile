@@ -165,6 +165,14 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
   mockNavigate.mockClear();
+  // .mockClear() first: resolved/rejected values from a prior test's
+  // mockRejectedValue/mockResolvedValueOnce leave call history behind too, not
+  // just the return value — without this, a later `not.toHaveBeenCalled()`
+  // assertion can see a call the previous test made.
+  mockBorrow.mockClear();
+  mockReturnLoan.mockClear();
+  mockPlaceHold.mockClear();
+  mockGetLibrary.mockClear();
   mockBorrow.mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
   mockReturnLoan.mockResolvedValue(undefined);
   mockPlaceHold.mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
@@ -790,7 +798,7 @@ describe('ItemDetailScreen selects presentation by workType', () => {
     const article = await render(renderArticleContent(articleDetail, jest.fn()));
     expect(screen.getByText('Abstract')).toBeTruthy();
     expect(screen.queryByText(/isbn/i)).toBeNull();
-    article.unmount();
+    await article.unmount();
 
     await render(renderBookContent(bookDetail, jest.fn()));
     expect(screen.queryByText('Abstract')).toBeNull();
@@ -839,8 +847,8 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Accept offer')).toBeTruthy());
-    expect(screen.getByText('Reject offer')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Accept')).toBeTruthy());
+    expect(screen.getByText('Reject')).toBeTruthy();
   });
 
   it('shows no actions when the reader is queued (waiting for a copy)', async () => {
@@ -864,8 +872,29 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     await waitFor(() => expect(screen.getByText('Elite')).toBeTruthy());
     // resolveAccess returns no actions for the queued state.
     expect(screen.queryByText('Grant access')).toBeNull();
-    expect(screen.queryByText('Accept offer')).toBeNull();
+    expect(screen.queryByText('Accept')).toBeNull();
     expect(screen.queryByText('Read')).toBeNull();
+  });
+
+  it('shows the reader their queue position when queued', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    const hold = {
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued' as const,
+      position: 3,
+      queueLength: 7,
+      serverTime: new Date().toISOString(),
+    };
+    useLibraryStore.setState({ loans: [], holds: [hold] });
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [hold] });
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('You are 3 of 7 in the queue')).toBeTruthy());
   });
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
