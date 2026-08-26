@@ -105,6 +105,10 @@ true satisfies 'cipherLength' extends keyof EncryptedPackage ? true : false;
 // --- getBook stays async (Promise<Bytes>), not a sync in-RAM read ----------
 true satisfies ReturnType<ContentProvider['getBook']> extends Promise<Bytes> ? true : false;
 
+// --- getMimeType returns Promise<string>, derived from PersistedMeta.mimeType --
+true satisfies 'getMimeType' extends keyof ContentProvider ? true : false;
+true satisfies ReturnType<ContentProvider['getMimeType']> extends Promise<string> ? true : false;
+
 // --- prefs is a PER-USER SINGLETON: bookId stays out ----------------------
 // Reversal guard for the T4_Ahana -> dev_T4 decision. A keyof check rather than
 // an expect-error directive: an excess-property error lands on the literal, not

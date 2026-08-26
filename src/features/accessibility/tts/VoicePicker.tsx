@@ -26,8 +26,13 @@ export function VoicePicker({
 }: VoicePickerProps): React.JSX.Element {
   return (
     <Modal animationType="slide" transparent onRequestClose={onClose} visible={visible}>
-      <Pressable accessibilityRole="none" onPress={onClose} style={styles.backdrop} />
-      <View style={styles.sheet}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Close voice picker"
+        onPress={onClose}
+        style={styles.backdrop}
+      />
+      <View accessibilityViewIsModal style={styles.sheet}>
         <Text style={styles.title}>Voice</Text>
         <FlatList
           data={voices}
@@ -41,6 +46,8 @@ export function VoicePicker({
           ListHeaderComponent={
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel="Platform default voice"
+              accessibilityState={{ selected: selectedVoiceId === null }}
               onPress={() => onSelect(null)}
               style={styles.row}
             >
@@ -51,6 +58,8 @@ export function VoicePicker({
           renderItem={({ item }) => (
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={`${item.name}, ${item.language}`}
+              accessibilityState={{ selected: selectedVoiceId === item.id }}
               onPress={() => onSelect(item.id)}
               style={styles.row}
             >

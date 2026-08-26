@@ -29,10 +29,16 @@ A position in an audiobook is *time within a track*. It is not a CFI and it is n
 no member for it, so today Reader cannot write an audio position into the synced model at all.
 
 **Reader is NOT blocked on this.** AUDIO PHASE 4 / Task A already shipped durable single-device
-resume (`audioSessionProgress.ts`) — a reader-owned, deliberately **local and unsynced** JSON store,
-in the same spirit as `audioAssetResolver.ts`'s stopgap. What this proposal unblocks is
-**cross-device** resume, not the feature. That ordering is deliberate: it means this can be decided
-at Gate pace rather than under delivery pressure.
+resume (`audioSessionProgress.ts`) — a reader-owned, deliberately **local and unsynced** JSON store.
+What this proposal unblocks is **cross-device** resume, not the feature. That ordering is deliberate:
+it means this can be decided at Gate pace rather than under delivery pressure.
+
+**This is now the only audio item on the Gate agenda.** Audio's other proposal — a plaintext-path
+accessor, to lift the size ceiling on the asset resolver — was **withdrawn on 2026-08-25** once the
+catalogue's own 20 MB storage limit made that ceiling unreachable (`AUDIO_PLAYER_DECISION.md`
+Part 2). Nothing about that decision touches this one: the two shared a directory and a phase, not a
+problem. This proposal is about a position that **cannot be expressed** in the frozen types at all,
+which no agreement about content size can resolve.
 
 ### The anti-pattern this proposal exists to avoid
 

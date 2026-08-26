@@ -52,6 +52,15 @@ export function SearchMatchBar({
         button: it is the widest target in the bar and it already names what tapping
         it shows. The accessibilityLabel spells that out because "Match 3 of 17" alone
         does not tell a screen-reader user it is actionable.
+
+        DELIBERATELY NOT A LIVE REGION, and the reason is stronger than the usual one. The
+        usual one is SearchPanel's: this text changes on every arrow press, which is the
+        highest-frequency update on the screen. The stronger one is that TTS may be speaking
+        the book — react-native-tts and the screen reader share one output device and neither
+        ducks for the other, so announcing here talks over the sentence being read aloud. A
+        user who wants the count can focus this control and hear the label below. The gated
+        channel for navigation announcements is `announce.pageChanges`; a search step is not
+        one, and nothing in this app announces unconditionally.
       */}
       <Pressable
         accessibilityRole="button"
@@ -65,6 +74,7 @@ export function SearchMatchBar({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Previous match"
+        accessibilityState={{ disabled: !canStepBack }}
         disabled={!canStepBack}
         onPress={() => {
           onStep(-1);
@@ -77,6 +87,7 @@ export function SearchMatchBar({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Next match"
+        accessibilityState={{ disabled: !canStepForward }}
         disabled={!canStepForward}
         onPress={() => {
           onStep(1);

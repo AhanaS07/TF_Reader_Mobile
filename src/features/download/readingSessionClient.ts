@@ -19,7 +19,7 @@ import type { BookId, BorrowRequest, Loan, ReadingFormat, ReadingSessionRequest,
 import { generateDeviceKeypair, publicKeyToRawBase64 } from '../encryption/deviceKeypair';
 import { API_BASE_URL, AUTH_REQUIRED } from './config';
 import { getAuthToken } from './devAuthToken';
-import { DownloadError, DownloadFailure } from './errors';
+import { DownloadError, DownloadFailure, UnmappedServerResponse } from './errors';
 
 // Real-backend calls need a bearer token or the `tf-app` resource-server chain 401s before
 // routing runs (see devAuthToken.ts). The mock backend has no `/api/v1/auth/*` routes at all, so
@@ -116,7 +116,7 @@ export async function borrowLoan(bookId: BookId): Promise<Loan> {
     throw new DownloadFailure(
       mapped ?? DownloadError.LOAN_FAILED,
       bookId,
-      flambeauError ?? new Error(`POST /api/v1/loans responded ${response.status}`),
+      flambeauError ?? new UnmappedServerResponse(`POST /api/v1/loans responded ${response.status}`),
     );
   }
 
@@ -162,7 +162,7 @@ export async function openReadingSession(
     throw new DownloadFailure(
       mapped ?? DownloadError.SESSION_FETCH_FAILED,
       bookId,
-      flambeauError ?? new Error(`POST /api/v1/reading-sessions responded ${response.status}`),
+      flambeauError ?? new UnmappedServerResponse(`POST /api/v1/reading-sessions responded ${response.status}`),
     );
   }
 

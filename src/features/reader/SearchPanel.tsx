@@ -114,10 +114,24 @@ export function SearchPanel({
         />
         {/* Both this and the return key call onSubmit: the return key is the faster
             path but is not discoverable on every keyboard. */}
-        <Pressable accessibilityRole="button" onPress={onSubmit} style={styles.action}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Search"
+          onPress={onSubmit}
+          style={styles.action}
+        >
           <Text style={styles.actionText}>Search</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={onClose} style={styles.action}>
+        {/* Named, not just "Close": three panels in this reader have a close affordance, and a
+            screen-reader user arriving at one out of visual context cannot tell which is which
+            from the word alone. The counterpart labels live in BookmarksPanel and on
+            ReaderScreen's Contents toggle. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close search"
+          onPress={onClose}
+          style={styles.action}
+        >
           <Text style={styles.actionText}>Close</Text>
         </Pressable>
       </View>
@@ -236,8 +250,19 @@ export function SearchPanel({
             return (
               <View key={`${index}-${locatorKey(hit)}`}>
                 {startsChapter && <Text style={styles.chapterCaption}>{hit.chapterId}</Text>}
+                {/* Composed rather than left to implicit naming. The row's children concatenate
+                    to "3 <snippet> Not available in this reader", which is the right information
+                    in the wrong order — the ordinal arrives as a bare number before anything has
+                    said what it counts. `hits.length`, not `rendered.length`: the ordinals are
+                    positions in the whole result set (that is what "Match n of m" in
+                    SearchMatchBar counts too), and the list is capped for rendering only. */}
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityLabel={
+                    `Result ${index + 1} of ${hits.length}: ${hit.snippet}` +
+                    (navigable ? '' : '. Not available in this reader')
+                  }
+                  accessibilityState={{ disabled: !navigable }}
                   disabled={!navigable}
                   onPress={() => {
                     onSelectHit(index);

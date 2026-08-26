@@ -135,11 +135,13 @@ See `encryption/API_CONTRACT_NOTES.md` §1 for the full evidence. Short version:
 hex) is exactly what the real backend computes, confirmed both by reading its source
 (`ContentAccessGrantImpl.fingerprintOf()`) and by a live round trip. No code change needed here.
 
-**The cheap improvement below is still open and still worth doing:** the comparison currently
-happens inside `contentStore.store()` — *after* `fetchEncryptedAsset` has pulled up to 25 MB.
-`session.encryption.keyFingerprint` is available the instant `openReadingSession` returns.
-Comparing there fails in milliseconds instead of after a full download, and gives you a
-`DownloadError` at the right layer rather than a `ContentFailure` from Encryption.
+~~**The cheap improvement below is still open and still worth doing:** the comparison currently
+happens inside `contentStore.store()` — *after* `fetchEncryptedAsset` has pulled up to 25 MB.~~
+**Done 2026-08-25:** `licenseCheck.ts:166` compares `session.encryption.keyFingerprint` against the
+device fingerprint the instant `openReadingSession` returns, before a single content byte is
+requested, and raises a `DownloadError` at the right layer. Both Open and Download get it, since
+they share that gate. `contentStore`'s own `assertLicenceMatchesPackage` still runs too — defence in
+depth for direct `store()` callers such as `devContentSeed.ts`, which never pass through here.
 
 ---
 
@@ -322,30 +324,39 @@ wokay's prose says a short key "is rejected" but names no code. It is documented
 
 ---
 
-### 7. `B15` 🟢 — a subscription audiobook would persist forever, unlicensed
+### 7. ~~`B15` 🟢 — a subscription audiobook would persist forever, unlicensed~~ ✅ CLOSED 2026-08-25
 
-Latent today (the reader is EPUB-only) but it follows directly from both contracts and is cheap to
-guard. Both state audio is never encrypted — wokay: "A book is encrypted unless it is
+Both contracts state audio is never encrypted — wokay: "A book is encrypted unless it is
 `OPEN_ACCESS`, or unless it is audio", and `Encryption` is "null for open access and for all
-audio."
+audio." (Still what the contracts SAY; the backend overrode it in practice on 2026-08-25 and audio
+is now encrypted like every other format. That override does not resurrect this bug — the fix below
+keys off the licence model, not off encryption — but it does mean the quoted rule can no longer be
+relied on anywhere else.) `downloadManager.ts` used to key persistence off encryption alone
+(`licence: isEncrypted ? licence : null`), so a `SUBSCRIPTION`-tier **audio** title arrived with
+`encryption: null` → `licence: null` → `contentStore` treated it as open access and
+`isLicenceExpired()` short-circuited to "not expired". It sat on the device permanently, outliving
+the subscription that entitled it.
 
-`downloadManager.ts:257` keys persistence off encryption alone:
+**Fixed** by deriving the licence from the licence model rather than from the encryption block:
 
 ```ts
-encryption: session.encryption ?? null,
-licence: isEncrypted ? licence : null,   // isEncrypted === (session.encryption != null)
+const needsLicence = license.mode !== 'open-access';
+...
+licence: needsLicence ? licence : null,
 ```
 
-So a `SUBSCRIPTION`-tier **audio** title arrives with `encryption: null` → `licence: null` →
-`contentStore` treats it as open access, persists it, and `isLicenceExpired()` short-circuits to
-"not expired". It sits on the device permanently, outliving the subscription that entitled it.
+`license.mode` comes from `checkLicense()`, which resolves it from the reading session's own
+`licenceModel` — so "unencrypted" and "unlicensed" are now two different questions, which is the
+distinction the entire audio tier turns on. The `needsLicence` line carries its own comment
+explaining why it is deliberately **not** `isEncrypted`; leave it there, since the two tests look
+interchangeable and are not.
 
-**Fix:** derive persistence from `loan.canPersist` **and** `loan.licenceModel`, not from
-`encryption != null`. `licenceModel === 'OPEN_ACCESS'` is the actual test for "no licence needed",
-and you already have it on the `Loan`. Three lines now; a data-migration later.
-
-Note that `84f2476` added an `AUDIO` row to `FORMAT_MIME_TYPES` (`downloadManager.ts:87`), which
-makes the audio path *look* more supported than it is. Close this before anyone believes it.
+The related worry logged here — that `84f2476`'s `AUDIO` row in `FORMAT_MIME_TYPES` made the audio
+path look more supported than it was — goes with it. It now *is* that supported, on this axis. What
+still bounds audio is size, not licensing: the 20 MB cap in `B11` is ~21 minutes of audio, which is
+a deliberate prototype bound rather than a gap being worked on. See
+`src/features/reader/audio/AUDIO_PLAYER_DECISION.md` Part 2 before assuming full-length audiobooks
+are in scope.
 
 ---
 
@@ -385,7 +396,7 @@ best value-per-line on this list.
 | `B18` | flambeau: is `POST /api/v1/loans` coming back, or is borrow gone for good (`D-020`)? | `borrowLoan()` gets `405` on every real-backend call |
 | `A10` | flambeau: `/loans/changes` vs `/changes` | `B6` gets built twice |
 | `A9` | flambeau: does `OPEN_ACCESS` write a loan? | `downloadManager.ts` borrows unconditionally and reads `canPersist`/`dueAt` off the result — fine under the prose reading, broken under the table reading |
-| `B11` | wokay: is there a maximum ingest size? | `MAX_DECRYPTED_BYTES` is 25 MB and no contract bounds book size, so an operator can publish a 40 MB book this client can never open, with no signal at either end |
+| `B11` | wokay: is there a maximum ingest size? | The client cap is per-format since 2026-08-25 — `maxDecryptedBytesFor()`: 25 MB EPUB/PDF, **20 MB AUDIO** (the OPDS team's agreed prototype storage limit). `downloadBook`/`openBook` size the chunked fetch from it and reject `BOOK_TOO_LARGE` before the body arrives. Neither number is in any contract, so an operator can still publish a 40 MB book this client can never open, with no signal at either end |
 | `C3` | nobody owns the catalogue client | Reader now ROUTES `format` off the stored package (`B12`, Reader half closed), but nothing can tell it the true value — `downloadBook()`'s `format` parameter still defaults to `'EPUB'` with no caller supplying it |
 
 ---

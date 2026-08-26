@@ -118,31 +118,49 @@ to `SignedLicence` or building anything on `signature`.
 
 ---
 
-## 3. `B15` 🟢 — the store can't defend itself against an unlicensed subscription audiobook
+## 3. ~~`B15` 🟢 — the store can't defend itself against an unlicensed subscription audiobook~~ ✅ CLOSED
 
-Both contracts say audio is never encrypted. `downloadManager.ts` keys `licence` off `encryption`,
-so a `SUBSCRIPTION`-tier audio title arrives with `encryption: null` → `licence: null`, and this
-store then treats it as open access: persists it, and `isLicenceExpired()` short-circuits to "not
-expired". A subscription audiobook sits on the device permanently, outliving the subscription.
+**Closed 2026-08-25 by Abhinav**, in `downloadManager.ts`, exactly as this section proposed:
+`needsLicence` is now `license.mode !== 'open-access'` — resolved from the session's own
+`licenceModel` — instead of `session.encryption != null`. A `SUBSCRIPTION` or `ELITE` audiobook now
+arrives at `store()` **with** its licence attached, so `isElite()` and `isLicenceExpired()` (both of
+which read off `pkg.licence`) answer correctly for it. `downloadManager.ts`'s own comment at the
+`needsLicence` line records the reasoning.
 
-The fix belongs in `downloadManager.ts` (derive from `loan.canPersist` + `loan.licenceModel`, not
-from `encryption != null`) — see Download's notes. **The reason it's listed here too:** this store's
-own invariant, "encrypted ⇒ must ship a licence", is the wrong invariant for the audio case. There
-is no combination of flags a caller can pass today that means "unencrypted but still licensed and
-expiring." If you close `B15` in `downloadManager.ts`, `assertLicenceMatchesPackage()` needs a
-matching rule, or the store will keep accepting the package it should refuse.
+What that leaves for this store, and it is the reason the section stays rather than being deleted:
+**`assertLicenceMatchesPackage()` was not changed and did not need to be.** Its invariant is
+"encrypted ⇒ must ship a licence", one direction only, so an *unencrypted-but-licensed* package —
+which is precisely what a subscription audiobook now is — passes it without a new rule. There is
+still no invariant here that would *catch* a caller who reverts the `downloadManager` fix and sends
+audio with `licence: null`: the store cannot distinguish that from genuine open access, because
+nothing on `EncryptedPackage` carries the tier. If that guarantee is wanted at this seam rather than
+at the caller, it needs `licenceModel` on the package, which is a Gate change, not a local one.
 
 ---
 
-## 4. `B11` 🟡 — the 25 MB ceiling is ours alone
+## 4. `B11` 🟡 — the client-side ceiling is ours alone, and it is now TWO numbers
 
-`contentStore.ts:41` sets `MAX_DECRYPTED_BYTES = 25 * 1024 * 1024`, and `downloadManager.ts` rejects
-an over-budget book with `BOOK_TOO_LARGE` **before** storing. Rejecting early is right — a stored
-oversized book burns one of the five offline slots and throws on every open.
+`contentStore.ts` sets **two** budgets, and every book-sized check in that file goes through
+`maxDecryptedBytesFor(format)` so they cannot drift apart:
 
-But **nothing in either contract bounds book size.** `SignedUrl.originalLength` is just
-`integer ≥ 1`, and wokay's ingest endpoint has no max-size validation. So an operator can publish a
-40 MB book that this client can never open, with no signal at either end.
+| Format | Budget | Where the number comes from |
+| --- | --- | --- |
+| `EPUB`, `PDF` | `MAX_DECRYPTED_BYTES` — 25 MB | measured device RAM, below |
+| `AUDIO` | `MAX_AUDIO_DECRYPTED_BYTES` — **20 MB** | the OPDS/catalogue team's prototype storage limit |
+
+`downloadManager.ts` and `openBook.ts` read the same helper, so an over-budget book is rejected with
+`BOOK_TOO_LARGE` **before** the body is fetched. `store()` then refuses it again on the write side
+(`assertWithinRamBudget`, added 2026-08-25) — which is not redundant: `devContentSeed.ts` and any
+other direct `store()` caller bypasses `downloadManager` entirely, and before that check existed an
+oversized book persisted successfully, reported `isAvailableOffline() === true`, and failed on every
+subsequent read. Rejecting early is right — a stored oversized book burns one of the five offline
+slots and throws on every open.
+
+### The 25 MB half: still unbounded by any contract
+
+**Nothing in either contract bounds book size.** `SignedUrl.originalLength` is just `integer ≥ 1`,
+and wokay's ingest endpoint has no max-size validation. So an operator can publish a 40 MB EPUB that
+this client can never open, with no signal at either end. This half of `B11` is **still open**.
 
 The number is not arbitrary — `CLAUDE.md` records a measured 20 MB EPUB producing a **609 MB app RSS
 peak**, on a simulator with no jetsam, where ~985 MB combined would likely be a foreground kill on a
@@ -151,6 +169,41 @@ peak**, on a simulator with no jetsam, where ~985 MB combined would likely be a 
 **Ask wokay** to document a maximum ingest size, or to give the client a capability hint before
 download so large titles can be marked stream-only. `hasSearchIndex` is the precedent for exactly
 that kind of hint.
+
+### The 20 MB audio half: bounded by agreement, 2026-08-25
+
+**Audio is capped at 20 MB, and the bound is the CATALOGUE's, not this device's.** The OPDS team
+stores prototype audio at 20 MB or under, so a larger audiobook cannot arrive from the only source
+that serves one. Enforcing it at ingest makes that agreement checkable at the boundary instead of
+assumed: a 40 MB audiobook is a catalogue bug, and `store()` now says so rather than letting it
+through to a 25 MB check that was only ever about RAM.
+
+Two things this is **not**, both worth stating because both are easy to read into it:
+
+1. **It is not a claim that 20 MB is the right size for audio in general.** It is ~21 minutes at
+   128 kbps (~42 at 64 kbps mono) against 8–15 hours for a real audiobook. Full-length audio is out
+   of reach at *any* value this constant could hold, because the constant bounds a
+   whole-book-into-a-`Uint8Array` operation — so **raising this number is not the fix for that and
+   must never be mistaken for it.** It is the right size for the prototype, which is a different and
+   sufficient claim: it is what the catalogue will serve. A contracts change that would have lifted
+   the ceiling properly was drafted and **withdrawn on 2026-08-25** for exactly that reason; the
+   decision, and the condition that would revive it, are recorded in
+   `src/features/reader/audio/AUDIO_PLAYER_DECISION.md` Part 2. **Full-length audiobooks are out of
+   scope until that is revisited** — this cap is where that shows up.
+2. **It is not a tightening of the EPUB/PDF budget.** The two caps are pinned apart by a test
+   (`contentStore.test.ts`, "the 20 MB AUDIO cap"), whose middle case stores an unencrypted **EPUB**
+   of exactly the size the audio case refuses. Without that case, dropping the whole budget to 20 MB
+   would pass just as well, and that is a different and much wider change.
+
+**Ask wokay/OPDS** to publish the 20 MB limit in the catalogue contract, the same way the 25 MB ask
+above is worded. Today it is an agreement recorded in this repo and enforced by this client alone —
+which is the same shape of problem as the 25 MB half, just with a number both sides have said out
+loud.
+
+**Ownership note:** the per-format cap, its tests, and the `maxDecryptedBytesFor` call sites in
+`downloadManager.ts`/`openBook.ts` were written by Ahana (Reader) at the team's request, in Abhinav's
+directories. `npm test`/`typecheck`/`lint` are green, but **this needs Abhinav's sign-off** — the
+budget is Encryption's invariant to own.
 
 ---
 

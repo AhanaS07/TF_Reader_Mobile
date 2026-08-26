@@ -25,13 +25,23 @@
 // real below, signature is not (no RS256-verify library wired in yet). Don't mistake "expiry
 // checked" for "licence verified."
 //
-// RAM budget: MAX_DECRYPTED_BYTES is a hard, enforced cap (checked before AND after decrypt), per
-// this task's "<25MB" directive. BuildPlan.md Phase 9.3 already flags 25MB as possibly
-// unrealistic for real whole-book payloads long-term (see docs/build-status.md) — kept as the
-// stated target here, not silently widened.
+// RAM budget: a hard, enforced cap, checked at store() time, on the cold-read path, and before
+// AND after decrypt. It is PER-FORMAT — MAX_DECRYPTED_BYTES (25 MB, this task's "<25MB"
+// directive) for EPUB/PDF, MAX_AUDIO_DECRYPTED_BYTES (20 MB, the OPDS team's prototype storage
+// limit) for AUDIO. Go through maxDecryptedBytesFor(); see its own comment for why audio is
+// bounded by the catalogue rather than by RAM. BuildPlan.md Phase 9.3 already flags 25MB as
+// possibly unrealistic for real whole-book payloads long-term (see docs/build-status.md) — kept
+// as the stated target here, not silently widened.
 
 import { Directory, File, Paths } from 'expo-file-system';
-import type { BookId, ContentStore, EncryptedPackage, SessionHandle, SignedLicence } from '@/shared/contracts';
+import type {
+  BookId,
+  ContentFormat,
+  ContentStore,
+  EncryptedPackage,
+  SessionHandle,
+  SignedLicence,
+} from '@/shared/contracts';
 import { ContentError, ContentFailure } from '@/shared/contracts';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
@@ -39,6 +49,30 @@ import { deleteBek, getBek, storeBek } from './keyStorage';
 import { unwrapBek } from './deviceKeypair';
 
 export const MAX_DECRYPTED_BYTES = 25 * 1024 * 1024; // 25 MB whole-book RAM budget (frozen for this task)
+
+// AUDIO is capped LOWER than everything else, and the reason is the catalogue, not this device:
+// the OPDS team stores prototype audio at 20 MB or under, so a larger audiobook cannot arrive
+// from the only source that serves one. Enforcing it here makes that agreement checkable at the
+// boundary instead of assumed — a 40 MB audiobook is a catalogue bug, and this is where it says
+// so rather than sailing through to a 25 MB check that was only ever about RAM.
+//
+// It is NOT a claim that 20 MB is the right size for audio in general — it is ~21 minutes at
+// 128 kbps against 8–15 hours for a real audiobook. Full-length audio is out of reach at ANY cap
+// this constant could hold, because the cap bounds a whole-book-into-a-Uint8Array operation and a
+// 10-hour audiobook is ~500 MB; so RAISING THIS NUMBER IS NOT HOW FULL-LENGTH AUDIO GETS SUPPORTED,
+// and a change that reads "just bump the audio cap" is a misreading of the problem. Shipping real
+// audiobooks needs a path-based accessor and a decision that was deliberately deferred — see
+// reader/audio/AUDIO_PLAYER_DECISION.md Part 2, and B11 in CONTRACT_ALIGNMENT.md.
+export const MAX_AUDIO_DECRYPTED_BYTES = 20 * 1024 * 1024; // 20 MB, agreed with the OPDS/catalogue team
+
+/**
+ * The whole-book byte budget for `format`. Every book-sized check in this file goes through here
+ * so the two caps cannot drift apart — the search-index checks deliberately do not, since
+ * `BookSearchIndex.format` (search.ts) excludes AUDIO outright and no audio index can exist.
+ */
+export function maxDecryptedBytesFor(format: ContentFormat): number {
+  return format === 'AUDIO' ? MAX_AUDIO_DECRYPTED_BYTES : MAX_DECRYPTED_BYTES;
+}
 
 const STORE_DIR = new Directory(Paths.document, 'tf-reader-content');
 
@@ -127,12 +161,13 @@ function assertLengthInvariant(pkg: EncryptedPackage): void {
 // checks — this is not actually a decryption failure, but neither is theirs, and the frozen
 // ContentError enum has no dedicated "too large" code to add without a Gate conversation.
 function assertWithinRamBudget(pkg: EncryptedPackage): void {
-  if (pkg.originalLength > MAX_DECRYPTED_BYTES) {
+  const budget = maxDecryptedBytesFor(pkg.format);
+  if (pkg.originalLength > budget) {
     throw new ContentFailure(
       ContentError.DECRYPTION_FAILED,
       pkg.bookId,
       new Error(
-        `book is ${pkg.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget — refusing to store it`
+        `book is ${pkg.originalLength} bytes, exceeds the ${budget}-byte budget for ${pkg.format} — refusing to store it`
       )
     );
   }
@@ -298,12 +333,13 @@ function loadPersisted(bookId: BookId): EncryptedPackage | null {
   // full bytes into a JS Uint8Array before decryptBook()'s own budget check ever runs, defeating
   // the "checked before decrypt" claim in this file's own header. Found via an adversarial
   // cross-file review, 2026-08-12 — not a hypothetical.
-  if (parsed.originalLength > MAX_DECRYPTED_BYTES) {
+  const budget = maxDecryptedBytesFor(parsed.format);
+  if (parsed.originalLength > budget) {
     throw new ContentFailure(
       ContentError.DECRYPTION_FAILED,
       bookId,
       new Error(
-        `book is ${parsed.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget — refusing to read it into memory`
+        `book is ${parsed.originalLength} bytes, exceeds the ${budget}-byte budget for ${parsed.format} — refusing to read it into memory`
       )
     );
   }
@@ -432,11 +468,12 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
     // NOTE: licence.signature (RS256) is NOT verified here — see file header. Expiry above is
     // real; signature is not, yet.
 
-    if (pkg.originalLength > MAX_DECRYPTED_BYTES) {
+    const budget = maxDecryptedBytesFor(pkg.format);
+    if (pkg.originalLength > budget) {
       throw new ContentFailure(
         ContentError.DECRYPTION_FAILED,
         bookId,
-        new Error(`book is ${pkg.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`)
+        new Error(`book is ${pkg.originalLength} bytes, exceeds the ${budget}-byte budget for ${pkg.format}`)
       );
     }
 
@@ -462,11 +499,11 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
       }
     }
 
-    if (plaintext.length > MAX_DECRYPTED_BYTES) {
+    if (plaintext.length > budget) {
       throw new ContentFailure(
         ContentError.DECRYPTION_FAILED,
         bookId,
-        new Error(`decrypted book is ${plaintext.length} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`)
+        new Error(`decrypted book is ${plaintext.length} bytes, exceeds the ${budget}-byte budget for ${pkg.format}`)
       );
     }
 
@@ -716,6 +753,25 @@ export async function getPersistedLicenceStatus(
   const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
   const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
   return { licence: parsed.licence, expired, downloaded: true, revoked: false };
+}
+
+/**
+ * Return the persisted MIME type for a stored book. Read from PersistedMeta.mimeType, set at
+ * store() time by the download pass (or devContentSeed). Used by audio callers to derive a file
+ * extension for the scratch URI instead of hardcoding one. Throws ContentFailure if the book has
+ * never been stored (no meta.json exists).
+ */
+export async function getMimeType(bookId: BookId): Promise<string> {
+  const meta = metaFile(bookId);
+  if (!meta.exists) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      bookId,
+      new Error('no stored package for this book — call store() first')
+    );
+  }
+  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  return parsed.mimeType;
 }
 
 /**
