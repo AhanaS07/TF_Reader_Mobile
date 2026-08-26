@@ -9,6 +9,7 @@
 
 import type { HighlightRow } from '@/features/sync/localDb/types';
 import { highlightStore, type HighlightPaint } from '@/features/sync/stores/highlightStore';
+import { syncEngine } from '@/features/sync/syncEngine';
 
 import {
   addEpubHighlight,
@@ -17,6 +18,14 @@ import {
   removeHighlight,
   toReaderHighlights,
 } from './readerHighlights';
+
+// A write nudges a sync (pushOnEdit.ts's `pushNow`); mock the engine so it neither hits the real DB
+// nor makes a network call here, and so we can assert it fires on writes but never on a read.
+jest.mock('@/features/sync/syncEngine', () => ({ syncEngine: { run: jest.fn() } }));
+
+beforeEach(() => {
+  (syncEngine.run as jest.Mock).mockClear();
+});
 
 const EPUB_PAINT: Extract<HighlightPaint, { format: 'EPUB' }> = {
   format: 'EPUB',
@@ -122,6 +131,8 @@ describe('loadReaderHighlights', () => {
     expect(highlights.epub.map((h) => h.id)).toEqual(['a']);
     expect(highlights.pdf).toEqual([{ id: 'b', page: 2, startOffset: 1, endOffset: 8, color: 'green' }]);
     expect(skippedIds).toEqual([]);
+    // A read changes nothing, so it must not kick a sync — only writes do.
+    expect(syncEngine.run).not.toHaveBeenCalled();
   });
 
   it('surfaces the ids of rows that cannot be painted rather than swallowing them', async () => {
@@ -144,6 +155,8 @@ describe('add / remove call-sites', () => {
 
     expect(add).toHaveBeenCalledWith('startCfi', 'endCfi', 'pink', 'book-42');
     expect(highlights.epub.map((h) => h.id)).toEqual(['new']);
+    // The write nudges a sync so it does not wait for the next reconnect.
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('persists a PDF selection through addFromSelection', async () => {
@@ -154,6 +167,7 @@ describe('add / remove call-sites', () => {
     await addPdfHighlight('book-42', selection, 'green');
 
     expect(add).toHaveBeenCalledWith(selection, 'green', 'book-42');
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('deletes by id and returns a set no longer containing it', async () => {
@@ -165,5 +179,7 @@ describe('add / remove call-sites', () => {
     expect(remove).toHaveBeenCalledWith('victim');
     expect(highlights.epub.map((h) => h.id)).toEqual(['survivor']);
     expect(highlights.epub.map((h) => h.id)).not.toContain('victim');
+    // Delete is a write too — the tombstone must propagate now, not on the next reconnect.
+    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 });
