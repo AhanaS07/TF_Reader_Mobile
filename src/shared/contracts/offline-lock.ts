@@ -51,6 +51,11 @@ import type { BookId, Timestamp } from '../types/primitives';
  * has NOT learned that a book is fine, and it has not learned that it is revoked either. The
  * withdrawn implementation collapsed those two into "valid", which is why a book with no
  * licence document read as readable.
+ *
+ * Q4 RESOLVED (2026-08-26): `memory-only` (Elite / `canPersist: false`) is NOT a lock concern.
+ * The licence model is known at download time and never changes without an explicit new licence.
+ * Lock signals exist for the UNEXPECTED — revocation from the server, or expiry discovered only
+ * after caching. Elite status is neither. Removed from LockReason.
  */
 export type LockReason =
   /** Never asked, or asked and could not reach the server. Carries no verdict either way. */
@@ -58,9 +63,7 @@ export type LockReason =
   /** The server says this licence no longer entitles the user. Privileged — see LockSignal. */
   | 'revoked'
   /** `SignedLicence.expiresAt` has passed. Encryption detects this alone, offline, unaided. */
-  | 'expired'
-  /** Entitlement is fine; the licence forbids persistence (Elite / `canPersist: false`). */
-  | 'memory-only';
+  | 'expired';
 
 export interface LockState {
   bookId: BookId;
@@ -159,10 +162,11 @@ export type OfflineLockSignal = LockSignal | UnlockSignal;
 //    Encryption's verdict, never an input to it, and it must not be a synced column: one
 //    device's verdict must not propagate as another device's truth.
 //
-// 4. [Both] Is `memory-only` an offline-lock concern at all? `canPersist: false` is known at
-//    download time from the licence, so Encryption arguably never needs a signal for it. Listed
-//    as a LockReason so the UI has one vocabulary for "why can't I read this", but it may
-//    belong in tier.ts instead.
+// Q4 RESOLVED (2026-08-26): `memory-only` is NOT a lock concern. Elite status is known at
+// download time and does not change unexpectedly. Removed from LockReason type. Elite books are
+// simply never available offline; no signal needed.
 //
-// 5. [Ahana] What does Reader show for `reason: 'unknown'`? It is neither locked nor confirmed.
-//    Silence is probably right, but the state exists and needs a defined presentation.
+// Q5 RESOLVED (2026-08-26): `reason: 'unknown'` means "never pulled" — Reader should render it
+// as "status unknown" or remain silent in the UI. Do NOT claim entitlement. The absence of
+// confirmation is itself the message: if a device has not reached the server since download, it
+// has not confirmed this book is still entitled. Show uncertainty, not a false guarantee.
