@@ -15,6 +15,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
+import { useSessionStore } from '@store/sessionStore';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import type { Institution } from '@model/institution';
 import type { CatalogueStackParamList } from '../navigation/types';
@@ -49,6 +50,7 @@ const IMPERIAL: Institution = {
 afterEach(() => {
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [], cachedInstitutions: [] });
   usePendingIntentStore.setState({ pending: null });
+  useSessionStore.getState().clearSession();
   mockGoBack.mockClear();
   mockNavigate.mockClear();
   mockPopTo.mockClear();
@@ -163,5 +165,19 @@ describe('SignInScreen pending-intent replay', () => {
 
     await waitFor(() => expect(mockGoBack).toHaveBeenCalledTimes(1));
     expect(mockPopTo).not.toHaveBeenCalled();
+  });
+
+  // The stub must set a session before replaying the intent, otherwise ItemDetail
+  // re-evaluates access and finds the reader still unauthenticated.
+  it('sets a placeholder session before navigating so access resolves on return', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalled());
+    expect(useSessionStore.getState().isAuthenticated).toBe(true);
+    expect(useSessionStore.getState().institutionId).toBe(IMPERIAL.id);
   });
 });

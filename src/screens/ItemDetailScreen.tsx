@@ -15,8 +15,9 @@
 // kept and tested directly rather than treated as a claim about code that does
 // not exist. `renderArticleContent` below is exported so a test can hand it a
 // hand-built `ItemDetail` with `workType: 'article'` — see
-// ItemDetailScreen.test.tsx. The moment `@type` grows a real value, the only
-// line that changes is the one call to `buildItemDetail` in `fetchItem`.
+// ItemDetailScreen.test.tsx. The normalizer already maps `schema.org/Book` and
+// `schema.org/Audiobook`; the moment wokay confirms journal/article `@type`
+// values (Q-1b), only `WOKAY_TYPE_MAP` in opds/normalize.ts needs extending.
 //
 // ACCESS IS RESOLVED REACTIVELY, NOT ONCE AT FETCH TIME. The publication is stored
 // separately and detail is recomputed whenever loans/holds change (after a borrow,
@@ -55,8 +56,10 @@ import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
-import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
-import type { ActionId, Publication, WorkType } from '@model/types';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@model/errorCopy';
+import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
+import { ERROR_CODES } from '@model/types';
+import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
@@ -89,6 +92,7 @@ const COVER_WIDTH = space.xl * 3;
 const COVER_HEIGHT = space.xl * 4 + space.md;
 
 const GENERIC_MESSAGE = "We couldn't load this title.";
+const LICENCE_GENERIC_MESSAGE = "That action couldn't be completed. Please try again.";
 
 // Screen 05's presentation. Exported for the same reason `renderArticleContent`
 // below is — a test can render it directly from a hand-built `ItemDetail`
@@ -114,6 +118,8 @@ export function renderBookContent(
   // callers keep working; `undefined` is the same "nothing in flight" ActionBar
   // already defaults to.
   pending?: ActionId,
+  // D13: plain-English message from a failed licence call, shown above the bar.
+  licenceMessage?: string,
 ): ReactElement {
   return (
     <>
@@ -221,6 +227,11 @@ export function renderBookContent(
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
           and draws its own top border, so it needs no wrapper of its own here. */}
+      {licenceMessage !== undefined && (
+        <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
+          {licenceMessage}
+        </Text>
+      )}
       <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
@@ -463,6 +474,8 @@ export function renderArticleContent(
   onAction: (action: ActionId) => void,
   /** See renderBookContent. */
   pending?: ActionId,
+  /** See renderBookContent. */
+  licenceMessage?: string,
 ): ReactElement {
   return (
     <>
@@ -549,6 +562,11 @@ export function renderArticleContent(
           and draws its own top border, so no wrapper is needed here; the
           `actionBarWrapper` stretch fix exists only for the book layout, whose
           centring column would otherwise shrink it. */}
+      {licenceMessage !== undefined && (
+        <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
+          {licenceMessage}
+        </Text>
+      )}
       <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
     </>
   );
@@ -585,6 +603,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // tapped button goes busy. `undefined` is "nothing in flight".
   const [pendingAction, setPendingAction] = useState<ActionId | undefined>(undefined);
   const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
+  // Plain-English message from a failed licence call. Cleared at the start of the
+  // next tap so the reader knows whether the new attempt also failed.
+  const [licenceMessage, setLicenceMessage] = useState<string | undefined>(undefined);
 
   // Recomputed whenever the publication or the reader's holdings change. Pure and
   // fast — no call is made, resolveAccess is synchronous.
@@ -597,7 +618,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       loan,
       hold,
     });
-    return buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access });
+    // Falls back to BOOK_WORK_TYPE until wokay answers Q-1b (journal/article
+    // @type values). Once they do, the normalizer fills publication.workType and
+    // nothing else here changes.
+    return buildItemDetail({ publication, workType: publication.workType ?? BOOK_WORK_TYPE, access });
   }, [publication, institutionId, loan, hold]);
 
   // No synchronous setState in here — only inside the async continuations. Same
@@ -652,13 +676,23 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // rest of this app relies on (see ActionButton's `inert`).
   const runLicenceCall = useCallback(
     (action: ActionId, call: () => Promise<unknown>) => {
+      // Clear any previous message so the reader knows this tap is a fresh attempt.
+      setLicenceMessage(undefined);
       setPendingAction(action);
 
       call()
         // Caught before the refresh so a failed call still invalidates the cache
-        // — a borrow that threw may still have created the loan. D13 owns turning
-        // the refusal into a message; this only stops the button spinning forever.
-        .catch(() => {})
+        // — a borrow that threw may still have created the loan.
+        .catch((err: unknown) => {
+          if (isLicenceFailure(err) && err.code === LicenceError.REFUSED) {
+            const knownCode =
+              err.errorCode !== undefined &&
+              (ERROR_CODES as readonly string[]).includes(err.errorCode)
+                ? (err.errorCode as ErrorCode)
+                : undefined;
+            setLicenceMessage(knownCode !== undefined ? WIRE_ERROR_COPY[knownCode] : LICENCE_GENERIC_MESSAGE);
+          }
+        })
         .then(() => refresh())
         .catch(() => {})
         .finally(() => setPendingAction(undefined));
@@ -748,8 +782,8 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // side is exercised directly in tests rather than left unwritten.
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction, pendingAction)
-        : renderBookContent(detail, handleAction, pendingAction);
+        ? renderArticleContent(detail, handleAction, pendingAction, licenceMessage)
+        : renderBookContent(detail, handleAction, pendingAction, licenceMessage);
   }
 
   return (
@@ -1064,5 +1098,18 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: color.border,
     marginTop: space.sm,
+  },
+  // Sits between the scroll and the action bar — above the tap target, visible
+  // without scrolling, so the reader does not wonder why the button did nothing.
+  // `error` colour matches the established error text pattern (ReaderPreferencesScreen).
+  licenceError: {
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    fontWeight: typeScale.smallLabel.weight,
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.error,
+    backgroundColor: color.white,
   },
 });

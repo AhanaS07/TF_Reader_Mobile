@@ -10,6 +10,7 @@ import ErrorState from '@components/ErrorState';
 import OfflineBanner from '@components/OfflineBanner';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
+import { useSessionStore } from '@store/sessionStore';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
 import type { CatalogueStackParamList } from '../navigation/types';
@@ -19,6 +20,7 @@ type Props = NativeStackScreenProps<CatalogueStackParamList, 'SignIn'>;
 export default function SignInScreen({ navigation }: Props) {
   const institution = useInstitutionStore((s) => s.selectedInstitution);
   const takeIntent = usePendingIntentStore((s) => s.take);
+  const setSession = useSessionStore((s) => s.setSession);
   const isOnline = useNetworkStatus();
 
   const [submitting, setSubmitting] = useState(false);
@@ -34,12 +36,25 @@ export default function SignInScreen({ navigation }: Props) {
     setSignInError(false);
     setSubmitting(true);
     try {
-      // STUB — replace when flambeau publishes the sign-in handoff contract.
-      // What goes here:
-      //   1. Call flambeau.beginSamlSignIn({ institutionId: institution.id, idpHint: institution.signIn?.idpHint })
-      //      `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
-      //   2. Wire the token return path (deep link / polling authTxnId — Question 5)
+      // STUB — exercises the full pending-intent round trip without a real SAML
+      // call. Replace with real steps when flambeau publishes the sign-in contract:
+      //   1. Call flambeau.beginSamlSignIn({ institutionId, idpHint }) and open the
+      //      browser — `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
+      //   2. Receive the token via deep link (tfreader://auth-complete) or authTxnId
+      //      polling — contract still TBD (Question 5 in the planning doc)
+      //   3. Call setSession() with the real token from step 2, then replay the intent
       //
+      // Placeholder: synthesise a short-lived session so access resolves correctly
+      // when the reader lands back on ItemDetail after "signing in".
+      setSession({
+        accessToken: `stub:${institution.id}`,
+        expiresIn: 3600,
+        userId: `stub:${institution.id}`,
+        institutionId: institution.id,
+        roles: [],
+        collections: [],
+      });
+
       // `popTo`, NOT `navigate` — for the common case the same ItemDetail is
       // already in the stack underneath AccessGate and this screen (the reader
       // never left the app), and `navigate` does not reliably collapse back to
@@ -56,7 +71,7 @@ export default function SignInScreen({ navigation }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [institution, submitting, isOnline, navigation, takeIntent]);
+  }, [institution, submitting, isOnline, navigation, takeIntent, setSession]);
 
   const handleRetry = useCallback(() => {
     handleSignIn();

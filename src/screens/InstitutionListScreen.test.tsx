@@ -231,6 +231,202 @@ describe('InstitutionListScreen offline cache — bug regressions', () => {
   });
 });
 
+// ─── Loading state ────────────────────────────────────────────────────────────
+
+describe('InstitutionListScreen loading state', () => {
+  it('shows skeleton rows while loading and hides institution content', async () => {
+    mockIsOnline.mockReturnValue(true);
+    // Never resolves — keeps the screen in the loading state.
+    setCatalogueSource(fakeSource(() => new Promise(() => {})));
+
+    await render(<InstitutionListScreen />);
+
+    // Search bar is present in every state.
+    expect(screen.getByTestId('search-input')).toBeTruthy();
+    // No institution names while loading.
+    expect(screen.queryByText('Imperial College London')).toBeNull();
+    expect(screen.queryByText('University of Manchester')).toBeNull();
+  });
+});
+
+// ─── Select and navigate ──────────────────────────────────────────────────────
+
+describe('InstitutionListScreen select and navigate', () => {
+  it('sets the selected institution and goes back when a row is tapped', async () => {
+    mockIsOnline.mockReturnValue(true);
+    setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+
+    fireEvent.press(screen.getByLabelText('Imperial College London'));
+
+    expect(useInstitutionStore.getState().selectedInstitution).toEqual(IMPERIAL);
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds the selected institution to recentlyUsedIds', async () => {
+    mockIsOnline.mockReturnValue(true);
+    setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(screen.getByText('University of Manchester')).toBeTruthy());
+
+    fireEvent.press(screen.getByLabelText('University of Manchester'));
+
+    expect(useInstitutionStore.getState().recentlyUsedIds).toContain('inst_a21');
+  });
+});
+
+// ─── Recently used ────────────────────────────────────────────────────────────
+
+describe('InstitutionListScreen recently used', () => {
+  it('shows a "Recently used" section when a loaded institution is in recentlyUsedIds', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ recentlyUsedIds: ['inst_7f3'] });
+    setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
+
+    await render(<InstitutionListScreen />);
+
+    // Both section headers appear once the data lands.
+    // Note: RNTL renders ListHeaderComponent twice in FlatList — getAllByText avoids the ambiguity.
+    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('All Institutions').length).toBeGreaterThan(0);
+  });
+
+  it('excludes a recently-used institution from the main list', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ recentlyUsedIds: ['inst_7f3'] });
+    setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+
+    // mainInstitutions filters out recentlyUsedIds — IMPERIAL must appear exactly
+    // once (pinned), not a second time in the main list.
+    expect(screen.getAllByText('Imperial College London')).toHaveLength(1);
+    // MANCHESTER is not pinned so it appears in the main list.
+    expect(screen.getByText('University of Manchester')).toBeTruthy();
+  });
+
+  it('resolves a recently-used institution not in the current page via getInstitution', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ recentlyUsedIds: ['inst_7f3'] });
+    // IMPERIAL is absent from the page — must be fetched separately.
+    setCatalogueSource(fakeSource(
+      async () => [MANCHESTER],
+      async (id) => {
+        if (id === 'inst_7f3') return IMPERIAL;
+        return Promise.reject(new Error('unexpected id'));
+      },
+    ));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+});
+
+// ─── Search ───────────────────────────────────────────────────────────────────
+
+describe('InstitutionListScreen search', () => {
+  it('passes the query to getInstitutions after debounce', async () => {
+    mockIsOnline.mockReturnValue(true);
+    const getInstitutions = jest.fn().mockResolvedValue([IMPERIAL]);
+    setCatalogueSource(fakeSource(getInstitutions));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(1));
+
+    fireEvent.changeText(screen.getByTestId('search-input-field'), 'Imp');
+
+    // The debounce is 300ms; waitFor polls for up to 1000ms.
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(2));
+    expect(getInstitutions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: 'Imp', page: 0, size: 20 }),
+    );
+  });
+
+  it('fetches without q immediately when the clear button is pressed', async () => {
+    mockIsOnline.mockReturnValue(true);
+    const getInstitutions = jest.fn().mockResolvedValue([IMPERIAL]);
+    setCatalogueSource(fakeSource(getInstitutions));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(1));
+
+    // Type a query — starts debounce timer
+    fireEvent.changeText(screen.getByTestId('search-input-field'), 'Imp');
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(2));
+
+    // Clear — query becomes '' with delay 0, fires immediately
+    fireEvent.press(screen.getByTestId('search-input-clear'));
+
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(3));
+    // Last call must have no q
+    const lastCall = getInstitutions.mock.calls[2][0] as Record<string, unknown>;
+    expect(lastCall.q).toBeUndefined();
+  });
+
+  it('filters cached institutions by name when offline', async () => {
+    mockIsOnline.mockReturnValue(false);
+    useInstitutionStore.setState({ cachedInstitutions: [IMPERIAL, MANCHESTER] });
+    setCatalogueSource(fakeSource(jest.fn()));
+
+    await render(<InstitutionListScreen />);
+    // Both institutions show initially (no query).
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+    expect(screen.getByText('University of Manchester')).toBeTruthy();
+
+    // Type a query — offline path filters the cache client-side.
+    fireEvent.changeText(screen.getByTestId('search-input-field'), 'Imp');
+
+    await waitFor(() =>
+      expect(screen.queryByText('University of Manchester')).toBeNull(),
+    );
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+});
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+describe('InstitutionListScreen pagination', () => {
+  it('fetches the next page via onEndReached when more results exist', async () => {
+    mockIsOnline.mockReturnValue(true);
+    const PAGE_SIZE = 20;
+    const page0 = Array.from({ length: PAGE_SIZE }, (_, i) => ({
+      ...IMPERIAL,
+      id: `inst_${i}`,
+      name: `Institution ${i}`,
+    }));
+    const getInstitutions = jest.fn()
+      .mockResolvedValueOnce(page0)          // page 0 — hasMore=true
+      .mockResolvedValue([MANCHESTER]);       // page 1
+
+    setCatalogueSource(fakeSource(getInstitutions));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(screen.getByText('Institution 0')).toBeTruthy());
+
+    // Simulate FlatList reaching the end.
+    fireEvent(screen.getByText('Institution 0').parent?.parent?.parent as any, 'onEndReached');
+
+    await waitFor(() => expect(getInstitutions).toHaveBeenCalledTimes(2));
+    expect(getInstitutions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1, size: PAGE_SIZE }),
+    );
+  });
+});
+
+// ─── B10 ──────────────────────────────────────────────────────────────────────
+//
+// KEPT ALONGSIDE MAIN'S SEARCH TESTS ABOVE, not merged into them. The offline
+// search describe proves the cache FILTERS to a match; these two prove what is
+// shown when it filters to nothing, online and offline. Different behaviours,
+// so both stay.
+
 // ── B10 — the third search empty state: offline, nothing in the cache ─────────
 //
 // B10 is "three empty states" in the B-series, which is the search feature. Two
