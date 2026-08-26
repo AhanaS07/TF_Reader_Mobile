@@ -42,7 +42,12 @@ import type {
   SessionHandle,
   SignedLicence,
 } from '@/shared/contracts';
-import { ContentError, ContentFailure, EVENT_CHANNELS } from '@/shared/contracts';
+import {
+  ContentError,
+  ContentFailure,
+  EVENT_CHANNELS,
+  OFFLINE_LOCK_EVENTS,
+} from '@/shared/contracts';
 import { eventBus } from '@/shared/eventBus';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
@@ -843,6 +848,15 @@ async function isAvailableOffline(bookId: BookId): Promise<boolean> {
   }
   return contentFile(bookId).exists;
 }
+
+eventBus.on(EVENT_CHANNELS.CONTENT_LOCK, (signal) => {
+  if (signal.type !== OFFLINE_LOCK_EVENTS.LOCK) return;
+  if (signal.reason !== 'revoked') return;
+
+  void invalidateLicence(signal.bookId).catch((error) => {
+    console.error(`[contentStore] failed to invalidate revoked book ${signal.bookId}`, error);
+  });
+});
 
 export const contentStore: ContentStore = {
   store,
