@@ -528,7 +528,13 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
 
           {/* Not format-gated, unlike Typography/Zoom below: this is a device-wide accessibility
               preference, not a per-document layout one. ReaderScreen's own toolbar button
-              (`ttsEnabled && format === 'EPUB'`) is where the EPUB-only gate actually lives. */}
+              (`ttsEnabled && format === 'EPUB'`) is where the EPUB-only gate actually lives.
+
+              THE ONLY TTS CONTROL IN THIS MENU. There used to be a second one — a separate "TTS"
+              section further down with an On/Off pair writing the same field, plus a hint saying
+              to re-enter the book for the change to take. Two controls for one boolean is one too
+              many, and the hint stopped being true when `useTtsEnabled` started subscribing to
+              `prefsStore` (see that file): the toggle now takes effect in an open book. */}
           <Text style={styles.sectionLabel}>Accessibility</Text>
           <View style={styles.row}>
             <Pressable
@@ -562,39 +568,6 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             </>
           )}
 
-          <Text style={styles.sectionLabel}>TTS</Text>
-          <Text style={styles.hint}>
-            Toggle on, then re-enter the book for the listen button to appear.
-          </Text>
-          <View style={styles.row}>
-            {(['On', 'Off'] as const).map((label) => {
-              const active = label === 'On' ? prefs.accessibility.tts.enabled : !prefs.accessibility.tts.enabled;
-              return (
-                <Pressable
-                  key={label}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={`TTS: ${label}${active ? ', selected' : ''}`}
-                  onPress={() => {
-                    void prefsStore.savePrefs({
-                      accessibility: {
-                        ...prefs.accessibility,
-                        tts: {
-                          ...prefs.accessibility.tts,
-                          enabled: label === 'On',
-                        },
-                      },
-                    });
-                  }}
-                  style={[styles.toggle, active && styles.toggleActive]}
-                >
-                  <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
-                    {label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
         </View>
       )}
     </View>

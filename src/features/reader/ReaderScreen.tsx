@@ -61,7 +61,6 @@ import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import {
   createEpubReaderTextProvider,
-  UNAVAILABLE_READER_TEXT_PROVIDER,
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
@@ -295,7 +294,6 @@ export function ReaderScreen({
   const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
-  const [showTts, setShowTts] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
 
   /**
@@ -357,11 +355,31 @@ export function ReaderScreen({
     ttsProviderRef.current = ttsProvider;
   }, [ttsProvider]);
 
-  // useTtsSession cannot be called conditionally (Rules of Hooks), so this always has SOME
-  // provider — the inert singleton while TTS isn't active, the real one once it is. TtsControls is
-  // only ever rendered once `ttsProvider` is non-null (see below), so the inert session is never
-  // shown, only ever briefly held.
-  const ttsSession = useTtsSession(ttsProvider ?? UNAVAILABLE_READER_TEXT_PROVIDER);
+  // NULL UNTIL TTS IS ACTUALLY ON. `useTtsSession` cannot be called conditionally (Rules of Hooks),
+  // so it is always called — and it does nothing at all with a null provider. It used to be handed
+  // an inert stand-in instead, which set up a whole session (engine listeners, AppState, a prefs
+  // read) that could never speak, then tore it down and set up a second one the moment the real
+  // provider arrived.
+  const ttsSession = useTtsSession(ttsProvider);
+
+
+  /**
+   * THE PREFERENCE IS THE SWITCH. There is no in-reader button that opens this panel: turning TTS
+   * on in the preferences menu is what puts the transport on screen, and turning it off is what
+   * takes it away (and stops speech — see `useTtsEnabled`). A speaker button in the toolbar was a
+   * SECOND control for a decision the preference already owns, and two switches for one mode is
+   * how a user ends up with TTS "on" and no controls, or controls for a mode that is off.
+   *
+   * The panel REPLACES the page-navigation row rather than stacking above it. Both are transport
+   * controls, and side by side the two Prev/Next pairs (page, and the match bar's) plus a
+   * Play/Stop read as one undifferentiated bank of buttons — `SearchMatchBar.tsx`'s own note makes
+   * the same point about the find bar's arrows.
+   *
+   * `ttsProvider` already carries every condition: the preference, `format === 'EPUB'`, and a live
+   * bridge. Derived rather than mirrored into state, so nothing can disagree about whether the
+   * panel is showing.
+   */
+  const ttsControlsVisible = ttsProvider !== null;
 
   /**
    * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
@@ -1226,7 +1244,6 @@ export function ReaderScreen({
     send !== null &&
     !showToc &&
     !showSearch &&
-    !showTts &&
     !showBookmarks &&
     !isBusy &&
     !isObscured &&
@@ -1266,7 +1283,6 @@ export function ReaderScreen({
             // "Close bookmarks", "Close contents"), so the exclusion is free to change on its
             // own merits without renaming a control out from under the test suite.
             setShowToc(false);
-            setShowTts(false);
             setShowBookmarks(false);
             setShowSearch((open) => !open);
           }}
@@ -1281,31 +1297,12 @@ export function ReaderScreen({
           onPress={() => {
             setShowToc(false);
             setShowSearch(false);
-            setShowTts(false);
             setShowBookmarks((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔖</Text>
         </Pressable>
-
-        {/* EPUB-only (readerTextProvider.ts is CFI-based) and gated on Accessibility's one
-            exported boolean — see ttsEnabled's own note above. */}
-        {ttsEnabled && format === 'EPUB' && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Listen to this book"
-            onPress={() => {
-              setShowToc(false);
-              setShowSearch(false);
-              setShowBookmarks(false);
-              setShowTts((open) => !open);
-            }}
-            style={styles.toolbarButton}
-          >
-            <Text style={styles.toolbarIcon}>🔊</Text>
-          </Pressable>
-        )}
 
         {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
             the rightmost item in the row rather than a floating overlay on top of it. */}
@@ -1348,6 +1345,7 @@ export function ReaderScreen({
         */}
         {swipeEnabled && (
           <View
+            testID="reader-swipe-catcher"
             style={FILL}
             {...panResponder.panHandlers}
             accessibilityElementsHidden
@@ -1414,6 +1412,40 @@ export function ReaderScreen({
                 <Text style={styles.bookmarkTooltipText}>Page Bookmarked</Text>
               </View>
             )}
+          </View>
+        )}
+
+        {/*
+          THE "READING ALOUD" CUE. Purely a visual state indicator: no `onPress`, no `onLongPress`,
+          and `pointerEvents="none"` so it cannot swallow a tap or a swipe meant for the page under
+          it — unlike the bookmark badge above, which has to receive touches for its tooltip. TTS is
+          driven from the transport panel and from the preference; this only reports that it is
+          running.
+
+          WHAT IT HONESTLY MEANS: "this book is being read aloud right now", anchored on the page
+          so the state is visible where the user is looking. It does NOT mean "the sentence being
+          spoken is on this page" — nothing host-side can know that. `setSpokenRange` paints into
+          the WebView and the reader does not follow the voice (TTS_PROVIDER.md open item 2), so
+          speech can run past the visible page, and a page turn moves the reader without moving the
+          voice. Promising the stronger meaning would need the WebView to report whether a CFI is
+          on screen, which is not on the bridge.
+
+          Gated on 'speaking' alone, not 'paused': paused keeps the highlight but nothing is being
+          read, and a speaker icon over a silent book is the kind of indicator people learn to
+          distrust.
+
+          STACKED BELOW THE BOOKMARK BADGE when both are showing — see `ttsCueWrap`'s own note for
+          why the offset is computed rather than left to flow.
+        */}
+        {ttsSession.status === 'speaking' && (
+          <View
+            testID="reader-tts-cue"
+            accessibilityRole="image"
+            accessibilityLabel="Reading aloud"
+            pointerEvents="none"
+            style={[styles.ttsCueWrap, isCurrentPositionBookmarked && styles.ttsCueBelowBookmark]}
+          >
+            <Text style={styles.ttsCueIcon}>🔊</Text>
           </View>
         )}
 
@@ -1601,8 +1633,7 @@ export function ReaderScreen({
             onStep={stepHit}
             onOpenResults={() => {
               setShowToc(false);
-              setShowTts(false);
-              setShowBookmarks(false);
+                setShowBookmarks(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
@@ -1645,12 +1676,12 @@ export function ReaderScreen({
 
       {/* Docked below the viewer rather than an absolute overlay like the TOC/Search panels — its
           own styling already assumes ordinary document flow (a border-top separator, not a floating
-          panel with fades). Rendered only once `ttsProvider` is real: while it's null the session
-          passed to useTtsSession is the inert singleton (see ttsProvider's own note), which must
-          never be shown as if it were a working session. */}
-      {showTts && ttsProvider !== null && <TtsControls session={ttsSession} />}
+          panel with fades). Shown on exactly the condition that gives `useTtsSession` something to
+          drive, so a transport is never on screen over a session that cannot speak. */}
+      {ttsControlsVisible && <TtsControls session={ttsSession} />}
 
-      <View style={styles.controls}>
+      {!ttsControlsVisible && (
+        <View style={styles.controls}>
         {/* Explicit label because the glyph carries no accessible name — "‹ Prev" reads as the
             guillemet plus an abbreviation. `accessibilityState` is explicit for the same reason it
             is on Next and Contents: `disabled` alone leaves it to the platform to synthesise, and
@@ -1683,7 +1714,6 @@ export function ReaderScreen({
           disabled={toc.length === 0}
           onPress={() => {
             setShowSearch(false); // mutual exclusion — see the toolbar button above
-            setShowTts(false);
             setShowBookmarks(false);
             setShowToc((open) => !open);
           }}
@@ -1751,7 +1781,8 @@ export function ReaderScreen({
         >
           <Text style={styles.buttonText}>Next ›</Text>
         </Pressable>
-      </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -1878,6 +1909,36 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   bookmarkTooltipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
+
+  // SAME CORNER AS THE BOOKMARK BADGE, and deliberately its own absolute element rather than a
+  // second child of `bookmarkBadgeWrap`. Sharing that wrap would put this in normal flow under the
+  // "Page Bookmarked" tooltip, so the cue would jump down 24pt every time the tooltip appeared and
+  // back when it went. An explicit offset costs one style and never moves.
+  ttsCueWrap: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Cool blue against the badge's warm gold: the two can be on screen at once, and colour is
+    // what separates "you bookmarked this" from "this is being read aloud" at a glance.
+    backgroundColor: '#d6e4ff',
+    borderWidth: 1,
+    borderColor: '#5b8def',
+    shadowColor: '#000000',
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 3,
+  },
+  // 8 (badge top) + 32 (badge height) + 8 (gap) — clears the bookmark badge exactly, so the two
+  // read as a column rather than a collision. Applied only while the badge is actually showing;
+  // otherwise the cue takes the corner itself rather than floating below an empty slot.
+  ttsCueBelowBookmark: { top: 48 },
+  ttsCueIcon: { fontSize: 15 },
 
   errorBanner: {
     backgroundColor: '#fdf2f2',

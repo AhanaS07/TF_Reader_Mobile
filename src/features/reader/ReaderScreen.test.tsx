@@ -2269,3 +2269,273 @@ describe('ReaderScreen bookmark badge', () => {
     expect(screen.queryByText('Page Bookmarked')).toBeNull();
   });
 });
+
+describe('TTS is driven by the preference, not by a button in the reader', () => {
+  // `useTtsEnabled` seeds from readSharedPrefs then tracks `prefsStore.subscribe`. This file
+  // already mocks the store with a live listener set (`__emitPrefsChange`), so a change here drives
+  // the real hook exactly as the preferences menu's toggle does on device.
+  // This file never clears mocks globally, so `addListener.mock.calls` otherwise accumulates every
+  // session every earlier test mounted — and `startSpeaking` below picks the newest `tts-start`
+  // handler out of it. Without this the helper reaches a handler belonging to a long-unmounted
+  // session, which is inert, and the cue never appears. Scoped to this block rather than made
+  // global: a blanket clearAllMocks here would wipe the module-level defaults the rest of the file
+  // sets up once.
+  beforeEach(() => {
+    // EXPLICIT, because this file never clears mocks between tests and several earlier ones leave
+    // `prepareBook` resolving 'PDF'. TTS is EPUB-only, so an inherited PDF silently means no
+    // transport and every assertion below fails for the wrong reason. Same convention the rest of
+    // the file follows — whoever needs a format states it.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+
+    // `addListener.mock.calls` likewise accumulates every session every earlier test mounted, and
+    // `startSpeaking` below picks the newest `tts-start` handler out of it. Stale handlers belong
+    // to unmounted sessions and are inert, so the cue would never appear.
+    const engine = jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+      default: { addListener: jest.Mock; speak: jest.Mock };
+    };
+    engine.default.addListener.mockClear();
+    engine.default.speak.mockClear();
+  });
+
+  function ttsPrefs(enabled: boolean): SharedPrefs {
+    const prefs = makePrefs();
+    prefs.accessibility.tts.enabled = enabled;
+    return prefs;
+  }
+
+  async function setTtsPref(enabled: boolean): Promise<void> {
+    await act(async () => {
+      __emitPrefsChange(ttsPrefs(enabled));
+    });
+  }
+
+  function navRowShowing(): boolean {
+    return screen.queryByRole('button', { name: 'Next page' }) !== null;
+  }
+
+  /** The `requestId` the provider just put on the wire, read back out of the injected script. */
+  function lastRequestId(): number {
+    const calls = __injectJavaScript.mock.calls;
+    for (let i = calls.length - 1; i >= 0; i -= 1) {
+      // The payload is a JSON object literal in the injected script, not a bare argument —
+      // `window.TFReader.requestTtsSentence({"requestId":1,...})`. See buildCommandScript.
+      const match = /requestTtsSentence\(\{"requestId":(\d+)/.exec(String(calls[i][0]));
+      if (match) return Number(match[1]);
+    }
+    throw new Error('no requestTtsSentence command was sent');
+  }
+
+  /** Drive the session all the way to 'speaking', which is what the on-page cue is gated on. */
+  async function startSpeaking(): Promise<void> {
+    await fireEvent.press(screen.getByRole('button', { name: 'Play' }));
+    await deliver({
+      type: 'ttsSentence',
+      requestId: lastRequestId(),
+      result: {
+        status: 'ok',
+        sentence: {
+          text: 'The grey wolf moved through the trees.',
+          cfi: 'epubcfi(/6/4[chap01]!/4/2,/1:0,/1:37)',
+          spineIndex: 0,
+          sentenceIndex: 0,
+          lastInSection: false,
+        },
+      },
+    });
+    // The engine's tts-start event is what flips the session to 'speaking' — the session is
+    // event-driven rather than action-driven on purpose (see useTtsSession's header).
+    // Let the session's fetch -> speak chain settle: resolving the bridge reply is one microtask,
+    // the session's await continuation another, and Tts.speak is called from the second.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const ttsEngine = (
+      jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+        default: { addListener: jest.Mock };
+      }
+    ).default;
+    // EXACTLY ONE, and asserting that is the point. `useTtsSession` used to be handed an inert
+    // stand-in provider before the real one existed, so it built a whole session that could never
+    // speak and then a second one — leaving two `tts-start` handlers, of which the first was dead.
+    // It now takes null and does nothing until there is a real provider.
+    const starts = ttsEngine.addListener.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'tts-start',
+    );
+    expect(starts).toHaveLength(1);
+    const start = starts[0];
+    await act(async () => {
+      (start[1] as () => void)();
+    });
+  }
+
+  it('shows the transport as soon as the preference goes on, with no button press', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+
+    await setTtsPref(true);
+
+    expect(screen.getByTestId('tts-speed-row')).toBeTruthy();
+    expect(navRowShowing()).toBe(false);
+  });
+
+  it('wires the REAL EPUB provider, so Play goes out over the bridge as requestTtsSentence', async () => {
+    // The chain this pins, end to end: prefsStore notifies -> useTtsEnabled flips -> ReaderScreen's
+    // ttsProvider memo calls createEpubReaderTextProvider(bookId, send) -> useTtsSession drives it.
+    // A wrong link anywhere here (the fake provider, a stale `send`, the old inert stand-in) still
+    // renders a working-looking transport whose Play button does nothing observable, so asserting
+    // the command actually reaches the WebView is what makes the wiring falsifiable.
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+    __injectJavaScript.mockClear();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Play' }));
+
+    const script = String(__injectJavaScript.mock.calls.at(-1)?.[0]);
+    expect(script).toContain('window.TFReader.requestTtsSentence(');
+    // `from: null` + `mode: 'current'` is `current(null)` — "start from wherever the reader is",
+    // which is what play() from idle means. Anything else would be resuming from a stale anchor.
+    expect(script).toContain('"from":null');
+    expect(script).toContain('"mode":"current"');
+  });
+
+  it('has no speaker button in the toolbar — the preference is the only switch', async () => {
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+
+    expect(screen.queryByRole('button', { name: 'Listen to this book' })).toBeNull();
+  });
+
+  it('takes the transport away and restores the navigation row when the preference goes off', async () => {
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+    expect(screen.getByTestId('tts-speed-row')).toBeTruthy();
+
+    await setTtsPref(false);
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+  });
+
+  it('never mounts the transport for a PDF, however the preference is set', async () => {
+    // The seam is CFI-based; a PDF has no CFI to segment against.
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+
+    await mountReader();
+    await reportReady();
+    await setTtsPref(true);
+
+    expect(screen.queryByTestId('tts-speed-row')).toBeNull();
+    expect(navRowShowing()).toBe(true);
+  });
+
+  describe('the on-page "reading aloud" cue', () => {
+    it('appears only while speech is actually playing', async () => {
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+
+      // Enabled but idle: the transport is up, nothing is being read.
+      expect(screen.queryByTestId('reader-tts-cue')).toBeNull();
+
+      await startSpeaking();
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+
+    it('is inert — a visual cue, not a control', async () => {
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+
+      const cue = screen.getByTestId('reader-tts-cue');
+      // No press handlers at all, and pointer events off, so it cannot eat a swipe meant for the
+      // page underneath it. This is the whole difference from the bookmark badge, which does take
+      // touches for its tooltip.
+      expect(cue.props.onPress).toBeUndefined();
+      expect(cue.props.onLongPress).toBeUndefined();
+      expect(cue.props.pointerEvents).toBe('none');
+      expect(cue.props.accessibilityRole).toBe('image');
+    });
+
+    it('drops below the bookmark badge when both are on screen, rather than over it', async () => {
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [
+          {
+            id: 'b1',
+            label: 'Chapter 1',
+            target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+          },
+        ],
+        skippedIds: [],
+      });
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      await startSpeaking();
+
+      // Not bookmarked yet: the cue takes the corner itself.
+      expect(StyleSheet.flatten(screen.getByTestId('reader-tts-cue').props.style).top).toBe(8);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+        atStart: false,
+        atEnd: false,
+      });
+
+      expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+      // 8 (badge top) + 32 (badge height) + 8 (gap) — clears it exactly.
+      expect(StyleSheet.flatten(screen.getByTestId('reader-tts-cue').props.style).top).toBe(48);
+    });
+  });
+
+  describe('page turns while TTS is running', () => {
+    it('keeps Prev/Next reachable — the transport replaces the row, so navigation moves to swipe', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      await startSpeaking();
+
+      // The button row is gone by design, so the swipe catcher is the page-turn affordance while
+      // listening. It must NOT be disabled by the transport being up — it used to be, because
+      // `swipeEnabled` was gated on the old `showTts` flag alongside the real overlays, which are
+      // the only things that legitimately suppress it.
+      //
+      // `includeHiddenElements`: the catcher carries `accessibilityElementsHidden` on purpose (it
+      // is inert chrome with nothing to announce), and RNTL's queries skip those by default.
+      expect(
+        screen.getByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+      ).toBeTruthy();
+    });
+
+    it('clears the spoken highlight on a page turn without silencing the cue', async () => {
+      // `notifyRelocated` clears the highlight and fires 'navigated', which is NOT a teardown —
+      // speech continues. The cue tracks the session, so it stays up, which is the honest report:
+      // the book is still being read aloud even though the reader has moved.
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/8/2)' },
+        atStart: false,
+        atEnd: false,
+      });
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+  });
+});

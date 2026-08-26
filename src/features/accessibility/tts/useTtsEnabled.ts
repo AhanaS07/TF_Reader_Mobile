@@ -15,18 +15,30 @@
 
 import { useEffect, useState } from 'react';
 
+import { prefsStore } from '@/features/personalization/prefsStore';
 import { readSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 
 /**
  * Whether the user has switched TTS on.
  *
- * READ ONCE, ON MOUNT — there is no live channel yet. `readSharedPrefs()` is a one-shot SQLite
- * read and nothing publishes prefs changes (`WEBVIEW_BRIDGE.md` schedules the store
- * subscription with the prefs-application stage). In practice that is not yet visible: there is
- * no settings screen to toggle this from mid-read, and `ReaderScreen` is keyed on `bookId`, so
- * opening a different book re-reads. When the subscription lands, this hook is the one place
- * that has to learn about it and no caller changes.
+ * TWO SOURCES, AND BOTH ARE NEEDED. `readSharedPrefs()` is the one-shot seed — it answers "what
+ * was stored before this screen mounted", which no subscription can, because `prefsStore` only
+ * notifies on a SUBSEQUENT write. `prefsStore.subscribe()` is the live channel — it answers "the
+ * user just changed it", which the seed cannot. Dropping either one reintroduces a bug: without
+ * the seed the hook reports `false` for a user who enabled TTS in an earlier session, and without
+ * the subscription a mid-read toggle does nothing until the book is reopened. `ReaderScreen`'s
+ * layout-prefs pair does the same two-part dance for the same reason.
+ *
+ * WHY THIS MATTERS BEYOND THE TOGGLE'S OWN UI: this boolean is what collapses `ReaderScreen`'s
+ * `ttsProvider` memo to `null`, which changes `useTtsSession`'s only dependency, which runs its
+ * cleanup — and that cleanup calls `Tts.stop()`. So switching TTS off is what STOPS SPEECH in an
+ * open book. It is a kill switch, not just a visibility flag, and the chain runs through here.
+ *
+ * Only local writes through `prefsStore` notify. A prefs row arriving from Sync does not (see
+ * `subscribe`'s own contract note), so TTS switched off on another device does not silence this
+ * one until the book is reopened. Correct for now — going further means an event-bus hop nothing
+ * else in the reader takes yet.
  *
  * Starts at the contract default (`false`) and stays there if the read fails, rather than
  * guessing `true`: a failed read is indistinguishable from first run, and the honest answer to
@@ -38,20 +50,31 @@ export function useTtsEnabled(): boolean {
 
   useEffect(() => {
     let torn = false;
+    // The seed is a SQLite read racing a user who can toggle before it resolves. If it lands
+    // last it would write the pre-toggle value back over the fresh one and silently re-enable
+    // TTS the user just switched off. A notification always carries a newer record than a read
+    // issued at mount, so once one has arrived the seed has nothing left to say.
+    let superseded = false;
 
     void readSharedPrefs()
       .then((shared) => {
         // The read outlived the component. Setting state here is the classic post-unmount
         // update, and this promise cannot be cancelled.
-        if (torn) return;
+        if (torn || superseded) return;
         setEnabled(shared.accessibility.tts.enabled);
       })
       .catch(() => {
         // Swallowed on purpose — see the fallback rationale above.
       });
 
+    const unsubscribe = prefsStore.subscribe((fresh) => {
+      superseded = true;
+      setEnabled(fresh.accessibility.tts.enabled);
+    });
+
     return () => {
       torn = true;
+      unsubscribe();
     };
   }, []);
 

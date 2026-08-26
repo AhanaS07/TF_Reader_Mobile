@@ -53,20 +53,6 @@ export interface EpubReaderTextProvider extends ReaderTextProvider {
 
 const UNAVAILABLE: TtsFetchResult = { status: 'unavailable' };
 
-/**
- * A `ReaderTextProvider` that never has anything to serve. `useTtsSession` cannot be called
- * conditionally (Rules of Hooks), so `ReaderScreen` needs SOME provider to pass it even while TTS
- * shouldn't be active yet — not enabled, a PDF book, or the bridge not ready. This stands in for
- * those windows: every fetch resolves `unavailable`, `setSpokenRange` and `onInterrupted` are no-ops.
- * Referentially stable (module-level, not a factory) since nothing about it ever needs to change.
- */
-export const UNAVAILABLE_READER_TEXT_PROVIDER: ReaderTextProvider = {
-  current: () => Promise.resolve(UNAVAILABLE),
-  next: () => Promise.resolve(UNAVAILABLE),
-  setSpokenRange: () => {},
-  onInterrupted: () => () => {},
-};
-
 interface PendingRequest {
   resolve: (result: TtsFetchResult) => void;
   generation: number;

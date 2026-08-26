@@ -118,8 +118,13 @@ unit-tested — same tier as `epub.entry.ts`) and `webview/src/ttsSegmentation.t
 sentence-boundary splitting and the 400-char word-boundary cap, no `Intl.Segmenter` since this
 WebView targets `safari15`). `setSpokenRange` paints through the new owner-namespaced highlight seam
 (`webview/src/highlightSeam.ts`/`highlightNaming.ts` — see open item 4, struck below) rather than
-calling `rendition.annotations` directly. Mounted in `ReaderScreen.tsx` behind a `showTts` toggle,
-gated on `useTtsEnabled()` and `format === 'EPUB'`.
+calling `rendition.annotations` directly. Mounted in `ReaderScreen.tsx` whenever `useTtsEnabled()`
+and `format === 'EPUB'` both hold — there is no in-reader toggle. The preference IS the switch:
+turning it on puts the transport on screen (replacing the page-navigation row), turning it off
+removes it and stops speech, because `ttsEnabled` collapses `ttsProvider` to null and that is
+`useTtsSession`'s only dependency, so its cleanup calls `Tts.stop()`. A speaker button in the
+toolbar was a second control for a decision the preference already owned; what remains of it is a
+non-interactive 🔊 cue painted on the page while `status === 'speaking'`.
 
 **Not done as part of step 5, on purpose — out of scope, not overlooked:** word-level highlighting
 (`TtsHighlightMode: 'word'` in the accessibility contract; the seam still only carries sentence-level
