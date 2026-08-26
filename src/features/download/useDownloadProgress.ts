@@ -28,10 +28,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
 import { downloadBook } from './downloadManager';
-import { DownloadFailure } from './errors';
 
 export type DownloadProgressStatus = 'idle' | 'downloading' | 'completed' | 'error';
 
@@ -56,10 +56,7 @@ const IDLE_STATE: DownloadProgressState = {
 };
 
 function describeFailure(cause: unknown): string {
-  if (cause instanceof DownloadFailure) {
-    return `${cause.code}${cause.cause ? ` (${String(cause.cause)})` : ''}`;
-  }
-  return cause instanceof Error ? cause.message : String(cause);
+  return formatDiagnosticErrorMessage(cause);
 }
 
 export function useDownloadProgress(): UseDownloadProgress {

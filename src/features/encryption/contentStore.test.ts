@@ -466,6 +466,87 @@ describe('contentStore — Elite (memory-only, canPersist: false)', () => {
   });
 });
 
+describe('contentStore — close() is REVERSIBLE for every tier, destroy() is the terminal one', () => {
+  // `close()` used to drop the packageCache entry unconditionally. For Subscription that is just a
+  // cache eviction — the ciphertext is on disk and loadPersisted() reloads it. For Elite it was
+  // DELETION: store() returns before its writeFile calls, so the cache entry is the only copy, and
+  // the next openSession() failed DECRYPTION_FAILED ("no stored package") forever after. That made
+  // close() terminal for Elite, which content-provider.ts reserves for destroy().
+  //
+  // Live in production the moment openBook() started forcing canPersist:false on every streamed
+  // book: audioAssetResolver closes after each resolve, so a streamed audiobook opened once and
+  // then refused to reopen. These tests pin the lifecycle, not the cache.
+  afterEach(async () => {
+    await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
+  });
+
+  async function storeEliteBook(bookId: string, plaintext: Uint8Array): Promise<void> {
+    const bek = randomKey();
+    const { publicKey } = await generateDeviceKeypair();
+    const pkg = await buildEncryptedPackage(bookId, plaintext, bek, { canPersist: false });
+    pkg.encryption = { ...pkg.encryption!, wrappedBek: await wrapBek(bek, publicKey) };
+    await contentStore.store(pkg);
+  }
+
+  it('ELITE: close() then reopen still decrypts — the in-memory package survives', async () => {
+    const bookId = 'elite-close-reopen';
+    const plaintext = plaintextOf(2048, 'streamed once, reopened after close');
+    await storeEliteBook(bookId, plaintext);
+
+    await contentStore.openSession(bookId);
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintext))).toBe(true);
+
+    await contentStore.close(bookId);
+
+    // The reopen is the whole point — this is what threw DECRYPTION_FAILED before.
+    await contentStore.openSession(bookId);
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintext))).toBe(true);
+  });
+
+  it('ELITE: destroy() IS still terminal — the exemption is scoped to close()', async () => {
+    const bookId = 'elite-destroy-terminal';
+    await storeEliteBook(bookId, plaintextOf(512, 'destroyed for good'));
+
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId);
+    await contentStore.destroy(bookId);
+
+    await expect(contentStore.openSession(bookId)).rejects.toMatchObject({
+      code: ContentError.DECRYPTION_FAILED,
+    });
+  });
+
+  it('ELITE: close() still zeroes the decrypted plaintext — only the ciphertext is kept', async () => {
+    const bookId = 'elite-close-zeroes';
+    await storeEliteBook(bookId, plaintextOf(256, 'plaintext must not survive close'));
+
+    await contentStore.openSession(bookId);
+    const plaintext = await contentStore.decryptBook(bookId);
+    expect(plaintext.some((b) => b !== 0)).toBe(true);
+
+    await contentStore.close(bookId);
+    expect(plaintext.every((b) => b === 0)).toBe(true);
+  });
+
+  it('SUBSCRIPTION: close() still evicts the cached package — the RAM saving is unchanged', async () => {
+    const bookId = 'sub-close-evicts';
+    const bek = randomKey();
+    const plaintext = plaintextOf(2048, 'persisted, so the cache can go');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, bek);
+    await storeBek(bookId, bek);
+    await contentStore.store(pkg);
+
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId);
+    await contentStore.close(bookId);
+
+    // Proves the reopen came off DISK rather than the cache: decryptBook() empties pkg.content for
+    // non-Elite packages, so the cached object could not have served this read.
+    await contentStore.openSession(bookId);
+    expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintext))).toBe(true);
+  });
+});
+
 describe('contentStore — invalidateLicence (revocation without full destroy)', () => {
   it('strips the licence and BEK but leaves ciphertext on disk', async () => {
     const bookId = 'revoke-basic';

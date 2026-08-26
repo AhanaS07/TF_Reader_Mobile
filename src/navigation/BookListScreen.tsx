@@ -32,7 +32,7 @@ import { DownloadProgressIndicator } from '@/features/download/DownloadProgressI
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { openBook } from '@/features/download/openBook';
 import { clearAllDownloads } from '@/features/download/downloadManager';
-import { DownloadFailure } from '@/features/download/errors';
+import { formatDiagnosticErrorMessage } from '@/shared/contracts/errors';
 import {
   DEV_FIXTURE_EPUB_BOOK_ID,
   DEV_FIXTURE_PDF_BOOK_ID,
@@ -153,8 +153,7 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
       await openBook(bookId, format);
       navigation.navigate('Reader', { bookId, format });
     } catch (error) {
-      const message =
-        error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
+      const message = formatDiagnosticErrorMessage(error);
       Alert.alert('Cannot open book', message);
     }
   };

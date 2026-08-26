@@ -138,7 +138,16 @@ export async function checkLicense(
   format: ContentFormat,
   intent: 'STREAM' | 'DOWNLOAD',
 ): Promise<LicenseCheckResult> {
-  const { publicKey } = await generateDeviceKeypair();
+  // iOS Keychain uses WHEN_UNLOCKED_THIS_DEVICE_ONLY — keys are inaccessible when the device is
+  // locked or after reboot before first unlock. Android Keystore has no such restriction.
+  // Route keychain failures to the offline fallback (same as network errors) so a locked-device
+  // open of an already-downloaded book still works instead of crashing.
+  let publicKey: string;
+  try {
+    ({ publicKey } = await generateDeviceKeypair());
+  } catch {
+    return offlineFallback(bookId);
+  }
   const devicePublicKey = publicKeyToRawBase64(publicKey);
   const deviceKeyFingerprint = await publicKeyFingerprint(publicKey);
 

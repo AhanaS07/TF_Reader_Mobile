@@ -65,7 +65,7 @@ import {
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
-import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
+import { ContentFailure, DEFAULT_PREFS, formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
 interface ReaderError {
@@ -1249,7 +1249,7 @@ export function ReaderScreen({
       {error !== null && (
         <View style={styles.errorBanner} accessibilityRole="alert" accessibilityLiveRegion="polite">
           <Text style={styles.errorCode}>{error.code}</Text>
-          <Text style={styles.errorMessage}>{error.message}</Text>
+          <Text style={styles.errorMessage}>{formatDiagnosticErrorMessage(error)}</Text>
         </View>
       )}
 
