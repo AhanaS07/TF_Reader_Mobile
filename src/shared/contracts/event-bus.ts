@@ -46,6 +46,8 @@ export const EVENT_CHANNELS = {
   /** Entitlement changed for a book. Payload: OfflineLockSignal. */
   CONTENT_LOCK: 'content.lock',
   CONTENT_UNLOCK: 'content.unlock',
+  /** A book's content + key material were destroyed (terminal). Payload: ContentDestroyedEvent. */
+  CONTENT_DESTROYED: 'content.destroyed',
 
   /** A sync run finished. Advisory — for a "last synced" indicator and refresh-on-change. */
   SYNC_COMPLETED: 'sync.completed',
@@ -114,10 +116,21 @@ export interface PrefsChangedEvent {
   at: Timestamp;
 }
 
+/**
+ * A book's content + key material were TERMINALLY destroyed (contentStore.destroy()). The book is
+ * no longer readable or recoverable without a fresh borrow. Emitted after deletion succeeds, so
+ * subscribers can clean up derived state (search indices, progress records, etc.).
+ */
+export interface ContentDestroyedEvent {
+  bookId: BookId;
+  at: Timestamp;
+}
+
 /** Channel-to-payload map. The single place that defines what each channel carries. */
 export interface EventPayloads {
   [EVENT_CHANNELS.CONTENT_LOCK]: OfflineLockSignal;
   [EVENT_CHANNELS.CONTENT_UNLOCK]: OfflineLockSignal;
+  [EVENT_CHANNELS.CONTENT_DESTROYED]: ContentDestroyedEvent;
   [EVENT_CHANNELS.SYNC_COMPLETED]: SyncCompletedEvent;
   [EVENT_CHANNELS.SYNC_QUEUE_CHANGED]: SyncQueueChangedEvent;
   [EVENT_CHANNELS.SYNC_ENTITY_APPLIED]: SyncEntityAppliedEvent;

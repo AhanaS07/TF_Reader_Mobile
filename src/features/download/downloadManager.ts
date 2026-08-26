@@ -205,9 +205,9 @@ export async function downloadBook(
   //     (dev-sample-epub), on every single download of that fixture. openBook.ts's STREAM path
   //     never hit this, because it always attaches the licence unconditionally — exactly why
   //     "opening the same book worked while downloading it didn't" was so confusing to spot.
-  //   - `isEncrypted` alone would make a SUBSCRIPTION/ELITE *audio* book (unencrypted by design,
-  //     both contracts agree "encryption is null for open access and for all audio")
-  //     indistinguishable from real open access: `licence` would end up null,
+  //   - `isEncrypted` alone would make a SUBSCRIPTION/ELITE *audio* book (which is encrypted by
+  //     design — see content-provider.ts lines 85–92) indistinguishable from real open access:
+  //     `licence` would end up null,
   //     `isElite()`/`isLicenceExpired()` (contentStore.ts) both read off `pkg.licence`, and a
   //     null licence makes both answer "no restriction" — an Elite audiobook would persist to
   //     disk forever instead of staying memory-only, and a Subscription audiobook's local copy
@@ -242,11 +242,12 @@ export async function downloadBook(
 
   // Chunked + resumable (docs/superpowers/specs/2026-08-17-resumable-chunked-download-scoping.md):
   // the budget is on the DECRYPTED size; the fetcher deals in ciphertext bytes, which are 28 bytes
-  // larger (nonce + tag) for encrypted content and identical for open access/audio. Converting
-  // here, once, keeps `chunkedAssetFetcher.ts` ignorant of encryption entirely — it only ever sees
-  // "a byte budget", not why that number is what it is. Per-format since the 20 MB audio cap
-  // landed (maxDecryptedBytesFor) — reading MAX_DECRYPTED_BYTES directly here would let an
-  // oversized audiobook pull 25 MB before store() refused it at 20.
+  // larger (nonce + tag) for encrypted content and identical for open access. Audio is encrypted
+  // (2026-08-25), so it adds the nonce+tag overhead. Converting here, once, keeps
+  // `chunkedAssetFetcher.ts` ignorant of encryption entirely — it only ever sees "a byte budget",
+  // not why that number is what it is. Per-format since the 20 MB audio cap landed
+  // (maxDecryptedBytesFor) — reading MAX_DECRYPTED_BYTES directly would let an oversized
+  // audiobook pull 25 MB before store() refused it at 20.
   const maxCipherBytes = maxDecryptedBytesFor(format) + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
   let bytes: Uint8Array;
   try {
@@ -414,4 +415,40 @@ export async function downloadBook(
     };
     await downloadTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', { locked: true });
   });
+}
+
+/**
+ * DEV/TEST TOOLING — not part of the download feature's own surface. Wipes every persisted
+ * download for this device: `contentStore.destroy()` (ciphertext, licence, keychain BEK) for
+ * each book, then a tombstoned removal of its `downloads` row so it still propagates on the
+ * next sync rather than just vanishing locally. Exists so BookListScreen's "Clear All Downloads"
+ * button (and manual testing generally) doesn't need adb/sqlite3 by hand to reset to a clean
+ * offline state — see ANDROID_UNAUTHENTICATED.md for how much of that this session did manually
+ * before this existed.
+ *
+ * One book failing to destroy must not stop the rest — same reasoning as the rollback path
+ * above: a keychain/FS error on one book is that book's problem, not a reason to leave nine
+ * others still occupying the 5-book limit. Every failure is collected and thrown together at the
+ * end, after every book has had its attempt, rather than surfacing (and stopping at) the first.
+ */
+export async function clearAllDownloads(): Promise<void> {
+  const rows = await downloadTable.listActive(USER_ID);
+  const failures: unknown[] = [];
+  for (const row of rows) {
+    try {
+      await contentStore.destroy(row.book_id as BookId);
+    } catch (cause) {
+      failures.push(cause);
+      console.warn(`clearAllDownloads: contentStore.destroy(${row.book_id}) failed`, cause);
+    }
+    await downloadTable.softDeleteLocal(row.id);
+  }
+  if (failures.length > 0) {
+    // A plain Error, not a DownloadFailure — none of DownloadError's members describe "some
+    // books failed to clear" (this is dev tooling, not a real download-feature failure mode),
+    // and reusing an existing code here would just mean it, not this.
+    throw new Error(
+      `clearAllDownloads: ${failures.length} of ${rows.length} book(s) failed to fully destroy — see console`,
+    );
+  }
 }

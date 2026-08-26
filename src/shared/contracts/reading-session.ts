@@ -57,7 +57,7 @@ import type { EncryptionDescriptor } from './content-provider';
  * file's exports read the same as the spec rather than silently renaming it. */
 export type ReadingFormat = ContentFormat;
 
-/** `DOWNLOAD` is refused for ELITE whatever the UI offered. Audio streams, never encrypted. */
+/** `DOWNLOAD` is refused for ELITE whatever the UI offered. Audio may be encrypted or not. */
 export type ReadingIntent = 'STREAM' | 'DOWNLOAD';
 
 export interface ReadingSessionRequest {

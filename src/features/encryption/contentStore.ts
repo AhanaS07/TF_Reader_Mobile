@@ -42,7 +42,8 @@ import type {
   SessionHandle,
   SignedLicence,
 } from '@/shared/contracts';
-import { ContentError, ContentFailure } from '@/shared/contracts';
+import { ContentError, ContentFailure, EVENT_CHANNELS } from '@/shared/contracts';
+import { eventBus } from '@/shared/eventBus';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
 import { deleteBek, getBek, storeBek } from './keyStorage';
@@ -136,8 +137,8 @@ function isLicenceExpired(pkg: EncryptedPackage): boolean {
 
 function assertLengthInvariant(pkg: EncryptedPackage): void {
   const hasCipher = pkg.encryption !== null;
-  // Open access / audio: `content` IS the plaintext (never AES-GCM'd), so there is no
-  // nonce/tag overhead to account for.
+  // Open access: `content` IS the plaintext (never AES-GCM'd), so there is no nonce/tag
+  // overhead to account for. Audio is encrypted (2026-08-25) so it follows the encrypted path.
   const expected = hasCipher ? NONCE_BYTES + pkg.originalLength + GCM_TAG_BYTES : pkg.originalLength;
 
   if (pkg.content.length !== pkg.cipherLength || pkg.cipherLength !== expected) {
@@ -479,11 +480,10 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
 
     let plaintext: Uint8Array;
     if (!pkg.encryption) {
-      // open access / audio: already plaintext. COPY it rather than aliasing pkg.content
-      // directly: close() zeroes session.plaintext IN PLACE, and pkg.content is the same object
-      // held by packageCache (and handed back by loadPersisted on a fresh read) — aliasing it
-      // would mean close()-ing this session corrupts the package for every future session of
-      // this same book.
+      // Open access (plaintext): COPY it rather than aliasing pkg.content directly: close()
+      // zeroes session.plaintext IN PLACE, and pkg.content is the same object held by
+      // packageCache (and handed back by loadPersisted on a fresh read) — aliasing it would mean
+      // close()-ing this session corrupts the package for every future session of this same book.
       plaintext = new Uint8Array(pkg.content);
     } else {
       const rawKey = await resolveRawKey(pkg, session);
@@ -666,7 +666,8 @@ async function close(bookId: BookId): Promise<void> {
 
 /**
  * Destroy key material and persisted ciphertext at expiry / return. TERMINAL — cannot be undone
- * without a fresh borrow (a new store() call).
+ * without a fresh borrow (a new store() call). Emits CONTENT_DESTROYED after deletion succeeds,
+ * so subscribers (e.g. the licence-expiry handler) can clean up derived state.
  */
 async function destroy(bookId: BookId): Promise<void> {
   await close(bookId);
@@ -676,6 +677,8 @@ async function destroy(bookId: BookId): Promise<void> {
   }
   await deleteBek(bookId);
   packageCache.delete(bookId);
+
+  eventBus.emit(EVENT_CHANNELS.CONTENT_DESTROYED, { bookId, at: Date.now() });
 }
 
 /**

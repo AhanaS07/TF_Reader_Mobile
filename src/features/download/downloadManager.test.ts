@@ -12,7 +12,7 @@
 
 import * as crypto from 'crypto';
 import * as Keychain from 'react-native-keychain';
-import { downloadBook } from './downloadManager';
+import { clearAllDownloads, downloadBook } from './downloadManager';
 import { downloadTable } from '../sync/stores/downloadStore';
 import { USER_ID } from '../sync/syncConfig';
 import { contentStore, decryptSearchIndex, MAX_DECRYPTED_BYTES } from '../encryption/contentStore';
@@ -417,21 +417,21 @@ describe('downloadBook — unencrypted audio under a real tier (B15 regression)'
     await Keychain.resetGenericPassword({ service: DEVICE_PRIVATE_KEY_SERVICE });
   });
 
-  // Both contracts agree audio is never encrypted regardless of tier — `session.encryption` is
-  // absent here exactly like a real audio response, distinguishing "unencrypted because open
-  // access" from "unencrypted because audio, under a real ELITE loan". Before the `needsLicence`
-  // fix, `isEncrypted` gated the licence, so this book got `licence: null` — `contentStore.ts`'s
-  // `isElite()` reads `pkg.licence`, saw null, answered false, and persisted an Elite title
-  // permanently: unaccounted against the 5-book limit and immune to the loan ever expiring.
+  // The backend default is audio unencrypted — `session.encryption` is absent here exactly like a
+  // real audio response, distinguishing "unencrypted because open access" from "unencrypted
+  // because audio, under a real ELITE loan". Before the `needsLicence` fix, `isEncrypted` gated
+  // the licence, so this book got `licence: null` — `contentStore.ts`'s `isElite()` reads
+  // `pkg.licence`, saw null, answered false, and persisted an Elite title permanently: unaccounted
+  // against the 5-book limit and immune to the loan ever expiring.
   it('an ELITE audio book is treated as Elite (memory-only), not open access', async () => {
     const bookId = 'elite-audio-book';
-    const plaintext = new Uint8Array([40, 41, 42, 43, 44]); // audio bytes, never encrypted
+    const plaintext = new Uint8Array([40, 41, 42, 43, 44]); // audio bytes, unencrypted in this fixture
     const loan = openAccessLoanFor(bookId, {
       licenceModel: 'ELITE',
       canPersist: false,
       dueAt: new Date(Date.now() + 86_400_000).toISOString(),
     });
-    // No `encryption` field — matches the real spec's "null for open access and for all audio".
+    // No `encryption` field — matches the real spec's default for audio (unencrypted).
     const session = sessionFor(bookId, plaintext);
     global.fetch = mockFetchFor(loan, session, plaintext);
 
@@ -1154,5 +1154,84 @@ describe('downloadBook — fail-closed cleanup on asset fetch failure', () => {
     const contentRequests = retryFetch.mock.calls.filter((call) => call[0] === session.content.url);
     expect(contentRequests[0][1].headers.Range).toBe(`bytes=0-${CHUNK_SIZE_BYTES - 1}`);
     expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+  });
+});
+
+describe('clearAllDownloads', () => {
+  const originalFetch = global.fetch;
+
+  // Earlier describe blocks in this file don't all clean up their own persisted rows (the
+  // "happy path" and "ENCRYPTED (Subscription)" blocks deliberately leave theirs, per their own
+  // comments about counting real rows), so by the time this block runs, the real un-reset
+  // downloadTable can already be near the 5-book BOOK_LIMIT. clearAllDownloads() is the function
+  // under test and is exactly the right tool to guarantee a clean slate here — using it up front
+  // makes this block self-contained instead of depending on every other block's cleanup discipline.
+  beforeEach(async () => {
+    await clearAllDownloads();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('destroys every downloaded book and tombstones its row, leaving nothing active', async () => {
+    const bookIds = ['clear-all-book-1', 'clear-all-book-2', 'clear-all-book-3'];
+    for (const bookId of bookIds) {
+      const content = new Uint8Array([1, 2, 3]);
+      const loan = openAccessLoanFor(bookId);
+      const session = sessionFor(bookId, content);
+      global.fetch = mockFetchFor(loan, session, content);
+      await downloadBook(bookId);
+    }
+    for (const bookId of bookIds) {
+      expect(await contentStore.isAvailableOffline(bookId)).toBe(true);
+    }
+
+    await clearAllDownloads();
+
+    for (const bookId of bookIds) {
+      expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
+    }
+    const rows = await downloadTable.listActive(USER_ID);
+    for (const bookId of bookIds) {
+      expect(rows.find((row) => row.book_id === bookId)).toBeUndefined();
+    }
+  });
+
+  it('is a no-op, not a throw, when nothing is downloaded', async () => {
+    await expect(clearAllDownloads()).resolves.toBeUndefined();
+  });
+
+  // One book's destroy() throwing (a keychain/FS error) must not stop the others from being
+  // cleared, and must still be reported rather than swallowed — same reasoning as the rollback
+  // path downloadBook() itself uses elsewhere in this file.
+  it('clears every other book even when one fails to destroy, then reports the failure', async () => {
+    const okBookId = 'clear-all-ok-book';
+    const failingBookId = 'clear-all-failing-book';
+    for (const bookId of [okBookId, failingBookId]) {
+      const content = new Uint8Array([4, 5, 6]);
+      const loan = openAccessLoanFor(bookId);
+      const session = sessionFor(bookId, content);
+      global.fetch = mockFetchFor(loan, session, content);
+      await downloadBook(bookId);
+    }
+
+    const realDestroy = contentStore.destroy;
+    jest.spyOn(contentStore, 'destroy').mockImplementation(async (bookId) => {
+      if (bookId === failingBookId) {
+        throw new Error('keychain unavailable');
+      }
+      return realDestroy(bookId);
+    });
+
+    await expect(clearAllDownloads()).rejects.toThrow(/1 of 2/);
+
+    // The row is still tombstoned even though destroy() failed for it — clearAllDownloads()
+    // removes the row unconditionally, same as downloadBook()'s own rollback path does.
+    expect(await contentStore.isAvailableOffline(okBookId)).toBe(false);
+    const rows = await downloadTable.listActive(USER_ID);
+    expect(rows.find((row) => row.book_id === okBookId)).toBeUndefined();
+    expect(rows.find((row) => row.book_id === failingBookId)).toBeUndefined();
+
+    jest.mocked(contentStore.destroy).mockRestore();
   });
 });
