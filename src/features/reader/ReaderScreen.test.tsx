@@ -559,6 +559,19 @@ describe('the page indicator', () => {
 
     expect(screen.getByText('BRIDGE_PARSE_FAILED')).toBeTruthy();
   });
+
+  it('shows the error MESSAGE, not a stringified object', async () => {
+    // This assertion is the one the test above was missing. It asserted only the code, so when the
+    // banner was switched to run `error` through `formatDiagnosticErrorMessage` — a formatter built
+    // for caught throwables, which a structured `{code, message}` is not — it rendered
+    // "[object Object]" underneath a correct-looking code and every suite stayed green.
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'error', code: 'BRIDGE_PARSE_FAILED', message: 'could not parse' });
+
+    expect(screen.getByText('could not parse')).toBeTruthy();
+    expect(screen.queryByText(/\[object Object\]/)).toBeNull();
+  });
 });
 
 describe('the page jump', () => {
@@ -977,9 +990,7 @@ describe('applyAppearance — the prefs-application wiring', () => {
         appearance: toReaderAppearance(makePrefs(), LIGHT_ENV),
       }),
     );
-    const openIndex = calls.indexOf(
-      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
-    );
+    const openIndex = calls.indexOf(buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }));
 
     // Both must actually have been sent (index -1 would mean "never called", not "called first").
     expect(appearanceIndex).toBeGreaterThanOrEqual(0);
@@ -1005,7 +1016,10 @@ describe('applyAppearance — the prefs-application wiring', () => {
     await Promise.resolve();
 
     expect(__injectJavaScript).toHaveBeenCalledWith(
-      buildCommandScript({ type: 'applyAppearance', appearance: toReaderAppearance(changed, LIGHT_ENV) }),
+      buildCommandScript({
+        type: 'applyAppearance',
+        appearance: toReaderAppearance(changed, LIGHT_ENV),
+      }),
     );
     // NOT a reopen: `openEpub` carries the book's bytes and nothing about a theme change should
     // touch them.
@@ -1054,7 +1068,7 @@ describe('applyAppearance — the prefs-application wiring', () => {
     expect(__injectJavaScript).not.toHaveBeenCalled();
   });
 
-  it('overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance\'s own passthrough', async () => {
+  it("overlays the loaded font-face bytes onto customFontUri, not toReaderAppearance's own passthrough", async () => {
     const fontDataUri = 'data:font/ttf;base64,AAAA';
     jest.mocked(loadFontFaceSrc).mockResolvedValue(fontDataUri);
     const withInter = makePrefs({ font: { family: 'Inter' } });
@@ -1151,14 +1165,20 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'contentSizeChange', 0, 1054);
 
     // At the top: entries continue below, nothing is hidden above.
-    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeTruthy();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeTruthy();
     expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
 
     // Scrolled to the very end: the mirror image. Getting this wrong leaves a white
     // veil over the last entry, which is the same defect the fade exists to fix.
     await fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 454 } } });
-    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeTruthy();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true }),
+    ).toBeTruthy();
   });
 
   it('fades neither edge when the whole list fits', async () => {
@@ -1173,7 +1193,9 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'contentSizeChange', 0, 180);
 
     expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeNull();
+    expect(
+      screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true }),
+    ).toBeNull();
   });
 
   it('keeps the Contents button disabled until a TOC arrives', async () => {
@@ -1374,7 +1396,9 @@ describe('ReaderScreen in-book search', () => {
     jest
       .mocked(queryBookIndex)
       .mockRejectedValue(
-        new Error('queryBookIndex: failed to decode search index for "test-book" — Unexpected token'),
+        new Error(
+          'queryBookIndex: failed to decode search index for "test-book" — Unexpected token',
+        ),
       );
 
     await mountReader();
@@ -1640,8 +1664,18 @@ describe('ReaderScreen in-book search', () => {
   // real device's Pressable does — so this is the check that would actually have caught it.
   it('does not disable the match bar arrows for an all-PDF result set', async () => {
     jest.mocked(queryBookIndex).mockResolvedValue([
-      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 3 }, snippet: '…one…' },
-      { bookId: 'test-book', chapterId: 'ch1', locator: { type: 'PDF', page: 7 }, snippet: '…two…' },
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'PDF', page: 3 },
+        snippet: '…one…',
+      },
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'PDF', page: 7 },
+        snippet: '…two…',
+      },
     ]);
 
     await mountReader();
@@ -1684,10 +1718,7 @@ describe('ReaderScreen in-book search', () => {
 
     const slow = deferred();
     const fast = deferred();
-    jest
-      .mocked(queryBookIndex)
-      .mockReturnValueOnce(slow.promise)
-      .mockReturnValueOnce(fast.promise);
+    jest.mocked(queryBookIndex).mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise);
 
     await mountReader();
     await openSearch();
@@ -1758,7 +1789,12 @@ describe('ReaderScreen bookmarks panel', () => {
   }
 
   async function relocateCfi(cfi: string | null): Promise<void> {
-    await deliver({ type: 'relocated', position: { kind: 'cfi', cfi }, atStart: true, atEnd: false });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi },
+      atStart: true,
+      atEnd: false,
+    });
   }
 
   it('does not load until the book has rendered', async () => {
@@ -1770,9 +1806,10 @@ describe('ReaderScreen bookmarks panel', () => {
   });
 
   it('loads once the book renders and lists what came back', async () => {
-    jest
-      .mocked(loadBookmarks)
-      .mockResolvedValue({ bookmarks: [bookmark({ id: 'a', label: 'The good bit' })], skippedIds: [] });
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'a', label: 'The good bit' })],
+      skippedIds: [],
+    });
     await mountReader();
     await deliver({ type: 'rendered' });
     await openBookmarks();
@@ -1802,7 +1839,9 @@ describe('ReaderScreen bookmarks panel', () => {
 
   it('navigates to a tapped bookmark and closes the panel — the same goTo every TOC entry and search hit uses', async () => {
     jest.mocked(loadBookmarks).mockResolvedValue({
-      bookmarks: [bookmark({ id: 'a', label: 'Chapter 3', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      bookmarks: [
+        bookmark({ id: 'a', label: 'Chapter 3', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+      ],
       skippedIds: [],
     });
     await mountReader();
@@ -1921,9 +1960,10 @@ describe('ReaderScreen bookmarks panel', () => {
       bookmarks: [bookmark({ id: 'victim', label: 'To be deleted' })],
       skippedIds: [],
     });
-    jest
-      .mocked(removeBookmark)
-      .mockResolvedValue({ bookmarks: [bookmark({ id: 'survivor', label: 'Still here' })], skippedIds: [] });
+    jest.mocked(removeBookmark).mockResolvedValue({
+      bookmarks: [bookmark({ id: 'survivor', label: 'Still here' })],
+      skippedIds: [],
+    });
     await mountReader();
     await deliver({ type: 'rendered' });
     await openBookmarks();
@@ -1962,19 +2002,37 @@ describe('ReaderScreen bookmarks panel', () => {
     it('re-creates the bookmark at the same EPUB target under the new name, then removes the old id', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'old',
+            label: 'Untitled',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
         ],
         skippedIds: [],
       });
       jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Untitled', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
-          bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'old',
+            label: 'Untitled',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+          bookmark({
+            id: 'new',
+            label: 'Renamed',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
         ],
         skippedIds: [],
       });
       jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [bookmark({ id: 'new', label: 'Renamed', target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+        bookmarks: [
+          bookmark({
+            id: 'new',
+            label: 'Renamed',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+        ],
         skippedIds: [],
       });
       await mountReader();
@@ -1982,10 +2040,7 @@ describe('ReaderScreen bookmarks panel', () => {
       await openBookmarks();
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Untitled' }));
-      await fireEvent.changeText(
-        screen.getByTestId('reader-bookmark-edit-input-old'),
-        'Renamed',
-      );
+      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-old'), 'Renamed');
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
 
       // Add happens at the SAME target, under the new name, BEFORE the old id is removed.
@@ -2017,7 +2072,9 @@ describe('ReaderScreen bookmarks panel', () => {
         skippedIds: [],
       });
       jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } })],
+        bookmarks: [
+          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+        ],
         skippedIds: [],
       });
       await mountReader();
@@ -2046,7 +2103,10 @@ describe('ReaderScreen bookmarks panel', () => {
       await openBookmarks();
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Original' }));
-      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), 'Changed my mind');
+      await fireEvent.changeText(
+        screen.getByTestId('reader-bookmark-edit-input-a'),
+        'Changed my mind',
+      );
       await fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
 
       expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
@@ -2066,7 +2126,9 @@ describe('ReaderScreen bookmarks panel', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Custom name' }));
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
-      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Save bookmark name: Custom name' }),
+      );
 
       expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
         'test-book',
@@ -2086,7 +2148,11 @@ describe('ReaderScreen bookmarks panel', () => {
     it('hides page-shaped (PDF) bookmarks while an EPUB is open', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'epub-1', label: 'Epub spot', target: { kind: 'href', href: 'epubcfi(/6/10)' } }),
+          bookmark({
+            id: 'epub-1',
+            label: 'Epub spot',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
           bookmark({ id: 'pdf-1', label: 'Foreign PDF page', target: { kind: 'page', page: 3 } }),
         ],
         skippedIds: [],
@@ -2204,7 +2270,9 @@ describe('ReaderScreen bookmark badge', () => {
     // user asked for the opposite — a marker like Word's, not a control — so this pins that
     // pressing it does nothing, and it is not even findable by button role.
     jest.mocked(loadBookmarks).mockResolvedValue({
-      bookmarks: [bookmark({ label: 'Here', target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } })],
+      bookmarks: [
+        bookmark({ label: 'Here', target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' } }),
+      ],
       skippedIds: [],
     });
     await mountReader();

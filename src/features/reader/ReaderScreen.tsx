@@ -65,7 +65,7 @@ import {
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
-import { ContentFailure, DEFAULT_PREFS, formatDiagnosticErrorMessage } from '@/shared/contracts';
+import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
 import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
 interface ReaderError {
@@ -1335,7 +1335,14 @@ export function ReaderScreen({
       {error !== null && (
         <View style={styles.errorBanner} accessibilityRole="alert" accessibilityLiveRegion="polite">
           <Text style={styles.errorCode}>{error.code}</Text>
-          <Text style={styles.errorMessage}>{formatDiagnosticErrorMessage(error)}</Text>
+          {/* `error.message` DIRECTLY, not `formatDiagnosticErrorMessage(error)`. That formatter is
+              for CAUGHT THROWABLES — it digs a `cause` out of an Error and composes "CODE: detail".
+              A `ReaderError` is neither: it is a structured `{code, message}` the bridge already
+              parsed, with no `cause` to dig for. Passed through the formatter it matched no branch
+              and fell to `String(error)`, which renders a plain object as "[object Object]" — the
+              banner showed that instead of the message. The code is on its own line above, so
+              composing it in here would duplicate it even once the formatter handles this shape. */}
+          <Text style={styles.errorMessage}>{error.message}</Text>
         </View>
       )}
 
