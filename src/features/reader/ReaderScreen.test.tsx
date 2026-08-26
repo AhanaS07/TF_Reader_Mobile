@@ -42,6 +42,7 @@ import {
   removeBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import { focusOn } from '@/features/reader/a11yFocus';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -178,6 +179,14 @@ jest.mock('@/features/reader/useAppearanceEnv', () => ({
 }));
 
 /**
+ * Focus movement. Mocked because Jest has no native view tree for `findNodeHandle` to resolve — see
+ * the note in the focus-order describe below for why that would silently invalidate its assertions.
+ */
+jest.mock('@/features/reader/a11yFocus', () => ({
+  focusOn: jest.fn(),
+}));
+
+/**
  * The custom-font byte-loading seam. Mocked for the same reason `readerAssets` is: the real
  * implementation is native (expo-asset/expo-file-system), and its own contract ("null for
  * 'system'/unknown, a data: URI otherwise, never throws") is this mock's job to honour, not to
@@ -256,7 +265,11 @@ const { __injectJavaScript } = jest.requireMock('react-native-webview') as {
  * would reject fails here rather than passing on a hand-made object.
  */
 async function deliver(message: unknown): Promise<void> {
-  const webView = screen.getByTestId('reader-webview');
+  // `includeHiddenElements`: this is the BRIDGE, not a user traversal. While a panel is open the
+  // WebView's container is deliberately hidden from assistive tech (see `anyPanelOpen`), but the
+  // WebView is still mounted and still delivering messages — a `relocated` does not stop arriving
+  // because a screen reader cannot reach the book.
+  const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
   await act(async () => {
     webView.props.onMessage({ nativeEvent: { data: JSON.stringify(message) } });
   });
@@ -292,7 +305,13 @@ async function openContents(): Promise<void> {
   // No chapter count in the query: the count lives in the visible text but deliberately not in
   // the accessible name, so that the name does not change under a focused control when the `toc`
   // message lands. See the Contents button in ReaderScreen.tsx.
-  await fireEvent.press(screen.getByRole('button', { name: 'Contents' }));
+  // `includeHiddenElements`: while Search or Bookmarks is open this button is hidden from assistive
+  // tech (those panels carry their own close, so the row behind them is background) but is still
+  // visible and tappable — which is what a press simulates. That it IS hidden in that state is
+  // asserted on its own, in the background-hiding tests below, rather than implied here.
+  await fireEvent.press(
+    screen.getByRole('button', { name: 'Contents', includeHiddenElements: true }),
+  );
 }
 
 function flatToc(count: number): ReaderTocItem[] {
@@ -1132,14 +1151,14 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'contentSizeChange', 0, 1054);
 
     // At the top: entries continue below, nothing is hidden above.
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeTruthy();
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeNull();
+    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeTruthy();
+    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
 
     // Scrolled to the very end: the mirror image. Getting this wrong leaves a white
     // veil over the last entry, which is the same defect the fade exists to fix.
     await fireEvent.scroll(list, { nativeEvent: { contentOffset: { y: 454 } } });
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeTruthy();
+    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeNull();
+    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeTruthy();
   });
 
   it('fades neither edge when the whole list fits', async () => {
@@ -1153,8 +1172,8 @@ describe('ReaderScreen Contents panel', () => {
     await fireEvent(list, 'layout', { nativeEvent: { layout: { height: 600 } } });
     await fireEvent(list, 'contentSizeChange', 0, 180);
 
-    expect(screen.queryByTestId('reader-toc-fade-top')).toBeNull();
-    expect(screen.queryByTestId('reader-toc-fade-bottom')).toBeNull();
+    expect(screen.queryByTestId('reader-toc-fade-top', { includeHiddenElements: true })).toBeNull();
+    expect(screen.queryByTestId('reader-toc-fade-bottom', { includeHiddenElements: true })).toBeNull();
   });
 
   it('keeps the Contents button disabled until a TOC arrives', async () => {
@@ -1210,7 +1229,12 @@ describe('ReaderScreen in-book search', () => {
   }
 
   async function openSearch(): Promise<void> {
-    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+    // `includeHiddenElements`, same reasoning as `openContents`: with a panel already open the
+    // toolbar is hidden from assistive tech but remains visible and tappable, and a press is a
+    // touch. The hidden state itself is asserted separately.
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
   }
 
   /** Type a term and press the panel's Search button. */
@@ -1485,14 +1509,17 @@ describe('ReaderScreen in-book search', () => {
     await mountReader();
     await reportReady();
 
-    const styleBefore = screen.getByTestId('reader-webview').props.style;
+    const styleBefore = screen.getByTestId('reader-webview', { includeHiddenElements: true }).props
+      .style;
 
     await openSearch();
-    expect(screen.getByTestId('reader-webview')).toBeTruthy();
+    expect(screen.getByTestId('reader-webview', { includeHiddenElements: true })).toBeTruthy();
     await runSearch('wolf');
     await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
 
-    expect(screen.getByTestId('reader-webview').props.style).toEqual(styleBefore);
+    expect(
+      screen.getByTestId('reader-webview', { includeHiddenElements: true }).props.style,
+    ).toEqual(styleBefore);
   });
 
   it('reopens the results from the match bar', async () => {
@@ -1921,7 +1948,9 @@ describe('ReaderScreen bookmarks panel', () => {
     // Bookmarks' own "Bookmark this page" affordance is gone once Contents took over the panel.
     expect(screen.queryByRole('button', { name: 'Bookmark this page' })).toBeNull();
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
     expect(screen.queryByTestId('reader-toc-list')).toBeNull();
   });
 
@@ -2536,6 +2565,205 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       });
 
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+  });
+});
+
+describe('screen-reader focus order', () => {
+  // `setAccessibilityFocus` is a native call with no observable effect in jsdom, so it is spied on
+  // rather than mocked wholesale — the rest of AccessibilityInfo (useAppearanceEnv reads
+  // isReduceMotionEnabled) has to keep working.
+  // `focusOn` IS MOCKED, not driven through to AccessibilityInfo, and that is the right seam for
+  // these tests. There is no native view tree under Jest, so the real `findNodeHandle` returns null
+  // for every test instance and `focusOn` would correctly no-op on all of them — every assertion
+  // here would pass for the wrong reason. What ReaderScreen owns is the DECISION (restore focus
+  // after a TOC row, not after Search opens); the native mechanics are `a11yFocus.test.ts`'s.
+  const focusOnMock = jest.mocked(focusOn);
+
+  beforeEach(() => {
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+    focusOnMock.mockClear();
+  });
+
+  // Local copies: the search block's own `openSearch`/`runSearch`/`epubHit` are scoped to that
+  // describe. Kept minimal — this block cares about focus and reachability, not about search.
+  async function openSearchPanel(): Promise<void> {
+    await fireEvent.press(
+      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+    );
+  }
+
+  function oneHit(): SearchHit {
+    return {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'EPUB', cfi: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
+      snippet: '…the grey wolf moved…',
+    };
+  }
+
+  describe('toggle buttons report expanded state', () => {
+    it('Search reports collapsed, then expanded, then collapsed again', async () => {
+      await mountReader();
+      const search = (): ReturnType<typeof screen.getByRole> =>
+        screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true });
+
+      expect(search().props.accessibilityState).toMatchObject({ expanded: false });
+      await openSearchPanel();
+      expect(search().props.accessibilityState).toMatchObject({ expanded: true });
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+      expect(search().props.accessibilityState).toMatchObject({ expanded: false });
+    });
+
+    it('Bookmarks reports collapsed, then expanded', async () => {
+      await mountReader();
+      const bookmarks = (): ReturnType<typeof screen.getByRole> =>
+        screen.getByRole('button', { name: 'Bookmarks', includeHiddenElements: true });
+
+      expect(bookmarks().props.accessibilityState).toMatchObject({ expanded: false });
+      await fireEvent.press(bookmarks());
+      expect(bookmarks().props.accessibilityState).toMatchObject({ expanded: true });
+    });
+  });
+
+  describe('the background leaves the focus order while a panel covers it', () => {
+    function hiddenFlags(testID: string): { hidden: unknown; important: unknown } {
+      const node = screen.getByTestId(testID, { includeHiddenElements: true });
+      return {
+        hidden: node.props.accessibilityElementsHidden,
+        important: node.props.importantForAccessibility,
+      };
+    }
+
+    it('leaves the book reachable when no panel is open', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(hiddenFlags('reader-webview-container')).toEqual({
+        hidden: false,
+        important: 'yes',
+      });
+    });
+
+    it('hides the book behind an open panel', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+
+      expect(hiddenFlags('reader-webview-container')).toEqual({
+        hidden: true,
+        important: 'no-hide-descendants',
+      });
+    });
+
+    it('keeps the Contents button reachable while the TOC is open — it is the way out', async () => {
+      // THE ONE ASYMMETRY, and it is deliberate. Search and Bookmarks each close from a button
+      // inside their own panel, so the bottom row behind them is background. Contents does not: the
+      // button in that row IS its close affordance. Hiding the row with everything else left a
+      // screen-reader user inside the TOC with no reachable way out.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+
+      expect(screen.getByRole('button', { name: 'Close contents' })).toBeTruthy();
+    });
+
+    it('hides the bottom row behind Search, which carries its own close', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openSearchPanel();
+
+      expect(screen.queryByRole('button', { name: 'Contents' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Close search' })).toBeTruthy();
+    });
+
+    it('hides the decorative TOC fades from assistive tech', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(40) });
+      await openContents();
+      const list = screen.getByTestId('reader-toc-list');
+      await fireEvent(list, 'layout', { nativeEvent: { layout: { height: 100 } } });
+      await fireEvent(list, 'contentSizeChange', 0, 900);
+
+      expect(hiddenFlags('reader-toc-fade-bottom')).toEqual({
+        hidden: true,
+        important: 'no-hide-descendants',
+      });
+    });
+  });
+
+  describe('focus restoration', () => {
+    it('returns focus to Contents when a TOC row is chosen', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByText('Chapter 2'));
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT move focus when the TOC closes because Search is opening', async () => {
+      // Search does its own entry focus (`autoFocus` on its field). Restoring to Contents here
+      // would race it and pull the user back out of the field they just landed in.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await openSearchPanel();
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT move focus when the TOC closes because Bookmarks is opening', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Bookmarks', includeHiddenElements: true }),
+      );
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('returns focus to the Search button when the panel is closed explicitly', async () => {
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT restore to Search when a result is selected', async () => {
+      // Selecting a result closes the panel too, but the user's journey ends at the book, not back
+      // at the toolbar. Where focus SHOULD land is a separate open question — this pins only that
+      // it is not silently sent backwards.
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+
+      expect(focusOnMock).not.toHaveBeenCalled();
     });
   });
 });

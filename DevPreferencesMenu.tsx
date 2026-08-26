@@ -567,7 +567,6 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
-
         </View>
       )}
     </View>
