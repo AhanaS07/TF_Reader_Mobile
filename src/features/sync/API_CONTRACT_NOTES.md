@@ -68,8 +68,9 @@ register it in the allocation. One claim to negotiate instead of eight scattered
 The tracked service in `TF_Reader_Backend` maps `@RequestMapping("/api/progress")`,
 `/api/bookmarks`, `/api/highlights`, `/api/personalization`, `/api/accessibility`, `/api/downloads`,
 `/api/outbox`, `/api/sync`, `/api/sync-metadata` — i.e. **`/api/*`, outside the contested
-`/api/v1/**` space entirely.** The client's `API_V1` prefix targets a *different, untracked* "Mongo
-backend" on port 9000 (`syncConfig.ts:43`).
+`/api/v1/**` space entirely.** The client's `API_V1` prefix targets the real backend on `:8080`
+(`syncConfig.ts:46`) — see finding 4 below; this path-prefix mismatch is a separate, still-open
+question from the port, which is now the same port both contracts specify.
 
 So the tracked backend and this client cannot currently be talking to each other, and anyone
 comparing them finds every path off by `/v1`. **Only you can say which service is canonical** —
@@ -145,20 +146,24 @@ before being built, and it has not been re-visited here.
 
 ---
 
-## 4. `B2`-adjacent 🟡 — three base URLs, none of them `:8080`
+## 4. `B2`-adjacent 🟡 — three base URLs, none of them `:8080` — **CLOSED for Sync's own constant**
 
-Not your finding, but two of the three constants are yours, so a fix touches this directory.
+Not your finding, but two of the three constants were yours, so a fix touched this directory.
 
 | Consumer | Constant | Value |
 | --- | --- | --- |
-| Download / reading sessions | `download/config.ts:31` | `:4000` — mock backend |
-| Sync CRUD | `sync/syncConfig.ts:40` | `:9000` — Mongo backend |
-| Book file + pdf.js assets | `sync/syncConfig.ts:47` | `:8090` — "old Spring app" |
+| Download / reading sessions | `download/config.ts:31` | `:4000` — mock backend (still separate; `EXPO_PUBLIC_USE_REAL_BACKEND` flips it to `:8080`) |
+| Sync CRUD | `sync/syncConfig.ts:11` | ~~`:9000` — Mongo backend~~ **now `:8080`** — confirmed 2026-08-25: the real backend is one server, `tf_reader_backend_temp`, and it now serves `api/v1/{entity}` alongside Download's device-key/content-licence/signed-url/seat routes |
+| Book file + pdf.js assets | `sync/syncConfig.ts:19` | `:8090` — "old Spring app" (still separate; unconfirmed whether this one merges too) |
 | **Both contracts** | — | **`http://localhost:8080`** |
 
-Both contracts specify `:8080` for everyone, so "point the app at the real backend" is currently a
-three-place change across two owners. If CAP-7's surface ends up on the same application (`C1`), two
-of these three collapse. Coordinate with Abhinav rather than each of you renaming your own constant.
+One of the three collapsed onto `:8080` per this session's confirmation (`C1`'s "same application"
+premise, at least for CRUD + licensing). The asset port (`:8090`) is still open — nobody has
+confirmed the Mongo/real backend serves book files yet, so `ASSET_PORT` stays as its own constant
+until that's checked. `download/config.ts`'s own `REAL_BACKEND_PORT = 8080` is a second, duplicate
+constant for the same value as `sync/syncConfig.ts`'s `BACKEND_PORT` — left as two constants rather
+than one shared one, per the module-boundary reasoning below (each owns its own config; a shared
+constant is a later coordination, not a Sync-side call to make alone).
 
 `download/config.ts`'s header explains why Download doesn't reach into `sync/config.ts` — separately
 owned modules, separate configs. That reasoning is sound and should survive any consolidation:

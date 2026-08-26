@@ -43,6 +43,9 @@ function postingPosition(posting: Posting): { node: string; seq: number } | null
   if (loc.type === 'PDF') {
     return { node: `p:${loc.page}`, seq: posting.seq };
   }
+  // AUDIO is unreachable here - BookSearchIndex.format never includes it, so no posting is ever
+  // built from one - but the check keeps this function total over the Locator union.
+  if (loc.type === 'AUDIO') return null;
   // The unit is the CFI's node path. A point CFI is `epubcfi(<path>:<charOffset>)`, and the
   // terminal char offset is the only ':' (the spine `!` and `[id]` assertions carry none),
   // so everything before the last ':' is the node.

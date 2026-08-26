@@ -8,8 +8,16 @@
 // `showToc`/`showSearch` mutual-exclusion pattern at ReaderScreen.tsx:138-139 is the template a
 // `showTts` toggle would follow) is Reader's (Ahana's) call, not this file's.
 
-import { useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  findNodeHandle,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import type { TtsSession } from './useTtsSession';
 import { PITCH_LADDER } from './ttsPitch';
@@ -22,8 +30,33 @@ export interface TtsControlsProps {
 
 const PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios';
 
+// Matches VoicePicker's own FOCUS_ENTRY_DELAY_MS rationale: the Modal's dismiss animation is
+// still running for a moment after `visible` flips to false, so an immediate focus call can be
+// swallowed by the outgoing native layer.
+const FOCUS_RESTORE_DELAY_MS = 300;
+
 export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const voiceButtonRef = useRef<View>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const closeVoicePicker = (): void => {
+    setVoicePickerOpen(false);
+    closeTimerRef.current = setTimeout(() => {
+      const node = findNodeHandle(voiceButtonRef.current);
+      if (node !== null) {
+        AccessibilityInfo.setAccessibilityFocus(node);
+      }
+    }, FOCUS_RESTORE_DELAY_MS);
+  };
 
   const isSpeaking = session.status === 'speaking';
   const isPaused = session.status === 'paused';
@@ -84,6 +117,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
         </Pressable>
 
         <Pressable
+          ref={voiceButtonRef}
           accessibilityRole="button"
           accessibilityLabel="Choose voice"
           onPress={() => {
@@ -135,10 +169,10 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
       </View>
 
       <VoicePicker
-        onClose={() => setVoicePickerOpen(false)}
+        onClose={closeVoicePicker}
         onSelect={(voiceId) => {
           session.setVoice(voiceId);
-          setVoicePickerOpen(false);
+          closeVoicePicker();
         }}
         selectedVoiceId={session.prefs.voiceId}
         visible={voicePickerOpen}

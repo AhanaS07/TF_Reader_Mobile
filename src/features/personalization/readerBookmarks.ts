@@ -18,6 +18,7 @@
 import type { BookmarkRow, Locator } from '@/features/sync/localDb/types';
 import { bookmarkStore, parseLocator } from '@/features/sync/stores/bookmarkStore';
 import type { ReaderTarget } from '@/features/reader/readerBridge';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
 /**
  * One bookmark the panel can render and navigate to. `id` is what tap-to-delete removes by; `target`
@@ -33,9 +34,10 @@ export interface ReaderBookmark {
 }
 
 /**
- * The loaded set, plus the ids of rows that could NOT be turned into a target (corrupt locator JSON).
- * Surfaced rather than swallowed, exactly as `toPaintable`/`loadReaderHighlights` surface theirs — a
- * stored bookmark that cannot be navigated to is a bug worth seeing, not a silently missing row.
+ * The loaded set, plus the ids of rows that could NOT be turned into a target — corrupt locator
+ * JSON, or (since AUDIO shipped) a valid locator with no `ReaderTarget` to reach it. Surfaced rather
+ * than swallowed, exactly as `toPaintable`/`loadReaderHighlights` surface theirs — a stored bookmark
+ * that cannot be navigated to from this panel is worth seeing, not a silently missing row.
  */
 export interface LoadedBookmarks {
   bookmarks: ReaderBookmark[];
@@ -44,12 +46,17 @@ export interface LoadedBookmarks {
 
 /**
  * A stored `Locator` -> the `goTo` target that reaches it. EPUB anchors by CFI, PDF by page — the two
- * addressing schemes `ReaderTarget` exists to carry. Total over the `Locator` union.
+ * addressing schemes `ReaderTarget` exists to carry.
+ *
+ * Returns null for AUDIO: `ReaderTarget` is bridge-local to the WebView reader (`kind: 'href' |
+ * 'page'`, see readerBridge.ts) and an audiobook's position has no destination there — audio never
+ * opens through `goTo`. Not a gap to close in this file; a navigable audio bookmark needs its own
+ * seam into AudioPlayerScreen, which is a call for whoever owns that route.
  */
-function toTarget(locator: Locator): ReaderTarget {
-  return locator.type === 'EPUB'
-    ? { kind: 'href', href: locator.cfi }
-    : { kind: 'page', page: locator.page };
+function toTarget(locator: Locator): ReaderTarget | null {
+  if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
+  if (locator.type === 'PDF') return { kind: 'page', page: locator.page };
+  return null;
 }
 
 /** The label to show, in precedence order: explicit name, then chapter id, then a positional default. */
@@ -73,7 +80,12 @@ export function toReaderBookmarks(rows: BookmarkRow[]): LoadedBookmarks {
       skippedIds.push(row.id);
       continue;
     }
-    bookmarks.push({ id: row.id, label: labelFor(row, locator), target: toTarget(locator) });
+    const target = toTarget(locator);
+    if (!target) {
+      skippedIds.push(row.id);
+      continue;
+    }
+    bookmarks.push({ id: row.id, label: labelFor(row, locator), target });
   }
 
   return { bookmarks, skippedIds };
@@ -100,6 +112,10 @@ export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
  * CALL-SITE 2a — user bookmarks the current EPUB position. Persists via the store (which enqueues the
  * sync outbox in the same transaction — offline-safe) and returns the fresh full set for the panel.
  * `cfi` is the current reading position the reader already reports on `relocated`.
+ *
+ * `pushNow()` after the write kicks a sync so a bookmark made while already online reaches the server
+ * now, not on the next reconnect — fire-and-forget, never a precondition of the local save. See
+ * pushOnEdit.ts.
  */
 export async function addCurrentEpubBookmark(
   bookId: string,
@@ -108,6 +124,7 @@ export async function addCurrentEpubBookmark(
   name?: string,
 ): Promise<LoadedBookmarks> {
   await bookmarkStore.addForCfi(cfi, chapterId, name, bookId);
+  pushNow();
   return reload(bookId);
 }
 
@@ -118,15 +135,43 @@ export async function addCurrentPdfBookmark(
   name?: string,
 ): Promise<LoadedBookmarks> {
   await bookmarkStore.addForPage(page, name, bookId);
+  pushNow();
   return reload(bookId);
 }
 
 /**
  * CALL-SITE 3 — user deletes a bookmark by tapping it in the panel. Delete is BY STORED ID
- * (soft-delete tombstone), the same create-and-delete-only model as highlights — which is what lets
- * plain LWW behave as union across devices. Returns the fresh set, the deleted id absent from it.
+ * (soft-delete tombstone). Independent creates and deletes never collide (each is a unique id), so
+ * plain LWW still behaves as union across those — the one same-id case is delete-vs-rename, resolved
+ * engine-side (see `renameBookmark`). Returns the fresh set, the deleted id absent from it.
  */
 export async function removeBookmark(bookId: string, id: string): Promise<LoadedBookmarks> {
   await bookmarkStore.remove(id);
+  pushNow();
+  return reload(bookId);
+}
+
+/**
+ * CALL-SITE 4 — user renames an existing bookmark by tapping it in the panel and giving it a new name.
+ * This is the REAL update-in-place op that replaces Reader's delete-and-recreate stand-in (see
+ * READER_BOOKMARKS_WIRING.md item 6): one write, one outbox entry, and the bookmark's id and `target`
+ * are untouched — only `name` changes. Returns the fresh set for the panel to re-render, then nudges a
+ * sync so the rename reaches the server now (see pushOnEdit.ts).
+ *
+ * WHY THIS DOES NOT BREAK plain-LWW-as-union (the reason bookmarks were create+delete-only): a rename
+ * is a same-id UPDATE, and two independent renames of DIFFERENT bookmarks never collide (different
+ * ids), so union still holds for them. The ONE case a same-id UPDATE reintroduces is delete-vs-rename
+ * on the SAME id — a rename with a later stamp could otherwise resurrect a bookmark another device
+ * deleted. Making deletes win that race is an engine-side guard (`is_deleted` sticky in
+ * `applyServerRecord`), which is KARTHIK's call — this facade only produces the local UPDATE + outbox
+ * entry; it cannot and does not decide the cross-device resolution. See the open item in the wiring doc.
+ */
+export async function renameBookmark(
+  bookId: string,
+  id: string,
+  name: string,
+): Promise<LoadedBookmarks> {
+  await bookmarkStore.rename(id, name);
+  pushNow();
   return reload(bookId);
 }

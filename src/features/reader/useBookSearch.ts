@@ -70,7 +70,12 @@ export function targetOf(hit: SearchHit): ReaderTarget | null {
  * by design (many hits per chapter), so it cannot be identity on its own.
  */
 export function locatorKey(hit: SearchHit): string {
-  return hit.locator.type === 'EPUB' ? hit.locator.cfi : `p${hit.locator.page}:${hit.locator.offset ?? 0}`;
+  const locator = hit.locator;
+  if (locator.type === 'EPUB') return locator.cfi;
+  if (locator.type === 'PDF') return `p${locator.page}:${locator.offset ?? 0}`;
+  // AUDIO is unreachable here today - BookSearchIndex.format never includes it (nothing is
+  // indexed, so no SearchHit ever carries one) - but the key still has to be total.
+  return `a${locator.positionMs}`;
 }
 
 /**
