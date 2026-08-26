@@ -60,6 +60,12 @@ _fail.bookId satisfies string; // context travels to the catch site
 // --- Locator discriminants are UPPERCASE ----------------------------------
 ({ type: 'EPUB', cfi: 'epubcfi(/6/4)' }) satisfies Locator;
 ({ type: 'PDF', page: 12 }) satisfies Locator;
+({ type: 'AUDIO', positionMs: 872_000 }) satisfies Locator;
+({ type: 'AUDIO', positionMs: 872_000, trackId: 'ch-03' }) satisfies Locator;
+// @ts-expect-error audio position is milliseconds under its own key, never PDF's `offset`
+({ type: 'AUDIO', offset: 872_000 }) satisfies Locator;
+// @ts-expect-error seconds-as-`position` was considered and rejected - positionMs only
+({ type: 'AUDIO', position: 872 }) satisfies Locator;
 // @ts-expect-error lowercase discriminants were reconciled out
 ({ type: 'epub', cfi: 'x' }) satisfies Locator;
 

@@ -9,22 +9,38 @@
 // Deliberately reads every book for the user (`listActive(USER_ID)`, no bookId), not just the
 // prototype's single hard-coded BOOK_ID - this predates a real book picker, so showing everything
 // the device has is the only way to prove downloadStore/bookmarkStore's local reads work at all.
+//
+// Tapping a downloaded row calls openBook() (Download, Abhinav) - the same unified licence gate
+// BookListScreen.tsx uses (checkLicense → decrypt). For a book already on disk it short-circuits
+// straight to the local ciphertext, so this is exactly how "open it offline" is exercised: no
+// network call happens for a book this device already has. AUDIO is skipped here (its route needs
+// a title this mock has no source for) - EPUB/PDF only, same as everything else in this file being
+// intentionally minimal.
 
 import { useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import { DownloadFailure } from '@/features/download/errors';
+import { openBook } from '@/features/download/openBook';
 import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
 import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { downloadTable } from '@/features/sync/stores/downloadStore';
 import { USER_ID } from '@/features/sync/syncConfig';
+import type { ContentFormat } from '@/shared/contracts';
+
+import type { RootStackParamList } from '@/navigation/RootNavigator';
 
 type Tab = 'downloaded' | 'bookmarked';
 
-export function MockLibraryScreen(): React.JSX.Element {
+type Props = NativeStackScreenProps<RootStackParamList, 'MockLibrary'>;
+
+export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
   const [tab, setTab] = useState<Tab | null>(null);
   const [downloads, setDownloads] = useState<DownloadRow[]>([]);
   const [bookmarks, setBookmarks] = useState<BookmarkRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
 
   const showDownloaded = async () => {
     setTab('downloaded');
@@ -38,6 +54,31 @@ export function MockLibraryScreen(): React.JSX.Element {
     setLoading(true);
     setBookmarks(await bookmarkTable.listActive(USER_ID));
     setLoading(false);
+  };
+
+  const openDownloadedBook = async (row: DownloadRow) => {
+    if (row.format === 'AUDIO') {
+      Alert.alert('Audiobook', 'Open audiobooks from the real BookList screen, not this mock.');
+      return;
+    }
+
+    setOpening(row.id);
+    try {
+      // checkLicense → decrypt. For a book already on disk (true for anything already showing up
+      // in this list) this never touches the network - exactly the "open it offline" path.
+      await openBook(row.book_id, row.format as ContentFormat);
+      navigation.navigate('Reader', {
+        bookId: row.book_id,
+        format: row.format as ContentFormat,
+      });
+    } catch (error) {
+      const message =
+        error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
+      console.error('openBook failed:', error instanceof DownloadFailure ? error.cause : error);
+      Alert.alert('Cannot open book', message);
+    } finally {
+      setOpening(null);
+    }
   };
 
   return (
@@ -77,13 +118,19 @@ export function MockLibraryScreen(): React.JSX.Element {
             <Text style={styles.empty}>No rows in the local `downloads` table.</Text>
           }
           renderItem={({ item }) => (
-            <View style={styles.row}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => openDownloadedBook(item)}
+              disabled={opening === item.id}
+              style={styles.row}
+            >
               <Text style={styles.rowTitle}>{item.book_id}</Text>
               <Text style={styles.rowSubtitle}>
                 {item.format} · {item.status ?? 'unknown status'} ·{' '}
                 {item.is_valid ? 'valid' : 'locked'}
+                {opening === item.id ? ' · opening…' : ''}
               </Text>
-            </View>
+            </Pressable>
           )}
         />
       )}

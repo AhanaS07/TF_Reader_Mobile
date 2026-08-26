@@ -8,11 +8,17 @@ import Constants from 'expo-constants';
 export const USER_ID = process.env.EXPO_PUBLIC_USER_ID ?? 'user-001';
 export const BOOK_ID = process.env.EXPO_PUBLIC_BOOK_ID ?? 'book-001';
 
-const BACKEND_PORT = 9000;
+// Was 9000 (a separate Mongo CRUD service) until the real backend consolidated onto one server -
+// tf_reader_backend_temp on 8080 now serves BOTH api/v1/{entity} CRUD and Download's
+// device-key/content-licence/signed-url/seat routes. Download's config.ts still has its own
+// REAL_BACKEND_PORT = 8080 for the same server; that duplication is real (see this file's own
+// resolveBackendHost, which already does correct LAN-host resolution that Download's hardcoded
+// `localhost` fallback does not), and is worth a shared constant later, not fixed in this change.
+const BACKEND_PORT = 8080;
 
 /**
  * The book file and the pdf.js runtime are static resources, not CRUD, and the
- * Mongo backend does not serve them - `/api/books/{id}/file` is a 404 on 9000.
+ * Mongo backend does not serve them - `/api/books/{id}/file` is a 404 on 8080.
  * Until it does, they come from the old Spring app on 8090. Once the Mongo
  * service picks them up, set this to BACKEND_PORT and the SQLite backend can go.
  */
@@ -36,7 +42,7 @@ function resolveBackendHost(): string {
   return 'localhost';
 }
 
-/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:8090 */
+/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:8080 */
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL ?? `http://${resolveBackendHost()}:${BACKEND_PORT}`;
 
