@@ -230,3 +230,54 @@ describe('InstitutionListScreen offline cache — bug regressions', () => {
     );
   });
 });
+
+// ── B10 — the third search empty state: offline, nothing in the cache ─────────
+//
+// B10 is "three empty states" in the B-series, which is the search feature. Two
+// of the three belong to the catalogue search on screen 17 (query matched
+// nothing; filters matched nothing) and are covered in SearchScreen.test.tsx.
+// The third belongs to the INSTITUTION search (B9, a separate pipeline sharing
+// only the shell): offline, with a query typed, and no cached match for it.
+//
+// It had no test on any surface before this. The variant existed and was wired
+// here, which is exactly the kind of state that regresses unnoticed.
+describe('InstitutionListScreen — B10 offline empty state', () => {
+  it('explains that the offline list has no match, rather than showing an error', async () => {
+    mockIsOnline.mockReturnValue(false);
+    useInstitutionStore.setState({ cachedInstitutions: [IMPERIAL, MANCHESTER] });
+    setCatalogueSource(fakeSource(jest.fn()));
+
+    await render(<InstitutionListScreen />);
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+
+    // A query no cached institution can satisfy.
+    await act(async () => {
+      fireEvent.changeText(screen.getByTestId('search-input-field'), 'zzzz-no-such-place');
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'No matches in your offline list — connect to search the full directory.',
+        ),
+      ).toBeTruthy(),
+    );
+    // Empty is not an error, and the copy has to say what to do about it.
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+
+  // The same zero-result query while ONLINE is a different fact, and says so —
+  // there is nothing to "connect" to fix.
+  it('uses the plain no-results copy when online', async () => {
+    mockIsOnline.mockReturnValue(true);
+    setCatalogueSource(fakeSource(jest.fn(async () => [])));
+
+    await render(<InstitutionListScreen />);
+
+    await act(async () => {
+      fireEvent.changeText(screen.getByTestId('search-input-field'), 'zzzz-no-such-place');
+    });
+
+    await waitFor(() => expect(screen.queryByText(/offline list/i)).toBeNull());
+  });
+});

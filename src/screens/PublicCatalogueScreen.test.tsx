@@ -413,3 +413,76 @@ describe('PublicCatalogueScreen access-tier badges', () => {
     await waitFor(() => expect(screen.getAllByText('Open Access')).toHaveLength(2));
   });
 });
+
+// ── D8 — not entitled: no buttons, no badge ───────────────────────────────────
+//
+// This screen is the most dangerous place for the OPEN_ACCESS placeholder to
+// leak: it is a list OF open access titles, so a false "Open Access" chip on an
+// unopenable row would look completely at home.
+describe('PublicCatalogueScreen — D8 not entitled', () => {
+  it('renders the row with no badge and no action', async () => {
+    const orphan = {
+      id: 'item_orphan',
+      title: 'Metadata Only',
+      publisher: 'Routledge',
+      authors: [],
+      subjects: [],
+    } as unknown as Publication;
+    setCatalogueSource(
+      fakeSource(async () => ({ id: 'public', title: 'Open access', publications: [orphan] })),
+    );
+
+    await render(<PublicCatalogueScreen />);
+
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+    expect(screen.queryByText('Open Access')).toBeNull();
+    expect(screen.queryByTestId('content-card-badge')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+});
+
+// ── D12 — audited, and excluded here on purpose ───────────────────────────────
+//
+// The deliverable names four surfaces; this is the one that does NOT get the
+// queue affordance, and the exclusion is verified rather than only commented.
+//
+// WHY, IN ONE LINE: with no institution there is no session, and `resolveAccess`
+// §4 answers `requires_signin` for every licensed tier once the session is null.
+// The queue is unreachable by construction here, so a button could never appear
+// however hard this screen tried — and this screen may not read
+// `institutionStore` to obtain one (see the file header).
+//
+// THIS TEST IS THE RECORD. If someone later gives this screen an institution,
+// it fails, and whoever changed it has to decide about D12 deliberately rather
+// than discovering a missing button in review.
+describe('PublicCatalogueScreen — D12 exclusion', () => {
+  it('offers no queue affordance on an Elite row, because there is no session', async () => {
+    const elite = {
+      id: 'item_elite',
+      title: 'An Elite Title',
+      publisher: 'Routledge',
+      authors: [],
+      subjects: [],
+      format: 'EPUB',
+      acquisition: {
+        actionId: 'borrow',
+        href: 'https://x/loan/item_elite',
+        licenceModel: 'ELITE',
+        encryption: null,
+        hasSearchIndex: false,
+        canPersist: true,
+      },
+    } as unknown as Publication;
+    setCatalogueSource(
+      fakeSource(async () => ({ id: 'public', title: 'Open access', publications: [elite] })),
+    );
+
+    await render(<PublicCatalogueScreen />);
+
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+    expect(screen.queryByText('Grant access')).toBeNull();
+    expect(screen.queryByTestId('queue-action-position')).toBeNull();
+    expect(screen.queryByTestId('queue-action-offer')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+});

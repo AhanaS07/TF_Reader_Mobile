@@ -10,7 +10,7 @@
 // checks are the ones with teeth.
 import { ACCESS_STATES, type Acquisition, type Hold, type Loan, type Session } from '@model/types';
 
-import { resolveAccess, type ResolvableItem } from './resolveAccess';
+import { isNotEntitled, resolveAccess, type ResolvableItem } from './resolveAccess';
 
 // Builders rather than shared literals, so one test cannot mutate another's
 // fixture and no test depends on a field it did not set itself.
@@ -110,6 +110,35 @@ describe('resolveAccess', () => {
       expect(actions).not.toContain('subscribe');
       expect(actions).not.toContain('signIn');
       expect(actions).not.toContain('grantAccess');
+    });
+  });
+
+  // ── D8 — the predicate screens ask before reading `tier` ────────────────────
+  //
+  // `tier` is required on AccessResult, so `not_entitled` has to put something
+  // there and the filler is OPEN_ACCESS. A screen that reads the tier without
+  // asking about the state therefore draws "Open Access" over a title the reader
+  // cannot open. This predicate is what five surfaces ask instead.
+  describe('isNotEntitled', () => {
+    it('is true for the not-entitled resolve, whose tier is a placeholder', () => {
+      const result = resolve({ item: { id: 'item_42' } });
+
+      expect(isNotEntitled(result)).toBe(true);
+      // The trap, spelled out: the tier looks free to read and is not.
+      expect(result.tier).toBe('OPEN_ACCESS');
+    });
+
+    it('is false for every state that has something real to show', () => {
+      const openAccess = resolve({
+        item: { id: 'item_1', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) },
+      });
+      const signedOut = resolve({
+        item: { id: 'item_2', acquisition: anAcquisition({ licenceModel: 'ELITE' }) },
+        session: null,
+      });
+
+      expect(isNotEntitled(openAccess)).toBe(false);
+      expect(isNotEntitled(signedOut)).toBe(false);
     });
   });
 

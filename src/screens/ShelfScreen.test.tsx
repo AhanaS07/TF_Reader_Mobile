@@ -14,7 +14,22 @@ import { setCatalogueSource } from '@config/catalogue';
 import type { Shelf } from '@model/types';
 import type { CatalogueStackParamList } from '@navigation/types';
 
+import { useLibraryStore } from '@store/libraryStore';
+
 import ShelfScreen from './ShelfScreen';
+
+// The licence seam is faked so nothing here reaches a real client. This screen
+// makes no licence call of its own — D12 is item detail only — but the store it
+// shares can, so the source has to answer.
+jest.mock('@config/licence', () => ({
+  getLicenceSource: () => ({
+    getLibrary: () => Promise.resolve({ loans: [], holds: [] }),
+    borrow: jest.fn(),
+    placeHold: jest.fn(),
+    acceptOffer: jest.fn(),
+    cancelHold: jest.fn(),
+  }),
+}));
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
 // referencing out-of-scope variables whose name starts with "mock".
@@ -538,12 +553,12 @@ describe('ShelfScreen filter & sort', () => {
   });
 });
 
-// ── D12's Elite queue button is ItemDetailScreen only ─────────────────────────
+// ── D12 — the Elite queue affordance is ItemDetailScreen only ─────────────────
 //
-// It used to also render on this shelf row (full pending-state coverage lived
-// here and in queueRequest.test.ts); moved back to the detail screen only, so
-// a shelf row draws no button regardless of tier.
-describe('ShelfScreen — no Elite queue button', () => {
+// CONFIRMED TEAM DECISION, 26 Aug. A shelf row draws no queue button regardless
+// of tier. Asserted for a reader holding nothing and for a reader mid-queue,
+// because an earlier pass rendered something in both cases.
+describe('ShelfScreen — no Elite queue affordance', () => {
   function eliteShelf(...ids: string[]): Shelf {
     return {
       id: 'ebooks',
@@ -555,16 +570,57 @@ describe('ShelfScreen — no Elite queue button', () => {
     };
   }
 
-  it('draws no queue button on an Elite row', async () => {
+  afterEach(() => {
+    useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  });
+
+  it('draws no Grant access button on an Elite row', async () => {
     setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
 
     await render(<ShelfScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByText('Elite item_42')).toBeTruthy());
     expect(screen.queryByText('Grant access')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
   });
 
-  it('still navigates to the detail screen on tap', async () => {
+  it('draws none on any row when several Elite titles are on screen', async () => {
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42', 'item_99')));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Elite item_99')).toBeTruthy());
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  // This screen no longer reads the holdings cache at all, so a queued hold
+  // cannot reach it — asserted anyway, because that is the behaviour the
+  // decision asks for rather than an accident of what the screen fetches.
+  it('draws no queue position even when the reader is queued', async () => {
+    useLibraryStore.setState({
+      loans: [],
+      holds: [
+        {
+          holdId: 'hold_1',
+          itemId: 'item_42',
+          state: 'queued',
+          position: 2,
+          queueLength: 5,
+          serverTime: '2026-08-26T09:00:00Z',
+        },
+      ],
+      loading: false,
+    });
+    setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Elite item_42')).toBeTruthy());
+    expect(screen.queryByText(/in queue/i)).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  it('still navigates to the detail screen, which is where the queue lives', async () => {
     setCatalogueSource(fakeSource(async () => eliteShelf('item_42')));
 
     await render(<ShelfScreen {...routeProps} />);
@@ -573,5 +629,98 @@ describe('ShelfScreen — no Elite queue button', () => {
     fireEvent.press(screen.getByText('Elite item_42'));
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+// ── D8 — not entitled: no buttons, no badge ───────────────────────────────────
+describe('ShelfScreen — D8 not entitled', () => {
+  const ORPHAN_SHELF: Shelf = {
+    id: 'ebooks',
+    title: 'eBooks',
+    publications: [
+      {
+        id: 'item_orphan',
+        title: 'Metadata Only',
+        publisher: 'Routledge',
+        authors: [],
+        subjects: [],
+        // No acquisition link — the branch normalize.ts rejects upstream.
+      } as unknown as Shelf['publications'][number],
+    ],
+  };
+
+  it('renders the row with no badge and no action', async () => {
+    setCatalogueSource(fakeSource(async () => ORPHAN_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+    expect(screen.queryByText('Open Access')).toBeNull();
+    expect(screen.queryByTestId('content-card-badge')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+});
+
+// ── B10 — the shelf's empty state ─────────────────────────────────────────────
+//
+// This screen carries a filter and sort sheet, so narrowing to zero rows is an
+// ordinary thing a reader can do. Before this it rendered nothing at all, which
+// reads as a failed load.
+describe('ShelfScreen — B10 empty state', () => {
+  const EMPTY: Shelf = { id: 'ebooks', title: 'eBooks', totalItems: 0, publications: [] };
+
+  it('says the shelf is empty when nothing was filtered', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Nothing to show here yet.')).toBeTruthy());
+  });
+
+  // "Your filters matched nothing" is a different fact from "this shelf is
+  // empty", and only the first has an action worth offering.
+  it('blames the filters, and offers to clear them, when a filter is applied', async () => {
+    const getShelf = jest.fn(async () => EMPTY);
+    setCatalogueSource(fakeSource(getShelf));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Nothing to show here yet.')).toBeTruthy());
+
+    await fireEvent.press(screen.getByLabelText('Filter and sort'));
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await fireEvent.press(screen.getByTestId('filter-sort-sheet-apply'));
+
+    await waitFor(() => expect(screen.getByText('Try adjusting your filters.')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Clear filters' })).toBeTruthy();
+  });
+
+  it('offers no Clear filters affordance when no filter is to blame', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Nothing to show here yet.')).toBeTruthy());
+
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+  });
+
+  // Empty is not an error, and the two must never be confused.
+  it('shows no error copy and no retry for an empty shelf', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY));
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText('Nothing to show here yet.')).toBeTruthy());
+
+    expect(screen.queryByText(/couldn.?t load/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+
+  it('keeps the honest count line beside the empty state', async () => {
+    setCatalogueSource(fakeSource(async () => EMPTY));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText(/showing 0 of 0/i)).toBeTruthy());
   });
 });

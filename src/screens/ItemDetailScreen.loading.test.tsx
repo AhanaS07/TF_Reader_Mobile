@@ -28,10 +28,16 @@ import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import { buildItemDetail } from '@model/detail';
 import type { Acquisition, Publication } from '@model/types';
+import { handToggledSession } from '@access/handToggledSession';
 import { resolveAccess } from '@access/resolveAccess';
 import { useLibraryStore } from '@store/libraryStore';
 
-import ItemDetailScreen, { ARTICLE_WORK_TYPE, renderArticleContent } from './ItemDetailScreen';
+import ItemDetailScreen, {
+  ARTICLE_WORK_TYPE,
+  BOOK_WORK_TYPE,
+  renderArticleContent,
+  renderBookContent,
+} from './ItemDetailScreen';
 
 // Must be prefixed `mock` — Jest's module-factory scope guard only allows
 // referencing out-of-scope variables whose name starts with "mock".
@@ -97,6 +103,13 @@ function fakeSource(getPublication: () => Promise<Publication>): DataSource {
     getInstitution: unused,
     getItemsBatch: unused,
   } as unknown as DataSource;
+}
+
+/** An open-access article detail, for the "no queue" control cases. */
+function anArticleDetailOpenAccess() {
+  const publication = anOpenAccessBook();
+  const access = resolveAccess({ item: publication, institutionId: 'inst_7f3', session: null });
+  return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
 }
 
 const routeProps = {
@@ -231,6 +244,196 @@ describe('ItemDetailScreen — pending reaches both presentations', () => {
     await render(renderArticleContent(anArticleDetail(), jest.fn()));
 
     expect(screen.queryByTestId('action-button-spinner')).toBeNull();
+  });
+});
+
+// ── D8 — not entitled renders nothing at all ─────────────────────────────────
+//
+// A publication with no acquisition link. Rendered through the presentation
+// function directly, so there is no fetch and no promise left open.
+describe('ItemDetailScreen — D8 not entitled', () => {
+  function notEntitledDetail() {
+    const publication = { id: 'item_orphan', title: 'Metadata Only', authors: [] } as never;
+    const access = resolveAccess({
+      item: publication,
+      institutionId: 'inst_7f3',
+      session: null,
+    });
+    return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
+  }
+
+  it('renders the title, because the metadata is real', async () => {
+    await render(renderArticleContent(notEntitledDetail(), jest.fn()));
+
+    expect(screen.getByText('Metadata Only')).toBeTruthy();
+  });
+
+  // The half that needed fixing: `tier` is required, so this state carries an
+  // OPEN_ACCESS filler that must never reach the screen.
+  it('draws no access badge, not even the OPEN_ACCESS placeholder', async () => {
+    await render(renderArticleContent(notEntitledDetail(), jest.fn()));
+
+    expect(screen.queryByText('Open Access')).toBeNull();
+  });
+
+  it('draws no action bar and nothing tappable', async () => {
+    await render(renderArticleContent(notEntitledDetail(), jest.fn()));
+
+    expect(screen.queryByTestId('action-bar')).toBeNull();
+    for (const label of ['Read', 'Download', 'Grant access', 'Sign in', 'Subscribe']) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+  });
+
+  // BOTH PRESENTATIONS, because D8 is a rule about the screen and the screen has
+  // two of them. The book layout carries extra furniture the article one does not
+  // — the price tag, the table-of-contents row — and none of it may become
+  // tappable just because there is no access.
+  it('renders the book presentation with no badge and nothing tappable either', async () => {
+    const publication = { id: 'item_orphan', title: 'Metadata Only', authors: [] } as never;
+    const access = resolveAccess({
+      item: publication,
+      institutionId: 'inst_7f3',
+      session: null,
+    });
+    const detail = buildItemDetail({ publication, workType: BOOK_WORK_TYPE, access });
+
+    await render(renderBookContent(detail, jest.fn()));
+
+    expect(screen.getByText('Metadata Only')).toBeTruthy();
+    expect(screen.queryByText('Open Access')).toBeNull();
+    expect(screen.queryByTestId('action-bar')).toBeNull();
+    for (const label of ['Read', 'Download', 'Grant access', 'Sign in', 'Subscribe']) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    // The muted mockup elements stay non-interactive rather than becoming the
+    // "request access" affordance index.html rules out.
+    expect(screen.queryByRole('button', { name: /table of contents/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /price/i })).toBeNull();
+  });
+});
+
+// ── D12 — the queued state on the detail screen ───────────────────────────────
+//
+// "Queued shows a position and nothing tappable." resolveAccess returns no
+// actions when queued, so ActionBar draws nothing and the position line is the
+// entire UI for this state — without it a waiting reader gets a detail screen
+// that answers nothing.
+describe('ItemDetailScreen — D12 queued', () => {
+  function queuedDetail() {
+    const publication = {
+      id: 'item_42',
+      title: 'An Elite Title',
+      authors: [],
+      acquisition: anAcquisition({ licenceModel: 'ELITE' }),
+    } as never;
+    const access = resolveAccess({
+      item: publication,
+      institutionId: 'inst_7f3',
+      session: handToggledSession('inst_7f3'),
+      hold: {
+        holdId: 'hold_1',
+        itemId: 'item_42',
+        state: 'queued',
+        position: 3,
+        queueLength: 7,
+        serverTime: '2026-08-26T09:00:00Z',
+      } as never,
+    });
+    return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
+  }
+
+  it('shows the reader their position', async () => {
+    await render(renderArticleContent(queuedDetail(), jest.fn()));
+
+    expect(screen.getByTestId('queue-position')).toBeTruthy();
+    expect(screen.getByText('Position 3 of 7 in queue')).toBeTruthy();
+  });
+
+  it('shows nothing tappable alongside it', async () => {
+    await render(renderArticleContent(queuedDetail(), jest.fn()));
+
+    expect(screen.queryByText('Grant access')).toBeNull();
+    expect(screen.queryByText('Accept')).toBeNull();
+    expect(screen.queryByTestId('action-bar')).toBeNull();
+  });
+
+  it('announces the position as text, not as a control', async () => {
+    await render(renderArticleContent(queuedDetail(), jest.fn()));
+
+    expect(screen.getByTestId('queue-position').props.accessibilityRole).toBe('text');
+  });
+
+  it('shows no position line when the reader is not queued', async () => {
+    const detail = anArticleDetailOpenAccess();
+    await render(renderArticleContent(detail, jest.fn()));
+
+    expect(screen.queryByTestId('queue-position')).toBeNull();
+  });
+});
+
+// ── D12 — the other two states on the detail screen ───────────────────────────
+//
+// Completes the matrix here rather than leaving it half-asserted: the card
+// surfaces have all three, and the detail screen is a required surface too.
+describe('ItemDetailScreen — D12 grant and offered', () => {
+  function eliteDetail(hold?: unknown) {
+    const publication = {
+      id: 'item_42',
+      title: 'An Elite Title',
+      authors: [],
+      acquisition: anAcquisition({ licenceModel: 'ELITE' }),
+    } as never;
+    const access = resolveAccess({
+      item: publication,
+      institutionId: 'inst_7f3',
+      session: handToggledSession('inst_7f3'),
+      hold: hold as never,
+    });
+    return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });
+  }
+
+  it('offers Grant access when nothing is held', async () => {
+    await render(renderArticleContent(eliteDetail(), jest.fn()));
+
+    expect(screen.getByText('Grant access')).toBeTruthy();
+    expect(screen.queryByTestId('queue-position')).toBeNull();
+  });
+
+  it('offers Accept and Reject when a copy is offered, and no position line', async () => {
+    const detail = eliteDetail({
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'offered',
+      offerExpiresAt: '2099-01-01T00:00:00Z',
+      serverTime: '2026-08-26T09:00:00Z',
+    });
+
+    await render(renderArticleContent(detail, jest.fn()));
+
+    expect(screen.getByText('Accept')).toBeTruthy();
+    expect(screen.getByText('Reject')).toBeTruthy();
+    // A reader with an offer is no longer waiting, so no position.
+    expect(screen.queryByTestId('queue-position')).toBeNull();
+    expect(screen.queryByText('Grant access')).toBeNull();
+  });
+
+  // No duplicates: the bar and the position line are mutually exclusive by
+  // construction, because resolveAccess returns no actions when queued.
+  it('never renders both a queue button and a position line', async () => {
+    const queued = eliteDetail({
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued',
+      position: 2,
+      queueLength: 4,
+      serverTime: '2026-08-26T09:00:00Z',
+    });
+
+    await render(renderArticleContent(queued, jest.fn()));
+
+    expect(screen.getByTestId('queue-position')).toBeTruthy();
+    expect(screen.queryByTestId('action-bar')).toBeNull();
   });
 });
 

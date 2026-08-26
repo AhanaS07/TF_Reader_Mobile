@@ -1,38 +1,17 @@
 // src/licence/queueRequest.test.ts
-// D12 — the Elite queue request that the card surfaces and the item detail
-// screen now share.
+// D12 — the Elite queue flow, which is ITEM DETAIL ONLY (confirmed team
+// decision, 26 Aug). The card-row descriptor and the `useQueueRequest` hook were
+// removed with that decision, along with their tests; what remains is the two
+// functions the detail screen calls.
 //
 // `borrowOrPlaceHold` IS TESTED DIRECTLY, with a hand-built source, because the
 // rule it encodes is the dangerous one: falling through to a hold on the WRONG
 // failure would enqueue a reader off the back of a network error. The narrow
 // catch gets a test per failure shape rather than one happy path.
-//
-// `await renderHook(...)` and `await act(async () => ...)` — both are promises in
-// RTL 14, and a bare synchronous `act()` corrupts every later render in the file.
-// See useReaderPrefs.test.ts, which records why.
-import { act, renderHook, waitFor } from '@testing-library/react-native';
 
 import { LicenceError, LicenceFailure, type LicenceSource } from '@/licence/LicenceSource';
-import { useLibraryStore } from '@store/libraryStore';
 
-import { borrowOrPlaceHold, offersQueue, QUEUE_ACTION, useQueueRequest } from './queueRequest';
-
-const mockBorrow = jest.fn();
-const mockPlaceHold = jest.fn();
-const mockGetLibrary = jest.fn();
-
-// The hook reads its source through `@config/licence`, the same indirection every
-// other licence caller uses, so the mock goes there rather than into the hook.
-jest.mock('@config/licence', () => ({
-  getLicenceSource: () => ({
-    borrow: (...args: [string]) => mockBorrow(...args),
-    placeHold: (...args: [string]) => mockPlaceHold(...args),
-    getLibrary: () => mockGetLibrary(),
-    returnLoan: jest.fn(),
-    acceptOffer: jest.fn(),
-    cancelHold: jest.fn(),
-  }),
-}));
+import { borrowOrPlaceHold, queuePositionLabel } from './queueRequest';
 
 const LOAN = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999 };
 const HELD = {
@@ -59,17 +38,6 @@ function source(over: Partial<LicenceSource> = {}): LicenceSource {
 
 const noCopies = () =>
   new LicenceFailure(LicenceError.REFUSED, { errorCode: 'NO_COPIES_AVAILABLE' });
-
-beforeEach(() => {
-  mockBorrow.mockResolvedValue(LOAN);
-  mockPlaceHold.mockResolvedValue(HELD);
-  mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
-});
-
-afterEach(() => {
-  jest.clearAllMocks();
-  useLibraryStore.setState({ loans: [], holds: [], loading: false });
-});
 
 describe('borrowOrPlaceHold', () => {
   it('borrows, and does not touch the queue, when a copy is free', async () => {
@@ -118,125 +86,28 @@ describe('borrowOrPlaceHold', () => {
   });
 });
 
-describe('QUEUE_ACTION and offersQueue', () => {
-  it('names the contract action, not a local string', () => {
-    expect(QUEUE_ACTION).toBe('grantAccess');
+// ── queuePositionLabel — the copy for the queued state on item detail ─────────
+//
+// A status line, never a button (16 Aug decision record), so this returns a
+// string and nothing else.
+describe('queuePositionLabel', () => {
+  it('gives position and total when both are known', () => {
+    expect(queuePositionLabel({ queuePosition: 3, queueLength: 7 })).toBe(
+      'Position 3 of 7 in queue',
+    );
   });
 
-  it('is true only when the resolve actually offered the queue', () => {
-    expect(offersQueue({ actions: ['grantAccess'] })).toBe(true);
-    // The four other Elite answers, none of which is a queue offer.
-    expect(offersQueue({ actions: [] })).toBe(false);
-    expect(offersQueue({ actions: ['signIn'] })).toBe(false);
-    expect(offersQueue({ actions: ['read', 'revokeLicence'] })).toBe(false);
-    expect(offersQueue({ actions: ['acceptOffer', 'rejectOffer'] })).toBe(false);
-  });
-});
-
-describe('useQueueRequest', () => {
-  it('starts with nothing pending', async () => {
-    const { result } = await renderHook(() => useQueueRequest());
-
-    expect(result.current.pendingItemId).toBeNull();
+  // `queueLength` is optional in the contract precisely because it is a nicety;
+  // the position is the thing the reader came for, so the copy degrades rather
+  // than waiting for a total that may never arrive.
+  it('drops the total rather than the position when the total is missing', () => {
+    expect(queuePositionLabel({ queuePosition: 1 })).toBe('Position 1 in queue');
   });
 
-  it('marks the requested item pending while the borrow is in flight', async () => {
-    // Held open so "in flight" is observable at all — `await act` would otherwise
-    // flush the resolution before the assertion.
-    mockBorrow.mockReturnValue(new Promise(() => {}));
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-    });
-
-    expect(result.current.pendingItemId).toBe('item_42');
-  });
-
-  it('clears pending and refreshes the holdings after a successful borrow', async () => {
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-    });
-
-    await waitFor(() => expect(result.current.pendingItemId).toBeNull());
-    expect(mockBorrow).toHaveBeenCalledWith('item_42');
-    expect(mockGetLibrary).toHaveBeenCalled();
-  });
-
-  it('queues, then clears pending, when no copy is free', async () => {
-    mockBorrow.mockRejectedValue(noCopies());
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-    });
-
-    await waitFor(() => expect(result.current.pendingItemId).toBeNull());
-    expect(mockPlaceHold).toHaveBeenCalledWith('item_42');
-    expect(mockGetLibrary).toHaveBeenCalled();
-  });
-
-  // A stuck spinner is the worst outcome of a failed request, so failure gets its
-  // own test rather than riding on the success path.
-  it('clears pending after a failure, and still refreshes', async () => {
-    mockBorrow.mockRejectedValue(new Error('boom'));
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-    });
-
-    await waitFor(() => expect(result.current.pendingItemId).toBeNull());
-    expect(mockPlaceHold).not.toHaveBeenCalled();
-    // A borrow that threw may still have created the loan, so the cache is stale
-    // either way.
-    expect(mockGetLibrary).toHaveBeenCalled();
-  });
-
-  it('ignores a second request for the same item while the first is in flight', async () => {
-    mockBorrow.mockReturnValue(new Promise(() => {}));
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-      result.current.requestQueue('item_42');
-      result.current.requestQueue('item_42');
-    });
-
-    expect(mockBorrow).toHaveBeenCalledTimes(1);
-  });
-
-  // The list-wide rule: twenty Elite rows must not be able to fire twenty
-  // borrows. See the note on useQueueRequest.
-  it('ignores a request for a DIFFERENT item while one is in flight', async () => {
-    mockBorrow.mockReturnValue(new Promise(() => {}));
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-      result.current.requestQueue('item_99');
-    });
-
-    expect(mockBorrow).toHaveBeenCalledTimes(1);
-    expect(mockBorrow).toHaveBeenCalledWith('item_42');
-    expect(result.current.pendingItemId).toBe('item_42');
-  });
-
-  it('accepts a new request once the previous one has settled', async () => {
-    const { result } = await renderHook(() => useQueueRequest());
-
-    await act(async () => {
-      result.current.requestQueue('item_42');
-    });
-    await waitFor(() => expect(result.current.pendingItemId).toBeNull());
-
-    await act(async () => {
-      result.current.requestQueue('item_99');
-    });
-
-    expect(mockBorrow).toHaveBeenCalledTimes(2);
-    expect(mockBorrow).toHaveBeenLastCalledWith('item_99');
+  // No position means there is nothing to say — the screen renders no line at
+  // all rather than "Position undefined".
+  it('says nothing when there is no position', () => {
+    expect(queuePositionLabel({})).toBeUndefined();
+    expect(queuePositionLabel({ queueLength: 7 })).toBeUndefined();
   });
 });

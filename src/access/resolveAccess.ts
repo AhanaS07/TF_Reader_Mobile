@@ -304,6 +304,26 @@ function result(
   };
 }
 
+// ── D8 — the not-entitled state, as a question a screen can ask ──────────────
+//
+// `not_entitled` renders NOTHING: no buttons, and no badge either. The buttons
+// take care of themselves — `actions` is `[]`, and `ActionBar` returns null on an
+// empty set. The BADGE does not, and that is the whole reason this predicate
+// exists: `tier` is required on `AccessResult`, so this state has to put
+// something there, and the filler is `OPEN_ACCESS` (settled 17 Aug). A caller
+// that reads `tier` without first checking `state` therefore draws "Open Access"
+// over a title the reader cannot open — which is the exact failure the comment on
+// branch 1 above warns about.
+//
+// A PREDICATE RATHER THAN FIVE INLINE COMPARISONS. Five surfaces render the badge
+// (item detail's two presentations, plus the catalogue, shelf, search and public
+// rows), and a rule spelled out five times is a rule that will be four rules
+// after the next refactor. Nothing is computed here — it reads the resolve and
+// reports it, so this is not a second place where access is decided.
+export function isNotEntitled(access: Pick<AccessResult, 'state'>): boolean {
+  return access.state === 'not_entitled';
+}
+
 // Unreachable by construction. Throws rather than returning a fallback: reaching
 // it means the tier vocabulary grew without this file being told, and a generous
 // default there is precisely how an unentitled reader gets handed a file.

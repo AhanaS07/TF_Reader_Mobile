@@ -42,7 +42,7 @@ import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
 import { handToggledSession } from '@access/handToggledSession';
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ErrorState } from '@components/ErrorState';
@@ -51,7 +51,7 @@ import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
-import { borrowOrPlaceHold } from '@/licence/queueRequest';
+import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -158,7 +158,18 @@ export function renderBookContent(
           invented, same rule as citation and the type label on screen 04. */}
         <UnavailableTag label="Price unavailable" />
 
-        <AccessTierBadge tier={detail.access.tier} />
+        {/* D8 — `not_entitled` renders nothing at all, badge included. `tier`
+            is required on AccessResult, so that state carries an OPEN_ACCESS
+            filler; drawing it would label a title the reader cannot open as
+            free to read. ActionBar already renders null on the empty action
+            set, so the buttons need no gate. */}
+        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+
+        {/* D12 — the `queued` half: "queued shows a position and nothing
+            tappable". `resolveAccess` returns no actions in that state, so
+            ActionBar draws nothing and this line is the entire UI for it —
+            without it a waiting reader sees a detail screen with no answer. */}
+        <QueuePositionLine access={detail.access} />
 
         {/* Publisher, published date, ISBN and page count are each shown only
           when the feed actually supplied them — "render whatever fields are
@@ -231,6 +242,26 @@ function MetaRow({
       <MaterialCommunityIcons name={icon} size={typeScale.meta.size} color={color.textSecondary} />
       <Text style={[styles.metaRow, styles.metaRowText]}>{text}</Text>
     </View>
+  );
+}
+
+// D12's `queued` state on the detail screen. A status line, not a control.
+//
+// LOCAL TO THIS SCREEN, because this is the ONLY surface the queue appears on.
+// Confirmed team decision, 26 Aug: D12 is item detail only, so there is no card
+// row wanting the same block and nothing to share it with. A shared component
+// for one caller is the speculative one CONVENTIONS §10 rules out.
+//
+// ABSENT IN EVERY OTHER STATE, including `offered`: the position is a fact about
+// waiting, and a reader who has been offered a copy is no longer waiting.
+function QueuePositionLine({ access }: { access: ItemDetail['access'] }): ReactElement | null {
+  const label = queuePositionLabel(access);
+  if (label === undefined) return null;
+
+  return (
+    <Text testID="queue-position" style={styles.queuePosition} accessibilityRole="text">
+      {label}
+    </Text>
   );
 }
 
@@ -489,7 +520,18 @@ export function renderArticleContent(
             entry point worth building. */}
         <InertTabRow labels={ARTICLE_TAB_LABELS} />
 
-        <AccessTierBadge tier={detail.access.tier} />
+        {/* D8 — `not_entitled` renders nothing at all, badge included. `tier`
+            is required on AccessResult, so that state carries an OPEN_ACCESS
+            filler; drawing it would label a title the reader cannot open as
+            free to read. ActionBar already renders null on the empty action
+            set, so the buttons need no gate. */}
+        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+
+        {/* D12 — the `queued` half: "queued shows a position and nothing
+            tappable". `resolveAccess` returns no actions in that state, so
+            ActionBar draws nothing and this line is the entire UI for it —
+            without it a waiting reader sees a detail screen with no answer. */}
+        <QueuePositionLine access={detail.access} />
 
         {/* The abstract is `ItemDetail.description` under the label this screen
             uses for it. Absent entirely — no heading, no empty block — when the
@@ -654,9 +696,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         runLicenceCall(action, () => source.returnLoan(loanId));
       } else if (action === 'grantAccess') {
         // Elite path: borrow first, queue only on NO_COPIES_AVAILABLE. The rule
-        // now lives in `borrowOrPlaceHold` because D12 gives it four more callers
-        // on the card surfaces — see src/licence/queueRequest.ts. Behaviour is
-        // unchanged; this is the same two calls in the same order.
+        // lives in `borrowOrPlaceHold` — see src/licence/queueRequest.ts. It is
+        // there rather than inline because the refusal rule is easy to get
+        // subtly wrong and dangerous when wrong, so it earns its own tests.
         runLicenceCall(action, () => borrowOrPlaceHold(source, itemId));
       } else if (action === 'acceptOffer' && hold?.holdId !== undefined) {
         const holdId = hold.holdId;
@@ -855,6 +897,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
+  },
+  // D12's queue position: a status line, styled as metadata rather than as an
+  // action, because that is what it is.
+  queuePosition: {
+    fontWeight: typeScale.meta.weight,
+    fontFamily: typeScale.meta.fontFamily,
+    fontSize: typeScale.meta.size,
+    lineHeight: typeScale.meta.lineHeight,
+    color: color.textSecondary,
   },
   metaRow: {
     fontWeight: typeScale.meta.weight,

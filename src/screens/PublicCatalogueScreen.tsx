@@ -25,22 +25,21 @@
 // than an omission, so it is written down here where the next person to check
 // will look.
 //
-// A READER WITH NO INSTITUTION CANNOT JOIN AN INSTITUTION'S QUEUE. That is the
-// whole of it. `resolveAccess` §4 answers `requires_signin` for any licensed
-// tier once the session is null, and this screen's session IS null — necessarily,
-// because it has no institution to derive one from (see the rule above: it may
-// not read `institutionStore`). So `offersQueue` would be false for every row
-// here no matter what the feed contained, and the hook plus the three lines of
-// JSX would be code that can never fire.
+// TWO INDEPENDENT REASONS, either one sufficient. First, the team decision of
+// 26 Aug: D12 is ItemDetailScreen only, so NO card surface carries it and this
+// screen needs no special case. Second, and why it was never in question here
+// even before that: a reader with no institution cannot join an institution's
+// queue. `resolveAccess` §4 answers `requires_signin` for any licensed tier once
+// the session is null, and this screen's session IS null — necessarily, because
+// it has no institution to derive one from (see the rule above: it may not read
+// `institutionStore`).
 //
 // IT IS ALSO A LIST OF OPEN ACCESS TITLES, whose resolve is `available` with
 // Read — Elite rows are not what this feed carries in the first place.
 //
-// WHAT WOULD CHANGE THIS: this screen gaining an institution, or flambeau
-// growing a way to queue anonymously. Either makes the queue reachable from the
-// public path, and at that point the fix is the same three lines the other three
-// surfaces use — `offersQueue(access)` guarding an `ActionButton` in
-// ContentCard's `action` slot — not a special case for this screen.
+// WHAT WOULD CHANGE THIS: the team revisiting the item-detail-only decision. The
+// second reason would still stand on its own until this screen gains an
+// institution, or flambeau grows a way to queue anonymously.
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -48,7 +47,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import EmptyState from '@/components/EmptyState';
 import OfflineBanner from '@/components/OfflineBanner';
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
@@ -188,21 +187,37 @@ export default function PublicCatalogueScreen() {
             EmptyState test. */}
         {isEmpty && <EmptyState variant="no_content" />}
 
-        {publications.map((publication) => (
-          <ContentCard
-            key={publication.id}
-            title={publication.title}
-            publisher={publication.publisher}
-            imageUrl={publication.coverUrl}
-            format={publication.format}
-            badge={
-              <AccessTierBadge
-                tier={resolveAccess({ item: publication, institutionId: null, session: null }).tier}
-              />
-            }
-            onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
-          />
-        ))}
+        {publications.map((publication) => {
+          // Resolved once rather than inline in the badge, so D8 can ask about
+          // the state before anything reads the tier.
+          const access = resolveAccess({
+            item: publication,
+            institutionId: null,
+            session: null,
+          });
+
+          return (
+            <ContentCard
+              key={publication.id}
+              title={publication.title}
+              publisher={publication.publisher}
+              imageUrl={publication.coverUrl}
+              format={publication.format}
+              // D8 — `not_entitled` renders nothing at all, badge included. The
+              // tier is an OPEN_ACCESS filler in that state, which on THIS
+              // screen would be doubly misleading: a list of open access titles
+              // is exactly where a false "Open Access" chip would go unnoticed.
+              badge={
+                isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+              }
+              // No `action` — D12 is audited and excluded here. See the file
+              // header for why: with no institution there is no session, so
+              // resolveAccess answers `requires_signin` for every licensed tier
+              // and the queue is unreachable by construction.
+              onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+            />
+          );
+        })}
 
         {/* Absent, not disabled, on the last page: a permanently dead button
             reads as broken. */}

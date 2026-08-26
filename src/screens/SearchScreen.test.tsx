@@ -20,7 +20,21 @@ import type { NavLink, Publication, SearchFeed } from '@model/types';
 import type { CatalogueSearchPipeline, SearchRequest } from '@/search';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 
+import { useLibraryStore } from '@store/libraryStore';
+
 import SearchScreen from './SearchScreen';
+
+// The licence seam is faked so nothing here reaches a real client. This screen
+// makes no licence call of its own — D12 is item detail only.
+jest.mock('@config/licence', () => ({
+  getLicenceSource: () => ({
+    getLibrary: () => Promise.resolve({ loans: [], holds: [] }),
+    borrow: jest.fn(),
+    placeHold: jest.fn(),
+    acceptOffer: jest.fn(),
+    cancelHold: jest.fn(),
+  }),
+}));
 
 const mockNavigate = jest.fn();
 
@@ -1257,24 +1271,132 @@ describe('voice search', () => {
   });
 });
 
-// ── D12's Elite queue button is ItemDetailScreen only ─────────────────────────
+// ── D12 — the Elite queue affordance is ItemDetailScreen only ─────────────────
 //
-// It used to also render on this search result row; moved back to the detail
-// screen only, so a result row draws no button regardless of tier.
-describe('SearchScreen — no Elite queue button', () => {
-  it('draws no queue button on an Elite result row', async () => {
-    setSearchPipeline(
-      stub(() =>
-        Promise.resolve(
-          feed({ publications: [publication('item_elite', 'An Elite Title', 'Routledge', 'ELITE')] }),
-        ),
-      ),
-    );
+// CONFIRMED TEAM DECISION, 26 Aug. A search result row draws no queue button
+// regardless of tier.
+describe('SearchScreen — no Elite queue affordance', () => {
+  function eliteFeed(id = 'item_elite') {
+    return feed({ publications: [publication(id, 'An Elite Title', 'Routledge', 'ELITE')] });
+  }
+
+  afterEach(() => {
+    useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  });
+
+  it('draws no Grant access button on an Elite result', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(eliteFeed())));
     await render(<SearchScreen />);
 
     await submit('elite');
 
     await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
     expect(screen.queryByText('Grant access')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+
+  it('draws no queue position even when the reader is queued', async () => {
+    useLibraryStore.setState({
+      loans: [],
+      holds: [
+        {
+          holdId: 'hold_1',
+          itemId: 'item_elite',
+          state: 'queued',
+          position: 4,
+          queueLength: 9,
+          serverTime: '2026-08-26T09:00:00Z',
+        },
+      ],
+      loading: false,
+    });
+    setSearchPipeline(stub(() => Promise.resolve(eliteFeed())));
+    await render(<SearchScreen />);
+
+    await submit('elite');
+
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+    expect(screen.queryByText(/in queue/i)).toBeNull();
+  });
+
+  it('still navigates to the detail screen, which is where the queue lives', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(eliteFeed())));
+    await render(<SearchScreen />);
+    await submit('elite');
+    await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
+
+    fireEvent.press(screen.getByText('An Elite Title'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_elite' });
+  });
+});
+
+// ── D8 — not entitled: no buttons, no badge ───────────────────────────────────
+describe('SearchScreen — D8 not entitled', () => {
+  it('renders the result with no badge and no action', async () => {
+    const orphan = {
+      id: 'item_orphan',
+      title: 'Metadata Only',
+      publisher: 'Routledge',
+      authors: [],
+      subjects: [],
+      // No acquisition link.
+    } as unknown as Publication;
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [orphan] }))));
+    await render(<SearchScreen />);
+
+    await submit('metadata');
+
+    await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
+    expect(screen.queryByText('Open Access')).toBeNull();
+    expect(screen.queryByTestId('content-card-badge')).toBeNull();
+    expect(screen.queryByTestId('content-card-action')).toBeNull();
+  });
+});
+
+// ── Screen 17 — the empty-search panels ───────────────────────────────────────
+//
+// The design shows two: "No results found" with a Clear search way out, and "No
+// matching content" with Clear filters. Both were rendered already; the Clear
+// search affordance was the missing half.
+describe('SearchScreen — screen 17 empty search', () => {
+  const emptyFeed = () => feed({ publications: [] });
+
+  it('names the query that matched nothing', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(emptyFeed())));
+    await render(<SearchScreen />);
+
+    await submit('xyz123');
+
+    await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
+    expect(screen.getByText(/xyz123/)).toBeTruthy();
+  });
+
+  // SCOPED TO THE PANEL, and the reason is worth recording: `SearchInput`'s own
+  // clear affordance already carries the accessible name "Clear search", so at
+  // screen level the query is ambiguous. Two controls with one accessible name is
+  // a real (small) accessibility smell — the design asks for both, so this is
+  // raised for the accessibility pass rather than resolved by dropping one.
+  it('offers Clear search in the panel, and clearing it drops the query', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(emptyFeed())));
+    await render(<SearchScreen />);
+    await submit('xyz123');
+    await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
+
+    const panel = within(screen.getByTestId('search-empty'));
+    fireEvent.press(panel.getByRole('button', { name: 'Clear search' }));
+
+    await waitFor(() => expect(screen.queryByTestId('search-empty')).toBeNull());
+  });
+
+  // Empty is not an error and must never render as one.
+  it('shows no error copy and no retry for a zero-result response', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(emptyFeed())));
+    await render(<SearchScreen />);
+
+    await submit('xyz123');
+
+    await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
   });
 });
