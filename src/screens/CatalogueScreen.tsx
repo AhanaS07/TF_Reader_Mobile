@@ -106,7 +106,14 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   const fetchCatalogue = useCallback(() => {
     getCatalogueSource()
       .getHomeCatalogue(institutionId)
-      .then(setCatalogue)
+      .then((result) => {
+        setCatalogue(result);
+        // Clears a failure left over from a previous institution — this fetch
+        // succeeded, so a stale "no catalogue" from before must not stick
+        // around when the reader switches back to one that works.
+        setFailed(false);
+        setErrorCode(undefined);
+      })
       .catch((err: unknown) => {
         setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
         setFailed(true);

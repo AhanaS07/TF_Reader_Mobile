@@ -22,14 +22,17 @@
     "collectCoverageFrom": [
       "src/**/*.{ts,tsx}",
       "!src/**/*.test.{ts,tsx}",
-      "!src/shared/contracts/**"
+      "!src/shared/contracts/**",
+      "!src/gallery/**",
+      "!src/**/*.gallery.{ts,tsx}",
+      "!src/**/index.{ts,tsx}"
     ],
     "coverageThreshold": {
       "global": {
-        "branches": 60,
-        "functions": 60,
-        "lines": 60,
-        "statements": 60
+        "branches": 83,
+        "functions": 88,
+        "lines": 93,
+        "statements": 90
       }
     }
   },

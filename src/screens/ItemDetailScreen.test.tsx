@@ -888,6 +888,27 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     expect(screen.queryByText('Read')).toBeNull();
   });
 
+  it('shows the reader their queue position when queued', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    const hold = {
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued' as const,
+      position: 3,
+      queueLength: 7,
+      serverTime: new Date().toISOString(),
+    };
+    useLibraryStore.setState({ loans: [], holds: [hold] });
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [hold] });
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Position 3 of 7 in queue')).toBeTruthy());
+  });
+
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
     useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
     const otherLoan = { loanId: 'loan_x', itemId: 'item_OTHER', state: 'active' as const, expiresAt: 9_999_999_999 };

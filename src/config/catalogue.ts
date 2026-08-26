@@ -11,7 +11,7 @@
 // Screens should narrow to the half they use (`CatalogueSource` or
 // `InstitutionSource`) rather than taking the whole `DataSource`.
 import type { DataSource } from '@adapters/InstitutionSource';
-import { ApiAdapter } from '@adapters/ApiAdapter';
+import { PartialApiAdapter } from '@adapters/PartialApiAdapter';
 import { MockAdapter, type MockAdapterOptions } from '@adapters/MockAdapter';
 
 export type CatalogueSourceKind = 'mock' | 'api';
@@ -19,6 +19,7 @@ export type CatalogueSourceKind = 'mock' | 'api';
 // Expo exposes EXPO_PUBLIC_* to the client bundle, which is the idiomatic way to
 // flip this per build without touching code.
 const ENV_VAR = 'EXPO_PUBLIC_CATALOGUE_SOURCE';
+const BASE_URL_VAR = 'EXPO_PUBLIC_CATALOGUE_BASE_URL';
 
 /**
  * Interprets the configured source kind.
@@ -53,13 +54,16 @@ export interface CreateCatalogueSourceOptions {
 export function createCatalogueSource(
   options: CreateCatalogueSourceOptions = {},
 ): DataSource {
-  const kind = options.kind ?? resolveCatalogueSourceKind(process.env[ENV_VAR]);
+  const kind = options.kind ?? resolveCatalogueSourceKind(process.env.EXPO_PUBLIC_CATALOGUE_SOURCE);
 
   if (kind === 'api') {
-    if (!options.baseUrl) {
-      throw new Error("createCatalogueSource requires a baseUrl when kind is 'api'");
+    const baseUrl = options.baseUrl ?? process.env.EXPO_PUBLIC_CATALOGUE_BASE_URL;
+    if (!baseUrl) {
+      throw new Error(`${BASE_URL_VAR} must be set when ${ENV_VAR} is 'api'.`);
     }
-    return new ApiAdapter({ baseUrl: options.baseUrl });
+    // Only institutions has a real endpoint today — everything else on this
+    // DataSource still comes from fixtures until more of the backend ships.
+    return new PartialApiAdapter(baseUrl, options.mock);
   }
 
   return new MockAdapter(options.mock);

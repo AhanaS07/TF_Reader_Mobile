@@ -21,7 +21,7 @@
 // skip the download on a warm one.
 import type { BookId } from '@/shared/types/primitives';
 import type { BatchItemsResult, Catalogue, Publication, Shelf } from '@model/types';
-import type { DataSource } from '@adapters/InstitutionSource';
+import type { DataSource, InstitutionQueryParams } from '@adapters/InstitutionSource';
 import type { ShelfQuery } from '@adapters/CatalogueSource';
 import { CatalogueError, CatalogueFailure, isCatalogueFailure } from '@model/errors';
 import { normalizeCatalogue, normalizePublication, normalizeShelf } from '@model/opds/normalize';
@@ -34,6 +34,13 @@ import {
 import { assertPublication } from '@model/validate';
 import { browseParams } from '@search/browseLink';
 import { expandSearchLink } from '@search/searchLink';
+
+// Strip combining diacritical marks so "Zurich" matches "Zürich" — same rule
+// MockAdapter.ts uses, kept in step here since both must agree on what a
+// search match means.
+function fold(str: string): string {
+  return str.normalize('NFD').replace(/\p{M}/gu, '');
+}
 
 // Only the two members of Response this adapter actually uses.
 //
@@ -211,11 +218,36 @@ export class ApiAdapter implements DataSource {
   // were derived from self-hrefs inside wokay's fixtures, whereas institutions
   // are a shape we invented, so nothing upstream has confirmed either the path or
   // the envelope. Expect this to be the first thing that changes when wokay reply.
-  async getInstitutions(): Promise<Institution[]> {
+  // The endpoint has no search or paging of its own — it always returns the
+  // full list — so those params are applied here in JS instead, the same way
+  // MockAdapter.getInstitutions does against its fixture. Keeps the
+  // DataSource contract (params actually filter/page) true for every caller,
+  // even though the real API can't do it server-side yet.
+  async getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]> {
     const body = await this.getJson(`${this.baseUrl}/institutions`, 'institutions');
+    let results = normalizeInstitutionList(body);
 
-    return normalizeInstitutionList(body);
+    if (params?.institutionId !== undefined) {
+      results = results.filter((i) => i.id === params.institutionId);
+    }
+
+    if (params?.q !== undefined && params.q.length > 0) {
+      const needle = fold(params.q.toLowerCase());
+      results = results.filter((i) => fold(i.name.toLowerCase()).includes(needle));
+    }
+
+    if (params?.country !== undefined) {
+      const target = params.country.toLowerCase();
+      results = results.filter((i) => i.country.toLowerCase() === target);
+    }
+
+    const size = params?.size ?? results.length;
+    const page = params?.page ?? 0;
+    return results.slice(page * size, page * size + size);
   }
+
+
+
 
   async getInstitution(institutionId: string): Promise<Institution> {
     const body = await this.getJson(

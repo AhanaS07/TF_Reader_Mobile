@@ -14,13 +14,13 @@ against that file. Settled and open access decisions live in
 |---|---|
 | `npm run lint` | `eslint . --max-warnings=0` — a warning fails, not just an error |
 | `npm run typecheck` | `tsc --noEmit`, including the frozen-contract canary |
-| `npm run test:ci` | `jest --ci --passWithNoTests` |
+| `npm run test:ci` | `jest --ci --coverage`, gated by `jest.coverageThreshold` in `package.json` |
 | `npm run format` | Prettier over `ts,tsx,js,jsx,json,md` |
 | `npm start` | `expo start` |
 
 CI runs `typecheck` as its own job, then `lint` and `test:ci`. All three must be
-green. `--passWithNoTests` is there because most feature folders are still empty;
-it goes once every CAP has a spec.
+green. Coverage thresholds are today's measured floor, not aspirational — raise
+them when coverage genuinely improves, never lower them to make a red build pass.
 
 ## Layering
 

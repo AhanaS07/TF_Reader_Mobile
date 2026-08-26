@@ -389,6 +389,35 @@ describe('CatalogueScreen error', () => {
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     expect(attempt).toBe(2);
   });
+
+  // A prior institution's failure must not survive a switch to one that works —
+  // the screen is reused rather than remounted when the reader picks a
+  // different institution, so a leftover `failed`/`errorCode` from before would
+  // otherwise mask a perfectly good catalogue underneath.
+  it('clears a stale failure when switching to an institution whose fetch succeeds', async () => {
+    const WORKING_INSTITUTION: Institution = {
+      id: 'inst_working',
+      name: 'Working Institution',
+      country: 'GB',
+      code: 'WRK',
+      city: 'Bristol',
+    };
+
+    setCatalogueSource(
+      fakeSource(async (institutionId) => {
+        if (institutionId === OTHER_INSTITUTION.id) throw new Error('unknown institution');
+        return FAKE_CATALOGUE;
+      }),
+    );
+
+    const { rerender } = await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
+
+    rerender(<CatalogueScreen institution={WORKING_INSTITUTION} />);
+
+    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    expect(screen.queryByText(/couldn.?t load/i)).toBeNull();
+  });
 });
 
 // An administrator configures the shelves per institution, so the category row

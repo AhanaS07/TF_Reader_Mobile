@@ -59,8 +59,9 @@ jobs:
         run: npm run lint
 
       # Unguarded since P0-1: jest + jest-expo are real dependencies, so a
-      # missing binary is a genuine failure, not a skip. Still --passWithNoTests
-      # (see the npm script) because most feature folders are empty; drop that
-      # flag once every CAP has at least one spec.
+      # missing binary is a genuine failure, not a skip. `test:ci` also carries
+      # a coverage gate (see the npm script and `jest.coverageThreshold` in
+      # package.json) — thresholds are today's measured floor, not aspirational,
+      # so a real regression fails the job rather than silently landing.
       - name: Test
         run: npm run test:ci

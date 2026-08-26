@@ -23,8 +23,10 @@ export interface Institution {
   // Short identifier code, e.g. "ICL". Required by the published contract.
   code: string;
   city: string;
-  // The root OPDS URL for this institution's catalogue.
-  catalogueUrl: string;
+  // The root OPDS URL for this institution's catalogue. Optional: the real
+  // backend does not send this field yet, unlike the frozen contract's
+  // assumption — see Q-D in CLAUDE.md's unsettled-decisions table.
+  catalogueUrl?: string;
   // Absent when the institution has no branding asset.
   branding?: InstitutionBranding;
 }
@@ -56,13 +58,18 @@ export function normalizeInstitution(doc: unknown): Institution {
       ? { logoUrl: brandingRaw.logoUrl }
       : undefined;
 
+  const catalogueUrl =
+    typeof raw.catalogueUrl === 'string' && raw.catalogueUrl.length > 0
+      ? raw.catalogueUrl
+      : undefined;
+
   return {
     id: reqString(raw.id, 'id'),
     name: reqString(raw.name, 'name'),
     country: reqString(raw.country, 'country'),
     code: reqString(raw.code, 'code'),
     city: reqString(raw.city, 'city'),
-    catalogueUrl: reqString(raw.catalogueUrl, 'catalogueUrl'),
+    ...(catalogueUrl !== undefined ? { catalogueUrl } : {}),
     ...(branding !== undefined ? { branding } : {}),
   };
 }

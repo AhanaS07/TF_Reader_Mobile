@@ -57,7 +57,35 @@ describe('normalizeInstitution', () => {
     ).toBeUndefined();
   });
 
-  it.each(['id', 'name', 'country', 'code', 'city', 'catalogueUrl'])(
+  // The real backend does not send this field yet (Q-D, CLAUDE.md), unlike
+  // the frozen contract's assumption — must be omittable without failing.
+  it('omits catalogueUrl entirely when the institution has none', () => {
+    const institution = normalizeInstitution({
+      id: 'inst_c88',
+      name: 'Kwame Nkrumah University of Science and Technology',
+      country: 'Ghana',
+      code: 'KNUST',
+      city: 'Kumasi',
+    });
+
+    expect(institution.catalogueUrl).toBeUndefined();
+    expect(Object.keys(institution)).not.toContain('catalogueUrl');
+  });
+
+  it('treats an empty catalogueUrl as absent rather than a broken URL', () => {
+    expect(
+      normalizeInstitution({
+        id: 'inst_x',
+        name: 'Somewhere',
+        country: 'Nowhere',
+        code: 'SW',
+        city: 'Somewhere City',
+        catalogueUrl: '',
+      }).catalogueUrl,
+    ).toBeUndefined();
+  });
+
+  it.each(['id', 'name', 'country', 'code', 'city'])(
     'rejects a missing %s',
     (field) => {
       const complete: Record<string, unknown> = {
@@ -138,6 +166,6 @@ describe('institution fixtures cover the P0-4 awkward cases', () => {
   });
 
   it('every institution has a catalogueUrl', () => {
-    expect(institutions.every((i) => i.catalogueUrl.length > 0)).toBe(true);
+    expect(institutions.every((i) => (i.catalogueUrl?.length ?? 0) > 0)).toBe(true);
   });
 });

@@ -16,14 +16,11 @@
 // real value — the public path — not as a missing one. Reading the store for an
 // id here would break the rule above.
 //
-// ─── D12 — AUDITED, AND DELIBERATELY NOT WIRED HERE ──────────────────────────
+// ─── D12 — item detail only, not wired here ──────────────────────────────────
 //
-// D12 puts the Elite queue button ("Grant access") on card rows rather than only
-// on the item detail screen, and both the Week 3 plan and index.html name three
-// surfaces plus this one. The other three — CatalogueScreen, ShelfScreen and
-// SearchScreen — render it. This screen does not, and that is a decision rather
-// than an omission, so it is written down here where the next person to check
-// will look.
+// D12's Elite queue button ("Grant access") is scoped to the item detail screen
+// only. CatalogueScreen, ShelfScreen and SearchScreen carry the same note and
+// none of them render it either — this is not a special case for this screen.
 //
 // TWO INDEPENDENT REASONS, either one sufficient. First, the team decision of
 // 26 Aug: D12 is ItemDetailScreen only, so NO card surface carries it and this
