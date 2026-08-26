@@ -218,6 +218,12 @@ export interface Publication {
   coverUrl?: string;
   thumbnailUrl?: string;
   acquisition: Acquisition;
+  // Derived from wokay's `metadata['@type']` — present when the value maps to a
+  // known WorkType ('book', 'audiobook'). Optional because journal/article values
+  // are Q-1b, still unanswered; callers fall back to BOOK_WORK_TYPE until the
+  // contract grows the full vocabulary. The moment wokay answers, only the
+  // normalizer needs updating — nothing else changes.
+  workType?: WorkType;
 }
 
 // A tab/section pointer in the catalogue's navigation.

@@ -8,11 +8,23 @@
 // `now` is passed explicitly throughout rather than faking timers. The store takes
 // it as an argument for exactly this reason, and a test that controls time by
 // argument cannot be broken by a slow CI machine.
+import { waitFor } from '@testing-library/react-native';
 import {
   INTENT_MAX_AGE_MS,
   usePendingIntentStore,
   type PendingIntentRequest,
 } from './pendingIntentStore';
+
+const mockGetItem = jest.fn<Promise<string | null>, [string]>();
+
+jest.mock('@storage/storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: (...args: [string]) => mockGetItem(...args),
+    setItem: jest.fn().mockResolvedValue(undefined),
+    removeItem: jest.fn().mockResolvedValue(undefined),
+  },
+}));
 
 const anIntent = (over: Partial<PendingIntentRequest> = {}): PendingIntentRequest => ({
   action: 'read',
@@ -26,6 +38,8 @@ const anIntent = (over: Partial<PendingIntentRequest> = {}): PendingIntentReques
 // honest about what callers can actually do.
 beforeEach(() => {
   usePendingIntentStore.getState().clear();
+  usePendingIntentStore.setState({ _hasHydrated: false });
+  mockGetItem.mockReset();
 });
 
 describe('pendingIntentStore', () => {
@@ -137,6 +151,45 @@ describe('pendingIntentStore', () => {
 
       setHasHydrated(true);
       expect(usePendingIntentStore.getState()._hasHydrated).toBe(true);
+    });
+
+    // The same error-path trap as institutionStore (FL-5): if storage rejects,
+    // _hasHydrated must still flip true so the navigator doesn't wait forever.
+    it('flips _hasHydrated=true even when storage rejects', async () => {
+      mockGetItem.mockRejectedValue(new Error('AsyncStorage unavailable'));
+
+      usePendingIntentStore.persist.rehydrate();
+
+      await waitFor(() =>
+        expect(usePendingIntentStore.getState()._hasHydrated).toBe(true),
+      );
+      // No intent is replayed — failing storage is the same as first launch.
+      expect(usePendingIntentStore.getState().pending).toBeNull();
+    });
+
+    it('restores a pending intent from a valid stored value', async () => {
+      const stored = {
+        state: {
+          pending: {
+            action: 'read',
+            itemId: 'item_42',
+            institutionId: 'inst_7f3',
+            createdAt: Date.now() - 1000,
+          },
+        },
+        version: 1,
+      };
+      mockGetItem.mockResolvedValue(JSON.stringify(stored));
+
+      usePendingIntentStore.persist.rehydrate();
+
+      await waitFor(() =>
+        expect(usePendingIntentStore.getState()._hasHydrated).toBe(true),
+      );
+      expect(usePendingIntentStore.getState().pending).toMatchObject({
+        action: 'read',
+        itemId: 'item_42',
+      });
     });
   });
 });

@@ -24,12 +24,12 @@ export interface ItemDetail {
 
   // Which of the two screens renders: 'article' → screen 04, 'book' → screen 05.
   //
-  // THE CALLER SUPPLIES IT, because nothing derives it yet.
-  // `normalizePublication` does not read `metadata['@type']`, and wokay's
-  // published enum holds only `schema.org/Book` and `schema.org/Audiobook` — no
-  // journal or article value exists, which is question 4 and the one the plan
-  // calls most urgent. When they answer, the derivation belongs in the adapter
-  // and this field stops being passed by hand.
+  // THE CALLER STILL SUPPLIES IT because `Publication.workType` is optional —
+  // wokay confirms Book and Audiobook (`@type` values), but journal/article are
+  // Q-1b (unanswered). `normalizePublication` now fills the field when `@type`
+  // maps to a known WorkType; callers fall back to BOOK_WORK_TYPE for everything
+  // else. When Q-1b is answered, only `WOKAY_TYPE_MAP` in opds/normalize.ts needs
+  // a new entry.
   workType: WorkType;
 
   title: string;
