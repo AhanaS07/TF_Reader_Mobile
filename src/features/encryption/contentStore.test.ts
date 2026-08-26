@@ -25,8 +25,14 @@ import {
   MAX_DECRYPTED_BYTES,
   MAX_AUDIO_DECRYPTED_BYTES,
 } from './contentStore';
-import { ContentError, ContentFailure } from '@/shared/contracts';
+import {
+  ContentError,
+  ContentFailure,
+  EVENT_CHANNELS,
+  OFFLINE_LOCK_EVENTS,
+} from '@/shared/contracts';
 import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import { eventBus } from '@/shared/eventBus';
 
 // Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
 // cleanup in the end-to-end describe block below (deviceKeypair.ts exposes no reset of its own).
@@ -544,6 +550,32 @@ describe('contentStore — close() is REVERSIBLE for every tier, destroy() is th
     // non-Elite packages, so the cached object could not have served this read.
     await contentStore.openSession(bookId);
     expect(Buffer.from(await contentStore.decryptBook(bookId)).equals(Buffer.from(plaintext))).toBe(true);
+  });
+});
+
+describe('offline lock revocation signal', () => {
+  it('invalidates the local licence and BEK when content.lock fires with reason revoked', async () => {
+    const bookId = 'lock-revoked-event';
+    const key = randomKey();
+    const plaintext = plaintextOf(512, 'revoked via offline lock signal');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key);
+    await storeBek(bookId, key);
+    await contentStore.store(pkg);
+
+    eventBus.emit(EVENT_CHANNELS.CONTENT_LOCK, {
+      type: OFFLINE_LOCK_EVENTS.LOCK,
+      bookId,
+      reason: 'revoked',
+      observedAt: Date.now(),
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(getBek(bookId)).rejects.toThrow();
+    await expect(getPersistedLicenceStatus(bookId)).resolves.toMatchObject({
+      downloaded: true,
+      revoked: true,
+      licence: null,
+    });
   });
 });
 
