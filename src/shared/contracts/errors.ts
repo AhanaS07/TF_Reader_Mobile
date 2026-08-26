@@ -58,3 +58,35 @@ export class ContentFailure extends Error {
     Object.setPrototypeOf(this, ContentFailure.prototype);
   }
 }
+
+/**
+ * Format any error (including ContentFailure, DownloadFailure, or generic Error) into a
+ * human-readable diagnostic message that surfaces the underlying cause.
+ */
+export function formatDiagnosticErrorMessage(error: unknown): string {
+  if (!error) return 'Unknown error';
+
+  const cause = (error as { cause?: unknown }).cause;
+  const code = (error as { code?: string }).code;
+  const causeRecord = cause && typeof cause === 'object' ? (cause as Record<string, unknown>) : null;
+  const causeCode = typeof causeRecord?.code === 'string' ? causeRecord.code : '';
+  const causeMsg =
+    cause instanceof Error
+      ? cause.message
+      : typeof causeRecord?.message === 'string'
+        ? causeRecord.message
+        : cause
+          ? String(cause)
+          : '';
+
+  if (code && causeMsg) {
+    return `${code}${causeCode ? ` (${causeCode})` : ''}: ${causeMsg}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+

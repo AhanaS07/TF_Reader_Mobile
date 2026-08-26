@@ -221,29 +221,31 @@ export function deleteAudioScratchFor(bookId: BookId): void {
  * `closeBook` "leaves the decrypted book sitting in RAM indefinitely." Closing here turns that
  * indefinite lifetime into a strictly transient one, which is what keeps cost 2 transient.
  */
-async function resolveAudioAssetUri(bookId: BookId): Promise<string> {
+async function acquireAudioAsset(bookId: BookId): Promise<string> {
   // RE-ACQUIRED ON EVERY RESOLVE, not cached, and that is what makes re-entry work.
   //
   // The `closeBook()` at the bottom of this function frees the decrypted copy from RAM as soon as
-  // the file exists. For a DOWNLOADED book that is reversible — the ciphertext is still on disk and
-  // the next open re-reads it. For a STREAMED (ephemeral, canPersist:false) book it is TERMINAL:
-  // `close()` drops the packageCache entry, which is the only copy that ever existed, so a second
-  // `getBook()` for that book would fail DECRYPTION_FAILED ("no stored package") forever after.
+  // the file exists, for both tiers: a DOWNLOADED book re-reads its ciphertext from disk on the
+  // next open, and a STREAMED (ephemeral, canPersist:false) one keeps its in-memory package until
+  // `destroy()`. Calling `openBook()` here rather than `getBook()` is what makes re-entry work
+  // regardless: every resolve re-runs the licence gate, so nothing has to detect that the session
+  // was closed, because nothing assumes it is still open.
   //
-  // Calling `openBook()` here rather than `getBook()` is what makes that a non-issue instead of a
-  // bug: every resolve re-runs the gate, so a re-entered streaming book is simply fetched again,
-  // and a re-entered downloaded book is re-read from disk. Nothing has to detect that the session
-  // was closed, because nothing assumes it is still open. The alternative — keeping the session
-  // open across the screen's lifetime — was rejected: it would hold the whole decrypted book in RAM
-  // for as long as the player exists (background playback means that outlives the screen), which is
-  // the cost `closeBook()` is here to avoid, and it would still need a re-acquire path for the case
-  // where the process was killed and relaunched.
+  // The alternative — keeping the session open across the screen's lifetime — was rejected: it
+  // would hold the whole decrypted book in RAM for as long as the player exists (background
+  // playback means that outlives the screen), which is the cost `closeBook()` is here to avoid,
+  // and it would still need a re-acquire path for the case where the process was killed and
+  // relaunched.
+  //
+  // CONCURRENT resolves of the same book must NOT reach this function twice — see `inFlight`
+  // below for what breaks. This function assumes it owns the session for `bookId` outright.
   const bytes = await openBook(bookId, 'AUDIO');
 
-  // AFTER openBook(), not alongside it. `getMimeType()` reads the persisted meta.json, which for a
-  // STREAMED book does not exist until openBook() has stored the ephemeral package — so issuing
-  // both together (as the accessor's first call site did, with Promise.all) would race, and lose,
-  // on the online path. Sequential is also nearly free here: this is a small metadata read next to
+  // AFTER openBook(), not alongside it. `getMimeType()` reads the stored package — the in-memory
+  // one for a STREAMED book (Elite writes no meta.json at all), the persisted meta.json for a
+  // downloaded one — and neither exists until openBook() has stored it, so issuing both together
+  // (as the accessor's first call site did, with Promise.all) would race, and lose, on the online
+  // path. Sequential is also nearly free here: this is a small metadata read next to
   // a whole-book decrypt.
   const extension = extensionForMimeType(await getMimeType(bookId));
 
@@ -265,11 +267,52 @@ async function resolveAudioAssetUri(bookId: BookId): Promise<string> {
   file.write(bytes);
 
   // Frees the decrypted copy openBook() just produced; the scratch file is now the only thing the
-  // player needs. Terminal for a streamed book by design — see the note at the top of this
-  // function for why that is safe here and would not be if the bytes were acquired with getBook().
+  // player needs. Zeroes `bytes` in place as it goes — that buffer must not be handed to anyone
+  // else, which is the other half of why `inFlight` below exists.
   await closeBook(bookId);
 
   return file.uri;
+}
+
+/**
+ * One in-flight acquire per bookId. NOT a URI cache — the entry is dropped the moment the acquire
+ * settles, so a later resolve re-runs the licence gate and rewrites the scratch file (the sweep
+ * may have deleted it in between). Only genuinely OVERLAPPING calls share a result.
+ *
+ * WITHOUT THIS, TWO CONCURRENT RESOLVES OF THE SAME BOOK CORRUPT EACH OTHER, because
+ * `contentStore` sessions are keyed by bookId with no reference counting — there is one session
+ * for a book, not one per caller, so the FIRST resolve to finish tears down the session the second
+ * is still using. Both halves of that were reproduced, not theorised:
+ *
+ *  - `closeBook()` zeroes `session.plaintext`, and `decryptBook()` hands both callers the SAME
+ *    buffer (that sharing is deliberate — see `OpenSession.pending` — so `close()` can guarantee it
+ *    zeroed the only copy). The second resolve's bytes went 0xab -> 0x00 mid-flight and it wrote a
+ *    scratch file of pure zeros. Silent: a valid file, unplayable audio.
+ *  - `closeBook()` also drops the package, so the second resolve's `getMimeType()` threw
+ *    `DECRYPTION_FAILED`. `contentStore.close()` no longer drops it for Elite, which fixes that
+ *    half at the source — but the zeroed buffer above is a session-lifetime problem, not a cache
+ *    one, and would survive that fix.
+ *
+ * `AudioPlayerScreen`'s load effect is the caller that overlaps: its `cancelled` flag suppresses a
+ * stale `setUri`, but nothing aborts the in-flight promise, so leaving the screen mid-load and
+ * re-entering leaves two acquires running against one session. Deduping here rather than there is
+ * deliberate — the hazard belongs to whoever owns the session lifecycle, and any other caller of
+ * this resolver would hit it identically.
+ */
+const inFlight = new Map<BookId, Promise<string>>();
+
+function resolveAudioAssetUri(bookId: BookId): Promise<string> {
+  const existing = inFlight.get(bookId);
+  if (existing) return existing;
+
+  // `.finally()` returns a NEW promise, and it is that one which gets stored and handed to every
+  // caller — so the map entry is cleared before any caller resumes, and a resolve issued from a
+  // continuation of this one correctly starts a fresh acquire instead of joining a settled entry.
+  const pending = acquireAudioAsset(bookId).finally(() => {
+    inFlight.delete(bookId);
+  });
+  inFlight.set(bookId, pending);
+  return pending;
 }
 
 export const audioAssetResolver: AudioAssetResolver = {

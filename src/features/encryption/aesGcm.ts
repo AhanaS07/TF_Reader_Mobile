@@ -133,13 +133,26 @@ export async function decryptBook(
 
   // GCM never pads: update() already emits the full plaintext in one shot, and final() exists
   // here purely to trigger the tag check above — it has nothing left to emit. Every real run
-  // through this file takes this branch. The allocate-and-concat path below stays only as a
-  // defensive fallback for a cipher mode/implementation that ever DID split output across the
-  // two calls — skipping it here removes one whole book-sized copy (plaintext duplicated into a
-  // second buffer for no reason) from every decrypt, on top of the base64 hop this file's header
-  // already removed.
+  // through this file takes this branch.
+  //
+  // ALWAYS COPY INTO A REAL Uint8Array before returning — REAL-DEVICE BUG, confirmed 2026-08-26.
+  // `update()`/`final()` return react-native-quick-crypto's OWN `Buffer` (@craftzdog/react-
+  // native-buffer), which satisfies `instanceof Uint8Array` and every length/byteOffset check a
+  // console.log can see, but is NOT the plain JSI-backed Uint8Array this function's own return
+  // type promises. Every existing caller happened to only ever re-encode that Buffer (base64, for
+  // the WebView) or read its `.length`, which this Buffer class handles fine — until
+  // audioAssetResolver.ts became the first caller to hand it straight to a DIFFERENT native
+  // module (`expo-file-system`'s `File.write()`), which crashes the whole app (native SIGTRAP, no
+  // catchable JS error, no crash report) the instant it tries to marshal this Buffer as if it
+  // were a real one. `new Uint8Array(x)` copies element-by-element through the indexing protocol
+  // rather than assuming a particular native representation, so it is safe regardless of which
+  // Buffer polyfill produced `x` — confirmed this closes the crash for the audio path without
+  // touching any other caller. The extra copy this file's header already avoided for the
+  // finalPart.length===0 branch is the price of every consumer getting a REAL Uint8Array, not a
+  // look-alike; a whole-book-sized copy is far cheaper than a caller having no way to defend
+  // against this at all.
   if (finalPart.length === 0) {
-    return plaintextPart;
+    return new Uint8Array(plaintextPart);
   }
 
   const plaintext = new Uint8Array(plaintextPart.length + finalPart.length);

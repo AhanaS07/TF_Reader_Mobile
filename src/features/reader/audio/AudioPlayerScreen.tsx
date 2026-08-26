@@ -38,6 +38,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
@@ -294,7 +295,7 @@ export function AudioPlayerScreen({
       <View style={styles.centered}>
         <Text style={styles.errorTitle}>Couldn&apos;t load this audiobook</Text>
         <Text style={styles.errorDetail}>
-          {loadError instanceof Error ? loadError.message : String(loadError)}
+          {formatDiagnosticErrorMessage(loadError)}
         </Text>
       </View>
     );
