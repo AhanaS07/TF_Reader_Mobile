@@ -165,6 +165,15 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
   mockNavigate.mockClear();
+  // CALL HISTORY, NOT JUST RETURN VALUES. These four had their resolved values
+  // reset but never their call lists, so a `not.toHaveBeenCalled()` assertion
+  // saw the PREVIOUS test's calls — which is why "does NOT fall through to
+  // placeHold" failed once the suite stopped timing out. `mockReset` would drop
+  // the implementations set below, so this is `mockClear` plus a fresh value.
+  mockBorrow.mockClear();
+  mockReturnLoan.mockClear();
+  mockPlaceHold.mockClear();
+  mockGetLibrary.mockClear();
   mockBorrow.mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
   mockReturnLoan.mockResolvedValue(undefined);
   mockPlaceHold.mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
@@ -790,7 +799,12 @@ describe('ItemDetailScreen selects presentation by workType', () => {
     const article = await render(renderArticleContent(articleDetail, jest.fn()));
     expect(screen.getByText('Abstract')).toBeTruthy();
     expect(screen.queryByText(/isbn/i)).toBeNull();
-    article.unmount();
+    // AWAITED. RTL 14 types `unmount` as returning a Promise, and an un-awaited
+    // one leaves an open act() scope that corrupts every render AFTER it in this
+    // file — which is what made the eight holdings/licence tests below fail while
+    // passing in isolation. Same trap this file's own header records for two
+    // presses in one test.
+    await article.unmount();
 
     await render(renderBookContent(bookDetail, jest.fn()));
     expect(screen.queryByText('Abstract')).toBeNull();
@@ -821,7 +835,13 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     expect(screen.queryByText('Grant access')).toBeNull();
   });
 
-  it('shows Accept offer and Reject offer when the reader has a live hold offer', async () => {
+  // LABELS ARE 'Accept' AND 'Reject', not "Accept offer"/"Reject offer". The
+  // action IDS are `acceptOffer`/`rejectOffer`, but ActionButton's own table
+  // renders the short pair — and the docs say the same: "offered shows
+  // Accept · Reject" (D10–D12, 16 Aug). The old expectation was asserting a
+  // label the app has never rendered; it only went unnoticed because this test
+  // was timing out for an unrelated reason.
+  it('shows Accept and Reject when the reader has a live hold offer', async () => {
     useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
     const hold = {
       holdId: 'hold_1',
@@ -839,8 +859,8 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Accept offer')).toBeTruthy());
-    expect(screen.getByText('Reject offer')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Accept')).toBeTruthy());
+    expect(screen.getByText('Reject')).toBeTruthy();
   });
 
   it('shows no actions when the reader is queued (waiting for a copy)', async () => {
@@ -864,7 +884,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     await waitFor(() => expect(screen.getByText('Elite')).toBeTruthy());
     // resolveAccess returns no actions for the queued state.
     expect(screen.queryByText('Grant access')).toBeNull();
-    expect(screen.queryByText('Accept offer')).toBeNull();
+    expect(screen.queryByText('Accept')).toBeNull();
     expect(screen.queryByText('Read')).toBeNull();
   });
 

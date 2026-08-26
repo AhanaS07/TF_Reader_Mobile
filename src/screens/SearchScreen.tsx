@@ -31,7 +31,7 @@ import { useNavigation, type CompositeNavigationProp } from '@react-navigation/n
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { resolveAccess } from '@access/resolveAccess';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { handToggledSession } from '@access/handToggledSession';
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
@@ -312,6 +312,10 @@ export default function SearchScreen() {
               variant={hasActiveFilter ? 'no_filter_results' : 'no_query_results'}
               query={search.query}
               onClearFilters={clearAllFilters}
+              // Screen 17 — "Clear search" beside the no-results message. The
+              // same `onClear` the input's own clear button uses, so the two
+              // routes out of a dead query land in the same state.
+              onClearSearch={search.onClear}
             />
 
             {search.browseInstead.length > 0 && (
@@ -355,8 +359,9 @@ export default function SearchScreen() {
           // restores — "an Elite row resolving identically on a list and on a
           // detail screen".
           //
-          // Still no loan/hold: a search result carries no holdings, and
-          // "nothing held" is what makes an Elite row resolve to the queue.
+          // No loan/hold: a search result carries no holdings. The session IS
+          // passed — that half is not part of the D12 revert, and it is what
+          // makes an Elite result resolve consistently with the detail screen.
           const access = resolveAccess({
             item: publication,
             institutionId: PLACEHOLDER_INSTITUTION_ID,
@@ -369,9 +374,12 @@ export default function SearchScreen() {
               title={publication.title}
               publisher={publication.publisher}
               imageUrl={publication.coverUrl}
-              badge={<AccessTierBadge tier={access.tier} />}
-              // No `action`: the Elite queue button ("Grant access") is
-              // ItemDetailScreen only, not on this search result row.
+              // D8 — `not_entitled` renders nothing at all, badge included.
+              badge={
+                isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+              }
+              // NO `action` PROP. D12's Elite queue affordance is
+              // ItemDetailScreen only — confirmed team decision, 26 Aug.
               onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
             />
           );

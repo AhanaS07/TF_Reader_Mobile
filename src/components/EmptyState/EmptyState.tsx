@@ -6,6 +6,22 @@ export type EmptyStateVariant =
   | 'no_query_results'
   | 'no_filter_results'
   | 'no_content'
+  // NO CALLER, AND THAT IS A CONTRACT FACT RATHER THAN AN OVERSIGHT — recorded
+  // here because CONVENTIONS §10 forbids a variant without one, so the absence
+  // needs an answer.
+  //
+  // This is the generic "we have no suggestions, here is the catalogue" fallback
+  // for a zero-result search. It cannot be reached: A8–A9 state that "zero
+  // results is a navigation feed, not an empty array", and the feed schema makes
+  // `navigation` `minItems: 1`, always carrying *All titles* — so a zero-result
+  // response always arrives with real browse targets. SearchScreen renders those
+  // targets as CategoryCards beside `no_query_results`/`no_filter_results`,
+  // which is the richer answer and the one screen 17 actually shows.
+  //
+  // Left in place rather than deleted: the day a feed does arrive with no
+  // navigation entries, this is the branch that catches it, and the docs' own
+  // rule for that case is "do not build an empty state for it" — meaning the
+  // fallback should exist but never be wired speculatively.
   | 'browse_instead'
   | 'offline_no_results';
 
@@ -15,6 +31,15 @@ export interface EmptyStateProps {
   query?: string;
   /** Rendered only for no_filter_results. */
   onClearFilters?: () => void;
+  /**
+   * Rendered only for no_query_results — screen 17's "Clear search".
+   *
+   * OPTIONAL, AND ABSENT MEANS NO AFFORDANCE. A surface with nothing to clear
+   * back to should not draw a dead link, so the variant alone does not earn the
+   * button: the caller has to supply somewhere for it to go. That is the same
+   * both-or-neither rule SectionHeader already applies to its own action.
+   */
+  onClearSearch?: () => void;
   /** browse_instead only — the screen follows the feed's own navigation entry. */
   onBrowse?: () => void;
 }
@@ -31,6 +56,7 @@ export default function EmptyState({
   variant,
   query,
   onClearFilters,
+  onClearSearch,
   onBrowse,
 }: EmptyStateProps) {
   const message =
@@ -41,6 +67,20 @@ export default function EmptyState({
   return (
     <View style={styles.container}>
       <Text style={styles.message}>{message}</Text>
+
+      {/* Screen 17's left panel pairs the "no results" message with a way out of
+          the query that produced it. Gated on the handler as well as the variant
+          — see the prop's own note. */}
+      {variant === 'no_query_results' && onClearSearch !== undefined && (
+        <Pressable
+          onPress={onClearSearch}
+          style={styles.action}
+          accessibilityRole="button"
+          accessibilityLabel="Clear search"
+        >
+          <Text style={styles.actionLabel}>Clear search</Text>
+        </Pressable>
+      )}
 
       {variant === 'no_filter_results' && (
         <Pressable
