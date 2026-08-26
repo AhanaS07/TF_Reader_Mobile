@@ -35,7 +35,7 @@ describe('BookListScreen', () => {
     jest.mocked(openBook).mockResolvedValue(new Uint8Array());
   });
 
-  it('lists all five book fixtures plus the TTS demo', async () => {
+  it('lists all five book fixtures', async () => {
     const { getByText } = await renderBookList(jest.fn());
 
     expect(getByText('EPUB')).toBeTruthy();
@@ -44,7 +44,6 @@ describe('BookListScreen', () => {
     expect(getByText('Big PDF')).toBeTruthy();
     // The one row NOT backed by a local seed — it names the backend's catalogue item.
     expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
-    expect(getByText('TTS Demo')).toBeTruthy();
   });
 
   it.each([
@@ -101,14 +100,5 @@ describe('BookListScreen', () => {
     });
     expect(navigate).not.toHaveBeenCalledWith('Reader', expect.anything());
     expect(openBook).not.toHaveBeenCalled();
-  });
-
-  it('tapping TTS Demo navigates to the TtsDemo route', async () => {
-    const navigate = jest.fn();
-    const { getByText } = await renderBookList(navigate);
-
-    fireEvent.press(getByText('TTS Demo'));
-
-    expect(navigate).toHaveBeenCalledWith('TtsDemo');
   });
 });

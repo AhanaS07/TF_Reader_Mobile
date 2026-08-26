@@ -10,15 +10,9 @@
 // is handed and is unmounted when there is no session to drive.
 
 import { useEffect, useRef, useState } from 'react';
-import {
-  AccessibilityInfo,
-  findNodeHandle,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { focusOn } from '@/features/reader/a11yFocus';
 
 import type { TtsSession } from './useTtsSession';
 import { PITCH_LADDER } from './ttsPitch';
@@ -51,12 +45,10 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
 
   const closeVoicePicker = (): void => {
     setVoicePickerOpen(false);
-    closeTimerRef.current = setTimeout(() => {
-      const node = findNodeHandle(voiceButtonRef.current);
-      if (node !== null) {
-        AccessibilityInfo.setAccessibilityFocus(node);
-      }
-    }, FOCUS_RESTORE_DELAY_MS);
+    // The DELAY is this file's own concern (the Modal has to finish unmounting before the button
+    // underneath can take focus); resolving the node and guarding the null cases is shared with
+    // Reader's panels via `focusOn`.
+    closeTimerRef.current = setTimeout(() => focusOn(voiceButtonRef), FOCUS_RESTORE_DELAY_MS);
   };
 
   const isSpeaking = session.status === 'speaking';
@@ -87,11 +79,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   return (
     <View style={styles.container}>
       {session.status === 'error' && session.errorMessage !== null && (
-        <Text
-          accessibilityRole="alert"
-          accessibilityLiveRegion="assertive"
-          style={styles.error}
-        >
+        <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>
           {session.errorMessage}
         </Text>
       )}

@@ -6,16 +6,9 @@
 // selected successfully).
 
 import { useEffect, useRef } from 'react';
-import {
-  AccessibilityInfo,
-  findNodeHandle,
-  FlatList,
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { focusOn } from '@/features/reader/a11yFocus';
 
 import type { Voice } from './ttsEngine';
 
@@ -45,12 +38,9 @@ export function VoicePicker({
     if (!visible) {
       return;
     }
-    const timer = setTimeout(() => {
-      const node = findNodeHandle(firstRowRef.current);
-      if (node !== null) {
-        AccessibilityInfo.setAccessibilityFocus(node);
-      }
-    }, FOCUS_ENTRY_DELAY_MS);
+    // The DELAY is this file's own concern (Modal mount timing, see above); resolving the node and
+    // guarding the null cases is not, and is shared with Reader's panels via `focusOn`.
+    const timer = setTimeout(() => focusOn(firstRowRef), FOCUS_ENTRY_DELAY_MS);
     return () => clearTimeout(timer);
   }, [visible]);
 
@@ -78,8 +68,8 @@ export function VoicePicker({
             keyExtractor={(voice) => voice.id}
             ListEmptyComponent={
               <Text style={styles.empty}>
-                No voices found. On Android this usually means the TTS engine isn&apos;t
-                installed, or the app can&apos;t see it yet.
+                No voices found. On Android this usually means the TTS engine isn&apos;t installed,
+                or the app can&apos;t see it yet.
               </Text>
             }
             ListHeaderComponent={

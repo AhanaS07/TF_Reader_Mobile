@@ -1,14 +1,18 @@
 // Owner: Reader (Ahana).
 //
-// Moving screen-reader focus to a specific element. This is the FIRST focus management in the repo —
-// `setAccessibilityFocus` and `findNodeHandle` appear nowhere else — so it is deliberately a shared
-// module rather than a local helper inside ReaderScreen.
+// Moving screen-reader focus to a specific element. The one place in this repo that calls
+// `setAccessibilityFocus`, and the one place that decides what a missing node means.
 //
-// >>> INTENDED AS THE REFERENCE IMPLEMENTATION, NOT A READER-PRIVATE ONE. <<< Accessibility's focus
-// work (VoicePicker's entry focus, and the TOC/search focus-ENTRY items still blocked on the
-// on-device VoiceOver/TalkBack spike) should call this rather than grow a second copy in
-// `src/features/accessibility/`. Two focus helpers with different null-handling is exactly the kind
-// of divergence that makes "focus went somewhere odd" impossible to trace.
+// >>> SHARED WITH ACCESSIBILITY, NOT READER-PRIVATE. <<< Callers are Reader's panels
+// (`ReaderScreen.tsx`) and Accessibility's `VoicePicker.tsx` / `TtsControls.tsx`. Those two arrived
+// with their own inline copies of this logic and were folded in here; keep it that way. Two focus
+// helpers with different null-handling is exactly the kind of divergence that makes "focus went
+// somewhere odd" impossible to trace.
+//
+// WHAT STAYS AT THE CALL SITE: timing. Accessibility's two call sites wrap this in a `setTimeout`
+// because a React Native `Modal` attaches its content on a native layer asynchronously, so focusing
+// the instant `visible` flips reliably no-ops. That delay is a property of Modal, not of focusing,
+// and Reader's inline panels need none of it — so it belongs to whoever has the Modal.
 //
 // WHY A PLAIN FUNCTION AND NOT A HOOK. Every caller fires it from an event handler that already
 // exists — a panel closing, a row being chosen — not as a consequence of rendering. A hook would
