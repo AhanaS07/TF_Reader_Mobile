@@ -43,7 +43,16 @@ export function describeInstitutionSourceConformance(
         for (const institution of institutions) {
           expect(institution.code.length).toBeGreaterThan(0);
           expect(institution.city.length).toBeGreaterThan(0);
-          expect(institution.catalogueUrl.length).toBeGreaterThan(0);
+        }
+      });
+
+      it('never returns an empty-string catalogueUrl, only absent or usable', async () => {
+        const institutions = await createSource().getInstitutions();
+
+        for (const institution of institutions) {
+          if (institution.catalogueUrl !== undefined) {
+            expect(institution.catalogueUrl.length).toBeGreaterThan(0);
+          }
         }
       });
 

@@ -1,6 +1,6 @@
 // src/config/catalogue.test.ts
-import { ApiAdapter } from '@adapters/ApiAdapter';
 import { MockAdapter } from '@adapters/MockAdapter';
+import { PartialApiAdapter } from '@adapters/PartialApiAdapter';
 import { createCatalogueSource, resolveCatalogueSourceKind } from '@config/catalogue';
 
 describe('resolveCatalogueSourceKind', () => {
@@ -28,14 +28,18 @@ describe('createCatalogueSource', () => {
     expect(createCatalogueSource({ kind: 'mock' })).toBeInstanceOf(MockAdapter);
   });
 
-  it('builds an ApiAdapter for api', () => {
+  // Only institutions has a real endpoint today, so 'api' builds a
+  // PartialApiAdapter — real institutions, mock for everything else.
+  it('builds a PartialApiAdapter for api', () => {
     expect(createCatalogueSource({ kind: 'api', baseUrl: 'https://api.tf/opds/v1' })).toBeInstanceOf(
-      ApiAdapter,
+      PartialApiAdapter,
     );
   });
 
   it('refuses to build an ApiAdapter with no base URL', () => {
-    expect(() => createCatalogueSource({ kind: 'api', baseUrl: '' })).toThrow(/baseUrl/);
+    expect(() => createCatalogueSource({ kind: 'api', baseUrl: '' })).toThrow(
+      /EXPO_PUBLIC_CATALOGUE_BASE_URL/,
+    );
   });
 
   it('passes mock options through so the gallery can inject latency', () => {
