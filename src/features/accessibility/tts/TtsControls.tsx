@@ -4,12 +4,15 @@
 // useTtsSession) as a prop rather than a ReaderTextProvider, so this component has no idea a
 // book or a WebView exists — it only knows how to drive the session it's handed.
 //
-// NOT MOUNTED ANYWHERE YET. Wiring this into ReaderScreen.tsx's toolbar/controls (the
-// `showToc`/`showSearch` mutual-exclusion pattern at ReaderScreen.tsx:138-139 is the template a
-// `showTts` toggle would follow) is Reader's (Ahana's) call, not this file's.
+// MOUNTED BY ReaderScreen, in place of the page-navigation row, whenever TTS is enabled for an
+// EPUB. There is no toggle in front of it: the `accessibility.tts.enabled` preference is what puts
+// it on screen and what takes it away. Nothing here needs to know that — it drives the session it
+// is handed and is unmounted when there is no session to drive.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { focusOn } from '@/features/reader/a11yFocus';
 
 import type { TtsSession } from './useTtsSession';
 import { PITCH_LADDER } from './ttsPitch';
@@ -22,8 +25,31 @@ export interface TtsControlsProps {
 
 const PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios';
 
+// Matches VoicePicker's own FOCUS_ENTRY_DELAY_MS rationale: the Modal's dismiss animation is
+// still running for a moment after `visible` flips to false, so an immediate focus call can be
+// swallowed by the outgoing native layer.
+const FOCUS_RESTORE_DELAY_MS = 300;
+
 export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const voiceButtonRef = useRef<View>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const closeVoicePicker = (): void => {
+    setVoicePickerOpen(false);
+    // The DELAY is this file's own concern (the Modal has to finish unmounting before the button
+    // underneath can take focus); resolving the node and guarding the null cases is shared with
+    // Reader's panels via `focusOn`.
+    closeTimerRef.current = setTimeout(() => focusOn(voiceButtonRef), FOCUS_RESTORE_DELAY_MS);
+  };
 
   const isSpeaking = session.status === 'speaking';
   const isPaused = session.status === 'paused';
@@ -53,11 +79,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   return (
     <View style={styles.container}>
       {session.status === 'error' && session.errorMessage !== null && (
-        <Text
-          accessibilityRole="alert"
-          accessibilityLiveRegion="assertive"
-          style={styles.error}
-        >
+        <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>
           {session.errorMessage}
         </Text>
       )}
@@ -84,6 +106,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
         </Pressable>
 
         <Pressable
+          ref={voiceButtonRef}
           accessibilityRole="button"
           accessibilityLabel="Choose voice"
           onPress={() => {
@@ -135,10 +158,10 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
       </View>
 
       <VoicePicker
-        onClose={() => setVoicePickerOpen(false)}
+        onClose={closeVoicePicker}
         onSelect={(voiceId) => {
           session.setVoice(voiceId);
-          setVoicePickerOpen(false);
+          closeVoicePicker();
         }}
         selectedVoiceId={session.prefs.voiceId}
         visible={voicePickerOpen}
@@ -149,16 +172,30 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
+  // CENTRED AND WIDTH-CAPPED, not stretched. This panel replaces the page-navigation row rather
+  // than sitting beside it (see ReaderScreen's `ttsControlsVisible`), so it owns the full width of
+  // the screen — and a row of transport buttons stretched across a tablet puts Play and Voice a
+  // hand's width apart. `maxWidth` holds the cluster at a reachable size, `alignSelf` centres what
+  // is left over, and `width: '100%'` keeps it edge to edge on a phone, where there is no excess.
   container: {
+    width: '100%',
+    maxWidth: 560,
+    alignSelf: 'center',
     borderTopWidth: 1,
     borderTopColor: '#e2e2e2',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  error: { fontSize: 13, color: '#8a1c1c', marginBottom: 8 },
-  transportRow: { flexDirection: 'row', gap: 8 },
+  error: { fontSize: 13, color: '#8a1c1c', marginBottom: 8, textAlign: 'center' },
+  // `flex: 1` children already divide the row, so `justifyContent` only matters if one ever stops
+  // flexing — cheap insurance against a future fourth button that sizes to its content.
+  transportRow: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
   button: {
     flex: 1,
+    // A floor, not a width: three buttons at `flex: 1` divide a 320pt screen into ~93pt each,
+    // which fits "Resume". This stops a narrower window (split view, a small Android phone) from
+    // shrinking them past a tappable target instead of wrapping the text.
+    minWidth: 72,
     alignItems: 'center',
     paddingVertical: 12,
     borderRadius: 8,
@@ -166,8 +203,17 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { opacity: 0.4 },
   buttonText: { fontSize: 14, fontWeight: '600', color: '#111111' },
-  sectionLabel: { fontSize: 12, color: '#777777', marginTop: 10, marginBottom: 4 },
-  chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  sectionLabel: {
+    fontSize: 12,
+    color: '#777777',
+    marginTop: 10,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  // Seven rate chips and six pitch ones. They WRAP rather than shrink — a chip is sized by its
+  // label, so the alternative to wrapping is clipping "0.75x". Centred so a wrapped final row
+  // sits under the middle of the one above it rather than hanging off the left edge.
+  chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center' },
   chip: {
     paddingHorizontal: 10,
     paddingVertical: 6,

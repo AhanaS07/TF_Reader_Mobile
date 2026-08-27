@@ -20,7 +20,7 @@
 import type { BookId, Bytes, Timestamp, ContentFormat } from '../types/primitives';
 
 // The `encryption` block from the grant (source-of-truth §10/§11). Names EXACT.
-// null for open access and ALL audio (plain file, no key).
+// null for open access; audio may be encrypted or unencrypted.
 export interface EncryptionDescriptor {
   algorithm: 'AES-256-GCM';
   layout: 'nonce(12) || ciphertext || tag(16)';

@@ -38,7 +38,7 @@ import {
   writeSharedPrefs,
   resetSharedPrefs,
 } from '@/features/sync/sharedPrefs';
-import { syncEngine } from '@/features/sync/syncEngine';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
 // Caller may change value fields only. Identity + sync bookkeeping (and isDeleted,
 // which prefs never set) are the store's job — mirrors the Omit in prefs.ts. A patch
@@ -86,18 +86,6 @@ function notify(prefs: SharedPrefs): void {
       // take out the others or the caller.
     }
   }
-}
-
-/**
- * PUSH-ON-EDIT: send a just-saved local edit to the server now, instead of waiting for the next
- * app-open/reconnect that `useAutoSync` is edge-triggered on. Fire-and-forget so the local write +
- * live re-apply never block on the network: `syncEngine.run()` drains the outbox entry the write
- * just queued. Offline it fails fast with the outbox intact, and `useAutoSync` still catches up on
- * reconnect — so this only ever syncs SOONER, it is never a dependency of the write succeeding.
- * Concurrent calls share one in-flight run (see syncEngine.run), so rapid edits do not stack.
- */
-function pushNow(): void {
-  void syncEngine.run();
 }
 
 export const prefsStore: PrefsStore = {

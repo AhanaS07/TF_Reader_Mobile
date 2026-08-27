@@ -57,7 +57,7 @@ import type { EncryptionDescriptor } from './content-provider';
  * file's exports read the same as the spec rather than silently renaming it. */
 export type ReadingFormat = ContentFormat;
 
-/** `DOWNLOAD` is refused for ELITE whatever the UI offered. Audio streams, never encrypted. */
+/** `DOWNLOAD` is refused for ELITE whatever the UI offered. Audio may be encrypted or not. */
 export type ReadingIntent = 'STREAM' | 'DOWNLOAD';
 
 export interface ReadingSessionRequest {
@@ -159,8 +159,10 @@ export interface ReadingSessionResponse {
   content: SignedUrl;
   /** Absent when there is none, or when `wantSearchIndex` wasn't set. */
   index?: IndexUrl;
-  /** Absent for open access and for all audio. Reused verbatim from content-provider.ts — same
-   * field names ARE the real wire format, per that file's own header. */
+  /** Absent for open access only. Audio is encrypted as of 2026-08-25, the same AES-256-GCM
+   * as EPUB/PDF. "Audio is never encrypted" was true through earlier build phases and is REVOKED.
+   * Reused verbatim from content-provider.ts — same field names ARE the real wire format, per
+   * that file's own header. */
   encryption?: EncryptionDescriptor;
 }
 

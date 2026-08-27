@@ -107,48 +107,61 @@ Every interactive control was checked for `accessible`, `accessibilityLabel`, `a
 `src/features/reader/` and `src/features/accessibility/`.
 
 ### `src/features/reader/ReaderScreen.tsx`
+
+**Audited 2026-08-25; closed by Reader 2026-08-26.** Every gap this table listed is now fixed except
+the TOC-row hint, which was declined with a reason.
+
 | Control | Has today | Gap |
 |---|---|---|
-| Search toggle | role, label | — complete |
-| TTS toggle ("Listen to this book") | role, label | — complete |
-| Prev button | role, `disabled` prop | no explicit `accessibilityLabel` (relies on "‹ Prev" text child), no explicit `accessibilityState={{disabled}}` |
-| Next button | role, `disabled` prop | same as Prev |
-| Contents/TOC toggle | role | no explicit label, no `accessibilityState` for open/closed |
-| TOC row | role, `accessibilityState={{disabled}}` | no `accessibilityHint` explaining it navigates to a chapter |
+| Search toggle | role, label, `accessibilityState={{expanded}}` | — complete |
+| Bookmarks toggle | role, label, `accessibilityState={{expanded}}` | — complete |
+| ~~TTS toggle ("Listen to this book")~~ | — | **Gone.** The speaker button was removed: `accessibility.tts.enabled` is now the only switch, and it mounts the transport directly. Two controls for one boolean is how a user ends up with TTS on and no controls |
+| Prev button | role, explicit label ("Previous page"), explicit `accessibilityState={{disabled}}` | — complete |
+| Next button | role, explicit label ("Next page"), explicit `accessibilityState={{disabled}}` | — complete |
+| Contents/TOC toggle | role, label ("Contents"/"Close contents"), `accessibilityState` | — complete. Reports `expanded` when a TOC exists and `disabled` alone when it does not: a control that can never open is not "collapsed" |
+| TOC row | role, `accessibilityState={{disabled}}` | **Hint declined, not overlooked.** `AccessibilityPrefs.screenReaderHints` is a frozen field defaulting to `false` and scoped to native RN controls — exactly this. A hardcoded always-on hint contradicts a preference the user is opted out of. Revisit behind a `useScreenReaderHints()` primitive when a settings screen exists |
 | Page indicator / page-jump button | role, explicit label | — complete |
 | Page-jump `TextInput` | explicit label | — complete |
-| Error banner | `accessibilityLiveRegion="polite"` | no `accessibilityRole="alert"` |
-| Swipe-catcher overlay, privacy cover | `accessibilityElementsHidden` + `importantForAccessibility="no-hide-descendants"` | correctly hidden — not a gap |
+| Error banner | `accessibilityRole="alert"` + `accessibilityLiveRegion="polite"` | — complete |
+| Book content (WebView container) | label ("Book content"), hidden while any panel is open | — complete |
+| Bookmark badge, TTS "reading aloud" cue | role, label, hidden while any panel is open | — complete |
+| Swipe-catcher overlay, privacy cover, TOC fades | `accessibilityElementsHidden` + `importantForAccessibility="no-hide-descendants"` | correctly hidden — not a gap |
 
 ### `src/features/reader/SearchPanel.tsx`
 | Control | Has today | Gap |
 |---|---|---|
 | Search input | explicit label | — complete |
-| Search submit button | role | implicit label only ("Search" text child) |
-| Close button | role | implicit label only |
+| Search submit button | role, explicit label | — complete |
+| Close button | role, explicit label ("Close search") | — complete. All three panels now name their own close, so "Close" is never ambiguous |
 | Status line | `accessibilityLiveRegion="polite"` | — present |
 | "Still opening this book" busy row | `accessibilityLiveRegion="polite"` | — present |
-| Result row | role, `disabled` when not navigable | no explicit label/`accessibilityState={{disabled}}` |
+| Result row | role, composed label ("Result N of M: {snippet}"), explicit `accessibilityState={{disabled}}` | — complete |
 
 ### `src/features/reader/SearchMatchBar.tsx`
-Best-labelled surface in the app: Previous/Next/Dismiss all have explicit role + label. Gaps: no
-live region on the "Match N of M" counter text (changes on every step press, never announced);
-disabled state on step buttons relies on the `disabled` prop rather than explicit
-`accessibilityState`.
+Previous/Next/Dismiss all have explicit role + label. The step buttons now carry explicit
+`accessibilityState={{disabled}}` as well.
 
-### `src/features/accessibility/tts/TtsControls.tsx`
+**The live region on the counter was declined, not missed.** It changes on every arrow press — the
+highest-frequency update on the screen — and with TTS speaking it would queue a screen-reader
+utterance *while react-native-tts is mid-sentence of the book*: two speech streams, one output
+device, neither ducking for the other. The gated channel for navigation announcements is
+`announce.pageChanges`, which nothing reads yet; a search step is not one of those, and nothing in
+this app announces unconditionally. The counter's own label already carries the count for anyone
+who focuses it.
+
+### `src/features/accessibility/tts/TtsControls.tsx` — closed by Accessibility, 2026-08-26
 | Control | Has today | Gap |
 |---|---|---|
-| Transport (Play/Pause/Stop), Stop, Voice buttons | role | implicit label only, no hint |
-| Rate chips, Pitch chips | role | **no `accessibilityState={{selected}}`** — a screen reader cannot tell which rate/pitch is currently active (visual-only styling) |
-| Error text | none | no live region — a TTS error mid-read is never announced |
+| Transport (Play/Pause/Stop), Stop, Voice buttons | role, explicit labels | — complete |
+| Rate chips, Pitch chips | role, explicit labels, `accessibilityState={{selected}}` | — complete |
+| Error text | `accessibilityRole="alert"` + assertive live region | — complete |
 
-### `src/features/accessibility/tts/VoicePicker.tsx`
-| Control | Has today | Gap |
-|---|---|---|
-| Backdrop | `accessibilityRole="none"` | closes on tap but isn't exposed to AT as a "Close" control |
-| "Platform default" row, voice rows | role | no label, no `accessibilityState={{selected}}` for the checkmark-indicated selection |
-| The `Modal` itself | — | no `accessibilityViewIsModal` |
+### `src/features/accessibility/tts/VoicePicker.tsx` — closed by Accessibility, 2026-08-26
+Backdrop, row labels/selection state and `accessibilityViewIsModal` all landed. Focus entry and
+restoration are wired too — both now call Reader's shared `focusOn` (`src/features/reader/a11yFocus.ts`)
+rather than resolving the node handle inline, so the null-handling lives in one place across both
+capabilities. The `setTimeout` around each call stays local: it exists for RN `Modal` mount timing,
+which is a property of Modal and not of focusing.
 
 **Cross-cutting pattern:** no control audited is entirely bare (every `Pressable` at least has
 `accessibilityRole="button"`). The two systemic gaps are (a) icon/text-only buttons relying on
@@ -160,15 +173,31 @@ explicit `accessibilityState`.
 
 ## 5. Focus & reading order
 
-**Current state:**
-- No `accessibilityViewIsModal` anywhere in the repo. TOC and Search panels are visual overlays
-  rendered as siblings of `ReaderWebView`, not native `Modal`s. Only `VoicePicker` uses RN's
-  `Modal`, which gives partial default focus trapping on iOS only, with no explicit reinforcement.
-- No focus-restoration code on any panel close (TOC, Search, TTS, VoicePicker) — dismissing a panel
-  never returns focus to the toolbar button that opened it.
+**Current state, updated 2026-08-26** — this section described the state before the focus work
+landed on both sides. What is still true is listed second.
+
+**Done:**
+- `VoicePicker` sets `accessibilityViewIsModal`, with a regression test covering the sharp edge
+  (it hides SIBLINGS, so the backdrop close control has to stay reachable).
+- Focus RESTORATION exists on the panels whose close is a deliberate act: TOC → Contents button,
+  Search → toolbar Search button, VoicePicker → Voice button. Reader's `closeToc(restoreFocus)`
+  carries the one rule that is easy to get wrong — restore when the user finished with the panel,
+  do NOT restore when it closed because another panel is opening over it, or the restore races
+  that panel's own entry focus.
+- The background (toolbar, WebView container, on-page badges) leaves the focus order while a panel
+  is open. One deliberate asymmetry: the bottom controls row stays reachable while the TOC is open,
+  because the Contents button in that row IS the TOC's close affordance — hiding it stranded a
+  screen-reader user inside the panel with no way out.
+- The WebView container is a named stop ("Book content") between the toolbar and the bottom row.
+- One shared `focusOn` helper (`src/features/reader/a11yFocus.ts`), used by both capabilities.
+
+**Still open:**
+- Focus ENTRY into the TOC and Search panels, and where focus should land after a search hit. All
+  three want the on-device VoiceOver/TalkBack spike first: Search's `autoFocus` may already carry
+  AT focus, in which case an explicit call is redundant plumbing.
 - No reading-order/focus-order handling across the native↔WebView seam: the `relocated` bridge
-  message (page/CFI change) only updates RN visual state (`ReaderScreen.tsx:673-680`); it never
-  calls `AccessibilityInfo.announceForAccessibility` and never sends a WebView-side focus command.
+  message (page/CFI change) only updates RN visual state; it never calls
+  `AccessibilityInfo.announceForAccessibility` and never sends a WebView-side focus command.
 
 **Expected/target reading order** (for future implementation, not built yet): toolbar → WebView
 content (heading → paragraphs, in DOM order) → toolbar; panel open/close moves focus in and
@@ -198,7 +227,7 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 | `epub.js` iframe/content-document focus behavior | High | Open, unconfirmed | Device test required, both platforms |
 | Page-transition accessibility (over/under-announcement) | High | Open, unconfirmed | Test with `announce.pageChanges` on and off once the consumer exists |
 | `announcePageChanges` / `reduceMotion` unconsumed in WebView | Medium | **Confirmed via code (§3)** | Bridge carries both fields into `currentAppearance`; `epub.entry.ts`/`pdf.entry.ts` never read either again |
-| No focus trap / restoration on TOC, Search, TTS, VoicePicker panels | Medium | **Confirmed via code (§5)** | Concrete, file-level version of the general "modal focus restoration" risk |
+| ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5)** | Restoration and background-hiding landed on both sides. What remains is focus ENTRY into TOC/Search and the post-search-hit destination, all gated on the device spike |
 | `useTtsSession` bypasses `prefsStore` write path | Low–Medium | **Confirmed via code (§3)** | Writes via `readSharedPrefs`/`writeSharedPrefs` directly; no live-subscriber notification on TTS pref changes; inconsistent with the app's single-write-path pattern |
 | VoiceOver vs. TalkBack divergence | Medium | Open, unconfirmed | Same DOM can produce different navigation/grouping/announcements; every spike matrix row needs two independent verdicts |
 | Image / alt-text quality | Medium | Open, out of app's control | Third-party EPUB metadata quality varies; test with one good and one poor sample EPUB |

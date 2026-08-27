@@ -680,47 +680,11 @@ describe('EDGE: Elite tier — persistence really does not survive a process res
   });
 });
 
-// >>> PINS A DEFECT, NOT DESIRED BEHAVIOUR. <<< Filed by Reader (Ahana) on 2026-08-18, after the
-// `close()` change on dev_T4; the real fix is Abhinav's call and is recorded as open item 1 in
-// CLAUDE.md. Delete this block when it is fixed and assert the reopen SUCCEEDS instead.
-//
-// `close()` now does `packageCache.delete(bookId)` unconditionally — correct and deliberate for
-// Subscription, whose ciphertext is on disk and is reloaded by `loadPersisted()` on the next open
-// (the describe above proves that still works). Elite never persists: `store()` returns before its
-// writeFile calls, so the cache entry IS the only copy, and dropping it makes `close()` terminal.
-//
-// That erases exactly the distinction content-provider.ts draws: `openSession` is specified for "a
-// stored (or in-memory Elite) book", `close()` is "REVERSIBLE", `destroy()` is "TERMINAL". Nothing
-// ships Elite content yet (devContentSeed.ts seeds canPersist: true), so this is invisible in the
-// app today — which is why it is pinned here rather than left to be rediscovered.
-describe('EDGE: Elite tier — close() is currently TERMINAL, which only destroy() should be', () => {
-  it('cannot reopen an Elite book after close(), because its only copy was the package cache', async () => {
-    const bookId = 'edge-elite-close-reopen';
-    const key = randomKey();
-    const pkg = await buildEncryptedPackage(bookId, plaintextOf(256, 'elite, memory only'), key, {
-      canPersist: false,
-    });
-
-    await contentStore.store(pkg);
-
-    // Elite is readable while cached: a session opens fine before close().
-    const handle = await contentStore.openSession(bookId);
-    expect(handle.bookId).toBe(bookId);
-
-    await contentStore.close(bookId);
-
-    // THE DEFECT. Per the frozen contract this should reopen (close() is REVERSIBLE, and Elite is
-    // explicitly in openSession's scope for the process lifetime). Instead the package is gone and
-    // there is no disk copy to fall back on, so the read fails outright.
-    await expect(contentStore.openSession(bookId)).rejects.toMatchObject({
-      code: ContentError.DECRYPTION_FAILED,
-    });
-
-    // And it is unrecoverable without a fresh store(): nothing was ever written for Elite, so
-    // isAvailableOffline() cannot report the book back either.
-    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
-  });
-});
+// FIXED, so the block that used to pin this defect is gone (per its own instruction: "Delete this
+// block when it is fixed and assert the reopen SUCCEEDS instead"). Elite `close()`-then-reopen is
+// now asserted positively in contentStore.test.ts, alongside the rest of the tier's lifecycle —
+// `close()` exempts Elite from the packageCache drop, so it is REVERSIBLE for every tier and
+// `destroy()` is the only terminal one, as content-provider.ts specifies.
 
 // Sanity re-import so later files in the same worker aren't left on a resetModules()'d
 // contentStore instance (jest.resetModules() above only affects require() cache, not this

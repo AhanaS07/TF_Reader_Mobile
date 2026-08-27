@@ -58,6 +58,27 @@ export interface ReaderWebViewProps {
    * unverified against this app's exact CSS chain; check on-device when exercising continuous scroll.
    */
   scrollEnabled?: boolean;
+  /**
+   * Take the book out of the screen-reader's focus order, for while a panel covers it.
+   *
+   * ON THIS COMPONENT'S OWN CONTAINER RATHER THAN A WRAPPER IN THE HOST. `ReaderScreen` renders the
+   * TOC/Search/Bookmarks panels as SIBLINGS of this component inside one `viewer` View, so there is
+   * no existing node that contains the book and excludes the panels — hiding the background from the
+   * host side would mean reparenting, and changing the viewer's height re-paginates epub.js, which
+   * makes every already-resolved CFI point somewhere else (see SearchMatchBar.tsx's header). This
+   * container already exists and wraps exactly the right subtree, so the prop comes here instead.
+   *
+   * Only affects the NATIVE container. The DOM inside the WebView builds its own accessibility tree
+   * that React Native props cannot reach — `AccessibilityPrefs.screenReaderHints` carries the same
+   * warning. Hiding the container is what stops a swipe landing on the book behind an open panel;
+   * it is not a claim about the document's internal semantics.
+   */
+  hidden?: boolean;
+  /**
+   * Accessible name for the container, so the book is a reachable, named stop between the toolbar
+   * and the bottom controls instead of an unlabelled gap in the traversal.
+   */
+  accessibilityLabel?: string;
 }
 
 export function ReaderWebView({
@@ -66,6 +87,8 @@ export function ReaderWebView({
   onHostError,
   onReady,
   scrollEnabled = false,
+  hidden = false,
+  accessibilityLabel,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
@@ -195,7 +218,17 @@ export function ReaderWebView({
   );
 
   return (
-    <View style={styles.container}>
+    <View
+      style={styles.container}
+      testID="reader-webview-container"
+      accessibilityLabel={accessibilityLabel}
+      // The two-prop pair this codebase already uses for "keep assistive tech out of here" (the
+      // swipe catcher, the privacy cover, the TOC fades). `importantForAccessibility` is explicitly
+      // set back to 'yes' rather than left undefined: it must un-hide when the panel closes, and
+      // 'auto' would let a previously-applied 'no-hide-descendants' linger on some Android versions.
+      accessibilityElementsHidden={hidden}
+      importantForAccessibility={hidden ? 'no-hide-descendants' : 'yes'}
+    >
       <WebView
         ref={webViewRef}
         source={{ uri: sourceUri }}

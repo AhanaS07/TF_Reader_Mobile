@@ -77,13 +77,72 @@ describe('audioAssetResolver', () => {
   });
 
   it('RE-ACQUIRES on every resolve, which is what makes re-entry work after closeBook', async () => {
-    // closeBook() below is TERMINAL for a streamed (ephemeral) package — it drops the only copy
-    // that ever existed. Re-entering the player must therefore re-run the gate rather than expect a
-    // session to still be open. If this ever regresses to caching, a second visit to a streamed
-    // audiobook fails DECRYPTION_FAILED forever.
+    // closeBook() ends the session and zeroes the plaintext, so re-entering the player must re-run
+    // the gate rather than expect a session to still be open. The in-flight dedupe below must not
+    // drift into a URI cache: these two resolves do not overlap, and the scratch file may have been
+    // swept between them, so each has to acquire for itself.
     await audioAssetResolver.resolveAudioAssetUri(BOOK);
     await audioAssetResolver.resolveAudioAssetUri(BOOK);
 
+    expect(mockOpenBook).toHaveBeenCalledTimes(2);
+  });
+
+  // ── overlapping resolves ────────────────────────────────────────────────────────────────────
+  //
+  // contentStore sessions are keyed by bookId with NO reference counting: one session per book,
+  // not one per caller. So two concurrent resolves of the same book used to tear each other down —
+  // the first to finish called closeBook(), which zeroed the shared plaintext buffer the second was
+  // about to write (a scratch file of pure zeros, silently) and dropped the package, so the
+  // second's getMimeType() threw DECRYPTION_FAILED.
+  //
+  // AudioPlayerScreen is the caller that overlaps: its load effect's `cancelled` flag suppresses a
+  // stale setUri but does not abort the in-flight promise, so leaving the screen mid-load and
+  // re-entering leaves two acquires running against one session.
+
+  it('shares ONE acquire between overlapping resolves of the same book', async () => {
+    let release!: (bytes: Uint8Array) => void;
+    mockOpenBook.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+
+    const first = audioAssetResolver.resolveAudioAssetUri(BOOK);
+    const second = audioAssetResolver.resolveAudioAssetUri(BOOK);
+    release(wavBytes());
+
+    expect(await first).toBe(await second);
+    expect(mockOpenBook).toHaveBeenCalledTimes(1);
+    expect(mockCloseBook).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives an overlapping resolve bytes that were not zeroed underneath it', async () => {
+    let release!: (bytes: Uint8Array) => void;
+    mockOpenBook.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+    // closeBook() zeroes the decrypted buffer in place — the real contentStore.close() does this,
+    // and it is the half of the hazard that fails SILENTLY rather than throwing.
+    const bytes = wavBytes();
+    mockCloseBook.mockImplementation(async () => { bytes.fill(0); });
+
+    const first = audioAssetResolver.resolveAudioAssetUri(BOOK);
+    const second = audioAssetResolver.resolveAudioAssetUri(BOOK);
+    release(bytes);
+    await Promise.all([first, second]);
+
+    const written = new File(await second).bytesSync();
+    expect(written.some((b) => b !== 0)).toBe(true);
+  });
+
+  it('does not dedupe DIFFERENT books onto one acquire', async () => {
+    await Promise.all([
+      audioAssetResolver.resolveAudioAssetUri(BOOK),
+      audioAssetResolver.resolveAudioAssetUri(OTHER_BOOK),
+    ]);
+
+    expect(mockOpenBook).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the in-flight entry on failure, so a retry is not stuck with the rejection', async () => {
+    mockOpenBook.mockRejectedValueOnce(new Error('LICENSE_DENIED'));
+    await expect(audioAssetResolver.resolveAudioAssetUri(BOOK)).rejects.toThrow('LICENSE_DENIED');
+
+    await expect(audioAssetResolver.resolveAudioAssetUri(BOOK)).resolves.toContain('file://');
     expect(mockOpenBook).toHaveBeenCalledTimes(2);
   });
 

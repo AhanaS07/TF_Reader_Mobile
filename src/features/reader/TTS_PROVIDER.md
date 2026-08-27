@@ -118,8 +118,13 @@ unit-tested — same tier as `epub.entry.ts`) and `webview/src/ttsSegmentation.t
 sentence-boundary splitting and the 400-char word-boundary cap, no `Intl.Segmenter` since this
 WebView targets `safari15`). `setSpokenRange` paints through the new owner-namespaced highlight seam
 (`webview/src/highlightSeam.ts`/`highlightNaming.ts` — see open item 4, struck below) rather than
-calling `rendition.annotations` directly. Mounted in `ReaderScreen.tsx` behind a `showTts` toggle,
-gated on `useTtsEnabled()` and `format === 'EPUB'`.
+calling `rendition.annotations` directly. Mounted in `ReaderScreen.tsx` whenever `useTtsEnabled()`
+and `format === 'EPUB'` both hold — there is no in-reader toggle. The preference IS the switch:
+turning it on puts the transport on screen (replacing the page-navigation row), turning it off
+removes it and stops speech, because `ttsEnabled` collapses `ttsProvider` to null and that is
+`useTtsSession`'s only dependency, so its cleanup calls `Tts.stop()`. A speaker button in the
+toolbar was a second control for a decision the preference already owned; what remains of it is a
+non-interactive 🔊 cue painted on the page while `status === 'speaking'`.
 
 **Not done as part of step 5, on purpose — out of scope, not overlooked:** word-level highlighting
 (`TtsHighlightMode: 'word'` in the accessibility contract; the seam still only carries sentence-level
@@ -127,13 +132,17 @@ CFIs), scroll-follow-the-spoken-range (open item 2, unchanged below), and a real
 source for `'revoked'` (open item 1, unchanged below — `terminate()` handles the reason identically to
 `'closed'` internally, but nothing calls it yet).
 
-**Step 6, Accessibility's half: done, 2026-08-23.** `TtsReadingScreen.tsx` (the standalone "TTS Demo"
-tab in `App.tsx`, with no `bookId`/`send` of its own) has been retired now that `ReaderScreen` has a
-real mount point — deleted along with its test and the `App.tsx`/`App.test.tsx` scaffolding that
-wired the tab in. That resolves both items this section used to list for Hruthik: the demo call site
-is gone (rather than rewired to a real book, which would have duplicated plumbing `ReaderScreen`
-already provides), and its header comment's stale citation to `ReaderScreen.tsx:138-139` went with
-the file rather than needing a fix in place.
+**Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
+Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount
+point — deleted along with its test, `src/navigation/TtsDemoScreen.tsx`, the `TtsDemo` route in
+`RootNavigator.tsx`, and `BookListScreen`'s row into it.
+
+**This section previously dated that removal 2026-08-23 and it was not true.** The screen survived
+the `RootNavigator` landing and stayed reachable from `BookListScreen` for three more days, which
+meant the app shipped two TTS surfaces: the real one in the reader, and a demo serving canned
+sentences whose synthetic CFIs resolve against no book. Anyone testing TTS from that row got
+plausible speech unrelated to any book. Recorded rather than quietly corrected, because a doc that
+declares work done is how the second surface went unnoticed.
 
 **What did NOT happen: `fakeReaderTextProvider.ts` itself was not deleted.** The deletion table below
 assumed the demo was the only call site outside `reader/tts/` — it wasn't. `useTtsSession.test.ts`
@@ -165,8 +174,8 @@ side is one import changing. That only holds while nothing depends on the test-o
 `ReaderTextProvider` cannot reach them; that is the intended pressure.
 
 The production call site that used to exist — `src/features/accessibility/tts/TtsReadingScreen.tsx`,
-`App.tsx`'s "TTS Demo" tab, standing in for a real mount point until step 5 landed — is gone as of
-2026-08-23. **The remaining call sites outside `reader/tts/` are test-only:**
+the "TTS Demo" route, standing in for a real mount point until step 5 landed — is gone as of
+2026-08-26. **The remaining call sites outside `reader/tts/` are test-only:**
 `src/features/accessibility/tts/useTtsSession.test.ts` and `useTtsSession.android.test.ts`, which use
 `createFakeReaderTextProvider` to drive `useTtsSession`'s own state machine (prefetch, generation
 counters, teardown) without a real book or WebView. That is a different kind of dependency than "no

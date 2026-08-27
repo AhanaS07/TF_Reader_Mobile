@@ -24,13 +24,15 @@
 // openBook() fails (offline with no local copy, entitlement revoked, etc.), the error is shown
 // as an alert and the user stays on the list.
 
+import { useState } from 'react';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Alert, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { openBook } from '@/features/download/openBook';
-import { DownloadFailure } from '@/features/download/errors';
+import { clearAllDownloads } from '@/features/download/downloadManager';
+import { formatDiagnosticErrorMessage } from '@/shared/contracts/errors';
 import {
   DEV_FIXTURE_EPUB_BOOK_ID,
   DEV_FIXTURE_PDF_BOOK_ID,
@@ -120,6 +122,28 @@ function FixtureRow({
 }
 
 export function BookListScreen({ navigation }: Props): React.JSX.Element {
+  // Bumped on every successful clear, and folded into each FixtureRow's `key` below — remounting
+  // the row is what resets its own useDownloadProgress() hook back to idle. That hook's state is
+  // in-memory only and has no way to learn "the book you thought was downloaded just got wiped"
+  // on its own; without this, a row would keep showing "Download complete" for a book that
+  // clearAllDownloads() just destroyed, which is exactly the kind of stale-UI-vs-real-disk-state
+  // mismatch this whole feature exists to let you get OUT of.
+  const [clearedGeneration, setClearedGeneration] = useState(0);
+  const [clearingAll, setClearingAll] = useState(false);
+
+  const handleClearAllDownloads = async () => {
+    setClearingAll(true);
+    try {
+      await clearAllDownloads();
+      setClearedGeneration((generation) => generation + 1);
+      Alert.alert('Cleared', 'All downloaded books have been removed from this device.');
+    } catch (error) {
+      Alert.alert('Could not clear all downloads', String(error));
+    } finally {
+      setClearingAll(false);
+    }
+  };
+
   const handleOpen = async (bookId: BookId, format: ContentFormat) => {
     try {
       // openBook() is the unified STREAM-intent licence gate: checkLicense → fetch/store →
@@ -129,24 +153,30 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
       await openBook(bookId, format);
       navigation.navigate('Reader', { bookId, format });
     } catch (error) {
-      const message =
-        error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
-      // TEMP diagnostic - DownloadFailure.cause carries the real underlying detail (HTTP status,
-      // parsed FlambeauError body, or the raw fetch failure) that the Alert below never shows.
-      // Remove once the real cause is surfaced properly.
-      console.error(
-        'openBook failed:',
-        error instanceof DownloadFailure ? error.cause : error,
-      );
+      const message = formatDiagnosticErrorMessage(error);
       Alert.alert('Cannot open book', message);
     }
   };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      {/* DEV/TEST TOOLING — see downloadManager.ts's clearAllDownloads() for what this actually
+          does (destroy every persisted book + tombstone its downloads row) and why. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Clear all downloads"
+        onPress={handleClearAllDownloads}
+        disabled={clearingAll}
+        style={[styles.clearAllButton, clearingAll && styles.clearAllButtonDisabled]}
+      >
+        <Text style={styles.clearAllButtonLabel}>
+          {clearingAll ? 'Clearing…' : 'Clear All Downloads'}
+        </Text>
+      </Pressable>
+
       {DEV_FIXTURES.map((fixture) => (
         <FixtureRow
-          key={fixture.bookId}
+          key={`${fixture.bookId}-${clearedGeneration}`}
           fixture={fixture}
           onPress={() =>
             // AUDIO PHASE 3: the open-path diversion. Decided HERE, at tap time, rather than
@@ -185,14 +215,6 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
         />
       ))}
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => navigation.navigate('TtsDemo')}
-        style={styles.row}
-      >
-        <Text style={styles.rowLabel}>TTS Demo</Text>
-      </Pressable>
-
       {/* TEMP, with src/features/sync/mock/ — remove this row when that whole folder goes. */}
       <Pressable
         accessibilityRole="button"
@@ -225,4 +247,14 @@ const styles = StyleSheet.create({
   },
   downloadButtonDisabled: { backgroundColor: '#9a9a9a' },
   downloadButtonLabel: { fontSize: 13, fontWeight: '600', color: '#ffffff' },
+  clearAllButton: {
+    borderWidth: 1,
+    borderColor: '#c0392b',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    backgroundColor: '#fdecea',
+  },
+  clearAllButtonDisabled: { opacity: 0.5 },
+  clearAllButtonLabel: { fontSize: 15, fontWeight: '700', color: '#c0392b' },
 });

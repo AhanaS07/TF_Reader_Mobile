@@ -42,7 +42,13 @@ import type {
   SessionHandle,
   SignedLicence,
 } from '@/shared/contracts';
-import { ContentError, ContentFailure } from '@/shared/contracts';
+import {
+  ContentError,
+  ContentFailure,
+  EVENT_CHANNELS,
+  OFFLINE_LOCK_EVENTS,
+} from '@/shared/contracts';
+import { eventBus } from '@/shared/eventBus';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
 import { deleteBek, getBek, storeBek } from './keyStorage';
@@ -114,6 +120,32 @@ function writeFile(file: File, content: string | Uint8Array): void {
   file.write(content);
 }
 
+/**
+ * Safe JSON.parse for meta.json — returns null instead of crashing on corruption.
+ * iOS can interrupt file writes during app suspension, leaving truncated meta.json files.
+ * Without this, a corrupted meta.json creates a crash loop: every subsequent open throws
+ * an uncaught SyntaxError from JSON.parse, and no recovery path clears the bad file.
+ */
+function parseMetaSafe(bookId: BookId): PersistedMeta | null {
+  const meta = metaFile(bookId);
+  if (!meta.exists) return null;
+  try {
+    return JSON.parse(meta.textSync()) as PersistedMeta;
+  } catch (err) {
+    console.error(
+      `[contentStore] corrupted meta.json for ${bookId} — deleting to break crash loop:`,
+      err,
+    );
+    try {
+      meta.delete();
+    } catch {
+      // Best-effort cleanup
+    }
+    return null;
+  }
+}
+
+
 // "false ⇒ Elite, memory-only, no keystore write" (SignedLicence.canPersist). No licence at all
 // is open access, which DOES persist — there is no key material to protect by keeping it memory-only.
 function isElite(pkg: EncryptedPackage): boolean {
@@ -136,8 +168,8 @@ function isLicenceExpired(pkg: EncryptedPackage): boolean {
 
 function assertLengthInvariant(pkg: EncryptedPackage): void {
   const hasCipher = pkg.encryption !== null;
-  // Open access / audio: `content` IS the plaintext (never AES-GCM'd), so there is no
-  // nonce/tag overhead to account for.
+  // Open access: `content` IS the plaintext (never AES-GCM'd), so there is no nonce/tag
+  // overhead to account for. Audio is encrypted (2026-08-25) so it follows the encrypted path.
   const expected = hasCipher ? NONCE_BYTES + pkg.originalLength + GCM_TAG_BYTES : pkg.originalLength;
 
   if (pkg.content.length !== pkg.cipherLength || pkg.cipherLength !== expected) {
@@ -263,10 +295,9 @@ const sessions = new Map<BookId, OpenSession>();
 // RSA unwrap on the next read (still decrypts correctly, just skips the cache once), which is a
 // safe trade-off for guaranteeing a genuine rotation is never missed.
 async function invalidateStaleCachedKeyIfRotated(pkg: EncryptedPackage): Promise<void> {
-  const meta = metaFile(pkg.bookId);
-  if (!meta.exists) return; // first store for this book — nothing cached yet to invalidate
+  const previous = parseMetaSafe(pkg.bookId);
+  if (!previous) return; // first store or corrupted meta — nothing cached yet to invalidate
 
-  const previous = JSON.parse(meta.textSync()) as PersistedMeta;
   const previousWrappedBek = previous.encryption?.wrappedBek ?? null;
   const nextWrappedBek = pkg.encryption?.wrappedBek ?? null;
   if (previousWrappedBek !== nextWrappedBek) {
@@ -322,10 +353,8 @@ async function store(pkg: EncryptedPackage): Promise<void> {
 }
 
 function loadPersisted(bookId: BookId): EncryptedPackage | null {
-  const meta = metaFile(bookId);
-  if (!meta.exists) return null;
-
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return null;
 
   // Check the RAM budget against the SMALL metadata read before touching the (potentially huge)
   // content file at all. Without this, a cold read (openSession() with nothing cached yet — the
@@ -479,11 +508,10 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
 
     let plaintext: Uint8Array;
     if (!pkg.encryption) {
-      // open access / audio: already plaintext. COPY it rather than aliasing pkg.content
-      // directly: close() zeroes session.plaintext IN PLACE, and pkg.content is the same object
-      // held by packageCache (and handed back by loadPersisted on a fresh read) — aliasing it
-      // would mean close()-ing this session corrupts the package for every future session of
-      // this same book.
+      // Open access (plaintext): COPY it rather than aliasing pkg.content directly: close()
+      // zeroes session.plaintext IN PLACE, and pkg.content is the same object held by
+      // packageCache (and handed back by loadPersisted on a fresh read) — aliasing it would mean
+      // close()-ing this session corrupts the package for every future session of this same book.
       plaintext = new Uint8Array(pkg.content);
     } else {
       const rawKey = await resolveRawKey(pkg, session);
@@ -645,17 +673,34 @@ async function decryptSearchIndex(bookId: BookId): Promise<Uint8Array | null> {
  *
  * ALSO drops `bookId` from `packageCache` (added 2026-08-18 — previously only `destroy()` did
  * this, so a closed-but-not-destroyed book's whole ciphertext, 20MB+ for a real book, stayed
- * resident in RAM indefinitely; see CLAUDE.md's former "known open item #1"). The trade-off this
- * makes deliberately: the NEXT `openSession()` for this book is a cold read — `loadPersisted()`'s
- * synchronous `bytesSync()` off the JS thread — instead of an in-memory hit. That is the correct
- * side to take it on: a reader who closed a book is not mid-read, so paying a one-time re-read
- * cost on the next open is a fair price for not holding every finished book's ciphertext in RAM
- * for the rest of the app's life. Ciphertext on DISK is untouched — this only affects the RAM
- * cache, same as the ciphertext-persistence guarantee `close()` already documented.
+ * resident in RAM indefinitely). The trade-off this makes deliberately: the NEXT `openSession()`
+ * for this book is a cold read — `loadPersisted()`'s synchronous `bytesSync()` off the JS thread
+ * — instead of an in-memory hit. That is the correct side to take it on: a reader who closed a
+ * book is not mid-read, so paying a one-time re-read cost on the next open is a fair price for
+ * not holding every finished book's ciphertext in RAM for the rest of the app's life. Ciphertext
+ * on DISK is untouched — this only affects the RAM cache, same as the ciphertext-persistence
+ * guarantee `close()` already documented.
+ *
+ * ELITE IS EXEMPT FROM THAT DROP, and the exemption is what keeps this function REVERSIBLE.
+ * Elite never reaches disk (`store()` returns before its `writeFile` calls), so its `packageCache`
+ * entry is the ONLY copy: dropping it made `close()` TERMINAL, which `content-provider.ts`
+ * reserves for `destroy()`. The next `openSession()` would miss the cache, `loadPersisted()` would
+ * find no meta.json, and the read failed `DECRYPTION_FAILED` ("no stored package for this book")
+ * forever after. That was CLAUDE.md's "known open item #1", invisible while nothing shipped Elite
+ * content and live the moment `openBook()` started forcing `canPersist: false` on every streamed
+ * book — the symptom was an audiobook that opened once and then refused to reopen.
+ *
+ * No RAM is given up by the exemption: Elite ciphertext was never held twice (`decryptBook()`
+ * skips its `pkg.content` release for exactly the same reason), so there is no second copy to
+ * reclaim here. The decrypted plaintext, which is the large transient, is still zeroed below.
+ * `destroy()` is what finally evicts an Elite package.
  */
 async function close(bookId: BookId): Promise<void> {
   const session = sessions.get(bookId);
-  packageCache.delete(bookId);
+  const pkg = packageCache.get(bookId);
+  if (!pkg || !isElite(pkg)) {
+    packageCache.delete(bookId);
+  }
   if (!session) return;
 
   session.plaintext?.fill(0);
@@ -666,7 +711,8 @@ async function close(bookId: BookId): Promise<void> {
 
 /**
  * Destroy key material and persisted ciphertext at expiry / return. TERMINAL — cannot be undone
- * without a fresh borrow (a new store() call).
+ * without a fresh borrow (a new store() call). Emits CONTENT_DESTROYED after deletion succeeds,
+ * so subscribers (e.g. the licence-expiry handler) can clean up derived state.
  */
 async function destroy(bookId: BookId): Promise<void> {
   await close(bookId);
@@ -676,6 +722,8 @@ async function destroy(bookId: BookId): Promise<void> {
   }
   await deleteBek(bookId);
   packageCache.delete(bookId);
+
+  eventBus.emit(EVENT_CHANNELS.CONTENT_DESTROYED, { bookId, at: Date.now() });
 }
 
 /**
@@ -704,8 +752,8 @@ async function invalidateLicence(bookId: BookId): Promise<void> {
   // incorrectly report it as revoked, breaking the offline fallback's open-access branch.
   const meta = metaFile(bookId);
   if (meta.exists) {
-    const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
-    if (!parsed.licence && !parsed.encryption) return; // open-access — nothing to revoke
+    const parsed = parseMetaSafe(bookId);
+    if (!parsed || (!parsed.licence && !parsed.encryption)) return; // open-access or corrupted — nothing to revoke
     const updated: PersistedMeta = {
       ...parsed,
       licence: null,
@@ -734,10 +782,8 @@ async function invalidateLicence(bookId: BookId): Promise<void> {
 export async function getPersistedLicenceStatus(
   bookId: BookId,
 ): Promise<{ licence: SignedLicence | null; expired: boolean; downloaded: boolean; revoked: boolean }> {
-  const meta = metaFile(bookId);
-  if (!meta.exists) return { licence: null, expired: false, downloaded: false, revoked: false };
-
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return { licence: null, expired: false, downloaded: false, revoked: false };
 
   // Post-revocation: licence was stripped by invalidateLicence(), ciphertext still on disk.
   // Distinct from genuine open-access: this book WAS encrypted and had a licence, but the
@@ -762,15 +808,18 @@ export async function getPersistedLicenceStatus(
  * never been stored (no meta.json exists).
  */
 export async function getMimeType(bookId: BookId): Promise<string> {
-  const meta = metaFile(bookId);
-  if (!meta.exists) {
+  const cached = packageCache.get(bookId);
+  if (cached) {
+    return cached.mimeType;
+  }
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) {
     throw new ContentFailure(
       ContentError.DECRYPTION_FAILED,
       bookId,
       new Error('no stored package for this book — call store() first')
     );
   }
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
   return parsed.mimeType;
 }
 
@@ -781,10 +830,8 @@ export async function getMimeType(bookId: BookId): Promise<string> {
  * content but no rights to open it, so it is NOT "available offline" in any useful sense.
  */
 async function isAvailableOffline(bookId: BookId): Promise<boolean> {
-  const meta = metaFile(bookId);
-  if (!meta.exists) return false;
-
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return false;
 
   // Post-revocation: licence stripped, ciphertext still on disk. Not available — the BEK is
   // gone and there is no rights material to decrypt with.
@@ -801,6 +848,15 @@ async function isAvailableOffline(bookId: BookId): Promise<boolean> {
   }
   return contentFile(bookId).exists;
 }
+
+eventBus.on(EVENT_CHANNELS.CONTENT_LOCK, (signal) => {
+  if (signal.type !== OFFLINE_LOCK_EVENTS.LOCK) return;
+  if (signal.reason !== 'revoked') return;
+
+  void invalidateLicence(signal.bookId).catch((error) => {
+    console.error(`[contentStore] failed to invalidate revoked book ${signal.bookId}`, error);
+  });
+});
 
 export const contentStore: ContentStore = {
   store,

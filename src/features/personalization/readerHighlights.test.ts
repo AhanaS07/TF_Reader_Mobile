@@ -8,8 +8,9 @@
 // Reader's apply half must satisfy once wired.
 
 import type { HighlightRow } from '@/features/sync/localDb/types';
-import { highlightStore, type HighlightPaint } from '@/features/sync/stores/highlightStore';
+import { type HighlightPaint } from '@/features/sync/stores/highlightStore';
 
+import { annotationsRouter } from '@/features/personalization/annotationsRouter';
 import {
   addEpubHighlight,
   addPdfHighlight,
@@ -17,6 +18,26 @@ import {
   removeHighlight,
   toReaderHighlights,
 } from './readerHighlights';
+
+// The facades route persistence through annotationsRouter (online→Mongo / offline→SQLite). Mock it so
+// these pin the facade wiring; the real `toPaintable` still runs on the rows router.list returns, so
+// list → paintable → partition is exercised. Router internals are covered in annotationsRouter.test.ts.
+jest.mock('@/features/personalization/annotationsRouter', () => ({
+  annotationsRouter: {
+    highlights: {
+      list: jest.fn(),
+      addFromCfi: jest.fn().mockResolvedValue(undefined),
+      addFromSelection: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    },
+  },
+}));
+
+const router = annotationsRouter.highlights as unknown as Record<string, jest.Mock>;
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 const EPUB_PAINT: Extract<HighlightPaint, { format: 'EPUB' }> = {
   format: 'EPUB',
@@ -105,20 +126,13 @@ const pdfRow = (id: string): HighlightRow =>
     color: 'green',
   });
 
-afterEach(() => {
-  jest.restoreAllMocks();
-});
-
 describe('loadReaderHighlights', () => {
-  it('turns stored rows into the format-free payload on open', async () => {
-    const list = jest
-      .spyOn(highlightStore, 'list')
-      .mockResolvedValue([row({ id: 'a' }), pdfRow('b')]);
+  it('turns router rows into the format-free payload on open', async () => {
+    router.list.mockResolvedValue([row({ id: 'a' }), pdfRow('b')]);
 
     const { highlights, skippedIds } = await loadReaderHighlights('book-42');
 
-    // Scoped to THIS book, not the global BOOK_ID constant (undefined keeps the store's user default).
-    expect(list).toHaveBeenCalledWith(undefined, 'book-42');
+    expect(router.list).toHaveBeenCalledWith('book-42'); // scoped to THIS book
     expect(highlights.epub.map((h) => h.id)).toEqual(['a']);
     expect(highlights.pdf).toEqual([{ id: 'b', page: 2, startOffset: 1, endOffset: 8, color: 'green' }]);
     expect(skippedIds).toEqual([]);
@@ -126,7 +140,7 @@ describe('loadReaderHighlights', () => {
 
   it('surfaces the ids of rows that cannot be painted rather than swallowing them', async () => {
     const corrupt = row({ id: 'bad', start_locator: 'not json', end_locator: 'not json' });
-    jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'ok' }), corrupt]);
+    router.list.mockResolvedValue([row({ id: 'ok' }), corrupt]);
 
     const { highlights, skippedIds } = await loadReaderHighlights('book-42');
 
@@ -137,32 +151,29 @@ describe('loadReaderHighlights', () => {
 
 describe('add / remove call-sites', () => {
   it('persists an EPUB selection and returns the fresh authoritative set', async () => {
-    const add = jest.spyOn(highlightStore, 'addFromCfi').mockResolvedValue({} as HighlightRow);
-    jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'new' })]);
+    router.list.mockResolvedValue([row({ id: 'new' })]);
 
     const { highlights } = await addEpubHighlight('book-42', 'startCfi', 'endCfi', 'pink');
 
-    expect(add).toHaveBeenCalledWith('startCfi', 'endCfi', 'pink', 'book-42');
+    expect(router.addFromCfi).toHaveBeenCalledWith('startCfi', 'endCfi', 'pink', 'book-42');
     expect(highlights.epub.map((h) => h.id)).toEqual(['new']);
   });
 
   it('persists a PDF selection through addFromSelection', async () => {
-    const add = jest.spyOn(highlightStore, 'addFromSelection').mockResolvedValue({} as HighlightRow);
-    jest.spyOn(highlightStore, 'list').mockResolvedValue([pdfRow('new')]);
+    router.list.mockResolvedValue([pdfRow('new')]);
 
     const selection = { page: 2, startOffset: 1, endOffset: 8 };
     await addPdfHighlight('book-42', selection, 'green');
 
-    expect(add).toHaveBeenCalledWith(selection, 'green', 'book-42');
+    expect(router.addFromSelection).toHaveBeenCalledWith(selection, 'green', 'book-42');
   });
 
-  it('deletes by id and returns a set no longer containing it', async () => {
-    const remove = jest.spyOn(highlightStore, 'remove').mockResolvedValue();
-    jest.spyOn(highlightStore, 'list').mockResolvedValue([row({ id: 'survivor' })]);
+  it('deletes by id (with bookId, for routing) and returns a set without it', async () => {
+    router.list.mockResolvedValue([row({ id: 'survivor' })]);
 
     const { highlights } = await removeHighlight('book-42', 'victim');
 
-    expect(remove).toHaveBeenCalledWith('victim');
+    expect(router.remove).toHaveBeenCalledWith('victim');
     expect(highlights.epub.map((h) => h.id)).toEqual(['survivor']);
     expect(highlights.epub.map((h) => h.id)).not.toContain('victim');
   });

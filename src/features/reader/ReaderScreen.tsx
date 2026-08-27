@@ -55,13 +55,13 @@ import type {
   ReaderTarget,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
+import { focusOn } from '@/features/reader/a11yFocus';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import {
   createEpubReaderTextProvider,
-  UNAVAILABLE_READER_TEXT_PROVIDER,
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
@@ -295,8 +295,35 @@ export function ReaderScreen({
   const [pageJump, setPageJump] = useState<string | null>(null);
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
-  const [showTts, setShowTts] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+
+  /**
+   * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
+   * the background — the toolbar, the WebView container, the bottom row, and the two on-page badges.
+   *
+   * A panel is an absolute overlay, so sighted users already cannot reach what is behind it; without
+   * this a screen reader still can, and swiping past the last row of the TOC walks straight into the
+   * book text underneath. The panels themselves are siblings of the WebView inside `viewer`, which
+   * is why this is a flag applied to several nodes rather than one wrapper around them — see
+   * `ReaderWebView`'s `hidden` prop for why reparenting is not an option here.
+   */
+  const anyPanelOpen = showToc || showSearch || showBookmarks;
+
+  /**
+   * The bottom row is hidden on a NARROWER condition than the rest of the background, and the
+   * difference is not an oversight.
+   *
+   * Search and Bookmarks each carry their own close button inside the panel ("Close search",
+   * "Close bookmarks"), so once one is open the row behind it is pure background. **Contents does
+   * not.** Its close affordance is the Contents button in this very row — the one whose label flips
+   * to "Close contents" while the panel is open. Hiding the row along with everything else left a
+   * screen-reader user inside the TOC with no reachable way out of it: every route back was a
+   * control that had just been removed from the focus order.
+   *
+   * Caught by `ReaderScreen.test.tsx`'s existing mutual-exclusion tests, which could no longer find
+   * the Contents button. They were right to fail.
+   */
+  const controlsHidden = showSearch || showBookmarks;
 
   /**
    * The bookmarks panel's own state — loaded once, after the first `rendered`, then kept current by
@@ -357,11 +384,30 @@ export function ReaderScreen({
     ttsProviderRef.current = ttsProvider;
   }, [ttsProvider]);
 
-  // useTtsSession cannot be called conditionally (Rules of Hooks), so this always has SOME
-  // provider — the inert singleton while TTS isn't active, the real one once it is. TtsControls is
-  // only ever rendered once `ttsProvider` is non-null (see below), so the inert session is never
-  // shown, only ever briefly held.
-  const ttsSession = useTtsSession(ttsProvider ?? UNAVAILABLE_READER_TEXT_PROVIDER);
+  // NULL UNTIL TTS IS ACTUALLY ON. `useTtsSession` cannot be called conditionally (Rules of Hooks),
+  // so it is always called — and it does nothing at all with a null provider. It used to be handed
+  // an inert stand-in instead, which set up a whole session (engine listeners, AppState, a prefs
+  // read) that could never speak, then tore it down and set up a second one the moment the real
+  // provider arrived.
+  const ttsSession = useTtsSession(ttsProvider);
+
+  /**
+   * THE PREFERENCE IS THE SWITCH. There is no in-reader button that opens this panel: turning TTS
+   * on in the preferences menu is what puts the transport on screen, and turning it off is what
+   * takes it away (and stops speech — see `useTtsEnabled`). A speaker button in the toolbar was a
+   * SECOND control for a decision the preference already owns, and two switches for one mode is
+   * how a user ends up with TTS "on" and no controls, or controls for a mode that is off.
+   *
+   * The panel REPLACES the page-navigation row rather than stacking above it. Both are transport
+   * controls, and side by side the two Prev/Next pairs (page, and the match bar's) plus a
+   * Play/Stop read as one undifferentiated bank of buttons — `SearchMatchBar.tsx`'s own note makes
+   * the same point about the find bar's arrows.
+   *
+   * `ttsProvider` already carries every condition: the preference, `format === 'EPUB'`, and a live
+   * bridge. Derived rather than mirrored into state, so nothing can disagree about whether the
+   * panel is showing.
+   */
+  const ttsControlsVisible = ttsProvider !== null;
 
   /**
    * The layout half of prefs, mirrored into local state so the swipe overlay (paginated-only) and
@@ -394,6 +440,18 @@ export function ReaderScreen({
    */
   const pendingSeekRef = useRef<ReaderTarget | null>(null);
   const [awaitingSeek, setAwaitingSeek] = useState(false);
+
+  /**
+   * The two toolbar/controls buttons that screen-reader focus is handed BACK to when the panel they
+   * opened closes — without this, dismissing a panel leaves focus on an element that just unmounted
+   * and the platform drops the user at the top of the screen.
+   *
+   * Only the two panels whose close is a deliberate act have one. Bookmarks closes the same way and
+   * could take a third, but its own close path is not in this handoff's scope; add it when that item
+   * comes round rather than guessing at the restore rule for it now.
+   */
+  const contentsButtonRef = useRef<View | null>(null);
+  const searchButtonRef = useRef<View | null>(null);
 
   const cancelPendingSeek = useCallback((): void => {
     pendingSeekRef.current = null;
@@ -900,15 +958,42 @@ export function ReaderScreen({
     send({ type: 'goTo', target });
   }, [isRendered, send]);
 
+  /**
+   * Close the Contents panel, optionally handing screen-reader focus back to the button that opened
+   * it.
+   *
+   * THE ARGUMENT IS THE WHOLE POINT OF THE HELPER — it is not here because five call sites repeat
+   * two lines, it is here because those five sites split into two cases that are easy to get wrong
+   * and impossible to see from any one of them:
+   *
+   *   `true`  — the user finished with the TOC (chose a row). Nothing else is claiming focus, so
+   *             leaving it where the now-unmounted row was strands it; send it back to Contents.
+   *   `false` — the TOC is closing because ANOTHER panel is opening over it (Search or Bookmarks
+   *             from the toolbar, a queued search seek, the match bar's "show all results"). That
+   *             panel does its own entry focus, and restoring here would race it — the user would be
+   *             moved to Contents a frame after arriving in the search field.
+   *
+   * The Contents toggle's own press needs neither: focus is already on it, and it is still mounted.
+   */
+  const closeToc = useCallback((restoreFocus: boolean): void => {
+    setShowToc(false);
+    if (restoreFocus) focusOn(contentsButtonRef);
+  }, []);
+
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
   const goTo = useCallback(
     (target: ReaderTarget): void => {
-      setShowToc(false);
+      // `false`, even though a Contents row is one of the things that reaches here. THIS FUNCTION IS
+      // SHARED — the bookmarks panel and the page-jump field navigate through it too, and Contents
+      // is always mounted (it lives in the bottom row, not inside the panel), so restoring focus
+      // here would yank a bookmark-selecting user over to a button they never touched. The Contents
+      // row restores focus at its own onPress instead, where "this was the TOC" is actually known.
+      closeToc(false);
       setShowBookmarks(false);
       send?.({ type: 'goTo', target });
     },
-    [send],
+    [closeToc, send],
   );
 
   /**
@@ -1088,7 +1173,7 @@ export function ReaderScreen({
         // exists.
         pendingSeekRef.current = target;
         setAwaitingSeek(true);
-        setShowToc(false);
+        closeToc(false); // Search is opening over it — see closeToc's own note.
         setShowBookmarks(false);
         setShowSearch(true);
         return;
@@ -1098,7 +1183,7 @@ export function ReaderScreen({
       setShowBookmarks(false);
       send({ type: 'goTo', target });
     },
-    [search, send],
+    [closeToc, search, send],
   );
 
   const stepHit = useCallback(
@@ -1157,7 +1242,9 @@ export function ReaderScreen({
    */
   const bookmarksForOpenBook = useMemo(() => {
     if (format === null) return bookmarks;
-    return bookmarks.filter((b) => (format === 'PDF' ? b.target.kind === 'page' : b.target.kind === 'href'));
+    return bookmarks.filter((b) =>
+      format === 'PDF' ? b.target.kind === 'page' : b.target.kind === 'href',
+    );
   }, [bookmarks, format]);
 
   /**
@@ -1226,7 +1313,6 @@ export function ReaderScreen({
     send !== null &&
     !showToc &&
     !showSearch &&
-    !showTts &&
     !showBookmarks &&
     !isBusy &&
     !isObscured &&
@@ -1249,24 +1335,40 @@ export function ReaderScreen({
       {error !== null && (
         <View style={styles.errorBanner} accessibilityRole="alert" accessibilityLiveRegion="polite">
           <Text style={styles.errorCode}>{error.code}</Text>
+          {/* `error.message` DIRECTLY, not `formatDiagnosticErrorMessage(error)`. That formatter is
+              for CAUGHT THROWABLES — it digs a `cause` out of an Error and composes "CODE: detail".
+              A `ReaderError` is neither: it is a structured `{code, message}` the bridge already
+              parsed, with no `cause` to dig for. Passed through the formatter it matched no branch
+              and fell to `String(error)`, which renders a plain object as "[object Object]" — the
+              banner showed that instead of the message. The code is on its own line above, so
+              composing it in here would duplicate it even once the formatter handles this shape. */}
           <Text style={styles.errorMessage}>{error.message}</Text>
         </View>
       )}
 
-      <View style={styles.toolbar}>
+      {/* THE BACKGROUND, for `anyPanelOpen`'s purposes — this row, the book, the two on-page
+          badges and the bottom row. Each carries the pair separately because a panel is a sibling
+          of the book inside `viewer`; there is no single node that holds all of this and none of
+          the panels. See `anyPanelOpen`'s own note. */}
+      <View
+        style={styles.toolbar}
+        accessibilityElementsHidden={anyPanelOpen}
+        importantForAccessibility={anyPanelOpen ? 'no-hide-descendants' : 'yes'}
+      >
         <Pressable
           accessibilityRole="button"
           // Required rather than stylistic: a glyph child gives a screen reader nothing to say,
           // and every existing test finds buttons by accessible name.
           accessibilityLabel="Search this book"
+          accessibilityState={{ expanded: showSearch }}
+          ref={searchButtonRef}
           onPress={() => {
             // Mutual exclusion with Contents, Bookmarks (and TTS). A UI decision — one panel's
             // worth of the viewer is all there is room for. It no longer also carries the job of
             // keeping "Close" unambiguous: each panel now names its own ("Close search",
             // "Close bookmarks", "Close contents"), so the exclusion is free to change on its
             // own merits without renaming a control out from under the test suite.
-            setShowToc(false);
-            setShowTts(false);
+            closeToc(false); // this panel is taking over — see closeToc's own note.
             setShowBookmarks(false);
             setShowSearch((open) => !open);
           }}
@@ -1278,34 +1380,16 @@ export function ReaderScreen({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Bookmarks"
+          accessibilityState={{ expanded: showBookmarks }}
           onPress={() => {
-            setShowToc(false);
+            closeToc(false);
             setShowSearch(false);
-            setShowTts(false);
             setShowBookmarks((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔖</Text>
         </Pressable>
-
-        {/* EPUB-only (readerTextProvider.ts is CFI-based) and gated on Accessibility's one
-            exported boolean — see ttsEnabled's own note above. */}
-        {ttsEnabled && format === 'EPUB' && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Listen to this book"
-            onPress={() => {
-              setShowToc(false);
-              setShowSearch(false);
-              setShowBookmarks(false);
-              setShowTts((open) => !open);
-            }}
-            style={styles.toolbarButton}
-          >
-            <Text style={styles.toolbarIcon}>🔊</Text>
-          </Pressable>
-        )}
 
         {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
             the rightmost item in the row rather than a floating overlay on top of it. */}
@@ -1330,6 +1414,11 @@ export function ReaderScreen({
             onHostError={raiseError}
             onReady={handleReady}
             scrollEnabled={layoutPrefs.flow === 'scrolled-doc'}
+            hidden={anyPanelOpen}
+            // The named stop between the toolbar and the bottom row. Says what this IS, not what it
+            // contains — the document's own structure lives in the WebView's accessibility tree,
+            // which no React Native prop can reach or describe.
+            accessibilityLabel="Book content"
           />
         )}
 
@@ -1348,6 +1437,7 @@ export function ReaderScreen({
         */}
         {swipeEnabled && (
           <View
+            testID="reader-swipe-catcher"
             style={FILL}
             {...panResponder.panHandlers}
             accessibilityElementsHidden
@@ -1383,7 +1473,14 @@ export function ReaderScreen({
           none is set, to stay consistent with how the rest of this screen stacks overlays.
         */}
         {isCurrentPositionBookmarked && (
-          <View style={styles.bookmarkBadgeWrap}>
+          // Hidden with the rest of the background: this is announced (`accessibilityRole="image"`,
+          // not `accessibilityElementsHidden` — see its note below), so unlike the truly decorative
+          // overlays it WOULD be a stop behind an open panel.
+          <View
+            style={styles.bookmarkBadgeWrap}
+            accessibilityElementsHidden={anyPanelOpen}
+            importantForAccessibility={anyPanelOpen ? 'no-hide-descendants' : 'yes'}
+          >
             <Pressable
               testID="reader-bookmark-badge"
               accessibilityRole="image"
@@ -1414,6 +1511,43 @@ export function ReaderScreen({
                 <Text style={styles.bookmarkTooltipText}>Page Bookmarked</Text>
               </View>
             )}
+          </View>
+        )}
+
+        {/*
+          THE "READING ALOUD" CUE. Purely a visual state indicator: no `onPress`, no `onLongPress`,
+          and `pointerEvents="none"` so it cannot swallow a tap or a swipe meant for the page under
+          it — unlike the bookmark badge above, which has to receive touches for its tooltip. TTS is
+          driven from the transport panel and from the preference; this only reports that it is
+          running.
+
+          WHAT IT HONESTLY MEANS: "this book is being read aloud right now", anchored on the page
+          so the state is visible where the user is looking. It does NOT mean "the sentence being
+          spoken is on this page" — nothing host-side can know that. `setSpokenRange` paints into
+          the WebView and the reader does not follow the voice (TTS_PROVIDER.md open item 2), so
+          speech can run past the visible page, and a page turn moves the reader without moving the
+          voice. Promising the stronger meaning would need the WebView to report whether a CFI is
+          on screen, which is not on the bridge.
+
+          Gated on 'speaking' alone, not 'paused': paused keeps the highlight but nothing is being
+          read, and a speaker icon over a silent book is the kind of indicator people learn to
+          distrust.
+
+          STACKED BELOW THE BOOKMARK BADGE when both are showing — see `ttsCueWrap`'s own note for
+          why the offset is computed rather than left to flow.
+        */}
+        {ttsSession.status === 'speaking' && (
+          <View
+            testID="reader-tts-cue"
+            accessibilityRole="image"
+            accessibilityLabel="Reading aloud"
+            pointerEvents="none"
+            // Announced, so it needs hiding behind a panel for the same reason the badge does.
+            accessibilityElementsHidden={anyPanelOpen}
+            importantForAccessibility={anyPanelOpen ? 'no-hide-descendants' : 'yes'}
+            style={[styles.ttsCueWrap, isCurrentPositionBookmarked && styles.ttsCueBelowBookmark]}
+          >
+            <Text style={styles.ttsCueIcon}>🔊</Text>
           </View>
         )}
 
@@ -1497,6 +1631,10 @@ export function ReaderScreen({
                         accessibilityState={{ disabled: !isNavigable }}
                         onPress={() => {
                           goTo(item.target);
+                          // THE ONE "restore focus" CASE. `goTo` deliberately does not do this
+                          // itself — it is shared with bookmarks and the page-jump field, where
+                          // Contents is not where the user came from. Here it is.
+                          focusOn(contentsButtonRef);
                         }}
                         // Indent, do not inset the row: paddingLeft keeps the whole
                         // width tappable at every depth, where marginLeft would shrink
@@ -1538,10 +1676,17 @@ export function ReaderScreen({
               #ffffff (src/theme/ landing, or a dark theme) these two constants move
               with it — which is why they sit next to it rather than inline.
             */}
+              {/* `pointerEvents="none"` keeps them out of the way of a finger; the two a11y props
+                  keep them out of the way of a screen reader. Both are needed and neither implies
+                  the other — a swipe-to-next-element walk visits nodes regardless of hit-testing,
+                  so without these the traversal stops twice on a decorative gradient with nothing
+                  to announce. Same pair as the swipe catcher and the privacy cover. */}
               {fades.top && (
                 <LinearGradient
                   testID="reader-toc-fade-top"
                   pointerEvents="none"
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
                   colors={TOC_FADE_DOWN}
                   style={[styles.tocFade, styles.tocFadeTop]}
                 />
@@ -1550,6 +1695,8 @@ export function ReaderScreen({
                 <LinearGradient
                   testID="reader-toc-fade-bottom"
                   pointerEvents="none"
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
                   colors={TOC_FADE_UP}
                   style={[styles.tocFade, styles.tocFadeBottom]}
                 />
@@ -1580,6 +1727,12 @@ export function ReaderScreen({
             onClose={() => {
               cancelPendingSeek();
               setShowSearch(false);
+              // THE EXPLICIT-CLOSE PATH ONLY. The user dismissed the panel without choosing
+              // anything, so the toolbar button they opened it from is where they were. Selecting a
+              // result also closes this panel and deliberately does NOT restore focus here — that
+              // journey ends somewhere else entirely (the match bar, or the book), which is its own
+              // open question and not answered by sending the user back to the toolbar.
+              focusOn(searchButtonRef);
             }}
             status={search.status}
             hits={search.hits}
@@ -1600,8 +1753,7 @@ export function ReaderScreen({
             submittedTerm={search.submittedTerm}
             onStep={stepHit}
             onOpenResults={() => {
-              setShowToc(false);
-              setShowTts(false);
+              closeToc(false); // the results panel is opening — see closeToc's own note.
               setShowBookmarks(false);
               setShowSearch(true);
             }}
@@ -1645,28 +1797,32 @@ export function ReaderScreen({
 
       {/* Docked below the viewer rather than an absolute overlay like the TOC/Search panels — its
           own styling already assumes ordinary document flow (a border-top separator, not a floating
-          panel with fades). Rendered only once `ttsProvider` is real: while it's null the session
-          passed to useTtsSession is the inert singleton (see ttsProvider's own note), which must
-          never be shown as if it were a working session. */}
-      {showTts && ttsProvider !== null && <TtsControls session={ttsSession} />}
+          panel with fades). Shown on exactly the condition that gives `useTtsSession` something to
+          drive, so a transport is never on screen over a session that cannot speak. */}
+      {ttsControlsVisible && <TtsControls session={ttsSession} />}
 
-      <View style={styles.controls}>
-        {/* Explicit label because the glyph carries no accessible name — "‹ Prev" reads as the
+      {!ttsControlsVisible && (
+        <View
+          style={styles.controls}
+          accessibilityElementsHidden={controlsHidden}
+          importantForAccessibility={controlsHidden ? 'no-hide-descendants' : 'yes'}
+        >
+          {/* Explicit label because the glyph carries no accessible name — "‹ Prev" reads as the
             guillemet plus an abbreviation. `accessibilityState` is explicit for the same reason it
             is on Next and Contents: `disabled` alone leaves it to the platform to synthesise, and
             this row's disabled states are load-bearing (see `prevDisabled`). */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Previous page"
-          accessibilityState={{ disabled: prevDisabled }}
-          disabled={prevDisabled}
-          onPress={() => send?.({ type: 'prev' })}
-          style={[styles.button, prevDisabled && styles.buttonDisabled]}
-        >
-          <Text style={styles.buttonText}>‹ Prev</Text>
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Previous page"
+            accessibilityState={{ disabled: prevDisabled }}
+            disabled={prevDisabled}
+            onPress={() => send?.({ type: 'prev' })}
+            style={[styles.button, prevDisabled && styles.buttonDisabled]}
+          >
+            <Text style={styles.buttonText}>‹ Prev</Text>
+          </Pressable>
 
-        {/*
+          {/*
           THE COUNT STAYS OUT OF THE ACCESSIBLE NAME. The visible text carries it, but a name that
           changes from "Contents (0)" to "Contents (37)" when the `toc` message lands renames a
           control the user may already have focused. The name is stable; the count is decoration.
@@ -1676,23 +1832,23 @@ export function ReaderScreen({
           invites VoiceOver's "collapsed, expandable" phrasing for a button that will never expand.
           Disabled is the whole truth in that state; expanded is the whole truth in the other.
         */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={showToc ? 'Close contents' : 'Contents'}
-          accessibilityState={toc.length === 0 ? { disabled: true } : { expanded: showToc }}
-          disabled={toc.length === 0}
-          onPress={() => {
-            setShowSearch(false); // mutual exclusion — see the toolbar button above
-            setShowTts(false);
-            setShowBookmarks(false);
-            setShowToc((open) => !open);
-          }}
-          style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
-        >
-          <Text style={styles.buttonText}>{showToc ? 'Close' : `Contents (${toc.length})`}</Text>
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={showToc ? 'Close contents' : 'Contents'}
+            accessibilityState={toc.length === 0 ? { disabled: true } : { expanded: showToc }}
+            ref={contentsButtonRef}
+            disabled={toc.length === 0}
+            onPress={() => {
+              setShowSearch(false); // mutual exclusion — see the toolbar button above
+              setShowBookmarks(false);
+              setShowToc((open) => !open);
+            }}
+            style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
+          >
+            <Text style={styles.buttonText}>{showToc ? 'Close' : `Contents (${toc.length})`}</Text>
+          </Pressable>
 
-        {/*
+          {/*
           THE PAGE INDICATOR, DOUBLING AS THE PAGE-JUMP AFFORDANCE. PDF-only by construction rather
           than by choice: `position` is discriminated by addressing scheme, and a reflowable book
           reports a CFI because it has no stable page. Rendering nothing for a CFI is the honest
@@ -1707,51 +1863,52 @@ export function ReaderScreen({
           Contents stays correctly disabled for it — most PDFs in the wild are that. This is the
           navigation such a book can actually offer.
         */}
-        {position?.kind === 'page' &&
-          (pageJump === null ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Page ${position.page} of ${position.pageCount}. Go to a page.`}
-              onPress={() => setPageJump('')}
-              testID="reader-page-indicator"
-            >
-              <Text style={styles.pageIndicator}>
-                {position.page} / {position.pageCount}
-              </Text>
-            </Pressable>
-          ) : (
-            <TextInput
-              testID="reader-page-jump"
-              // The placeholder carries the RANGE, which is the whole benefit of the host knowing
-              // pageCount: the bound is visible before you type rather than discovered by being
-              // refused. A placeholder is not a reliable accessible name on Android, so the label is
-              // explicit as well.
-              accessibilityLabel={`Go to page, 1 to ${position.pageCount}`}
-              placeholder={`1–${position.pageCount}`}
-              placeholderTextColor="#8a8a8a"
-              style={styles.pageJump}
-              value={pageJump}
-              onChangeText={setPageJump}
-              onSubmitEditing={submitPageJump}
-              onBlur={() => setPageJump(null)}
-              keyboardType="number-pad"
-              returnKeyType="go"
-              autoFocus
-              maxLength={String(position.pageCount).length}
-            />
-          ))}
+          {position?.kind === 'page' &&
+            (pageJump === null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Page ${position.page} of ${position.pageCount}. Go to a page.`}
+                onPress={() => setPageJump('')}
+                testID="reader-page-indicator"
+              >
+                <Text style={styles.pageIndicator}>
+                  {position.page} / {position.pageCount}
+                </Text>
+              </Pressable>
+            ) : (
+              <TextInput
+                testID="reader-page-jump"
+                // The placeholder carries the RANGE, which is the whole benefit of the host knowing
+                // pageCount: the bound is visible before you type rather than discovered by being
+                // refused. A placeholder is not a reliable accessible name on Android, so the label is
+                // explicit as well.
+                accessibilityLabel={`Go to page, 1 to ${position.pageCount}`}
+                placeholder={`1–${position.pageCount}`}
+                placeholderTextColor="#8a8a8a"
+                style={styles.pageJump}
+                value={pageJump}
+                onChangeText={setPageJump}
+                onSubmitEditing={submitPageJump}
+                onBlur={() => setPageJump(null)}
+                keyboardType="number-pad"
+                returnKeyType="go"
+                autoFocus
+                maxLength={String(position.pageCount).length}
+              />
+            ))}
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Next page"
-          accessibilityState={{ disabled: nextDisabled }}
-          disabled={nextDisabled}
-          onPress={() => send?.({ type: 'next' })}
-          style={[styles.button, nextDisabled && styles.buttonDisabled]}
-        >
-          <Text style={styles.buttonText}>Next ›</Text>
-        </Pressable>
-      </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next page"
+            accessibilityState={{ disabled: nextDisabled }}
+            disabled={nextDisabled}
+            onPress={() => send?.({ type: 'next' })}
+            style={[styles.button, nextDisabled && styles.buttonDisabled]}
+          >
+            <Text style={styles.buttonText}>Next ›</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -1878,6 +2035,36 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   bookmarkTooltipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
+
+  // SAME CORNER AS THE BOOKMARK BADGE, and deliberately its own absolute element rather than a
+  // second child of `bookmarkBadgeWrap`. Sharing that wrap would put this in normal flow under the
+  // "Page Bookmarked" tooltip, so the cue would jump down 24pt every time the tooltip appeared and
+  // back when it went. An explicit offset costs one style and never moves.
+  ttsCueWrap: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Cool blue against the badge's warm gold: the two can be on screen at once, and colour is
+    // what separates "you bookmarked this" from "this is being read aloud" at a glance.
+    backgroundColor: '#d6e4ff',
+    borderWidth: 1,
+    borderColor: '#5b8def',
+    shadowColor: '#000000',
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 3,
+  },
+  // 8 (badge top) + 32 (badge height) + 8 (gap) — clears the bookmark badge exactly, so the two
+  // read as a column rather than a collision. Applied only while the badge is actually showing;
+  // otherwise the cue takes the corner itself rather than floating below an empty slot.
+  ttsCueBelowBookmark: { top: 48 },
+  ttsCueIcon: { fontSize: 15 },
 
   errorBanner: {
     backgroundColor: '#fdf2f2',
