@@ -18,6 +18,7 @@ import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
 import { api, ApiError } from './syncApi';
 import { applyDownloadRecord, recordEntitlementCheck } from './offlineLock';
+import { setSyncRunner } from './syncTrigger';
 
 /** One place that knows how to apply a server record for each entity type. */
 const TABLES = {
@@ -82,6 +83,12 @@ export const syncEngine = {
     return inFlight !== null;
   },
 };
+
+// Registers the actual runner behind syncTrigger.ts's requestSync() - see that file's header
+// for why this indirection exists (breaks an import cycle back through every syncable table).
+setSyncRunner(() => {
+  void syncEngine.run();
+});
 
 async function execute(): Promise<SyncReport> {
   const report: SyncReport = {

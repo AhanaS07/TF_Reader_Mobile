@@ -1,14 +1,15 @@
 // src/features/sync/mock/ — throwaway scaffolding, NOT part of the real app surface.
 //
 // Exists only to visually exercise the sync layer's local reads before any real library screen
-// consumes them: tap "Downloaded" to read expo-sqlite's `downloads` table via downloadTable, tap
-// "Bookmarked" to read `bookmarks` via bookmarkTable - both straight from local SQLite, no network,
-// exactly what a real screen would call. DELETE THIS WHOLE FOLDER once a real library/bookmarks UI
-// lands - it exists so "does the local read side actually work" can be seen on a device today.
+// consumes them: tap "Downloaded" to read expo-sqlite's `downloads` table via downloadTable,
+// tap "Bookmarked" to read straight from Mongo when online and fall back to expo-sqlite's
+// `bookmarks` table (via bookmarkTable) when offline - see showBookmarked() below. DELETE THIS
+// WHOLE FOLDER once a real library/bookmarks UI lands - it exists so "do the local AND live
+// reads actually work" can be seen on a device today.
 //
-// Deliberately reads every book for the user (`listActive(USER_ID)`, no bookId), not just the
-// prototype's single hard-coded BOOK_ID - this predates a real book picker, so showing everything
-// the device has is the only way to prove downloadStore/bookmarkStore's local reads work at all.
+// Deliberately reads every book for the user, not just the prototype's single hard-coded
+// BOOK_ID - this predates a real book picker, so showing everything the device/server has is the
+// only way to prove the reads actually work.
 //
 // Tapping a downloaded row calls openBook() (Download, Abhinav) - the same unified licence gate
 // BookListScreen.tsx uses (checkLicense → decrypt). For a book already on disk it short-circuits
@@ -24,21 +25,27 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { DownloadFailure } from '@/features/download/errors';
 import { openBook } from '@/features/download/openBook';
 import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
+import { bookmarkMapper } from '@/features/sync/localDb/mappers';
 import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { downloadTable } from '@/features/sync/stores/downloadStore';
+import { api } from '@/features/sync/syncApi';
 import { USER_ID } from '@/features/sync/syncConfig';
+import { useConnectivity } from '@/features/sync/useConnectivity';
 import type { ContentFormat } from '@/shared/contracts';
 
 import type { RootStackParamList } from '@/navigation/RootNavigator';
 
 type Tab = 'downloaded' | 'bookmarked';
+type BookmarkSource = 'mongo' | 'sqlite';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MockLibrary'>;
 
 export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
+  const online = useConnectivity();
   const [tab, setTab] = useState<Tab | null>(null);
   const [downloads, setDownloads] = useState<DownloadRow[]>([]);
   const [bookmarks, setBookmarks] = useState<BookmarkRow[]>([]);
+  const [bookmarkSource, setBookmarkSource] = useState<BookmarkSource>('sqlite');
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
 
@@ -49,10 +56,30 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
     setLoading(false);
   };
 
+  /**
+   * Online -> straight from Mongo (`api.list`), no local SQLite involved at all - proves the
+   * "undownloaded book, read online" path this mock exists to exercise (see the discussion this
+   * screen followed from: a bookmark that lives only on the server for a book never downloaded
+   * here must still be visible while reading it online). Offline -> `bookmarkTable.listActive`,
+   * the durable local copy, same as before. Falls back to SQLite on a Mongo error too (e.g. the
+   * device THINKS it has a route but the backend itself is down) rather than showing nothing.
+   */
   const showBookmarked = async () => {
     setTab('bookmarked');
     setLoading(true);
+    if (online) {
+      try {
+        const response = await api.list<Record<string, unknown>>('bookmarks', { userId: USER_ID });
+        setBookmarks((response.data ?? []).map((record) => bookmarkMapper.toRow(record)));
+        setBookmarkSource('mongo');
+        setLoading(false);
+        return;
+      } catch (error) {
+        console.error('showBookmarked: Mongo read failed, falling back to local SQLite', error);
+      }
+    }
     setBookmarks(await bookmarkTable.listActive(USER_ID));
+    setBookmarkSource('sqlite');
     setLoading(false);
   };
 
@@ -107,7 +134,11 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
         </Pressable>
       </View>
 
-      {loading && <Text style={styles.status}>Loading from local SQLite…</Text>}
+      {loading && (
+        <Text style={styles.status}>
+          {tab === 'bookmarked' && online ? 'Loading from Mongo…' : 'Loading from local SQLite…'}
+        </Text>
+      )}
 
       {tab === 'downloaded' && !loading && (
         <FlatList
@@ -136,20 +167,27 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
       )}
 
       {tab === 'bookmarked' && !loading && (
-        <FlatList
-          data={bookmarks}
-          keyExtractor={(row) => row.id}
-          contentContainerStyle={bookmarks.length === 0 && styles.emptyContainer}
-          ListEmptyComponent={
-            <Text style={styles.empty}>No rows in the local `bookmarks` table.</Text>
-          }
-          renderItem={({ item }) => (
-            <View style={styles.row}>
-              <Text style={styles.rowTitle}>{item.name ?? item.chapter_id ?? item.id}</Text>
-              <Text style={styles.rowSubtitle}>book: {item.book_id}</Text>
-            </View>
-          )}
-        />
+        <>
+          <Text style={styles.sourceLabel}>
+            Source: {bookmarkSource === 'mongo' ? 'Mongo (live)' : 'local SQLite'}
+          </Text>
+          <FlatList
+            data={bookmarks}
+            keyExtractor={(row) => row.id}
+            contentContainerStyle={bookmarks.length === 0 && styles.emptyContainer}
+            ListEmptyComponent={
+              <Text style={styles.empty}>
+                No bookmarks found ({bookmarkSource === 'mongo' ? 'Mongo' : 'local SQLite'}).
+              </Text>
+            }
+            renderItem={({ item }) => (
+              <View style={styles.row}>
+                <Text style={styles.rowTitle}>{item.name ?? item.chapter_id ?? item.id}</Text>
+                <Text style={styles.rowSubtitle}>book: {item.book_id}</Text>
+              </View>
+            )}
+          />
+        </>
       )}
 
       {tab === null && !loading && (
@@ -175,6 +213,7 @@ const styles = StyleSheet.create({
   tabLabel: { fontSize: 14, fontWeight: '600', color: '#444444' },
   tabLabelActive: { color: '#ffffff' },
   status: { color: '#666666', textAlign: 'center', marginTop: 24 },
+  sourceLabel: { fontSize: 11, color: '#666666', marginBottom: 8 },
   empty: { color: '#888888', textAlign: 'center' },
   emptyContainer: { flexGrow: 1, justifyContent: 'center' },
   row: {

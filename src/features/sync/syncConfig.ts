@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 /**
  * Fixed prototype identity. Every local record and every synced record uses
@@ -39,6 +40,15 @@ function resolveBackendHost(): string {
   if (host && host !== 'localhost' && host !== '127.0.0.1') {
     return host;
   }
+  // hostUri gave nothing usable (empty, or itself localhost/127.0.0.1) - on a physical device or
+  // the iOS simulator that correctly means the dev machine itself. An ANDROID EMULATOR is its own
+  // VM though: "localhost" there is the emulator, not the host machine, and no hostUri lookup can
+  // ever produce the host's real address from inside it - 10.0.2.2 is the documented emulator ->
+  // host alias, not a value that comes from resolving anything. Confirmed 2026-08-26: without this,
+  // sync silently posts into a black hole on the emulator (outbox never drains) while the same code
+  // works fine on a physical device or iOS sim, because on those the hostUri branch above already
+  // returns a real, reachable address.
+  if (Platform.OS === 'android') return '10.0.2.2';
   return 'localhost';
 }
 
@@ -90,3 +100,12 @@ export const MAX_PUSH_RETRIES = 6;
 
 /** How long a single network call may take before we treat the device as offline. */
 export const REQUEST_TIMEOUT_MS = 8000;
+
+/**
+ * How long a local write waits, with no further write arriving, before it triggers a sync run -
+ * see syncTrigger.ts. Long enough that a burst of writes to the same record (e.g. a page turn on
+ * every relocate while flipping through a book) collapses into one run instead of one per write;
+ * short enough that a single bookmark/highlight/prefs edit still reaches the server promptly
+ * without waiting for the next connectivity edge (useAutoSync.ts) or app restart.
+ */
+export const PUSH_ON_ENQUEUE_DEBOUNCE_MS = 1500;

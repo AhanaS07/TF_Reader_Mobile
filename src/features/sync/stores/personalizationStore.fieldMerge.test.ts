@@ -174,6 +174,50 @@ describe('stale updates', () => {
   });
 });
 
+describe('convergence: a merge that diverges from what it just pulled', () => {
+  /**
+   * The gap Vaishnavi flagged (2026-08-26): a field-merge that kept a locally-newer field
+   * previously wrote back `synced: existing.synced` unconditionally - so a merge landing on an
+   * already-fully-synced row (no PENDING edit at merge time) never got pushed, even though the
+   * merged result now holds a field value the server's own document does not have. The server
+   * stays stale until some unrelated later edit happens to carry a fresh value for that field
+   * too. Fixed by forcing `synced: 0` whenever the merge keeps a field the incoming record does
+   * not itself carry the same value for - `pull()` already refreshes the outbox for any merged
+   * row that comes back `synced: 0`, so no change was needed there, only in what triggers it.
+   */
+  it('marks the row unsynced when it keeps a field the incoming record does not carry, even with no pending edit', async () => {
+    await personalizationTable.applyServerRecord(
+      serverRecord({ updatedAt: '2026-08-20T08:00:00.000Z' }),
+    );
+
+    // A local edit to fontFamily, at T1 - then simulate it having ALREADY been pushed and
+    // acknowledged (synced: 1), same as a real push would leave it. No pending edit remains.
+    await personalizationStore.update({ font_family: 'serif' });
+    await personalizationTable.markSynced([personalizationId(USER)]);
+    expect((await currentRow())?.synced).toBe(1);
+
+    // A pull arrives for a DIFFERENT field (theme, genuinely newer) from some other device's
+    // push - one that raced ahead of this device's fontFamily edit and so still carries the OLD
+    // fontFamily value, with no field_updated_at stamp for it at all.
+    const applied = await personalizationTable.applyServerRecord(
+      serverRecord({
+        theme: 'dark',
+        fontFamily: 'system', // stale relative to this device's own edit above
+        updatedAt: future(120_000),
+        fieldUpdatedAt: { theme: future(120_000) },
+      }),
+    );
+
+    expect(applied).toBe(true);
+    const row = await currentRow();
+    expect(row?.theme).toBe('dark'); // remote's genuinely newer field landed
+    expect(row?.font_family).toBe('serif'); // this device's edit survived the merge
+    // The row now holds something ('serif') the incoming record did not - the server's own copy
+    // is stale for that field, so this must be re-pushed even though nothing was pending.
+    expect(row?.synced).toBe(0);
+  });
+});
+
 describe('migration compatibility', () => {
   it('a pre-migration row (empty field_updated_at) falls back to whole-row updated_at per field', async () => {
     // Simulates a row written by the app before this feature existed: `field_updated_at`
