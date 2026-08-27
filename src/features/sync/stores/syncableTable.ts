@@ -2,6 +2,7 @@ import { getDatabase, nowIso } from '../localDb/database';
 import type { EntityType, OutboxOperation } from '../localDb/types';
 import { outboxStore } from './outboxStore';
 import { parseFieldTimestamps, stringifyFieldTimestamps } from './fieldTimestamps';
+import { requestSync } from '../syncTrigger';
 
 interface SyncableTableOptions<TRow> {
   table: string;
@@ -204,6 +205,9 @@ export function createSyncableTable<TRow extends RowShape>(
             toServer(stamped),
           );
         });
+        // Outside the transaction: this only schedules a future sync attempt, it is not part of
+        // the write itself, and must run even if the caller never awaits push draining it.
+        requestSync();
         return stamped;
       };
 
@@ -389,6 +393,12 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
   const merged: any = { ...existing };
   const mergedTimes: Record<string, string> = { ...existingTimes };
   let changed = false;
+  // Whether the merged row keeps a field the incoming record does NOT carry the same value for
+  // - i.e. the server's own document, whatever pushed `incoming`, is missing something this
+  // device now knows. Tracked separately from `changed` (which only means "adopted something
+  // FROM incoming") because it is the opposite direction: it means incoming is stale relative to
+  // the merge, not that local was.
+  let divergesFromIncoming = false;
 
   for (const field of fields) {
     const localTime = existingTimes[field];
@@ -409,6 +419,8 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
       merged[field] = (incoming as any)[field];
       mergedTimes[field] = remoteTime ?? incoming.updated_at;
       changed = true;
+    } else if (merged[field] !== (incoming as any)[field]) {
+      divergesFromIncoming = true;
     }
   }
 
@@ -418,11 +430,14 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
   merged.updated_at = isAfter(incoming.updated_at, existing.updated_at)
     ? incoming.updated_at
     : existing.updated_at;
-  // NOT hard-coded to 1: if `existing` already had a pending local edit (synced: 0), that
-  // status survives the merge regardless of which individual fields the merge just adopted
-  // from the incoming record - the caller (`applyServerRecord`) is what refreshes the outbox
-  // payload so the pending edit and the newly-merged field travel together on the next push.
-  merged.synced = existing.synced;
+  // `existing.synced === 0` (a pending local edit) always survives the merge, as before. NEW:
+  // also force 0 when the merge kept a field `incoming` did not carry - otherwise that field
+  // lives only on this device and the server's own copy of it goes stale until some unrelated
+  // edit happens to carry a fresh value along with it. `pull()` already enqueues an outbox
+  // refresh whenever the merged row comes back `synced: 0`; this is the only change needed to
+  // make that existing mechanism cover the "no pending edit, pure remote-wins-mostly merge" case
+  // too, instead of just "there was already a pending edit".
+  merged.synced = existing.synced === 0 || divergesFromIncoming ? 0 : 1;
   merged.server_updated_at = incoming.updated_at;
   return { row: merged as TRow, changed: true };
 }
