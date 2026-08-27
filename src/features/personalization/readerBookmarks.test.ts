@@ -6,9 +6,8 @@
 // authoritative set), so it doubles as the checklist the panel UI must satisfy once wired.
 
 import type { BookmarkRow } from '@/features/sync/localDb/types';
-import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
-import { syncEngine } from '@/features/sync/syncEngine';
 
+import { annotationsRouter } from '@/features/personalization/annotationsRouter';
 import {
   addCurrentEpubBookmark,
   addCurrentPdfBookmark,
@@ -18,12 +17,25 @@ import {
   toReaderBookmarks,
 } from './readerBookmarks';
 
-// A write nudges a sync (pushOnEdit.ts's `pushNow`); mock the engine so it neither hits the real DB
-// nor makes a network call here, and so we can assert it fires on writes but never on a read.
-jest.mock('@/features/sync/syncEngine', () => ({ syncEngine: { run: jest.fn() } }));
+// The facades route persistence through annotationsRouter (online→Mongo / offline→SQLite). Mock it so
+// these pin the facade WIRING — the right router call with the right args, and the fresh set re-read
+// and re-mapped — not the router internals (covered in annotationsRouter.test.ts).
+jest.mock('@/features/personalization/annotationsRouter', () => ({
+  annotationsRouter: {
+    bookmarks: {
+      list: jest.fn(),
+      addForCfi: jest.fn().mockResolvedValue(undefined),
+      addForPage: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+      rename: jest.fn().mockResolvedValue(undefined),
+    },
+  },
+}));
+
+const router = annotationsRouter.bookmarks as unknown as Record<string, jest.Mock>;
 
 beforeEach(() => {
-  (syncEngine.run as jest.Mock).mockClear();
+  jest.clearAllMocks();
 });
 
 function row(overrides: Partial<BookmarkRow>): BookmarkRow {
@@ -107,81 +119,59 @@ describe('toReaderBookmarks', () => {
   });
 });
 
-// --- the host call-sites: list-on-open, add/remove-on-action ------------------
-
-afterEach(() => {
-  jest.restoreAllMocks();
-});
+// --- the host call-sites: list-on-open, add/remove/rename-on-action -----------
+//
+// Each write goes through annotationsRouter (mocked); the facade then re-reads via router.list and
+// re-maps. So a write test stubs router.list with the fresh set and asserts the router method + args.
 
 describe('loadBookmarks', () => {
-  it('turns stored rows into navigable panel rows on open', async () => {
-    const list = jest
-      .spyOn(bookmarkStore, 'list')
-      .mockResolvedValue([row({ id: 'a' }), pdfRow({ id: 'b' })]);
+  it('turns router rows into navigable panel rows on open', async () => {
+    router.list.mockResolvedValue([row({ id: 'a' }), pdfRow({ id: 'b' })]);
 
     const { bookmarks, skippedIds } = await loadBookmarks('book-42');
 
-    // Scoped to THIS book, not the global BOOK_ID constant (undefined keeps the store's user default).
-    expect(list).toHaveBeenCalledWith(undefined, 'book-42');
+    expect(router.list).toHaveBeenCalledWith('book-42'); // scoped to THIS book
     expect(bookmarks.map((b) => b.id)).toEqual(['a', 'b']);
     expect(bookmarks[1].target).toEqual({ kind: 'page', page: 7 });
     expect(skippedIds).toEqual([]);
-    // A read changes nothing, so it must not kick a sync — only writes do.
-    expect(syncEngine.run).not.toHaveBeenCalled();
   });
 });
 
-describe('add / remove call-sites', () => {
+describe('add / remove / rename call-sites', () => {
   it('bookmarks the current EPUB position and returns the fresh set', async () => {
-    const add = jest.spyOn(bookmarkStore, 'addForCfi').mockResolvedValue({} as BookmarkRow);
-    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([row({ id: 'new' })]);
+    router.list.mockResolvedValue([row({ id: 'new' })]);
 
     const { bookmarks } = await addCurrentEpubBookmark('book-42', 'epubcfi(/6/4)', 'chapter-1', 'Start');
 
-    expect(add).toHaveBeenCalledWith('epubcfi(/6/4)', 'chapter-1', 'Start', 'book-42');
+    // chapterId defaults to null (not undefined) when absent; here it's passed through.
+    expect(router.addForCfi).toHaveBeenCalledWith('epubcfi(/6/4)', 'chapter-1', 'Start', 'book-42');
     expect(bookmarks.map((b) => b.id)).toEqual(['new']);
-    // The write nudges a sync so it does not wait for the next reconnect.
-    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('bookmarks the current PDF page through addForPage', async () => {
-    const add = jest.spyOn(bookmarkStore, 'addForPage').mockResolvedValue({} as BookmarkRow);
-    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([pdfRow({ id: 'new' })]);
+    router.list.mockResolvedValue([pdfRow({ id: 'new' })]);
 
     await addCurrentPdfBookmark('book-42', 7, 'Chart');
 
-    expect(add).toHaveBeenCalledWith(7, 'Chart', 'book-42');
-    expect(syncEngine.run).toHaveBeenCalledTimes(1);
+    expect(router.addForPage).toHaveBeenCalledWith(7, 'Chart', 'book-42');
   });
 
-  it('deletes by id and returns a set no longer containing it', async () => {
-    const remove = jest.spyOn(bookmarkStore, 'remove').mockResolvedValue();
-    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([row({ id: 'survivor' })]);
+  it('deletes by id (with bookId, for routing) and returns a set without it', async () => {
+    router.list.mockResolvedValue([row({ id: 'survivor' })]);
 
     const { bookmarks } = await removeBookmark('book-42', 'victim');
 
-    expect(remove).toHaveBeenCalledWith('victim');
+    expect(router.remove).toHaveBeenCalledWith('victim');
     expect(bookmarks.map((b) => b.id)).toEqual(['survivor']);
-    // Delete is a write too — the tombstone must propagate now, not on the next reconnect.
-    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 
   it('renames in place by id, keeping the id, and returns the fresh set', async () => {
-    const rename = jest
-      .spyOn(bookmarkStore, 'rename')
-      .mockResolvedValue({} as BookmarkRow);
-    // The reload reflects the new name under the SAME id — id and target are untouched by a rename.
-    jest
-      .spyOn(bookmarkStore, 'list')
-      .mockResolvedValue([row({ id: 'b1', name: 'New name' })]);
+    router.list.mockResolvedValue([row({ id: 'b1', name: 'New name' })]);
 
     const { bookmarks } = await renameBookmark('book-42', 'b1', 'New name');
 
-    expect(rename).toHaveBeenCalledWith('b1', 'New name');
-    expect(bookmarks).toHaveLength(1);
+    expect(router.rename).toHaveBeenCalledWith('b1', 'New name');
     expect(bookmarks[0].id).toBe('b1');
     expect(bookmarks[0].label).toBe('New name');
-    // A rename is an update-in-place write — one sync nudge, same as add/remove.
-    expect(syncEngine.run).toHaveBeenCalledTimes(1);
   });
 });
