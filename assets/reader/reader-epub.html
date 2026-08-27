@@ -569,21 +569,6 @@ ${text}`;
     rendition2.annotations.remove(cfiRange, EPUBJS_KIND);
   }
 
-  // src/features/reader/webview/src/touchGesture.ts
-  var LONG_PRESS_MS = 500;
-  var LONG_PRESS_SLOP_PX = 10;
-  var SWIPE_MIN_DISTANCE_PX = 50;
-  function movedBeyondSlop(from, to, slop = LONG_PRESS_SLOP_PX) {
-    return Math.abs(to.x - from.x) > slop || Math.abs(to.y - from.y) > slop;
-  }
-  function swipeDirection(from, to, minDistance = SWIPE_MIN_DISTANCE_PX) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    if (Math.abs(dx) < minDistance) return null;
-    if (Math.abs(dx) <= Math.abs(dy)) return null;
-    return dx < 0 ? "next" : "prev";
-  }
-
   // src/features/reader/webview/src/selectionTheme.ts
   function parseHex(color) {
     const hex = color.trim().replace(/^#/, "");
@@ -603,6 +588,42 @@ ${text}`;
     if (accent) return `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.32)`;
     const page = bg ? parseHex(bg) : null;
     return page && luminance(page) < 0.5 ? "rgba(255, 255, 255, 0.30)" : "rgba(0, 0, 0, 0.18)";
+  }
+  var NAMED_COLOR_HEX = { yellow: "#ffff00" };
+  function resolveChannels(color) {
+    return parseHex(NAMED_COLOR_HEX[color.toLowerCase()] ?? color);
+  }
+  function highlightFill(color, bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return { fill: color, blend: "multiply" };
+    if (luminance(page) < 0.35) return { fill: color, blend: "screen" };
+    const swatch = resolveChannels(color);
+    if (swatch) {
+      const warm = (c) => c.r > c.b && c.g > c.b;
+      const closeInLightness = Math.abs(luminance(page) - luminance(swatch)) < 0.25;
+      if (warm(page) && warm(swatch) && closeInLightness) {
+        return {
+          fill: `rgb(${Math.round(swatch.r * 0.7)}, ${Math.round(swatch.g * 0.55)}, ${Math.round(swatch.b * 0.7)})`,
+          blend: "multiply"
+        };
+      }
+    }
+    return { fill: color, blend: "multiply" };
+  }
+
+  // src/features/reader/webview/src/touchGesture.ts
+  var LONG_PRESS_MS = 500;
+  var LONG_PRESS_SLOP_PX = 10;
+  var SWIPE_MIN_DISTANCE_PX = 50;
+  function movedBeyondSlop(from, to, slop = LONG_PRESS_SLOP_PX) {
+    return Math.abs(to.x - from.x) > slop || Math.abs(to.y - from.y) > slop;
+  }
+  function swipeDirection(from, to, minDistance = SWIPE_MIN_DISTANCE_PX) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < minDistance) return null;
+    if (Math.abs(dx) <= Math.abs(dy)) return null;
+    return dx < 0 ? "next" : "prev";
   }
 
   // src/shared/contracts/accessibility.ts
@@ -872,16 +893,18 @@ ${text}`;
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_STYLES = {
     fill: "#ffd500",
-    "fill-opacity": "0.4",
+    "fill-opacity": "0.2",
     "mix-blend-mode": "multiply"
   };
   var USER_OWNER = "user";
   var USER_SAVED_VARIANT = "saved";
   function userHighlightStyles(color) {
-    return { fill: color, "fill-opacity": "1", "mix-blend-mode": "multiply" };
+    const { fill, blend } = highlightFill(color, currentAppearance?.bg);
+    return { fill, "fill-opacity": "0.25", "mix-blend-mode": blend };
   }
   var paintedUserHighlights = /* @__PURE__ */ new Map();
   var lastUserHighlights = [];
+  var lastSelection = null;
   function currentTypography() {
     if (!currentAppearance) return void 0;
     return {
@@ -1004,41 +1027,25 @@ ${columnOverrideCss()}` : currentCss;
   var longPressTimer = 0;
   var longPressFired = false;
   var pressedHighlightId = null;
-  var suppressSelectionOffer = false;
-  function frameOffset(view) {
-    const rect = view.frameElement?.getBoundingClientRect();
-    return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
-  }
-  function selectionAnchor(contents) {
-    const view = contents.document.defaultView;
-    const selection = view?.getSelection();
-    if (!view || !selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
-    const rect = selection.getRangeAt(0).getBoundingClientRect();
-    const offset = frameOffset(view);
-    return {
-      x: rect.left + offset.left,
-      y: rect.top + offset.top,
-      width: rect.width,
-      height: rect.height
-    };
+  function highlightIdAtPoint(contents, x, y) {
+    const caret = contents.document.caretRangeFromPoint(x, y);
+    if (!caret) return null;
+    for (const [id, cfiRange] of paintedUserHighlights) {
+      try {
+        const range = contents.range(cfiRange);
+        if (range?.isPointInRange(caret.startContainer, caret.startOffset)) return id;
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
   function cancelLongPress() {
     if (longPressTimer) window.clearTimeout(longPressTimer);
     longPressTimer = 0;
   }
-  function onLongPress(view) {
+  function onLongPress() {
     longPressFired = true;
-    if (pressedHighlightId === null || !touchOrigin) return;
-    suppressSelectionOffer = true;
-    const offset = frameOffset(view);
-    post({
-      type: "highlightPressed",
-      id: pressedHighlightId,
-      // A zero-sized box AT THE FINGER, not the highlight's own rect: a highlight can run several
-      // lines and start off screen, so its bounding box is a poor thing to point a menu at, where the
-      // touch is exactly where the reader is looking.
-      anchor: { x: touchOrigin.x + offset.left, y: touchOrigin.y + offset.top, width: 0, height: 0 }
-    });
   }
   function watchTouches(contents) {
     const doc = contents.document;
@@ -1052,11 +1059,9 @@ ${columnOverrideCss()}` : currentCss;
         cancelLongPress();
         touchOrigin = { x: touch.clientX, y: touch.clientY };
         longPressFired = false;
-        suppressSelectionOffer = false;
-        pressedHighlightId = null;
-        longPressTimer = window.setTimeout(() => {
-          onLongPress(view);
-        }, LONG_PRESS_MS);
+        pressedHighlightId = highlightIdAtPoint(contents, touch.clientX, touch.clientY);
+        post({ type: "highlightTouchActive", active: pressedHighlightId !== null });
+        longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
       },
       { passive: true }
     );
@@ -1096,16 +1101,6 @@ ${columnOverrideCss()}` : currentCss;
       },
       { passive: true }
     );
-    doc.addEventListener(
-      "selectionchange",
-      () => {
-        const selection = view.getSelection();
-        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-          post({ type: "selection", selection: null, anchor: null });
-        }
-      },
-      { passive: true }
-    );
   }
   function applyUserHighlights(highlights) {
     if (!rendition) return;
@@ -1119,25 +1114,7 @@ ${columnOverrideCss()}` : currentCss;
     for (const highlight of added) {
       const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
       if (cfiRange === null) continue;
-      add(
-        active,
-        USER_OWNER,
-        cfiRange,
-        USER_SAVED_VARIANT,
-        userHighlightStyles(highlight.color),
-        // PRESS-TO-DELETE, BY STORED ID. epub.js wires this to `touchstart`, and marks-pane only
-        // dispatches it when the touch point is inside one of THIS mark's own rects — so it is already
-        // "the finger is in this highlight", one word's worth included. It records rather than posts:
-        // a touch is not yet a press, and the long-press timer decides (`onLongPress`). The id is
-        // closed over from the payload that painted this rect, so nothing has to re-match a range
-        // against a selection afterwards — the fragile thing READER_HIGHLIGHTS_WIRING.md rules out.
-        //
-        // Guarded on a gesture actually being in progress: the same callback is wired to `click`, and
-        // a click with no touch behind it would otherwise leave an id set for a later press to find.
-        () => {
-          if (touchOrigin !== null) pressedHighlightId = highlight.id;
-        }
-      );
+      add(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
       paintedUserHighlights.set(highlight.id, cfiRange);
     }
   }
@@ -1168,20 +1145,16 @@ ${columnOverrideCss()}` : currentCss;
       applyBaselineCss();
     });
     rendition.on("selected", (cfiRange, contents) => {
-      if (suppressSelectionOffer) return;
       const ends = splitCfiRange(cfiRange);
-      if (ends === null) return;
-      const anchor = selectionAnchor(contents);
-      if (anchor === null) return;
-      post({
-        type: "selection",
-        selection: { kind: "cfiRange", startCfi: ends.startCfi, endCfi: ends.endCfi },
-        anchor
-      });
+      if (ends === null) {
+        lastSelection = null;
+        return;
+      }
+      lastSelection = { kind: "cfiRange", startCfi: ends.startCfi, endCfi: ends.endCfi };
     });
     rendition.on("relocated", (location) => {
       lastCfi = location?.start?.cfi ?? null;
-      post({ type: "selection", selection: null, anchor: null });
+      lastSelection = null;
       post({
         type: "relocated",
         // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
@@ -1383,6 +1356,36 @@ ${columnOverrideCss()}` : currentCss;
         currentSpokenCfi = cfi;
         if (cfi !== null) add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
       } catch {
+      }
+    },
+    /**
+     * The reader tapped "Highlight". Forces `triggerSelectedEvent` (epub.js's own CFI computation,
+     * `contents.js`) rather than reading `lastSelection` as-is, so a selection extended a moment ago
+     * is what gets read. Refuses (`null`) if the press was on an existing highlight
+     * (`pressedHighlightId`) — see readerBridge.ts's `requestCurrentSelection` doc.
+     */
+    requestCurrentSelection: () => {
+      if (pressedHighlightId !== null) {
+        post({ type: "selection", selection: null });
+        return;
+      }
+      if (rendition) {
+        for (const contents of rendition.getContents()) {
+          const selection = contents.document.defaultView?.getSelection();
+          if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+            contents.triggerSelectedEvent(selection);
+            post({ type: "selection", selection: lastSelection });
+            return;
+          }
+        }
+      }
+      post({ type: "selection", selection: null });
+    },
+    /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
+     * (`pressedHighlightId`); silent otherwise. */
+    confirmDeleteHighlight: () => {
+      if (pressedHighlightId !== null) {
+        post({ type: "highlightPressed", id: pressedHighlightId });
       }
     }
   };

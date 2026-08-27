@@ -57,14 +57,12 @@ import type {
   ReaderCommand,
   ReaderErrorCode,
   ReaderMessage,
-  ReaderAnchor,
   ReaderPosition,
   ReaderSelection,
   ReaderTarget,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
 import { focusOn } from '@/features/reader/a11yFocus';
-import { popupPosition } from '@/features/reader/highlightPopup';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
@@ -346,36 +344,6 @@ export function ReaderScreen({
   const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
   const [skippedBookmarkCount, setSkippedBookmarkCount] = useState(0);
 
-  /**
-   * The little menu that appears over a long press, or null when there is nothing to offer.
-   *
-   * >>> ONE GESTURE, TWO OFFERS, AND THE SHELL DECIDES WHICH. <<< Press and hold on plain text and
-   * WebKit selects it and the shell reports a `selection`, so the menu offers to highlight it. Press
-   * and hold on something already highlighted — anywhere in it, one word is enough — and the shell
-   * reports a `highlightPressed` instead, so the menu offers to delete it. The reader learns one
-   * gesture; which offer they get follows from what is under their finger.
-   *
-   * A MENU RATHER THAN THE ACTION ITSELF, for delete especially: a long press is deliberate, but it
-   * is not a confirmation, and nothing that destroys saved work should happen without the reader
-   * naming it.
-   *
-   * MIRRORED FROM THE WEBVIEW RATHER THAN ASKED FOR ON DEMAND. The bridge is fire-and-forget in this
-   * direction (there is one request/reply pair on it, and this is not it), and a selection is
-   * ephemeral enough that a round trip on button press would race the reader's next touch. Both
-   * shells post every change including the clear, precisely so this can be a mirror.
-   *
-   * `selection` here is exactly `addEpubHighlight`'s / `addPdfHighlight`'s own arguments — see
-   * `ReaderSelection`'s note on why nothing re-derives anything from it.
-   */
-  const [highlightMenu, setHighlightMenu] = useState<
-    | { kind: 'create'; selection: ReaderSelection; anchor: ReaderAnchor }
-    | { kind: 'delete'; id: string; anchor: ReaderAnchor }
-    | null
-  >(null);
-
-  /** The viewer's measured box, for keeping the menu inside it. Written on layout only, so this
-   * re-renders once per rotation rather than per frame. */
-  const [viewerBox, setViewerBox] = useState({ width: 0, height: 0 });
 
   /**
    * The user's saved highlights for this book, split per shell, plus how many stored rows could not
@@ -932,6 +900,48 @@ export function ReaderScreen({
     void applyAppearanceWith(send, appearanceEnv);
   }, [send, appearanceEnv, applyAppearanceWith]);
 
+  /**
+   * Highlight what the reader just selected, in reply to `requestCurrentSelection`.
+   *
+   * No colour argument — highlights are single-colour by design, so plain last-write-wins behaves
+   * as a union across devices (READER_HIGHLIGHTS_WIRING.md).
+   *
+   * Defined above `handleMessage`, which depends on this via its `useCallback` array.
+   */
+  const createHighlightFromSelection = useCallback(
+    (selection: ReaderSelection): Promise<void> => {
+      const add =
+        selection.kind === 'cfiRange'
+          ? addEpubHighlight(bookId, selection.startCfi, selection.endCfi)
+          : addPdfHighlight(bookId, {
+              page: selection.page,
+              startOffset: selection.startOffset,
+              endOffset: selection.endOffset,
+            });
+
+      return add.then(({ highlights: fresh, skippedIds }) => {
+        setHighlights(fresh);
+        setSkippedHighlightCount(skippedIds.length);
+      });
+    },
+    [bookId],
+  );
+
+  /**
+   * Delete the highlight a "Delete Highlight" press was on, in reply to `confirmDeleteHighlight`.
+   * By stored id — the shell already said which one the press landed on, so nothing here matches a
+   * range against a selection. No separate RN confirmation step: choosing the item from a menu the
+   * reader explicitly opened by pressing the highlight already is the confirmation.
+   */
+  const deleteHighlightById = useCallback(
+    (id: string): Promise<void> =>
+      removeHighlight(bookId, id).then(({ highlights: fresh, skippedIds }) => {
+        setHighlights(fresh);
+        setSkippedHighlightCount(skippedIds.length);
+      }),
+    [bookId],
+  );
+
   const handleMessage = useCallback((message: ReaderMessage): void => {
     switch (message.type) {
       case 'ready':
@@ -975,33 +985,16 @@ export function ReaderScreen({
         ttsProviderRef.current?.handleReply(message);
         break;
       case 'selection':
-        /**
-         * The reader long-pressed some text (or let a selection go). Turned straight into the menu's
-         * own state, INCLUDING the null — "nothing is selected any more" is half of what this
-         * message carries (see its note in readerBridge.ts), and is what takes the menu back off
-         * screen when they tap elsewhere.
-         *
-         * A `selection` NEVER displaces a delete menu, because the shells never send one while a
-         * press has claimed the gesture for delete (`suppressSelectionOffer` in both entries). The
-         * decision is made where the whole gesture is visible; the host only mirrors it.
-         */
-        setHighlightMenu(
-          message.selection === null || message.anchor === null
-            ? null
-            : { kind: 'create', selection: message.selection, anchor: message.anchor },
-        );
+        // Reply to `requestCurrentSelection`. Null is a normal answer (selection cleared before
+        // the reply arrived) and just does nothing.
+        if (message.selection !== null) void createHighlightFromSelection(message.selection);
         break;
       case 'highlightPressed':
-        /**
-         * The reader long-pressed a highlight they already made — anywhere in it, one word is
-         * enough. Offers the delete, it does NOT perform it: a long press is a deliberate gesture
-         * but it is not a confirmation, and nothing that destroys saved work should happen without
-         * the reader naming it. The menu is that naming.
-         */
-        setHighlightMenu({ kind: 'delete', id: message.id, anchor: message.anchor });
+        // Reply to `confirmDeleteHighlight` — deletes directly, no RN confirmation step.
+        void deleteHighlightById(message.id);
         break;
     }
-  }, []);
+  }, [createHighlightFromSelection, deleteHighlightById]);
 
   /**
    * Flush a search jump that was queued while `send` was still null.
@@ -1249,64 +1242,6 @@ export function ReaderScreen({
       }
     }
   }, [isRendered, send, format, highlights]);
-
-  /**
-   * CALL-SITE 2 (both formats): highlight what the user has selected.
-   *
-   * `selection` is forwarded EXACTLY as the shell reported it — `ReaderSelection`'s two shapes are
-   * `addEpubHighlight`'s and `addPdfHighlight`'s own arguments (see its note in readerBridge.ts), so
-   * nothing here re-derives a locator and there is no second place for a selection's meaning to
-   * drift from what gets stored.
-   *
-   * NO COLOUR ARGUMENT. Highlights are single-colour and create-and-delete-only by design — that
-   * restriction is what lets plain last-write-wins behave as a union across devices
-   * (READER_HIGHLIGHTS_WIRING.md's locked constraints), so a colour picker here would not be a UI
-   * addition, it would be a sync-model change. The store's own default is the one colour.
-   *
-   * `setSelection(null)` FIRST, not in the `then`: the selection is spent the moment the button is
-   * pressed, and leaving the affordance on screen for the length of a database write invites a
-   * second press that stores the same span twice. (`highlightStore.add` is idempotent on the exact
-   * span, so the duplicate would be absorbed — but the button would still be lying about what it
-   * was going to do.)
-   */
-  const highlightSelection = useCallback((): void => {
-    if (highlightMenu?.kind !== 'create') return;
-    const { selection } = highlightMenu;
-    const add =
-      selection.kind === 'cfiRange'
-        ? addEpubHighlight(bookId, selection.startCfi, selection.endCfi)
-        : addPdfHighlight(bookId, {
-            page: selection.page,
-            startOffset: selection.startOffset,
-            endOffset: selection.endOffset,
-          });
-
-    setHighlightMenu(null);
-    void add.then(({ highlights: fresh, skippedIds }) => {
-      setHighlights(fresh);
-      setSkippedHighlightCount(skippedIds.length);
-    });
-  }, [bookId, highlightMenu]);
-
-  /**
-   * CALL-SITE 3, per READER_HIGHLIGHTS_WIRING.md: delete the highlight the reader long-pressed.
-   *
-   * BY STORED ID. The shell painted it and said which one was pressed, so nothing here matches a
-   * range against a selection — the fragile thing that doc rules out. The menu closes first, for the
-   * same reason `highlightSelection` clears it first: the offer is spent the moment it is taken, and
-   * leaving it up for the length of a database write invites a second press on a highlight that is
-   * already going away.
-   */
-  const deleteHighlight = useCallback((): void => {
-    if (highlightMenu?.kind !== 'delete') return;
-    const { id } = highlightMenu;
-
-    setHighlightMenu(null);
-    void removeHighlight(bookId, id).then(({ highlights: fresh, skippedIds }) => {
-      setHighlights(fresh);
-      setSkippedHighlightCount(skippedIds.length);
-    });
-  }, [bookId, highlightMenu]);
 
   /**
    * Jump to a typed page, or refuse without navigating.
@@ -1564,21 +1499,7 @@ export function ReaderScreen({
         {toolbarExtra}
       </View>
 
-      <View
-        testID="reader-viewer"
-        style={styles.viewer}
-        // The box the highlight menu is clamped into. Measured here rather than assumed from
-        // `Dimensions`, because this container is what the WebView actually fills — the toolbar and
-        // the bottom row take height off the window, and a menu clamped against the WINDOW would be
-        // allowed to sit under the controls. `onLayout` fires on mount and on rotation, which is
-        // exactly when this changes; it is not a per-frame cost.
-        onLayout={(event) => {
-          const { width, height } = event.nativeEvent.layout;
-          setViewerBox((previous) =>
-            previous.width === width && previous.height === height ? previous : { width, height },
-          );
-        }}
-      >
+      <View testID="reader-viewer" style={styles.viewer}>
         {/*
           ReaderWebView is KEYED ON THE SHELL URI, so a different shell is a different
           component instance rather than the same one told to navigate. ReaderWebView
@@ -1601,59 +1522,15 @@ export function ReaderScreen({
             // contains — the document's own structure lives in the WebView's accessibility tree,
             // which no React Native prop can reach or describe.
             accessibilityLabel="Book content"
+            // Both highlight actions are native menu items now (see ReaderWebView.tsx) — the host
+            // just asks the shell to act on whatever the press landed on.
+            onHighlightRequested={() => {
+              send?.({ type: 'requestCurrentSelection' });
+            }}
+            onDeleteHighlightRequested={() => {
+              send?.({ type: 'confirmDeleteHighlight' });
+            }}
           />
-        )}
-
-        {/*
-          THE HIGHLIGHT MENU. One small popover over the words the reader just pressed, offering the
-          one thing that makes sense for what is under their finger: "Highlight" over plain text they
-          have just selected, "Delete highlight" over one they made earlier. Which offer arrives is
-          decided in the WebView, where the whole gesture is visible — see `highlightMenu`'s note.
-
-          WHY THIS IS AN RN VIEW AND NOT THE OS's OWN SELECTION CALLOUT: WKWebView's callout menu
-          cannot be extended from React Native, and the pieces that could reach it (a document-side
-          menu, or `injectJavaScript` racing the native one) would put a control the reader depends
-          on inside the document that renders decrypted book content. The same decision
-          `SearchMatchBar` already makes for find-next.
-
-          POSITIONED IN THE WEBVIEW'S OWN COORDINATES, which are this container's — `ReaderWebView`
-          fills `viewer`, so an anchor crosses the bridge needing no conversion, only clamping.
-          `highlightPopup.ts` does the clamping, and is pure so the edge cases (a first line, a word
-          in the margin, a viewer shorter than the menu) are tested rather than eyeballed.
-
-          Suppressed while a panel is open: the panels cover the book, so a menu pointing at words
-          nobody can see would be pointing at nothing.
-        */}
-        {highlightMenu !== null && !anyPanelOpen && !isBusy && !isObscured && (
-          <View
-            testID="reader-highlight-menu"
-            style={[
-              styles.highlightMenu,
-              popupPosition(highlightMenu.anchor, HIGHLIGHT_MENU_SIZE, viewerBox),
-            ]}
-          >
-            {highlightMenu.kind === 'create' ? (
-              <Pressable
-                testID="reader-highlight-create"
-                accessibilityRole="button"
-                accessibilityLabel="Highlight"
-                onPress={highlightSelection}
-                style={styles.highlightMenuButton}
-              >
-                <Text style={styles.highlightMenuText}>Highlight</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                testID="reader-highlight-delete"
-                accessibilityRole="button"
-                accessibilityLabel="Delete highlight"
-                onPress={deleteHighlight}
-                style={styles.highlightMenuButton}
-              >
-                <Text style={styles.highlightMenuText}>Delete highlight</Text>
-              </Pressable>
-            )}
-          </View>
         )}
 
         {/*
@@ -1663,7 +1540,7 @@ export function ReaderScreen({
           is no highlights panel to put it in (the menu is the whole UI), so it sits quietly at the
           bottom of the page and says nothing when the count is zero.
         */}
-        {skippedHighlightCount > 0 && highlightMenu === null && !anyPanelOpen && !isBusy && (
+        {skippedHighlightCount > 0 && !anyPanelOpen && !isBusy && (
           <View style={styles.highlightNoticeWrap} pointerEvents="none">
             <Text style={styles.highlightNotice}>
               {`${String(skippedHighlightCount)} saved highlight(s) could not be shown`}
@@ -2157,17 +2034,6 @@ function targetKey(target: ReaderTarget): string {
 const TOC_INDENT_PX = 16;
 
 /**
- * The highlight menu's fixed box.
- *
- * FIXED RATHER THAN MEASURED, and that is what lets it be placed correctly on its FIRST frame:
- * `popupPosition` needs the size to centre and clamp, and a measured size only arrives after a
- * layout pass — so a self-sizing menu would appear in the wrong place and jump. Both labels
- * ("Highlight", "Delete highlight") fit this width at the button's own font size; the longer one is
- * what it was chosen for.
- */
-const HIGHLIGHT_MENU_SIZE = { width: 156, height: 44 };
-
-/**
  * Slack, in points, before an edge counts as "scrolled away from".
  *
  * Not zero: contentOffset and contentSize are floats that rarely land on exactly the
@@ -2226,30 +2092,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   toolbarIcon: { fontSize: 20 },
-  // A dark popover rather than a page-coloured one, deliberately: it has to read as chrome floating
-  // OVER the book at any theme, and a panel tinted like the page would disappear into it on the
-  // sepia and dark palettes — the two where a selection is hardest to see already.
-  highlightMenu: {
-    position: 'absolute',
-    width: HIGHLIGHT_MENU_SIZE.width,
-    height: HIGHLIGHT_MENU_SIZE.height,
-    borderRadius: 10,
-    backgroundColor: 'rgba(31, 31, 31, 0.95)',
-    shadowColor: '#000000',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 6,
-  },
-  // Fills the popover, so the whole thing is the target rather than the label inside it — 44pt is
-  // the minimum comfortable touch size, and this menu appears under a finger that is already there.
-  highlightMenuButton: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  highlightMenuText: { fontSize: 15, fontWeight: '600', color: '#ffffff' },
 
   highlightNoticeWrap: { position: 'absolute', left: 8, right: 8, bottom: 8, alignItems: 'center' },
   highlightNotice: {

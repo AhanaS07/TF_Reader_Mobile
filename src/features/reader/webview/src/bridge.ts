@@ -178,6 +178,8 @@ export interface CommandArgs {
   // highlightPaint.ts) — the same thing `goTo` does with `ReaderTarget`, and for the same reason:
   // splitting it per shell would mean a `ContentFormat`-shaped decision on the wire.
   paintHighlights: [highlights: EpubHighlightPaint[] | PdfHighlightPaint[]];
+  requestCurrentSelection: [];
+  confirmDeleteHighlight: [];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */

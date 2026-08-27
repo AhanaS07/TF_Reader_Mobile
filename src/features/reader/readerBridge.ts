@@ -260,31 +260,6 @@ export type ReaderSelection =
   | { kind: 'pageRange'; page: number; startOffset: number; endOffset: number };
 
 /**
- * Where a gesture happened, in the WebView's own viewport coordinates.
- *
- * >>> PIXELS ON THIS BRIDGE, WHICH NOTHING ELSE ON IT CARRIES, AND WHY IT IS RIGHT HERE. <<<
- * Every other payload is deliberately position-independent — a CFI, a page number, character
- * offsets — because a reading position has to survive a reflow, a rotation and a zoom. An anchor is
- * the opposite kind of value on purpose: it says where the reader's finger just was, it is consumed
- * within the same gesture, and it is meaningless a moment later. The host uses it to put a menu next
- * to the words, and nothing stores it.
- *
- * The WebView's viewport and the host's `viewer` container are the same box (`ReaderWebView` fills
- * it), so these need no conversion host-side — only clamping. See `highlightPopup.ts`.
- *
- * A selection reports its bounding box; a press on a highlight reports a zero-sized box at the
- * finger, because the useful thing to point a menu at there is the touch, not the highlight's full
- * extent (which can be several lines long and start off screen).
- */
-export interface ReaderAnchor {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-
-/**
  * The reply to a `requestTtsSentence` command. `requestId` is the same value the command carried —
  * that is the whole correlation mechanism on the host side; nothing about a book identity or a
  * generation crosses the wire, because each open book gets its own provider instance with its own
@@ -301,28 +276,30 @@ export type ReaderMessage =
   | { type: 'error'; code: ReaderErrorCode; message: string }
   | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
   /**
-   * What the user currently has selected in the book, or null once nothing is.
-   *
-   * SENT ON EVERY CHANGE, INCLUDING THE CLEAR. The host turns this into the "Highlight" affordance,
-   * so a selection that is dropped (the user tapped elsewhere, or turned the page) has to be
-   * reported as explicitly as one that is made — otherwise the button outlives the selection it
-   * would act on and saves a highlight over text nobody has selected any more.
+   * The currently selected text, in reply to `requestCurrentSelection` — or null if nothing is
+   * selected, or if the press landed on an existing highlight (refused; see that command's note).
+   * Sent only on request, not passively — creation is a native `menuItems` entry now, not a
+   * floating host UI tracking a live selection. No anchor: nothing positions a menu against this.
    */
-  | { type: 'selection'; selection: ReaderSelection | null; anchor: ReaderAnchor | null }
+  | { type: 'selection'; selection: ReaderSelection | null }
   /**
-   * The user LONG-PRESSED a painted highlight — anywhere in it, one word is enough.
-   *
-   * Carries only the id, which is what `removeHighlight` takes — deliberately NOT the range:
-   * re-deriving a stored highlight from the pixels under a finger is a fuzzy match, and deleting the
-   * wrong one is unrecoverable. The shell knows the id because it painted it (see `diffHighlights`
-   * in highlightPaint.ts).
-   *
-   * A LONG PRESS, NOT A TAP, and the difference is the whole safety of the gesture: a tap is what
-   * the reader does by accident while turning pages, and it must never be able to destroy something
-   * they saved. It is also the same gesture that summons the menu over plain text, so there is one
-   * thing to learn — press and hold, then choose — rather than two.
+   * The reader chose "Delete Highlight" from the native menu, in reply to a
+   * `confirmDeleteHighlight` command, or never sent if that press wasn't on one. Carries only the
+   * id (`removeHighlight` takes an id, not a range). No anchor: nothing positions a menu against
+   * this any more — delete has no RN popup, it deletes directly on arrival.
    */
-  | { type: 'highlightPressed'; id: string; anchor: ReaderAnchor };
+  | { type: 'highlightPressed'; id: string }
+  /**
+   * Whether the current touch is on a painted highlight, sent from `touchstart`. Drives which
+   * native menu item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection`
+   * and `confirmDeleteHighlight` re-check `pressedHighlightId` themselves, so a wrong/late value
+   * here only shows the "wrong" item, never causes a wrong action.
+   *
+   * ONLY EVER CLEARED FROM THE NEXT `touchstart`, not `touchend`/`touchcancel` — clearing there
+   * previously crashed the app: `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` at TAP
+   * time, not at menu-build time, with no bounds check, and the menu is built around `touchend`.
+   */
+  | { type: 'highlightTouchActive'; active: boolean };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -348,6 +325,7 @@ export const READER_MESSAGE_TYPES = [
   'ttsSentence',
   'selection',
   'highlightPressed',
+  'highlightTouchActive',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -384,6 +362,8 @@ export const READER_COMMANDS = {
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
   paintHighlights: 'paintHighlights',
+  requestCurrentSelection: 'requestCurrentSelection',
+  confirmDeleteHighlight: 'confirmDeleteHighlight',
 } as const;
 
 /**
@@ -482,7 +462,18 @@ export type ReaderCommand =
    * Fire-and-forget, like `setSpokenRange`: a highlight that cannot be painted must not be able to
    * fail an open or interrupt reading.
    */
-  | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] };
+  | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] }
+  /**
+   * Fired when the reader taps the native "Highlight" item. Reads the selection fresh (not
+   * cached), so a selection extended right up to the tap is used. Answers `null` if the press
+   * landed on an existing highlight (`pressedHighlightId`) — refuses rather than duplicating.
+   */
+  | { type: 'requestCurrentSelection' }
+  /**
+   * Fired when the reader taps the native "Delete Highlight" item. Replies with
+   * `highlightPressed` only if `pressedHighlightId` is set; otherwise silent (nothing to delete).
+   */
+  | { type: 'confirmDeleteHighlight' };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -612,20 +603,6 @@ function asSelection(value: unknown): ReaderSelection | null {
   return null;
 }
 
-/**
- * A `ReaderAnchor` from an untrusted payload, or null if it is not one.
- *
- * FINITE NUMBERS, and negatives allowed. A selection that starts above the current scroll offset
- * legitimately reports a negative `y` — that is a real position, and `highlightPopup.ts` clamps it
- * into view. What must not get through is `NaN`/`Infinity`: those propagate silently through the
- * placement arithmetic and land the menu nowhere, with no error to explain it.
- */
-function asAnchor(value: unknown): ReaderAnchor | null {
-  if (!isRecord(value)) return null;
-  const { x, y, width, height } = value;
-  if (![x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
-  return { x: x as number, y: y as number, width: width as number, height: height as number };
-}
 
 /**
  * A `TtsSentence` from an untrusted payload, or null if it is not one.
@@ -734,31 +711,28 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
     }
 
     case 'selection': {
-      // NULL IS A REAL VALUE HERE, not a parse failure — "nothing is selected any more" is half of
-      // what this message exists to say (see its own note on `ReaderMessage`). Anything that is
-      // neither null nor a valid selection IS a failure and drops the message, so a malformed
-      // payload can never be mistaken for a deliberate clear.
-      if (parsed.selection === null) return { type: 'selection', selection: null, anchor: null };
+      // NULL IS A REAL VALUE HERE, not a parse failure — "nothing was selected" is a legitimate
+      // reply to `requestCurrentSelection` (the reader tapped "Highlight" after the selection had
+      // already cleared). Anything that is neither null nor a valid selection IS a failure and
+      // drops the message, so a malformed payload can never be mistaken for that deliberate reply.
+      if (parsed.selection === null) return { type: 'selection', selection: null };
       const selection = asSelection(parsed.selection);
-      const anchor = asAnchor(parsed.anchor);
-      // BOTH OR NEITHER. A selection with no readable anchor cannot be offered to the reader — the
-      // menu is the only way to act on it, and a menu with nowhere to go is not something to place
-      // at a guessed default. Dropping the message leaves the previous state standing, which the
-      // next `selectionchange` corrects within a gesture.
-      if (selection === null || anchor === null) return null;
-      return { type: 'selection', selection, anchor };
+      return selection === null ? null : { type: 'selection', selection };
     }
 
-    case 'highlightPressed': {
+    case 'highlightPressed':
       // Dropped rather than defaulted, on the same reasoning as `relocated`'s position and more
-      // sharply: this id is about to be offered to `removeHighlight`, and a fabricated one either
-      // deletes nothing or deletes something the reader did not press.
-      const anchor = asAnchor(parsed.anchor);
-      if (anchor === null) return null;
+      // sharply: this id is about to be passed to `removeHighlight`, and a fabricated one either
+      // deletes nothing or deletes something the reader did not choose.
       return typeof parsed.id === 'string' && parsed.id !== ''
-        ? { type: 'highlightPressed', id: parsed.id, anchor }
+        ? { type: 'highlightPressed', id: parsed.id }
         : null;
-    }
+
+    case 'highlightTouchActive':
+      // Malformed collapses to `false` rather than dropping the message — this only ever affects
+      // which menu item is offered, never destroys anything, so the safe default is "assume plain
+      // text" rather than "leave the previous gesture's state standing".
+      return { type: 'highlightTouchActive', active: parsed.active === true };
 
     default:
       return null;

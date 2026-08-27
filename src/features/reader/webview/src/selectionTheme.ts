@@ -64,3 +64,41 @@ export function selectionBackground(link?: string, bg?: string): string {
   const page = bg ? parseHex(bg) : null;
   return page && luminance(page) < 0.5 ? 'rgba(255, 255, 255, 0.30)' : 'rgba(0, 0, 0, 0.18)';
 }
+
+/** The one CSS colour name this ever sees today (`highlightStore`'s own default) — resolved because
+ * `parseHex` deliberately only reads hex, and a named colour still needs its channels to judge
+ * contrast against the page. Anything not in this map is passed to `parseHex` as-is, so a future
+ * hex-stored colour needs no change here. */
+const NAMED_COLOR_HEX: Record<string, string> = { yellow: '#ffff00' };
+
+function resolveChannels(color: string): { r: number; g: number; b: number } | null {
+  return parseHex(NAMED_COLOR_HEX[color.toLowerCase()] ?? color);
+}
+
+/**
+ * A saved highlight's rendered fill and blend mode, for the current page. `multiply` is right on a
+ * neutral light page, but reads wrong elsewhere: near-invisible on a dark page (multiplying by
+ * near-black stays near-black — use `screen`, its inverse, instead), and low-contrast on a warm
+ * page like sepia against a similarly warm/light fill (darken the same colour instead).
+ */
+export function highlightFill(color: string, bg?: string): { fill: string; blend: 'multiply' | 'screen' } {
+  const page = bg ? parseHex(bg) : null;
+  if (!page) return { fill: color, blend: 'multiply' };
+
+  if (luminance(page) < 0.35) return { fill: color, blend: 'screen' };
+
+  const swatch = resolveChannels(color);
+  if (swatch) {
+    const warm = (c: { r: number; g: number; b: number }): boolean => c.r > c.b && c.g > c.b;
+    const closeInLightness = Math.abs(luminance(page) - luminance(swatch)) < 0.25;
+
+    if (warm(page) && warm(swatch) && closeInLightness) {
+      return {
+        fill: `rgb(${Math.round(swatch.r * 0.7)}, ${Math.round(swatch.g * 0.55)}, ${Math.round(swatch.b * 0.7)})`,
+        blend: 'multiply',
+      };
+    }
+  }
+
+  return { fill: color, blend: 'multiply' };
+}

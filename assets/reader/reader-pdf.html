@@ -431,6 +431,27 @@ ${text}`;
     const page = bg ? parseHex(bg) : null;
     return page && luminance(page) < 0.5 ? "rgba(255, 255, 255, 0.30)" : "rgba(0, 0, 0, 0.18)";
   }
+  var NAMED_COLOR_HEX = { yellow: "#ffff00" };
+  function resolveChannels(color) {
+    return parseHex(NAMED_COLOR_HEX[color.toLowerCase()] ?? color);
+  }
+  function highlightFill(color, bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return { fill: color, blend: "multiply" };
+    if (luminance(page) < 0.35) return { fill: color, blend: "screen" };
+    const swatch = resolveChannels(color);
+    if (swatch) {
+      const warm = (c) => c.r > c.b && c.g > c.b;
+      const closeInLightness = Math.abs(luminance(page) - luminance(swatch)) < 0.25;
+      if (warm(page) && warm(swatch) && closeInLightness) {
+        return {
+          fill: `rgb(${Math.round(swatch.r * 0.7)}, ${Math.round(swatch.g * 0.55)}, ${Math.round(swatch.b * 0.7)})`,
+          blend: "multiply"
+        };
+      }
+    }
+    return { fill: color, blend: "multiply" };
+  }
 
   // src/features/reader/webview/src/touchGesture.ts
   var LONG_PRESS_MS = 500;
@@ -531,7 +552,7 @@ ${text}`;
     surface.divs = divs;
     surface.lengths = itemsStr.map((item) => item.length);
   }
-  function paintPage(surface, highlights) {
+  function paintPage(surface, highlights, bg) {
     surface.highlightLayer.replaceChildren();
     surface.boxes = [];
     if (surface.divs.length === 0) return;
@@ -568,7 +589,10 @@ ${text}`;
           el.style.top = `${box.top}px`;
           el.style.width = `${box.width}px`;
           el.style.height = `${box.height}px`;
-          el.style.background = highlight.color;
+          const { fill, blend } = highlightFill(highlight.color, bg);
+          el.style.background = fill;
+          el.style.opacity = "0.25";
+          el.style.mixBlendMode = blend;
           fragment.appendChild(el);
         }
       }
@@ -690,6 +714,7 @@ ${text}`;
   var spreadPref = "single";
   var pageSurfaces = /* @__PURE__ */ new Map();
   var userHighlights = [];
+  var currentBg = "#ffffff";
   async function renderPageSurface(pageNumber, page, root, cssScale) {
     const pdfjs = lib();
     if (!pdfjs) return;
@@ -710,13 +735,13 @@ ${text}`;
       textContentItemsStr
     }).promise;
     setPageText(surface, textDivs, textContentItemsStr);
-    paintPage(surface, userHighlights);
+    paintPage(surface, userHighlights, currentBg);
   }
   function forgetPageSurface(pageNumber) {
     pageSurfaces.delete(pageNumber);
   }
   function repaintUserHighlights() {
-    for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights);
+    for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
   }
   var SPREAD_GAP_PX = 8;
   var renderToken = 0;
@@ -1005,19 +1030,16 @@ ${text}`;
       fail("NAVIGATION_FAILED", error);
     });
   }
-  function reportSelection() {
+  function requestCurrentSelection() {
+    if (pressedHighlightId !== null) {
+      post({ type: "selection", selection: null });
+      return;
+    }
     const selection = document.getSelection();
-    if (selection && !selection.isCollapsed && selection.rangeCount > 0 && !suppressSelectionOffer) {
+    if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
       for (const surface of pageSurfaces.values()) {
         const span = selectionInSurface(surface, selection);
         if (span) {
-          const rect = selection.getRangeAt(0).getBoundingClientRect();
-          const anchor = {
-            x: rect.left,
-            y: rect.top,
-            width: rect.width,
-            height: rect.height
-          };
           post({
             type: "selection",
             selection: {
@@ -1025,47 +1047,24 @@ ${text}`;
               page: surface.page,
               startOffset: span.startOffset,
               endOffset: span.endOffset
-            },
-            anchor
+            }
           });
           return;
         }
       }
     }
-    if (suppressSelectionOffer) return;
-    post({ type: "selection", selection: null, anchor: null });
+    post({ type: "selection", selection: null });
   }
-  var selectionReportTimer = 0;
-  document.addEventListener(
-    "selectionchange",
-    () => {
-      window.clearTimeout(selectionReportTimer);
-      selectionReportTimer = window.setTimeout(reportSelection, 250);
-    },
-    { passive: true }
-  );
   var touchOrigin = null;
   var longPressTimer = 0;
   var longPressFired = false;
-  var suppressSelectionOffer = false;
+  var pressedHighlightId = null;
   function cancelLongPress() {
     if (longPressTimer) window.clearTimeout(longPressTimer);
     longPressTimer = 0;
   }
   function onLongPress() {
     longPressFired = true;
-    if (!touchOrigin) return;
-    for (const surface of pageSurfaces.values()) {
-      const id = highlightAtClientPoint(surface, touchOrigin.x, touchOrigin.y);
-      if (id === null) continue;
-      suppressSelectionOffer = true;
-      post({
-        type: "highlightPressed",
-        id,
-        anchor: { x: touchOrigin.x, y: touchOrigin.y, width: 0, height: 0 }
-      });
-      return;
-    }
   }
   document.addEventListener(
     "touchstart",
@@ -1075,7 +1074,15 @@ ${text}`;
       cancelLongPress();
       touchOrigin = { x: touch.clientX, y: touch.clientY };
       longPressFired = false;
-      suppressSelectionOffer = false;
+      pressedHighlightId = null;
+      for (const surface of pageSurfaces.values()) {
+        const id = highlightAtClientPoint(surface, touch.clientX, touch.clientY);
+        if (id !== null) {
+          pressedHighlightId = id;
+          break;
+        }
+      }
+      post({ type: "highlightTouchActive", active: pressedHighlightId !== null });
       longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
     },
     { passive: true }
@@ -1243,7 +1250,9 @@ ${text}`;
      * (one page is one canvas, not a chapter document), so a single direct style write is enough.
      */
     applyAppearance: (appearance) => {
+      currentBg = appearance.bg;
       document.body.style.background = appearance.bg;
+      repaintUserHighlights();
       document.documentElement.style.setProperty(
         "--tf-selection",
         selectionBackground(appearance.link, appearance.bg)
@@ -1316,6 +1325,14 @@ ${text}`;
           "NAVIGATION_FAILED",
           `paintHighlights: ${String(foreign)} highlight(s) address CFIs, and this shell renders PDF`
         );
+      }
+    },
+    requestCurrentSelection,
+    /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
+     * (`pressedHighlightId`); silent otherwise. */
+    confirmDeleteHighlight: () => {
+      if (pressedHighlightId !== null) {
+        post({ type: "highlightPressed", id: pressedHighlightId });
       }
     }
   };

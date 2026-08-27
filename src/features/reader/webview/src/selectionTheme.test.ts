@@ -6,7 +6,7 @@
 
 import { THEME_PALETTES } from '@/features/personalization/readerAppearance';
 
-import { selectionBackground } from './selectionTheme';
+import { highlightFill, selectionBackground } from './selectionTheme';
 
 describe('the selection fill', () => {
   it('uses the theme accent, translucent so the words show through', () => {
@@ -49,5 +49,52 @@ describe('the selection fill', () => {
     expect(selectionBackground('rebeccapurple', '#ffffff')).toBe('rgba(0, 0, 0, 0.18)');
     expect(selectionBackground('#12345', '#ffffff')).toBe('rgba(0, 0, 0, 0.18)');
     expect(selectionBackground(undefined, undefined)).toBe('rgba(0, 0, 0, 0.18)');
+  });
+});
+
+describe('a saved highlight fill', () => {
+  it('leaves the stored colour and multiply alone on a neutral, light page', () => {
+    // The case this was already right for — nothing here should move.
+    expect(highlightFill('yellow', THEME_PALETTES.light.bg)).toEqual({
+      fill: 'yellow',
+      blend: 'multiply',
+    });
+  });
+
+  it('switches to screen on a dark page, where multiply would nearly vanish', () => {
+    // Multiplying by a near-black page stays near black regardless of the fill colour — screen does
+    // the opposite of multiply and reads close to the fill colour itself instead.
+    expect(highlightFill('yellow', THEME_PALETTES.dark.bg)).toEqual({
+      fill: 'yellow',
+      blend: 'screen',
+    });
+  });
+
+  it('darkens a warm fill on an equally warm, similarly light page (sepia)', () => {
+    // Confirmed on-device: plain yellow multiplied against sepia's own warm, pale tone barely
+    // shifts — both are warm and both are light, so there is little for multiply to do. A darker,
+    // more saturated shade of the same colour still reads as "this highlight" while actually
+    // standing out from the page.
+    expect(highlightFill('yellow', THEME_PALETTES.sepia.bg)).toEqual({
+      fill: 'rgb(179, 140, 0)',
+      blend: 'multiply',
+    });
+  });
+
+  it('leaves an unparseable stored colour and an unparseable page alone, rather than guessing', () => {
+    expect(highlightFill('yellow', undefined)).toEqual({ fill: 'yellow', blend: 'multiply' });
+    expect(highlightFill('rebeccapurple', THEME_PALETTES.sepia.bg)).toEqual({
+      fill: 'rebeccapurple',
+      blend: 'multiply',
+    });
+  });
+
+  it('does not darken a cool fill on a warm page — only warm-on-warm is low-contrast', () => {
+    // A blue fill against sepia already has plenty of hue contrast; the sepia-specific darkening is
+    // for a fill that shares the page's own warmth, not for every fill that happens to be light.
+    expect(highlightFill('#3a7bd5', THEME_PALETTES.sepia.bg)).toEqual({
+      fill: '#3a7bd5',
+      blend: 'multiply',
+    });
   });
 });

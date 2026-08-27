@@ -50,7 +50,6 @@ import {
 } from '@/features/personalization/readerHighlights';
 import type { ReaderHighlights } from '@/features/personalization/readerHighlights';
 import { focusOn } from '@/features/reader/a11yFocus';
-import { popupPosition } from '@/features/reader/highlightPopup';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -2876,7 +2875,6 @@ describe('ReaderScreen highlights', () => {
     color: 'yellow',
   };
   const PDF_HL = { id: 'h2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' };
-  const ANCHOR = { x: 120, y: 300, width: 80, height: 18 };
 
   function loaded(highlights: Partial<ReaderHighlights>, skippedIds: string[] = []) {
     return { highlights: { epub: [], pdf: [], ...highlights }, skippedIds };
@@ -2899,14 +2897,47 @@ describe('ReaderScreen highlights', () => {
     endCfi: EPUB_HL.endCfi,
   };
 
-  /** The shell's report that a long press selected some text. */
-  async function selectText(selection: unknown = EPUB_SELECTION): Promise<void> {
-    await deliver({ type: 'selection', selection, anchor: ANCHOR });
+  /**
+   * The reader tapping the native "Highlight" menu item over a selection — WKWebView's own
+   * `onCustomMenuSelection`, not a bridge message. `ReaderWebView`'s real handler is what's under
+   * test here (the mock only replaces `react-native-webview`'s `WebView`), so this exercises the
+   * same code path a real long-press-then-tap does.
+   */
+  async function requestHighlight(): Promise<void> {
+    const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+    await act(async () => {
+      webView.props.onCustomMenuSelection({
+        nativeEvent: { key: 'highlight', label: 'Highlight', selectedText: 'some text' },
+      });
+    });
   }
 
-  /** The shell's report that a long press landed on an existing highlight. */
-  async function pressHighlight(id: string): Promise<void> {
-    await deliver({ type: 'highlightPressed', id, anchor: ANCHOR });
+  /** Same as `requestHighlight`, for the native "Delete Highlight" item. */
+  async function requestDeleteHighlight(): Promise<void> {
+    const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+    await act(async () => {
+      webView.props.onCustomMenuSelection({
+        nativeEvent: { key: 'delete-highlight', label: 'Delete Highlight', selectedText: '' },
+      });
+    });
+  }
+
+  /**
+   * The shell's reply to `requestCurrentSelection` — what `deliver`s a `selection` message meant
+   * NOW, since nothing sends one passively any more (see `ReaderMessage`'s own note). Every arrival
+   * is a create instruction, so this alone is enough to drive the store call-sites below; nothing
+   * in this file needs to go through `requestHighlight` first to test that half.
+   */
+  async function replyWithSelection(selection: unknown = EPUB_SELECTION): Promise<void> {
+    await deliver({ type: 'selection', selection });
+  }
+
+  /**
+   * The shell's reply to `confirmDeleteHighlight` — the reader chose "Delete Highlight" for a press
+   * that landed on this id. No anchor any more: there is no RN popup left for one to position.
+   */
+  async function replyHighlightPressed(id: string): Promise<void> {
+    await deliver({ type: 'highlightPressed', id });
   }
 
   async function openBook(format: ContentFormat = 'EPUB'): Promise<void> {
@@ -2947,77 +2978,57 @@ describe('ReaderScreen highlights', () => {
     );
   });
 
-  it('shows no menu until a gesture asks for one', async () => {
+  it('offers both highlight actions only through the native WebView menu, never an RN popup', async () => {
+    // Both creating AND deleting used to be (or, for delete, could have been) a floating RN button.
+    // Replaced because an RN view can never reliably win screen space against, or stay reachable
+    // under, WKWebView's own native selection callout (always drawn above the whole app). Both are
+    // native `menuItems` entries on the WebView itself now (see `ReaderWebView.tsx`).
     await openBook();
-    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
-  });
 
-  it('offers Highlight over text the reader just selected', async () => {
-    await openBook();
-    await selectText();
-
-    expect(screen.getByRole('button', { name: 'Highlight' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Highlight' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete highlight' })).toBeNull();
   });
 
-  it('offers Delete highlight over one they made earlier', async () => {
-    // The two offers are mutually exclusive by construction — the shell decides which arrives, where
-    // the whole gesture is visible, so the host never has to guess from a selection alone.
+  it('offers "Highlight" by default, and switches to "Delete Highlight" while highlightTouchActive', async () => {
+    // Best-effort display only (see `highlightTouchActive`'s own note in readerBridge.ts) — this
+    // pins that `ReaderWebView` actually reads the signal and toggles `menuItems`, not that the
+    // signal always arrives in time on a real device, which nothing at this layer can pin.
     await openBook();
-    await pressHighlight('h1');
 
-    expect(screen.getByRole('button', { name: 'Delete highlight' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Highlight' })).toBeNull();
+    const getMenuItems = () =>
+      screen.getByTestId('reader-webview', { includeHiddenElements: true }).props.menuItems;
+
+    expect(getMenuItems()).toEqual([{ label: 'Highlight', key: 'highlight' }]);
+
+    await deliver({ type: 'highlightTouchActive', active: true });
+    expect(getMenuItems()).toEqual([{ label: 'Delete Highlight', key: 'delete-highlight' }]);
+
+    await deliver({ type: 'highlightTouchActive', active: false });
+    expect(getMenuItems()).toEqual([{ label: 'Highlight', key: 'highlight' }]);
   });
 
-  it('takes the menu away when the selection is dropped', async () => {
-    // `selection: null` is a real message, not an absence — this is the half that stops the menu
-    // outliving the words it would act on when the reader taps elsewhere or turns the page.
+  it('sends requestCurrentSelection when the native "Highlight" menu item is tapped', async () => {
     await openBook();
-    await selectText();
-    await deliver({ type: 'selection', selection: null, anchor: null });
+    await requestHighlight();
 
-    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
-  });
-
-  it("places the menu against the anchor, in the WebView's own coordinates", async () => {
-    // The anchor crosses the bridge in the WebView's viewport coordinates, which ARE the viewer
-    // container's — `ReaderWebView` fills it — so placement only has to clamp, never convert. That
-    // equivalence is the whole reason the menu can live in RN while the gesture happens in the
-    // document, and it is what this asserts: the same numbers, through the same pure placer, land on
-    // the rendered menu. The placement arithmetic itself is exercised in highlightPopup.test.ts.
-    await openBook();
-
-    // The viewer measures itself on layout; RNTL renders with no layout pass, so drive one. Without
-    // it `viewerBox` stays 0x0 and every menu clamps into the corner — which would make this test
-    // pass while proving nothing.
-    await act(async () => {
-      // `void`: RNTL's fireEvent returns a promise this does not need to await individually — the
-      // surrounding `act` is what flushes it, and type-aware lint is on for this directory.
-      void fireEvent(screen.getByTestId('reader-viewer'), 'layout', {
-        nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } },
-      });
-    });
-    await selectText();
-
-    const style = StyleSheet.flatten(screen.getByTestId('reader-highlight-menu').props.style) as {
-      left: number;
-      top: number;
-      width: number;
-      height: number;
-    };
-    expect({ left: style.left, top: style.top }).toEqual(
-      popupPosition(ANCHOR, { width: style.width, height: style.height }, { width: 390, height: 700 }),
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'requestCurrentSelection' }),
     );
-    // Above the words, not under the hand that just pressed them.
-    expect(style.top).toBeLessThan(ANCHOR.y);
+  });
+
+  it('sends confirmDeleteHighlight when the native "Delete Highlight" menu item is tapped', async () => {
+    await openBook();
+    await requestDeleteHighlight();
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'confirmDeleteHighlight' }),
+    );
   });
 
   it('forwards an EPUB selection to addEpubHighlight verbatim, and repaints the fresh set', async () => {
     jest.mocked(addEpubHighlight).mockResolvedValue(loaded({ epub: [EPUB_HL] }));
     await openBook();
-    await selectText();
-    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+    await replyWithSelection();
 
     // No colour argument: highlights are single-colour by design, so the store's own default is the
     // one colour. A picker here would be a sync-model change, not a UI addition.
@@ -3029,8 +3040,7 @@ describe('ReaderScreen highlights', () => {
 
   it('forwards a PDF selection as the SelectionRange the store takes', async () => {
     await openBook('PDF');
-    await selectText({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
-    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+    await replyWithSelection({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
 
     expect(addPdfHighlight).toHaveBeenCalledWith('test-book', {
       page: 4,
@@ -3039,31 +3049,25 @@ describe('ReaderScreen highlights', () => {
     });
   });
 
-  it('closes the menu as soon as the offer is taken', async () => {
-    // The offer is spent the moment it is pressed. Leaving it up for the length of a database write
-    // invites a second press on a highlight that is already going away.
+  it('does nothing when the reply says nothing was selected', async () => {
+    // A legitimate answer, not a failure — the selection could have cleared between the tap and the
+    // reply. Nothing to create, and nothing to surface an error about.
     await openBook();
-    await selectText();
-    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+    await replyWithSelection(null);
 
-    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
+    expect(addEpubHighlight).not.toHaveBeenCalled();
+    expect(addPdfHighlight).not.toHaveBeenCalled();
   });
 
-  it('deletes by stored id when the reader takes the delete offer', async () => {
+  it('deletes by stored id when the shell confirms a highlight press', async () => {
+    // `highlightPressed` is now sent ONLY in reply to `confirmDeleteHighlight` (the reader chose
+    // "Delete Highlight" from the native menu) — there is no separate RN confirmation step any more,
+    // because choosing that item from an explicit menu IS the naming the old two-step gesture
+    // existed to require. See `deleteHighlightById`'s own note in ReaderScreen.tsx.
     await openBook();
-    await pressHighlight('h1');
-    await fireEvent.press(screen.getByRole('button', { name: 'Delete highlight' }));
+    await replyHighlightPressed('h1');
 
     expect(removeHighlight).toHaveBeenCalledWith('test-book', 'h1');
-  });
-
-  it('never deletes on the press alone — the menu is the confirmation', async () => {
-    // A long press is deliberate but it is not a confirmation, and this is the one gesture in the
-    // reader that destroys saved work.
-    await openBook();
-    await pressHighlight('h1');
-
-    expect(removeHighlight).not.toHaveBeenCalled();
   });
 
   it('surfaces highlights that could not be made paintable, rather than only logging them', async () => {

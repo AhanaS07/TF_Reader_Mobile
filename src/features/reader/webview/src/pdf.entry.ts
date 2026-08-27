@@ -23,7 +23,6 @@ import type { PageViewport, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
-import type { ReaderAnchor } from '@/features/reader/readerBridge';
 
 import {
   base64ToArrayBuffer,
@@ -157,6 +156,12 @@ const pageSurfaces = new Map<number, PdfPageSurface>();
  * or a scroll re-render must restore the highlights without asking the host to re-send them. */
 let userHighlights: PdfHighlightPaint[] = [];
 
+/** The current page background, as `applyAppearance` last set it — kept as the ORIGINAL hex string
+ * rather than read back from `document.body.style.background`, whose serialised form (`rgb(...)` vs
+ * the hex it was assigned) is not guaranteed across engines and would silently break
+ * `highlightFill`'s `parseHex`, which only reads hex. */
+let currentBg = '#ffffff';
+
 /** Rebuild one page's text layer at the scale it is currently drawn, then repaint its highlights.
  *
  * `cssScale` is the page's on-screen scale (fit x zoom), NOT the canvas backing-store scale — the
@@ -193,7 +198,7 @@ async function renderPageSurface(
   }).promise;
 
   setPageText(surface, textDivs, textContentItemsStr);
-  paintPage(surface, userHighlights);
+  paintPage(surface, userHighlights, currentBg);
 }
 
 /** Forget a page that is no longer on screen. Its surface elements go with the DOM node that held
@@ -206,7 +211,7 @@ function forgetPageSurface(pageNumber: number): void {
  * absolutely-positioned divs — which is what lets this be the ONE repaint entry point rather than a
  * diff (see paintPage's own note on why the PDF side does not diff). */
 function repaintUserHighlights(): void {
-  for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights);
+  for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
 }
 
 /** Gutter between the two canvases when a spread is actually showing two pages. Small and fixed —
@@ -751,34 +756,22 @@ function renderCurrentGuarded(pageNumber: number): void {
 }
 
 /**
- * Report the current selection, or its absence, to the host.
- *
- * ONE DOCUMENT-LEVEL LISTENER RATHER THAN ONE PER PAGE, because a selection is a property of the
- * document, not of an element: `selectionchange` fires on the document whatever is selected, and
- * per-page listeners would each have to decide whether the event was theirs.
- *
- * WHICH PAGE a selection belongs to is answered by asking each visible surface whether BOTH of the
- * selection's endpoints are in its own text layer (`selectionInSurface`). In a double-page spread
- * two surfaces are live at once, so this is where spread-awareness actually lands for selection —
- * and a drag that crosses from one page to the other matches neither, which is refused rather than
- * truncated (see `selectionInSurface`'s own note on why half a highlight is worse than none).
+ * The reader tapped "Highlight". Reads `document.getSelection()` fresh, so a selection extended
+ * right up to the tap is what's used. `selectionInSurface` finds which page it's on (spread-aware);
+ * refuses (`null`) if the press was on an existing highlight (`pressedHighlightId`).
  */
-function reportSelection(): void {
+function requestCurrentSelection(): void {
+  if (pressedHighlightId !== null) {
+    post({ type: 'selection', selection: null });
+    return;
+  }
+
   const selection = document.getSelection();
 
-  if (selection && !selection.isCollapsed && selection.rangeCount > 0 && !suppressSelectionOffer) {
+  if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
     for (const surface of pageSurfaces.values()) {
       const span = selectionInSurface(surface, selection);
       if (span) {
-        // The text layer is in THIS document, so its rects are already the WebView viewport's — no
-        // iframe boundary to cross, unlike the EPUB shell.
-        const rect = selection.getRangeAt(0).getBoundingClientRect();
-        const anchor: ReaderAnchor = {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
-        };
         post({
           type: 'selection',
           selection: {
@@ -787,33 +780,14 @@ function reportSelection(): void {
             startOffset: span.startOffset,
             endOffset: span.endOffset,
           },
-          anchor,
         });
         return;
       }
     }
   }
 
-  // Reached for a genuinely empty selection AND for one this gesture has already claimed for delete
-  // — in the second case the host has a delete menu up, and a `null` would take it away. So the
-  // suppressed case returns without saying anything rather than falling through to here.
-  if (suppressSelectionOffer) return;
-  post({ type: 'selection', selection: null, anchor: null });
+  post({ type: 'selection', selection: null });
 }
-
-let selectionReportTimer = 0;
-
-// DEBOUNCED, at the same 250ms epub.js's own `Contents` uses for its `selected` event — deliberately
-// the same number so the two shells behave alike from the host's side. `selectionchange` fires on
-// every frame of a drag, and each one would otherwise cost a walk of every visible page's spans.
-document.addEventListener(
-  'selectionchange',
-  () => {
-    window.clearTimeout(selectionReportTimer);
-    selectionReportTimer = window.setTimeout(reportSelection, 250);
-  },
-  { passive: true },
-);
 
 // --- gestures ---------------------------------------------------------------------------------
 //
@@ -827,10 +801,13 @@ let touchOrigin: TouchPoint | null = null;
 let longPressTimer = 0;
 let longPressFired = false;
 
-/** Set once a long press has claimed the gesture for DELETE — see epub.entry.ts's fuller note. Both
- * shells need this because WebKit selects the word under a long press whether or not the press also
- * landed on something already highlighted. */
-let suppressSelectionOffer = false;
+/**
+ * The painted highlight under the finger for the CURRENT gesture, or null — hit-tested at
+ * `touchstart` rather than only when `onLongPress` fires. Read by `requestCurrentSelection` (refuse
+ * a create over an existing highlight) and `confirmDeleteHighlight` (delete only if this is set) —
+ * see their own notes in readerBridge.ts.
+ */
+let pressedHighlightId: string | null = null;
 
 function cancelLongPress(): void {
   if (longPressTimer) window.clearTimeout(longPressTimer);
@@ -838,31 +815,13 @@ function cancelLongPress(): void {
 }
 
 /**
- * The long press fired: if the finger is on a painted highlight, offer to delete it.
- *
- * HIT-TESTED AGAINST THE PAINTED GEOMETRY, not by a listener on each box — the boxes must stay
- * `pointer-events: none` or they would swallow the very drags that create highlights (see
- * pdfHighlightSeam.ts's header). Every visible surface is asked, which is what makes this work
- * across a double-page spread: the press can land on either page.
+ * The long press fired. Only sets the flag `touchend` reads to tell a swipe-release from a
+ * press-release — see its own note there. Creating and deleting highlights are both native-menu-
+ * driven now (`requestCurrentSelection`, `confirmDeleteHighlight`), decided when a menu item is
+ * actually tapped rather than at this timer, so there is nothing else to do here any more.
  */
 function onLongPress(): void {
   longPressFired = true;
-  if (!touchOrigin) return;
-
-  for (const surface of pageSurfaces.values()) {
-    const id = highlightAtClientPoint(surface, touchOrigin.x, touchOrigin.y);
-    if (id === null) continue;
-
-    suppressSelectionOffer = true;
-    // Zero-sized box AT THE FINGER — same reasoning as the EPUB shell's: a highlight's own rect can
-    // span lines and start off screen, and the touch is where the reader is looking.
-    post({
-      type: 'highlightPressed',
-      id,
-      anchor: { x: touchOrigin.x, y: touchOrigin.y, width: 0, height: 0 },
-    });
-    return;
-  }
 }
 
 document.addEventListener(
@@ -874,7 +833,23 @@ document.addEventListener(
     cancelLongPress();
     touchOrigin = { x: touch.clientX, y: touch.clientY };
     longPressFired = false;
-    suppressSelectionOffer = false;
+
+    // HIT-TESTED AGAINST THE PAINTED GEOMETRY, not by a listener on each box — the boxes must stay
+    // `pointer-events: none` or they would swallow the very drags that create highlights (see
+    // pdfHighlightSeam.ts's header). Every visible surface is asked, which is what makes this work
+    // across a double-page spread: the press can land on either page.
+    pressedHighlightId = null;
+    for (const surface of pageSurfaces.values()) {
+      const id = highlightAtClientPoint(surface, touch.clientX, touch.clientY);
+      if (id !== null) {
+        pressedHighlightId = id;
+        break;
+      }
+    }
+    // Reset only here, never on touchend/touchcancel — see readerBridge.ts's `highlightTouchActive`
+    // note (clearing on touchend crashed the app).
+    post({ type: 'highlightTouchActive', active: pressedHighlightId !== null });
+
     longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
   },
   { passive: true },
@@ -896,6 +871,7 @@ document.addEventListener(
     cancelLongPress();
     const origin = touchOrigin;
     touchOrigin = null;
+    // highlightTouchActive is NOT reset here — see readerBridge.ts's note (it used to be, and crashed).
 
     const touch = event.changedTouches[0];
     if (!origin || !touch || longPressFired || !pdfDoc) return;
@@ -1092,7 +1068,10 @@ const api: TFReaderApi<'openPdf'> = {
    * (one page is one canvas, not a chapter document), so a single direct style write is enough.
    */
   applyAppearance: (appearance: ReaderAppearance) => {
+    currentBg = appearance.bg;
     document.body.style.background = appearance.bg;
+    // Re-tint existing highlights for the new theme immediately, not on the next unrelated repaint.
+    repaintUserHighlights();
     // The text layer is transparent, so the ONLY visible sign that a long press selected anything is
     // the `::selection` fill — and WebKit's default is opaque, which hides the words it is selecting.
     // Delivered as a custom property because the rule that reads it lives in the template's CSS,
@@ -1182,6 +1161,16 @@ const api: TFReaderApi<'openPdf'> = {
         'NAVIGATION_FAILED',
         `paintHighlights: ${String(foreign)} highlight(s) address CFIs, and this shell renders PDF`,
       );
+    }
+  },
+
+  requestCurrentSelection,
+
+  /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
+   * (`pressedHighlightId`); silent otherwise. */
+  confirmDeleteHighlight: () => {
+    if (pressedHighlightId !== null) {
+      post({ type: 'highlightPressed', id: pressedHighlightId });
     }
   },
 };

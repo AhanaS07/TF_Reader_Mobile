@@ -27,6 +27,7 @@
 import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
 
 import { annotationClassName } from './highlightNaming';
+import { highlightFill } from './selectionTheme';
 import {
   highlightAt,
   offsetsForSelection,
@@ -127,7 +128,11 @@ export function setPageText(
  * are a handful of absolutely-positioned `<div>`s whose GEOMETRY changes on every zoom, rotation and
  * spread flip anyway. Diffing ids would save nothing and would still have to re-measure every box.
  */
-export function paintPage(surface: PdfPageSurface, highlights: readonly PdfHighlightPaint[]): void {
+export function paintPage(
+  surface: PdfPageSurface,
+  highlights: readonly PdfHighlightPaint[],
+  bg?: string,
+): void {
   surface.highlightLayer.replaceChildren();
   surface.boxes = [];
 
@@ -175,10 +180,13 @@ export function paintPage(surface: PdfPageSurface, highlights: readonly PdfHighl
         el.style.top = `${box.top}px`;
         el.style.width = `${box.width}px`;
         el.style.height = `${box.height}px`;
-        // The user layer's channel from HIGHLIGHT_LAYERS.md §3 — a SOLID fill in the stored colour,
-        // composited with `multiply` (set in the template's CSS) so the rasterised glyphs underneath
-        // still read through it, exactly as the EPUB side does it.
-        el.style.background = highlight.color;
+        // Same `highlightFill` call as the EPUB side. `bg` is `pdf.entry.ts`'s `currentBg`, passed
+        // in rather than read back from `document.body.style.background` (serialised form isn't
+        // guaranteed hex). Inline `mixBlendMode` overrides the template's `multiply` fallback.
+        const { fill, blend } = highlightFill(highlight.color, bg);
+        el.style.background = fill;
+        el.style.opacity = '0.25';
+        el.style.mixBlendMode = blend;
         fragment.appendChild(el);
       }
     }

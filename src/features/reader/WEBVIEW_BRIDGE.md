@@ -102,8 +102,9 @@ about behaviour changed.
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 | `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
-| `selection` | `selection` (`ReaderSelection \| null`), `anchor` (`ReaderAnchor \| null`) |
-| `highlightPressed` | `id`, `anchor` (`ReaderAnchor`)      |
+| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection` |
+| `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
+| `highlightTouchActive` | `active` (`boolean`)                                        |
 
 `ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
 `{format:'PDF', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
@@ -130,12 +131,62 @@ wrong one.
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
+| `requestCurrentSelection` | — | **yes** (`selection`) | both |
+| `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
 
-### The highlight trio — `paintHighlights`, `selection`, `highlightPressed`
+### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
 
-Landed together; they are one feature and none of the three is useful alone. Design and ownership are
-in `../personalization/READER_HIGHLIGHTS_WIRING.md` (Personalization writes, Reader applies) and
+Landed together; they are one feature and none is useful alone. Design and ownership are in
+`../personalization/READER_HIGHLIGHTS_WIRING.md` (Personalization writes, Reader applies) and
 `HIGHLIGHT_LAYERS.md` (the collision convention). What is bridge-specific:
+
+**Both highlight actions are native `menuItems` entries now, not RN popups.** iOS's native
+selection callout is drawn by UIKit above the entire app, including every RN view, so an RN popup
+for either action can be triggered correctly and still be visually unreachable. Both moved to
+`react-native-webview`'s `menuItems`/`onCustomMenuSelection` (backed by Apple's public
+`UIEditMenuInteraction`/`UIMenuController`) for the same reason: a long press on already-highlighted
+text also makes WebKit select the word underneath, so the native menu can sit over an RN "Delete"
+popup and disable it too, not just over the "Highlight" case.
+
+**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything is a
+separate, post-hoc check — only the second is load-bearing.** `ReaderWebView.tsx` swaps `menuItems`
+between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message sent from
+`touchstart` — a direct hit test in both shells (`highlightIdAtPoint` in `epub.entry.ts`,
+`highlightAtClientPoint` in `pdfHighlightSeam.ts`). `requestCurrentSelection` and
+`confirmDeleteHighlight` both re-check the shell's own current `pressedHighlightId` at tap time and
+refuse if it doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a
+display mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+
+Two failure modes so far, both fixed:
+1. **Pre-empting which item showed was unreliable.** An earlier version updated `menuItems` before
+   WebKit built its menu — but that build comes from an independent `UILongPressGestureRecognizer`
+   (`RNCWebViewImpl.m`, 0.4s `minimumPressDuration`), racing our own touchstart round trip with no
+   ordering guarantee, and sometimes losing. Fixed by pairing the toggle with the post-hoc check
+   above rather than relying on the toggle alone.
+2. **Clearing `highlightTouchActive` on `touchend` crashed the app.** The native menu builds around
+   `touchend`, and `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` fresh at TAP time with
+   no bounds check. Clearing on `touchend` flipped `menuItems` back to `[highlight]` right as
+   "Delete Highlight" appeared, so tapping it filtered to an empty array and indexing `[0]` threw.
+   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime.
+
+**EPUB's original press detection (`highlightAdd`'s `onTap`, riding marks-pane's own touch-proxy
+wiring) never fired reliably** — it needs marks-pane to translate coordinates between the chapter
+iframe (where touches fire) and the outer document (where painted marks live), and that translation
+was not reliable enough to use. Replaced with a same-document hit test, `highlightIdAtPoint` in
+`epub.entry.ts`: resolve each painted highlight's CFI range to a `Range` via `contents.range()`, then
+locate the touch point with `caretRangeFromPoint` and check `Range.isPointInRange`.
+
+**Deleting has no separate RN confirmation step, and that's not a safety regression.** Choosing
+"Delete Highlight" from a menu the reader explicitly opened by pressing the highlight already is the
+confirmation; `highlightPressed` means "the reader confirmed this," and the host deletes on arrival.
+
+**Known limitation: the native menu doesn't reliably reappear after dragging a selection handle.**
+`startLongPress:`'s `UILongPressGestureRecognizer` cancels instead of ending once a drag exceeds
+UIKit's default 10pt `allowableMovement`, so the menu isn't re-shown at drag end. A quick tap on the
+extended selection doesn't help either (it can't hold the 0.4s `minimumPressDuration`) — only a
+fresh, stationary long-press brings the menu back. This is `react-native-webview`'s gesture
+recognizer, not fixable from this side of the bridge; patching it (`patch-package`) is the only
+lever and hasn't been attempted.
 
 - **`paintHighlights` carries the WHOLE set every time, never a patch.** Every `readerHighlights.ts`
   call-site returns the fresh, full, authoritative set, so the host has nothing else to send. Each
@@ -155,20 +206,15 @@ in `../personalization/READER_HIGHLIGHTS_WIRING.md` (Personalization writes, Rea
   as `goTo` narrows `ReaderTarget` on `kind`. A wrong-shape entry is refused with
   `NAVIGATION_FAILED` rather than dropped: it is structurally unreachable, and "no highlights" is
   precisely what that bug would otherwise look like.
-- **`selection` is sent on every change INCLUDING the clear**, and `selection: null` is a valid
-  payload rather than a parse failure. "Nothing is selected any more" is half of what the message
-  exists to say — without it, the host's menu outlives the words it would act on. Discriminated on
-  `kind` (`cfiRange` / `pageRange`), the same rule `ReaderTarget` and `ReaderPosition` follow.
-- **`highlightPressed` carries only the id**, plus an anchor. Not the range: re-deriving a stored
-  highlight from the pixels under a finger is a fuzzy match, and deleting the wrong one is
-  unrecoverable. The shell knows the id because it painted it. It is a LONG PRESS, not a tap — a tap
-  is what a reader does by accident while turning pages, and it must never destroy saved work.
-- **`ReaderAnchor` is the only pixel-valued payload on this bridge**, and the exception is
-  deliberate. Everything else here is position-independent (a CFI, a page, character offsets) because
-  a reading position has to survive a reflow. An anchor is the opposite kind of value on purpose: it
-  says where the finger just was, it is consumed inside the same gesture, and nothing stores it. The
-  WebView's viewport and the host's `viewer` container are the same box, so it crosses needing no
-  conversion — only clamping (`highlightPopup.ts`).
+- **`selection: null` is a valid `requestCurrentSelection` reply, not a parse failure** — the
+  selection could have cleared between the tap and the reply, and that is an unremarkable answer,
+  not an error. Discriminated on `kind` (`cfiRange` / `pageRange`), the same rule `ReaderTarget` and
+  `ReaderPosition` follow.
+- **`highlightPressed` carries only the id.** Not a range: re-deriving a stored highlight from the
+  pixels under a finger is a fuzzy match, and deleting the wrong one is unrecoverable. The shell
+  knows the id because it painted it. No anchor either — there is no RN popup left for one to
+  position; the pixels-on-the-bridge exception this file used to describe (`ReaderAnchor`) no
+  longer exists, because nothing on this bridge positions anything any more.
 - **Both gestures that drive this are recognised WebView-side**, including page-turn swipe, which
   used to be an RN overlay. That overlay was the topmost hit-test target for every touch in the
   viewer, so the document could never receive a `touchstart` — fine for swipes, fatal for selection.

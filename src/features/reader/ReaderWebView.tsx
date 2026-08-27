@@ -23,6 +23,7 @@ import type {
   WebViewMessageEvent,
   WebViewNavigation,
   ShouldStartLoadRequest,
+  WebViewCustomMenuItems,
 } from 'react-native-webview/lib/WebViewTypes';
 
 import { buildCommandScript, parseReaderMessage } from '@/features/reader/readerBridge';
@@ -36,6 +37,16 @@ import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/r
  * this timer is what enforces it for the cases nothing else can catch.
  */
 const READY_TIMEOUT_MS = 10_000;
+
+/** Shown over plain text — the common case, and the default before any `highlightTouchActive`
+ * signal has arrived for the current gesture. Stable references, not inline literals in the JSX
+ * below, so neither array gets a new identity on every render. */
+const CREATE_MENU_ITEMS: WebViewCustomMenuItems[] = [{ label: 'Highlight', key: 'highlight' }];
+
+/** Shown while `highlightTouchActive` — the press landed on an existing highlight. */
+const DELETE_MENU_ITEMS: WebViewCustomMenuItems[] = [
+  { label: 'Delete Highlight', key: 'delete-highlight' },
+];
 
 export interface ReaderWebViewProps {
   /** file:// URI of the generated shell for this book's format, from getReaderHtmlUri(). */
@@ -79,6 +90,10 @@ export interface ReaderWebViewProps {
    * and the bottom controls instead of an unlabelled gap in the traversal.
    */
   accessibilityLabel?: string;
+  /** Native "Highlight" item tapped. `ReaderScreen` sends `requestCurrentSelection` in response. */
+  onHighlightRequested: () => void;
+  /** Native "Delete Highlight" item tapped. `ReaderScreen` sends `confirmDeleteHighlight`. */
+  onDeleteHighlightRequested: () => void;
 }
 
 export function ReaderWebView({
@@ -89,9 +104,14 @@ export function ReaderWebView({
   scrollEnabled = false,
   hidden = false,
   accessibilityLabel,
+  onHighlightRequested,
+  onDeleteHighlightRequested,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
+  /** Drives `menuItems` below. Best-effort display only — correctness lives in the WebView's own
+   * `pressedHighlightId` checks, so a stale value here shows the wrong item, never a wrong action. */
+  const [highlightTouchActive, setHighlightTouchActive] = useState(false);
 
   // Refs, not deps: these are called from WebView callbacks, and putting the
   // callback props in a dependency array would re-arm the ready timer (or worse,
@@ -160,6 +180,13 @@ export function ReaderWebView({
       if (message.type === 'ready') {
         setIsReady(true);
         onReadyRef.current(send);
+      }
+
+      // Consumed here, not forwarded to a `ReaderScreen` case — the only thing this drives is the
+      // `menuItems` prop below, and `ReaderScreen` has no use for a touch-active boolean.
+      if (message.type === 'highlightTouchActive') {
+        setHighlightTouchActive(message.active);
+        return;
       }
 
       onMessageRef.current(message);
@@ -270,6 +297,19 @@ export function ReaderWebView({
         scrollEnabled={scrollEnabled}
         bounces={false}
         overScrollMode="never"
+        // Replaces WebKit's Copy/Translate/Share callout entirely, so there's nothing left to
+        // out-z-order. The toggle is best-effort display only — see `highlightTouchActive` above.
+        menuItems={highlightTouchActive ? DELETE_MENU_ITEMS : CREATE_MENU_ITEMS}
+        onCustomMenuSelection={(event) => {
+          switch (event.nativeEvent.key) {
+            case 'highlight':
+              onHighlightRequested();
+              break;
+            case 'delete-highlight':
+              onDeleteHighlightRequested();
+              break;
+          }
+        }}
         // Transport-level failures. Without these, a bad URI is a white screen.
         onError={(event) => {
           const { description, code } = event.nativeEvent;

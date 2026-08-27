@@ -111,15 +111,21 @@ regression, not a simplification. So each owner claims a different visual channe
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
 `fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
 ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
-nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.4', 'mix-blend-mode': 'multiply' }`
-— the same intended translucent yellow, expressed in the vocabulary that reaches the element. The
-interim rule for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode': 'multiply' }`
+— the same intended translucent yellow, expressed in the vocabulary that reaches the element (opacity
+lowered from an original `0.4` alongside `user`'s own correction below, to keep the two channels in
+the ordering this section's table intends). The interim rule for Hruthik is unchanged: **keep TTS
+translucent** so it layers rather than masks.
 
-`user` paints `{ fill: <the stored colour>, 'fill-opacity': '1', 'mix-blend-mode': 'multiply' }`.
-Full opacity *with* `multiply` is what makes "solid" and "the text is still readable" the same thing
-— multiply darkens the page towards the fill instead of covering the glyphs, which is how a physical
-highlighter behaves and why epub.js's own defaults use it. A flat opaque rect would be solid and
-unreadable.
+**`user` paints `{ fill: <theme-adjusted colour>, 'fill-opacity': '0.25', 'mix-blend-mode':
+<theme-adjusted> }`** — not `fill-opacity: '1'` with a fixed `multiply`, which read as fully opaque
+and hid the text on every theme, confirmed on-device. A correctly-translucent `multiply` is still
+wrong on two of the three shipped themes: it nearly disappears against dark's near-black page, and
+barely shifts a warm fill like the default yellow against sepia's similarly warm, pale page.
+`webview/src/selectionTheme.ts`'s `highlightFill(color, bg)` (pure, unit-tested) picks fill and
+blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
+sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
+from `tts`" is still the intent; how to render it now depends on the page behind it.
 
 ### 4. Z-order — TTS on top, and only for the same-channel tie
 
@@ -150,8 +156,13 @@ plus `webview/src/pdfTextRange.ts` (pure, unit-tested). What that took, and what
   lost.
 - **The naming convention carries over unchanged** — the seam reuses `annotationClassName('user',
   'saved')`, so a PDF highlight box and an EPUB one answer to the same class.
-- **The visual channel is the same too**, reached differently: `background: <colour>` plus
-  `mix-blend-mode: multiply` in CSS, where the EPUB side gets multiply from epub.js's own defaults.
+- **The visual channel is the same too**, reached differently — and, like the EPUB side, NOT a
+  fixed `background`/`multiply` pair any more. `pdfHighlightSeam.ts`'s `paintPage` calls the SAME
+  `highlightFill(color, bg)` the EPUB side does, setting `background`/`opacity`/inline
+  `mixBlendMode` per page (the template's CSS class still carries `multiply` as the no-JS fallback,
+  but an inline style always wins). `bg` is `pdf.entry.ts`'s own `currentBg`, not read back from
+  `document.body.style.background` — that serialised form is not guaranteed hex across engines and
+  would silently defeat `highlightFill`'s `parseHex`.
 - **The boxes are `pointer-events: none`, and that is load-bearing.** A box that takes touches
   swallows the drag that starts inside it, so an existing highlight could never be selected through or
   extended. A long press on one is resolved by hit-testing the painted geometry instead
@@ -162,11 +173,11 @@ seam: `readerTextProvider.ts`'s model is CFI-based, so Reader never builds one f
 
 ## Handoff
 
-- **Ahana (seam):** DONE, 2026-08-26. The `user` client is built end to end — create-on-selection,
-  painting via the seam under `owner: 'user'`, and tap-to-delete by `id` — in both shells, behind the
-  `paintHighlights` / `selection` / `highlightTapped` trio (`WEBVIEW_BRIDGE.md`). Building it is what
-  found the two corrections in §1 and §3 above, so **read those before writing the `search` client**:
-  a per-owner `type` paints nothing, and camelCased style keys are ignored.
+- **Ahana (seam):** DONE, 2026-08-26, since revised. The `user` client is built end to end — both
+  create and delete are native WebView menu items now (`WEBVIEW_BRIDGE.md`'s "The highlight set"),
+  painting via the seam under `owner: 'user'` either way. Building it is what found the two
+  corrections in §1 and §3 above, so **read those before writing the `search` client**: a per-owner
+  `type` paints nothing, and camelCased style keys are ignored.
 - **Hruthik (TTS, interim):** you're the only live client. The rule for you is §3 — **keep the spoken
   highlight translucent** (`rgba(...)` with alpha well under 1) so `user`/`search` layers show
   through it, and keep painting through the seam with `owner: 'tts'`. No coordination needed beyond

@@ -25,6 +25,16 @@ Every `add*`/`remove` persists through `highlightStore` (which enqueues the sync
 transaction — offline-safe) and returns the **fresh, full, authoritative set**, so the caller always
 sends one idempotent repaint rather than an incremental patch.
 
+**Update, 2026-08-27: neither highlight action is an RN-rendered affordance any more.** The
+description below (a passive `selection` + anchor driving a floating "Highlight" popup;
+`highlightPressed` driving a floating "Delete highlight" popup) is history, not current behaviour —
+UIKit's native selection callout is drawn above the whole app, so an RN popup for either action can
+be visually unreachable even when triggered correctly. Both actions are native `menuItems` entries
+on the WebView now; `selection`/`highlightPressed` are sent only in reply to
+`requestCurrentSelection`/`confirmDeleteHighlight` and carry no anchor. `WEBVIEW_BRIDGE.md`'s "The
+highlight set" section is the current, authoritative shape — this section stays as the record of
+how call-sites 2 and 3 were originally wired.
+
 ## What Ahana added (applies half) — LANDED, 2026-08-26
 
 All three pieces below, plus **two the plan did not anticipate**: this stage needed traffic in the

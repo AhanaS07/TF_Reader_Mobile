@@ -57,9 +57,15 @@ const EPUBJS_KIND = 'highlight';
  * ignored. epub.js's own defaults (`fill: yellow`, `fill-opacity: 0.3`, `mix-blend-mode: multiply`)
  * are merged UNDER whatever is passed, so a caller only has to name what it changes.
  *
- * `onTap` is wired by epub.js to both `click` and `touchstart` on the painted element — a real
- * touch, not a mouse-only affordance. It is what tap-to-delete rides on; `undefined` for a layer
- * that is not interactive (TTS's spoken range is not something to tap). */
+ * `onTap` is wired by epub.js/marks-pane to both `click` and `touchstart` on the painted element —
+ * a real touch, not a mouse-only affordance. NOT what tap-to-delete rides on any more: confirmed
+ * on-device that marks-pane's touch proxy (which crosses from the chapter iframe's document, where
+ * touches fire, to the OUTER document, where the painted `<rect>`s live) does not fire reliably
+ * here, so `epub.entry.ts`'s own `highlightIdAtPoint` hit-tests directly at `touchstart` instead —
+ * see its doc comment for the fuller account. No current caller passes `onTap`; the parameter stays
+ * because epub.js/marks-pane still support it for whatever DOES want a same-document tap callback,
+ * and `undefined` remains the right value for a layer that is not interactive (TTS's spoken range
+ * is not something to tap). */
 export function add(
   rendition: Rendition,
   owner: string,

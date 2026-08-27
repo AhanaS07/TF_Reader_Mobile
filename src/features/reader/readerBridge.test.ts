@@ -439,11 +439,12 @@ describe('what the compiler cannot check about the WebView half', () => {
       toc: {},
       error: {},
       ttsSentence: { requestId: 0, result: { status: 'unavailable' } },
-      // `null` IS the minimum valid payload here, not a placeholder for one — "nothing is selected"
-      // is half of what this message exists to carry, so a case that only accepted a real selection
-      // would drop every clear.
-      selection: { selection: null, anchor: null },
-      highlightPressed: { id: 'hl-1', anchor: { x: 10, y: 20, width: 0, height: 0 } },
+      // `null` IS the minimum valid payload here, not a placeholder for one — "nothing was selected"
+      // is a legitimate reply to `requestCurrentSelection`, so a case that only accepted a real
+      // selection would drop it.
+      selection: { selection: null },
+      highlightPressed: { id: 'hl-1' },
+      highlightTouchActive: { active: false },
     };
 
     for (const type of READER_MESSAGE_TYPES) {
