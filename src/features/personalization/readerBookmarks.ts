@@ -16,9 +16,9 @@
 // drift from what `goTo` accepts. The import is `import type` (erased), so it adds no runtime coupling.
 
 import type { BookmarkRow, Locator } from '@/features/sync/localDb/types';
-import { bookmarkStore, parseLocator } from '@/features/sync/stores/bookmarkStore';
+import { parseLocator } from '@/features/sync/localDb/mappers';
 import type { ReaderTarget } from '@/features/reader/readerBridge';
-import { pushNow } from '@/features/personalization/pushOnEdit';
+import { annotationsRouter } from '@/features/personalization/annotationsRouter';
 
 /**
  * One bookmark the panel can render and navigate to. `id` is what tap-to-delete removes by; `target`
@@ -94,13 +94,12 @@ export function toReaderBookmarks(rows: BookmarkRow[]): LoadedBookmarks {
 /**
  * list (scoped to THIS book) -> navigable rows. Shared by every call-site below.
  *
- * `bookId` is passed explicitly rather than letting `bookmarkStore.list` fall back to the single
- * hardcoded `BOOK_ID` — that fallback is why every book used to show every other book's bookmarks.
- * `list(undefined, bookId)` keeps the store's `userId` default (single-user prototype) while pinning
- * the book. Now multi-book capable: the reader passes the id of whichever book is open.
+ * Goes through `annotationsRouter`, which reads Mongo directly when online (refreshing the SQLite
+ * snapshot for a downloaded book) and SQLite when offline — see annotationsRouter.ts. `bookId` pins the
+ * open book; the single-user prototype `userId` default lives in the router.
  */
 async function reload(bookId: string): Promise<LoadedBookmarks> {
-  return toReaderBookmarks(await bookmarkStore.list(undefined, bookId));
+  return toReaderBookmarks(await annotationsRouter.bookmarks.list(bookId));
 }
 
 /** CALL-SITE 1 — on open: load THIS book's bookmarks for the panel. */
@@ -109,13 +108,10 @@ export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
 }
 
 /**
- * CALL-SITE 2a — user bookmarks the current EPUB position. Persists via the store (which enqueues the
- * sync outbox in the same transaction — offline-safe) and returns the fresh full set for the panel.
- * `cfi` is the current reading position the reader already reports on `relocated`.
- *
- * `pushNow()` after the write kicks a sync so a bookmark made while already online reaches the server
- * now, not on the next reconnect — fire-and-forget, never a precondition of the local save. See
- * pushOnEdit.ts.
+ * CALL-SITE 2a — user bookmarks the current EPUB position. Persists via `annotationsRouter`: online it
+ * writes straight to Mongo, offline it queues in SQLite for the reconcile — see annotationsRouter.ts.
+ * Returns the fresh full set for the panel. `cfi` is the reading position the reader reports on
+ * `relocated`.
  */
 export async function addCurrentEpubBookmark(
   bookId: string,
@@ -123,8 +119,7 @@ export async function addCurrentEpubBookmark(
   chapterId?: string,
   name?: string,
 ): Promise<LoadedBookmarks> {
-  await bookmarkStore.addForCfi(cfi, chapterId, name, bookId);
-  pushNow();
+  await annotationsRouter.bookmarks.addForCfi(cfi, chapterId ?? null, name, bookId);
   return reload(bookId);
 }
 
@@ -134,8 +129,7 @@ export async function addCurrentPdfBookmark(
   page: number,
   name?: string,
 ): Promise<LoadedBookmarks> {
-  await bookmarkStore.addForPage(page, name, bookId);
-  pushNow();
+  await annotationsRouter.bookmarks.addForPage(page, name, bookId);
   return reload(bookId);
 }
 
@@ -146,32 +140,23 @@ export async function addCurrentPdfBookmark(
  * engine-side (see `renameBookmark`). Returns the fresh set, the deleted id absent from it.
  */
 export async function removeBookmark(bookId: string, id: string): Promise<LoadedBookmarks> {
-  await bookmarkStore.remove(id);
-  pushNow();
+  await annotationsRouter.bookmarks.remove(id);
   return reload(bookId);
 }
 
 /**
  * CALL-SITE 4 — user renames an existing bookmark by tapping it in the panel and giving it a new name.
- * This is the REAL update-in-place op that replaces Reader's delete-and-recreate stand-in (see
- * READER_BOOKMARKS_WIRING.md item 6): one write, one outbox entry, and the bookmark's id and `target`
- * are untouched — only `name` changes. Returns the fresh set for the panel to re-render, then nudges a
- * sync so the rename reaches the server now (see pushOnEdit.ts).
- *
- * WHY THIS DOES NOT BREAK plain-LWW-as-union (the reason bookmarks were create+delete-only): a rename
- * is a same-id UPDATE, and two independent renames of DIFFERENT bookmarks never collide (different
- * ids), so union still holds for them. The ONE case a same-id UPDATE reintroduces is delete-vs-rename
- * on the SAME id — a rename with a later stamp could otherwise resurrect a bookmark another device
- * deleted. Making deletes win that race is an engine-side guard (`is_deleted` sticky in
- * `applyServerRecord`), which is KARTHIK's call — this facade only produces the local UPDATE + outbox
- * entry; it cannot and does not decide the cross-device resolution. See the open item in the wiring doc.
+ * The REAL update-in-place op that replaces Reader's delete-and-recreate stand-in (READER_BOOKMARKS_
+ * WIRING.md item 6): the id and `target` are untouched, only `name` changes. Persists via
+ * `annotationsRouter` (online → Mongo PUT, offline → SQLite pending for the reconcile) and returns the
+ * fresh set. Concurrent delete-vs-rename on the same id resolves server-wins-on-divergence in our own
+ * reconcile — see ANNOTATIONS_STORAGE.md; it is no longer routed through Sync's engine.
  */
 export async function renameBookmark(
   bookId: string,
   id: string,
   name: string,
 ): Promise<LoadedBookmarks> {
-  await bookmarkStore.rename(id, name);
-  pushNow();
+  await annotationsRouter.bookmarks.rename(id, name);
   return reload(bookId);
 }
