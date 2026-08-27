@@ -181,3 +181,85 @@ describe('SignInScreen pending-intent replay', () => {
     expect(useSessionStore.getState().institutionId).toBe(IMPERIAL.id);
   });
 });
+
+// ── T5 — the in-flight row: header item 5 ─────────────────────────────────────
+//
+// The file header lists "5. Sign-in button is disabled while a sign-in attempt is
+// in flight (submitting=true)" as a covered behaviour. It had no test, and
+// writing one turned up WHY: the window is currently zero-width.
+//
+// `handleSignIn` sets `submitting` true, runs the whole stub body with NO `await`
+// anywhere in it (setSession, takeIntent and the navigation call are all
+// synchronous), then clears the flag in `finally`. React batches all of that into
+// one commit, so the component never renders with `submitting === true` and the
+// spinner frame is unobservable from outside. That is a property of the STUB, not
+// a defect in the guard — `if (!institution || submitting || !isOnline) return`
+// is present and correct, and the loading frame appears for free the moment step
+// 1/2 of the documented SAML flow introduces a real await.
+//
+// So these tests assert what is true and load-bearing today — the wiring, the
+// absence of a stuck spinner, and single-fire — rather than asserting a frame
+// that cannot render. Production is deliberately unchanged: the behaviour is not
+// missing, its observable window is.
+describe('SignInScreen sign-in in flight', () => {
+  it('renders the sign-in button idle, not busy, before anything is pressed', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    expect(screen.getByTestId('action-button-signIn').props.accessibilityState).toEqual({
+      disabled: false,
+      busy: false,
+    });
+    expect(screen.queryByTestId('action-button-spinner')).toBeNull();
+  });
+
+  // THE FAILURE MODE THAT MATTERS. A `finally` that stopped clearing `submitting`
+  // would strand the sheet on a spinner with no way out, and nothing else in this
+  // file would catch it.
+  it('leaves the button usable after a sign-in completes, never stuck busy', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalled());
+    expect(screen.queryByTestId('action-button-spinner')).toBeNull();
+  });
+
+  // The guard's observable consequence: one press, one session write. A
+  // re-entrant call would write twice.
+  it('writes the session exactly once for one press', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalledTimes(1));
+    expect(useSessionStore.getState().accessToken).toBe(`stub:${IMPERIAL.id}`);
+  });
+
+  // Offline outranks in-flight: the button is disabled before a press can ever
+  // start an attempt, so `submitting` is never reached. This is the boundary
+  // between header items 4 and 5.
+  it('never enters the in-flight path at all while offline', async () => {
+    mockIsOnline.mockReturnValue(false);
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+
+    await render(<SignInScreen navigation={mockNavigation} route={{} as any} />);
+
+    expect(screen.getByTestId('action-button-signIn').props.accessibilityState).toEqual({
+      disabled: true,
+      busy: false,
+    });
+
+    fireEvent.press(screen.getByTestId('action-button-signIn'));
+
+    expect(useSessionStore.getState().accessToken).toBeNull();
+  });
+});

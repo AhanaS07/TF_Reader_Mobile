@@ -20,6 +20,18 @@ import type { CatalogueStackParamList } from '../navigation/types';
 
 import InstitutionDetailScreen from './InstitutionDetailScreen';
 
+// `useNetworkStatus` talks to NetInfo, which has no meaningful answer under Jest
+// — left real, its `fetch()` throws on `isInternetReachable` and every test in
+// this file dies. Mocked per-test so the offline case can be driven directly, the
+// same pattern CatalogueScreen.test.tsx uses.
+//
+// Must be prefixed `mock` — Jest's module-factory scope guard only allows
+// referencing out-of-scope variables whose name starts with "mock".
+const mockUseNetworkStatus = jest.fn(() => true);
+jest.mock('@hooks/useNetworkStatus', () => ({
+  useNetworkStatus: () => mockUseNetworkStatus(),
+}));
+
 const IMPERIAL: Institution = {
   id: 'inst_7f3',
   name: 'Imperial College London',
@@ -81,6 +93,7 @@ afterEach(() => {
   // Zustand state is module-global, so a selection made by one test would
   // otherwise still be there for the next one.
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
+  mockUseNetworkStatus.mockReturnValue(true);
 });
 
 describe('InstitutionDetailScreen loading', () => {
@@ -251,5 +264,72 @@ describe('InstitutionDetailScreen intentions', () => {
 
     expect(goBack).toHaveBeenCalled();
     expect(useInstitutionStore.getState().selectedInstitution).toBeNull();
+  });
+});
+
+// ── F5 — offline is its own state ─────────────────────────────────────────────
+//
+// DISTINCT FROM THE NETWORK-ERROR TESTS ABOVE, and the distinction is the point.
+// "shows the offline line with a retry when the network is unavailable" covers the
+// ERROR cell: a fetch rejected with NETWORK_UNAVAILABLE, so ErrorState renders
+// offline-flavoured copy and a retry. This block covers the OFFLINE cell:
+// `useNetworkStatus` reports no connection, so the banner overlays whatever is on
+// screen and the content behind it stays usable. CONVENTIONS §6 — "Offline?
+// Different from failed, since it resolves itself."
+//
+// The screen returns early four times, so the banner is asserted in the three
+// reachable branches. There is no empty branch: a detail screen either resolves
+// or fails, and `institution === null` is documented unreachable.
+describe('InstitutionDetailScreen offline', () => {
+  it('shows the banner over the loaded institution, which stays readable', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(fakeSource(async () => IMPERIAL));
+    const { props } = makeProps();
+
+    await render(<InstitutionDetailScreen {...props} />);
+
+    // A notice, not a blocker — the content is still there behind it.
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+    expect(screen.getByText("You're offline")).toBeTruthy();
+  });
+
+  it('renders no banner while the network is up', async () => {
+    setCatalogueSource(fakeSource(async () => IMPERIAL));
+    const { props } = makeProps();
+
+    await render(<InstitutionDetailScreen {...props} />);
+
+    await waitFor(() => expect(screen.getByText('Imperial College London')).toBeTruthy());
+    expect(screen.queryByText("You're offline")).toBeNull();
+  });
+
+  // The banner has to be there before there is any content to overlay, which is
+  // why the loading branch renders it too.
+  it('shows the banner while the institution is still loading', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(fakeSource(() => new Promise(() => {})));
+    const { props } = makeProps();
+
+    await render(<InstitutionDetailScreen {...props} />);
+
+    expect(screen.getByTestId('institution-detail-skeleton')).toBeTruthy();
+    expect(screen.getByText("You're offline")).toBeTruthy();
+  });
+
+  // Both cells at once: being offline is usually WHY the fetch failed, so the
+  // notice and the error belong on screen together rather than one replacing the
+  // other.
+  it('shows the banner alongside the error state, not instead of it', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(
+      fakeSource(() => Promise.reject(new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE))),
+    );
+    const { props } = makeProps();
+
+    await render(<InstitutionDetailScreen {...props} />);
+
+    await waitFor(() => expect(screen.getByText(/you appear to be offline/i)).toBeTruthy());
+    expect(screen.getByText("You're offline")).toBeTruthy();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
   });
 });
