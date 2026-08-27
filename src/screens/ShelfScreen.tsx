@@ -61,7 +61,9 @@ import { EmptyState } from '@components/EmptyState';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
+import { OfflineBanner } from '@components/OfflineBanner';
 import { getCatalogueSource } from '../config/catalogue';
+import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Publication, Shelf, SortOrder } from '../model/types';
@@ -84,6 +86,12 @@ const SKELETON_COUNT = 3;
 export default function ShelfScreen({ route }: Props) {
   const { shelfId, institutionId } = route.params;
   const navigation = useNavigation<Nav>();
+
+  // F5 — offline is its own state, independent of loading/empty/error: a shelf
+  // already on screen stays readable behind the banner, and a shelf that failed
+  // gets an explanation for why. Rendered in BOTH branches below rather than
+  // once, the same way InstitutionListScreen renders it in each of its three.
+  const isOnline = useNetworkStatus();
 
   // The shelf's IDENTITY, taken from the first page and then left alone: title
   // and totalItems describe the whole shelf, not the page that carried them.
@@ -236,6 +244,7 @@ export default function ShelfScreen({ route }: Props) {
           message={errorCode === undefined ? "Couldn't load this shelf." : CATALOGUE_ERROR_COPY[errorCode]}
           onRetry={retry}
         />
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -377,6 +386,10 @@ export default function ShelfScreen({ route }: Props) {
         onApply={applyFilters}
         onClearAll={clearAllFilters}
       />
+
+      {/* Last in the tree, so it overlays the list and the sheet rather than
+          being covered by them — the placement InstitutionListScreen uses. */}
+      <OfflineBanner visible={!isOnline} />
     </View>
   );
 }

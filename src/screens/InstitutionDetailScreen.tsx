@@ -21,9 +21,11 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { InstitutionSource } from '@adapters/InstitutionSource';
 import { ErrorState } from '@components/ErrorState';
+import { OfflineBanner } from '@components/OfflineBanner';
 import { InstitutionDetailView } from '@components/InstitutionDetailView';
 import { Skeleton } from '@components/Skeleton';
 import { getCatalogueSource } from '@config/catalogue';
+import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Institution } from '@model/institution';
@@ -95,6 +97,17 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
     navigation.goBack();
   }, [navigation]);
 
+  // F5 — offline is a state of its own, independent of loading/error/content.
+  // This screen returns early four times, so the banner is rendered in each of
+  // them rather than once: being offline is true regardless of which branch is
+  // on screen, and it is usually the reason the failed branch failed. Same
+  // per-branch placement InstitutionListScreen uses for its three.
+  //
+  // NO EMPTY BRANCH TO COVER. A detail screen either resolves or fails — the
+  // `institution === null` return below is documented unreachable, not an empty
+  // state, and detail screens deliberately have none.
+  const isOnline = useNetworkStatus();
+
   if (loading) {
     return (
       <View style={styles.screen}>
@@ -110,6 +123,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
               uses, and React Native clamps that to a stadium at this height. */}
           <Skeleton variant="text" width={ACTION_WIDTH} height={ACTION_HEIGHT} />
         </View>
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -125,6 +139,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
         {/* onRetry is passed for every variant; ErrorState decides whether to
             render it, and that decision belongs there rather than here. */}
         <ErrorState variant={variant} message={message} onRetry={retry} />
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -137,6 +152,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
     return (
       <View style={[styles.screen, styles.centre]}>
         <ErrorState variant="not_ready" message={GENERIC_MESSAGE} onRetry={retry} />
+        <OfflineBanner visible={!isOnline} />
       </View>
     );
   }
@@ -160,6 +176,7 @@ export default function InstitutionDetailScreen({ route, navigation }: Props) {
         }}
         onBack={handleBack}
       />
+      <OfflineBanner visible={!isOnline} />
     </View>
   );
 }

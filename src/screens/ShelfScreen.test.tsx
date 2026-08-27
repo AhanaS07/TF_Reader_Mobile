@@ -38,6 +38,15 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: mockNavigate }),
 }));
 
+// `useNetworkStatus` talks to NetInfo, which has no meaningful answer under Jest
+// — left real, its `fetch()` throws on `isInternetReachable` and every test in
+// this file dies at module level. Mocked per-test so the offline case can be
+// driven directly, the same pattern CatalogueScreen.test.tsx uses.
+const mockUseNetworkStatus = jest.fn(() => true);
+jest.mock('@hooks/useNetworkStatus', () => ({
+  useNetworkStatus: () => mockUseNetworkStatus(),
+}));
+
 function publication(id: string, title: string): Shelf['publications'][number] {
   return {
     id,
@@ -160,6 +169,7 @@ const routeProps = propsFor({
 afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
+  mockUseNetworkStatus.mockReturnValue(true);
 });
 
 describe('ShelfScreen loading', () => {
@@ -722,5 +732,64 @@ describe('ShelfScreen — B10 empty state', () => {
     await render(<ShelfScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByText(/showing 0 of 0/i)).toBeTruthy());
+  });
+});
+
+// ── F5 — offline is its own state ─────────────────────────────────────────────
+//
+// Not the same cell as a failed fetch. CONVENTIONS §6: "Offline? Different from
+// failed, since it resolves itself." So the banner is a notice over whatever is
+// already on screen, and the shelf underneath stays readable — AGENTS.md's
+// "offline is degraded, not disabled".
+//
+// This screen had no offline handling at all before F5; the network-error copy it
+// already had is the ERROR cell, reached by a rejected fetch, not this one.
+describe('ShelfScreen offline', () => {
+  it('shows the offline banner over the loaded shelf when the network is down', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(fakeSource(async () => FAKE_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    // The rows are still there — a notice, not a blocker.
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.getByText("You're offline")).toBeTruthy();
+  });
+
+  it('renders no offline banner while the network is up', async () => {
+    setCatalogueSource(fakeSource(async () => FAKE_SHELF));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText("You're offline")).toBeNull();
+  });
+
+  // Offline while the first page is still in flight: the banner has to be there
+  // before there is any content to overlay, which is why it is rendered in the
+  // list branch rather than only once rows exist.
+  it('shows the banner while the shelf is still loading', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    setCatalogueSource(fakeSource(() => new Promise(() => {})));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    expect(screen.getByText("You're offline")).toBeTruthy();
+    expect(screen.getAllByTestId('content-card-skeleton').length).toBeGreaterThan(0);
+  });
+
+  // The error branch is a separate early return, so it needs the banner too —
+  // being offline is usually WHY the fetch failed, and the notice explains it.
+  it('shows the banner alongside the error state when a failed fetch was offline', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
+    // A plain Error, the same way the existing failure test above rejects —
+    // this cell is about the banner coexisting with the error, not about which
+    // error copy is chosen.
+    setCatalogueSource(fakeSource(async () => { throw new Error('network down'); }));
+
+    await render(<ShelfScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy());
+    expect(screen.getByText("You're offline")).toBeTruthy();
   });
 });
