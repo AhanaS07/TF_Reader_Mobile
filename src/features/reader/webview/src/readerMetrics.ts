@@ -16,6 +16,7 @@
 // nothing here is sent or received. These are compile-time reads of a constant, resolved before the
 // shell is even built.
 
+import { selectionBackground } from './selectionTheme';
 import type { LayoutPrefs } from '@/shared/contracts';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 
@@ -274,6 +275,11 @@ export function baselineCss(
     '  overflow-wrap: normal !important;',
     '}',
     ...(link ? [`a { color: ${link} !important; }`] : []),
+    // SELECTION IS PART OF THE READING SURFACE NOW, not incidental chrome: a long press selects
+    // text and the host offers to highlight it, so what the selection looks like is what tells the
+    // reader the gesture worked. `::selection` only ever sets a background — the theme's `fg` stays,
+    // because a tint composites over the text where an opaque swatch replaces it.
+    `::selection { background: ${selectionBackground(link, bg)}; }`,
     // One size for every text-bearing element. `div` and `span` are in the list because
     // Calibre-converted books put their scaling on wrappers.
     'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',

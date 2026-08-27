@@ -101,6 +101,9 @@ about behaviour changed.
 | `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd` |
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
+| `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
+| `selection` | `selection` (`ReaderSelection \| null`), `anchor` (`ReaderAnchor \| null`) |
+| `highlightPressed` | `id`, `anchor` (`ReaderAnchor`)      |
 
 `ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
 `{format:'PDF', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
@@ -126,6 +129,60 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
+
+### The highlight trio — `paintHighlights`, `selection`, `highlightPressed`
+
+Landed together; they are one feature and none of the three is useful alone. Design and ownership are
+in `../personalization/READER_HIGHLIGHTS_WIRING.md` (Personalization writes, Reader applies) and
+`HIGHLIGHT_LAYERS.md` (the collision convention). What is bridge-specific:
+
+- **`paintHighlights` carries the WHOLE set every time, never a patch.** Every `readerHighlights.ts`
+  call-site returns the fresh, full, authoritative set, so the host has nothing else to send. Each
+  shell diffs it against what it has painted (`webview/src/highlightPaint.ts`), paints new ids and
+  un-paints ids that fell out — so **a delete is an absence**, and there is deliberately no
+  `unpaintHighlight` command. Adding one would be a second way for a shell's paint to disagree with
+  storage.
+- **The payload is format-free, and this is the sharpest test that rule has had.** `HighlightPaint`
+  (Sync's stored shape) really does discriminate on `format: 'EPUB' | 'PDF'` — frozen `ContentFormat`
+  literals — so forwarding it as-is would put a frozen enum value on the wire. `toReaderHighlights`
+  splits it host-side into two per-shell shapes carrying no `format` field, and the host picks the
+  array from the same typechecked `switch (format)` that picked `openEpub`/`openPdf`. Pinned by
+  `readerBridge.test.ts`'s "never puts a ContentFormat value into a command payload", which now
+  builds both arms of this command.
+- **Both shells share the command, so both receive the UNION** and narrow it on arrival. Not
+  discriminated by format (that is the whole point) — narrowed on the FIELDS each shape has, exactly
+  as `goTo` narrows `ReaderTarget` on `kind`. A wrong-shape entry is refused with
+  `NAVIGATION_FAILED` rather than dropped: it is structurally unreachable, and "no highlights" is
+  precisely what that bug would otherwise look like.
+- **`selection` is sent on every change INCLUDING the clear**, and `selection: null` is a valid
+  payload rather than a parse failure. "Nothing is selected any more" is half of what the message
+  exists to say — without it, the host's menu outlives the words it would act on. Discriminated on
+  `kind` (`cfiRange` / `pageRange`), the same rule `ReaderTarget` and `ReaderPosition` follow.
+- **`highlightPressed` carries only the id**, plus an anchor. Not the range: re-deriving a stored
+  highlight from the pixels under a finger is a fuzzy match, and deleting the wrong one is
+  unrecoverable. The shell knows the id because it painted it. It is a LONG PRESS, not a tap — a tap
+  is what a reader does by accident while turning pages, and it must never destroy saved work.
+- **`ReaderAnchor` is the only pixel-valued payload on this bridge**, and the exception is
+  deliberate. Everything else here is position-independent (a CFI, a page, character offsets) because
+  a reading position has to survive a reflow. An anchor is the opposite kind of value on purpose: it
+  says where the finger just was, it is consumed inside the same gesture, and nothing stores it. The
+  WebView's viewport and the host's `viewer` container are the same box, so it crosses needing no
+  conversion — only clamping (`highlightPopup.ts`).
+- **Both gestures that drive this are recognised WebView-side**, including page-turn swipe, which
+  used to be an RN overlay. That overlay was the topmost hit-test target for every touch in the
+  viewer, so the document could never receive a `touchstart` — fine for swipes, fatal for selection.
+  `webview/src/touchGesture.ts` holds the thresholds and the fuller account.
+- **The PDF shell grew a text layer for this.** A rasterised page has no text to select and nothing
+  to anchor to, so `pdf.entry.ts` now renders pdf.js's standard text layer over every visible page
+  (`webview/src/pdfHighlightSeam.ts`, `pdfTextRange.ts`). It is spread-aware by construction —
+  everything is keyed on a page number — and `.pdf-text-layer` / `.pdf-highlight-layer` CSS lives in
+  the template, because a `.ts` file cannot carry it.
+- **`::selection` is themed in both shells** (`webview/src/selectionTheme.ts`). WebKit's default fill
+  is opaque and covers the words it is selecting; on this flow the selection IS the feedback that the
+  long press worked, so it has to be a translucent tint. EPUB gets it through `baselineCss`; PDF
+  through a `--tf-selection` custom property `applyAppearance` sets, because the rule that reads it
+  lives in the template.
 
 **`requestTtsSentence`/`ttsSentence` is the FIRST reply-bearing pair on this bridge** — landed for
 TTS_PROVIDER.md's step 5. One command, not two (`current`/`next` share a `mode` discriminant inside

@@ -428,6 +428,76 @@ ${text}`;
     return found ? ok(found) : { status: "endOfBook" };
   }
 
+  // src/features/reader/webview/src/epubCfiRange.ts
+  function unwrap(cfi) {
+    const trimmed = cfi.trim();
+    if (!trimmed.startsWith("epubcfi(") || !trimmed.endsWith(")")) return null;
+    return trimmed.slice("epubcfi(".length, -1);
+  }
+  function splitBase(inner) {
+    const at = inner.lastIndexOf("!");
+    return at === -1 ? { base: "", path: inner } : { base: inner.slice(0, at + 1), path: inner.slice(at + 1) };
+  }
+  function toSteps(path) {
+    const steps = [];
+    let current = "";
+    let depth = 0;
+    for (const char of path) {
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      if (char === "/" && depth === 0) {
+        if (current !== "") steps.push(current);
+        current = "/";
+        continue;
+      }
+      current += char;
+    }
+    if (current !== "") steps.push(current);
+    return steps;
+  }
+  function joinCfiRange(startCfi, endCfi) {
+    const startInner = unwrap(startCfi);
+    const endInner = unwrap(endCfi);
+    if (startInner === null || endInner === null) return null;
+    const start = splitBase(startInner);
+    const end = splitBase(endInner);
+    if (start.base !== end.base) return null;
+    const startSteps = toSteps(start.path);
+    const endSteps = toSteps(end.path);
+    const maxCommon = Math.min(startSteps.length, endSteps.length) - 1;
+    let common = 0;
+    while (common < maxCommon && startSteps[common] === endSteps[common]) common++;
+    const startTail = startSteps.slice(common).join("");
+    const endTail = endSteps.slice(common).join("");
+    if (startTail === "" || endTail === "" || startTail === endTail) return null;
+    return `epubcfi(${start.base}${startSteps.slice(0, common).join("")},${startTail},${endTail})`;
+  }
+  function splitCfiRange(cfiRange) {
+    const inner = unwrap(cfiRange);
+    if (inner === null) return null;
+    const parts = [];
+    let current = "";
+    let depth = 0;
+    for (const char of inner) {
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      if (char === "," && depth === 0) {
+        parts.push(current);
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    parts.push(current);
+    if (parts.length !== 3) return null;
+    const [common, startTail, endTail] = parts;
+    if (startTail === "" || endTail === "") return null;
+    return {
+      startCfi: `epubcfi(${common}${startTail})`,
+      endCfi: `epubcfi(${common}${endTail})`
+    };
+  }
+
   // src/features/reader/readerBridge.ts
   var MAX_TOC_DEPTH = 6;
 
@@ -446,6 +516,33 @@ ${text}`;
     return into;
   }
 
+  // src/features/reader/webview/src/highlightPaint.ts
+  function isEpub(entry) {
+    return typeof entry.startCfi === "string";
+  }
+  function epubHighlights(payload) {
+    const mine = [];
+    let foreign = 0;
+    for (const entry of payload) {
+      if (isEpub(entry)) mine.push(entry);
+      else foreign++;
+    }
+    return { mine, foreign };
+  }
+  function diffHighlights(painted, next) {
+    const incoming = /* @__PURE__ */ new Set();
+    const added = [];
+    for (const entry of next) {
+      incoming.add(entry.id);
+      if (!painted.has(entry.id)) added.push(entry);
+    }
+    const removedIds = [];
+    for (const id of painted) {
+      if (!incoming.has(id)) removedIds.push(id);
+    }
+    return { added, removedIds };
+  }
+
   // src/features/reader/webview/src/highlightNaming.ts
   function annotationType(owner) {
     return `tf-hl-${owner}`;
@@ -455,18 +552,57 @@ ${text}`;
   }
 
   // src/features/reader/webview/src/highlightSeam.ts
-  function add(rendition2, owner, cfiRange, variant, styles) {
+  var EPUBJS_KIND = "highlight";
+  function add(rendition2, owner, cfiRange, variant, styles, onTap) {
     rendition2.annotations.add(
-      annotationType(owner),
+      EPUBJS_KIND,
       cfiRange,
-      {},
-      void 0,
+      // Lands on the painted element's `dataset` (marks-pane's `Highlight.bind`), so which owner drew
+      // a given rect is inspectable in the DOM rather than only inferable from its class name.
+      { tfOwner: annotationType(owner) },
+      onTap,
       annotationClassName(owner, variant),
       styles
     );
   }
-  function remove(rendition2, owner, cfiRange) {
-    rendition2.annotations.remove(cfiRange, annotationType(owner));
+  function remove(rendition2, _owner, cfiRange) {
+    rendition2.annotations.remove(cfiRange, EPUBJS_KIND);
+  }
+
+  // src/features/reader/webview/src/touchGesture.ts
+  var LONG_PRESS_MS = 500;
+  var LONG_PRESS_SLOP_PX = 10;
+  var SWIPE_MIN_DISTANCE_PX = 50;
+  function movedBeyondSlop(from, to, slop = LONG_PRESS_SLOP_PX) {
+    return Math.abs(to.x - from.x) > slop || Math.abs(to.y - from.y) > slop;
+  }
+  function swipeDirection(from, to, minDistance = SWIPE_MIN_DISTANCE_PX) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < minDistance) return null;
+    if (Math.abs(dx) <= Math.abs(dy)) return null;
+    return dx < 0 ? "next" : "prev";
+  }
+
+  // src/features/reader/webview/src/selectionTheme.ts
+  function parseHex(color) {
+    const hex = color.trim().replace(/^#/, "");
+    const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+    if (full.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(full)) return null;
+    return {
+      r: Number.parseInt(full.slice(0, 2), 16),
+      g: Number.parseInt(full.slice(2, 4), 16),
+      b: Number.parseInt(full.slice(4, 6), 16)
+    };
+  }
+  function luminance(color) {
+    return (0.299 * color.r + 0.587 * color.g + 0.114 * color.b) / 255;
+  }
+  function selectionBackground(link, bg) {
+    const accent = link ? parseHex(link) : null;
+    if (accent) return `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.32)`;
+    const page = bg ? parseHex(bg) : null;
+    return page && luminance(page) < 0.5 ? "rgba(255, 255, 255, 0.30)" : "rgba(0, 0, 0, 0.18)";
   }
 
   // src/shared/contracts/accessibility.ts
@@ -607,6 +743,11 @@ ${text}`;
       "  overflow-wrap: normal !important;",
       "}",
       ...link ? [`a { color: ${link} !important; }`] : [],
+      // SELECTION IS PART OF THE READING SURFACE NOW, not incidental chrome: a long press selects
+      // text and the host offers to highlight it, so what the selection looks like is what tells the
+      // reader the gesture worked. `::selection` only ever sets a background — the theme's `fg` stays,
+      // because a tint composites over the text where an opaque swatch replaces it.
+      `::selection { background: ${selectionBackground(link, bg)}; }`,
       // One size for every text-bearing element. `div` and `span` are in the list because
       // Calibre-converted books put their scaling on wrappers.
       "p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {",
@@ -729,7 +870,18 @@ ${text}`;
   var currentSpokenCfi = null;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
-  var TTS_SPOKEN_STYLES = { backgroundColor: "rgba(255, 213, 0, 0.4)" };
+  var TTS_SPOKEN_STYLES = {
+    fill: "#ffd500",
+    "fill-opacity": "0.4",
+    "mix-blend-mode": "multiply"
+  };
+  var USER_OWNER = "user";
+  var USER_SAVED_VARIANT = "saved";
+  function userHighlightStyles(color) {
+    return { fill: color, "fill-opacity": "1", "mix-blend-mode": "multiply" };
+  }
+  var paintedUserHighlights = /* @__PURE__ */ new Map();
+  var lastUserHighlights = [];
   function currentTypography() {
     if (!currentAppearance) return void 0;
     return {
@@ -848,6 +1000,151 @@ ${text}`;
     return isPaginated(currentFlow()) && hasAuthoredColumns(doc) ? `${currentCss}
 ${columnOverrideCss()}` : currentCss;
   }
+  var touchOrigin = null;
+  var longPressTimer = 0;
+  var longPressFired = false;
+  var pressedHighlightId = null;
+  var suppressSelectionOffer = false;
+  function frameOffset(view) {
+    const rect = view.frameElement?.getBoundingClientRect();
+    return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
+  }
+  function selectionAnchor(contents) {
+    const view = contents.document.defaultView;
+    const selection = view?.getSelection();
+    if (!view || !selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const offset = frameOffset(view);
+    return {
+      x: rect.left + offset.left,
+      y: rect.top + offset.top,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+  function cancelLongPress() {
+    if (longPressTimer) window.clearTimeout(longPressTimer);
+    longPressTimer = 0;
+  }
+  function onLongPress(view) {
+    longPressFired = true;
+    if (pressedHighlightId === null || !touchOrigin) return;
+    suppressSelectionOffer = true;
+    const offset = frameOffset(view);
+    post({
+      type: "highlightPressed",
+      id: pressedHighlightId,
+      // A zero-sized box AT THE FINGER, not the highlight's own rect: a highlight can run several
+      // lines and start off screen, so its bounding box is a poor thing to point a menu at, where the
+      // touch is exactly where the reader is looking.
+      anchor: { x: touchOrigin.x + offset.left, y: touchOrigin.y + offset.top, width: 0, height: 0 }
+    });
+  }
+  function watchTouches(contents) {
+    const doc = contents.document;
+    const view = doc.defaultView;
+    if (!view) return;
+    doc.addEventListener(
+      "touchstart",
+      (event) => {
+        const touch = event.touches[0];
+        if (!touch) return;
+        cancelLongPress();
+        touchOrigin = { x: touch.clientX, y: touch.clientY };
+        longPressFired = false;
+        suppressSelectionOffer = false;
+        pressedHighlightId = null;
+        longPressTimer = window.setTimeout(() => {
+          onLongPress(view);
+        }, LONG_PRESS_MS);
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchmove",
+      (event) => {
+        const touch = event.touches[0];
+        if (!touch || !touchOrigin) return;
+        if (movedBeyondSlop(touchOrigin, { x: touch.clientX, y: touch.clientY })) cancelLongPress();
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchend",
+      (event) => {
+        cancelLongPress();
+        const origin = touchOrigin;
+        touchOrigin = null;
+        const touch = event.changedTouches[0];
+        if (!origin || !touch || longPressFired) return;
+        if (!view.getSelection()?.isCollapsed) return;
+        if (!isPaginated(currentFlow())) return;
+        const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+        if (direction === null || !rendition) return;
+        const turn = direction === "next" ? rendition.next() : rendition.prev();
+        turn.catch((error) => {
+          fail("NAVIGATION_FAILED", error);
+        });
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchcancel",
+      () => {
+        cancelLongPress();
+        touchOrigin = null;
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "selectionchange",
+      () => {
+        const selection = view.getSelection();
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          post({ type: "selection", selection: null, anchor: null });
+        }
+      },
+      { passive: true }
+    );
+  }
+  function applyUserHighlights(highlights) {
+    if (!rendition) return;
+    const active = rendition;
+    const { added, removedIds } = diffHighlights(new Set(paintedUserHighlights.keys()), highlights);
+    for (const id of removedIds) {
+      const cfiRange = paintedUserHighlights.get(id);
+      if (cfiRange !== void 0) remove(active, USER_OWNER, cfiRange);
+      paintedUserHighlights.delete(id);
+    }
+    for (const highlight of added) {
+      const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
+      if (cfiRange === null) continue;
+      add(
+        active,
+        USER_OWNER,
+        cfiRange,
+        USER_SAVED_VARIANT,
+        userHighlightStyles(highlight.color),
+        // PRESS-TO-DELETE, BY STORED ID. epub.js wires this to `touchstart`, and marks-pane only
+        // dispatches it when the touch point is inside one of THIS mark's own rects — so it is already
+        // "the finger is in this highlight", one word's worth included. It records rather than posts:
+        // a touch is not yet a press, and the long-press timer decides (`onLongPress`). The id is
+        // closed over from the payload that painted this rect, so nothing has to re-match a range
+        // against a selection afterwards — the fragile thing READER_HIGHLIGHTS_WIRING.md rules out.
+        //
+        // Guarded on a gesture actually being in progress: the same callback is wired to `click`, and
+        // a click with no touch behind it would otherwise leave an id set for a later press to find.
+        () => {
+          if (touchOrigin !== null) pressedHighlightId = highlight.id;
+        }
+      );
+      paintedUserHighlights.set(highlight.id, cfiRange);
+    }
+  }
+  function repaintUserHighlights() {
+    paintedUserHighlights.clear();
+    applyUserHighlights(lastUserHighlights);
+  }
   function createRendition() {
     if (!book) throw new Error("createRendition() called before a book was opened");
     rendition = book.renderTo("viewer", {
@@ -865,12 +1162,26 @@ ${columnOverrideCss()}` : currentCss;
       if (isPaginated(currentFlow())) applyAuthoredBreaks(contents.document);
       capExcessiveIndents(contents.document, viewportSize().width);
       insertStylesheet(contents, finalCssFor(contents.document));
+      watchTouches(contents);
     });
     rendition.on("resized", () => {
       applyBaselineCss();
     });
+    rendition.on("selected", (cfiRange, contents) => {
+      if (suppressSelectionOffer) return;
+      const ends = splitCfiRange(cfiRange);
+      if (ends === null) return;
+      const anchor = selectionAnchor(contents);
+      if (anchor === null) return;
+      post({
+        type: "selection",
+        selection: { kind: "cfiRange", startCfi: ends.startCfi, endCfi: ends.endCfi },
+        anchor
+      });
+    });
     rendition.on("relocated", (location) => {
       lastCfi = location?.start?.cfi ?? null;
+      post({ type: "selection", selection: null, anchor: null });
       post({
         type: "relocated",
         // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
@@ -910,6 +1221,8 @@ ${columnOverrideCss()}` : currentCss;
         try {
           resetTtsState();
           currentSpokenCfi = null;
+          paintedUserHighlights.clear();
+          lastUserHighlights = [];
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
@@ -994,6 +1307,7 @@ ${columnOverrideCss()}` : currentCss;
           if (currentSpokenCfi !== null && rendition) {
             add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
           }
+          repaintUserHighlights();
         }).catch((error) => {
           fail("NAVIGATION_FAILED", error);
         });
@@ -1037,6 +1351,31 @@ ${columnOverrideCss()}` : currentCss;
      * cannot be painted must not be able to interrupt speech, so this never posts a message and never
      * throws out of the try.
      */
+    /**
+     * Paint the user's saved highlights — the whole set, idempotently. See `ReaderCommand`'s own note
+     * for why the host always sends everything rather than a patch.
+     *
+     * The payload is narrowed on arrival because the command is shared by both shells and its argument
+     * is the union of their two shapes (highlightPaint.ts explains why it cannot be discriminated by
+     * format). A PDF-shaped entry reaching the EPUB shell means the host chose the wrong array while
+     * having correctly chosen `openEpub` — structurally impossible, and reported the same way a
+     * wrong-format `goTo` target is rather than quietly dropped, so it cannot hide as "no highlights".
+     *
+     * `lastUserHighlights` is updated even when there is no rendition yet: `paintHighlights` can
+     * legitimately arrive before the book has finished opening (the host sends it after `rendered`,
+     * but nothing in the protocol forces that), and the rebuild path re-reads it.
+     */
+    paintHighlights: (highlights) => {
+      const { mine, foreign } = epubHighlights(highlights);
+      lastUserHighlights = mine;
+      applyUserHighlights(mine);
+      if (foreign > 0) {
+        fail(
+          "NAVIGATION_FAILED",
+          `paintHighlights: ${String(foreign)} highlight(s) address pages, and this shell renders EPUB`
+        );
+      }
+    },
     setSpokenRange: (cfi) => {
       try {
         if (!rendition) return;

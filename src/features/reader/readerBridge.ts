@@ -53,6 +53,10 @@
 //      protocol change with a host-side half, not a change of how one file is produced.
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+import type {
+  EpubHighlightPaint,
+  PdfHighlightPaint,
+} from '@/features/personalization/readerHighlights';
 import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
 
 /**
@@ -236,6 +240,49 @@ export type ReaderPosition =
 // Discriminated on `kind` for the same reason `ReaderTarget` is — see the note there. Read it as "the
 // position is a CFI" / "the position is a page", not as "the book is an EPUB".
 
+/**
+ * A live text selection in the book, as the shell that owns it describes it.
+ *
+ * >>> DISCRIMINATED ON `kind`, NOT ON FORMAT — the same rule `ReaderTarget` and `ReaderPosition`
+ * already follow, and for the same reason: `ContentFormat` is a frozen contract and its values do
+ * not cross this bridge. Read `cfiRange` as "this selection is addressed by a pair of CFIs" and
+ * `pageRange` as "this selection is addressed by character offsets into one page", not as "this is
+ * the EPUB one" / "this is the PDF one".
+ *
+ * THE TWO SHAPES ARE EXACTLY WHAT `addEpubHighlight`/`addPdfHighlight` TAKE. That is deliberate:
+ * the host does not re-derive anything from this, it forwards it, so there is no second place for
+ * a selection's meaning to drift from what gets stored. `pageRange`'s `startOffset`/`endOffset` are
+ * character offsets into that page's text layer — see pdfTextRange.ts for why a PDF highlight is
+ * addressed by characters and not by a rectangle.
+ */
+export type ReaderSelection =
+  | { kind: 'cfiRange'; startCfi: string; endCfi: string }
+  | { kind: 'pageRange'; page: number; startOffset: number; endOffset: number };
+
+/**
+ * Where a gesture happened, in the WebView's own viewport coordinates.
+ *
+ * >>> PIXELS ON THIS BRIDGE, WHICH NOTHING ELSE ON IT CARRIES, AND WHY IT IS RIGHT HERE. <<<
+ * Every other payload is deliberately position-independent — a CFI, a page number, character
+ * offsets — because a reading position has to survive a reflow, a rotation and a zoom. An anchor is
+ * the opposite kind of value on purpose: it says where the reader's finger just was, it is consumed
+ * within the same gesture, and it is meaningless a moment later. The host uses it to put a menu next
+ * to the words, and nothing stores it.
+ *
+ * The WebView's viewport and the host's `viewer` container are the same box (`ReaderWebView` fills
+ * it), so these need no conversion host-side — only clamping. See `highlightPopup.ts`.
+ *
+ * A selection reports its bounding box; a press on a highlight reports a zero-sized box at the
+ * finger, because the useful thing to point a menu at there is the touch, not the highlight's full
+ * extent (which can be several lines long and start off screen).
+ */
+export interface ReaderAnchor {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 
 /**
  * The reply to a `requestTtsSentence` command. `requestId` is the same value the command carried —
@@ -252,7 +299,30 @@ export type ReaderMessage =
   | { type: 'relocated'; position: ReaderPosition; atStart: boolean; atEnd: boolean }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string }
-  | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult };
+  | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
+  /**
+   * What the user currently has selected in the book, or null once nothing is.
+   *
+   * SENT ON EVERY CHANGE, INCLUDING THE CLEAR. The host turns this into the "Highlight" affordance,
+   * so a selection that is dropped (the user tapped elsewhere, or turned the page) has to be
+   * reported as explicitly as one that is made — otherwise the button outlives the selection it
+   * would act on and saves a highlight over text nobody has selected any more.
+   */
+  | { type: 'selection'; selection: ReaderSelection | null; anchor: ReaderAnchor | null }
+  /**
+   * The user LONG-PRESSED a painted highlight — anywhere in it, one word is enough.
+   *
+   * Carries only the id, which is what `removeHighlight` takes — deliberately NOT the range:
+   * re-deriving a stored highlight from the pixels under a finger is a fuzzy match, and deleting the
+   * wrong one is unrecoverable. The shell knows the id because it painted it (see `diffHighlights`
+   * in highlightPaint.ts).
+   *
+   * A LONG PRESS, NOT A TAP, and the difference is the whole safety of the gesture: a tap is what
+   * the reader does by accident while turning pages, and it must never be able to destroy something
+   * they saved. It is also the same gesture that summons the menu over plain text, so there is one
+   * thing to learn — press and hold, then choose — rather than two.
+   */
+  | { type: 'highlightPressed'; id: string; anchor: ReaderAnchor };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -276,6 +346,8 @@ export const READER_MESSAGE_TYPES = [
   'toc',
   'error',
   'ttsSentence',
+  'selection',
+  'highlightPressed',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -311,6 +383,7 @@ export const READER_COMMANDS = {
   applyAppearance: 'applyAppearance',
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
+  paintHighlights: 'paintHighlights',
 } as const;
 
 /**
@@ -388,7 +461,28 @@ export type ReaderCommand =
    * `ReaderTextProvider.setSpokenRange`'s own contract: best-effort, never a reply, never a
    * reason to interrupt speech if it fails.
    */
-  | { type: 'setSpokenRange'; cfi: string | null };
+  | { type: 'setSpokenRange'; cfi: string | null }
+  /**
+   * Paint the user's saved highlights — the WHOLE set, every time, never a patch.
+   *
+   * >>> ONE IDEMPOTENT REPAINT, NOT AN ADD/REMOVE PAIR, AND THAT IS A DESIGN CHOICE. <<<
+   * `readerHighlights.ts`'s call-sites each return the fresh, full, authoritative set (its own
+   * contract), so the host has nothing else to send. The shell diffs the incoming set against what
+   * it has painted (`diffHighlights` in highlightPaint.ts): new ids get painted, ids that fell out
+   * get un-painted. A delete is therefore just an absence, which means there is exactly one way for
+   * the shell's paint to differ from storage — and re-sending after a reconnect or a re-render
+   * costs nothing rather than double-painting.
+   *
+   * THE PAYLOAD IS FORMAT-FREE, and that is not incidental. `HighlightPaint` (Sync's stored shape)
+   * discriminates on `format: 'EPUB' | 'PDF'` — frozen `ContentFormat` literals, which must never
+   * cross this bridge. `toReaderHighlights` splits them host-side into these two per-shell shapes
+   * with no `format` field at all, and the host sends whichever matches the shell it opened. Same
+   * move as `goTo` unwrapping `.cfi` from a `Locator`, and `openEpub`/`openPdf` routing by name.
+   *
+   * Fire-and-forget, like `setSpokenRange`: a highlight that cannot be painted must not be able to
+   * fail an open or interrupt reading.
+   */
+  | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -480,6 +574,57 @@ function isPositiveInteger(value: unknown): value is number {
 /** Like `isPositiveInteger`, but 0 is valid — `spineIndex`/`sentenceIndex`/`requestId` all start at 0. */
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * A `ReaderSelection` from an untrusted payload, or null if it is not one.
+ *
+ * STRICT, and deliberately so even though a selection looks cosmetic: what this validates is what
+ * `addEpubHighlight`/`addPdfHighlight` will PERSIST and then sync. A CFI here is minted from the
+ * book's own text, and a page range's offsets index into the book's own extracted text, so this is
+ * exactly the untrusted-content path `parseReaderMessage` exists for.
+ *
+ * A REVERSED OR EMPTY PAGE RANGE IS REFUSED, not normalised. The shell already normalises a
+ * backwards drag (`offsetsForSelection` in pdfTextRange.ts); one arriving reversed here means the
+ * shell's own arithmetic is wrong, and quietly repairing it would hide that while storing a
+ * highlight nobody can see.
+ */
+function asSelection(value: unknown): ReaderSelection | null {
+  if (!isRecord(value)) return null;
+
+  if (value.kind === 'cfiRange') {
+    return typeof value.startCfi === 'string' &&
+      typeof value.endCfi === 'string' &&
+      value.startCfi !== '' &&
+      value.endCfi !== ''
+      ? { kind: 'cfiRange', startCfi: value.startCfi, endCfi: value.endCfi }
+      : null;
+  }
+
+  if (value.kind === 'pageRange') {
+    const { page, startOffset, endOffset } = value;
+    if (!isPositiveInteger(page)) return null;
+    if (!isNonNegativeInteger(startOffset) || !isNonNegativeInteger(endOffset)) return null;
+    if (endOffset <= startOffset) return null;
+    return { kind: 'pageRange', page, startOffset, endOffset };
+  }
+
+  return null;
+}
+
+/**
+ * A `ReaderAnchor` from an untrusted payload, or null if it is not one.
+ *
+ * FINITE NUMBERS, and negatives allowed. A selection that starts above the current scroll offset
+ * legitimately reports a negative `y` — that is a real position, and `highlightPopup.ts` clamps it
+ * into view. What must not get through is `NaN`/`Infinity`: those propagate silently through the
+ * placement arithmetic and land the menu nowhere, with no error to explain it.
+ */
+function asAnchor(value: unknown): ReaderAnchor | null {
+  if (!isRecord(value)) return null;
+  const { x, y, width, height } = value;
+  if (![x, y, width, height].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  return { x: x as number, y: y as number, width: width as number, height: height as number };
 }
 
 /**
@@ -588,6 +733,33 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
       return { type: 'ttsSentence', requestId: parsed.requestId, result };
     }
 
+    case 'selection': {
+      // NULL IS A REAL VALUE HERE, not a parse failure — "nothing is selected any more" is half of
+      // what this message exists to say (see its own note on `ReaderMessage`). Anything that is
+      // neither null nor a valid selection IS a failure and drops the message, so a malformed
+      // payload can never be mistaken for a deliberate clear.
+      if (parsed.selection === null) return { type: 'selection', selection: null, anchor: null };
+      const selection = asSelection(parsed.selection);
+      const anchor = asAnchor(parsed.anchor);
+      // BOTH OR NEITHER. A selection with no readable anchor cannot be offered to the reader — the
+      // menu is the only way to act on it, and a menu with nowhere to go is not something to place
+      // at a guessed default. Dropping the message leaves the previous state standing, which the
+      // next `selectionchange` corrects within a gesture.
+      if (selection === null || anchor === null) return null;
+      return { type: 'selection', selection, anchor };
+    }
+
+    case 'highlightPressed': {
+      // Dropped rather than defaulted, on the same reasoning as `relocated`'s position and more
+      // sharply: this id is about to be offered to `removeHighlight`, and a fabricated one either
+      // deletes nothing or deletes something the reader did not press.
+      const anchor = asAnchor(parsed.anchor);
+      if (anchor === null) return null;
+      return typeof parsed.id === 'string' && parsed.id !== ''
+        ? { type: 'highlightPressed', id: parsed.id, anchor }
+        : null;
+    }
+
     default:
       return null;
   }
@@ -629,7 +801,14 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : '';
+              : command.type === 'paintHighlights'
+                ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                  // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                  // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                  // storage rather than from a locator, and JSON.stringify escapes it like any other
+                  // string; nothing here is pasted into the script unquoted.
+                  JSON.stringify(command.highlights)
+                : '';
 
   return `(function(){
     try {

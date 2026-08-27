@@ -356,6 +356,18 @@ describe('buildCommandScript', () => {
       buildCommandScript({ type: 'next' }),
       buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
       buildCommandScript({ type: 'applyAppearance', appearance: SAMPLE_APPEARANCE }),
+      // The newest way this rule could have been broken: `HighlightPaint` (Sync's stored shape) DOES
+      // discriminate on `format: 'EPUB' | 'PDF'`, so forwarding it as-is would put a frozen enum
+      // value on the wire. `toReaderHighlights` strips it host-side into these per-shell shapes;
+      // this is that stripping, asserted rather than trusted.
+      buildCommandScript({
+        type: 'paintHighlights',
+        highlights: [{ id: 'hl-1', startCfi: 'epubcfi(/6/4!/4/2/1:0)', endCfi: 'epubcfi(/6/4!/4/2/1:9)', color: 'yellow' }],
+      }),
+      buildCommandScript({
+        type: 'paintHighlights',
+        highlights: [{ id: 'hl-2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' }],
+      }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
         expect(script).not.toContain(`'${format}'`);
@@ -427,6 +439,11 @@ describe('what the compiler cannot check about the WebView half', () => {
       toc: {},
       error: {},
       ttsSentence: { requestId: 0, result: { status: 'unavailable' } },
+      // `null` IS the minimum valid payload here, not a placeholder for one — "nothing is selected"
+      // is half of what this message exists to carry, so a case that only accepted a real selection
+      // would drop every clear.
+      selection: { selection: null, anchor: null },
+      highlightPressed: { id: 'hl-1', anchor: { x: 10, y: 20, width: 0, height: 0 } },
     };
 
     for (const type of READER_MESSAGE_TYPES) {

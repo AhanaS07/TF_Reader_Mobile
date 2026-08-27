@@ -20,12 +20,21 @@ tests that used to read the templates as text are gone, and deleting them was th
 | `webview/src/pdf.entry.ts`                              | pdf.js renderer, `openPdf`, the worker wiring                       |
 | `webview/src/readerMetrics.ts`                          | typography arithmetic + the stylesheet — **pure, unit-tested**      |
 | `webview/src/epubOutline.ts`, `pdfOutline.ts`            | navigation/outline → `toc`, page + scale maths — **pure, unit-tested** |
+| `webview/src/highlightSeam.ts`, `pdfHighlightSeam.ts`   | the ONLY callers of `rendition.annotations` / the PDF text+box layers |
+| `webview/src/highlightNaming.ts`, `highlightPaint.ts`, `epubCfiRange.ts`, `pdfTextRange.ts`, `touchGesture.ts`, `selectionTheme.ts` | owner naming, paint diffing, CFI range join/split, PDF offset maths, swipe/long-press thresholds, `::selection` colour — **pure, unit-tested** |
 | `webview/reader-{epub,pdf}.template.html`               | **HTML and CSS only** — the DOM each entry queries                  |
 
 `buildReaderHtml.ts` compiles each entry with **esbuild** (one IIFE per format) and inlines it beside
 the libraries. `esbuild` is pinned **exactly** in `package.json` on purpose: CI regenerates both
 artifacts and `git diff --exit-code`s them, so output determinism is load-bearing. A flapping diff
 means the version drifted — do not "fix" it by loosening the CI check.
+
+**Both reading gestures are recognised INSIDE the WebView** — long-press (select text / press a
+highlight) and the directional drag that turns the page. There is no RN gesture overlay over the
+book any more, and there must not be one again: an overlay is the topmost hit-test target for every
+touch in the viewer, so the document beneath it can never receive a `touchstart`, and text selection
+(the first half of highlighting) stops working with nothing to explain why. See
+`webview/src/touchGesture.ts`.
 
 **Keep DOM-reading code in the entries and everything else in the pure modules.** That split is what
 makes the outline flatteners, the line grid and the page/scale arithmetic testable by *calling* them.

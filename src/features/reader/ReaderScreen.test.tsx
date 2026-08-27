@@ -42,7 +42,15 @@ import {
   removeBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import {
+  addEpubHighlight,
+  addPdfHighlight,
+  loadReaderHighlights,
+  removeHighlight,
+} from '@/features/personalization/readerHighlights';
+import type { ReaderHighlights } from '@/features/personalization/readerHighlights';
 import { focusOn } from '@/features/reader/a11yFocus';
+import { popupPosition } from '@/features/reader/highlightPopup';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
   getBookBase64,
@@ -131,6 +139,26 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
   addCurrentEpubBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+}));
+
+/**
+ * The highlights writes half. Mocked at the same seam as bookmarks and search's `queryBookIndex`,
+ * for the same reason: `readerHighlights.ts` is Personalization's, is unit-tested there, and reaches
+ * SQLite — what this file covers is what the READER does with what it hands back.
+ */
+jest.mock('@/features/personalization/readerHighlights', () => ({
+  loadReaderHighlights: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  addEpubHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  addPdfHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  removeHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
 }));
 
 /**
@@ -2597,23 +2625,27 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
   });
 
   describe('page turns while TTS is running', () => {
-    it('keeps Prev/Next reachable — the transport replaces the row, so navigation moves to swipe', async () => {
+    it('leaves the book reachable to touch — the transport replaces the row, so swipe is the way on', async () => {
       await mountReader();
       await reportReady();
       await deliver({ type: 'rendered' });
       await setTtsPref(true);
       await startSpeaking();
 
-      // The button row is gone by design, so the swipe catcher is the page-turn affordance while
-      // listening. It must NOT be disabled by the transport being up — it used to be, because
-      // `swipeEnabled` was gated on the old `showTts` flag alongside the real overlays, which are
-      // the only things that legitimately suppress it.
+      // The button row is gone by design, so swipe is the page-turn affordance while listening.
       //
-      // `includeHiddenElements`: the catcher carries `accessibilityElementsHidden` on purpose (it
-      // is inert chrome with nothing to announce), and RNTL's queries skip those by default.
+      // WHAT THIS ASSERTS CHANGED WHEN SWIPE MOVED INTO THE WEBVIEW. It used to find
+      // `reader-swipe-catcher` — the RN overlay that recognised the swipe — and its point was that
+      // the transport being up must not suppress it (an earlier version gated `swipeEnabled` on the
+      // TTS flag alongside the real overlays, which are the only things that legitimately suppress
+      // page turns). The gesture is recognised inside the document now, so the equivalent claim is
+      // that nothing is covering the book and the WebView is still mounted and reachable: an
+      // overlay here, or a `hidden` WebView, would swallow the swipe exactly as the old flag did.
+      const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+      expect(webView).toBeTruthy();
       expect(
-        screen.getByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
-      ).toBeTruthy();
+        screen.queryByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+      ).toBeNull();
     });
 
     it('clears the spoken highlight on a page turn without silencing the cue', async () => {
@@ -2833,5 +2865,233 @@ describe('screen-reader focus order', () => {
 
       expect(focusOnMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('ReaderScreen highlights', () => {
+  const EPUB_HL = {
+    id: 'h1',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+    color: 'yellow',
+  };
+  const PDF_HL = { id: 'h2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' };
+  const ANCHOR = { x: 120, y: 300, width: 80, height: 18 };
+
+  function loaded(highlights: Partial<ReaderHighlights>, skippedIds: string[] = []) {
+    return { highlights: { epub: [], pdf: [], ...highlights }, skippedIds };
+  }
+
+  beforeEach(() => {
+    jest.mocked(loadReaderHighlights).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(addEpubHighlight).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(addPdfHighlight).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(removeHighlight).mockReset().mockResolvedValue(loaded({}));
+    // Same reasoning as the bookmarks block's: nothing in this file resets `prepareBook` globally,
+    // so a PDF override left by an earlier test would route these EPUB fixtures down the PDF arm.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    __injectJavaScript.mockClear();
+  });
+
+  const EPUB_SELECTION = {
+    kind: 'cfiRange',
+    startCfi: EPUB_HL.startCfi,
+    endCfi: EPUB_HL.endCfi,
+  };
+
+  /** The shell's report that a long press selected some text. */
+  async function selectText(selection: unknown = EPUB_SELECTION): Promise<void> {
+    await deliver({ type: 'selection', selection, anchor: ANCHOR });
+  }
+
+  /** The shell's report that a long press landed on an existing highlight. */
+  async function pressHighlight(id: string): Promise<void> {
+    await deliver({ type: 'highlightPressed', id, anchor: ANCHOR });
+  }
+
+  async function openBook(format: ContentFormat = 'EPUB'): Promise<void> {
+    jest.mocked(prepareBook).mockResolvedValue(format);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+  }
+
+  it('does not load until the book has rendered', async () => {
+    // Highlights have to be PAINTED, and painting needs a rendition — `paintHighlights` is a no-op
+    // in the EPUB shell before openEpub has built one. A sharper version of the bookmarks gate.
+    await mountReader();
+    await reportReady();
+
+    expect(loadReaderHighlights).not.toHaveBeenCalled();
+  });
+
+  it('loads this book and paints what came back, once it renders', async () => {
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({ epub: [EPUB_HL] }));
+    await openBook();
+
+    expect(loadReaderHighlights).toHaveBeenCalledWith('test-book');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
+  });
+
+  it('sends the PDF array for a PDF book, which IS the format routing', async () => {
+    // `toReaderHighlights` splits the set host-side so no ContentFormat value crosses the bridge;
+    // choosing which half to send is what replaces the discriminant. Sending the wrong one would
+    // reach a shell that refuses it, so this is the assertion that keeps the split honest.
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({ pdf: [PDF_HL] }));
+    await openBook('PDF');
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [PDF_HL] }),
+    );
+  });
+
+  it('shows no menu until a gesture asks for one', async () => {
+    await openBook();
+    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
+  });
+
+  it('offers Highlight over text the reader just selected', async () => {
+    await openBook();
+    await selectText();
+
+    expect(screen.getByRole('button', { name: 'Highlight' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Delete highlight' })).toBeNull();
+  });
+
+  it('offers Delete highlight over one they made earlier', async () => {
+    // The two offers are mutually exclusive by construction — the shell decides which arrives, where
+    // the whole gesture is visible, so the host never has to guess from a selection alone.
+    await openBook();
+    await pressHighlight('h1');
+
+    expect(screen.getByRole('button', { name: 'Delete highlight' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Highlight' })).toBeNull();
+  });
+
+  it('takes the menu away when the selection is dropped', async () => {
+    // `selection: null` is a real message, not an absence — this is the half that stops the menu
+    // outliving the words it would act on when the reader taps elsewhere or turns the page.
+    await openBook();
+    await selectText();
+    await deliver({ type: 'selection', selection: null, anchor: null });
+
+    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
+  });
+
+  it("places the menu against the anchor, in the WebView's own coordinates", async () => {
+    // The anchor crosses the bridge in the WebView's viewport coordinates, which ARE the viewer
+    // container's — `ReaderWebView` fills it — so placement only has to clamp, never convert. That
+    // equivalence is the whole reason the menu can live in RN while the gesture happens in the
+    // document, and it is what this asserts: the same numbers, through the same pure placer, land on
+    // the rendered menu. The placement arithmetic itself is exercised in highlightPopup.test.ts.
+    await openBook();
+
+    // The viewer measures itself on layout; RNTL renders with no layout pass, so drive one. Without
+    // it `viewerBox` stays 0x0 and every menu clamps into the corner — which would make this test
+    // pass while proving nothing.
+    await act(async () => {
+      // `void`: RNTL's fireEvent returns a promise this does not need to await individually — the
+      // surrounding `act` is what flushes it, and type-aware lint is on for this directory.
+      void fireEvent(screen.getByTestId('reader-viewer'), 'layout', {
+        nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } },
+      });
+    });
+    await selectText();
+
+    const style = StyleSheet.flatten(screen.getByTestId('reader-highlight-menu').props.style) as {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    };
+    expect({ left: style.left, top: style.top }).toEqual(
+      popupPosition(ANCHOR, { width: style.width, height: style.height }, { width: 390, height: 700 }),
+    );
+    // Above the words, not under the hand that just pressed them.
+    expect(style.top).toBeLessThan(ANCHOR.y);
+  });
+
+  it('forwards an EPUB selection to addEpubHighlight verbatim, and repaints the fresh set', async () => {
+    jest.mocked(addEpubHighlight).mockResolvedValue(loaded({ epub: [EPUB_HL] }));
+    await openBook();
+    await selectText();
+    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+
+    // No colour argument: highlights are single-colour by design, so the store's own default is the
+    // one colour. A picker here would be a sync-model change, not a UI addition.
+    expect(addEpubHighlight).toHaveBeenCalledWith('test-book', EPUB_HL.startCfi, EPUB_HL.endCfi);
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
+  });
+
+  it('forwards a PDF selection as the SelectionRange the store takes', async () => {
+    await openBook('PDF');
+    await selectText({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
+    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+
+    expect(addPdfHighlight).toHaveBeenCalledWith('test-book', {
+      page: 4,
+      startOffset: 10,
+      endOffset: 25,
+    });
+  });
+
+  it('closes the menu as soon as the offer is taken', async () => {
+    // The offer is spent the moment it is pressed. Leaving it up for the length of a database write
+    // invites a second press on a highlight that is already going away.
+    await openBook();
+    await selectText();
+    await fireEvent.press(screen.getByRole('button', { name: 'Highlight' }));
+
+    expect(screen.queryByTestId('reader-highlight-menu')).toBeNull();
+  });
+
+  it('deletes by stored id when the reader takes the delete offer', async () => {
+    await openBook();
+    await pressHighlight('h1');
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete highlight' }));
+
+    expect(removeHighlight).toHaveBeenCalledWith('test-book', 'h1');
+  });
+
+  it('never deletes on the press alone — the menu is the confirmation', async () => {
+    // A long press is deliberate but it is not a confirmation, and this is the one gesture in the
+    // reader that destroys saved work.
+    await openBook();
+    await pressHighlight('h1');
+
+    expect(removeHighlight).not.toHaveBeenCalled();
+  });
+
+  it('surfaces highlights that could not be made paintable, rather than only logging them', async () => {
+    // Same reasoning as the bookmarks panel's skipped count and the TOC hardeners: a stored
+    // highlight that cannot be drawn is a bug worth seeing, and silence reads as "you never made one".
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({}, ['bad-1', 'bad-2']));
+    await openBook();
+
+    expect(screen.getByText(/2 saved highlight\(s\) could not be shown/)).toBeTruthy();
+  });
+
+  it('has no highlight MODE to enter — the gesture is the whole interface', async () => {
+    // The toolbar toggle this feature briefly had is gone: page turns and text selection are told
+    // apart by gesture shape inside the WebView now, so there is nothing left for a mode to switch.
+    await openBook();
+
+    expect(screen.queryByRole('button', { name: 'Highlight mode' })).toBeNull();
+  });
+
+  it('leaves no RN overlay over the book to swallow the long press', async () => {
+    // THE REASON THE MODE COULD GO. `reader-swipe-catcher` was the topmost hit-test target for every
+    // touch in the viewer, so the document underneath never saw a `touchstart` and could not select
+    // text. Swipes are recognised in the WebView now (webview/src/touchGesture.ts); if this overlay
+    // ever comes back, long-press-to-highlight stops working on a device and no other test notices.
+    await openBook();
+
+    expect(
+      screen.queryByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+    ).toBeNull();
   });
 });

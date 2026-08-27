@@ -26,9 +26,10 @@
   the @inject:entry marker below. WEBVIEW_BRIDGE.md recorded when the hand-synced
   arrangement would end; this is it.
 
-  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-canvas,
-  #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus
-  the CSS. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-page-1,
+  #pdf-page-2, #pdf-canvas, #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the
+  text/plain worker block), plus the CSS — including .pdf-text-layer and .pdf-highlight-layer, which
+  the entry creates at runtime but cannot style from a .ts file. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
   #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
   a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
   #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
@@ -88,19 +89,112 @@
         pdf.entry.ts's dpr-aware canvas sizing). #pdf-single's own scroll (below) is what makes the
         excess reachable instead of clipped.
       */
-      #pdf-canvas {
+      #pdf-canvas,
+      #pdf-canvas-2 {
         display: block;
       }
 
       /*
-        THE SECOND SPREAD CANVAS. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        ONE PAGE'S STACK: the canvas, the transparent text layer over it, and the highlight boxes
+        over that. `position: relative` is the whole reason this wrapper exists — the two layers are
+        absolutely positioned against it, and without a positioned ancestor they would resolve
+        against the viewport and land nowhere near the page. Used by BOTH surfaces: #pdf-single
+        holds two of these (a spread), and continuous scroll builds one per page inside each
+        .pdf-scroll-page.
+      */
+      .pdf-page {
+        position: relative;
+        display: block;
+        line-height: 0;
+      }
+
+      /*
+        THE SECOND SPREAD PAGE. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
         wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
         epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
         and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
         `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+
+        THE WRAPPER IS WHAT HIDES, NOT THE CANVAS INSIDE IT: #pdf-single is a flex row with a gutter,
+        and `gap` applies between IN-FLOW children — an empty-but-present wrapper would keep an 8px
+        gap next to a single page and shift it off centre.
       */
-      #pdf-canvas-2 {
+      #pdf-page-2 {
         display: none;
+      }
+
+      /*
+        THE TEXT LAYER — pdf.js's standard transparent overlay, one <span> per text item, positioned
+        by percentages of the page and scaled by the `--scale-factor` custom property the entry sets
+        (pdf.js 3.11 emits `calc(var(--scale-factor) * Npx)` into every span's font size, so a layer
+        without that property renders every glyph at zero and selects nothing).
+
+        WHY A PDF SHELL HAS ONE AT ALL: a rasterised page has no text to select and nothing to anchor
+        a highlight to. This is what makes selection possible and what character offsets — the way
+        `highlightStore` addresses a PDF highlight — are counted against. See pdfHighlightSeam.ts.
+
+        The rules below are pdf.js's own (text_layer_builder.css), trimmed to what this shell uses.
+        `color: transparent` rather than `opacity: 0`: the selection highlight the OS draws must stay
+        visible, and an opacity-0 layer takes its selection colour with it.
+      */
+      .pdf-text-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        line-height: 1;
+        text-align: initial;
+        text-size-adjust: none;
+        forced-color-adjust: none;
+        transform-origin: 0 0;
+      }
+      .pdf-text-layer span,
+      .pdf-text-layer br {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+      }
+      .pdf-text-layer .markedContent {
+        top: 0;
+        height: 0;
+        width: 0;
+      }
+
+      /*
+        THE SELECTION FILL, and it is not cosmetic here. The text layer is transparent, so the fill
+        is the ONLY visible sign that a long press selected anything — and WebKit's default is drawn
+        OPAQUE, which on a rasterised page covers the very words being selected. `--tf-selection` is
+        set by pdf.entry.ts's applyAppearance from the theme (selectionTheme.ts); the fallback is
+        what shows before the first appearance payload arrives.
+      */
+      .pdf-text-layer ::selection,
+      .pdf-text-layer span::selection {
+        background: var(--tf-selection, rgba(0, 0, 0, 0.18));
+      }
+
+      /*
+        THE USER HIGHLIGHT LAYER. `pointer-events: none` is LOAD-BEARING, not tidiness: a box that
+        takes touches is a box that swallows a drag beginning inside it, so extending or re-selecting
+        an existing highlight would be impossible. Taps on a highlight are resolved by hit-testing
+        the page container's own click against the painted geometry instead (pdfTextRange.ts's
+        `highlightAt`).
+
+        `mix-blend-mode: multiply` is what makes a SOLID fill — the user layer's channel in
+        HIGHLIGHT_LAYERS.md §3 — readable rather than opaque: it darkens the rasterised glyphs
+        underneath towards the highlight colour instead of covering them, the same compositing the
+        EPUB shell gets from epub.js's own highlight defaults.
+      */
+      .pdf-highlight-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-highlight-layer > div {
+        position: absolute;
+        mix-blend-mode: multiply;
+        border-radius: 2px;
       }
 
       /*
@@ -174,7 +268,10 @@
   </head>
   <body>
     <div id="pdf-pages">
-      <div id="pdf-single"><canvas id="pdf-canvas"></canvas><canvas id="pdf-canvas-2"></canvas></div>
+      <div id="pdf-single">
+        <div class="pdf-page" id="pdf-page-1"><canvas id="pdf-canvas"></canvas></div>
+        <div class="pdf-page" id="pdf-page-2"><canvas id="pdf-canvas-2"></canvas></div>
+      </div>
       <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
     </div>
     <pre id="fallback"></pre>
