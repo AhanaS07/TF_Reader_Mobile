@@ -205,3 +205,26 @@ cross the iframe/content-document boundary predictably) is currently unconfirmed
   both now call Reader's shared `focusOn`. **`TtsControls` IS mounted** — `ReaderScreen` renders it
   whenever TTS is enabled for an EPUB, in place of the page-navigation row. The "not mounted
   anywhere yet" note this line used to cite is gone from that file.
+
+## STATUS, 2026-08-28 — `fakeReaderTextProvider.ts`'s test-double dependency is gone
+
+`TTS_PROVIDER.md`'s deletion table named `useTtsSession.test.ts`/`.android.test.ts`'s dependency on
+`src/features/reader/tts/fakeReaderTextProvider.ts` as the one thing blocking that file's deletion.
+That dependency no longer exists: `src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts`
+is a forked, Accessibility-owned copy (same content, `Owner: Accessibility (Hruthik)`), and both
+test files now import from it instead. Confirmed via
+`grep -rn "features/reader/tts/fakeReaderTextProvider" src/` — the only remaining hits are
+`fakeReaderTextProvider.ts`/`.test.ts` referencing themselves and `TTS_PROVIDER.md`'s own table.
+
+So, on your side: `TTS_PROVIDER.md`'s deletion-table items 1, 2, and 4
+(`fakeReaderTextProvider.ts`, its test, and that table's own section) are unblocked — item 3
+("every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/`") is now
+satisfied. Deleting those two files and updating that doc's status line is yours to do, since they
+live in `src/features/reader/`.
+
+Also, separately: `accessibility-frontend-integration-contract.md` had a documentation error (§0,
+§2.3, §3, §4, §5 attributed `TtsControls`/`VoicePicker` to you) that's now corrected to match
+`CLAUDE.md`'s ownership table and both files' own headers — Accessibility (Hruthik) owns them, not
+Reader. Flagging directly since you've been editing them in good faith under the old (wrong) text —
+this doesn't undo that collaboration, just corrects who signs off on the next changes to those two
+files specifically.
