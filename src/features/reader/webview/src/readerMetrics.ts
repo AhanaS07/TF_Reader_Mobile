@@ -16,6 +16,7 @@
 // nothing here is sent or received. These are compile-time reads of a constant, resolved before the
 // shell is even built.
 
+import { selectionBackground } from './selectionTheme';
 import type { LayoutPrefs } from '@/shared/contracts';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 
@@ -252,6 +253,15 @@ export function baselineCss(
     'html, body {',
     '  -webkit-text-size-adjust: 100% !important;',
     '  text-size-adjust: 100% !important;',
+    // SELECTION MUST SURVIVE THE BOOK'S OWN CSS, and it is the one thing here a book can switch off
+    // outright rather than merely restyle. `user-select: none` and `-webkit-touch-callout: none` are
+    // routine in publisher and Calibre-converted stylesheets (they are the copy-prevention idiom),
+    // and either one makes a long press select nothing at all — no menu, no highlight, and nothing
+    // on screen to say why. `!important` for the same reason as every other rule in this sheet.
+    // The PDF shell never needs this: its text layer is our own DOM, not the book's.
+    '  -webkit-user-select: text !important;',
+    '  user-select: text !important;',
+    '  -webkit-touch-callout: default !important;',
     ...(bg ? [`  background: ${bg} !important;`] : []),
     '}',
     'body {',
@@ -274,11 +284,21 @@ export function baselineCss(
     '  overflow-wrap: normal !important;',
     '}',
     ...(link ? [`a { color: ${link} !important; }`] : []),
+    // SELECTION IS PART OF THE READING SURFACE NOW, not incidental chrome: a long press selects
+    // text and the host offers to highlight it, so what the selection looks like is what tells the
+    // reader the gesture worked. `::selection` only ever sets a background — the theme's `fg` stays,
+    // because a tint composites over the text where an opaque swatch replaces it.
+    `::selection { background: ${selectionBackground(link, bg)}; }`,
     // One size for every text-bearing element. `div` and `span` are in the list because
     // Calibre-converted books put their scaling on wrappers.
     'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',
     `  font-size: ${f}px !important;`,
     `  line-height: ${l}px !important;`,
+    // Repeated from the html/body rule above because `user-select` is inherited but overridable:
+    // a book that sets it on its own paragraphs beats an ancestor's `!important`, since both are
+    // important declarations and the more specific match wins.
+    '  -webkit-user-select: text !important;',
+    '  user-select: text !important;',
     '}',
     // Raised/lowered glyphs must not grow the line box, or the grid drifts by a fraction of a line
     // on every citation marker — and the test fixture is full of them. line-height: 0 is the

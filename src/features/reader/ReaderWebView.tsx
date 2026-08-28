@@ -23,6 +23,7 @@ import type {
   WebViewMessageEvent,
   WebViewNavigation,
   ShouldStartLoadRequest,
+  WebViewCustomMenuItems,
 } from 'react-native-webview/lib/WebViewTypes';
 
 import { buildCommandScript, parseReaderMessage } from '@/features/reader/readerBridge';
@@ -36,6 +37,16 @@ import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/r
  * this timer is what enforces it for the cases nothing else can catch.
  */
 const READY_TIMEOUT_MS = 10_000;
+
+/** Shown over plain text — the common case, and the default before any `highlightTouchActive`
+ * signal has arrived for the current gesture. Stable references, not inline literals in the JSX
+ * below, so neither array gets a new identity on every render. */
+const CREATE_MENU_ITEMS: WebViewCustomMenuItems[] = [{ label: 'Highlight', key: 'highlight' }];
+
+/** Shown while `highlightTouchActive` — the press landed on an existing highlight. */
+const DELETE_MENU_ITEMS: WebViewCustomMenuItems[] = [
+  { label: 'Delete Highlight', key: 'delete-highlight' },
+];
 
 export interface ReaderWebViewProps {
   /** file:// URI of the generated shell for this book's format, from getReaderHtmlUri(). */
@@ -75,10 +86,31 @@ export interface ReaderWebViewProps {
    */
   hidden?: boolean;
   /**
-   * Accessible name for the container, so the book is a reachable, named stop between the toolbar
-   * and the bottom controls instead of an unlabelled gap in the traversal.
+   * Accessible name for the book, so it is a reachable, named stop between the toolbar and the
+   * bottom controls instead of an unlabelled gap in the traversal.
+   *
+   * >>> THIS DOES NOT GO ON THE CONTAINER, AND MOVING IT BACK THERE BREAKS READING. <<<
+   * On Android, React Native maps `accessibilityLabel` to `setContentDescription`. A ViewGroup that
+   * is important-for-accessibility AND has a contentDescription is a screen-reader focus LEAF:
+   * TalkBack announces the group and does not descend into its children — including the virtual
+   * accessibility node tree a WebView publishes for its DOM. Put this on the View wrapping the
+   * WebView and every heading, paragraph and link in the book becomes unreachable, with nothing on
+   * screen to explain why. That is the "accessibilityLabel trap", named with this exact string as
+   * its example in ACCESSIBILITY_ARCHITECTURE_MAP.md §1 and WEBVIEW_A11Y_FINDINGS.md §3.6.
+   *
+   * So it is rendered on a 1x1 sibling node INSIDE the container instead. That gives the traversal
+   * its named stop without making the container itself focusable, and `hidden` below still hides it
+   * along with everything else, because it is inside the subtree those two props cover.
+   *
+   * Only names the container's PLACE in the native focus order. The DOM inside builds its own
+   * accessibility tree that React Native props cannot reach — see `hidden`'s note, and
+   * `AccessibilityPrefs.screenReaderHints`, which carries the same warning.
    */
   accessibilityLabel?: string;
+  /** Native "Highlight" item tapped. `ReaderScreen` sends `requestCurrentSelection` in response. */
+  onHighlightRequested: () => void;
+  /** Native "Delete Highlight" item tapped. `ReaderScreen` sends `confirmDeleteHighlight`. */
+  onDeleteHighlightRequested: () => void;
 }
 
 export function ReaderWebView({
@@ -89,9 +121,14 @@ export function ReaderWebView({
   scrollEnabled = false,
   hidden = false,
   accessibilityLabel,
+  onHighlightRequested,
+  onDeleteHighlightRequested,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
+  /** Drives `menuItems` below. Best-effort display only — correctness lives in the WebView's own
+   * `pressedHighlightId` checks, so a stale value here shows the wrong item, never a wrong action. */
+  const [highlightTouchActive, setHighlightTouchActive] = useState(false);
 
   // Refs, not deps: these are called from WebView callbacks, and putting the
   // callback props in a dependency array would re-arm the ready timer (or worse,
@@ -162,6 +199,13 @@ export function ReaderWebView({
         onReadyRef.current(send);
       }
 
+      // Consumed here, not forwarded to a `ReaderScreen` case — the only thing this drives is the
+      // `menuItems` prop below, and `ReaderScreen` has no use for a touch-active boolean.
+      if (message.type === 'highlightTouchActive') {
+        setHighlightTouchActive(message.active);
+        return;
+      }
+
       onMessageRef.current(message);
     },
     [send],
@@ -221,7 +265,8 @@ export function ReaderWebView({
     <View
       style={styles.container}
       testID="reader-webview-container"
-      accessibilityLabel={accessibilityLabel}
+      // NO `accessibilityLabel` HERE. It is a contentDescription on Android and would merge the
+      // whole WebView away from TalkBack — see the prop's own doc for the full trap.
       // The two-prop pair this codebase already uses for "keep assistive tech out of here" (the
       // swipe catcher, the privacy cover, the TOC fades). `importantForAccessibility` is explicitly
       // set back to 'yes' rather than left undefined: it must un-hide when the panel closes, and
@@ -229,6 +274,20 @@ export function ReaderWebView({
       accessibilityElementsHidden={hidden}
       importantForAccessibility={hidden ? 'no-hide-descendants' : 'yes'}
     >
+      {/* The named stop — see `accessibilityLabel`'s doc for why it is a sibling of the WebView
+          rather than a prop on the container above. `pointerEvents="none"` because a 1x1 node in
+          the top-left corner is still a hit-test target otherwise; a11y traversal visits it
+          regardless, which is the whole point (same reasoning as the TOC fades, inverted). */}
+      {accessibilityLabel !== undefined && (
+        <View
+          testID="reader-webview-a11y-stop"
+          pointerEvents="none"
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel={accessibilityLabel}
+          style={styles.a11yStop}
+        />
+      )}
       <WebView
         ref={webViewRef}
         source={{ uri: sourceUri }}
@@ -270,6 +329,19 @@ export function ReaderWebView({
         scrollEnabled={scrollEnabled}
         bounces={false}
         overScrollMode="never"
+        // Replaces WebKit's Copy/Translate/Share callout entirely, so there's nothing left to
+        // out-z-order. The toggle is best-effort display only — see `highlightTouchActive` above.
+        menuItems={highlightTouchActive ? DELETE_MENU_ITEMS : CREATE_MENU_ITEMS}
+        onCustomMenuSelection={(event) => {
+          switch (event.nativeEvent.key) {
+            case 'highlight':
+              onHighlightRequested();
+              break;
+            case 'delete-highlight':
+              onDeleteHighlightRequested();
+              break;
+          }
+        }}
         // Transport-level failures. Without these, a bad URI is a white screen.
         onError={(event) => {
           const { description, code } = event.nativeEvent;
@@ -306,4 +378,8 @@ const styles = StyleSheet.create({
   // single most common false "epub.js is broken" report.
   container: { flex: 1 },
   webView: { flex: 1, backgroundColor: '#ffffff' },
+  // Absolutely positioned and 1x1 so the named stop costs no layout: this sits inside the same
+  // flex:1 chain epub.js measures, and a node with real height would shrink the viewer and
+  // re-paginate the book.
+  a11yStop: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
 });

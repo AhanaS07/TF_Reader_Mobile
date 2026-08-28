@@ -20,12 +20,21 @@ tests that used to read the templates as text are gone, and deleting them was th
 | `webview/src/pdf.entry.ts`                              | pdf.js renderer, `openPdf`, the worker wiring                       |
 | `webview/src/readerMetrics.ts`                          | typography arithmetic + the stylesheet — **pure, unit-tested**      |
 | `webview/src/epubOutline.ts`, `pdfOutline.ts`            | navigation/outline → `toc`, page + scale maths — **pure, unit-tested** |
+| `webview/src/highlightSeam.ts`, `pdfHighlightSeam.ts`   | the ONLY callers of `rendition.annotations` / the PDF text+box layers |
+| `webview/src/highlightNaming.ts`, `highlightPaint.ts`, `epubCfiRange.ts`, `pdfTextRange.ts`, `touchGesture.ts`, `selectionTheme.ts` | owner naming, paint diffing, CFI range join/split, PDF offset maths, swipe/long-press thresholds, `::selection` colour — **pure, unit-tested** |
 | `webview/reader-{epub,pdf}.template.html`               | **HTML and CSS only** — the DOM each entry queries                  |
 
 `buildReaderHtml.ts` compiles each entry with **esbuild** (one IIFE per format) and inlines it beside
 the libraries. `esbuild` is pinned **exactly** in `package.json` on purpose: CI regenerates both
 artifacts and `git diff --exit-code`s them, so output determinism is load-bearing. A flapping diff
 means the version drifted — do not "fix" it by loosening the CI check.
+
+**Both reading gestures are recognised INSIDE the WebView** — long-press (select text / press a
+highlight) and the directional drag that turns the page. There is no RN gesture overlay over the
+book any more, and there must not be one again: an overlay is the topmost hit-test target for every
+touch in the viewer, so the document beneath it can never receive a `touchstart`, and text selection
+(the first half of highlighting) stops working with nothing to explain why. See
+`webview/src/touchGesture.ts`.
 
 **Keep DOM-reading code in the entries and everything else in the pure modules.** That split is what
 makes the outline flatteners, the line grid and the page/scale arithmetic testable by *calling* them.
@@ -66,6 +75,39 @@ entries to define it, so the "must be in both halves" trap is enforced rather th
 let the payload split into a second `applyA11y` sibling — one command carries everything the WebView
 renders with, for all three claimants (Personalization's typography/theme, Reader's `reduceMotion`,
 Accessibility's `announce.pageChanges`).
+
+## Reader accessibility — three rules that are easy to undo by accident
+
+`src/features/reader/READER_ANNOUNCEMENTS.md` is the source of truth for the announcement seam;
+`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Three things in the code
+look like tidy-ups and are not:
+
+**1. `ReaderWebView`'s container must NOT carry an `accessibilityLabel`.** On Android RN maps it to
+`setContentDescription`, and a ViewGroup that is important-for-accessibility with one is a
+screen-reader focus LEAF — TalkBack announces the container and never descends into the WebView's
+virtual node tree, so no heading, paragraph or link in the book is reachable. This is the
+"accessibilityLabel trap" three docs in `src/features/accessibility/` name, using the exact string
+`"Book content"` as the example, and it was in this repo for two days. The named stop is a 1x1
+`accessible` sibling INSIDE the container instead. Adding a label back to the container makes the
+book unreadable to TalkBack with nothing on screen to explain why.
+
+**2. A screen reader forces `flow: 'scrolled-doc'`, and the user is TOLD.** epub.js paginates with a
+CSS multi-column strip that Android's WebView cannot compute usable accessibility bounds for (spike
+F4/F6: the whole book present in the node tree at `bounds=[0,0][0,0]`). `readerA11yLayout.ts` is the
+rule; it is applied in `ReaderScreen`'s `buildAppearanceWithFont`, NOT in Personalization's
+`toReaderAppearance` — that function resolves preferences, and screen-reader state is not one.
+**Never make this silent.** `ReaderScreen` shows a one-time `Alert` with a "Use pages anyway"
+opt-out, and `DevPreferencesMenu` disables and annotates its Flow/Spread rows while it applies. The
+opt-out lives in `a11yOverrideChoice.ts` — a module, not component state, because the prefs menu
+arrives through `toolbarExtra` and is not `ReaderScreen`'s child.
+
+**3. Nothing announces unconditionally.** Every announcement passes three gates: a previous value
+exists, the user's `announce.pageChanges`/`announce.chapterChanges` allows it, and TTS is not
+speaking. That last one is not optional — react-native-tts and the screen reader share one output
+device and neither ducks, and `useTtsSession`'s `autoContinueChapter` turns pages *while reading*.
+`announce()` (`a11yAnnounce.ts`) is the shared transport and is deliberately opinion-free; the rules
+and wording are `readerAnnouncements.ts`, which is pure. Search results are **declined**, not
+overlooked — `SearchMatchBar.tsx:50-64` carries the argument.
 
 ## Generated and tracked artifacts
 

@@ -208,6 +208,19 @@ describe('the line grid — why a line cannot be sliced by a page edge', () => {
     );
   });
 
+  it('forces text selectable against a book that switches it off', () => {
+    // `user-select: none` / `-webkit-touch-callout: none` are the copy-prevention idiom in publisher
+    // and Calibre-converted stylesheets, and either one makes a long press select nothing — no
+    // menu, no highlight, and nothing on screen explaining it. Selection is half of highlighting
+    // now, so this sheet has to win.
+    const css = baselineCss(readerMetrics(393, 700));
+    expect(css).toMatch(/html, body \{[^}]*-webkit-user-select: text !important/);
+    expect(css).toMatch(/html, body \{[^}]*-webkit-touch-callout: default !important/);
+    // Repeated on the text elements: both declarations are important, so a book's rule on its own
+    // paragraphs beats an ancestor's on specificity unless this sheet matches there too.
+    expect(css).toMatch(/^p, div, span, li,[^{]*\{[^}]*user-select: text !important/m);
+  });
+
   it('does not quantise when the flow has no page edges', () => {
     // Guard on the flow rather than the value: when scrolled-doc arrives, this test is the record
     // of what changes with it.
@@ -598,10 +611,17 @@ describe('the PDF shell carries continuous scroll\'s second surface', () => {
   // pdf.entry.ts toggles which of #pdf-single/#pdf-scroll is visible off applyAppearance's flow —
   // both silently do nothing if their elements go missing, same failure mode the block above guards
   // for the single-page surface.
-  it('defines #pdf-single wrapping both spread canvases', () => {
+  it('defines #pdf-single wrapping both spread pages', () => {
+    // EACH CANVAS SITS IN ITS OWN POSITIONED .pdf-page WRAPPER, which the canvases did not need
+    // before highlighting: the text layer and the highlight boxes are absolutely positioned, and
+    // without a positioned ancestor per page they resolve against the viewport instead of the page.
     expect(PDF_TEMPLATE).toMatch(
-      /<div id="pdf-single"><canvas id="pdf-canvas"><\/canvas><canvas id="pdf-canvas-2"><\/canvas><\/div>/,
+      /<div class="pdf-page" id="pdf-page-1"><canvas id="pdf-canvas"><\/canvas><\/div>/,
     );
+    expect(PDF_TEMPLATE).toMatch(
+      /<div class="pdf-page" id="pdf-page-2"><canvas id="pdf-canvas-2"><\/canvas><\/div>/,
+    );
+    expect(PDF_TEMPLATE).toMatch(/<div id="pdf-single">/);
   });
 
   it('defines the scrollable surface and its page-wrapper content root', () => {
@@ -618,12 +638,47 @@ describe('the PDF shell carries double-page spread\'s second canvas', () => {
   // renderCurrent() (pdf.entry.ts) toggles #pdf-canvas-2's display when a spread has two pages —
   // same failure mode as the rest of this file: an element that goes missing here means the second
   // page of a spread silently never appears, with no error to explain why.
-  it('hides #pdf-canvas-2 by default, so a book always opens on one page absent an appearance', () => {
-    expect(PDF_TEMPLATE).toMatch(/#pdf-canvas-2\s*\{[^}]*display:\s*none/);
+  it('hides #pdf-page-2 by default, so a book always opens on one page absent an appearance', () => {
+    // THE WRAPPER, NOT THE CANVAS — moved when the page wrappers landed. #pdf-single is a flex row
+    // with a gutter, and `gap` applies between IN-FLOW children, so hiding only the canvas would
+    // leave an empty flex item holding an 8px gap beside a single page and shift it off centre.
+    expect(PDF_TEMPLATE).toMatch(/#pdf-page-2\s*\{[^}]*display:\s*none/);
   });
 
   it('gives #pdf-single a gutter for when both canvases are showing', () => {
     expect(PDF_TEMPLATE).toMatch(/#pdf-single\s*\{[^}]*gap:\s*8px/);
+  });
+});
+
+describe("the PDF shell carries the layers a highlight is selected and painted in", () => {
+  // pdf.entry.ts CREATES these elements at runtime but cannot style them — a .ts file carries no
+  // CSS. Both fail silently and differently if their rules go missing: an unstyled text layer is
+  // opaque text stacked on top of the page bitmap, and an unstyled highlight layer is a set of
+  // static-positioned divs pushing the canvas down the page.
+  it('positions the text layer over the page', () => {
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-text-layer\s*\{[^}]*position:\s*absolute/);
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-page\s*\{[^}]*position:\s*relative/);
+  });
+
+  it('keeps the text layer transparent rather than invisible', () => {
+    // `color: transparent`, NOT `opacity: 0`: the OS draws the selection highlight into this layer,
+    // and an opacity-0 layer takes that with it — the user would be selecting text they cannot see
+    // selected, which is indistinguishable from selection being broken.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-text-layer span[^{]*\{[^}]*color:\s*transparent/);
+  });
+
+  it('keeps highlight boxes out of the touch path', () => {
+    // LOAD-BEARING, not tidiness: a box that takes touches swallows the drag that starts inside it,
+    // so an existing highlight could never be selected through or extended. Taps are hit-tested
+    // against the painted geometry instead (highlightGeometry.ts's `highlightAt`).
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*\{[^}]*pointer-events:\s*none/);
+  });
+
+  it('composites a highlight rather than covering the page with it', () => {
+    // `multiply` is what makes a SOLID fill (the user layer's channel in HIGHLIGHT_LAYERS.md §3)
+    // readable: it darkens the rasterised glyphs towards the colour instead of hiding them, the same
+    // compositing epub.js's own highlight defaults give the EPUB shell.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*>\s*div\s*\{[^}]*mix-blend-mode:\s*multiply/);
   });
 });
 

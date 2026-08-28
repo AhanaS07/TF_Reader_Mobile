@@ -31,6 +31,13 @@ native WebView **container only** — it does nothing for the HTML rendered insi
 `<button>`, etc.). Neither layer substitutes for the other; each needs its own treatment. This is
 referred to elsewhere as the "accessibilityLabel trap."
 
+**And it is worse than "does nothing": on Android it actively HIDES the content.** A ViewGroup that
+is important-for-accessibility and carries a `contentDescription` is a screen-reader focus leaf, so
+TalkBack announces the container and never descends into the WebView's virtual node tree. This repo
+had that exact line, added 2026-08-26 in good faith as a "named stop" for the focus order, and
+removed 2026-08-28 — see `WEBVIEW_A11Y_SPIKE.md` F4(a). The named stop is now a 1x1 sibling node
+INSIDE the container, which gives the traversal its stop without making the container focusable.
+
 **Still the largest open unknown:** the on-device VoiceOver/TalkBack spike
 (`WEBVIEW_A11Y_SPIKE.md`, 21-area matrix) **has never been run**. Every risk in §6 that depends on
 "does the real `epub.js`-rendered DOM expose a correct accessibility tree" is unconfirmed, not
@@ -80,11 +87,15 @@ Accessibility fix.
 - `announce.pageChanges` / `announce.chapterChanges` are owned by Accessibility and transported to
   the WebView today via the `applyAppearance` bridge command, resolved into
   `ReaderAppearance.announcePageChanges` (`src/features/personalization/readerAppearance.ts:134,262`).
-  **Verified gap:** `epub.entry.ts` assigns the incoming appearance to `currentAppearance` (line
-  509) but nothing downstream ever reads `currentAppearance.announcePageChanges` or
-  `currentAppearance.reduceMotion` again — no `aria-live` region, no announcement call, no
-  animation gate exists in `epub.entry.ts` / `pdf.entry.ts`. The carrier exists end-to-end; the
-  consumer does not. Same finding for `reduceMotion`.
+  ~~**Verified gap:** ... The carrier exists end-to-end; the consumer does not.~~
+  **`announcePageChanges` NOW HAS A CONSUMER (2026-08-28) — but a native one, not a WebView one, and
+  that is the design rather than a shortcut.** `ReaderScreen` retains the last-sent `ReaderAppearance`
+  and reads the flag at `relocated` time, announcing through `AccessibilityInfo`. It is native
+  because the event that warrants the announcement (`relocated`) is already on the native side, and
+  an `aria-live` region inside the WebView would announce from a document a screen reader may not be
+  able to reach at all — which is F4. `announce.chapterChanges` was added to `ReaderAppearance` in
+  the same change and is consumed the same way. See `src/features/reader/READER_ANNOUNCEMENTS.md`.
+  **`reduceMotion` is still unconsumed** — that half of the original finding stands.
 - **Live-apply channel:** `prefsStore.savePrefs()` → in-memory `notify()` → `ReaderScreen.tsx`'s
   `prefsStore.subscribe()` → `toReaderAppearance()` re-resolve → `applyAppearance` bridge command,
   with no reopen required. This is the one true write path the rest of the app relies on for "save
@@ -123,7 +134,7 @@ the TOC-row hint, which was declined with a reason.
 | Page indicator / page-jump button | role, explicit label | — complete |
 | Page-jump `TextInput` | explicit label | — complete |
 | Error banner | `accessibilityRole="alert"` + `accessibilityLiveRegion="polite"` | — complete |
-| Book content (WebView container) | label ("Book content"), hidden while any panel is open | — complete |
+| Book content (WebView container) | hidden while any panel is open; label ("Book content") on a 1x1 SIBLING of the WebView, not on the container | — complete. **The label moved on 2026-08-28 and must not move back**: on Android `accessibilityLabel` is a `contentDescription`, and one on the ViewGroup wrapping a WebView makes it a focus leaf — TalkBack announces it and never descends into the DOM. That is §1's "accessibilityLabel trap", with this exact string as its example. See `WEBVIEW_A11Y_SPIKE.md` F4(a) |
 | Bookmark badge, TTS "reading aloud" cue | role, label, hidden while any panel is open | — complete |
 | Swipe-catcher overlay, privacy cover, TOC fades | `accessibilityElementsHidden` + `importantForAccessibility="no-hide-descendants"` | correctly hidden — not a gap |
 
@@ -195,9 +206,13 @@ landed on both sides. What is still true is listed second.
 - Focus ENTRY into the TOC and Search panels, and where focus should land after a search hit. All
   three want the on-device VoiceOver/TalkBack spike first: Search's `autoFocus` may already carry
   AT focus, in which case an explicit call is redundant plumbing.
-- No reading-order/focus-order handling across the native↔WebView seam: the `relocated` bridge
-  message (page/CFI change) only updates RN visual state; it never calls
-  `AccessibilityInfo.announceForAccessibility` and never sends a WebView-side focus command.
+- ~~No reading-order/focus-order handling across the native↔WebView seam: the `relocated` bridge
+  message only updates RN visual state; it never calls `AccessibilityInfo.announceForAccessibility`~~
+  — **the announcement half closed 2026-08-28.** `relocated` now carries a `ReaderSection` and drives
+  pref-gated page/chapter announcements through `src/features/reader/a11yAnnounce.ts`, the shared
+  sibling of `a11yFocus.ts`. **The focus half is still open**: nothing sends a WebView-side focus
+  command, and `READER_FOCUS_ORDER_HANDOFF.md` §9's `focusContent` is still correctly deferred —
+  moving DOM focus into content is the wrong order until F4's fixes are confirmed on a device.
 
 **Expected/target reading order** (for future implementation, not built yet): toolbar → WebView
 content (heading → paragraphs, in DOM order) → toolbar; panel open/close moves focus in and
@@ -222,11 +237,13 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 
 | Risk | Severity | Status | Notes |
 |---|---|---|---|
-| On-device VoiceOver/TalkBack spike never run | High | Open | Blocking further confidence on every DOM-accessibility claim below |
+| On-device VoiceOver/TalkBack spike never run | High | **Android ran 2026-08-24/25; iOS still never run** | The Android pass found a total failure (F4), now attributed and fixed but unconfirmed on a device. Every VoiceOver cell in all 21 rows is still `—` |
 | EPUB DOM not semantically accessible (headings/paragraphs survive `epub.js`?) | High | Open, unconfirmed | Only settled by the spike's DOM-inspection checklist |
 | `epub.js` iframe/content-document focus behavior | High | Open, unconfirmed | Device test required, both platforms |
 | Page-transition accessibility (over/under-announcement) | High | Open, unconfirmed | Test with `announce.pageChanges` on and off once the consumer exists |
-| `announcePageChanges` / `reduceMotion` unconsumed in WebView | Medium | **Confirmed via code (§3)** | Bridge carries both fields into `currentAppearance`; `epub.entry.ts`/`pdf.entry.ts` never read either again |
+| ~~`announcePageChanges`~~ / `reduceMotion` unconsumed | Medium | **Half closed 2026-08-28** | `announcePageChanges` and the new `announceChapterChanges` are consumed natively by `ReaderScreen` (see §3 and READER_ANNOUNCEMENTS.md). `reduceMotion` is still read by nothing in either entry |
+| On-device confirmation of the F4 fixes | High | **Open** | Both causes were attributed and fixed at the code level on 2026-08-28 and NEITHER has been observed against TalkBack. Protocol: `WEBVIEW_A11Y_SPIKE.md` §11 |
+| Reader overrides `layout.flow` when a screen reader is running | Low | **Deliberate, 2026-08-28** | Paginated flow makes book content unreachable (F4/F6). The override is announced with an `Alert` and a session-only opt-out, and `DevPreferencesMenu` disables and annotates its Flow rows while it is in effect — a stored preference is never silently changed. See `src/features/reader/readerA11yLayout.ts` |
 | ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5)** | Restoration and background-hiding landed on both sides. What remains is focus ENTRY into TOC/Search and the post-search-hit destination, all gated on the device spike |
 | `useTtsSession` bypasses `prefsStore` write path | Low–Medium | **Confirmed via code (§3)** | Writes via `readSharedPrefs`/`writeSharedPrefs` directly; no live-subscriber notification on TTS pref changes; inconsistent with the app's single-write-path pattern |
 | VoiceOver vs. TalkBack divergence | Medium | Open, unconfirmed | Same DOM can produce different navigation/grouping/announcements; every spike matrix row needs two independent verdicts |

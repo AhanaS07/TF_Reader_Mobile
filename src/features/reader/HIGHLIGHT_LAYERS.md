@@ -15,11 +15,12 @@ Every in-book highlight in the EPUB renderer lands in one shared store: epub.js'
 | Owner string | Feature | Painted by | Status |
 | ------------ | ------- | ---------- | ------ |
 | `tts`        | Read-aloud spoken word/sentence | Accessibility (Hruthik) | **live** — `epub.entry.ts` |
-| `user`       | User's saved highlights | Personalization (Vaishnavi) | pending — host call-site wiring |
+| `user`       | User's saved highlights | Personalization (Vaishnavi) | **live** — both shells, via `paintHighlights`; long-press to create/delete |
 | `search`     | In-book search match highlight | Search (Vaishnavi) | pending — search only scrolls today |
 
-Nothing collides at runtime *today* because only `tts` paints. This document settles the rules before
-`user` and `search` land, so the collision is designed out rather than discovered on a device.
+`user` landed 2026-08-26 (`paintHighlights`; see `../personalization/READER_HIGHLIGHTS_WIRING.md`),
+so two owners can now paint at once and §1 below stopped being a forecast. It also stopped being
+correct — read the correction there before writing a third client.
 
 **How epub.js makes them fight, if unmanaged:**
 
@@ -34,13 +35,38 @@ Nothing collides at runtime *today* because only `tts` paints. This document set
 
 ## The convention
 
-### 1. Namespace by owner — mandatory, and it must go through `type`
+### 1. Namespace by owner — by CSS class, NOT by the `type` argument
 
-Every owner gets a distinct **`type`** *and* a distinct **CSS class**, both derived from its owner
-string. This is not stylistic: because epub.js keys removal on `cfiRange + type`, a per-owner `type`
-is the *only* thing that makes one owner's `remove` structurally incapable of touching another's
-paint. A per-owner class alone would fix the styling collision but leave the clobber/remove collision
-intact.
+> **CORRECTED 2026-08-26, and the correction is the important part of this section.** This rule used
+> to say every owner must pass a per-owner **`type`** to `.add`/`.remove`, on the reading that
+> epub.js keys removal on `cfiRange + type` and so a per-owner `type` is the only thing that makes
+> one owner's `remove` structurally incapable of touching another's paint. That is true of `remove`
+> and false of everything else, because of what `Annotation.attach()` does with the same value
+> (`epubjs/lib/annotations.js`):
+>
+> ```js
+> if (type === "highlight")      result = view.highlight(...);
+> else if (type === "underline") result = view.underline(...);
+> else if (type === "mark")      result = view.mark(...);
+> ```
+>
+> There is no `else`. `type` is epub.js's annotation **KIND**, not a free label: a value outside
+> those three matches no branch, and **nothing is ever painted**. The annotation is filed in the map
+> and attached to every view and draws nothing. That is why the TTS spoken highlight never actually
+> appeared on a device despite being wired end to end — unit tests cannot see a blank overlay, and
+> the paint was the one part no test called. Found while building the `user` client; confirmed
+> against epub.js 0.3.93's source, not inferred.
+
+So: **the kind passed to `.add` is always `'highlight'`**, and the namespacing that survives is the
+per-owner **CSS class** (`annotationClassName`) plus the owner stamped into the annotation's `data`,
+which marks-pane copies onto the painted element's `dataset`. `webview/src/highlightSeam.ts` does
+both; no caller should be passing a `type` at all.
+
+**What is lost, stated plainly rather than buried:** epub.js hashes its annotation map on
+`encodeURI(cfiRange + type)`, so two owners painting the *exact same range string* now collide there
+— the later `add` displaces the earlier, and a `remove` for that range removes whichever is filed.
+It is bounded (identical ranges only, and a repaint restores it) and it is the price of painting at
+all. It is **not** a reason to go back: nothing painted is strictly worse than a rare clobber.
 
 The naming is centralised and unit-tested in `webview/src/highlightNaming.ts`:
 
@@ -81,10 +107,47 @@ regression, not a simplification. So each owner claims a different visual channe
 | `search` | **Outline / box** (border, minimal fill) | Transient; must be findable *over* a user fill without hiding it. |
 | `tts`    | **Translucent overlay** on top | Ephemeral, moves every word; a low-alpha wash composites over whatever is beneath. |
 
-Today `tts` paints `backgroundColor: rgba(255, 213, 0, 0.4)` (translucent yellow) via
-`TTS_SPOKEN_STYLES` in `epub.entry.ts` — already a translucent overlay, so it composes correctly with
-a solid `user` fill beneath it. That is the interim rule for Hruthik: **keep TTS translucent** so it
-layers rather than masks.
+**`styles` ARE SVG PRESENTATION ATTRIBUTES, NOT CSS DECLARATIONS** — the other half of the 2026-08-26
+correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
+`fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
+ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
+nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode':
+<theme-adjusted> }` — the same intended translucent yellow, expressed in the vocabulary that reaches
+the element (opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep
+the two channels in the ordering this section's table intends). It goes through the same
+`highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
+the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
+for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+
+**`user` paints `{ fill: <theme-adjusted colour>, 'fill-opacity': '0.25', 'mix-blend-mode':
+<theme-adjusted> }`** — not `fill-opacity: '1'` with a fixed `multiply`, which read as fully opaque
+and hid the text on every theme, confirmed on-device. A correctly-translucent `multiply` is still
+wrong on two of the three shipped themes: it nearly disappears against dark's near-black page, and
+barely shifts a warm fill like the default yellow against sepia's similarly warm, pale page.
+`webview/src/selectionTheme.ts`'s `highlightFill(color, bg)` (pure, unit-tested) picks fill and
+blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
+sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
+from `tts`" is still the intent; how to render it now depends on the page behind it.
+
+**THE SHADE IS A FUNCTION OF THE PAGE, SO IT IS RE-DERIVED WHEN THE PAGE CHANGES COLOUR.** Both
+shells re-tint the `user` and `tts` layers from `applyAppearance` whenever `bg` moves, rather than
+leaving a highlight wearing the theme it was created under. Without it, a light→dark switch leaves
+`multiply` against a near-black page and the highlight all but vanishes — and no later repaint
+repairs it, because `paintHighlights` diffs on ids alone (`highlightPaint.ts`) and an already-painted
+id is skipped.
+
+The two shells re-tint differently, and the asymmetry is forced:
+
+- **PDF** simply repaints. `paintPage` is a whole-layer `replaceChildren` over a handful of divs
+  whose geometry it re-measures on every zoom anyway, so re-deriving the colour is free.
+- **EPUB must REMOVE THEN ADD, never re-add.** epub.js's `Annotations.add` hashes on
+  `encodeURI(cfiRange + type)` and overwrites that map entry **without detaching the mark already
+  attached**, while also pushing a duplicate hash into `_annotationsBySectionIndex`. So a bare re-add
+  leaves the old-coloured rect painted underneath the new one — compositing darker, and undeletable,
+  since `remove` can only reach the winner — and attaches it twice more on the next `hooks.render`.
+  `epub.entry.ts` has two functions for this on purpose: `retintUserHighlights()` (live rendition,
+  removes first) and `repaintUserHighlights()` (a rendition that was just rebuilt, so there is
+  nothing to detach). Using the second where the first belongs is the bug it was written to prevent.
 
 ### 4. Z-order — TTS on top, and only for the same-channel tie
 
@@ -94,28 +157,61 @@ matters when two owners would otherwise occupy the *same* channel; the distinct-
 what keeps it from mattering most of the time. **This is priority, not mutual exclusion** — a lower
 layer is never removed to show a higher one.
 
-## PDF is out of scope for this convention (for now)
+## PDF — IN scope as of 2026-08-26, with its own seam
 
-The PDF renderer has **no highlight seam** in the current scope — `pdf.entry.ts`'s TTS handler is a
-documented no-op. When PDF highlight painting lands it will need its own seam, and it must be
-**spread-aware from day one**: in a double-page spread two pages are visible at once, so paint must
-cover both visible pages and hit-test across the spread, and re-paint on a double↔single flip. The
-storage/contract is unchanged (PDF locators stay per-page `{page, offset}`); only the painting/nav
-wiring must stop assuming one page in view. The owner/variant naming convention above carries over
-unchanged — a PDF seam should reuse `highlightNaming.ts`.
+Was "out of scope, and when it lands it will need its own seam, spread-aware from day one." It
+landed, and it is: `webview/src/pdfHighlightSeam.ts` (DOM, same untested tier as `highlightSeam.ts`)
+plus `webview/src/pdfTextRange.ts` (pure, unit-tested). What that took, and what carries over:
+
+- **A rasterised page has no text**, so there was nothing to select and nothing to anchor to. The
+  shell now renders pdf.js's standard **text layer** over every visible page — that is what makes
+  selection possible, and what character offsets (how `highlightStore` addresses a PDF highlight) are
+  counted against. `.pdf-text-layer` and `.pdf-highlight-layer` are styled in
+  `reader-pdf.template.html`; the entry creates them but a `.ts` file cannot carry their CSS.
+- **Spread-aware by construction, not by a special case.** Everything is keyed on a PAGE NUMBER and
+  scoped to that page's own surface, so a double-page spread is simply two surfaces, continuous
+  scroll is up to `2 * SCROLL_BUFFER_PAGES + 1`, and a double↔single flip re-renders both. `page`
+  travels in the paint payload (`PdfHighlightPaint`) for exactly this reason. Storage is unchanged —
+  PDF locators stay per-page `{page, offset}`.
+- **A selection that crosses the spread is REFUSED, not truncated.** `SelectionRange` is single-page
+  by construction, so half of a cross-page selection would be stored silently and the other half
+  lost.
+- **The naming convention carries over unchanged** — the seam reuses `annotationClassName('user',
+  'saved')`, so a PDF highlight box and an EPUB one answer to the same class.
+- **The visual channel is the same too**, reached differently — and, like the EPUB side, NOT a
+  fixed `background`/`multiply` pair any more. `pdfHighlightSeam.ts`'s `paintPage` calls the SAME
+  `highlightFill(color, bg)` the EPUB side does, setting `background`/`opacity`/inline
+  `mixBlendMode` per page (the template's CSS class still carries `multiply` as the no-JS fallback,
+  but an inline style always wins). `bg` is `pdf.entry.ts`'s own `currentBg`, not read back from
+  `document.body.style.background` — that serialised form is not guaranteed hex across engines and
+  would silently defeat `highlightFill`'s `parseHex`.
+- **The boxes are `pointer-events: none`, and that is load-bearing.** A box that takes touches
+  swallows the drag that starts inside it, so an existing highlight could never be selected through or
+  extended. A long press on one is resolved by hit-testing the painted geometry instead
+  (`highlightAt`), across every visible surface — so it works on either page of a spread. **The EPUB
+  shell hit-tests the same way now**, measuring `contents.range(cfiRange).getClientRects()` instead
+  of pdf.js's text layer, through the same pure `highlightAt` — so `highlightAt` and `HighlightBox`
+  moved out of `pdfTextRange.ts` into `webview/src/highlightGeometry.ts`. See WEBVIEW_BRIDGE.md for
+  what the EPUB side did before and why a caret was the wrong primitive.
+
+**TTS is still a documented no-op here**, and that is now a segmentation limit rather than a missing
+seam: `readerTextProvider.ts`'s model is CFI-based, so Reader never builds one for a PDF book.
 
 ## Handoff
 
-- **Ahana (seam):** the enforcement mechanism (`highlightSeam.ts` + `highlightNaming.ts`) is yours
-  and already built. This doc is the contract it enforces. The one thing still on the reader side is
-  the **`user` client**: create-on-selection (selection → locators), painting saved highlights via
-  the seam, and tap-to-delete by `id`. That's the joint reader-UI task; my host call-sites feed it.
+- **Ahana (seam):** DONE, 2026-08-26, since revised. The `user` client is built end to end — both
+  create and delete are native WebView menu items now (`WEBVIEW_BRIDGE.md`'s "The highlight set"),
+  painting via the seam under `owner: 'user'` either way. Building it is what found the two
+  corrections in §1 and §3 above, so **read those before writing the `search` client**: a per-owner
+  `type` paints nothing, and camelCased style keys are ignored.
 - **Hruthik (TTS, interim):** you're the only live client. The rule for you is §3 — **keep the spoken
   highlight translucent** (`rgba(...)` with alpha well under 1) so `user`/`search` layers show
   through it, and keep painting through the seam with `owner: 'tts'`. No coordination needed beyond
   that; the namespace already isolates you.
-- **Vaishnavi (me):** `user` and `search` clients call the same seam with their own owner strings and
-  the channels/styles in §3 when the host call-site wiring and search-match painting land.
+- **Vaishnavi:** `search` is the one client left. It calls the same seam with `owner: 'search'` and
+  §3's outline channel — expressed as SVG attributes (`stroke`, `stroke-opacity`, `fill: 'none'`),
+  not CSS property names. The `user` client is live and is the layer a search box has to remain
+  findable *over*.
 
 See also: `TTS_PROVIDER.md` (open item 4, where this collision was first raised and the seam agreed),
 `WEBVIEW_BRIDGE.md` (the bridge rule for the future `paintHighlights` command — payloads cross the

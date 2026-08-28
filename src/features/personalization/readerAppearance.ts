@@ -132,6 +132,15 @@ export interface ReaderAppearance {
   readableSpacing: boolean;
   /** announce.pageChanges — gate the WebView's polite page-change announcement (§3.7, defaults true). */
   announcePageChanges: boolean;
+  /**
+   * announce.chapterChanges — the same gate for chapter boundaries (defaults true).
+   *
+   * ITS OWN FIELD RATHER THAN SHARING `announcePageChanges`, because `AccessibilityPrefs` already
+   * separates them and they are genuinely different volumes of speech: a page turn fires constantly,
+   * a chapter change a handful of times a book. A reader who turned pages off has not asked to stop
+   * being told which chapter they are in.
+   */
+  announceChapterChanges: boolean;
 }
 
 /**
@@ -260,5 +269,6 @@ export function toReaderAppearance(prefs: SharedPrefs, env: AppearanceEnv): Read
     dyslexiaFont: text.dyslexiaFont,
     readableSpacing: text.readableSpacing,
     announcePageChanges: announce.pageChanges,
+    announceChapterChanges: announce.chapterChanges,
   };
 }

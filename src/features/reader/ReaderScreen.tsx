@@ -9,8 +9,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
-  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -39,6 +39,13 @@ import {
   removeBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import {
+  addEpubHighlight,
+  addPdfHighlight,
+  loadReaderHighlights,
+  removeHighlight,
+} from '@/features/personalization/readerHighlights';
+import type { ReaderHighlights } from '@/features/personalization/readerHighlights';
 import { BookmarksPanel } from '@/features/reader/BookmarksPanel';
 import { ReaderWebView } from '@/features/reader/ReaderWebView';
 import {
@@ -52,6 +59,8 @@ import type {
   ReaderErrorCode,
   ReaderMessage,
   ReaderPosition,
+  ReaderSection,
+  ReaderSelection,
   ReaderTarget,
   ReaderTocItem,
 } from '@/features/reader/readerBridge';
@@ -59,7 +68,21 @@ import { focusOn } from '@/features/reader/a11yFocus';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
+import {
+  a11yFlowOverride,
+  effectiveLayoutFlow,
+  flowOverrideApplied,
+} from '@/features/reader/readerA11yLayout';
+import { announce } from '@/features/reader/a11yAnnounce';
+import { setOverrideDeclined, useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
+import {
+  appearanceChangeAnnouncement,
+  chapterChangeAnnouncement,
+  pageChangeAnnouncement,
+  tocLabelForHref,
+} from '@/features/reader/readerAnnouncements';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import {
   createEpubReaderTextProvider,
   type EpubReaderTextProvider,
@@ -162,9 +185,65 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
 async function buildAppearanceWithFont(
   prefs: SharedPrefs,
   env: AppearanceEnv,
+  screenReaderEnabled: boolean,
 ): Promise<ReaderAppearance> {
   const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
-  return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
+  const resolved: ReaderAppearance = {
+    ...toReaderAppearance(prefs, env),
+    customFontUri: fontFaceSrc,
+  };
+  // THE ONE PLACE THE READER OVERRULES A STORED PREFERENCE, and it is here rather than in
+  // `toReaderAppearance` on purpose: that function is Personalization's, it RESOLVES prefs into
+  // primitives, and whether a screen reader is running is not a preference to resolve. Its own
+  // header says the apply-time meaning of these fields is Reader's. See readerA11yLayout.ts for
+  // why paginated flow makes the book unreachable to TalkBack, and `flowOverrideActive` below for
+  // the notice that stops this being a silent change.
+  return a11yFlowOverride(resolved, screenReaderEnabled);
+}
+
+/**
+ * ANNOTATION FAILURES — why the six highlight/bookmark call-sites below carry handlers at all.
+ *
+ * They could not reject in any way worth reacting to until 2026-08-28. `readerHighlights.ts` and
+ * `readerBookmarks.ts` reached only SQLite then, so a rejection meant the local database was broken
+ * and there was nothing useful to say about it. `annotationsRouter.ts` now sends them at the sync
+ * backend whenever NetInfo reports a network — which on a simulator is ALWAYS, since `isConnected`
+ * asks whether the device has an interface, not whether the backend answers — and `syncApi.ts`
+ * turns a refused connection into `ApiError(status 0)`. With the backend not running these reject
+ * on every call, and a bare `void promise` made that an unhandled rejection: a LogBox warning in
+ * dev, and nothing whatsoever in release.
+ *
+ * Reads and writes get different answers because the cost is different:
+ *
+ *   READ  — nothing is lost. The panel stays empty and the next open retries, so a warning is the
+ *           right weight; an Alert on every open with the backend down would be unusable.
+ *   WRITE — the edit has nowhere else to live. The router's online branch POSTs to Mongo and
+ *           returns WITHOUT touching SQLite or the outbox — deliberately, since keeping a
+ *           non-downloaded book's rows out of the offline store is its whole purpose — so a failed
+ *           POST leaves the highlight in no store at all. Nothing else on screen will show the user
+ *           that, so it has to be said.
+ *
+ * `Alert.alert` for the same reason the layout notice above uses it: it is this app's idiom for
+ * "something changed out from under you", and being native it is announced by a screen reader
+ * without any work here.
+ *
+ * NONE OF THIS RESTORES DURABILITY. It converts silent data loss into visible failure, which is as
+ * far as Reader can reach: the fix that makes the edit SURVIVE is a transient-failure fallback to
+ * the offline store inside `annotationsRouter.ts`, and that is Personalization's file (Vaishnavi).
+ * `annotationDurability.test.ts` pins that defect; the containment below has its own cases in
+ * `ReaderScreen.test.tsx`.
+ */
+function warnAnnotationReadFailed(what: 'highlights' | 'bookmarks', cause: unknown): void {
+  console.warn(`ReaderScreen: could not load ${what}`, cause);
+}
+
+/**
+ * `title`/`body` rather than one operation enum: a failed ADD loses the edit, while a failed DELETE
+ * leaves the row exactly where it was. Same handler, genuinely different thing to tell the user.
+ */
+function alertAnnotationWriteFailed(title: string, body: string, cause: unknown): void {
+  console.warn(`ReaderScreen: ${title}`, cause);
+  Alert.alert(title, body, [{ text: 'OK', style: 'default' }]);
 }
 
 interface ReaderScreenProps {
@@ -337,6 +416,19 @@ export function ReaderScreen({
   const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
   const [skippedBookmarkCount, setSkippedBookmarkCount] = useState(0);
 
+
+  /**
+   * The user's saved highlights for this book, split per shell, plus how many stored rows could not
+   * be made paintable.
+   *
+   * Held so the SAME set can be re-sent after a re-open (`send` transitions null -> non-null once,
+   * but a WebView reload would give a second `rendered`), and so the count has somewhere to live.
+   * `readerHighlights.ts`'s call-sites each return the fresh, full, authoritative set, so this is
+   * only ever replaced wholesale — never merged into.
+   */
+  const [highlights, setHighlights] = useState<ReaderHighlights>({ epub: [], pdf: [] });
+  const [skippedHighlightCount, setSkippedHighlightCount] = useState(0);
+
   /**
    * Whether the "Page Bookmarked" tooltip should show, driven by TWO independent triggers:
    *
@@ -422,6 +514,18 @@ export function ReaderScreen({
    * subscription.
    */
   const [layoutPrefs, setLayoutPrefs] = useState<LayoutPrefs>(DEFAULT_PREFS.layout);
+
+  /**
+   * Whether `layoutPrefs` is the user's stored value yet, as opposed to the DEFAULT_PREFS fallback
+   * it starts at. Distinguishes "still reading from storage" from "read storage and it says this",
+   * exactly as `bookmarksLoaded` does above.
+   *
+   * IT EXISTS FOR THE OVERRIDE NOTICE, and the case it fixes is not hypothetical: the default flow
+   * is `paginated`, so between mount and the seed effect below resolving, a user who chose SCROLLED
+   * looks momentarily like a user who chose paginated — and the notice would tell them a preference
+   * had been overridden when nothing had been. Caught by ReaderScreen.test.tsx.
+   */
+  const [layoutPrefsLoaded, setLayoutPrefsLoaded] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
 
@@ -589,6 +693,124 @@ export function ReaderScreen({
   });
 
   /**
+   * Live screen-reader state, and the user's answer to being told about the layout override.
+   *
+   * >>> WHY THE READER OVERRIDES `layout.flow` AT ALL <<<
+   * epub.js paginates with a CSS multi-column strip that Android's WebView accessibility bridge
+   * cannot compute usable bounds for — WEBVIEW_A11Y_SPIKE.md's F4/F6 recorded the whole book's text
+   * present in the native accessibility tree at `bounds=[0,0][0,0]`, and TalkBack unable to reach a
+   * single paragraph by any method tried. Scrolled flow is ordinary document flow and does not have
+   * that problem. See readerA11yLayout.ts.
+   *
+   * >>> AND WHY IT IS NOT SILENT <<<
+   * The user chose "Paginated". Overriding that without saying so is its own defect, however good
+   * the reason, so `flowOverrideActive` drives a one-time notice with a way out — and while it is
+   * in effect, DevPreferencesMenu disables and annotates its Flow/Spread rows so the explanation
+   * stays reachable after the alert is gone.
+   *
+   * `overrideDeclined` IS SESSION-ONLY AND IN-MEMORY, deliberately. It is not written to prefs:
+   * Reader does not own `accessibility.*`, and "ignore accessibility" is not a flag to persist by
+   * accident. Same scope as sessionProgress.ts — it lasts as long as this screen does. It is also
+   * the escape hatch if scrolled flow ever renders badly on some book.
+   */
+  const screenReaderEnabled = useScreenReaderEnabled();
+  const overrideDeclined = useOverrideDeclined();
+
+  // Reset on mount, so the choice is scoped to one reading session rather than to the app process:
+  // reopening a book asks again, which is right for a decision whose point is to be reconsidered.
+  // It lives in a module rather than in state here because `DevPreferencesMenu` has to read the
+  // same value and is not this component's child — see a11yOverrideChoice.ts.
+  useEffect(() => {
+    setOverrideDeclined(false);
+  }, []);
+
+  /** What the appearance funnel and the RN half below are actually told. */
+  const a11yLayoutEnabled = screenReaderEnabled && !overrideDeclined;
+
+  /** True only while something was really taken from the user — false when they already chose
+   * scrolled, because then nothing was overridden and there is nothing to explain. */
+  const flowOverrideActive =
+    layoutPrefsLoaded && flowOverrideApplied(layoutPrefs.flow, a11yLayoutEnabled);
+
+  // Read from `applyAppearanceWith`'s closure, which is memoised on `[]` so it does not change
+  // identity on every screen-reader tick — same reasoning as `appearanceEnvRef` above.
+  const a11yLayoutEnabledRef = useRef(a11yLayoutEnabled);
+  useEffect(() => {
+    a11yLayoutEnabledRef.current = a11yLayoutEnabled;
+  });
+
+  /**
+   * The last appearance the WebView was actually sent, and the last position it reported.
+   *
+   * REFS, NOT STATE, and not because refs are cheaper: nothing renders from either, and state here
+   * would re-render the whole screen on every OS appearance tick and every page turn. They exist so
+   * an announcement can be built from a CHANGE — `readerAnnouncements.ts` returns null without a
+   * previous value, which is what stops the reader narrating the act of opening a book.
+   *
+   * `lastAppearanceRef` is also how `announcePageChanges` becomes readable at `relocated` time.
+   * Reader does not read `AccessibilityPrefs` (ACCESSIBILITY_ARCHITECTURE_MAP.md §2); the
+   * preference arrives already resolved onto this payload, which is the sanctioned route.
+   */
+  const lastAppearanceRef = useRef<ReaderAppearance | null>(null);
+  const lastPositionRef = useRef<ReaderPosition | null>(null);
+  const lastSectionRef = useRef<ReaderSection | null>(null);
+
+  /**
+   * TTS's live status, mirrored for `handleMessage` and the appearance funnel.
+   *
+   * A REF RATHER THAN A DEPENDENCY, deliberately. `handleMessage`'s dep array is kept minimal on
+   * purpose (see its own note); adding a value that changes on every utterance boundary would
+   * rebuild the bridge's message handler several times a sentence. Nothing here renders from it.
+   */
+  const ttsStatusRef = useRef(ttsSession.status);
+  useEffect(() => {
+    ttsStatusRef.current = ttsSession.status;
+  });
+
+  /**
+   * The outline, for naming a chapter in an announcement.
+   *
+   * A REF FOR THE SAME REASON `ttsStatusRef` IS: `handleMessage` would otherwise have to depend on
+   * `toc`, and `toc` is set BY `handleMessage` — a dependency on its own output rebuilds the handler
+   * the moment the outline lands, mid-open.
+   */
+  const tocRef = useRef<ReaderTocItem[]>(toc);
+  useEffect(() => {
+    tocRef.current = toc;
+  });
+
+  /**
+   * The notice. Fires at most once per mount, and only on a real override — re-resolving the same
+   * appearance (trigger C fires on every OS appearance tick) must not re-alert.
+   *
+   * `Alert.alert` rather than an in-screen banner: it is the idiom this app already uses for
+   * exactly this situation (DevPreferencesMenu's `warnScrolledDoubleSpreadConflict`, which tells
+   * the user when a layout field was reset out from under them), and being native it is announced
+   * by the screen reader that caused it without any work here.
+   */
+  const noticeShownRef = useRef(false);
+  useEffect(() => {
+    if (!flowOverrideActive || noticeShownRef.current) return;
+    noticeShownRef.current = true;
+
+    Alert.alert(
+      'Layout changed for screen readers',
+      'Page-by-page layout hides most of the book from VoiceOver and TalkBack, so this book is ' +
+        'showing as one continuous scroll. Your saved layout preference has not been changed.',
+      [
+        { text: 'OK', style: 'default' },
+        {
+          text: 'Use pages anyway',
+          style: 'cancel',
+          onPress: () => {
+            setOverrideDeclined(true);
+          },
+        },
+      ],
+    );
+  }, [flowOverrideActive]);
+
+  /**
    * Resolve the current prefs against `env` and send `applyAppearance` — the one seam both the
    * open-time send (trigger A) and the live re-apply effects below (triggers B/C) go through, so
    * "read prefs, resolve, send" is not duplicated three times.
@@ -601,10 +823,22 @@ export function ReaderScreen({
     async (
       sender: (command: ReaderCommand) => void,
       env = appearanceEnvRef.current,
+      /** Trigger B already HAS the fresh record (`subscribe` hands it over); A and C do not. */
+      record?: SharedPrefs,
     ): Promise<void> => {
       try {
-        const prefs = await prefsStore.getPrefs();
-        sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
+        const prefs = record ?? (await prefsStore.getPrefs());
+        const appearance = await buildAppearanceWithFont(prefs, env, a11yLayoutEnabledRef.current);
+        sender({ type: 'applyAppearance', appearance });
+
+        // Said AFTER the send, so what the reader hears cannot describe a change the renderer was
+        // never told about. `appearanceChangeAnnouncement` diffs the RESOLVED payload — see its own
+        // note for why that is what keeps trigger C's every-OS-tick re-send quiet.
+        const said = appearanceChangeAnnouncement(lastAppearanceRef.current, appearance, {
+          ttsSpeaking: ttsStatusRef.current === 'speaking',
+        });
+        lastAppearanceRef.current = appearance;
+        if (said !== null) announce(said);
       } catch {
         // Best-effort — see the note above.
       }
@@ -847,13 +1081,14 @@ export function ReaderScreen({
   useEffect(() => {
     return prefsStore.subscribe((freshPrefs) => {
       setLayoutPrefs(freshPrefs.layout);
+      setLayoutPrefsLoaded(true);
       if (send === null) return;
-      void (async () => {
-        const appearance = await buildAppearanceWithFont(freshPrefs, appearanceEnvRef.current);
-        send({ type: 'applyAppearance', appearance });
-      })();
+      // Routed through the same funnel as triggers A and C rather than building the payload inline.
+      // Four steps — resolve, override, send, announce — duplicated in two callbacks is four
+      // chances for them to drift; `freshPrefs` is passed so this still costs no `getPrefs()` hop.
+      void applyAppearanceWith(send, appearanceEnvRef.current, freshPrefs);
     });
-  }, [send]);
+  }, [send, applyAppearanceWith]);
 
   // Seed `layoutPrefs` once at mount — the subscribe effect above only fires on a SUBSEQUENT
   // savePrefs/resetPrefs, so without this the toggle and the swipe overlay would see the
@@ -861,7 +1096,9 @@ export function ReaderScreen({
   useEffect(() => {
     let cancelled = false;
     void prefsStore.getPrefs().then((prefs) => {
-      if (!cancelled) setLayoutPrefs(prefs.layout);
+      if (cancelled) return;
+      setLayoutPrefs(prefs.layout);
+      setLayoutPrefsLoaded(true);
     });
     return () => {
       cancelled = true;
@@ -878,7 +1115,74 @@ export function ReaderScreen({
   useEffect(() => {
     if (send === null) return;
     void applyAppearanceWith(send, appearanceEnv);
-  }, [send, appearanceEnv, applyAppearanceWith]);
+    // `a11yLayoutEnabled` rides this same effect rather than getting its own: turning TalkBack on
+    // inside an open book, and pressing "Use pages anyway", both need exactly what this already
+    // does — re-resolve and re-send. A second effect would send the payload twice on any tick that
+    // changed both.
+  }, [send, appearanceEnv, a11yLayoutEnabled, applyAppearanceWith]);
+
+  /**
+   * Highlight what the reader just selected, in reply to `requestCurrentSelection`.
+   *
+   * No colour argument — highlights are single-colour by design, so plain last-write-wins behaves
+   * as a union across devices (READER_HIGHLIGHTS_WIRING.md).
+   *
+   * Defined above `handleMessage`, which depends on this via its `useCallback` array.
+   */
+  const createHighlightFromSelection = useCallback(
+    (selection: ReaderSelection): Promise<void> => {
+      const add =
+        selection.kind === 'cfiRange'
+          ? addEpubHighlight(bookId, selection.startCfi, selection.endCfi)
+          : addPdfHighlight(bookId, {
+              page: selection.page,
+              startOffset: selection.startOffset,
+              endOffset: selection.endOffset,
+            });
+
+      return add
+        .then(({ highlights: fresh, skippedIds }) => {
+          setHighlights(fresh);
+          setSkippedHighlightCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          // The selection is already gone — the WebView cleared it when the menu item fired — so
+          // there is nothing left on screen to show the user what they lost.
+          alertAnnotationWriteFailed(
+            'Highlight not saved',
+            'This highlight could not be saved and has not been kept. Check your connection and try again.',
+            cause,
+          );
+        });
+    },
+    [bookId],
+  );
+
+  /**
+   * Delete the highlight a "Delete Highlight" press was on, in reply to `confirmDeleteHighlight`.
+   * By stored id — the shell already said which one the press landed on, so nothing here matches a
+   * range against a selection. No separate RN confirmation step: choosing the item from a menu the
+   * reader explicitly opened by pressing the highlight already is the confirmation.
+   */
+  const deleteHighlightById = useCallback(
+    (id: string): Promise<void> =>
+      removeHighlight(bookId, id)
+        .then(({ highlights: fresh, skippedIds }) => {
+          setHighlights(fresh);
+          setSkippedHighlightCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          // Milder than a failed add: the highlight is still stored and still painted, so the
+          // screen already agrees with the truth. Said anyway, because the user asked for it to go
+          // and it did not.
+          alertAnnotationWriteFailed(
+            'Highlight not deleted',
+            'This highlight could not be removed and is still saved. Check your connection and try again.',
+            cause,
+          );
+        }),
+    [bookId],
+  );
 
   const handleMessage = useCallback((message: ReaderMessage): void => {
     switch (message.type) {
@@ -891,7 +1195,7 @@ export function ReaderScreen({
         }
         setIsRendered(true);
         break;
-      case 'relocated':
+      case 'relocated': {
         setPosition(message.position);
         setBounds({ atStart: message.atStart, atEnd: message.atEnd });
         // Every real `relocated` is a navigation signal — epub.js never fires it for
@@ -899,7 +1203,43 @@ export function ReaderScreen({
         // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
         ttsProviderRef.current?.notifyRelocated();
         onRelocatedRef.current?.(message.position);
+
+        const ttsSpeaking = ttsStatusRef.current === 'speaking';
+
+        // ONE RELOCATION, ONE UTTERANCE. The chapter is tried first and the page only if it said
+        // nothing: crossing a chapter boundary is also a page change, and announcing both would
+        // read out "Chapter: The Cave" and "Page 88 of 340" back to back for a single turn.
+        const chapter = chapterChangeAnnouncement(
+          lastSectionRef.current,
+          message.section,
+          message.section === null
+            ? null
+            : tocLabelForHref(tocRef.current, message.section.href),
+          {
+            enabled: lastAppearanceRef.current?.announceChapterChanges ?? false,
+            ttsSpeaking,
+          },
+        );
+
+        // Announced from the CHANGE, not from the message arriving. `pdf.entry.ts`'s scroll mode
+        // posts `relocated` from a rAF-coalesced scroll listener, so a single flick delivers dozens
+        // of these — `pageChangeAnnouncement` returns null unless the page number actually moved.
+        // It also returns null for a reflowable EPUB, which has no page to name.
+        const page =
+          chapter !== null
+            ? null
+            : pageChangeAnnouncement(lastPositionRef.current, message.position, {
+                enabled: lastAppearanceRef.current?.announcePageChanges ?? false,
+                ttsSpeaking,
+              });
+
+        lastPositionRef.current = message.position;
+        lastSectionRef.current = message.section;
+
+        const said = chapter ?? page;
+        if (said !== null) announce(said);
         break;
+      }
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
         // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
@@ -922,8 +1262,17 @@ export function ReaderScreen({
       case 'ttsSentence':
         ttsProviderRef.current?.handleReply(message);
         break;
+      case 'selection':
+        // Reply to `requestCurrentSelection`. Null is a normal answer (selection cleared before
+        // the reply arrived) and just does nothing.
+        if (message.selection !== null) void createHighlightFromSelection(message.selection);
+        break;
+      case 'highlightPressed':
+        // Reply to `confirmDeleteHighlight` — deletes directly, no RN confirmation step.
+        void deleteHighlightById(message.id);
+        break;
     }
-  }, []);
+  }, [createHighlightFromSelection, deleteHighlightById]);
 
   /**
    * Flush a search jump that was queued while `send` was still null.
@@ -1005,12 +1354,21 @@ export function ReaderScreen({
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadBookmarks(bookId).then(({ bookmarks: loaded, skippedIds }) => {
-      if (cancelled) return;
-      setBookmarks(loaded);
-      setSkippedBookmarkCount(skippedIds.length);
-      setBookmarksLoaded(true);
-    });
+    void loadBookmarks(bookId)
+      .then(({ bookmarks: loaded, skippedIds }) => {
+        if (cancelled) return;
+        setBookmarks(loaded);
+        setSkippedBookmarkCount(skippedIds.length);
+        setBookmarksLoaded(true);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        // `bookmarksLoaded` IS STILL SET. It distinguishes "still reading" from "finished reading"
+        // (see its own note) — not "read successfully". Left false on a failure the panel sits on
+        // its loading state forever, which reads as a hang rather than as an empty list.
+        setBookmarksLoaded(true);
+        warnAnnotationReadFailed('bookmarks', cause);
+      });
     return () => {
       cancelled = true;
     };
@@ -1056,10 +1414,18 @@ export function ReaderScreen({
             : null;
       if (add === null) return;
 
-      void add.then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
+      void add
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not saved',
+            'This bookmark could not be saved and has not been kept. Check your connection and try again.',
+            cause,
+          );
+        });
     },
     [position, bookId],
   );
@@ -1067,10 +1433,18 @@ export function ReaderScreen({
   /** CALL-SITE 3: tap-to-delete, by stored id. Re-renders from the returned fresh set. */
   const deleteBookmark = useCallback(
     (id: string): void => {
-      void removeBookmark(bookId, id).then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
+      void removeBookmark(bookId, id)
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not deleted',
+            'This bookmark could not be removed and is still saved. Check your connection and try again.',
+            cause,
+          );
+        });
     },
     [bookId],
   );
@@ -1115,6 +1489,71 @@ export function ReaderScreen({
     },
     [bookId],
   );
+
+  /**
+   * CALL-SITE 1, per READER_HIGHLIGHTS_WIRING.md: load this book's highlights once, after the first
+   * `rendered`.
+   *
+   * AFTER `rendered`, NOT MERELY ONCE `send` EXISTS, and for a sharper reason than the bookmarks
+   * effect beside it has: a bookmark is a list, but a highlight has to be PAINTED, and painting
+   * needs a rendition to paint onto. The EPUB shell's `paintHighlights` is a no-op before
+   * `openEpub` has built one, and the PDF shell has no page surface to measure against until its
+   * first page is rasterised. Same gate `setSpokenRange` needs, for the same reason.
+   */
+  useEffect(() => {
+    if (!isRendered) return;
+    let cancelled = false;
+    void loadReaderHighlights(bookId)
+      .then(({ highlights: loaded, skippedIds }) => {
+        if (cancelled) return;
+        setHighlights(loaded);
+        setSkippedHighlightCount(skippedIds.length);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        // Left at the empty initial set, which is what the paint effect below then sends: a book
+        // with no highlights painted, not a broken one. NOT routed into `skippedHighlightCount` —
+        // that badge means "rows that would not map", and a load that returned nothing at all has
+        // no count to report.
+        warnAnnotationReadFailed('highlights', cause);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isRendered, bookId]);
+
+  /**
+   * Paint whatever the current set is — the ONE place `paintHighlights` is sent from.
+   *
+   * DERIVED FROM STATE RATHER THAN SENT AT EACH CALL-SITE, which is what makes "load on open" and
+   * "the user just added one" the same code path: every call-site replaces `highlights` with the
+   * fresh authoritative set `readerHighlights.ts` hands back, and this effect re-sends it. A second
+   * send from inside `highlightSelection` would be a second thing to keep in step with the first.
+   *
+   * The `switch` is exhaustive for the same reason `handleReady`'s is: choosing which array to send
+   * IS the format routing (`toReaderHighlights` split them host-side precisely so no `ContentFormat`
+   * value has to cross), so a fourth format must be a compile error here rather than a book whose
+   * highlights silently never paint.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null || format === null) return;
+    switch (format) {
+      case 'EPUB':
+        send({ type: 'paintHighlights', highlights: highlights.epub });
+        break;
+      case 'PDF':
+        send({ type: 'paintHighlights', highlights: highlights.pdf });
+        break;
+      case 'AUDIO':
+        // Unreachable — the same backstop `handleReady`'s switch carries, and for the same reason:
+        // no WebView is mounted for an audio book at all, so there is nothing to paint onto.
+        break;
+      default: {
+        const unhandled: never = format;
+        throw new Error(`Unhandled ContentFormat: ${String(unhandled)}`);
+      }
+    }
+  }, [isRendered, send, format, highlights]);
 
   /**
    * Jump to a typed page, or refuse without navigating.
@@ -1279,51 +1718,30 @@ export function ReaderScreen({
   }, [bookmarksForOpenBook, position]);
 
   /**
-   * Swipe-to-turn-page. INSTANT, NO ANIMATION — reuses the exact `next`/`prev` commands the
-   * Prev/Next buttons already send, so there is no WebView-side change for either format.
+   * SWIPE-TO-TURN-PAGE NO LONGER LIVES IN THIS FILE, and the move is worth recording where the
+   * PanResponder used to be.
    *
-   * `useMemo` keyed on `send`, NOT a ref: `send` only ever transitions null -> non-null exactly once
-   * (see its own state comment above), so this recreates at most once in practice, and closing over
-   * a plain reactive value rather than a ref is what keeps this out of the "may read a ref during
-   * render" class of bug — a real one for a PanResponder, since `.panHandlers` is spread into JSX
-   * below, which is inherently a render-time read.
+   * It was an RN overlay above the WebView (`reader-swipe-catcher`) with a `PanResponder` on it.
+   * That overlay is the topmost hit-test target for every touch in the viewer, so the document
+   * underneath never received a `touchstart` while it was mounted — fine for swipes, fatal for text
+   * selection, which is the first half of making a highlight. The two could not both own the same
+   * touches from opposite sides of the bridge.
    *
-   * Claims the responder only once a clearly HORIZONTAL drag is under way
-   * (`onMoveShouldSetPanResponder`), so it never fights a vertical scroll gesture — relevant once
-   * continuous scroll exists, even though the overlay itself is not mounted in that flow (see the
-   * render condition below).
+   * So both gestures are now recognised inside the WebView, where the whole touch is visible and
+   * they can be told apart by SHAPE: hold still and the text selects, drag sideways and the page
+   * turns. See `webview/src/touchGesture.ts`. Prev/Next below are unaffected — they were always
+   * buttons, and they still send the same `next`/`prev` commands.
    */
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_evt, gestureState) =>
-          Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy),
-        onPanResponderRelease: (_evt, gestureState) => {
-          if (Math.abs(gestureState.dx) <= SWIPE_MIN_DISTANCE_PX) return;
-          send?.({ type: gestureState.dx < 0 ? 'next' : 'prev' });
-        },
-      }),
-    [send],
-  );
-
-  // Paginated-only: in continuous scroll, native scrolling IS the navigation, and a swipe catcher
-  // sitting over the WebView would block it. Also gated on every overlay that already claims full
-  // priority over touches once visible, matching their own render conditions.
-  const swipeEnabled =
-    send !== null &&
-    !showToc &&
-    !showSearch &&
-    !showBookmarks &&
-    !isBusy &&
-    !isObscured &&
-    layoutPrefs.flow === 'paginated';
 
   // Prev/Next are BUTTON-driven, discrete-page-turn controls, and neither concept applies in
-  // continuous scroll: navigation there is native scrolling, same reasoning as swipeEnabled above.
+  // continuous scroll: navigation there is native scrolling.
   // `bounds` is the UI-only refinement on top of that — `next`/`prev` already no-op at an edge
   // WebView-side, so disabling here only stops the button LOOKING tappable past the end; it changes
   // no behaviour if `bounds` is ever behind the WebView's own state.
-  const isScrolling = layoutPrefs.flow === 'scrolled-doc';
+  // EFFECTIVE, not stored: the WebView was told the overridden flow, and an RN half that disagrees
+  // would leave the swipe affordances and the WebView's own scroll view set for a layout that is
+  // not on screen. See readerA11yLayout.ts.
+  const isScrolling = effectiveLayoutFlow(layoutPrefs.flow, a11yLayoutEnabled) === 'scrolled-doc';
   const prevDisabled = send === null || isScrolling || bounds.atStart;
   const nextDisabled = send === null || isScrolling || bounds.atEnd;
 
@@ -1396,7 +1814,7 @@ export function ReaderScreen({
         {toolbarExtra}
       </View>
 
-      <View style={styles.viewer}>
+      <View testID="reader-viewer" style={styles.viewer}>
         {/*
           ReaderWebView is KEYED ON THE SHELL URI, so a different shell is a different
           component instance rather than the same one told to navigate. ReaderWebView
@@ -1413,36 +1831,36 @@ export function ReaderScreen({
             onMessage={handleMessage}
             onHostError={raiseError}
             onReady={handleReady}
-            scrollEnabled={layoutPrefs.flow === 'scrolled-doc'}
+            scrollEnabled={isScrolling}
             hidden={anyPanelOpen}
             // The named stop between the toolbar and the bottom row. Says what this IS, not what it
             // contains — the document's own structure lives in the WebView's accessibility tree,
             // which no React Native prop can reach or describe.
             accessibilityLabel="Book content"
+            // Both highlight actions are native menu items now (see ReaderWebView.tsx) — the host
+            // just asks the shell to act on whatever the press landed on.
+            onHighlightRequested={() => {
+              send?.({ type: 'requestCurrentSelection' });
+            }}
+            onDeleteHighlightRequested={() => {
+              send?.({ type: 'confirmDeleteHighlight' });
+            }}
           />
         )}
 
         {/*
-          THE SWIPE CATCHER. A sibling View ON TOP of the WebView, not a wrapper around it — a
-          PanResponder wrapping a native WebView does not reliably see touches at all, because the
-          WebView's own native gesture handling intercepts them before RN's JS responder system does.
-          A plain overlay above it has no such problem: RN hit-tests overlapping siblings by z-order,
-          so every other overlay below (rendered later in this file, hence higher z) still gets first
-          claim on touches within its own bounds once visible.
-
-          Necessarily swallows every touch in the viewer while mounted — there is no existing in-book
-          tap interaction to preserve underneath it; navigation is fully blocked by
-          ReaderWebView.tsx's allow-list already, and everything interactive today is RN-button- or
-          panel-driven.
+          Stored highlights that could not be drawn, surfaced rather than only logged — same
+          reasoning as the bookmarks panel's skipped count and the TOC hardeners: a highlight that
+          cannot be painted is a bug worth seeing, and silence reads as "you never made one". There
+          is no highlights panel to put it in (the menu is the whole UI), so it sits quietly at the
+          bottom of the page and says nothing when the count is zero.
         */}
-        {swipeEnabled && (
-          <View
-            testID="reader-swipe-catcher"
-            style={FILL}
-            {...panResponder.panHandlers}
-            accessibilityElementsHidden
-            importantForAccessibility="no-hide-descendants"
-          />
+        {skippedHighlightCount > 0 && !anyPanelOpen && !isBusy && (
+          <View style={styles.highlightNoticeWrap} pointerEvents="none">
+            <Text style={styles.highlightNotice}>
+              {`${String(skippedHighlightCount)} saved highlight(s) could not be shown`}
+            </Text>
+          </View>
         )}
 
         {/*
@@ -1930,9 +2348,6 @@ function targetKey(target: ReaderTarget): string {
  */
 const TOC_INDENT_PX = 16;
 
-/** Horizontal drag distance, in points, that counts as a deliberate page-turn swipe. */
-const SWIPE_MIN_DISTANCE_PX = 50;
-
 /**
  * Slack, in points, before an edge counts as "scrolled away from".
  *
@@ -1992,6 +2407,18 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   toolbarIcon: { fontSize: 20 },
+
+  highlightNoticeWrap: { position: 'absolute', left: 8, right: 8, bottom: 8, alignItems: 'center' },
+  highlightNotice: {
+    backgroundColor: 'rgba(31, 31, 31, 0.85)',
+    color: '#ffffff',
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    overflow: 'hidden',
+    textAlign: 'center',
+  },
 
   // Explicit inset rather than StyleSheet.absoluteFillObject: RN 0.86's types
   // export only `absoluteFill`, so the *Object form is a typecheck error here.

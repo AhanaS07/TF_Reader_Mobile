@@ -28,7 +28,7 @@
 // under test.
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { StyleSheet } from 'react-native';
+import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
@@ -42,6 +42,13 @@ import {
   removeBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
+import {
+  addEpubHighlight,
+  addPdfHighlight,
+  loadReaderHighlights,
+  removeHighlight,
+} from '@/features/personalization/readerHighlights';
+import type { ReaderHighlights } from '@/features/personalization/readerHighlights';
 import { focusOn } from '@/features/reader/a11yFocus';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
@@ -53,6 +60,7 @@ import {
 import { buildCommandScript } from '@/features/reader/readerBridge';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { ContentFormat, SearchHit, SharedPrefs } from '@/shared/contracts';
@@ -134,6 +142,26 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
 }));
 
 /**
+ * The highlights writes half. Mocked at the same seam as bookmarks and search's `queryBookIndex`,
+ * for the same reason: `readerHighlights.ts` is Personalization's, is unit-tested there, and reaches
+ * SQLite — what this file covers is what the READER does with what it hands back.
+ */
+jest.mock('@/features/personalization/readerHighlights', () => ({
+  loadReaderHighlights: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  addEpubHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  addPdfHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+  removeHighlight: jest.fn(() =>
+    Promise.resolve({ highlights: { epub: [], pdf: [] }, skippedIds: [] }),
+  ),
+}));
+
+/**
  * A named alias, not an inline `(prefs: SharedPrefs) => void` inside the factory below:
  * babel-plugin-jest-hoist's out-of-scope-variable check mis-parses an inline function-type
  * parameter name as a variable reference (a known quirk, not a real scope violation), and fails
@@ -176,6 +204,16 @@ const { __emitPrefsChange } = jest.requireMock('@/features/personalization/prefs
  */
 jest.mock('@/features/reader/useAppearanceEnv', () => ({
   useAppearanceEnv: jest.fn(),
+}));
+
+/**
+ * Live screen-reader state. Mocked for the same reason `useAppearanceEnv` is, and defaulted to
+ * FALSE so every other test in this file exercises the ordinary paginated path — the override is
+ * opt-in by device state, and a test file where it was always on would be testing a configuration
+ * almost no run of the app is in.
+ */
+jest.mock('@/features/reader/useScreenReaderEnabled', () => ({
+  useScreenReaderEnabled: jest.fn(() => false),
 }));
 
 /**
@@ -225,8 +263,35 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
 // explicitly anyway so the applyAppearance-specific tests below have a real baseline to diff from.
 beforeEach(() => {
   jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
+  jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
   jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
+
+  // THE ASSET SEAM IS RESTORED FOR EVERY TEST, not left to whichever block last touched it. Any
+  // PDF test anywhere in this file has to point these three somewhere else, and `mockResolvedValue`
+  // replaces the factory's IMPLEMENTATION for the rest of the run — so a block that overrode them
+  // silently handed a PDF shell (and PDF bytes) to every later EPUB test. That is invisible in
+  // declaration order and only shows up under `jest --randomize`, as an assertion that says
+  // "openEpub was never sent" rather than anything about formats.
+  //
+  // Global rather than one afterEach per block: a per-block restore has to be remembered by the
+  // NEXT person adding a PDF case, and the two blocks that already reset `prepareBook` defensively
+  // are evidence that it was not. Blocks may still override — an outer beforeEach runs first.
+  jest.mocked(prepareBook).mockResolvedValue('EPUB');
+  jest
+    .mocked(getReaderHtmlUri)
+    .mockImplementation((format) => Promise.resolve(`file:///reader-${format.toLowerCase()}.html`));
+  jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+
+  // AND THE COMMAND LOG, for the same reason. Assertions here locate a command by `indexOf` over
+  // `__injectJavaScript.mock.calls`, which finds the FIRST match — so calls left by an earlier test
+  // do not just pad the array, they can win the lookup and make an ordering assertion compare two
+  // different tests' commands. Roughly half the blocks below already clear it in their own
+  // beforeEach; the ones that forgot are the ones that fail under `--randomize`.
+  //
+  // Declared below this beforeEach (the WebView mock is further down the file) and referenced here
+  // through the closure, which is evaluated at call time, long after the module has finished.
+  __injectJavaScript.mockClear();
 });
 
 /**
@@ -1774,12 +1839,10 @@ describe('ReaderScreen bookmarks panel', () => {
       .mockReset()
       .mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
-    // EXPLICIT, not relying on the top-level factory default: `bookmarksForOpenBook` (ReaderScreen.tsx)
-    // now filters the panel's list by `format`, so a PDF override left behind by an earlier test in
-    // this file (nothing here resets it automatically — there is no global mock-reset config) would
-    // silently filter out every EPUB-shaped `bookmark()` fixture below. Reset here rather than adding
-    // one to every individual PDF test, so this describe block cannot inherit stale state from
-    // whatever ran before it.
+    // Redundant with the file-level beforeEach, which now resets the whole asset seam and the
+    // command log for every test — kept because `bookmarksForOpenBook` (ReaderScreen.tsx) filters
+    // the panel's list by `format`, so this block breaks in a particularly confusing way (every
+    // EPUB-shaped `bookmark()` fixture silently vanishes) if that reset is ever narrowed.
     jest.mocked(prepareBook).mockResolvedValue('EPUB');
     __injectJavaScript.mockClear();
   });
@@ -2597,23 +2660,27 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
   });
 
   describe('page turns while TTS is running', () => {
-    it('keeps Prev/Next reachable — the transport replaces the row, so navigation moves to swipe', async () => {
+    it('leaves the book reachable to touch — the transport replaces the row, so swipe is the way on', async () => {
       await mountReader();
       await reportReady();
       await deliver({ type: 'rendered' });
       await setTtsPref(true);
       await startSpeaking();
 
-      // The button row is gone by design, so the swipe catcher is the page-turn affordance while
-      // listening. It must NOT be disabled by the transport being up — it used to be, because
-      // `swipeEnabled` was gated on the old `showTts` flag alongside the real overlays, which are
-      // the only things that legitimately suppress it.
+      // The button row is gone by design, so swipe is the page-turn affordance while listening.
       //
-      // `includeHiddenElements`: the catcher carries `accessibilityElementsHidden` on purpose (it
-      // is inert chrome with nothing to announce), and RNTL's queries skip those by default.
+      // WHAT THIS ASSERTS CHANGED WHEN SWIPE MOVED INTO THE WEBVIEW. It used to find
+      // `reader-swipe-catcher` — the RN overlay that recognised the swipe — and its point was that
+      // the transport being up must not suppress it (an earlier version gated `swipeEnabled` on the
+      // TTS flag alongside the real overlays, which are the only things that legitimately suppress
+      // page turns). The gesture is recognised inside the document now, so the equivalent claim is
+      // that nothing is covering the book and the WebView is still mounted and reachable: an
+      // overlay here, or a `hidden` WebView, would swallow the swipe exactly as the old flag did.
+      const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+      expect(webView).toBeTruthy();
       expect(
-        screen.getByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
-      ).toBeTruthy();
+        screen.queryByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+      ).toBeNull();
     });
 
     it('clears the spoken highlight on a page turn without silencing the cue', async () => {
@@ -2633,6 +2700,39 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       });
 
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+    });
+  });
+
+  describe('nothing announces over the read-aloud', () => {
+    it('suppresses a settings announcement while a sentence is being spoken', async () => {
+      // react-native-tts and the screen reader share one output device and neither ducks for the
+      // other, so an announcement lands ON TOP of the sentence being read. `SearchMatchBar.tsx`
+      // already declines a live region in writing for this exact reason.
+      //
+      // A SETTINGS CHANGE IS THE CASE THAT CAN ACTUALLY HAPPEN HERE. TTS is EPUB-only
+      // (`ttsProvider` requires it), and a reflowable EPUB announces no page number at all — so
+      // there is no page announcement to collide with today. The collision that matters is the
+      // chapter announcement, which is EPUB's unit; this test covers the same gate through the one
+      // path that is reachable now.
+      const spoken = jest
+        .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+        .mockImplementation(() => undefined);
+
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+      spoken.mockClear();
+
+      const dark = ttsPrefs(true);
+      dark.theme = 'dark';
+      __emitPrefsChange(dark);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(spoken).not.toHaveBeenCalled();
+      spoken.mockRestore();
     });
   });
 });
@@ -2832,6 +2932,880 @@ describe('screen-reader focus order', () => {
       await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
 
       expect(focusOnMock).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('ReaderScreen highlights', () => {
+  const EPUB_HL = {
+    id: 'h1',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+    color: 'yellow',
+  };
+  const PDF_HL = { id: 'h2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' };
+
+  function loaded(highlights: Partial<ReaderHighlights>, skippedIds: string[] = []) {
+    return { highlights: { epub: [], pdf: [], ...highlights }, skippedIds };
+  }
+
+  beforeEach(() => {
+    jest.mocked(loadReaderHighlights).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(addEpubHighlight).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(addPdfHighlight).mockReset().mockResolvedValue(loaded({}));
+    jest.mocked(removeHighlight).mockReset().mockResolvedValue(loaded({}));
+    // Same reasoning as the bookmarks block's: redundant with the file-level reset, kept as the
+    // local statement of what these EPUB fixtures need.
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    __injectJavaScript.mockClear();
+  });
+
+  const EPUB_SELECTION = {
+    kind: 'cfiRange',
+    startCfi: EPUB_HL.startCfi,
+    endCfi: EPUB_HL.endCfi,
+  };
+
+  /**
+   * The reader tapping the native "Highlight" menu item over a selection — WKWebView's own
+   * `onCustomMenuSelection`, not a bridge message. `ReaderWebView`'s real handler is what's under
+   * test here (the mock only replaces `react-native-webview`'s `WebView`), so this exercises the
+   * same code path a real long-press-then-tap does.
+   */
+  async function requestHighlight(): Promise<void> {
+    const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+    await act(async () => {
+      webView.props.onCustomMenuSelection({
+        nativeEvent: { key: 'highlight', label: 'Highlight', selectedText: 'some text' },
+      });
+    });
+  }
+
+  /** Same as `requestHighlight`, for the native "Delete Highlight" item. */
+  async function requestDeleteHighlight(): Promise<void> {
+    const webView = screen.getByTestId('reader-webview', { includeHiddenElements: true });
+    await act(async () => {
+      webView.props.onCustomMenuSelection({
+        nativeEvent: { key: 'delete-highlight', label: 'Delete Highlight', selectedText: '' },
+      });
+    });
+  }
+
+  /**
+   * The shell's reply to `requestCurrentSelection` — what `deliver`s a `selection` message meant
+   * NOW, since nothing sends one passively any more (see `ReaderMessage`'s own note). Every arrival
+   * is a create instruction, so this alone is enough to drive the store call-sites below; nothing
+   * in this file needs to go through `requestHighlight` first to test that half.
+   */
+  async function replyWithSelection(selection: unknown = EPUB_SELECTION): Promise<void> {
+    await deliver({ type: 'selection', selection });
+  }
+
+  /**
+   * The shell's reply to `confirmDeleteHighlight` — the reader chose "Delete Highlight" for a press
+   * that landed on this id. No anchor any more: there is no RN popup left for one to position.
+   */
+  async function replyHighlightPressed(id: string): Promise<void> {
+    await deliver({ type: 'highlightPressed', id });
+  }
+
+  async function openBook(format: ContentFormat = 'EPUB'): Promise<void> {
+    jest.mocked(prepareBook).mockResolvedValue(format);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+  }
+
+  it('does not load until the book has rendered', async () => {
+    // Highlights have to be PAINTED, and painting needs a rendition — `paintHighlights` is a no-op
+    // in the EPUB shell before openEpub has built one. A sharper version of the bookmarks gate.
+    await mountReader();
+    await reportReady();
+
+    expect(loadReaderHighlights).not.toHaveBeenCalled();
+  });
+
+  it('loads this book and paints what came back, once it renders', async () => {
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({ epub: [EPUB_HL] }));
+    await openBook();
+
+    expect(loadReaderHighlights).toHaveBeenCalledWith('test-book');
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
+  });
+
+  it('sends the PDF array for a PDF book, which IS the format routing', async () => {
+    // `toReaderHighlights` splits the set host-side so no ContentFormat value crosses the bridge;
+    // choosing which half to send is what replaces the discriminant. Sending the wrong one would
+    // reach a shell that refuses it, so this is the assertion that keeps the split honest.
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({ pdf: [PDF_HL] }));
+    await openBook('PDF');
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [PDF_HL] }),
+    );
+  });
+
+  it('offers both highlight actions only through the native WebView menu, never an RN popup', async () => {
+    // Both creating AND deleting used to be (or, for delete, could have been) a floating RN button.
+    // Replaced because an RN view can never reliably win screen space against, or stay reachable
+    // under, WKWebView's own native selection callout (always drawn above the whole app). Both are
+    // native `menuItems` entries on the WebView itself now (see `ReaderWebView.tsx`).
+    await openBook();
+
+    expect(screen.queryByRole('button', { name: 'Highlight' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete highlight' })).toBeNull();
+  });
+
+  it('offers "Highlight" by default, and switches to "Delete Highlight" while highlightTouchActive', async () => {
+    // Best-effort display only (see `highlightTouchActive`'s own note in readerBridge.ts) — this
+    // pins that `ReaderWebView` actually reads the signal and toggles `menuItems`, not that the
+    // signal always arrives in time on a real device, which nothing at this layer can pin.
+    await openBook();
+
+    const getMenuItems = () =>
+      screen.getByTestId('reader-webview', { includeHiddenElements: true }).props.menuItems;
+
+    expect(getMenuItems()).toEqual([{ label: 'Highlight', key: 'highlight' }]);
+
+    await deliver({ type: 'highlightTouchActive', active: true });
+    expect(getMenuItems()).toEqual([{ label: 'Delete Highlight', key: 'delete-highlight' }]);
+
+    await deliver({ type: 'highlightTouchActive', active: false });
+    expect(getMenuItems()).toEqual([{ label: 'Highlight', key: 'highlight' }]);
+  });
+
+  it('sends requestCurrentSelection when the native "Highlight" menu item is tapped', async () => {
+    await openBook();
+    await requestHighlight();
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'requestCurrentSelection' }),
+    );
+  });
+
+  it('sends confirmDeleteHighlight when the native "Delete Highlight" menu item is tapped', async () => {
+    await openBook();
+    await requestDeleteHighlight();
+
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'confirmDeleteHighlight' }),
+    );
+  });
+
+  it('forwards an EPUB selection to addEpubHighlight verbatim, and repaints the fresh set', async () => {
+    jest.mocked(addEpubHighlight).mockResolvedValue(loaded({ epub: [EPUB_HL] }));
+    await openBook();
+    await replyWithSelection();
+
+    // No colour argument: highlights are single-colour by design, so the store's own default is the
+    // one colour. A picker here would be a sync-model change, not a UI addition.
+    expect(addEpubHighlight).toHaveBeenCalledWith('test-book', EPUB_HL.startCfi, EPUB_HL.endCfi);
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
+  });
+
+  it('forwards a PDF selection as the SelectionRange the store takes', async () => {
+    await openBook('PDF');
+    await replyWithSelection({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
+
+    expect(addPdfHighlight).toHaveBeenCalledWith('test-book', {
+      page: 4,
+      startOffset: 10,
+      endOffset: 25,
+    });
+  });
+
+  it('does nothing when the reply says nothing was selected', async () => {
+    // A legitimate answer, not a failure — the selection could have cleared between the tap and the
+    // reply. Nothing to create, and nothing to surface an error about.
+    await openBook();
+    await replyWithSelection(null);
+
+    expect(addEpubHighlight).not.toHaveBeenCalled();
+    expect(addPdfHighlight).not.toHaveBeenCalled();
+  });
+
+  it('deletes by stored id when the shell confirms a highlight press', async () => {
+    // `highlightPressed` is now sent ONLY in reply to `confirmDeleteHighlight` (the reader chose
+    // "Delete Highlight" from the native menu) — there is no separate RN confirmation step any more,
+    // because choosing that item from an explicit menu IS the naming the old two-step gesture
+    // existed to require. See `deleteHighlightById`'s own note in ReaderScreen.tsx.
+    await openBook();
+    await replyHighlightPressed('h1');
+
+    expect(removeHighlight).toHaveBeenCalledWith('test-book', 'h1');
+  });
+
+  it('surfaces highlights that could not be made paintable, rather than only logging them', async () => {
+    // Same reasoning as the bookmarks panel's skipped count and the TOC hardeners: a stored
+    // highlight that cannot be drawn is a bug worth seeing, and silence reads as "you never made one".
+    jest.mocked(loadReaderHighlights).mockResolvedValue(loaded({}, ['bad-1', 'bad-2']));
+    await openBook();
+
+    expect(screen.getByText(/2 saved highlight\(s\) could not be shown/)).toBeTruthy();
+  });
+
+  it('has no highlight MODE to enter — the gesture is the whole interface', async () => {
+    // The toolbar toggle this feature briefly had is gone: page turns and text selection are told
+    // apart by gesture shape inside the WebView now, so there is nothing left for a mode to switch.
+    await openBook();
+
+    expect(screen.queryByRole('button', { name: 'Highlight mode' })).toBeNull();
+  });
+
+  it('leaves no RN overlay over the book to swallow the long press', async () => {
+    // THE REASON THE MODE COULD GO. `reader-swipe-catcher` was the topmost hit-test target for every
+    // touch in the viewer, so the document underneath never saw a `touchstart` and could not select
+    // text. Swipes are recognised in the WebView now (webview/src/touchGesture.ts); if this overlay
+    // ever comes back, long-press-to-highlight stops working on a device and no other test notices.
+    await openBook();
+
+    expect(
+      screen.queryByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
+    ).toBeNull();
+  });
+});
+
+/**
+ * CONTAINMENT for the defect pinned in annotationDurability.test.ts — read that file first; it
+ * explains why these six call-sites can reject at all (they could not before dev_T4 `facc57d`).
+ *
+ * What is asserted here is only what Reader can actually do about it: a rejection must not become
+ * an unhandled promise (a LogBox warning in dev, nothing at all in release), the book must stay
+ * usable, and a failed WRITE must be said out loud, because the edit is gone and nothing else on
+ * screen will show the user that.
+ *
+ * THESE TESTS DO NOT GO AWAY WHEN THE ROUTER IS FIXED. A durable stack still fails when the device
+ * is genuinely offline and the local write itself errors, so the handlers stay correct either way.
+ * The `it.failing` cases next door are the ones that expire.
+ */
+describe('a rejected annotation call is contained, not swallowed', () => {
+  let alert: jest.SpyInstance;
+  let warn: jest.SpyInstance;
+
+  const REJECTION = new Error('/api/v1/highlights: Network request failed');
+
+  function loaded(highlights: Partial<ReaderHighlights> = {}) {
+    return { highlights: { epub: [], pdf: [], ...highlights }, skippedIds: [] };
+  }
+
+  beforeEach(() => {
+    jest.mocked(loadReaderHighlights).mockReset().mockResolvedValue(loaded());
+    jest.mocked(addEpubHighlight).mockReset().mockResolvedValue(loaded());
+    jest.mocked(removeHighlight).mockReset().mockResolvedValue(loaded());
+    jest.mocked(loadBookmarks).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest
+      .mocked(addCurrentEpubBookmark)
+      .mockReset()
+      .mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    // Asserted on, not merely silenced: "it warned" is half of what containment means here, and an
+    // unmocked console.warn would also print this file's deliberate failures as if they were real.
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    alert.mockRestore();
+    warn.mockRestore();
+  });
+
+  async function openBook(): Promise<void> {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+  }
+
+  async function requestHighlightFor(selection: unknown): Promise<void> {
+    await deliver({ type: 'selection', selection });
+  }
+
+  const EPUB_SELECTION = {
+    kind: 'cfiRange',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+  };
+
+  it('a failed highlight LOAD leaves the book readable and says nothing to the user', async () => {
+    jest.mocked(loadReaderHighlights).mockRejectedValue(REJECTION);
+
+    await openBook();
+
+    // The book is still there. Nothing about a highlight fetch should blank the reader.
+    expect(screen.getByTestId('reader-webview', { includeHiddenElements: true })).toBeTruthy();
+    // Quiet on purpose: nothing was lost, the next open retries, and an Alert on every open with
+    // the backend down would make the app unusable. See warnAnnotationReadFailed's own note.
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not load highlights'),
+      REJECTION,
+    );
+  });
+
+  it('a failed highlight ADD tells the user the highlight was not kept', async () => {
+    jest.mocked(addEpubHighlight).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await requestHighlightFor(EPUB_SELECTION);
+
+    // The wording has to say it was NOT KEPT, not merely that something went wrong: the selection
+    // is already cleared, so this Alert is the only evidence the user ever gets.
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed highlight DELETE says it is still saved, not that it was lost', async () => {
+    jest.mocked(removeHighlight).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await deliver({ type: 'highlightPressed', id: 'h1' });
+
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not deleted',
+      expect.stringContaining('is still saved'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed bookmark LOAD resolves the panel out of its loading state', async () => {
+    // The specific trap this pins: `bookmarksLoaded` means "finished reading", not "read
+    // successfully". Left false on a rejection the panel sits on "Loading bookmarks…" forever,
+    // which reads as a hang rather than as an empty list.
+    jest.mocked(loadBookmarks).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    expect(screen.queryByText('Loading bookmarks…')).toBeNull();
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not load bookmarks'),
+      REJECTION,
+    );
+  });
+
+  it('a failed bookmark ADD tells the user it was not kept', async () => {
+    jest.mocked(addCurrentEpubBookmark).mockRejectedValue(REJECTION);
+    await openBook();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: true,
+      atEnd: false,
+    });
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * FORMAT COVERAGE. There is no format branch inside any of the six handlers — `createHighlight
+   * FromSelection` and `addCurrentBookmark` each pick the EPUB or PDF call-site and then share ONE
+   * `.then().catch()` — so these are not a second code path. They are here because that sharing is
+   * the thing worth pinning: a future split into per-format chains would have to keep both halves
+   * handled, and this is what would notice.
+   */
+  it('a failed PDF highlight ADD takes the same handler as the EPUB one', async () => {
+    jest.mocked(addPdfHighlight).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    await openBook();
+
+    await requestHighlightFor({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
+
+    expect(addPdfHighlight).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed PDF bookmark ADD takes the same handler as the EPUB one', async () => {
+    jest.mocked(addCurrentPdfBookmark).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    await openBook();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page: 7, pageCount: 100 },
+      atStart: false,
+      atEnd: false,
+    });
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(addCurrentPdfBookmark).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('AUDIO never reaches either handler, because it never renders', async () => {
+    // The third format has no WebView at all — `getReaderHtmlUri` refuses it before one can exist,
+    // so `rendered` never arrives and both load effects stay gated behind `isRendered`. Pinned as a
+    // NEGATIVE because the failure it guards against is noisy: an audio book popping a "could not
+    // load highlights" warning for a reader that was never going to paint any.
+    jest.mocked(loadReaderHighlights).mockRejectedValue(REJECTION);
+    jest.mocked(loadBookmarks).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('AUDIO');
+    jest.mocked(getReaderHtmlUri).mockRejectedValue(new UnsupportedFormatError('AUDIO'));
+
+    await render(<ReaderScreen bookId="test-book" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(loadReaderHighlights).not.toHaveBeenCalled();
+    expect(loadBookmarks).not.toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a failed bookmark DELETE says it is still saved', async () => {
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [
+        {
+          id: 'victim',
+          label: 'To be deleted',
+          target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+        },
+      ],
+      skippedIds: [],
+    });
+    jest.mocked(removeBookmark).mockRejectedValue(REJECTION);
+    await openBook();
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete bookmark: To be deleted' }));
+
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not deleted',
+      expect.stringContaining('is still saved'),
+      expect.anything(),
+    );
+  });
+});
+
+/**
+ * The two halves of F4 (WEBVIEW_A11Y_SPIKE.md): the native container must not swallow the WebView's
+ * own accessibility tree, and paginated flow must not be what a screen-reader user is given.
+ */
+describe('the screen-reader layout override', () => {
+  function container(): ReturnType<typeof screen.getByTestId> {
+    return screen.getByTestId('reader-webview-container', { includeHiddenElements: true });
+  }
+
+  describe('the WebView container does not merge the book away', () => {
+    it('carries no accessibilityLabel of its own', async () => {
+      // THE REGRESSION THIS EXISTS TO CATCH. On Android `accessibilityLabel` is a
+      // contentDescription, and a contentDescription on the ViewGroup wrapping a WebView makes it a
+      // screen-reader focus leaf — TalkBack announces "Book content" and never descends into the
+      // DOM, so no heading, paragraph or link in the book is reachable. It reads like a helpful
+      // label and it is the single most expensive line anyone could re-add here.
+      await mountReader();
+
+      expect(container().props.accessibilityLabel).toBeUndefined();
+    });
+
+    it('still offers a named stop, as a sibling of the WebView', async () => {
+      await mountReader();
+
+      const stop = screen.getByTestId('reader-webview-a11y-stop', { includeHiddenElements: true });
+      expect(stop.props.accessibilityLabel).toBe('Book content');
+      expect(stop.props.accessibilityRole).toBe('header');
+      // Inside the container, so the panel-open hiding above still covers it.
+      expect(stop.props.pointerEvents).toBe('none');
+    });
+  });
+
+  describe('what gets sent over the bridge', () => {
+    it('leaves paginated flow alone with no screen reader running', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(__injectJavaScript).toHaveBeenCalledWith(
+        buildCommandScript({
+          type: 'applyAppearance',
+          appearance: toReaderAppearance(makePrefs(), LIGHT_ENV),
+        }),
+      );
+    });
+
+    it('switches to scrolled flow and a single spread when a screen reader is running', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      jest
+        .mocked(prefsStore.getPrefs)
+        .mockResolvedValue(makePrefs({ layout: { flow: 'paginated', spread: 'double' } }));
+
+      await mountReader();
+      await reportReady();
+
+      const sent = __injectJavaScript.mock.calls
+        .map((call) => String(call[0]))
+        .filter((script) => script.includes('applyAppearance'));
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent[sent.length - 1]).toContain('"flow":"scrolled-doc"');
+      expect(sent[sent.length - 1]).toContain('"spread":"single"');
+    });
+  });
+
+  describe('the user is told, and can decline', () => {
+    let alert: jest.SpyInstance;
+
+    beforeEach(() => {
+      alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      alert.mockRestore();
+    });
+
+    it('says nothing when nothing was overridden', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(alert).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the user already chose scrolled flow', async () => {
+      // Nothing was taken from them, so there is nothing to explain. Announcing here would tell a
+      // scrolled-by-choice reader their preference had been overridden, which is false.
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      jest
+        .mocked(prefsStore.getPrefs)
+        .mockResolvedValue(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+
+      await mountReader();
+      await reportReady();
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(alert).not.toHaveBeenCalled();
+    });
+
+    it('explains the override once, and not again on a later re-apply', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      const view = await render(<ReaderScreen bookId="test-book" />);
+      await screen.findByTestId('reader-webview');
+      await reportReady();
+
+      // The stored preference has to reach `layoutPrefs` before the override can be detected as
+      // one — until then the screen is still on its DEFAULT_PREFS-derived fallback.
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(alert).toHaveBeenCalledTimes(1);
+      expect(String(alert.mock.calls[0][0])).toContain('Layout changed');
+
+      // Trigger C fires on every OS appearance tick. Re-alerting on each one would make a theme
+      // change re-explain a layout decision the user already answered.
+      jest.mocked(useAppearanceEnv).mockReturnValue({ ...LIGHT_ENV, osColorScheme: 'dark' });
+      await act(async () => {
+        await view.rerender(<ReaderScreen bookId="test-book" />);
+      });
+
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+
+    it('goes back to paginated when the user chooses "Use pages anyway"', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      await mountReader();
+      await reportReady();
+
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const buttons = alert.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+      const decline = buttons.find((button) => button.text === 'Use pages anyway');
+      expect(decline).toBeDefined();
+
+      __injectJavaScript.mockClear();
+      await act(async () => {
+        decline?.onPress?.();
+        await Promise.resolve();
+      });
+
+      const sent = __injectJavaScript.mock.calls
+        .map((call) => String(call[0]))
+        .filter((script) => script.includes('applyAppearance'));
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent[sent.length - 1]).toContain('"flow":"paginated"');
+    });
+  });
+});
+
+/**
+ * WHEN the reader speaks. The wording and the gate rules are `readerAnnouncements.test.ts`'s; what
+ * needs a mounted screen is that the right values reach them — `announcePageChanges` is only
+ * readable at `relocated` time through the appearance the WebView was last sent, and a previous
+ * position only exists if something retained it.
+ */
+describe('screen-reader announcements', () => {
+  let spoken: jest.SpyInstance;
+
+  // EXPLICIT, for the reason the TTS block above states: this file never clears mocks between
+  // tests and several earlier ones leave `prepareBook` resolving 'PDF'.
+  beforeEach(() => {
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+    spoken = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    spoken.mockRestore();
+  });
+
+  function said(): string[] {
+    return spoken.mock.calls.map((call) => String(call[0]));
+  }
+
+  describe('page changes', () => {
+    async function openPdf(): Promise<void> {
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      await mountReader();
+      await reportReady();
+    }
+
+    it('says nothing for the first position after an open', async () => {
+      await openPdf();
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 340 } });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('names the new page once it actually moves', async () => {
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 340 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 340 } });
+
+      expect(said()).toEqual(['Page 2 of 340']);
+    });
+
+    it('stays silent while the page number is unchanged', async () => {
+      // The PDF scroll path posts `relocated` from a rAF-coalesced scroll listener, so one flick
+      // delivers dozens of these. This is the difference between one announcement per page turn and
+      // one per animation frame.
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('respects announce.pageChanges', async () => {
+      // Read off the appearance the WebView was last sent, not from AccessibilityPrefs directly —
+      // that route is the standing rule in ACCESSIBILITY_ARCHITECTURE_MAP.md §2, and this is the
+      // test that it is actually the route taken.
+      const prefs = makePrefs();
+      prefs.accessibility.announce.pageChanges = false;
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(prefs);
+
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 9 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 9 } });
+
+      expect(said()).toEqual([]);
+
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    });
+
+    it('says nothing for a reflowable EPUB, which has no page to name', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'relocated', position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' } });
+
+      expect(said()).toEqual([]);
+    });
+  });
+
+  describe('chapter changes', () => {
+    const chapterToc = [
+      { label: 'The Cave', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 0 },
+      { label: 'The Road', target: { kind: 'href', href: 'ch2.xhtml' }, depth: 0 },
+    ];
+
+    async function openEpubAt(href: string, index: number): Promise<void> {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: chapterToc });
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' },
+        section: { index, href },
+      });
+      spoken.mockClear();
+    }
+
+    it('names the chapter using the outline the reader can see', async () => {
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter: The Road']);
+    });
+
+    it('falls back to the spine position when the outline names nothing', async () => {
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/8!/4/2)' },
+        section: { index: 4, href: 'appendix.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter 5']);
+    });
+
+    it('says nothing while the reader stays inside one chapter', async () => {
+      // Every page turn within a chapter reports the same href. Announcing on arrival rather than
+      // on change would name the chapter on every single page.
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/40)' },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('says nothing for the first chapter after an open', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: chapterToc });
+      spoken.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('respects announce.chapterChanges independently of pageChanges', async () => {
+      const prefs = makePrefs();
+      prefs.accessibility.announce.chapterChanges = false;
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(prefs);
+
+      await openEpubAt('ch1.xhtml', 0);
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    });
+
+    it('never announces both a chapter and a page for one relocation', async () => {
+      // Crossing a chapter boundary is also a page change. Two utterances for one turn is the
+      // over-announcement the whole seam exists to avoid.
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      await mountReader();
+      await reportReady();
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'page', page: 1, pageCount: 9 },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+      spoken.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'page', page: 2, pageCount: 9 },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter 2']);
+    });
+  });
+
+  describe('appearance changes', () => {
+    it('says nothing for the first appearance of a session', async () => {
+      // Opening a book is not a settings change, and narrating it is the over-announcement this
+      // whole seam exists to avoid.
+      await mountReader();
+      await reportReady();
+
+      expect(said()).toEqual([]);
+    });
+
+    it('names the field the user changed', async () => {
+      await mountReader();
+      await reportReady();
+      spoken.mockClear();
+
+      __emitPrefsChange(makePrefs({ theme: 'dark' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(said()).toEqual(['Dark theme']);
+    });
+
+    it('says nothing when a re-resolve produces the same payload', async () => {
+      // Trigger C re-resolves on every OS appearance tick. Diffing the RESOLVED appearance rather
+      // than the prefs edit is what keeps that silent.
+      const view = await render(<ReaderScreen bookId="test-book" />);
+      await screen.findByTestId('reader-webview');
+      await reportReady();
+      spoken.mockClear();
+
+      await act(async () => {
+        await view.rerender(<ReaderScreen bookId="test-book" />);
+      });
+
+      expect(said()).toEqual([]);
     });
   });
 });

@@ -32,6 +32,10 @@ import type {
   WebViewErrorCode,
 } from '@/features/reader/readerBridge';
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+import type {
+  EpubHighlightPaint,
+  PdfHighlightPaint,
+} from '@/features/personalization/readerHighlights';
 
 type ReaderCommandName = ReaderCommand['type'];
 
@@ -169,6 +173,13 @@ export interface CommandArgs {
   applyAppearance: [appearance: ReaderAppearance];
   requestTtsSentence: [request: TtsSentenceRequest];
   setSpokenRange: [cfi: string | null];
+  // The UNION, not the shell's own half of it, because this map has one entry per COMMAND and both
+  // shells share this command. Each entry narrows it on arrival (`epubHighlights`/`pdfHighlights` in
+  // highlightPaint.ts) — the same thing `goTo` does with `ReaderTarget`, and for the same reason:
+  // splitting it per shell would mean a `ContentFormat`-shaped decision on the wire.
+  paintHighlights: [highlights: EpubHighlightPaint[] | PdfHighlightPaint[]];
+  requestCurrentSelection: [];
+  confirmDeleteHighlight: [];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */

@@ -26,9 +26,10 @@
   the @inject:entry marker below. WEBVIEW_BRIDGE.md recorded when the hand-synced
   arrangement would end; this is it.
 
-  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-canvas,
-  #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the text/plain worker block), plus
-  the CSS. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-page-1,
+  #pdf-page-2, #pdf-canvas, #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the
+  text/plain worker block), plus the CSS — including .pdf-text-layer and .pdf-highlight-layer, which
+  the entry creates at runtime but cannot style from a .ts file. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
   #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
   a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
   #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
@@ -88,19 +89,112 @@
         pdf.entry.ts's dpr-aware canvas sizing). #pdf-single's own scroll (below) is what makes the
         excess reachable instead of clipped.
       */
-      #pdf-canvas {
+      #pdf-canvas,
+      #pdf-canvas-2 {
         display: block;
       }
 
       /*
-        THE SECOND SPREAD CANVAS. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        ONE PAGE'S STACK: the canvas, the transparent text layer over it, and the highlight boxes
+        over that. `position: relative` is the whole reason this wrapper exists — the two layers are
+        absolutely positioned against it, and without a positioned ancestor they would resolve
+        against the viewport and land nowhere near the page. Used by BOTH surfaces: #pdf-single
+        holds two of these (a spread), and continuous scroll builds one per page inside each
+        .pdf-scroll-page.
+      */
+      .pdf-page {
+        position: relative;
+        display: block;
+        line-height: 0;
+      }
+
+      /*
+        THE SECOND SPREAD PAGE. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
         wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
         epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
         and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
         `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+
+        THE WRAPPER IS WHAT HIDES, NOT THE CANVAS INSIDE IT: #pdf-single is a flex row with a gutter,
+        and `gap` applies between IN-FLOW children — an empty-but-present wrapper would keep an 8px
+        gap next to a single page and shift it off centre.
       */
-      #pdf-canvas-2 {
+      #pdf-page-2 {
         display: none;
+      }
+
+      /*
+        THE TEXT LAYER — pdf.js's standard transparent overlay, one <span> per text item, positioned
+        by percentages of the page and scaled by the `--scale-factor` custom property the entry sets
+        (pdf.js 3.11 emits `calc(var(--scale-factor) * Npx)` into every span's font size, so a layer
+        without that property renders every glyph at zero and selects nothing).
+
+        WHY A PDF SHELL HAS ONE AT ALL: a rasterised page has no text to select and nothing to anchor
+        a highlight to. This is what makes selection possible and what character offsets — the way
+        `highlightStore` addresses a PDF highlight — are counted against. See pdfHighlightSeam.ts.
+
+        The rules below are pdf.js's own (text_layer_builder.css), trimmed to what this shell uses.
+        `color: transparent` rather than `opacity: 0`: the selection highlight the OS draws must stay
+        visible, and an opacity-0 layer takes its selection colour with it.
+      */
+      .pdf-text-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        line-height: 1;
+        text-align: initial;
+        text-size-adjust: none;
+        forced-color-adjust: none;
+        transform-origin: 0 0;
+      }
+      .pdf-text-layer span,
+      .pdf-text-layer br {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+      }
+      .pdf-text-layer .markedContent {
+        top: 0;
+        height: 0;
+        width: 0;
+      }
+
+      /*
+        THE SELECTION FILL, and it is not cosmetic here. The text layer is transparent, so the fill
+        is the ONLY visible sign that a long press selected anything — and WebKit's default is drawn
+        OPAQUE, which on a rasterised page covers the very words being selected. `--tf-selection` is
+        set by pdf.entry.ts's applyAppearance from the theme (selectionTheme.ts); the fallback is
+        what shows before the first appearance payload arrives.
+      */
+      .pdf-text-layer ::selection,
+      .pdf-text-layer span::selection {
+        background: var(--tf-selection, rgba(0, 0, 0, 0.18));
+      }
+
+      /*
+        THE USER HIGHLIGHT LAYER. `pointer-events: none` is LOAD-BEARING, not tidiness: a box that
+        takes touches is a box that swallows a drag beginning inside it, so extending or re-selecting
+        an existing highlight would be impossible. Taps on a highlight are resolved by hit-testing
+        the page container's own click against the painted geometry instead (highlightGeometry.ts's
+        `highlightAt`, shared with the EPUB shell).
+
+        `mix-blend-mode: multiply` is what makes a SOLID fill — the user layer's channel in
+        HIGHLIGHT_LAYERS.md §3 — readable rather than opaque: it darkens the rasterised glyphs
+        underneath towards the highlight colour instead of covering them, the same compositing the
+        EPUB shell gets from epub.js's own highlight defaults.
+      */
+      .pdf-highlight-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-highlight-layer > div {
+        position: absolute;
+        mix-blend-mode: multiply;
+        border-radius: 2px;
       }
 
       /*
@@ -174,7 +268,10 @@
   </head>
   <body>
     <div id="pdf-pages">
-      <div id="pdf-single"><canvas id="pdf-canvas"></canvas><canvas id="pdf-canvas-2"></canvas></div>
+      <div id="pdf-single">
+        <div class="pdf-page" id="pdf-page-1"><canvas id="pdf-canvas"></canvas></div>
+        <div class="pdf-page" id="pdf-page-2"><canvas id="pdf-canvas-2"></canvas></div>
+      </div>
       <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
     </div>
     <pre id="fallback"></pre>
@@ -300,6 +397,235 @@ ${text}`;
     post({ type: "ready" });
   }
 
+  // src/features/reader/webview/src/highlightPaint.ts
+  function isEpub(entry) {
+    return typeof entry.startCfi === "string";
+  }
+  function pdfHighlights(payload) {
+    const mine = [];
+    let foreign = 0;
+    for (const entry of payload) {
+      if (isEpub(entry)) foreign++;
+      else mine.push(entry);
+    }
+    return { mine, foreign };
+  }
+
+  // src/features/reader/webview/src/selectionTheme.ts
+  function parseHex(color) {
+    const hex = color.trim().replace(/^#/, "");
+    const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+    if (full.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(full)) return null;
+    return {
+      r: Number.parseInt(full.slice(0, 2), 16),
+      g: Number.parseInt(full.slice(2, 4), 16),
+      b: Number.parseInt(full.slice(4, 6), 16)
+    };
+  }
+  function luminance(color) {
+    return (0.299 * color.r + 0.587 * color.g + 0.114 * color.b) / 255;
+  }
+  function selectionBackground(link, bg) {
+    const accent = link ? parseHex(link) : null;
+    if (accent) return `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.32)`;
+    const page = bg ? parseHex(bg) : null;
+    return page && luminance(page) < 0.5 ? "rgba(255, 255, 255, 0.30)" : "rgba(0, 0, 0, 0.18)";
+  }
+  var NAMED_COLOR_HEX = { yellow: "#ffff00" };
+  function resolveChannels(color) {
+    return parseHex(NAMED_COLOR_HEX[color.toLowerCase()] ?? color);
+  }
+  function highlightFill(color, bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return { fill: color, blend: "multiply" };
+    if (luminance(page) < 0.35) return { fill: color, blend: "screen" };
+    const swatch = resolveChannels(color);
+    if (swatch) {
+      const warm = (c) => c.r > c.b && c.g > c.b;
+      const closeInLightness = Math.abs(luminance(page) - luminance(swatch)) < 0.25;
+      if (warm(page) && warm(swatch) && closeInLightness) {
+        return {
+          fill: `rgb(${Math.round(swatch.r * 0.7)}, ${Math.round(swatch.g * 0.55)}, ${Math.round(swatch.b * 0.7)})`,
+          blend: "multiply"
+        };
+      }
+    }
+    return { fill: color, blend: "multiply" };
+  }
+
+  // src/features/reader/webview/src/touchGesture.ts
+  var LONG_PRESS_MS = 500;
+  var LONG_PRESS_SLOP_PX = 10;
+  var SWIPE_MIN_DISTANCE_PX = 50;
+  function movedBeyondSlop(from, to, slop = LONG_PRESS_SLOP_PX) {
+    return Math.abs(to.x - from.x) > slop || Math.abs(to.y - from.y) > slop;
+  }
+  function swipeDirection(from, to, minDistance = SWIPE_MIN_DISTANCE_PX) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < minDistance) return null;
+    if (Math.abs(dx) <= Math.abs(dy)) return null;
+    return dx < 0 ? "next" : "prev";
+  }
+
+  // src/features/reader/webview/src/highlightGeometry.ts
+  function highlightAt(boxes, x, y) {
+    for (let index = boxes.length - 1; index >= 0; index--) {
+      const box = boxes[index];
+      if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
+        return box.id;
+      }
+    }
+    return null;
+  }
+
+  // src/features/reader/webview/src/highlightNaming.ts
+  function annotationClassName(owner, variant) {
+    return `tf-hl-${owner}--${variant}`;
+  }
+
+  // src/features/reader/webview/src/pdfTextRange.ts
+  function itemStarts(lengths) {
+    const starts = [0];
+    for (const length of lengths) starts.push(starts[starts.length - 1] + Math.max(0, length));
+    return starts;
+  }
+  function locateOffset(lengths, offset, after = false) {
+    const starts = itemStarts(lengths);
+    const total = starts[starts.length - 1];
+    const clamped = Math.min(Math.max(offset, 0), total);
+    if (lengths.length === 0) return { index: 0, withinItem: 0 };
+    for (let index = 0; index < lengths.length; index++) {
+      const start = starts[index];
+      const end = starts[index + 1];
+      const inside = after ? clamped > start && clamped <= end : clamped >= start && clamped < end;
+      if (inside) return { index, withinItem: clamped - start };
+    }
+    return after ? { index: lengths.length - 1, withinItem: Math.max(0, lengths[lengths.length - 1]) } : { index: 0, withinItem: 0 };
+  }
+  function slicesForRange(lengths, startOffset, endOffset) {
+    if (!(endOffset > startOffset)) return [];
+    const start = locateOffset(lengths, startOffset);
+    const end = locateOffset(lengths, endOffset, true);
+    const slices = [];
+    for (let index = start.index; index <= end.index && index < lengths.length; index++) {
+      const from = index === start.index ? start.withinItem : 0;
+      const to = index === end.index ? end.withinItem : Math.max(0, lengths[index]);
+      if (to > from) slices.push({ index, from, to });
+    }
+    return slices;
+  }
+  function offsetsForSelection(lengths, a, b) {
+    const starts = itemStarts(lengths);
+    const at = (anchor) => {
+      const index = Math.min(Math.max(anchor.index, 0), Math.max(0, lengths.length - 1));
+      return starts[index] + Math.min(Math.max(anchor.withinItem, 0), Math.max(0, lengths[index] ?? 0));
+    };
+    const first = at(a);
+    const second = at(b);
+    return first <= second ? { startOffset: first, endOffset: second } : { startOffset: second, endOffset: first };
+  }
+
+  // src/features/reader/webview/src/pdfHighlightSeam.ts
+  var PDF_TEXT_LAYER_CLASS = "pdf-text-layer";
+  var USER_BOX_CLASS = annotationClassName("user", "saved");
+  function ensureSurface(page, root) {
+    let textLayer = root.querySelector(`.${PDF_TEXT_LAYER_CLASS}`);
+    if (!textLayer) {
+      textLayer = document.createElement("div");
+      textLayer.className = PDF_TEXT_LAYER_CLASS;
+      root.appendChild(textLayer);
+    }
+    let highlightLayer = root.querySelector(".pdf-highlight-layer");
+    if (!highlightLayer) {
+      highlightLayer = document.createElement("div");
+      highlightLayer.className = "pdf-highlight-layer";
+      root.appendChild(highlightLayer);
+    }
+    root.dataset.pdfPage = String(page);
+    return { page, root, textLayer, highlightLayer, divs: [], lengths: [], boxes: [] };
+  }
+  function clearTextLayer(surface) {
+    surface.textLayer.replaceChildren();
+    surface.highlightLayer.replaceChildren();
+    surface.divs = [];
+    surface.lengths = [];
+    surface.boxes = [];
+  }
+  function setPageText(surface, divs, itemsStr) {
+    surface.divs = divs;
+    surface.lengths = itemsStr.map((item) => item.length);
+  }
+  function paintPage(surface, highlights, bg) {
+    surface.highlightLayer.replaceChildren();
+    surface.boxes = [];
+    if (surface.divs.length === 0) return;
+    const origin = surface.root.getBoundingClientRect();
+    const fragment = document.createDocumentFragment();
+    for (const highlight of highlights) {
+      if (highlight.page !== surface.page) continue;
+      for (const slice of slicesForRange(surface.lengths, highlight.startOffset, highlight.endOffset)) {
+        const div = surface.divs[slice.index];
+        const text = div?.firstChild;
+        if (!text || text.nodeType !== Node.TEXT_NODE) continue;
+        const range = document.createRange();
+        try {
+          const limit = text.textContent?.length ?? 0;
+          range.setStart(text, Math.min(slice.from, limit));
+          range.setEnd(text, Math.min(slice.to, limit));
+        } catch {
+          continue;
+        }
+        for (const rect of range.getClientRects()) {
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const box = {
+            id: highlight.id,
+            left: rect.left - origin.left,
+            top: rect.top - origin.top,
+            width: rect.width,
+            height: rect.height
+          };
+          surface.boxes.push(box);
+          const el = document.createElement("div");
+          el.className = USER_BOX_CLASS;
+          el.dataset.hlId = highlight.id;
+          el.style.left = `${box.left}px`;
+          el.style.top = `${box.top}px`;
+          el.style.width = `${box.width}px`;
+          el.style.height = `${box.height}px`;
+          const { fill, blend } = highlightFill(highlight.color, bg);
+          el.style.background = fill;
+          el.style.opacity = "0.25";
+          el.style.mixBlendMode = blend;
+          fragment.appendChild(el);
+        }
+      }
+    }
+    surface.highlightLayer.appendChild(fragment);
+  }
+  function highlightAtClientPoint(surface, clientX, clientY) {
+    const origin = surface.root.getBoundingClientRect();
+    return highlightAt(surface.boxes, clientX - origin.left, clientY - origin.top);
+  }
+  function anchorIndex(surface, node, offset) {
+    if (!node) return null;
+    const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    if (!element) return null;
+    const index = surface.divs.indexOf(element);
+    if (index === -1) return null;
+    const length = surface.lengths[index] ?? 0;
+    const within = node.nodeType === Node.TEXT_NODE ? Math.min(offset, length) : 0;
+    return { index, withinItem: within };
+  }
+  function selectionInSurface(surface, selection) {
+    if (selection.isCollapsed || selection.rangeCount === 0) return null;
+    const anchor = anchorIndex(surface, selection.anchorNode, selection.anchorOffset);
+    const focus = anchorIndex(surface, selection.focusNode, selection.focusOffset);
+    if (!anchor || !focus) return null;
+    const { startOffset, endOffset } = offsetsForSelection(surface.lengths, anchor, focus);
+    return endOffset > startOffset ? { startOffset, endOffset } : null;
+  }
+
   // src/features/reader/readerBridge.ts
   var MAX_TOC_DEPTH = 6;
 
@@ -390,6 +716,37 @@ ${text}`;
   var pageCount = 0;
   var currentZoom = 1;
   var spreadPref = "single";
+  var pageSurfaces = /* @__PURE__ */ new Map();
+  var userHighlights = [];
+  var currentBg = "#ffffff";
+  async function renderPageSurface(pageNumber, page, root, cssScale) {
+    const pdfjs = lib();
+    if (!pdfjs) return;
+    const surface = ensureSurface(pageNumber, root);
+    pageSurfaces.set(pageNumber, surface);
+    clearTextLayer(surface);
+    surface.textLayer.style.setProperty("--scale-factor", String(cssScale));
+    const textDivs = [];
+    const textContentItemsStr = [];
+    await pdfjs.renderTextLayer({
+      // The UNSCALED viewport, deliberately: pdf.js positions each span as a PERCENTAGE of the page
+      // and sizes it as `calc(var(--scale-factor) * <unscaled>px)`, so the scale belongs in the custom
+      // property and passing a scaled viewport here would apply it twice.
+      textContentSource: await page.getTextContent(),
+      container: surface.textLayer,
+      viewport: page.getViewport({ scale: 1 }),
+      textDivs,
+      textContentItemsStr
+    }).promise;
+    setPageText(surface, textDivs, textContentItemsStr);
+    paintPage(surface, userHighlights, currentBg);
+  }
+  function forgetPageSurface(pageNumber) {
+    pageSurfaces.delete(pageNumber);
+  }
+  function repaintUserHighlights() {
+    for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
+  }
   var SPREAD_GAP_PX = 8;
   var renderToken = 0;
   var scrollMode = false;
@@ -432,6 +789,11 @@ ${text}`;
       const wrapper = document.createElement("div");
       wrapper.className = "pdf-scroll-page";
       wrapper.style.height = `${Math.floor(height)}px`;
+      const pageBox = document.createElement("div");
+      pageBox.className = "pdf-page";
+      pageBox.style.width = `${Math.floor(fit > 0 ? base.width * fit : 0)}px`;
+      pageBox.style.height = `${Math.floor(height)}px`;
+      wrapper.appendChild(pageBox);
       content.appendChild(wrapper);
       pageWrappers.set(pageNumber, wrapper);
     }
@@ -464,7 +826,10 @@ ${text}`;
       if (!context) return;
       await page.render({ canvasContext: context, viewport }).promise;
       if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) return;
-      wrapper.replaceChildren(canvas);
+      const pageBox = wrapper.querySelector(".pdf-page") ?? wrapper;
+      pageBox.replaceChildren(canvas);
+      await renderPageSurface(pageNumber, page, pageBox, fit);
+      if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) forgetPageSurface(pageNumber);
     } catch (error) {
       renderedPages.delete(pageNumber);
       throw error;
@@ -474,7 +839,9 @@ ${text}`;
     if (!renderedPages.has(pageNumber)) return;
     renderedPages.delete(pageNumber);
     nextTokenFor(pageNumber);
-    pageWrappers.get(pageNumber)?.replaceChildren();
+    forgetPageSurface(pageNumber);
+    const wrapper = pageWrappers.get(pageNumber);
+    (wrapper?.querySelector(".pdf-page") ?? wrapper)?.replaceChildren();
   }
   var scrollRaf = 0;
   function scheduleVirtualize() {
@@ -504,7 +871,11 @@ ${text}`;
       type: "relocated",
       position: { kind: "page", page: current, pageCount },
       atStart: current <= 1,
-      atEnd: current >= pageCount
+      atEnd: current >= pageCount,
+      // A PDF has no spine, so there is no section to name and nothing for a chapter announcement to
+      // compare against. Null rather than a synthesised "section 1": the outline is a separate thing
+      // (pdfOutline.ts) and a page is not a member of one.
+      section: null
     });
   }
   var scrollListenerAttached = false;
@@ -535,6 +906,7 @@ ${text}`;
     scrollMode = false;
     detachScrollListener();
     for (const page of [...renderedPages]) disposeScrollPage(page);
+    pageSurfaces.clear();
     pageWrappers.clear();
     cachedPageTops = [];
     const content = scrollContentEl();
@@ -608,21 +980,27 @@ ${text}`;
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const canvasIds = ["pdf-canvas", "pdf-canvas-2"];
+    const spreadSlots = [
+      { root: "pdf-page-1", canvas: "pdf-canvas" },
+      { root: "pdf-page-2", canvas: "pdf-canvas-2" }
+    ];
     const renders = [];
-    for (let i = 0; i < canvasIds.length; i++) {
-      const canvas = document.getElementById(canvasIds[i]);
-      if (!canvas) {
+    const surfaceWork = [];
+    for (let i = 0; i < spreadSlots.length; i++) {
+      const root = document.getElementById(spreadSlots[i].root);
+      const canvas = document.getElementById(spreadSlots[i].canvas);
+      if (!canvas || !root) {
         fail("NAVIGATION_FAILED", "the page canvas is missing from the shell");
         return;
       }
       if (i >= pageProxies.length) {
-        canvas.style.display = "none";
+        root.style.display = "none";
         canvas.width = 0;
         canvas.height = 0;
         continue;
       }
-      canvas.style.display = "block";
+      root.style.display = "block";
+      surfaceWork.push({ page: pages[i], proxy: pageProxies[i], root });
       const base = bases[i];
       const viewport = pageProxies[i].getViewport({ scale: fit * dpr * currentZoom });
       canvas.width = Math.floor(viewport.width);
@@ -638,12 +1016,23 @@ ${text}`;
     }
     await Promise.all(renders);
     if (token !== renderToken) return;
+    for (const page of [...pageSurfaces.keys()]) {
+      if (!pages.includes(page)) forgetPageSurface(page);
+    }
+    for (const work of surfaceWork) {
+      void renderPageSurface(work.page, work.proxy, work.root, fit * currentZoom).then(() => {
+        if (token !== renderToken) forgetPageSurface(work.page);
+      }).catch(() => {
+      });
+    }
     currentPage = pages[0];
     post({
       type: "relocated",
       position: { kind: "page", page: currentPage, pageCount },
       atStart: pages[0] <= 1,
-      atEnd: pages[pages.length - 1] >= pageCount
+      atEnd: pages[pages.length - 1] >= pageCount,
+      // No spine — see the scroll-mode emission above.
+      section: null
     });
   }
   function renderCurrentGuarded(pageNumber) {
@@ -651,6 +1040,99 @@ ${text}`;
       fail("NAVIGATION_FAILED", error);
     });
   }
+  function requestCurrentSelection() {
+    if (pressedHighlightId !== null) {
+      post({ type: "selection", selection: null });
+      return;
+    }
+    const selection = document.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+      for (const surface of pageSurfaces.values()) {
+        const span = selectionInSurface(surface, selection);
+        if (span) {
+          post({
+            type: "selection",
+            selection: {
+              kind: "pageRange",
+              page: surface.page,
+              startOffset: span.startOffset,
+              endOffset: span.endOffset
+            }
+          });
+          return;
+        }
+      }
+    }
+    post({ type: "selection", selection: null });
+  }
+  var touchOrigin = null;
+  var longPressTimer = 0;
+  var longPressFired = false;
+  var pressedHighlightId = null;
+  function cancelLongPress() {
+    if (longPressTimer) window.clearTimeout(longPressTimer);
+    longPressTimer = 0;
+  }
+  function onLongPress() {
+    longPressFired = true;
+  }
+  document.addEventListener(
+    "touchstart",
+    (event) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      cancelLongPress();
+      touchOrigin = { x: touch.clientX, y: touch.clientY };
+      longPressFired = false;
+      pressedHighlightId = null;
+      for (const surface of pageSurfaces.values()) {
+        const id = highlightAtClientPoint(surface, touch.clientX, touch.clientY);
+        if (id !== null) {
+          pressedHighlightId = id;
+          break;
+        }
+      }
+      post({ type: "highlightTouchActive", active: pressedHighlightId !== null });
+      longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchmove",
+    (event) => {
+      const touch = event.touches[0];
+      if (!touch || !touchOrigin) return;
+      if (movedBeyondSlop(touchOrigin, { x: touch.clientX, y: touch.clientY })) cancelLongPress();
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchend",
+    (event) => {
+      cancelLongPress();
+      const origin = touchOrigin;
+      touchOrigin = null;
+      const touch = event.changedTouches[0];
+      if (!origin || !touch || longPressFired || !pdfDoc) return;
+      if (!document.getSelection()?.isCollapsed) return;
+      if (scrollMode) return;
+      const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+      if (direction === null) return;
+      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+      const target = direction === "next" ? nextSpreadStart(currentPage, pageCount, spreading) : prevSpreadStart(currentPage, pageCount, spreading);
+      if (target === null) return;
+      renderCurrentGuarded(target);
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchcancel",
+    () => {
+      cancelLongPress();
+      touchOrigin = null;
+    },
+    { passive: true }
+  );
   window.addEventListener("resize", () => {
     if (!pdfDoc) return;
     if (scrollMode) {
@@ -695,6 +1177,8 @@ ${text}`;
         try {
           pdfDoc = await loading.promise;
           pageCount = pdfDoc.numPages;
+          pageSurfaces.clear();
+          userHighlights = [];
           await renderCurrent(1);
           if (wantsScroll) {
             await enterScrollMode(pdfDoc);
@@ -776,7 +1260,13 @@ ${text}`;
      * (one page is one canvas, not a chapter document), so a single direct style write is enough.
      */
     applyAppearance: (appearance) => {
+      currentBg = appearance.bg;
       document.body.style.background = appearance.bg;
+      repaintUserHighlights();
+      document.documentElement.style.setProperty(
+        "--tf-selection",
+        selectionBackground(appearance.link, appearance.bg)
+      );
       const zoomChanged = appearance.zoom !== currentZoom;
       currentZoom = appearance.zoom;
       wantsScroll = appearance.flow === "scrolled-doc";
@@ -816,8 +1306,44 @@ ${text}`;
     requestTtsSentence: ({ requestId }) => {
       post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
     },
-    /** Documented no-op — see requestTtsSentence's note. PDF has no highlight seam in this scope. */
+    /** Documented no-op — see requestTtsSentence's note. Reader never constructs a
+     * `ReaderTextProvider` for a PDF book, so nothing ever asks this shell to paint a spoken range.
+     * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
+     * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
     setSpokenRange: () => {
+    },
+    /**
+     * Paint the user's saved highlights — the whole set, idempotently, exactly as the EPUB shell does.
+     * See `ReaderCommand`'s own note for why the host always sends everything rather than a patch.
+     *
+     * Stored before it is applied, and applied to whatever is on screen NOW: pages that are not
+     * currently rasterised have no surface to paint onto, and pick these up when they are next
+     * rendered (`renderPageSurface` ends with a `paintPage`). That is what makes a highlight on page
+     * 400 of a scrolled book appear when it is scrolled to, without this command having to know
+     * anything about the virtualisation window.
+     *
+     * The wrong-shape case is refused rather than dropped, for the reason the EPUB shell gives: an
+     * EPUB-shaped entry reaching here means the host chose the wrong array while having correctly
+     * chosen `openPdf`, and "no highlights" is exactly what that bug would otherwise look like.
+     */
+    paintHighlights: (highlights) => {
+      const { mine, foreign } = pdfHighlights(highlights);
+      userHighlights = mine;
+      repaintUserHighlights();
+      if (foreign > 0) {
+        fail(
+          "NAVIGATION_FAILED",
+          `paintHighlights: ${String(foreign)} highlight(s) address CFIs, and this shell renders PDF`
+        );
+      }
+    },
+    requestCurrentSelection,
+    /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
+     * (`pressedHighlightId`); silent otherwise. */
+    confirmDeleteHighlight: () => {
+      if (pressedHighlightId !== null) {
+        post({ type: "highlightPressed", id: pressedHighlightId });
+      }
     }
   };
   if (!lib()) {
