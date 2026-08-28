@@ -295,3 +295,21 @@ Also, separately: `accessibility-frontend-integration-contract.md` had a documen
 Reader. Flagging directly since you've been editing them in good faith under the old (wrong) text —
 this doesn't undo that collaboration, just corrects who signs off on the next changes to those two
 files specifically.
+
+**Two more items, consolidated here rather than left scattered across plan files:**
+
+3. **A `customFontUri` collision, ahead of you wiring in the dyslexia-font override.**
+   `src/features/accessibility/dyslexiaFontLoader.ts` now exists (`loadDyslexiaFontFaceSrc()`,
+   complete and tested) for Handoff B item 1 below. It targets the same `customFontUri`/`fontFamily`
+   fields that Vaishnavi's bundled-font loader already overlays in `buildAppearanceWithFont()`
+   (`ReaderScreen.tsx:190-194`, `loadFontFaceSrc(prefs.font.family)`). When you wire the dyslexia
+   override in, that same call site needs to decide precedence — does `dyslexiaFont === true` win
+   over whatever the bundled-font loader already produced? Not decided anywhere yet; your call, since
+   it's your seam.
+4. **Handoff B (Dyslexia Font / High Contrast / Reduce Motion) is open whenever you pick it up.**
+   Full detail lives in `~/.claude/plans/day-5-accessibility-compressed-whistle.md` — not urgent,
+   just flagging its existence here too since a plan file isn't somewhere you'd otherwise look.
+   Short version: `AccessibilitySettingsPanel.tsx`/`dyslexiaFontLoader.ts`/`highContrastColors.ts`
+   are built, tested, and unmounted; mounting the panel and wiring the two overrides into
+   `buildAppearanceWithFont()` (same seam `a11yFlowOverride` already uses, not
+   `toReaderAppearance()`) is the remaining work, and it's entirely yours per the contract's §5.
