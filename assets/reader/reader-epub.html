@@ -915,6 +915,8 @@ ${text}`;
   var STYLESHEET_KEY = "tf-baseline";
   var currentCss = "";
   var currentAppearance = null;
+  var renditionFlow = null;
+  var openInFlight = false;
   var lastCfi = null;
   var currentSpokenCfi = null;
   var TTS_OWNER = "tts";
@@ -1220,8 +1222,24 @@ ${columnOverrideCss()}` : currentCss;
     paintedUserHighlights.clear();
     applyUserHighlights(lastUserHighlights);
   }
+  function rebuildForFlowIfNeeded() {
+    if (!rendition || openInFlight) return false;
+    if (renditionFlow === currentFlow()) return false;
+    const cfi = lastCfi;
+    rendition.destroy();
+    createRendition().display(cfi ?? void 0).then(() => {
+      if (currentSpokenCfi !== null && rendition) {
+        add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+      }
+      repaintUserHighlights();
+    }).catch((error) => {
+      fail("NAVIGATION_FAILED", error);
+    });
+    return true;
+  }
   function createRendition() {
     if (!book) throw new Error("createRendition() called before a book was opened");
+    renditionFlow = currentFlow();
     rendition = book.renderTo("viewer", {
       flow: currentFlow(),
       manager: mapManager(currentFlow()),
@@ -1313,12 +1331,19 @@ ${columnOverrideCss()}` : currentCss;
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
+          openInFlight = true;
           const newRendition = createRendition();
-          await newRendition.display();
+          try {
+            await newRendition.display();
+          } finally {
+            openInFlight = false;
+          }
           post({ type: "rendered" });
+          void rebuildForFlowIfNeeded();
           const navigation = await book.loaded.navigation;
           post({ type: "toc", items: flattenToc(navigation?.toc ?? [], 0, []) });
         } catch (error) {
+          openInFlight = false;
           fail("OPEN_FAILED", error);
         }
       })();
@@ -1384,23 +1409,10 @@ ${columnOverrideCss()}` : currentCss;
      * idempotent, and is not epub.js's manager choice.
      */
     applyAppearance: (appearance) => {
-      const previousFlow = currentAppearance?.flow;
       const previousBg = currentAppearance?.bg;
       currentAppearance = appearance;
       if (!rendition) return;
-      if (previousFlow !== void 0 && previousFlow !== appearance.flow) {
-        const cfi = lastCfi;
-        rendition.destroy();
-        createRendition().display(cfi ?? void 0).then(() => {
-          if (currentSpokenCfi !== null && rendition) {
-            add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
-          }
-          repaintUserHighlights();
-        }).catch((error) => {
-          fail("NAVIGATION_FAILED", error);
-        });
-        return;
-      }
+      if (rebuildForFlowIfNeeded()) return;
       applyBaselineCss();
       rendition.spread(mapSpread(appearance.spread));
       if (previousBg !== appearance.bg) retintUserHighlights();

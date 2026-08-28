@@ -32,9 +32,18 @@ export function useScreenReaderEnabled(): boolean {
   useEffect(() => {
     let cancelled = false;
 
-    void AccessibilityInfo.isScreenReaderEnabled().then((on) => {
-      if (!cancelled) setEnabled(on);
-    });
+    // `.catch` AND NOT JUST `void`: `void` satisfies no-floating-promises, which is a lint rule about
+    // intent, not a runtime handler — a rejection here would still surface as an unhandled promise
+    // rejection (a redbox in dev). This is a native call and it can fail on a host where the
+    // accessibility manager is unavailable. Staying at `false` is the right answer to "could not
+    // find out": the plain paginated reader, which is what shipped before any of this existed.
+    AccessibilityInfo.isScreenReaderEnabled()
+      .then((on) => {
+        if (!cancelled) setEnabled(on);
+      })
+      .catch(() => {
+        // Swallowed deliberately — see above.
+      });
 
     const subscription = AccessibilityInfo.addEventListener('screenReaderChanged', (on: boolean) => {
       setEnabled(on);

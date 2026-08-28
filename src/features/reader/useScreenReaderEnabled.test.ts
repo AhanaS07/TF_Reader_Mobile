@@ -5,7 +5,7 @@
 // reader, and an initial value that never corrects would leave a TalkBack user on the paginated
 // path the whole session.
 
-import { renderHook, waitFor } from '@testing-library/react-native';
+import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AccessibilityInfo } from 'react-native';
 
 import { useScreenReaderEnabled } from './useScreenReaderEnabled';
@@ -79,6 +79,25 @@ describe('useScreenReaderEnabled', () => {
       fire?.(true);
       expect(result.current).toBe(true);
     });
+  });
+
+  it('falls back to false when the native read rejects', async () => {
+    // A native call that can fail on a host with no accessibility manager. Staying at false means
+    // the plain paginated reader — what shipped before any of this existed — rather than an
+    // unhandled rejection and a redbox over the book.
+    jest
+      .spyOn(AccessibilityInfo, 'isScreenReaderEnabled')
+      .mockRejectedValue(new Error('no accessibility manager'));
+    jest
+      .spyOn(AccessibilityInfo, 'addEventListener')
+      .mockReturnValue({ remove: () => undefined } as never);
+
+    const { result } = await renderHook(() => useScreenReaderEnabled());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current).toBe(false);
   });
 
   it('removes its subscription on unmount', async () => {

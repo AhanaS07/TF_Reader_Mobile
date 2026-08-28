@@ -86,6 +86,24 @@ let currentCss = '';
  */
 let currentAppearance: ReaderAppearance | null = null;
 
+/**
+ * The flow the CURRENT rendition was actually built with, and whether `openEpub` is still building
+ * one. Together they are what makes a flow change safe to act on.
+ *
+ * >>> WHY NOT JUST COMPARE THE LAST TWO PAYLOADS' `flow` FIELDS <<<
+ * `openEpub` assigns `rendition` and then awaits `display()`. An `applyAppearance` landing in that
+ * window would find a non-null rendition, destroy it, and leave the in-flight `display()` running
+ * against a destroyed object — which rejects, and surfaces as OPEN_FAILED on a book that was opening
+ * perfectly well. The window is small but it is reachable: turning a screen reader ON mid-open makes
+ * the host re-resolve and re-send with a different flow (readerA11yLayout.ts), and so does touching
+ * the layout toggle while the book loads.
+ *
+ * So a rebuild asks "does what is on screen match what was asked for", not "did the payload change",
+ * and it is deferred while an open owns the rendition — `openEpub` re-checks once it is done.
+ */
+let renditionFlow: ReaderFlow | null = null;
+let openInFlight = false;
+
 /** The last reported CFI, kept only to re-display the reading position after a live flow change —
  * the one appearance change that needs epub.js to re-layout rather than just re-style. Also what
  * `requestTtsSentence`'s `current(null)` resolves against: "wherever the reader actually is." */
@@ -749,9 +767,48 @@ function repaintUserHighlights(): void {
  * hook is registered, so the first chapter loads already columnised — registering the hook first
  * would flash UA-default styles before the first `resized`/reflow.
  */
+/**
+ * Rebuild the rendition when the flow on screen is not the flow that was asked for.
+ *
+ * NOT CALLED WHILE `openInFlight`: `openEpub` owns the rendition until its first `display()`
+ * resolves, and destroying it underneath would fail an open that was going fine. It re-checks itself
+ * when it is done, so a flow that arrives mid-open is applied a moment later rather than dropped.
+ *
+ * A flow change is the one appearance change epub.js cannot do in place — crossing the
+ * paginated <-> scrolled boundary needs a different MANAGER (see `mapManager`), and there is no
+ * public API to hot-swap one.
+ */
+function rebuildForFlowIfNeeded(): boolean {
+  if (!rendition || openInFlight) return false;
+  if (renditionFlow === currentFlow()) return false;
+
+  const cfi = lastCfi;
+  rendition.destroy();
+  createRendition()
+    .display(cfi ?? undefined)
+    .then(() => {
+      // A fresh Rendition means a fresh Annotations store — the old highlight is gone with it.
+      // Re-paint rather than silently drop it; setSpokenRange's own remove-then-add would target
+      // the wrong (destroyed) rendition if called from here instead.
+      if (currentSpokenCfi !== null && rendition) {
+        highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+      }
+      // Same problem, same fix, for the durable layer — and worse if missed: a spoken range
+      // reappears on the next sentence, but a user highlight would simply be gone until the
+      // book was reopened.
+      repaintUserHighlights();
+    })
+    .catch((error: unknown) => {
+      fail('NAVIGATION_FAILED', error);
+    });
+
+  return true;
+}
+
 function createRendition(): Rendition {
   if (!book) throw new Error('createRendition() called before a book was opened');
 
+  renditionFlow = currentFlow();
   rendition = book.renderTo('viewer', {
     flow: currentFlow(),
     manager: mapManager(currentFlow()),
@@ -914,14 +971,28 @@ const api: TFReaderApi<'openEpub'> = {
         // currentAppearance's own note. See createRendition()'s own note for why this is factored
         // out: applyAppearance needs to rebuild the same way on a flow change that needs a different
         // manager.
+        // CLAIMS THE RENDITION until the first display() resolves. An applyAppearance arriving in
+        // this window must not destroy what is being displayed — see `renditionFlow`'s note.
+        openInFlight = true;
         const newRendition = createRendition();
 
-        await newRendition.display();
+        try {
+          await newRendition.display();
+        } finally {
+          openInFlight = false;
+        }
         post({ type: 'rendered' });
+
+        // A flow that arrived DURING the open was deferred rather than dropped. Applied now, on the
+        // book that is actually on screen — this is the "turned the screen reader on while the book
+        // was loading" path, and without it the reader would sit in paginated flow, which is the
+        // layout the override exists to get out of.
+        void rebuildForFlowIfNeeded();
 
         const navigation = (await book.loaded.navigation) as { toc?: NavItem[] };
         post({ type: 'toc', items: flattenToc(navigation?.toc ?? [], 0, []) });
       } catch (error) {
+        openInFlight = false;
         fail('OPEN_FAILED', error);
       }
     })();
@@ -993,34 +1064,15 @@ const api: TFReaderApi<'openEpub'> = {
    * idempotent, and is not epub.js's manager choice.
    */
   applyAppearance: (appearance) => {
-    const previousFlow = currentAppearance?.flow;
     const previousBg = currentAppearance?.bg;
     currentAppearance = appearance;
 
     if (!rendition) return;
 
-    if (previousFlow !== undefined && previousFlow !== appearance.flow) {
-      const cfi = lastCfi;
-      rendition.destroy();
-      createRendition()
-        .display(cfi ?? undefined)
-        .then(() => {
-          // A fresh Rendition means a fresh Annotations store — the old highlight is gone with it.
-          // Re-paint rather than silently drop it; setSpokenRange's own remove-then-add would target
-          // the wrong (destroyed) rendition if called from here instead.
-          if (currentSpokenCfi !== null && rendition) {
-            highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
-          }
-          // Same problem, same fix, for the durable layer — and worse if missed: a spoken range
-          // reappears on the next sentence, but a user highlight would simply be gone until the
-          // book was reopened.
-          repaintUserHighlights();
-        })
-        .catch((error: unknown) => {
-          fail('NAVIGATION_FAILED', error);
-        });
-      return;
-    }
+    // Compares what is RENDERED against what is now wanted, and defers while an open is in flight —
+    // see `renditionFlow`'s note for the race that motivates both. A rebuild re-styles on its own,
+    // so there is nothing left for the rest of this handler to do.
+    if (rebuildForFlowIfNeeded()) return;
 
     applyBaselineCss();
     rendition.spread(mapSpread(appearance.spread));
