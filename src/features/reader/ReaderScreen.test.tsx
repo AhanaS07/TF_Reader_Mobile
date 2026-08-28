@@ -28,7 +28,7 @@
 // under test.
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { StyleSheet } from 'react-native';
+import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
 import { closeBook } from '@/features/encryption/contentProvider';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
@@ -60,6 +60,7 @@ import {
 import { buildCommandScript } from '@/features/reader/readerBridge';
 import type { ReaderTocItem } from '@/features/reader/readerBridge';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { ContentFormat, SearchHit, SharedPrefs } from '@/shared/contracts';
@@ -206,6 +207,16 @@ jest.mock('@/features/reader/useAppearanceEnv', () => ({
 }));
 
 /**
+ * Live screen-reader state. Mocked for the same reason `useAppearanceEnv` is, and defaulted to
+ * FALSE so every other test in this file exercises the ordinary paginated path — the override is
+ * opt-in by device state, and a test file where it was always on would be testing a configuration
+ * almost no run of the app is in.
+ */
+jest.mock('@/features/reader/useScreenReaderEnabled', () => ({
+  useScreenReaderEnabled: jest.fn(() => false),
+}));
+
+/**
  * Focus movement. Mocked because Jest has no native view tree for `findNodeHandle` to resolve — see
  * the note in the focus-order describe below for why that would silently invalidate its assertions.
  */
@@ -252,6 +263,7 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
 // explicitly anyway so the applyAppearance-specific tests below have a real baseline to diff from.
 beforeEach(() => {
   jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
+  jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
   jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
 });
@@ -2666,6 +2678,39 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
     });
   });
+
+  describe('nothing announces over the read-aloud', () => {
+    it('suppresses a settings announcement while a sentence is being spoken', async () => {
+      // react-native-tts and the screen reader share one output device and neither ducks for the
+      // other, so an announcement lands ON TOP of the sentence being read. `SearchMatchBar.tsx`
+      // already declines a live region in writing for this exact reason.
+      //
+      // A SETTINGS CHANGE IS THE CASE THAT CAN ACTUALLY HAPPEN HERE. TTS is EPUB-only
+      // (`ttsProvider` requires it), and a reflowable EPUB announces no page number at all — so
+      // there is no page announcement to collide with today. The collision that matters is the
+      // chapter announcement, which is EPUB's unit; this test covers the same gate through the one
+      // path that is reachable now.
+      const spoken = jest
+        .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+        .mockImplementation(() => undefined);
+
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+      spoken.mockClear();
+
+      const dark = ttsPrefs(true);
+      dark.theme = 'dark';
+      __emitPrefsChange(dark);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(spoken).not.toHaveBeenCalled();
+      spoken.mockRestore();
+    });
+  });
 });
 
 describe('screen-reader focus order', () => {
@@ -3097,5 +3142,410 @@ describe('ReaderScreen highlights', () => {
     expect(
       screen.queryByTestId('reader-swipe-catcher', { includeHiddenElements: true }),
     ).toBeNull();
+  });
+});
+
+/**
+ * The two halves of F4 (WEBVIEW_A11Y_SPIKE.md): the native container must not swallow the WebView's
+ * own accessibility tree, and paginated flow must not be what a screen-reader user is given.
+ */
+describe('the screen-reader layout override', () => {
+  function container(): ReturnType<typeof screen.getByTestId> {
+    return screen.getByTestId('reader-webview-container', { includeHiddenElements: true });
+  }
+
+  describe('the WebView container does not merge the book away', () => {
+    it('carries no accessibilityLabel of its own', async () => {
+      // THE REGRESSION THIS EXISTS TO CATCH. On Android `accessibilityLabel` is a
+      // contentDescription, and a contentDescription on the ViewGroup wrapping a WebView makes it a
+      // screen-reader focus leaf — TalkBack announces "Book content" and never descends into the
+      // DOM, so no heading, paragraph or link in the book is reachable. It reads like a helpful
+      // label and it is the single most expensive line anyone could re-add here.
+      await mountReader();
+
+      expect(container().props.accessibilityLabel).toBeUndefined();
+    });
+
+    it('still offers a named stop, as a sibling of the WebView', async () => {
+      await mountReader();
+
+      const stop = screen.getByTestId('reader-webview-a11y-stop', { includeHiddenElements: true });
+      expect(stop.props.accessibilityLabel).toBe('Book content');
+      expect(stop.props.accessibilityRole).toBe('header');
+      // Inside the container, so the panel-open hiding above still covers it.
+      expect(stop.props.pointerEvents).toBe('none');
+    });
+  });
+
+  describe('what gets sent over the bridge', () => {
+    it('leaves paginated flow alone with no screen reader running', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(__injectJavaScript).toHaveBeenCalledWith(
+        buildCommandScript({
+          type: 'applyAppearance',
+          appearance: toReaderAppearance(makePrefs(), LIGHT_ENV),
+        }),
+      );
+    });
+
+    it('switches to scrolled flow and a single spread when a screen reader is running', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(
+        makePrefs({ layout: { flow: 'paginated', spread: 'double' } }),
+      );
+
+      await mountReader();
+      await reportReady();
+
+      const sent = __injectJavaScript.mock.calls
+        .map((call) => String(call[0]))
+        .filter((script) => script.includes('applyAppearance'));
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent[sent.length - 1]).toContain('"flow":"scrolled-doc"');
+      expect(sent[sent.length - 1]).toContain('"spread":"single"');
+    });
+  });
+
+  describe('the user is told, and can decline', () => {
+    let alert: jest.SpyInstance;
+
+    beforeEach(() => {
+      alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      alert.mockRestore();
+    });
+
+    it('says nothing when nothing was overridden', async () => {
+      await mountReader();
+      await reportReady();
+
+      expect(alert).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the user already chose scrolled flow', async () => {
+      // Nothing was taken from them, so there is nothing to explain. Announcing here would tell a
+      // scrolled-by-choice reader their preference had been overridden, which is false.
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      jest
+        .mocked(prefsStore.getPrefs)
+        .mockResolvedValue(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+
+      await mountReader();
+      await reportReady();
+      __emitPrefsChange(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(alert).not.toHaveBeenCalled();
+    });
+
+    it('explains the override once, and not again on a later re-apply', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      const view = await render(<ReaderScreen bookId="test-book" />);
+      await screen.findByTestId('reader-webview');
+      await reportReady();
+
+      // The stored preference has to reach `layoutPrefs` before the override can be detected as
+      // one — until then the screen is still on its DEFAULT_PREFS-derived fallback.
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(alert).toHaveBeenCalledTimes(1);
+      expect(String(alert.mock.calls[0][0])).toContain('Layout changed');
+
+      // Trigger C fires on every OS appearance tick. Re-alerting on each one would make a theme
+      // change re-explain a layout decision the user already answered.
+      jest.mocked(useAppearanceEnv).mockReturnValue({ ...LIGHT_ENV, osColorScheme: 'dark' });
+      await act(async () => {
+        await view.rerender(<ReaderScreen bookId="test-book" />);
+      });
+
+      expect(alert).toHaveBeenCalledTimes(1);
+    });
+
+    it('goes back to paginated when the user chooses "Use pages anyway"', async () => {
+      jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+      await mountReader();
+      await reportReady();
+
+      __emitPrefsChange(makePrefs({ layout: { flow: 'paginated', spread: 'single' } }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const buttons = alert.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+      const decline = buttons.find((button) => button.text === 'Use pages anyway');
+      expect(decline).toBeDefined();
+
+      __injectJavaScript.mockClear();
+      await act(async () => {
+        decline?.onPress?.();
+        await Promise.resolve();
+      });
+
+      const sent = __injectJavaScript.mock.calls
+        .map((call) => String(call[0]))
+        .filter((script) => script.includes('applyAppearance'));
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent[sent.length - 1]).toContain('"flow":"paginated"');
+    });
+  });
+});
+
+/**
+ * WHEN the reader speaks. The wording and the gate rules are `readerAnnouncements.test.ts`'s; what
+ * needs a mounted screen is that the right values reach them — `announcePageChanges` is only
+ * readable at `relocated` time through the appearance the WebView was last sent, and a previous
+ * position only exists if something retained it.
+ */
+describe('screen-reader announcements', () => {
+  let spoken: jest.SpyInstance;
+
+  // EXPLICIT, for the reason the TTS block above states: this file never clears mocks between
+  // tests and several earlier ones leave `prepareBook` resolving 'PDF'.
+  beforeEach(() => {
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+    spoken = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    spoken.mockRestore();
+  });
+
+  function said(): string[] {
+    return spoken.mock.calls.map((call) => String(call[0]));
+  }
+
+  describe('page changes', () => {
+    async function openPdf(): Promise<void> {
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      await mountReader();
+      await reportReady();
+    }
+
+    it('says nothing for the first position after an open', async () => {
+      await openPdf();
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 340 } });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('names the new page once it actually moves', async () => {
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 340 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 340 } });
+
+      expect(said()).toEqual(['Page 2 of 340']);
+    });
+
+    it('stays silent while the page number is unchanged', async () => {
+      // The PDF scroll path posts `relocated` from a rAF-coalesced scroll listener, so one flick
+      // delivers dozens of these. This is the difference between one announcement per page turn and
+      // one per animation frame.
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 340 } });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('respects announce.pageChanges', async () => {
+      // Read off the appearance the WebView was last sent, not from AccessibilityPrefs directly —
+      // that route is the standing rule in ACCESSIBILITY_ARCHITECTURE_MAP.md §2, and this is the
+      // test that it is actually the route taken.
+      const prefs = makePrefs();
+      prefs.accessibility.announce.pageChanges = false;
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(prefs);
+
+      await openPdf();
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 9 } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 9 } });
+
+      expect(said()).toEqual([]);
+
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    });
+
+    it('says nothing for a reflowable EPUB, which has no page to name', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'relocated', position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' } });
+      spoken.mockClear();
+
+      await deliver({ type: 'relocated', position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' } });
+
+      expect(said()).toEqual([]);
+    });
+  });
+
+  describe('chapter changes', () => {
+    const chapterToc = [
+      { label: 'The Cave', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 0 },
+      { label: 'The Road', target: { kind: 'href', href: 'ch2.xhtml' }, depth: 0 },
+    ];
+
+    async function openEpubAt(href: string, index: number): Promise<void> {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: chapterToc });
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' },
+        section: { index, href },
+      });
+      spoken.mockClear();
+    }
+
+    it('names the chapter using the outline the reader can see', async () => {
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter: The Road']);
+    });
+
+    it('falls back to the spine position when the outline names nothing', async () => {
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/8!/4/2)' },
+        section: { index: 4, href: 'appendix.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter 5']);
+    });
+
+    it('says nothing while the reader stays inside one chapter', async () => {
+      // Every page turn within a chapter reports the same href. Announcing on arrival rather than
+      // on change would name the chapter on every single page.
+      await openEpubAt('ch1.xhtml', 0);
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/40)' },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('says nothing for the first chapter after an open', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: chapterToc });
+      spoken.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/4/2)' },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+    });
+
+    it('respects announce.chapterChanges independently of pageChanges', async () => {
+      const prefs = makePrefs();
+      prefs.accessibility.announce.chapterChanges = false;
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(prefs);
+
+      await openEpubAt('ch1.xhtml', 0);
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/6!/4/2)' },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual([]);
+
+      jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    });
+
+    it('never announces both a chapter and a page for one relocation', async () => {
+      // Crossing a chapter boundary is also a page change. Two utterances for one turn is the
+      // over-announcement the whole seam exists to avoid.
+      jest.mocked(prepareBook).mockResolvedValue('PDF');
+      await mountReader();
+      await reportReady();
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'page', page: 1, pageCount: 9 },
+        section: { index: 0, href: 'ch1.xhtml' },
+      });
+      spoken.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'page', page: 2, pageCount: 9 },
+        section: { index: 1, href: 'ch2.xhtml' },
+      });
+
+      expect(said()).toEqual(['Chapter 2']);
+    });
+  });
+
+  describe('appearance changes', () => {
+    it('says nothing for the first appearance of a session', async () => {
+      // Opening a book is not a settings change, and narrating it is the over-announcement this
+      // whole seam exists to avoid.
+      await mountReader();
+      await reportReady();
+
+      expect(said()).toEqual([]);
+    });
+
+    it('names the field the user changed', async () => {
+      await mountReader();
+      await reportReady();
+      spoken.mockClear();
+
+      __emitPrefsChange(makePrefs({ theme: 'dark' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(said()).toEqual(['Dark theme']);
+    });
+
+    it('says nothing when a re-resolve produces the same payload', async () => {
+      // Trigger C re-resolves on every OS appearance tick. Diffing the RESOLVED appearance rather
+      // than the prefs edit is what keeps that silent.
+      const view = await render(<ReaderScreen bookId="test-book" />);
+      await screen.findByTestId('reader-webview');
+      await reportReady();
+      spoken.mockClear();
+
+      await act(async () => {
+        await view.rerender(<ReaderScreen bookId="test-book" />);
+      });
+
+      expect(said()).toEqual([]);
+    });
   });
 });

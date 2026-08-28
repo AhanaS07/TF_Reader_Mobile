@@ -210,6 +210,8 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *   rendered  — first display() resolved; the book is on screen.
  *   relocated — the page changed (also fires for the first page). Carries a
  *               `ReaderPosition`: a CFI from the EPUB shell, a page + page count from the PDF one.
+ *               Also carries the current `ReaderSection` where the format has one (EPUB), which is
+ *               what a chapter-change announcement is built from — see `ReaderSection`.
  *   toc       — navigation resolved, as one depth-first flattened list (a book's
  *               nav document is a tree). Arrives AFTER rendered, not with it.
  *   error     — anything went wrong; always coded, never bare.
@@ -236,6 +238,25 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
 export type ReaderPosition =
   | { kind: 'cfi'; cfi: string | null }
   | { kind: 'page'; page: number; pageCount: number };
+
+/**
+ * Which section of the book the reader is in, when the format has sections at all.
+ *
+ * NOT PART OF `ReaderPosition`, and the split is the point: a position is where to RESUME, a
+ * section is what to CALL where you are. They change on different events (every page turn moves the
+ * position; only a chapter boundary moves the section) and only one of them is worth announcing.
+ * Folding a chapter name into `ReaderPosition` would also put it into `sessionProgress` and
+ * `progressStore.savePosition()`, neither of which has any use for it.
+ *
+ * `index` is the SPINE index, 0-based — the same numbering `epubOutline.ts` uses. `href` is the
+ * spine item's own, and is what a chapter CHANGE is detected on: a `goTo` within the current
+ * chapter reports the same href, and a book whose spine repeats an href would look like a change on
+ * index alone.
+ */
+export interface ReaderSection {
+  index: number;
+  href: string;
+}
 
 // Discriminated on `kind` for the same reason `ReaderTarget` is — see the note there. Read it as "the
 // position is a CFI" / "the position is a page", not as "the book is an EPUB".
@@ -271,7 +292,17 @@ export type ReaderSelection =
 export type ReaderMessage =
   | { type: 'ready' }
   | { type: 'rendered' }
-  | { type: 'relocated'; position: ReaderPosition; atStart: boolean; atEnd: boolean }
+  | {
+      type: 'relocated';
+      position: ReaderPosition;
+      atStart: boolean;
+      atEnd: boolean;
+      /**
+       * The section the position lands in, or null for a format with no spine (PDF always) and for
+       * a shell that could not name one.
+       */
+      section: ReaderSection | null;
+    }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string }
   | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
@@ -570,6 +601,21 @@ function asPosition(value: unknown): ReaderPosition | null {
   return null;
 }
 
+/**
+ * A `ReaderSection` from an untrusted payload, or null.
+ *
+ * LENIENT ON PURPOSE, unlike `asPosition`: see the note at its call site. An empty `href` is
+ * rejected rather than passed through, because it is the value `epubOutline.ts` already treats as
+ * "this entry addresses nothing" — a section that addresses nothing cannot be compared against the
+ * previous one, so it would announce a chapter change on every page turn.
+ */
+function asSection(value: unknown): ReaderSection | null {
+  if (!isRecord(value)) return null;
+  if (!isNonNegativeInteger(value.index)) return null;
+  if (typeof value.href !== 'string' || value.href === '') return null;
+  return { index: value.index, href: value.href };
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
@@ -700,6 +746,13 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
         position,
         atStart: parsed.atStart === true,
         atEnd: parsed.atEnd === true,
+        // DEFAULTED TO NULL, NOT DROPPED — the opposite of `position` two lines up, and the
+        // asymmetry is deliberate. A position that cannot be understood makes the whole message
+        // meaningless, and a confidently wrong page number is worse than none. A section that
+        // cannot be understood costs a chapter NAME on one announcement, while the relocation
+        // itself is still valid and still has to reach the page indicator, TTS and session
+        // progress. Dropping the message over it would trade a missing word for a stuck reader.
+        section: asSection(parsed.section),
       };
     }
 

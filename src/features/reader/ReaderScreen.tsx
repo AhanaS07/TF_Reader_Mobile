@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Pressable,
   ScrollView,
@@ -58,6 +59,7 @@ import type {
   ReaderErrorCode,
   ReaderMessage,
   ReaderPosition,
+  ReaderSection,
   ReaderSelection,
   ReaderTarget,
   ReaderTocItem,
@@ -66,7 +68,21 @@ import { focusOn } from '@/features/reader/a11yFocus';
 import { logEvent, logSpan, now } from '@/features/reader/readerTiming';
 import { SearchMatchBar } from '@/features/reader/SearchMatchBar';
 import { SearchPanel } from '@/features/reader/SearchPanel';
+import {
+  a11yFlowOverride,
+  effectiveLayoutFlow,
+  flowOverrideApplied,
+} from '@/features/reader/readerA11yLayout';
+import { announce } from '@/features/reader/a11yAnnounce';
+import { setOverrideDeclined, useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
+import {
+  appearanceChangeAnnouncement,
+  chapterChangeAnnouncement,
+  pageChangeAnnouncement,
+  tocLabelForHref,
+} from '@/features/reader/readerAnnouncements';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import {
   createEpubReaderTextProvider,
   type EpubReaderTextProvider,
@@ -169,9 +185,20 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
 async function buildAppearanceWithFont(
   prefs: SharedPrefs,
   env: AppearanceEnv,
+  screenReaderEnabled: boolean,
 ): Promise<ReaderAppearance> {
   const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
-  return { ...toReaderAppearance(prefs, env), customFontUri: fontFaceSrc };
+  const resolved: ReaderAppearance = {
+    ...toReaderAppearance(prefs, env),
+    customFontUri: fontFaceSrc,
+  };
+  // THE ONE PLACE THE READER OVERRULES A STORED PREFERENCE, and it is here rather than in
+  // `toReaderAppearance` on purpose: that function is Personalization's, it RESOLVES prefs into
+  // primitives, and whether a screen reader is running is not a preference to resolve. Its own
+  // header says the apply-time meaning of these fields is Reader's. See readerA11yLayout.ts for
+  // why paginated flow makes the book unreachable to TalkBack, and `flowOverrideActive` below for
+  // the notice that stops this being a silent change.
+  return a11yFlowOverride(resolved, screenReaderEnabled);
 }
 
 interface ReaderScreenProps {
@@ -442,6 +469,18 @@ export function ReaderScreen({
    * subscription.
    */
   const [layoutPrefs, setLayoutPrefs] = useState<LayoutPrefs>(DEFAULT_PREFS.layout);
+
+  /**
+   * Whether `layoutPrefs` is the user's stored value yet, as opposed to the DEFAULT_PREFS fallback
+   * it starts at. Distinguishes "still reading from storage" from "read storage and it says this",
+   * exactly as `bookmarksLoaded` does above.
+   *
+   * IT EXISTS FOR THE OVERRIDE NOTICE, and the case it fixes is not hypothetical: the default flow
+   * is `paginated`, so between mount and the seed effect below resolving, a user who chose SCROLLED
+   * looks momentarily like a user who chose paginated — and the notice would tell them a preference
+   * had been overridden when nothing had been. Caught by ReaderScreen.test.tsx.
+   */
+  const [layoutPrefsLoaded, setLayoutPrefsLoaded] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
   const [error, setError] = useState<ReaderError | null>(null);
 
@@ -609,6 +648,124 @@ export function ReaderScreen({
   });
 
   /**
+   * Live screen-reader state, and the user's answer to being told about the layout override.
+   *
+   * >>> WHY THE READER OVERRIDES `layout.flow` AT ALL <<<
+   * epub.js paginates with a CSS multi-column strip that Android's WebView accessibility bridge
+   * cannot compute usable bounds for — WEBVIEW_A11Y_SPIKE.md's F4/F6 recorded the whole book's text
+   * present in the native accessibility tree at `bounds=[0,0][0,0]`, and TalkBack unable to reach a
+   * single paragraph by any method tried. Scrolled flow is ordinary document flow and does not have
+   * that problem. See readerA11yLayout.ts.
+   *
+   * >>> AND WHY IT IS NOT SILENT <<<
+   * The user chose "Paginated". Overriding that without saying so is its own defect, however good
+   * the reason, so `flowOverrideActive` drives a one-time notice with a way out — and while it is
+   * in effect, DevPreferencesMenu disables and annotates its Flow/Spread rows so the explanation
+   * stays reachable after the alert is gone.
+   *
+   * `overrideDeclined` IS SESSION-ONLY AND IN-MEMORY, deliberately. It is not written to prefs:
+   * Reader does not own `accessibility.*`, and "ignore accessibility" is not a flag to persist by
+   * accident. Same scope as sessionProgress.ts — it lasts as long as this screen does. It is also
+   * the escape hatch if scrolled flow ever renders badly on some book.
+   */
+  const screenReaderEnabled = useScreenReaderEnabled();
+  const overrideDeclined = useOverrideDeclined();
+
+  // Reset on mount, so the choice is scoped to one reading session rather than to the app process:
+  // reopening a book asks again, which is right for a decision whose point is to be reconsidered.
+  // It lives in a module rather than in state here because `DevPreferencesMenu` has to read the
+  // same value and is not this component's child — see a11yOverrideChoice.ts.
+  useEffect(() => {
+    setOverrideDeclined(false);
+  }, []);
+
+  /** What the appearance funnel and the RN half below are actually told. */
+  const a11yLayoutEnabled = screenReaderEnabled && !overrideDeclined;
+
+  /** True only while something was really taken from the user — false when they already chose
+   * scrolled, because then nothing was overridden and there is nothing to explain. */
+  const flowOverrideActive =
+    layoutPrefsLoaded && flowOverrideApplied(layoutPrefs.flow, a11yLayoutEnabled);
+
+  // Read from `applyAppearanceWith`'s closure, which is memoised on `[]` so it does not change
+  // identity on every screen-reader tick — same reasoning as `appearanceEnvRef` above.
+  const a11yLayoutEnabledRef = useRef(a11yLayoutEnabled);
+  useEffect(() => {
+    a11yLayoutEnabledRef.current = a11yLayoutEnabled;
+  });
+
+  /**
+   * The last appearance the WebView was actually sent, and the last position it reported.
+   *
+   * REFS, NOT STATE, and not because refs are cheaper: nothing renders from either, and state here
+   * would re-render the whole screen on every OS appearance tick and every page turn. They exist so
+   * an announcement can be built from a CHANGE — `readerAnnouncements.ts` returns null without a
+   * previous value, which is what stops the reader narrating the act of opening a book.
+   *
+   * `lastAppearanceRef` is also how `announcePageChanges` becomes readable at `relocated` time.
+   * Reader does not read `AccessibilityPrefs` (ACCESSIBILITY_ARCHITECTURE_MAP.md §2); the
+   * preference arrives already resolved onto this payload, which is the sanctioned route.
+   */
+  const lastAppearanceRef = useRef<ReaderAppearance | null>(null);
+  const lastPositionRef = useRef<ReaderPosition | null>(null);
+  const lastSectionRef = useRef<ReaderSection | null>(null);
+
+  /**
+   * TTS's live status, mirrored for `handleMessage` and the appearance funnel.
+   *
+   * A REF RATHER THAN A DEPENDENCY, deliberately. `handleMessage`'s dep array is kept minimal on
+   * purpose (see its own note); adding a value that changes on every utterance boundary would
+   * rebuild the bridge's message handler several times a sentence. Nothing here renders from it.
+   */
+  const ttsStatusRef = useRef(ttsSession.status);
+  useEffect(() => {
+    ttsStatusRef.current = ttsSession.status;
+  });
+
+  /**
+   * The outline, for naming a chapter in an announcement.
+   *
+   * A REF FOR THE SAME REASON `ttsStatusRef` IS: `handleMessage` would otherwise have to depend on
+   * `toc`, and `toc` is set BY `handleMessage` — a dependency on its own output rebuilds the handler
+   * the moment the outline lands, mid-open.
+   */
+  const tocRef = useRef<ReaderTocItem[]>(toc);
+  useEffect(() => {
+    tocRef.current = toc;
+  });
+
+  /**
+   * The notice. Fires at most once per mount, and only on a real override — re-resolving the same
+   * appearance (trigger C fires on every OS appearance tick) must not re-alert.
+   *
+   * `Alert.alert` rather than an in-screen banner: it is the idiom this app already uses for
+   * exactly this situation (DevPreferencesMenu's `warnScrolledDoubleSpreadConflict`, which tells
+   * the user when a layout field was reset out from under them), and being native it is announced
+   * by the screen reader that caused it without any work here.
+   */
+  const noticeShownRef = useRef(false);
+  useEffect(() => {
+    if (!flowOverrideActive || noticeShownRef.current) return;
+    noticeShownRef.current = true;
+
+    Alert.alert(
+      'Layout changed for screen readers',
+      'Page-by-page layout hides most of the book from VoiceOver and TalkBack, so this book is ' +
+        'showing as one continuous scroll. Your saved layout preference has not been changed.',
+      [
+        { text: 'OK', style: 'default' },
+        {
+          text: 'Use pages anyway',
+          style: 'cancel',
+          onPress: () => {
+            setOverrideDeclined(true);
+          },
+        },
+      ],
+    );
+  }, [flowOverrideActive]);
+
+  /**
    * Resolve the current prefs against `env` and send `applyAppearance` — the one seam both the
    * open-time send (trigger A) and the live re-apply effects below (triggers B/C) go through, so
    * "read prefs, resolve, send" is not duplicated three times.
@@ -621,10 +778,22 @@ export function ReaderScreen({
     async (
       sender: (command: ReaderCommand) => void,
       env = appearanceEnvRef.current,
+      /** Trigger B already HAS the fresh record (`subscribe` hands it over); A and C do not. */
+      record?: SharedPrefs,
     ): Promise<void> => {
       try {
-        const prefs = await prefsStore.getPrefs();
-        sender({ type: 'applyAppearance', appearance: await buildAppearanceWithFont(prefs, env) });
+        const prefs = record ?? (await prefsStore.getPrefs());
+        const appearance = await buildAppearanceWithFont(prefs, env, a11yLayoutEnabledRef.current);
+        sender({ type: 'applyAppearance', appearance });
+
+        // Said AFTER the send, so what the reader hears cannot describe a change the renderer was
+        // never told about. `appearanceChangeAnnouncement` diffs the RESOLVED payload — see its own
+        // note for why that is what keeps trigger C's every-OS-tick re-send quiet.
+        const said = appearanceChangeAnnouncement(lastAppearanceRef.current, appearance, {
+          ttsSpeaking: ttsStatusRef.current === 'speaking',
+        });
+        lastAppearanceRef.current = appearance;
+        if (said !== null) announce(said);
       } catch {
         // Best-effort — see the note above.
       }
@@ -867,13 +1036,14 @@ export function ReaderScreen({
   useEffect(() => {
     return prefsStore.subscribe((freshPrefs) => {
       setLayoutPrefs(freshPrefs.layout);
+      setLayoutPrefsLoaded(true);
       if (send === null) return;
-      void (async () => {
-        const appearance = await buildAppearanceWithFont(freshPrefs, appearanceEnvRef.current);
-        send({ type: 'applyAppearance', appearance });
-      })();
+      // Routed through the same funnel as triggers A and C rather than building the payload inline.
+      // Four steps — resolve, override, send, announce — duplicated in two callbacks is four
+      // chances for them to drift; `freshPrefs` is passed so this still costs no `getPrefs()` hop.
+      void applyAppearanceWith(send, appearanceEnvRef.current, freshPrefs);
     });
-  }, [send]);
+  }, [send, applyAppearanceWith]);
 
   // Seed `layoutPrefs` once at mount — the subscribe effect above only fires on a SUBSEQUENT
   // savePrefs/resetPrefs, so without this the toggle and the swipe overlay would see the
@@ -881,7 +1051,9 @@ export function ReaderScreen({
   useEffect(() => {
     let cancelled = false;
     void prefsStore.getPrefs().then((prefs) => {
-      if (!cancelled) setLayoutPrefs(prefs.layout);
+      if (cancelled) return;
+      setLayoutPrefs(prefs.layout);
+      setLayoutPrefsLoaded(true);
     });
     return () => {
       cancelled = true;
@@ -898,7 +1070,11 @@ export function ReaderScreen({
   useEffect(() => {
     if (send === null) return;
     void applyAppearanceWith(send, appearanceEnv);
-  }, [send, appearanceEnv, applyAppearanceWith]);
+    // `a11yLayoutEnabled` rides this same effect rather than getting its own: turning TalkBack on
+    // inside an open book, and pressing "Use pages anyway", both need exactly what this already
+    // does — re-resolve and re-send. A second effect would send the payload twice on any tick that
+    // changed both.
+  }, [send, appearanceEnv, a11yLayoutEnabled, applyAppearanceWith]);
 
   /**
    * Highlight what the reader just selected, in reply to `requestCurrentSelection`.
@@ -953,7 +1129,7 @@ export function ReaderScreen({
         }
         setIsRendered(true);
         break;
-      case 'relocated':
+      case 'relocated': {
         setPosition(message.position);
         setBounds({ atStart: message.atStart, atEnd: message.atEnd });
         // Every real `relocated` is a navigation signal — epub.js never fires it for
@@ -961,7 +1137,43 @@ export function ReaderScreen({
         // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
         ttsProviderRef.current?.notifyRelocated();
         onRelocatedRef.current?.(message.position);
+
+        const ttsSpeaking = ttsStatusRef.current === 'speaking';
+
+        // ONE RELOCATION, ONE UTTERANCE. The chapter is tried first and the page only if it said
+        // nothing: crossing a chapter boundary is also a page change, and announcing both would
+        // read out "Chapter: The Cave" and "Page 88 of 340" back to back for a single turn.
+        const chapter = chapterChangeAnnouncement(
+          lastSectionRef.current,
+          message.section,
+          message.section === null
+            ? null
+            : tocLabelForHref(tocRef.current, message.section.href),
+          {
+            enabled: lastAppearanceRef.current?.announceChapterChanges ?? false,
+            ttsSpeaking,
+          },
+        );
+
+        // Announced from the CHANGE, not from the message arriving. `pdf.entry.ts`'s scroll mode
+        // posts `relocated` from a rAF-coalesced scroll listener, so a single flick delivers dozens
+        // of these — `pageChangeAnnouncement` returns null unless the page number actually moved.
+        // It also returns null for a reflowable EPUB, which has no page to name.
+        const page =
+          chapter !== null
+            ? null
+            : pageChangeAnnouncement(lastPositionRef.current, message.position, {
+                enabled: lastAppearanceRef.current?.announcePageChanges ?? false,
+                ttsSpeaking,
+              });
+
+        lastPositionRef.current = message.position;
+        lastSectionRef.current = message.section;
+
+        const said = chapter ?? page;
+        if (said !== null) announce(said);
         break;
+      }
       case 'toc':
         // TIMED, unlike the other post-open messages, because this is the one that can stall
         // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
@@ -1426,7 +1638,10 @@ export function ReaderScreen({
   // `bounds` is the UI-only refinement on top of that — `next`/`prev` already no-op at an edge
   // WebView-side, so disabling here only stops the button LOOKING tappable past the end; it changes
   // no behaviour if `bounds` is ever behind the WebView's own state.
-  const isScrolling = layoutPrefs.flow === 'scrolled-doc';
+  // EFFECTIVE, not stored: the WebView was told the overridden flow, and an RN half that disagrees
+  // would leave the swipe affordances and the WebView's own scroll view set for a layout that is
+  // not on screen. See readerA11yLayout.ts.
+  const isScrolling = effectiveLayoutFlow(layoutPrefs.flow, a11yLayoutEnabled) === 'scrolled-doc';
   const prevDisabled = send === null || isScrolling || bounds.atStart;
   const nextDisabled = send === null || isScrolling || bounds.atEnd;
 
@@ -1516,7 +1731,7 @@ export function ReaderScreen({
             onMessage={handleMessage}
             onHostError={raiseError}
             onReady={handleReady}
-            scrollEnabled={layoutPrefs.flow === 'scrolled-doc'}
+            scrollEnabled={isScrolling}
             hidden={anyPanelOpen}
             // The named stop between the toolbar and the bottom row. Says what this IS, not what it
             // contains — the document's own structure lives in the WebView's accessibility tree,

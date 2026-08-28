@@ -86,8 +86,25 @@ export interface ReaderWebViewProps {
    */
   hidden?: boolean;
   /**
-   * Accessible name for the container, so the book is a reachable, named stop between the toolbar
-   * and the bottom controls instead of an unlabelled gap in the traversal.
+   * Accessible name for the book, so it is a reachable, named stop between the toolbar and the
+   * bottom controls instead of an unlabelled gap in the traversal.
+   *
+   * >>> THIS DOES NOT GO ON THE CONTAINER, AND MOVING IT BACK THERE BREAKS READING. <<<
+   * On Android, React Native maps `accessibilityLabel` to `setContentDescription`. A ViewGroup that
+   * is important-for-accessibility AND has a contentDescription is a screen-reader focus LEAF:
+   * TalkBack announces the group and does not descend into its children — including the virtual
+   * accessibility node tree a WebView publishes for its DOM. Put this on the View wrapping the
+   * WebView and every heading, paragraph and link in the book becomes unreachable, with nothing on
+   * screen to explain why. That is the "accessibilityLabel trap", named with this exact string as
+   * its example in ACCESSIBILITY_ARCHITECTURE_MAP.md §1 and WEBVIEW_A11Y_FINDINGS.md §3.6.
+   *
+   * So it is rendered on a 1x1 sibling node INSIDE the container instead. That gives the traversal
+   * its named stop without making the container itself focusable, and `hidden` below still hides it
+   * along with everything else, because it is inside the subtree those two props cover.
+   *
+   * Only names the container's PLACE in the native focus order. The DOM inside builds its own
+   * accessibility tree that React Native props cannot reach — see `hidden`'s note, and
+   * `AccessibilityPrefs.screenReaderHints`, which carries the same warning.
    */
   accessibilityLabel?: string;
   /** Native "Highlight" item tapped. `ReaderScreen` sends `requestCurrentSelection` in response. */
@@ -248,7 +265,8 @@ export function ReaderWebView({
     <View
       style={styles.container}
       testID="reader-webview-container"
-      accessibilityLabel={accessibilityLabel}
+      // NO `accessibilityLabel` HERE. It is a contentDescription on Android and would merge the
+      // whole WebView away from TalkBack — see the prop's own doc for the full trap.
       // The two-prop pair this codebase already uses for "keep assistive tech out of here" (the
       // swipe catcher, the privacy cover, the TOC fades). `importantForAccessibility` is explicitly
       // set back to 'yes' rather than left undefined: it must un-hide when the panel closes, and
@@ -256,6 +274,20 @@ export function ReaderWebView({
       accessibilityElementsHidden={hidden}
       importantForAccessibility={hidden ? 'no-hide-descendants' : 'yes'}
     >
+      {/* The named stop — see `accessibilityLabel`'s doc for why it is a sibling of the WebView
+          rather than a prop on the container above. `pointerEvents="none"` because a 1x1 node in
+          the top-left corner is still a hit-test target otherwise; a11y traversal visits it
+          regardless, which is the whole point (same reasoning as the TOC fades, inverted). */}
+      {accessibilityLabel !== undefined && (
+        <View
+          testID="reader-webview-a11y-stop"
+          pointerEvents="none"
+          accessible
+          accessibilityRole="header"
+          accessibilityLabel={accessibilityLabel}
+          style={styles.a11yStop}
+        />
+      )}
       <WebView
         ref={webViewRef}
         source={{ uri: sourceUri }}
@@ -346,4 +378,8 @@ const styles = StyleSheet.create({
   // single most common false "epub.js is broken" report.
   container: { flex: 1 },
   webView: { flex: 1, backgroundColor: '#ffffff' },
+  // Absolutely positioned and 1x1 so the named stop costs no layout: this sits inside the same
+  // flex:1 chain epub.js measures, and a node with real height would shrink the viewer and
+  // re-paginate the book.
+  a11yStop: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
 });

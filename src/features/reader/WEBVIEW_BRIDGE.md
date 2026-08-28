@@ -98,7 +98,7 @@ about behaviour changed.
 | ----------- | ------------------------------------------- |
 | `ready`     | —                                           |
 | `rendered`  | —                                           |
-| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd` |
+| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`) |
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 | `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
@@ -106,11 +106,28 @@ about behaviour changed.
 | `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
 | `highlightTouchActive` | `active` (`boolean`)                                        |
 
-`ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
-`{format:'PDF', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
+`ReaderPosition` is **discriminated by ADDRESSING SCHEME**, not by format: `{kind:'cfi', cfi}` or
+`{kind:'page', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
 a spine offset and has no PDF meaning; a page number has no reflowable meaning — so carrying both flat
 would mean one of them is always `null` and the reader has to know which. That is the same "one field,
 two meanings" arrangement `toc.items[].href` still has, and this is the first place it was undone.
+(Read `kind` as "the position is a CFI", not "the book is an EPUB" — see decision 3 below.)
+
+`ReaderSection` (`{index, href}`) rides the same message but is **not part of the position**, and the
+split is the point: a position is where to RESUME, a section is what to CALL where you are. They move
+on different events — every page turn moves the position, only a chapter boundary moves the section —
+and only one of them is worth announcing. Folding it into `ReaderPosition` would also push it into
+`sessionProgress` and `progressStore.savePosition()`, neither of which has any use for a chapter name.
+`index` is the 0-based SPINE index; `href` is the spine item's own, and is what a chapter CHANGE is
+detected on (a `goTo` inside the current chapter reports the same href, and a spine that repeats an
+href would look like a change on index alone). PDF always sends `null` — it has no spine.
+
+**`section` is validated on the OPPOSITE rule to `position`.** An unparseable position **drops the
+whole message**; an unparseable section is **defaulted to `null`** and the relocation is kept. A
+position nobody can understand makes the message meaningless and a confidently wrong page number is
+worse than none — but a garbled section costs one word on one announcement, while the relocation
+itself still has to reach the page indicator, TTS and session progress. Refusing it there would trade
+a missing chapter name for a reader stuck on the previous page.
 
 `parseReaderMessage` validates a PDF position as two positive integers with `page <= pageCount`, and
 **drops the whole message** if it cannot (rather than substituting a default, as the TOC hardeners do).

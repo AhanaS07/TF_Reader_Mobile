@@ -38,6 +38,16 @@ need no code at all.
    panels. The bottom row therefore stays reachable while the TOC is open. Caught by existing tests.
 4. **Item 9's premise was wrong.** `ReaderWebView`'s container had no `accessibilityLabel` at all, so
    this was real work rather than a no-op. It now has one ("Book content").
+   **CORRECTION, 2026-08-28 (Reader): putting it ON THE CONTAINER was itself a defect, and it has
+   been moved.** On Android `accessibilityLabel` is a `contentDescription`, and a ViewGroup that is
+   important-for-accessibility with one is a screen-reader focus LEAF — TalkBack announces "Book
+   content" and never descends into the WebView's virtual node tree, so no heading, paragraph or
+   link in the book is reachable. That is precisely the "accessibilityLabel trap" this workstream
+   documents, using this exact string as its example (`ACCESSIBILITY_ARCHITECTURE_MAP.md` §1,
+   `WEBVIEW_A11Y_FINDINGS.md` §3.6). It landed two days AFTER the spike, so it did not cause F4's
+   original observation — but it would have made any fix unobservable. The named stop this item
+   asked for is now a 1x1 `accessible` sibling INSIDE the container, which gives the traversal its
+   stop without making the container itself focusable. See `WEBVIEW_A11Y_SPIKE.md` F4(a).
 
 **On the `VoicePicker` pattern this doc cites:** it did not exist in the repo when the items were
 written, so Reader established the helper — `src/features/reader/a11yFocus.ts`. `VoicePicker.tsx` and
@@ -176,8 +186,9 @@ real, reachable, labelled stop in the toolbar↔content traversal. The existing 
 `ACCESSIBILITY_ARCHITECTURE_MAP.md` §1) is exactly what makes the *container* — as opposed to the
 content inside it — a valid stop, so there's nothing to change for that half.
 
-**Explicitly deferred, not specced further here:** moving focus to specific DOM content (e.g. the
-current chapter's heading) on entering the WebView. That needs a new `ReaderCommand` (e.g.
+**Explicitly deferred, not specced further here** — and STILL deferred as of 2026-08-28, now behind
+`WEBVIEW_A11Y_SPIKE.md` §11's re-run rather than behind the original spike: moving focus to specific
+DOM content (e.g. the current chapter's heading) on entering the WebView. That needs a new `ReaderCommand` (e.g.
 `focusContent`) added to `readerBridge.ts`, implemented in both `epub.entry.ts` and `pdf.entry.ts`,
 with `assets/reader/reader-{epub,pdf}.html` regenerated via `npm run reader:build-html` and
 `WEBVIEW_BRIDGE.md`'s "Current surface" table updated — the full checklist is in

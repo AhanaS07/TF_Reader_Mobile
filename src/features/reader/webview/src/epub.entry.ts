@@ -822,24 +822,43 @@ function createRendition(): Rendition {
     lastSelection = { kind: 'cfiRange', startCfi: ends.startCfi, endCfi: ends.endCfi };
   });
 
-  rendition.on('relocated', (location: { start?: { cfi?: string }; atStart?: boolean; atEnd?: boolean }) => {
-    lastCfi = location?.start?.cfi ?? null;
+  rendition.on(
+    'relocated',
+    (location: {
+      start?: { cfi?: string; href?: string; index?: number };
+      atStart?: boolean;
+      atEnd?: boolean;
+    }) => {
+      lastCfi = location?.start?.cfi ?? null;
 
-    // A page turn drops whatever was selected — the view it lived in is no longer on screen, so a
-    // later requestCurrentSelection must not answer with words nobody can see any more.
-    lastSelection = null;
-    invalidateHighlightBoxes();
+      // A page turn drops whatever was selected — the view it lived in is no longer on screen, so a
+      // later requestCurrentSelection must not answer with words nobody can see any more.
+      lastSelection = null;
+      invalidateHighlightBoxes();
 
-    post({
-      type: 'relocated',
-      // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
-      // the whole reason ReaderPosition is discriminated by format rather than carrying both shapes
-      // flat with one of them always null.
-      position: { kind: 'cfi', cfi: lastCfi },
-      atStart: !!location?.atStart,
-      atEnd: !!location?.atEnd,
-    });
-  });
+      // epub.js's own location already carries both, so this costs no extra call: `href` is the
+      // spine item's and `index` its spine position. Sent whole or not at all — a section with an
+      // index and no href cannot be compared against the previous one (see `ReaderSection`), so a
+      // partial one would announce a chapter change on every page turn.
+      const href = location?.start?.href;
+      const index = location?.start?.index;
+      const section =
+        typeof href === 'string' && href !== '' && typeof index === 'number'
+          ? { index, href }
+          : null;
+
+      post({
+        type: 'relocated',
+        // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
+        // the whole reason ReaderPosition is discriminated by format rather than carrying both
+        // shapes flat with one of them always null.
+        position: { kind: 'cfi', cfi: lastCfi },
+        atStart: !!location?.atStart,
+        atEnd: !!location?.atEnd,
+        section,
+      });
+    },
+  );
 
   return rendition;
 }

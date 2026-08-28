@@ -458,6 +458,10 @@ function virtualize(): void {
     position: { kind: 'page', page: current, pageCount },
     atStart: current <= 1,
     atEnd: current >= pageCount,
+    // A PDF has no spine, so there is no section to name and nothing for a chapter announcement to
+    // compare against. Null rather than a synthesised "section 1": the outline is a separate thing
+    // (pdfOutline.ts) and a page is not a member of one.
+    section: null,
   });
 }
 
@@ -745,6 +749,8 @@ async function renderCurrent(pageNumber: number): Promise<void> {
     position: { kind: 'page', page: currentPage, pageCount },
     atStart: pages[0] <= 1,
     atEnd: pages[pages.length - 1] >= pageCount,
+    // No spine — see the scroll-mode emission above.
+    section: null,
   });
 }
 

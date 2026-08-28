@@ -127,13 +127,15 @@ describe('toReaderAppearance', () => {
       spread: 'single',
       zoom: 1.0,
       // a11y: DEFAULT display/text flags are false; reduceMotion 'system' + OS off -> false;
-      // announce.pageChanges defaults true.
+      // BOTH announce.* flags default TRUE — see DEFAULT_ACCESSIBILITY_PREFS's own note that they
+      // are among the four defaults that are not "off".
       reduceMotion: false,
       highContrast: false,
       boldText: false,
       dyslexiaFont: false,
       readableSpacing: false,
       announcePageChanges: true,
+      announceChapterChanges: true,
     });
   });
 
@@ -155,6 +157,7 @@ describe('toReaderAppearance', () => {
     prefs.accessibility.display.boldText = true;
     prefs.accessibility.text.dyslexiaFont = true;
     prefs.accessibility.text.readableSpacing = true;
+    prefs.accessibility.announce.chapterChanges = true;
     prefs.accessibility.announce.pageChanges = false;
     expect(toReaderAppearance(prefs, ENV)).toMatchObject({
       highContrast: true,
@@ -162,6 +165,10 @@ describe('toReaderAppearance', () => {
       dyslexiaFont: true,
       readableSpacing: true,
       announcePageChanges: false,
+      // INDEPENDENT OF pageChanges, and asserted here rather than in its own case because that
+      // independence is the whole reason it is a second field: turning page announcements off must
+      // not silently take chapter announcements with it.
+      announceChapterChanges: true,
     });
   });
 

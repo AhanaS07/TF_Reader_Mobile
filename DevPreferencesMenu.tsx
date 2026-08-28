@@ -55,6 +55,9 @@ import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-na
 import type { LayoutChangeEvent } from 'react-native';
 
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
+import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
+import { flowOverrideApplied } from '@/features/reader/readerA11yLayout';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
@@ -98,6 +101,15 @@ function toggleFontFamily(current: SharedPrefs, family: string): PrefsPatch {
 const FLOW_OPTIONS: readonly { label: string; flow: LayoutPrefs['flow'] }[] = [
   { label: 'Paginated', flow: 'paginated' },
   { label: 'Scrolled', flow: 'scrolled-doc' },
+];
+
+/** Labels kept short — these two sit side by side in one row, like every other pair in this menu. */
+const ANNOUNCE_OPTIONS: readonly {
+  label: string;
+  field: 'pageChanges' | 'chapterChanges';
+}[] = [
+  { label: 'Pages', field: 'pageChanges' },
+  { label: 'Chapters', field: 'chapterChanges' },
 ];
 
 const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[] = [
@@ -163,6 +175,30 @@ function toggleTtsEnabled(current: SharedPrefs): PrefsPatch {
     accessibility: {
       ...current.accessibility,
       tts: { ...current.accessibility.tts, enabled: !current.accessibility.tts.enabled },
+    },
+  };
+}
+
+/**
+ * The two `announce.*` gates, flipped the same way `toggleTtsEnabled` flips its one.
+ *
+ * A PLAIN FLIP, not this file's usual revert-to-default toggle, and the difference is worth stating
+ * because it looks like an inconsistency: both of these DEFAULT TO TRUE (they are two of the four
+ * defaults `DEFAULT_ACCESSIBILITY_PREFS` calls out as not being "off"), so "press the active option
+ * again to revert to the default" would mean the Off button could never stay pressed.
+ *
+ * TWO CONTROLS BECAUSE THEY ARE TWO PREFERENCES. A page turn announces constantly and a chapter
+ * change a handful of times a book; a reader who silenced pages has not asked to stop being told
+ * which chapter they are in. `AccessibilityPrefs` already separates them.
+ */
+function toggleAnnounce(current: SharedPrefs, field: 'pageChanges' | 'chapterChanges'): PrefsPatch {
+  return {
+    accessibility: {
+      ...current.accessibility,
+      announce: {
+        ...current.accessibility.announce,
+        [field]: !current.accessibility.announce[field],
+      },
     },
   };
 }
@@ -397,6 +433,20 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
     void prefsStore.savePrefs({ zoom: { level } });
   }, []);
 
+  /**
+   * Whether the Reader is currently overriding `layout.flow` for a screen reader — see
+   * readerA11yLayout.ts for why it does, and ReaderScreen for the notice that says so.
+   *
+   * DERIVED FROM THE SAME THREE INPUTS ReaderScreen uses, rather than passed down, because this
+   * component is not its child: it arrives through the `toolbarExtra` slot, constructed in
+   * ReaderRouteScreen. The one input that could not be re-derived — whether the user declined — is
+   * why `a11yOverrideChoice` is a module instead of local state.
+   */
+  const screenReaderEnabled = useScreenReaderEnabled();
+  const overrideDeclined = useOverrideDeclined();
+  const flowOverridden =
+    prefs !== null && flowOverrideApplied(prefs.layout.flow, screenReaderEnabled && !overrideDeclined);
+
   // Unlike `commitZoom`, this spreads the CURRENT typography group rather than `DEFAULT_PREFS`'s —
   // `typography` has siblings (lineHeight/spacing/margins) a bare `{ size }` patch would silently
   // reset, the exact "one rule that bites" this file's header already warns about for layout. That
@@ -483,6 +533,22 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
           )}
 
           <Text style={styles.sectionLabel}>Layout</Text>
+          {/*
+            DISABLED, NOT HIDDEN, while the Reader is overriding `flow` for a screen reader
+            (readerA11yLayout.ts). Both are the same principle this file already applies to Zoom on
+            EPUB — a control with nothing to control is worse than no control — but the treatments
+            differ deliberately: Zoom is hidden because it can NEVER apply to a reflowable book,
+            while this is conditional and reversible, so the user has to be able to find out why
+            their toggle stopped responding. It is also where the one-time alert ReaderScreen shows
+            stays reachable after being dismissed. Choosing "Use pages anyway" there clears the
+            override, and these rows come back.
+          */}
+          {flowOverridden && (
+            <Text style={styles.sectionNote} testID="prefs-flow-override-note">
+              Scrolled layout is on so screen readers can reach the text. Your saved preference is
+              unchanged.
+            </Text>
+          )}
           <View style={styles.row}>
             {FLOW_OPTIONS.map(({ label, flow }) => {
               const active = prefs.layout.flow === flow;
@@ -490,12 +556,17 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 <Pressable
                   key={flow}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: flowOverridden }}
                   accessibilityLabel={`Flow: ${label}${active ? ', selected' : ''}`}
+                  disabled={flowOverridden}
                   onPress={() => {
                     void prefsStore.savePrefs(toggleFlow(prefs, flow));
                   }}
-                  style={[styles.toggle, active && styles.toggleActive]}
+                  style={[
+                    styles.toggle,
+                    active && styles.toggleActive,
+                    flowOverridden && styles.toggleDisabled,
+                  ]}
                 >
                   <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
                     {label}
@@ -511,12 +582,17 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 <Pressable
                   key={spread}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: flowOverridden }}
                   accessibilityLabel={`Spread: ${label}${active ? ', selected' : ''}`}
+                  disabled={flowOverridden}
                   onPress={() => {
                     void prefsStore.savePrefs(toggleSpread(prefs, spread));
                   }}
-                  style={[styles.toggle, active && styles.toggleActive]}
+                  style={[
+                    styles.toggle,
+                    active && styles.toggleActive,
+                    flowOverridden && styles.toggleDisabled,
+                  ]}
                 >
                   <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
                     {label}
@@ -557,6 +633,37 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             </Pressable>
           </View>
 
+          {/*
+            THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a
+            device — nothing else in the app writes `accessibility.announce.*`, so the announcements
+            they gate could only ever be tested by hand-editing SQLite. Same standing as the TTS
+            toggle above: temporary, and it goes with this file when a real settings screen lands.
+
+            SEPARATE ROWS BECAUSE THEY ARE SEPARATE PREFERENCES — see `toggleAnnounce`. Both default
+            ON, which is why they are plain flips and not this file's revert-to-default toggles.
+          */}
+          <View style={styles.row}>
+            {ANNOUNCE_OPTIONS.map(({ label, field }) => {
+              const on = prefs.accessibility.announce[field];
+              return (
+                <Pressable
+                  key={field}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={`${label} announcements: ${on ? 'On' : 'Off'}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs(toggleAnnounce(prefs, field));
+                  }}
+                  style={[styles.toggle, on && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, on && styles.toggleLabelActive]}>
+                    {label}: {on ? 'On' : 'Off'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
           {/* ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. See this file's header note: a
               reflowable EPUB scales via fontSizePt, epub.entry.ts never reads appearance.zoom, and
               a control with nothing to control is worse than no control. Shown for PDF and for the
@@ -586,6 +693,12 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   menuIcon: { fontSize: 22, color: '#111111' },
+
+  // Matches the visual weight of a `disabled` Pressable elsewhere in the reader (ReaderScreen's
+  // Prev/Next), so a row the screen-reader override has taken over reads as unavailable rather than
+  // as broken.
+  toggleDisabled: { opacity: 0.4 },
+  sectionNote: { fontSize: 11, lineHeight: 15, color: '#555555', marginBottom: 6 },
 
   // Floats over the reader — z-indexed above it and NOT part of the header's own layout flow, so
   // opening it never resizes the WebView underneath (which would re-paginate for no reason).
