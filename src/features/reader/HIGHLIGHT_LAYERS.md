@@ -111,11 +111,13 @@ regression, not a simplification. So each owner claims a different visual channe
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
 `fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
 ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
-nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode': 'multiply' }`
-— the same intended translucent yellow, expressed in the vocabulary that reaches the element (opacity
-lowered from an original `0.4` alongside `user`'s own correction below, to keep the two channels in
-the ordering this section's table intends). The interim rule for Hruthik is unchanged: **keep TTS
-translucent** so it layers rather than masks.
+nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode':
+<theme-adjusted> }` — the same intended translucent yellow, expressed in the vocabulary that reaches
+the element (opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep
+the two channels in the ordering this section's table intends). It goes through the same
+`highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
+the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
+for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
 
 **`user` paints `{ fill: <theme-adjusted colour>, 'fill-opacity': '0.25', 'mix-blend-mode':
 <theme-adjusted> }`** — not `fill-opacity: '1'` with a fixed `multiply`, which read as fully opaque
@@ -126,6 +128,26 @@ barely shifts a warm fill like the default yellow against sepia's similarly warm
 blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
 sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
 from `tts`" is still the intent; how to render it now depends on the page behind it.
+
+**THE SHADE IS A FUNCTION OF THE PAGE, SO IT IS RE-DERIVED WHEN THE PAGE CHANGES COLOUR.** Both
+shells re-tint the `user` and `tts` layers from `applyAppearance` whenever `bg` moves, rather than
+leaving a highlight wearing the theme it was created under. Without it, a light→dark switch leaves
+`multiply` against a near-black page and the highlight all but vanishes — and no later repaint
+repairs it, because `paintHighlights` diffs on ids alone (`highlightPaint.ts`) and an already-painted
+id is skipped.
+
+The two shells re-tint differently, and the asymmetry is forced:
+
+- **PDF** simply repaints. `paintPage` is a whole-layer `replaceChildren` over a handful of divs
+  whose geometry it re-measures on every zoom anyway, so re-deriving the colour is free.
+- **EPUB must REMOVE THEN ADD, never re-add.** epub.js's `Annotations.add` hashes on
+  `encodeURI(cfiRange + type)` and overwrites that map entry **without detaching the mark already
+  attached**, while also pushing a duplicate hash into `_annotationsBySectionIndex`. So a bare re-add
+  leaves the old-coloured rect painted underneath the new one — compositing darker, and undeletable,
+  since `remove` can only reach the winner — and attaches it twice more on the next `hooks.render`.
+  `epub.entry.ts` has two functions for this on purpose: `retintUserHighlights()` (live rendition,
+  removes first) and `repaintUserHighlights()` (a rendition that was just rebuilt, so there is
+  nothing to detach). Using the second where the first belongs is the bug it was written to prevent.
 
 ### 4. Z-order — TTS on top, and only for the same-channel tie
 
@@ -166,7 +188,11 @@ plus `webview/src/pdfTextRange.ts` (pure, unit-tested). What that took, and what
 - **The boxes are `pointer-events: none`, and that is load-bearing.** A box that takes touches
   swallows the drag that starts inside it, so an existing highlight could never be selected through or
   extended. A long press on one is resolved by hit-testing the painted geometry instead
-  (`highlightAt`), across every visible surface — so it works on either page of a spread.
+  (`highlightAt`), across every visible surface — so it works on either page of a spread. **The EPUB
+  shell hit-tests the same way now**, measuring `contents.range(cfiRange).getClientRects()` instead
+  of pdf.js's text layer, through the same pure `highlightAt` — so `highlightAt` and `HighlightBox`
+  moved out of `pdfTextRange.ts` into `webview/src/highlightGeometry.ts`. See WEBVIEW_BRIDGE.md for
+  what the EPUB side did before and why a caret was the wrong primitive.
 
 **TTS is still a documented no-op here**, and that is now a segmentation limit rather than a missing
 seam: `readerTextProvider.ts`'s model is CFI-based, so Reader never builds one for a PDF book.

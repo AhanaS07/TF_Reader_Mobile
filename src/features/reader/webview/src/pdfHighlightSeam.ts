@@ -22,18 +22,14 @@
 // THE HIGHLIGHT BOXES ARE `pointer-events: none`, AND THAT IS LOAD-BEARING, NOT COSMETIC. A box that
 // can be clicked is a box that swallows the drag that starts inside it, which would make a highlight
 // impossible to extend or to select through. Taps are resolved by hit-testing the surface's own
-// click against the boxes' geometry instead — `highlightAt` in pdfTextRange.ts.
+// click against the boxes' geometry instead — `highlightAt` in highlightGeometry.ts.
 
 import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
 
+import { highlightAt, type HighlightBox } from './highlightGeometry';
 import { annotationClassName } from './highlightNaming';
+import { offsetsForSelection, slicesForRange } from './pdfTextRange';
 import { highlightFill } from './selectionTheme';
-import {
-  highlightAt,
-  offsetsForSelection,
-  slicesForRange,
-  type HighlightBox,
-} from './pdfTextRange';
 
 /** The class the text-layer container carries. Matched by the template's CSS, and by
  * `surfaceForNode` below when working out which page a selection landed in. */
@@ -96,11 +92,19 @@ export function ensureSurface(page: number, root: HTMLElement): PdfPageSurface {
 }
 
 /** Empty a surface's text layer before it is re-rendered. Separate from `ensureSurface` because a
- * resize reuses the container but must not reuse the spans, which are laid out for the old scale. */
+ * resize reuses the container but must not reuse the spans, which are laid out for the old scale.
+ *
+ * THE PAINTED BOXES GO WITH THEM. The window between "start re-rendering" and "the new text
+ * arrives" is async, and a box left standing through it is measured against a layout that no longer
+ * exists — so `highlightAtClientPoint` would answer from stale geometry, and the rects would sit at
+ * the old scale until the next `paintPage`. `pdf.entry.ts` repaints immediately after the new text
+ * lands, so nothing is lost by dropping them here. */
 export function clearTextLayer(surface: PdfPageSurface): void {
   surface.textLayer.replaceChildren();
+  surface.highlightLayer.replaceChildren();
   surface.divs = [];
   surface.lengths = [];
+  surface.boxes = [];
 }
 
 /**

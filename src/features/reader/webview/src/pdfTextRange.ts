@@ -1,9 +1,12 @@
 // Owner: Reader (Ahana).
 //
-// The arithmetic behind PDF highlighting: character offsets into a page's text layer, and the
-// geometry of hit-testing a tap against painted boxes. Pure and unit-tested, for the reason
-// CLAUDE.md gives — `pdf.entry.ts` reads the DOM and drives pdf.js, so anything with a `+1` in it
-// belongs next door where a test can call it.
+// The arithmetic behind PDF highlighting: character offsets into a page's text layer. Pure and
+// unit-tested, for the reason CLAUDE.md gives — `pdf.entry.ts` reads the DOM and drives pdf.js, so
+// anything with a `+1` in it belongs next door where a test can call it.
+//
+// Hit-testing a touch against the painted boxes used to live here too. It moved to
+// `highlightGeometry.ts` when the EPUB shell started doing it the same way — a rect is a rect, and
+// one copy is what keeps "press on a highlight" meaning the same thing in both formats.
 //
 // >>> WHAT A PDF HIGHLIGHT IS ADDRESSED BY, AND WHY IT IS NOT A RECTANGLE. <<<
 // `highlightStore` stores a PDF highlight as two per-page `Locator`s — `{page, offset}` — where
@@ -134,38 +137,4 @@ export function offsetsForSelection(
   return first <= second
     ? { startOffset: first, endOffset: second }
     : { startOffset: second, endOffset: first };
-}
-
-/** A painted highlight box, in the page surface's own coordinate space. */
-export interface HighlightBox {
-  id: string;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/**
- * Which painted highlight a tap landed on, or null.
- *
- * HIT-TESTED HOST-SIDE-OF-THE-DOM RATHER THAN BY A LISTENER ON EACH BOX, and the reason is
- * selection: a box that can receive a click is a box that can swallow a drag, and the text layer
- * underneath it is the thing the user has to be able to select in order to make a highlight at all.
- * So the boxes stay `pointer-events: none` and the page container does the hit test instead.
- *
- * LAST MATCH WINS — boxes are painted in set order, so the last one is the topmost, and a tap on
- * overlapping highlights should delete the one the user can actually see.
- */
-export function highlightAt(
-  boxes: readonly HighlightBox[],
-  x: number,
-  y: number,
-): string | null {
-  for (let index = boxes.length - 1; index >= 0; index--) {
-    const box = boxes[index];
-    if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
-      return box.id;
-    }
-  }
-  return null;
 }

@@ -13,7 +13,6 @@
 //   item 2: " world"   offsets 11..16
 
 import {
-  highlightAt,
   itemStarts,
   locateOffset,
   offsetsForSelection,
@@ -120,33 +119,5 @@ describe('a live selection -> the span to store', () => {
     expect(
       offsetsForSelection(LENGTHS, { index: 1, withinItem: 99 }, { index: 1, withinItem: 0 }),
     ).toEqual({ startOffset: 6, endOffset: 11 });
-  });
-});
-
-describe('hit-testing a tap against painted boxes', () => {
-  const BOXES = [
-    { id: 'under', left: 0, top: 0, width: 100, height: 20 },
-    { id: 'over', left: 40, top: 0, width: 100, height: 20 },
-  ];
-
-  it('finds the box a point is inside', () => {
-    expect(highlightAt(BOXES, 10, 10)).toBe('under');
-  });
-
-  it('returns null outside every box', () => {
-    expect(highlightAt(BOXES, 10, 50)).toBeNull();
-    expect(highlightAt(BOXES, 200, 10)).toBeNull();
-    expect(highlightAt([], 1, 1)).toBeNull();
-  });
-
-  it('prefers the LAST box where two overlap, which is the one on top', () => {
-    // Boxes are appended in paint order, so the last is the topmost. A tap on overlapping highlights
-    // must delete the one the user can actually see.
-    expect(highlightAt(BOXES, 50, 10)).toBe('over');
-  });
-
-  it('counts the edges as inside', () => {
-    expect(highlightAt([BOXES[0]], 0, 0)).toBe('under');
-    expect(highlightAt([BOXES[0]], 100, 20)).toBe('under');
   });
 });

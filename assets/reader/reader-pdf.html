@@ -177,8 +177,8 @@
         THE USER HIGHLIGHT LAYER. `pointer-events: none` is LOAD-BEARING, not tidiness: a box that
         takes touches is a box that swallows a drag beginning inside it, so extending or re-selecting
         an existing highlight would be impossible. Taps on a highlight are resolved by hit-testing
-        the page container's own click against the painted geometry instead (pdfTextRange.ts's
-        `highlightAt`).
+        the page container's own click against the painted geometry instead (highlightGeometry.ts's
+        `highlightAt`, shared with the EPUB shell).
 
         `mix-blend-mode: multiply` is what makes a SOLID fill — the user layer's channel in
         HIGHLIGHT_LAYERS.md §3 — readable rather than opaque: it darkens the rasterised glyphs
@@ -468,6 +468,17 @@ ${text}`;
     return dx < 0 ? "next" : "prev";
   }
 
+  // src/features/reader/webview/src/highlightGeometry.ts
+  function highlightAt(boxes, x, y) {
+    for (let index = boxes.length - 1; index >= 0; index--) {
+      const box = boxes[index];
+      if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
+        return box.id;
+      }
+    }
+    return null;
+  }
+
   // src/features/reader/webview/src/highlightNaming.ts
   function annotationClassName(owner, variant) {
     return `tf-hl-${owner}--${variant}`;
@@ -514,15 +525,6 @@ ${text}`;
     const second = at(b);
     return first <= second ? { startOffset: first, endOffset: second } : { startOffset: second, endOffset: first };
   }
-  function highlightAt(boxes, x, y) {
-    for (let index = boxes.length - 1; index >= 0; index--) {
-      const box = boxes[index];
-      if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
-        return box.id;
-      }
-    }
-    return null;
-  }
 
   // src/features/reader/webview/src/pdfHighlightSeam.ts
   var PDF_TEXT_LAYER_CLASS = "pdf-text-layer";
@@ -545,8 +547,10 @@ ${text}`;
   }
   function clearTextLayer(surface) {
     surface.textLayer.replaceChildren();
+    surface.highlightLayer.replaceChildren();
     surface.divs = [];
     surface.lengths = [];
+    surface.boxes = [];
   }
   function setPageText(surface, divs, itemsStr) {
     surface.divs = divs;

@@ -208,6 +208,19 @@ describe('the line grid — why a line cannot be sliced by a page edge', () => {
     );
   });
 
+  it('forces text selectable against a book that switches it off', () => {
+    // `user-select: none` / `-webkit-touch-callout: none` are the copy-prevention idiom in publisher
+    // and Calibre-converted stylesheets, and either one makes a long press select nothing — no
+    // menu, no highlight, and nothing on screen explaining it. Selection is half of highlighting
+    // now, so this sheet has to win.
+    const css = baselineCss(readerMetrics(393, 700));
+    expect(css).toMatch(/html, body \{[^}]*-webkit-user-select: text !important/);
+    expect(css).toMatch(/html, body \{[^}]*-webkit-touch-callout: default !important/);
+    // Repeated on the text elements: both declarations are important, so a book's rule on its own
+    // paragraphs beats an ancestor's on specificity unless this sheet matches there too.
+    expect(css).toMatch(/^p, div, span, li,[^{]*\{[^}]*user-select: text !important/m);
+  });
+
   it('does not quantise when the flow has no page edges', () => {
     // Guard on the flow rather than the value: when scrolled-doc arrives, this test is the record
     // of what changes with it.
@@ -657,7 +670,7 @@ describe("the PDF shell carries the layers a highlight is selected and painted i
   it('keeps highlight boxes out of the touch path', () => {
     // LOAD-BEARING, not tidiness: a box that takes touches swallows the drag that starts inside it,
     // so an existing highlight could never be selected through or extended. Taps are hit-tested
-    // against the painted geometry instead (pdfTextRange.ts's `highlightAt`).
+    // against the painted geometry instead (highlightGeometry.ts's `highlightAt`).
     expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*\{[^}]*pointer-events:\s*none/);
   });
 

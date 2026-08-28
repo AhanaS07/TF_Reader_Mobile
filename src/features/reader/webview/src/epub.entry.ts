@@ -35,6 +35,7 @@ import {
 import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
 import { joinCfiRange, splitCfiRange } from './epubCfiRange';
 import { flattenToc, type NavItem } from './epubOutline';
+import { highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import { highlightFill } from './selectionTheme';
@@ -101,12 +102,18 @@ const TTS_SPOKEN_VARIANT = 'spoken';
 
 /** TTS's channel (HIGHLIGHT_LAYERS.md §3): a translucent overlay. SVG presentation attributes, not
  * CSS — marks-pane applies them via `setAttribute`. `0.2`, kept below `user`'s opacity so the two
- * stay visually ordered. */
-const TTS_SPOKEN_STYLES: Record<string, string> = {
-  fill: '#ffd500',
-  'fill-opacity': '0.2',
-  'mix-blend-mode': 'multiply',
-};
+ * stay visually ordered.
+ *
+ * A FUNCTION, NOT A CONSTANT, for the same reason `userHighlightStyles` is: `multiply` against a
+ * near-black page multiplies towards black, so a fixed blend made the spoken word invisible on the
+ * dark theme — the layer that most needs to be seen, since it is what tells the reader where the
+ * voice is. Re-derived on every paint and re-applied by `retintUserHighlights` on a theme change. */
+const TTS_SPOKEN_COLOR = '#ffd500';
+
+function ttsSpokenStyles(): Record<string, string> {
+  const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
+  return { fill, 'fill-opacity': '0.2', 'mix-blend-mode': blend };
+}
 
 const USER_OWNER = 'user';
 const USER_SAVED_VARIANT = 'saved';
@@ -408,28 +415,129 @@ let longPressFired = false;
 /**
  * The painted highlight under the finger, or null — hit-tested at `touchstart` via
  * `highlightIdAtPoint`, not marks-pane's own touch proxy (unreliable here; see that function).
- * Read post-hoc by `requestCurrentSelection`/`confirmDeleteHighlight`, and mirrored to RN as
- * `highlightTouchActive` for the native menu's display.
+ *
+ * THE FALLBACK SIGNAL, NOT THE ANSWER. It records where the finger LANDED, which equals what the
+ * reader selected only for a press that neither moved nor was adjusted — see `activeHighlightId`,
+ * which asks the selection first and reaches for this only when there is no selection to ask.
  */
 let pressedHighlightId: string | null = null;
 
-/** Which painted user highlight, if any, contains point `(x, y)` in `contents.document`'s own
- * coordinates. Converts point -> text position (`caretRangeFromPoint`) then checks containment by
- * document order — a CFI from a different chapter (map isn't chapter-scoped) just fails to resolve
- * and is skipped. */
-function highlightIdAtPoint(contents: Contents, x: number, y: number): string | null {
-  const caret = contents.document.caretRangeFromPoint(x, y);
-  if (!caret) return null;
+/**
+ * Every painted user highlight's rects in `contents.document`'s own client coordinates — the same
+ * space `touch.clientX/clientY` are in, and the same rects marks-pane paints.
+ *
+ * CACHED PER LAYOUT, because building it is not cheap: resolving a CFI to a `Range` walks the
+ * chapter's tree, and `touchstart` fires for every touch including each one of a page-turn swipe.
+ * Doing that work N-highlights-deep inside the touch handler is what made a well-highlighted book
+ * feel worse than the PDF shell, whose hit test is arithmetic over an array measured once.
+ *
+ * Invalidated wherever the geometry can move — a relocate, a resize, a re-styled chapter, a repaint
+ * — by `invalidateHighlightBoxes()`. A stale box is a press that deletes the wrong highlight, so
+ * when in doubt, drop it: rebuilding costs one tree walk, being wrong costs the reader their note.
+ */
+let highlightBoxCache: { doc: Document; boxes: HighlightBox[] } | null = null;
 
+function invalidateHighlightBoxes(): void {
+  highlightBoxCache = null;
+}
+
+function highlightBoxes(contents: Contents): HighlightBox[] {
+  const cached = highlightBoxCache;
+  if (cached && cached.doc === contents.document) return cached.boxes;
+
+  const boxes: HighlightBox[] = [];
   for (const [id, cfiRange] of paintedUserHighlights) {
+    const range = rangeForCfi(contents, cfiRange);
+    if (!range) continue;
+    // One rect per line the highlight covers, exactly as marks-pane draws it — so a highlight that
+    // wraps is hit anywhere the reader can see it, and nowhere in the empty tail of its last line.
+    for (const rect of range.getClientRects()) {
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      boxes.push({ id, left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    }
+  }
+
+  highlightBoxCache = { doc: contents.document, boxes };
+  return boxes;
+}
+
+/** One painted highlight's CFI resolved against THIS chapter, or null. The map is not
+ * chapter-scoped, so a CFI belonging to another spine document simply fails to resolve — epub.js
+ * signals that by throwing as often as by returning nothing, hence the catch. */
+function rangeForCfi(contents: Contents, cfiRange: string): Range | null {
+  try {
+    return contents.range(cfiRange) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which painted user highlight covers point `(x, y)` in `contents.document`'s own coordinates.
+ *
+ * GEOMETRY, NOT A TEXT POSITION, and that is a correctness change rather than a tidy-up. This used
+ * to convert the touch with `caretRangeFromPoint` and ask `Range.isPointInRange` — but a caret
+ * SNAPS to the nearest text position, so a press in a line's trailing whitespace claimed a
+ * highlight that was not under the finger, and a press inside a highlighted word whose caret
+ * snapped to the neighbouring character missed one that was. `caretRangeFromPoint` can also hand
+ * back an ELEMENT container, where `isPointInRange` degrades to a tree-order comparison that has
+ * nothing to do with where the reader touched. The PDF shell has always tested boxes; this is the
+ * same test, through the same pure `highlightAt`.
+ */
+function highlightIdAtPoint(contents: Contents, x: number, y: number): string | null {
+  return highlightAt(highlightBoxes(contents), x, y);
+}
+
+/**
+ * Which painted user highlight the given SELECTION overlaps, or null.
+ *
+ * >>> A SELECTION IS A RANGE, SO A POINT TEST ANSWERS THE WRONG QUESTION. <<< `pressedHighlightId`
+ * records where the finger first landed, which is only the same thing as "what did the reader
+ * select" when the press neither moved nor was adjusted. Drag a selection from plain text INTO a
+ * highlight, or release a handle just outside one, and the point test says "no highlight" — so the
+ * menu offered "Highlight", and taking it painted a second annotation over the first. Two ids on
+ * the identical range then collide in epub.js's own map (highlightSeam.ts's header), which is what
+ * made the duplicate both visibly darker and only half-deletable.
+ *
+ * Overlap, not containment: touching a highlight at all is enough, per the agreed rule that any
+ * selection meeting an existing highlight offers delete and refuses create.
+ */
+function highlightIdForRange(contents: Contents, selected: Range): string | null {
+  for (const [id, cfiRange] of paintedUserHighlights) {
+    const range = rangeForCfi(contents, cfiRange);
+    if (!range) continue;
     try {
-      const range = contents.range(cfiRange);
-      if (range?.isPointInRange(caret.startContainer, caret.startOffset)) return id;
+      if (rangesOverlap(selected, range)) return id;
     } catch {
+      // Ranges in different documents throw rather than compare — a highlight from another chapter.
       continue;
     }
   }
   return null;
+}
+
+/** The live selection in whichever rendered chapter has one, with that chapter's `Contents`. */
+function currentSelectionRange(): { contents: Contents; range: Range } | null {
+  if (!rendition) return null;
+  for (const contents of rendition.getContents() as unknown as Contents[]) {
+    const selection = contents.document.defaultView?.getSelection();
+    if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+      return { contents, range: selection.getRangeAt(0) };
+    }
+  }
+  return null;
+}
+
+/** Which highlight the reader's current gesture is acting on: what the selection overlaps, else
+ * what the finger landed on. The selection wins because it is the later, more deliberate signal —
+ * `pressedHighlightId` is only the fallback for a press that has not selected anything yet. */
+function activeHighlightId(): string | null {
+  const selected = currentSelectionRange();
+  if (selected) {
+    const overlapped = highlightIdForRange(selected.contents, selected.range);
+    if (overlapped !== null) return overlapped;
+  }
+  return pressedHighlightId;
 }
 
 function cancelLongPress(): void {
@@ -542,6 +650,8 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
 
   const { added, removedIds } = diffHighlights(new Set(paintedUserHighlights.keys()), highlights);
 
+  if (removedIds.length > 0 || added.length > 0) invalidateHighlightBoxes();
+
   for (const id of removedIds) {
     const cfiRange = paintedUserHighlights.get(id);
     if (cfiRange !== undefined) highlightRemove(active, USER_OWNER, cfiRange);
@@ -558,10 +668,58 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
     const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
     if (cfiRange === null) continue;
 
+    // TWO IDS ON ONE RANGE COLLIDE INSIDE epub.js, so refuse the second rather than paint it.
+    // `Annotations` hashes on `encodeURI(cfiRange + type)` (highlightSeam.ts's header), and its
+    // `add` overwrites that entry WITHOUT detaching the mark already attached — so the loser stays
+    // painted forever, composites darker under the winner, and `remove` can only ever detach one of
+    // them. Reported rather than dropped: `highlightIdForRange` now refuses to create a highlight
+    // over one that exists, so reaching here means the host and this shell disagree about what is
+    // painted, which is worth hearing about even though it should be unreachable.
+    const collidingId = [...paintedUserHighlights].find(
+      ([, painted]) => painted === cfiRange,
+    )?.[0];
+    if (collidingId !== undefined) {
+      fail(
+        'NAVIGATION_FAILED',
+        `paintHighlights: ${highlight.id} and ${collidingId} address the same range`,
+      );
+      continue;
+    }
+
     // No onTap: press-to-delete hit-tests directly now (`highlightIdAtPoint`), not marks-pane's own
     // touch wiring.
     highlightAdd(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
     paintedUserHighlights.set(highlight.id, cfiRange);
+  }
+}
+
+/**
+ * Re-tint every painted highlight for the CURRENT theme, against a LIVE rendition.
+ *
+ * >>> NOT `repaintUserHighlights()`, AND THE DIFFERENCE IS NOT COSMETIC. <<< That one clears the
+ * map first, which leaves `diffHighlights` with nothing in `removedIds` — correct only when the old
+ * `Rendition` was destroyed and took its `Annotations` with it. Here the rendition is alive, and
+ * epub.js's `Annotations.add` overwrites its map entry WITHOUT detaching the mark already attached,
+ * while also pushing a duplicate hash into `_annotationsBySectionIndex`. So a bare re-add would
+ * leave the old-coloured rect painted under the new one and attach it twice more on the next
+ * `hooks.render`. Remove first, then add.
+ *
+ * The spoken range rides along: `ttsSpokenStyles()` is theme-derived for the same reason, and it is
+ * removed and re-added through the same seam so it keeps its place above the user layer.
+ */
+function retintUserHighlights(): void {
+  if (!rendition) return;
+  const active = rendition;
+
+  for (const cfiRange of paintedUserHighlights.values()) {
+    highlightRemove(active, USER_OWNER, cfiRange);
+  }
+  paintedUserHighlights.clear();
+  applyUserHighlights(lastUserHighlights);
+
+  if (currentSpokenCfi !== null) {
+    highlightRemove(active, TTS_OWNER, currentSpokenCfi);
+    highlightAdd(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
   }
 }
 
@@ -573,6 +731,9 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
  * turns the next `applyUserHighlights` into "add all of them" rather than "nothing changed" — the
  * ids are the same, so without it the diff would correctly conclude there is nothing to do, and the
  * user's highlights would silently disappear on a paginated <-> scrolled switch.
+ *
+ * ONLY FOR A RENDITION THAT WAS JUST REBUILT. Against a live one it leaks the marks it means to
+ * replace — use `retintUserHighlights()` there, and see its note for what epub.js does.
  */
 function repaintUserHighlights(): void {
   paintedUserHighlights.clear();
@@ -609,6 +770,10 @@ function createRendition(): Rendition {
     capExcessiveIndents(contents.document, viewportSize().width);
     insertStylesheet(contents, finalCssFor(contents.document));
     watchTouches(contents);
+    // A newly loaded chapter is a different document with different geometry, and the cache is
+    // keyed on the document it measured — but drop it explicitly rather than leaning on that, so
+    // a re-styled reload of the SAME document cannot serve boxes measured before the restyle.
+    invalidateHighlightBoxes();
   });
 
   // Rotation changes the type size AND the line-grid remainder, so a sheet built for portrait
@@ -616,11 +781,35 @@ function createRendition(): Rendition {
   // on resize; this is the stylesheet half of it.
   rendition.on('resized', () => {
     applyBaselineCss();
+    invalidateHighlightBoxes();
   });
 
-  /** Keeps `lastSelection` current; does not post (no floating UI listens for it any more).
-   * Splits epub.js's range CFI into two point CFIs — `addEpubHighlight` takes two locators. */
+  /** Keeps `lastSelection` current, and re-answers the menu toggle now that there is a selection to
+   * judge it against. Splits epub.js's range CFI into two point CFIs — `addEpubHighlight` takes two
+   * locators.
+   *
+   * >>> WHY THE TOGGLE IS RE-POSTED FROM HERE AND NOT ONLY FROM `touchstart`. <<< At `touchstart`
+   * there is no selection yet, so the only question that can be asked is "is the finger on a
+   * highlight" — and the reader's question is "does what I selected meet one". epub.js debounces
+   * `selectionchange` by 250ms, so in the ordinary long-press case this lands while the finger is
+   * still down, i.e. before `touchend`, which is when WebKit builds the menu. Best-effort display
+   * either way: `requestCurrentSelection`/`confirmDeleteHighlight` re-check for themselves, so a
+   * late one costs a wrong LABEL and never a wrong action.
+   *
+   * Still never cleared on `touchend` — see readerBridge.ts's `highlightTouchActive` note. Both
+   * menu arrays are one item long (`ReaderWebView.tsx`), so swapping between them cannot reproduce
+   * the crash that came from an array shrinking to empty under `tappedMenuItem:`. */
   rendition.on('selected', (cfiRange: string, contents: Contents) => {
+    const selection = contents.document.defaultView?.getSelection();
+    const overlapped =
+      selection && selection.rangeCount > 0 && !selection.isCollapsed
+        ? highlightIdForRange(contents, selection.getRangeAt(0))
+        : null;
+    post({
+      type: 'highlightTouchActive',
+      active: overlapped !== null || pressedHighlightId !== null,
+    });
+
     const ends = splitCfiRange(cfiRange);
     // Not a range (a collapsed CFI, or a shape this parser does not recognise) is not a selection
     // anyone can highlight. Silent: epub.js emits this on every drag, so a malformed one is noise,
@@ -639,6 +828,7 @@ function createRendition(): Rendition {
     // A page turn drops whatever was selected — the view it lived in is no longer on screen, so a
     // later requestCurrentSelection must not answer with words nobody can see any more.
     lastSelection = null;
+    invalidateHighlightBoxes();
 
     post({
       type: 'relocated',
@@ -785,6 +975,7 @@ const api: TFReaderApi<'openEpub'> = {
    */
   applyAppearance: (appearance) => {
     const previousFlow = currentAppearance?.flow;
+    const previousBg = currentAppearance?.bg;
     currentAppearance = appearance;
 
     if (!rendition) return;
@@ -799,7 +990,7 @@ const api: TFReaderApi<'openEpub'> = {
           // Re-paint rather than silently drop it; setSpokenRange's own remove-then-add would target
           // the wrong (destroyed) rendition if called from here instead.
           if (currentSpokenCfi !== null && rendition) {
-            highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+            highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
           }
           // Same problem, same fix, for the durable layer — and worse if missed: a spoken range
           // reappears on the next sentence, but a user highlight would simply be gone until the
@@ -814,6 +1005,19 @@ const api: TFReaderApi<'openEpub'> = {
 
     applyBaselineCss();
     rendition.spread(mapSpread(appearance.spread));
+
+    // THE RENDERED SHADE IS A FUNCTION OF THE PAGE, SO A NEW PAGE COLOUR MEANS A NEW SHADE.
+    // `userHighlightStyles`/`ttsSpokenStyles` resolve `highlightFill(color, bg)` and hand the result
+    // to marks-pane as SVG presentation attributes — baked into the DOM once, at paint time. Nothing
+    // else re-derives them: `paintHighlights` diffs on ids only (highlightPaint.ts), so an
+    // already-painted id is skipped and a highlight would keep the shade of whatever theme it was
+    // created under until the book was reopened. On a light -> dark switch that means `multiply`
+    // against a near-black page, which is very nearly invisible.
+    //
+    // Guarded on `bg` so a font-size or spread change does not detach and re-attach every
+    // annotation in the chapter for a colour that did not move. The PDF shell needs no guard — its
+    // repaint is a `replaceChildren` over a handful of divs it re-measures anyway.
+    if (previousBg !== appearance.bg) retintUserHighlights();
   },
 
   /**
@@ -889,7 +1093,7 @@ const api: TFReaderApi<'openEpub'> = {
       if (!rendition) return;
       if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
       currentSpokenCfi = cfi;
-      if (cfi !== null) highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+      if (cfi !== null) highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }
@@ -898,36 +1102,42 @@ const api: TFReaderApi<'openEpub'> = {
   /**
    * The reader tapped "Highlight". Forces `triggerSelectedEvent` (epub.js's own CFI computation,
    * `contents.js`) rather than reading `lastSelection` as-is, so a selection extended a moment ago
-   * is what gets read. Refuses (`null`) if the press was on an existing highlight
-   * (`pressedHighlightId`) — see readerBridge.ts's `requestCurrentSelection` doc.
+   * is what gets read.
+   *
+   * REFUSES (`null`) WHENEVER THE GESTURE ALREADY MEETS A HIGHLIGHT — `activeHighlightId`, which is
+   * the SELECTION's overlap first and the pressed point only as a fallback. Refusing on
+   * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null,
+   * so this happily created a second annotation over the first. See `highlightIdForRange`.
    */
   requestCurrentSelection: () => {
-    if (pressedHighlightId !== null) {
+    if (activeHighlightId() !== null) {
       post({ type: 'selection', selection: null });
       return;
     }
 
-    if (rendition) {
-      for (const contents of rendition.getContents() as unknown as Contents[]) {
-        const selection = contents.document.defaultView?.getSelection();
-        if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
-          (
-            contents as unknown as { triggerSelectedEvent: (s: Selection) => void }
-          ).triggerSelectedEvent(selection);
-          post({ type: 'selection', selection: lastSelection });
-          return;
-        }
+    const selected = currentSelectionRange();
+    if (selected) {
+      const view = selected.contents.document.defaultView;
+      const selection = view?.getSelection();
+      if (selection) {
+        (
+          selected.contents as unknown as { triggerSelectedEvent: (s: Selection) => void }
+        ).triggerSelectedEvent(selection);
+        post({ type: 'selection', selection: lastSelection });
+        return;
       }
     }
 
     post({ type: 'selection', selection: null });
   },
 
-  /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
-   * (`pressedHighlightId`); silent otherwise. */
+  /** The reader tapped "Delete Highlight". Answers with whatever the gesture is acting on —
+   * `activeHighlightId`, so a highlight reached by dragging a selection over it deletes just like
+   * one reached by pressing it. Silent when neither applies, as before. */
   confirmDeleteHighlight: () => {
-    if (pressedHighlightId !== null) {
-      post({ type: 'highlightPressed', id: pressedHighlightId });
+    const id = activeHighlightId();
+    if (id !== null) {
+      post({ type: 'highlightPressed', id });
     }
   },
 };

@@ -277,7 +277,7 @@ export type ReaderMessage =
   | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
   /**
    * The currently selected text, in reply to `requestCurrentSelection` — or null if nothing is
-   * selected, or if the press landed on an existing highlight (refused; see that command's note).
+   * selected, or if the selection meets an existing highlight (refused; see that command's note).
    * Sent only on request, not passively — creation is a native `menuItems` entry now, not a
    * floating host UI tracking a live selection. No anchor: nothing positions a menu against this.
    */
@@ -290,10 +290,16 @@ export type ReaderMessage =
    */
   | { type: 'highlightPressed'; id: string }
   /**
-   * Whether the current touch is on a painted highlight, sent from `touchstart`. Drives which
-   * native menu item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection`
-   * and `confirmDeleteHighlight` re-check `pressedHighlightId` themselves, so a wrong/late value
-   * here only shows the "wrong" item, never causes a wrong action.
+   * Whether the reader's current gesture is acting on a painted highlight. Drives which native menu
+   * item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection` and
+   * `confirmDeleteHighlight` re-decide for themselves, so a wrong/late value here only shows the
+   * "wrong" item, never causes a wrong action.
+   *
+   * SENT TWICE PER GESTURE BY THE EPUB SHELL, and the second one is the accurate one. At
+   * `touchstart` nothing is selected yet, so the only question answerable is "is the finger on a
+   * highlight" — while the reader's question is "does what I selected meet one". epub.js's
+   * `selected` event answers the real one 250ms after the selection settles, which is usually still
+   * before `touchend` (when WebKit builds the menu).
    *
    * ONLY EVER CLEARED FROM THE NEXT `touchstart`, not `touchend`/`touchcancel` — clearing there
    * previously crashed the app: `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` at TAP
@@ -465,13 +471,19 @@ export type ReaderCommand =
   | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] }
   /**
    * Fired when the reader taps the native "Highlight" item. Reads the selection fresh (not
-   * cached), so a selection extended right up to the tap is used. Answers `null` if the press
-   * landed on an existing highlight (`pressedHighlightId`) — refuses rather than duplicating.
+   * cached), so a selection extended right up to the tap is used. Answers `null` if the gesture
+   * meets an existing highlight — refuses rather than duplicating.
+   *
+   * "Meets" is the SELECTION's overlap first, the pressed point only as a fallback. Checking the
+   * pressed point alone let a selection dragged from plain text into a highlight paint a second
+   * annotation over the first, which then collided with it in epub.js's own map.
    */
   | { type: 'requestCurrentSelection' }
   /**
-   * Fired when the reader taps the native "Delete Highlight" item. Replies with
-   * `highlightPressed` only if `pressedHighlightId` is set; otherwise silent (nothing to delete).
+   * Fired when the reader taps the native "Delete Highlight" item. Replies with `highlightPressed`
+   * for whichever highlight the gesture is acting on — the same "selection first, pressed point as
+   * fallback" rule as above, so a highlight reached by dragging over it deletes like one reached by
+   * pressing it. Silent when neither applies (nothing to delete).
    */
   | { type: 'confirmDeleteHighlight' };
 

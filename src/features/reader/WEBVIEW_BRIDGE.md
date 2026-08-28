@@ -148,14 +148,28 @@ for either action can be triggered correctly and still be visually unreachable. 
 text also makes WebKit select the word underneath, so the native menu can sit over an RN "Delete"
 popup and disable it too, not just over the "Highlight" case.
 
+**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT OFFERS DELETE, AND REFUSES CREATE.** Signed off
+2026-08-28. Any overlap at all counts; merely abutting one does not, or highlighting the sentence
+after the one you already did would be impossible. `requestCurrentSelection` answers `null` and
+`confirmDeleteHighlight` answers with the overlapped id.
+
 **Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything is a
 separate, post-hoc check — only the second is load-bearing.** `ReaderWebView.tsx` swaps `menuItems`
-between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message sent from
-`touchstart` — a direct hit test in both shells (`highlightIdAtPoint` in `epub.entry.ts`,
-`highlightAtClientPoint` in `pdfHighlightSeam.ts`). `requestCurrentSelection` and
-`confirmDeleteHighlight` both re-check the shell's own current `pressedHighlightId` at tap time and
-refuse if it doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a
-display mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message.
+`requestCurrentSelection` and `confirmDeleteHighlight` both re-decide at tap time and refuse if it
+doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a display
+mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+
+**The decision is the SELECTION's overlap first, the pressed point only as a fallback** —
+`activeHighlightId()` in `epub.entry.ts`. Deciding from `touchstart` alone was a real bug, not just
+an imprecision: `pressedHighlightId` records where the finger first *landed*, which equals what the
+reader selected only when the press neither moved nor was adjusted. Dragging a selection from plain
+text into a highlight left it null, so the menu offered "Highlight" and taking it painted a second
+annotation over the first — visibly darker, and only half-deletable once the two ids collided in
+epub.js's own map. The EPUB shell therefore posts `highlightTouchActive` twice per gesture: once
+from `touchstart` (a point test, all that is knowable before anything is selected) and again from
+epub.js's `selected` event, which debounces `selectionchange` by 250ms and so lands while the finger
+is usually still down — i.e. before `touchend`, which is when WebKit builds the menu.
 
 Two failure modes so far, both fixed:
 1. **Pre-empting which item showed was unreliable.** An earlier version updated `menuItems` before
@@ -173,8 +187,24 @@ Two failure modes so far, both fixed:
 wiring) never fired reliably** — it needs marks-pane to translate coordinates between the chapter
 iframe (where touches fire) and the outer document (where painted marks live), and that translation
 was not reliable enough to use. Replaced with a same-document hit test, `highlightIdAtPoint` in
-`epub.entry.ts`: resolve each painted highlight's CFI range to a `Range` via `contents.range()`, then
-locate the touch point with `caretRangeFromPoint` and check `Range.isPointInRange`.
+`epub.entry.ts`.
+
+**That hit test is GEOMETRIC, like the PDF shell's, and its first version was not.** It briefly
+converted the touch to a text position (`caretRangeFromPoint`) and asked `Range.isPointInRange` — but
+a caret SNAPS to the nearest text position, so a press in a line's trailing whitespace claimed a
+highlight that was not under the finger, and a press inside a highlighted word whose caret snapped to
+the neighbouring character missed one that was; `caretRangeFromPoint` can also hand back an *element*
+container, where `isPointInRange` degrades to a tree-order comparison unrelated to where the reader
+touched. It now measures `contents.range(cfiRange).getClientRects()` — the same rects marks-pane
+paints, already in the chapter document's client coordinates — and calls the same pure `highlightAt`
+the PDF shell does (`webview/src/highlightGeometry.ts`, shared by both since 2026-08-28).
+
+Those boxes are **cached per layout** and dropped on relocate, resize, chapter load and repaint.
+Resolving a CFI walks the chapter tree, `touchstart` fires for every touch including each one of a
+page-turn swipe, and doing that work N-highlights-deep inside the touch handler is what made a
+well-highlighted EPUB feel worse than a PDF, whose hit test is arithmetic over an array measured
+once. A stale box deletes the wrong highlight, so when in doubt the cache is dropped: rebuilding
+costs one tree walk, being wrong costs the reader their note.
 
 **Deleting has no separate RN confirmation step, and that's not a safety regression.** Choosing
 "Delete Highlight" from a menu the reader explicitly opened by pressing the highlight already is the

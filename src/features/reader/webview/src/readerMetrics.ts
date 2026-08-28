@@ -253,6 +253,15 @@ export function baselineCss(
     'html, body {',
     '  -webkit-text-size-adjust: 100% !important;',
     '  text-size-adjust: 100% !important;',
+    // SELECTION MUST SURVIVE THE BOOK'S OWN CSS, and it is the one thing here a book can switch off
+    // outright rather than merely restyle. `user-select: none` and `-webkit-touch-callout: none` are
+    // routine in publisher and Calibre-converted stylesheets (they are the copy-prevention idiom),
+    // and either one makes a long press select nothing at all — no menu, no highlight, and nothing
+    // on screen to say why. `!important` for the same reason as every other rule in this sheet.
+    // The PDF shell never needs this: its text layer is our own DOM, not the book's.
+    '  -webkit-user-select: text !important;',
+    '  user-select: text !important;',
+    '  -webkit-touch-callout: default !important;',
     ...(bg ? [`  background: ${bg} !important;`] : []),
     '}',
     'body {',
@@ -285,6 +294,11 @@ export function baselineCss(
     'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',
     `  font-size: ${f}px !important;`,
     `  line-height: ${l}px !important;`,
+    // Repeated from the html/body rule above because `user-select` is inherited but overridable:
+    // a book that sets it on its own paragraphs beats an ancestor's `!important`, since both are
+    // important declarations and the more specific match wins.
+    '  -webkit-user-select: text !important;',
+    '  user-select: text !important;',
     '}',
     // Raised/lowered glyphs must not grow the line box, or the grid drifts by a fraction of a line
     // on every citation marker — and the test fixture is full of them. line-height: 0 is the

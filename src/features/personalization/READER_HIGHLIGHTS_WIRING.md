@@ -104,8 +104,11 @@ page turns (`webview/src/touchGesture.ts`, pure and tested). Consequences worth 
   and hides the words it is selecting, which matters more than usual when seeing the selection IS the
   feedback that the gesture worked. The theme's link colour at 32% alpha, with a lightness-derived
   neutral scrim as the fallback.
-- **Two RN-side pieces are pure and tested rather than eyeballed**: `highlightPopup.ts` (where the
-  menu goes, and how it stays on screen at a margin or a first line) and the gesture thresholds above.
+- **There is no RN-side menu placement to test any more.** `highlightPopup.ts` worked out where a
+  floating popup went and how it stayed on screen at a margin or a first line; both actions moved to
+  native `menuItems`, which UIKit positions, and the file was deleted with them. What stayed pure and
+  tested is the gesture thresholds above, plus `webview/src/highlightGeometry.ts` — the box hit test
+  and the range-overlap rule that decide which menu item a gesture gets.
 
 Worth a look on the simulator before you rely on it: it changes what every touch on the book does,
 and no unit test can see a swipe that stopped working.

@@ -177,8 +177,8 @@
         THE USER HIGHLIGHT LAYER. `pointer-events: none` is LOAD-BEARING, not tidiness: a box that
         takes touches is a box that swallows a drag beginning inside it, so extending or re-selecting
         an existing highlight would be impossible. Taps on a highlight are resolved by hit-testing
-        the page container's own click against the painted geometry instead (pdfTextRange.ts's
-        `highlightAt`).
+        the page container's own click against the painted geometry instead (highlightGeometry.ts's
+        `highlightAt`, shared with the EPUB shell).
 
         `mix-blend-mode: multiply` is what makes a SOLID fill — the user layer's channel in
         HIGHLIGHT_LAYERS.md §3 — readable rather than opaque: it darkens the rasterised glyphs
