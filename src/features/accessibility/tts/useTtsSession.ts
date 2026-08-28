@@ -38,6 +38,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 
+import { announce } from '@/features/reader/a11yAnnounce';
 import type {
   ReaderTextProvider,
   TtsFetchResult,
@@ -51,6 +52,7 @@ import type { A11yTtsPrefs } from '@/shared/contracts';
 import Tts from './ttsEngine';
 import type { Voice } from './ttsEngine';
 import { mapRate } from './ttsRate';
+import { ttsStatusAnnouncement } from './ttsAnnouncements';
 
 export type TtsSessionStatus = 'idle' | 'speaking' | 'paused' | 'error';
 
@@ -152,8 +154,13 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     let persistChain: Promise<void> = Promise.resolve();
 
     function updateStatus(next: TtsSessionStatus): void {
+      // READER_ANNOUNCEMENTS.md §5 item 8. Captured before the mutation so the pure decision
+      // function sees the real transition, not `next` compared against itself.
+      const previous = liveStatus;
       liveStatus = next;
       setStatus(next);
+      const said = ttsStatusAnnouncement(previous, next);
+      if (said !== null) announce(said);
     }
 
     function clearHighlight(): void {
