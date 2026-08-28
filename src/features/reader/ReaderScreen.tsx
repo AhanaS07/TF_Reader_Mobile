@@ -201,6 +201,51 @@ async function buildAppearanceWithFont(
   return a11yFlowOverride(resolved, screenReaderEnabled);
 }
 
+/**
+ * ANNOTATION FAILURES — why the six highlight/bookmark call-sites below carry handlers at all.
+ *
+ * They could not reject in any way worth reacting to until 2026-08-28. `readerHighlights.ts` and
+ * `readerBookmarks.ts` reached only SQLite then, so a rejection meant the local database was broken
+ * and there was nothing useful to say about it. `annotationsRouter.ts` now sends them at the sync
+ * backend whenever NetInfo reports a network — which on a simulator is ALWAYS, since `isConnected`
+ * asks whether the device has an interface, not whether the backend answers — and `syncApi.ts`
+ * turns a refused connection into `ApiError(status 0)`. With the backend not running these reject
+ * on every call, and a bare `void promise` made that an unhandled rejection: a LogBox warning in
+ * dev, and nothing whatsoever in release.
+ *
+ * Reads and writes get different answers because the cost is different:
+ *
+ *   READ  — nothing is lost. The panel stays empty and the next open retries, so a warning is the
+ *           right weight; an Alert on every open with the backend down would be unusable.
+ *   WRITE — the edit has nowhere else to live. The router's online branch POSTs to Mongo and
+ *           returns WITHOUT touching SQLite or the outbox — deliberately, since keeping a
+ *           non-downloaded book's rows out of the offline store is its whole purpose — so a failed
+ *           POST leaves the highlight in no store at all. Nothing else on screen will show the user
+ *           that, so it has to be said.
+ *
+ * `Alert.alert` for the same reason the layout notice above uses it: it is this app's idiom for
+ * "something changed out from under you", and being native it is announced by a screen reader
+ * without any work here.
+ *
+ * NONE OF THIS RESTORES DURABILITY. It converts silent data loss into visible failure, which is as
+ * far as Reader can reach: the fix that makes the edit SURVIVE is a transient-failure fallback to
+ * the offline store inside `annotationsRouter.ts`, and that is Personalization's file (Vaishnavi).
+ * `annotationDurability.test.ts` pins that defect; the containment below has its own cases in
+ * `ReaderScreen.test.tsx`.
+ */
+function warnAnnotationReadFailed(what: 'highlights' | 'bookmarks', cause: unknown): void {
+  console.warn(`ReaderScreen: could not load ${what}`, cause);
+}
+
+/**
+ * `title`/`body` rather than one operation enum: a failed ADD loses the edit, while a failed DELETE
+ * leaves the row exactly where it was. Same handler, genuinely different thing to tell the user.
+ */
+function alertAnnotationWriteFailed(title: string, body: string, cause: unknown): void {
+  console.warn(`ReaderScreen: ${title}`, cause);
+  Alert.alert(title, body, [{ text: 'OK', style: 'default' }]);
+}
+
 interface ReaderScreenProps {
   /**
    * Identifies the ContentStore session `getBook(bookId)` opens and
@@ -1095,10 +1140,20 @@ export function ReaderScreen({
               endOffset: selection.endOffset,
             });
 
-      return add.then(({ highlights: fresh, skippedIds }) => {
-        setHighlights(fresh);
-        setSkippedHighlightCount(skippedIds.length);
-      });
+      return add
+        .then(({ highlights: fresh, skippedIds }) => {
+          setHighlights(fresh);
+          setSkippedHighlightCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          // The selection is already gone — the WebView cleared it when the menu item fired — so
+          // there is nothing left on screen to show the user what they lost.
+          alertAnnotationWriteFailed(
+            'Highlight not saved',
+            'This highlight could not be saved and has not been kept. Check your connection and try again.',
+            cause,
+          );
+        });
     },
     [bookId],
   );
@@ -1111,10 +1166,21 @@ export function ReaderScreen({
    */
   const deleteHighlightById = useCallback(
     (id: string): Promise<void> =>
-      removeHighlight(bookId, id).then(({ highlights: fresh, skippedIds }) => {
-        setHighlights(fresh);
-        setSkippedHighlightCount(skippedIds.length);
-      }),
+      removeHighlight(bookId, id)
+        .then(({ highlights: fresh, skippedIds }) => {
+          setHighlights(fresh);
+          setSkippedHighlightCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          // Milder than a failed add: the highlight is still stored and still painted, so the
+          // screen already agrees with the truth. Said anyway, because the user asked for it to go
+          // and it did not.
+          alertAnnotationWriteFailed(
+            'Highlight not deleted',
+            'This highlight could not be removed and is still saved. Check your connection and try again.',
+            cause,
+          );
+        }),
     [bookId],
   );
 
@@ -1288,12 +1354,21 @@ export function ReaderScreen({
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadBookmarks(bookId).then(({ bookmarks: loaded, skippedIds }) => {
-      if (cancelled) return;
-      setBookmarks(loaded);
-      setSkippedBookmarkCount(skippedIds.length);
-      setBookmarksLoaded(true);
-    });
+    void loadBookmarks(bookId)
+      .then(({ bookmarks: loaded, skippedIds }) => {
+        if (cancelled) return;
+        setBookmarks(loaded);
+        setSkippedBookmarkCount(skippedIds.length);
+        setBookmarksLoaded(true);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        // `bookmarksLoaded` IS STILL SET. It distinguishes "still reading" from "finished reading"
+        // (see its own note) — not "read successfully". Left false on a failure the panel sits on
+        // its loading state forever, which reads as a hang rather than as an empty list.
+        setBookmarksLoaded(true);
+        warnAnnotationReadFailed('bookmarks', cause);
+      });
     return () => {
       cancelled = true;
     };
@@ -1339,10 +1414,18 @@ export function ReaderScreen({
             : null;
       if (add === null) return;
 
-      void add.then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
+      void add
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not saved',
+            'This bookmark could not be saved and has not been kept. Check your connection and try again.',
+            cause,
+          );
+        });
     },
     [position, bookId],
   );
@@ -1350,10 +1433,18 @@ export function ReaderScreen({
   /** CALL-SITE 3: tap-to-delete, by stored id. Re-renders from the returned fresh set. */
   const deleteBookmark = useCallback(
     (id: string): void => {
-      void removeBookmark(bookId, id).then(({ bookmarks: fresh, skippedIds }) => {
-        setBookmarks(fresh);
-        setSkippedBookmarkCount(skippedIds.length);
-      });
+      void removeBookmark(bookId, id)
+        .then(({ bookmarks: fresh, skippedIds }) => {
+          setBookmarks(fresh);
+          setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not deleted',
+            'This bookmark could not be removed and is still saved. Check your connection and try again.',
+            cause,
+          );
+        });
     },
     [bookId],
   );
@@ -1412,11 +1503,20 @@ export function ReaderScreen({
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadReaderHighlights(bookId).then(({ highlights: loaded, skippedIds }) => {
-      if (cancelled) return;
-      setHighlights(loaded);
-      setSkippedHighlightCount(skippedIds.length);
-    });
+    void loadReaderHighlights(bookId)
+      .then(({ highlights: loaded, skippedIds }) => {
+        if (cancelled) return;
+        setHighlights(loaded);
+        setSkippedHighlightCount(skippedIds.length);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        // Left at the empty initial set, which is what the paint effect below then sends: a book
+        // with no highlights painted, not a broken one. NOT routed into `skippedHighlightCount` —
+        // that badge means "rows that would not map", and a load that returned nothing at all has
+        // no count to report.
+        warnAnnotationReadFailed('highlights', cause);
+      });
     return () => {
       cancelled = true;
     };

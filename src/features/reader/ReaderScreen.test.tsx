@@ -266,6 +266,32 @@ beforeEach(() => {
   jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
   jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
+
+  // THE ASSET SEAM IS RESTORED FOR EVERY TEST, not left to whichever block last touched it. Any
+  // PDF test anywhere in this file has to point these three somewhere else, and `mockResolvedValue`
+  // replaces the factory's IMPLEMENTATION for the rest of the run — so a block that overrode them
+  // silently handed a PDF shell (and PDF bytes) to every later EPUB test. That is invisible in
+  // declaration order and only shows up under `jest --randomize`, as an assertion that says
+  // "openEpub was never sent" rather than anything about formats.
+  //
+  // Global rather than one afterEach per block: a per-block restore has to be remembered by the
+  // NEXT person adding a PDF case, and the two blocks that already reset `prepareBook` defensively
+  // are evidence that it was not. Blocks may still override — an outer beforeEach runs first.
+  jest.mocked(prepareBook).mockResolvedValue('EPUB');
+  jest
+    .mocked(getReaderHtmlUri)
+    .mockImplementation((format) => Promise.resolve(`file:///reader-${format.toLowerCase()}.html`));
+  jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+
+  // AND THE COMMAND LOG, for the same reason. Assertions here locate a command by `indexOf` over
+  // `__injectJavaScript.mock.calls`, which finds the FIRST match — so calls left by an earlier test
+  // do not just pad the array, they can win the lookup and make an ordering assertion compare two
+  // different tests' commands. Roughly half the blocks below already clear it in their own
+  // beforeEach; the ones that forgot are the ones that fail under `--randomize`.
+  //
+  // Declared below this beforeEach (the WebView mock is further down the file) and referenced here
+  // through the closure, which is evaluated at call time, long after the module has finished.
+  __injectJavaScript.mockClear();
 });
 
 /**
@@ -1813,12 +1839,10 @@ describe('ReaderScreen bookmarks panel', () => {
       .mockReset()
       .mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
-    // EXPLICIT, not relying on the top-level factory default: `bookmarksForOpenBook` (ReaderScreen.tsx)
-    // now filters the panel's list by `format`, so a PDF override left behind by an earlier test in
-    // this file (nothing here resets it automatically — there is no global mock-reset config) would
-    // silently filter out every EPUB-shaped `bookmark()` fixture below. Reset here rather than adding
-    // one to every individual PDF test, so this describe block cannot inherit stale state from
-    // whatever ran before it.
+    // Redundant with the file-level beforeEach, which now resets the whole asset seam and the
+    // command log for every test — kept because `bookmarksForOpenBook` (ReaderScreen.tsx) filters
+    // the panel's list by `format`, so this block breaks in a particularly confusing way (every
+    // EPUB-shaped `bookmark()` fixture silently vanishes) if that reset is ever narrowed.
     jest.mocked(prepareBook).mockResolvedValue('EPUB');
     __injectJavaScript.mockClear();
   });
@@ -2930,8 +2954,8 @@ describe('ReaderScreen highlights', () => {
     jest.mocked(addEpubHighlight).mockReset().mockResolvedValue(loaded({}));
     jest.mocked(addPdfHighlight).mockReset().mockResolvedValue(loaded({}));
     jest.mocked(removeHighlight).mockReset().mockResolvedValue(loaded({}));
-    // Same reasoning as the bookmarks block's: nothing in this file resets `prepareBook` globally,
-    // so a PDF override left by an earlier test would route these EPUB fixtures down the PDF arm.
+    // Same reasoning as the bookmarks block's: redundant with the file-level reset, kept as the
+    // local statement of what these EPUB fixtures need.
     jest.mocked(prepareBook).mockResolvedValue('EPUB');
     __injectJavaScript.mockClear();
   });
@@ -3146,6 +3170,242 @@ describe('ReaderScreen highlights', () => {
 });
 
 /**
+ * CONTAINMENT for the defect pinned in annotationDurability.test.ts — read that file first; it
+ * explains why these six call-sites can reject at all (they could not before dev_T4 `facc57d`).
+ *
+ * What is asserted here is only what Reader can actually do about it: a rejection must not become
+ * an unhandled promise (a LogBox warning in dev, nothing at all in release), the book must stay
+ * usable, and a failed WRITE must be said out loud, because the edit is gone and nothing else on
+ * screen will show the user that.
+ *
+ * THESE TESTS DO NOT GO AWAY WHEN THE ROUTER IS FIXED. A durable stack still fails when the device
+ * is genuinely offline and the local write itself errors, so the handlers stay correct either way.
+ * The `it.failing` cases next door are the ones that expire.
+ */
+describe('a rejected annotation call is contained, not swallowed', () => {
+  let alert: jest.SpyInstance;
+  let warn: jest.SpyInstance;
+
+  const REJECTION = new Error('/api/v1/highlights: Network request failed');
+
+  function loaded(highlights: Partial<ReaderHighlights> = {}) {
+    return { highlights: { epub: [], pdf: [], ...highlights }, skippedIds: [] };
+  }
+
+  beforeEach(() => {
+    jest.mocked(loadReaderHighlights).mockReset().mockResolvedValue(loaded());
+    jest.mocked(addEpubHighlight).mockReset().mockResolvedValue(loaded());
+    jest.mocked(removeHighlight).mockReset().mockResolvedValue(loaded());
+    jest.mocked(loadBookmarks).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest
+      .mocked(addCurrentEpubBookmark)
+      .mockReset()
+      .mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(prepareBook).mockResolvedValue('EPUB');
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    // Asserted on, not merely silenced: "it warned" is half of what containment means here, and an
+    // unmocked console.warn would also print this file's deliberate failures as if they were real.
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    alert.mockRestore();
+    warn.mockRestore();
+  });
+
+  async function openBook(): Promise<void> {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+  }
+
+  async function requestHighlightFor(selection: unknown): Promise<void> {
+    await deliver({ type: 'selection', selection });
+  }
+
+  const EPUB_SELECTION = {
+    kind: 'cfiRange',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+  };
+
+  it('a failed highlight LOAD leaves the book readable and says nothing to the user', async () => {
+    jest.mocked(loadReaderHighlights).mockRejectedValue(REJECTION);
+
+    await openBook();
+
+    // The book is still there. Nothing about a highlight fetch should blank the reader.
+    expect(screen.getByTestId('reader-webview', { includeHiddenElements: true })).toBeTruthy();
+    // Quiet on purpose: nothing was lost, the next open retries, and an Alert on every open with
+    // the backend down would make the app unusable. See warnAnnotationReadFailed's own note.
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not load highlights'),
+      REJECTION,
+    );
+  });
+
+  it('a failed highlight ADD tells the user the highlight was not kept', async () => {
+    jest.mocked(addEpubHighlight).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await requestHighlightFor(EPUB_SELECTION);
+
+    // The wording has to say it was NOT KEPT, not merely that something went wrong: the selection
+    // is already cleared, so this Alert is the only evidence the user ever gets.
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed highlight DELETE says it is still saved, not that it was lost', async () => {
+    jest.mocked(removeHighlight).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await deliver({ type: 'highlightPressed', id: 'h1' });
+
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not deleted',
+      expect.stringContaining('is still saved'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed bookmark LOAD resolves the panel out of its loading state', async () => {
+    // The specific trap this pins: `bookmarksLoaded` means "finished reading", not "read
+    // successfully". Left false on a rejection the panel sits on "Loading bookmarks…" forever,
+    // which reads as a hang rather than as an empty list.
+    jest.mocked(loadBookmarks).mockRejectedValue(REJECTION);
+    await openBook();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    expect(screen.queryByText('Loading bookmarks…')).toBeNull();
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not load bookmarks'),
+      REJECTION,
+    );
+  });
+
+  it('a failed bookmark ADD tells the user it was not kept', async () => {
+    jest.mocked(addCurrentEpubBookmark).mockRejectedValue(REJECTION);
+    await openBook();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+      atStart: true,
+      atEnd: false,
+    });
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * FORMAT COVERAGE. There is no format branch inside any of the six handlers — `createHighlight
+   * FromSelection` and `addCurrentBookmark` each pick the EPUB or PDF call-site and then share ONE
+   * `.then().catch()` — so these are not a second code path. They are here because that sharing is
+   * the thing worth pinning: a future split into per-format chains would have to keep both halves
+   * handled, and this is what would notice.
+   */
+  it('a failed PDF highlight ADD takes the same handler as the EPUB one', async () => {
+    jest.mocked(addPdfHighlight).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    await openBook();
+
+    await requestHighlightFor({ kind: 'pageRange', page: 4, startOffset: 10, endOffset: 25 });
+
+    expect(addPdfHighlight).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(
+      'Highlight not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed PDF bookmark ADD takes the same handler as the EPUB one', async () => {
+    jest.mocked(addCurrentPdfBookmark).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('PDF');
+    jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
+    jest.mocked(getBookBase64).mockResolvedValue('JVBERi0xLjQK');
+    await openBook();
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'page', page: 7, pageCount: 100 },
+      atStart: false,
+      atEnd: false,
+    });
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmark this page' }));
+
+    expect(addCurrentPdfBookmark).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not saved',
+      expect.stringContaining('has not been kept'),
+      expect.anything(),
+    );
+  });
+
+  it('AUDIO never reaches either handler, because it never renders', async () => {
+    // The third format has no WebView at all — `getReaderHtmlUri` refuses it before one can exist,
+    // so `rendered` never arrives and both load effects stay gated behind `isRendered`. Pinned as a
+    // NEGATIVE because the failure it guards against is noisy: an audio book popping a "could not
+    // load highlights" warning for a reader that was never going to paint any.
+    jest.mocked(loadReaderHighlights).mockRejectedValue(REJECTION);
+    jest.mocked(loadBookmarks).mockRejectedValue(REJECTION);
+    jest.mocked(prepareBook).mockResolvedValue('AUDIO');
+    jest.mocked(getReaderHtmlUri).mockRejectedValue(new UnsupportedFormatError('AUDIO'));
+
+    await render(<ReaderScreen bookId="test-book" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(loadReaderHighlights).not.toHaveBeenCalled();
+    expect(loadBookmarks).not.toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a failed bookmark DELETE says it is still saved', async () => {
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [
+        {
+          id: 'victim',
+          label: 'To be deleted',
+          target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+        },
+      ],
+      skippedIds: [],
+    });
+    jest.mocked(removeBookmark).mockRejectedValue(REJECTION);
+    await openBook();
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Delete bookmark: To be deleted' }));
+
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not deleted',
+      expect.stringContaining('is still saved'),
+      expect.anything(),
+    );
+  });
+});
+
+/**
  * The two halves of F4 (WEBVIEW_A11Y_SPIKE.md): the native container must not swallow the WebView's
  * own accessibility tree, and paginated flow must not be what a screen-reader user is given.
  */
@@ -3192,9 +3452,9 @@ describe('the screen-reader layout override', () => {
 
     it('switches to scrolled flow and a single spread when a screen reader is running', async () => {
       jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
-      jest.mocked(prefsStore.getPrefs).mockResolvedValue(
-        makePrefs({ layout: { flow: 'paginated', spread: 'double' } }),
-      );
+      jest
+        .mocked(prefsStore.getPrefs)
+        .mockResolvedValue(makePrefs({ layout: { flow: 'paginated', spread: 'double' } }));
 
       await mountReader();
       await reportReady();
