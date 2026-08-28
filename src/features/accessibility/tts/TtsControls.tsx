@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { announce } from '@/features/reader/a11yAnnounce';
 import { focusOn } from '@/features/reader/a11yFocus';
 
 import type { TtsSession } from './useTtsSession';
@@ -50,6 +51,16 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
     // Reader's panels via `focusOn`.
     closeTimerRef.current = setTimeout(() => focusOn(voiceButtonRef), FOCUS_RESTORE_DELAY_MS);
   };
+
+  // READER_ANNOUNCEMENTS.md §5 item 9. `accessibilityLiveRegion` (below, on the error Text) is
+  // Android-only — iOS ignores it entirely — so without this the error is silent on iOS. iOS-gated
+  // rather than unconditional: on Android the live region already announces it, and calling
+  // `announce()` too would speak it twice.
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    if (session.status !== 'error' || session.errorMessage === null) return;
+    announce(session.errorMessage);
+  }, [session.status, session.errorMessage]);
 
   const isSpeaking = session.status === 'speaking';
   const isPaused = session.status === 'paused';
