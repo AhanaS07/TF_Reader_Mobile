@@ -15,7 +15,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 
-import { createFakeReaderTextProvider } from '@/features/reader/tts/fakeReaderTextProvider';
+import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS, DEFAULT_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs, SharedPrefs } from '@/shared/contracts';
@@ -384,6 +384,42 @@ describe('useTtsSession', () => {
     await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalled());
     const written = writeSharedPrefsMock.mock.calls.at(-1)?.[0];
     expect(written.accessibility.tts.voiceId).toBeNull();
+  });
+
+  it('coalesces a rate press immediately followed by a pitch press into one persisted write', async () => {
+    // Regression guard for a lost-update race: persistTtsPatch used to fire an unserialized
+    // read-modify-write per press, so a second press's readSharedPrefs() could complete before
+    // the first press's writeSharedPrefs() did, and the second write would silently drop the
+    // first change. Debouncing coalesces both presses into one write carrying both fields.
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.setRate(2.0));
+    await act(() => result.current.setPitch(1.5));
+
+    await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalledTimes(1));
+    const written = writeSharedPrefsMock.mock.calls[0][0];
+    expect(written.accessibility.tts.rate).toBe(2.0);
+    expect(written.accessibility.tts.pitch).toBe(1.5);
+  });
+
+  it('flushes a pending patch immediately on teardown, before the debounce would have fired', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result, unmount } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.setRate(1.75));
+    // No time has passed — the 300ms debounce has not fired on its own yet.
+    expect(writeSharedPrefsMock).not.toHaveBeenCalled();
+
+    await act(() => unmount());
+
+    await waitFor(() => expect(writeSharedPrefsMock).toHaveBeenCalledTimes(1));
+    const written = writeSharedPrefsMock.mock.calls[0][0];
+    expect(written.accessibility.tts.rate).toBe(1.75);
   });
 
   it('on mount, applies stored non-default pitch and voiceId to the native engine', async () => {

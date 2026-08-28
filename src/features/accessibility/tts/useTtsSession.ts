@@ -43,6 +43,7 @@ import type {
   TtsFetchResult,
   TtsSentence,
 } from '@/features/reader/tts/readerTextProvider';
+import { logSpan, now } from '@/features/reader/readerTiming';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs } from '@/shared/contracts';
@@ -75,6 +76,11 @@ export interface TtsSession {
 
 /** Android's pause()/resume() are documented no-ops in @iternio/react-native-tts. */
 const PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios';
+
+// Coalesces rapid-fire rate/pitch/voice changes (a user dragging through chips) into one
+// SQLite round trip instead of one per press. See applyPrefsPatch/schedulePersist below for why
+// this also fixes a lost-update race, not just I/O volume.
+const PERSIST_DEBOUNCE_MS = 300;
 
 const noop = (): void => undefined;
 
@@ -126,11 +132,24 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     let currentlySpeaking: TtsSentence | null = null;
     let awaitingUtterance = false;
     let pendingNext: Promise<TtsFetchResult> | null = null;
+    // Opt-in diagnostic only (readerTiming.ts's EXPO_PUBLIC_READER_TIMING flag) — set when a fresh
+    // play() starts the WebView round-trip (`beginFrom`), closed on the native `tts-start` event.
+    // Brackets exactly the one latency source `beginFrom` can't avoid: fetching the first sentence
+    // has no cache to serve from, unlike every sentence after it (see `speakSentence`'s prefetch).
+    let playPressedAt: number | null = null;
     // Bumped on every stop/interruption/teardown. Async continuations (a prefetch resolving, a
     // fetch issued from beginFrom) capture this on entry and check it after every await, so a
     // continuation from a superseded play() can't resurrect state a later action already moved
     // past.
     let generation = 0;
+
+    // Debounced prefs persistence — see applyPrefsPatch/schedulePersist/flushPendingTtsPatch.
+    let pendingTtsPatch: Partial<A11yTtsPrefs> | null = null;
+    let persistTimer: ReturnType<typeof setTimeout> | null = null;
+    // Every actual write chains onto this, so a debounce-timer flush and the teardown flush can
+    // never interleave their read-modify-write against SQLite — whichever was scheduled first
+    // fully completes before the next one reads.
+    let persistChain: Promise<void> = Promise.resolve();
 
     function updateStatus(next: TtsSessionStatus): void {
       liveStatus = next;
@@ -146,6 +165,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       awaitingUtterance = false;
       pendingNext = null;
       currentlySpeaking = null;
+      playPressedAt = null;
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
       if (opts?.clearHighlight !== false) clearHighlight();
@@ -204,6 +224,10 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     function handleTtsStart(): void {
       if (!awaitingUtterance) return;
+      if (playPressedAt !== null) {
+        logSpan('tts play-to-start', playPressedAt);
+        playPressedAt = null;
+      }
       setErrorMessage(null);
       updateStatus('speaking');
       if (currentlySpeaking) source.setSpokenRange(currentlySpeaking.cfi);
@@ -291,10 +315,36 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       });
     }
 
+    // Persists whatever has accumulated in `pendingTtsPatch` right now, synchronously clearing
+    // the debounce timer and the pending patch first so a flush can't be double-scheduled.
+    // Chained onto persistChain rather than fired directly: without that, two flushes close
+    // together (a debounce tick immediately followed by teardown, say) could each call
+    // readSharedPrefs() before either's writeSharedPrefs() lands, and the second write's spread
+    // of the pre-first-write record would silently undo the first patch.
+    function flushPendingTtsPatch(): void {
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+      const patch = pendingTtsPatch;
+      pendingTtsPatch = null;
+      if (patch === null) return;
+      persistChain = persistChain.then(() => persistTtsPatch(patch)).catch(noop);
+    }
+
+    // Coalesces patches that land inside the same debounce window into one persisted write —
+    // e.g. a rate press immediately followed by a pitch press ends up as a single
+    // read-modify-write carrying both, not two writes where the second overwrites the first.
+    function schedulePersist(patch: Partial<A11yTtsPrefs>): void {
+      pendingTtsPatch = { ...pendingTtsPatch, ...patch };
+      if (persistTimer !== null) clearTimeout(persistTimer);
+      persistTimer = setTimeout(flushPendingTtsPatch, PERSIST_DEBOUNCE_MS);
+    }
+
     function applyPrefsPatch(patch: Partial<A11yTtsPrefs>): void {
       livePrefs = { ...livePrefs, ...patch };
       setPrefs(livePrefs);
-      void persistTtsPatch(patch).catch(noop);
+      schedulePersist(patch);
     }
 
     playRef.current = () => {
@@ -307,6 +357,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
         void Tts.resume().catch(noop);
         return;
       }
+      playPressedAt = now();
       void beginFrom(null, generation);
     };
 
@@ -397,6 +448,10 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     return () => {
       torn = true;
+      // Before anything else: a pending debounced patch must not be lost just because the
+      // session is going away (provider changed, TTS toggled off, the reader closed) before its
+      // timer fired.
+      flushPendingTtsPatch();
       subscriptions.forEach((subscription) => subscription.remove());
       appStateSubscription.remove();
       unsubscribeInterrupted();

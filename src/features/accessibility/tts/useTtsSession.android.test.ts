@@ -13,7 +13,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 
-import { createFakeReaderTextProvider } from '@/features/reader/tts/fakeReaderTextProvider';
+import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
 
 import { useTtsSession } from './useTtsSession';
 
