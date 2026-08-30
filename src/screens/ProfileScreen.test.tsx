@@ -12,6 +12,8 @@ import { fireEvent, render, screen } from '@testing-library/react-native';
 
 import type { Institution } from '@model/institution';
 import { useInstitutionStore } from '@store/institutionStore';
+import { usePendingIntentStore } from '@store/pendingIntentStore';
+import { useSessionStore } from '@store/sessionStore';
 
 import ProfileScreen from './ProfileScreen';
 
@@ -57,7 +59,33 @@ beforeEach(() => {
 afterEach(() => {
   mockNavigate.mockClear();
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
+  usePendingIntentStore.setState({ pending: null });
+  useSessionStore.getState().clearSession();
 });
+
+// A personal (OIDC) session: no institutionId, so sessionStore reads it as an
+// individual subscriber.
+function signInPersonally() {
+  useSessionStore.getState().setSession({
+    accessToken: 'stub-personal:reader@tf.com',
+    expiresIn: 3600,
+    userId: 'reader@tf.com',
+    roles: [],
+    collections: [],
+  });
+}
+
+// An institutional (SAML) session, which does carry one.
+function signInInstitutionally(institution: Institution) {
+  useSessionStore.getState().setSession({
+    accessToken: `stub:${institution.id}`,
+    expiresIn: 3600,
+    userId: `stub:${institution.id}`,
+    institutionId: institution.id,
+    roles: [],
+    collections: [],
+  });
+}
 
 describe('ProfileScreen account header', () => {
   // The avatar is a generic glyph in the mockup, not a photograph, so it needs
@@ -89,6 +117,81 @@ describe('ProfileScreen account header', () => {
     selectInstitution(OXFORD);
     await render(<ProfileScreen />);
     expect(screen.getByText('Not signed in')).toBeTruthy();
+  });
+});
+
+describe('ProfileScreen signed-out entry points', () => {
+  it('offers both signing in and creating an account', async () => {
+    await render(<ProfileScreen />);
+
+    expect(screen.getByTestId('profile-sign-in')).toBeTruthy();
+    expect(screen.getByTestId('profile-sign-up')).toBeTruthy();
+  });
+
+  it('sends Sign in to the method chooser', async () => {
+    await render(<ProfileScreen />);
+
+    fireEvent.press(screen.getByTestId('profile-sign-in'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('SignInMethod');
+  });
+
+  // Straight past the chooser: an institution already owns its readers'
+  // accounts, so there is nothing to create on the SAML side.
+  it('sends Create an account straight to the sign-up form', async () => {
+    await render(<ProfileScreen />);
+
+    fireEvent.press(screen.getByTestId('profile-sign-up'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('PersonalAccount', { mode: 'signUp' });
+  });
+
+  // A leftover intent would make PersonalAccountScreen reach for ItemDetail,
+  // which the Profile stack does not have. Signing in from here is not resuming.
+  it.each(['profile-sign-in', 'profile-sign-up'])(
+    'clears a stale pending intent before navigating from %s',
+    async (testID) => {
+      usePendingIntentStore.getState().remember({
+        action: 'read',
+        itemId: 'item_42',
+        institutionId: 'inst_7f3',
+      });
+      await render(<ProfileScreen />);
+
+      fireEvent.press(screen.getByTestId(testID));
+
+      expect(usePendingIntentStore.getState().pending).toBeNull();
+    },
+  );
+
+  it('withdraws both once a session exists', async () => {
+    signInPersonally();
+    await render(<ProfileScreen />);
+
+    expect(screen.queryByTestId('profile-sign-in')).toBeNull();
+    expect(screen.queryByTestId('profile-sign-up')).toBeNull();
+  });
+});
+
+describe('ProfileScreen account header, signed in', () => {
+  // Still no name or email in AuthMeResponse, so the line shows the identifier
+  // the session actually carries rather than an invented display name.
+  it('shows the identifier and names the account type for a personal session', async () => {
+    selectInstitution(null);
+    signInPersonally();
+    await render(<ProfileScreen />);
+
+    expect(screen.getByText('reader@tf.com')).toBeTruthy();
+    expect(screen.getByText('Personal account')).toBeTruthy();
+  });
+
+  it('shows the institution for an institutional session', async () => {
+    selectInstitution(OXFORD);
+    signInInstitutionally(OXFORD);
+    await render(<ProfileScreen />);
+
+    expect(screen.getByText('Institutional access')).toBeTruthy();
+    expect(screen.queryByText('Not signed in')).toBeNull();
   });
 });
 

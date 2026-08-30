@@ -190,38 +190,67 @@ describe('AccessGateScreen institution option', () => {
   });
 });
 
+// This card was drawn disabled and inert while B2C had no destination. The
+// personal-account form is that destination, so the four tests that pinned the
+// inert behaviour now pin the wired behaviour instead.
 describe('AccessGateScreen personal account option', () => {
   it('renders the personal account card', async () => {
     await render(<AccessGateScreen {...makeProps()} />);
 
     expect(screen.getByText('Personal account')).toBeTruthy();
-    expect(screen.getByText('Sign in with email')).toBeTruthy();
+    expect(screen.getByText('Sign in with email and password')).toBeTruthy();
   });
 
-  // Shown, not hidden — index.html: "screen 03's second option is reopened
-  // rather than settled." No destination exists to navigate to, so this is
-  // `text`, not `button` — same convention as `UnavailableTag` elsewhere in
-  // this codebase for "shown but not backed by data" gaps.
-  it('uses a text accessibility role, not button', async () => {
+  it('is a button now that it has somewhere to go', async () => {
     await render(<AccessGateScreen {...makeProps()} />);
 
-    expect(screen.getByLabelText('Personal account').props.accessibilityRole).toBe('text');
+    expect(screen.getByLabelText('Personal account').props.accessibilityRole).toBe('button');
   });
 
-  it('does not navigate when pressed', async () => {
+  it('dismisses the sheet, then opens the sign-in form', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    fireEvent.press(screen.getByLabelText('Personal account'));
+
+    // Dismiss first, or this sheet stays mounted underneath the form.
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('PersonalAccount', { mode: 'signIn' });
+  });
+
+  // Without this the reader signs in and lands back on the catalogue rather than
+  // on the item that raised the gate.
+  it('records a read intent for the item that raised the gate', async () => {
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    fireEvent.press(screen.getByLabelText('Personal account'));
+
+    expect(usePendingIntentStore.getState().pending).toMatchObject({
+      action: 'read',
+      itemId: 'item_42',
+    });
+  });
+
+  // The intent's institution is the CONTEXT THE ITEM WAS FOUND IN, not a claim
+  // about how the reader signs in — pendingIntentStore: "the same title resolves
+  // differently per institution, so resuming in the wrong one would replay the
+  // intent against different access rules." So it records the selection even on
+  // the personal path, exactly as the institution path does.
+  it('records the browsing institution, not null, on the personal path', async () => {
+    useInstitutionStore.setState({ selectedInstitution: IMPERIAL });
+    await render(<AccessGateScreen {...makeProps()} />);
+
+    fireEvent.press(screen.getByLabelText('Personal account'));
+
+    expect(usePendingIntentStore.getState().pending?.institutionId).toBe('inst_7f3');
+  });
+
+  it('is disabled while offline', async () => {
+    mockUseNetworkStatus.mockReturnValue(false);
     await render(<AccessGateScreen {...makeProps()} />);
 
     fireEvent.press(screen.getByLabelText('Personal account'));
 
     expect(mockNavigate).not.toHaveBeenCalled();
-  });
-
-  it('does not create a pending intent when pressed', async () => {
-    await render(<AccessGateScreen {...makeProps()} />);
-
-    fireEvent.press(screen.getByLabelText('Personal account'));
-
-    expect(usePendingIntentStore.getState().pending).toBeNull();
   });
 
   it('renders a trailing chevron', async () => {

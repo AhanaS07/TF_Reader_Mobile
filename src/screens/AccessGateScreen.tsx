@@ -1,16 +1,17 @@
 // Screen 03 — access gate. Raised when resolveAccess returns requires_signin.
 // transparentModal, not BottomSheet — same z-index reason as SignInScreen.
-// "Through my institution" is wired; "Personal account" is shown but disabled (B2C destination unsettled).
-// No auth here — navigation and intent only; SignInScreen handles SAML.
+// Both options are now wired: institution goes to SAML, personal account goes to
+// the email-and-password form. No auth here — navigation and intent only.
 import { useCallback, useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Ionicons from '@expo/vector-icons/Ionicons';
 
+import { AuthMethodCard } from '@components/AuthMethodCard';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
+import type { PersonalAccountMode } from '@navigation/types';
 
 // A minimal, hand-typed shape rather than either stack's generated props —
 // same reason ItemDetailScreen's own route type is hand-typed: this screen is
@@ -23,12 +24,13 @@ import { color, radius, space, type as typeScale } from '@theme/tokens';
 interface Props {
   route: { params: { itemId: string; title: string; authors: string } };
   navigation: {
-    navigate: (screen: 'SignIn' | 'InstitutionList') => void;
+    navigate: (
+      screen: 'SignIn' | 'InstitutionList' | 'PersonalAccount',
+      params?: { mode: PersonalAccountMode },
+    ) => void;
     goBack: () => void;
   };
 }
-
-const ICON_SIZE = 28;
 
 export default function AccessGateScreen({ route, navigation }: Props) {
   const { itemId, title, authors } = route.params;
@@ -65,12 +67,17 @@ export default function AccessGateScreen({ route, navigation }: Props) {
   // documented judgement call for exactly this case: "the intent is the
   // app's judgement about what to resume... rather than a button they
   // pressed."
-  const handleInstitution = useCallback(() => {
+  // Both options record the same intent, so it is recorded in one place.
+  const rememberReadIntent = useCallback(() => {
     remember({
       action: 'read',
       itemId,
       institutionId: selectedInstitution?.id ?? null,
     });
+  }, [remember, itemId, selectedInstitution]);
+
+  const handleInstitution = useCallback(() => {
+    rememberReadIntent();
 
     // In-stack navigation — pushes onto whichever stack this screen is
     // currently mounted in (Catalogue or Search), so a flow that started in
@@ -86,7 +93,16 @@ export default function AccessGateScreen({ route, navigation }: Props) {
       awaitingInstitution.current = true;
       navigation.navigate('InstitutionList');
     }
-  }, [remember, itemId, selectedInstitution, navigation]);
+  }, [rememberReadIntent, selectedInstitution, navigation]);
+
+  // No institution needed on this path — a personal subscriber belongs to none,
+  // so it goes straight to the form. Dismiss first for the same reason the
+  // institution path does: otherwise this sheet stays mounted underneath.
+  const handlePersonal = useCallback(() => {
+    rememberReadIntent();
+    navigation.goBack();
+    navigation.navigate('PersonalAccount', { mode: 'signIn' });
+  }, [rememberReadIntent, navigation]);
 
   return (
     <View style={styles.overlay}>
@@ -123,49 +139,26 @@ export default function AccessGateScreen({ route, navigation }: Props) {
             message="You're offline. Institutional sign-in needs a connection."
           />
 
-          <Pressable
-            style={[styles.card, !isOnline && styles.cardDisabled]}
-            onPress={isOnline ? handleInstitution : undefined}
+          <AuthMethodCard
+            testID="access-gate-institution"
+            icon="business-outline"
+            title="Through my institution"
+            subtitle="Sign in via SAML/SSO"
+            onPress={handleInstitution}
             disabled={!isOnline}
-            accessibilityRole="button"
-            accessibilityLabel="Through my institution"
-            accessibilityState={{ disabled: !isOnline }}
-          >
-            <Ionicons name="business-outline" size={ICON_SIZE} color={color.primary} />
-            <View style={styles.cardText}>
-              <Text style={styles.cardTitle}>Through my institution</Text>
-              <Text style={styles.cardSubtitle}>Sign in via SAML/SSO</Text>
-            </View>
-            <Ionicons
-              testID="access-gate-institution-chevron"
-              name="chevron-forward"
-              size={20}
-              color={color.textSecondary}
-            />
-          </Pressable>
+          />
 
-          {/* Shown, not hidden — same rule as every other unsettled mockup
-              element in this codebase. No onPress, no navigation, no pending
-              intent: there is nowhere for a tap here to go until B2C's
-              destination is settled (index.html: "screen 03's second option
-              is reopened rather than settled"). */}
-          <View
-            style={[styles.card, styles.cardDisabled]}
-            accessibilityRole="text"
-            accessibilityLabel="Personal account"
-          >
-            <Ionicons name="person-outline" size={ICON_SIZE} color={color.textSecondary} />
-            <View style={styles.cardText}>
-              <Text style={styles.cardTitle}>Personal account</Text>
-              <Text style={styles.cardSubtitle}>Sign in with email</Text>
-            </View>
-            <Ionicons
-              testID="access-gate-personal-account-chevron"
-              name="chevron-forward"
-              size={20}
-              color={color.textSecondary}
-            />
-          </View>
+          {/* Live as of the personal-account form landing. It was drawn disabled
+              while B2C had no destination; the destination now exists, so the
+              card behaves like the one above it. */}
+          <AuthMethodCard
+            testID="access-gate-personal-account"
+            icon="person-outline"
+            title="Personal account"
+            subtitle="Sign in with email and password"
+            onPress={handlePersonal}
+            disabled={!isOnline}
+          />
 
           <Pressable
             style={styles.laterButton}
@@ -235,36 +228,6 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
   },
   itemAuthors: {
-    fontWeight: typeScale.meta.weight,
-    fontFamily: typeScale.meta.fontFamily,
-    fontSize: typeScale.meta.size,
-    lineHeight: typeScale.meta.lineHeight,
-    color: color.textSecondary,
-  },
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    padding: space.md,
-    borderWidth: 1,
-    borderColor: color.border,
-    borderRadius: radius.card,
-  },
-  cardDisabled: {
-    opacity: 0.4,
-  },
-  cardText: {
-    flex: 1,
-    gap: space.xs / 2,
-  },
-  cardTitle: {
-    fontWeight: typeScale.body.weight,
-    fontFamily: typeScale.body.fontFamily,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textPrimary,
-  },
-  cardSubtitle: {
     fontWeight: typeScale.meta.weight,
     fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,

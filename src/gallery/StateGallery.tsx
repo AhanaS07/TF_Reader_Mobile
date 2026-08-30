@@ -6,6 +6,7 @@ import ResolveAccessGallery from '@/access/resolveAccess.gallery';
 import AccessTierBadgeGallery from '@/components/AccessTierBadge/AccessTierBadge.gallery';
 import ActionBarGallery from '@/components/ActionBar/ActionBar.gallery';
 import ActionButtonGallery from '@/components/ActionButton/ActionButton.gallery';
+import AuthMethodCardGallery from '@/components/AuthMethodCard/AuthMethodCard.gallery';
 import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import CategoryCardGallery from '@/components/CategoryCard/CategoryCard.gallery';
@@ -18,12 +19,14 @@ import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/Ins
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
 import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.gallery';
+import PrimaryButtonGallery from '@/components/PrimaryButton/PrimaryButton.gallery';
 import QueueNotificationGallery from '@/components/QueueNotification/QueueNotification.gallery';
 import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
 import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
 import SubjectChipGallery from '@/components/SubjectChip/SubjectChip.gallery';
 import TabsGallery from '@/components/Tabs/Tabs.gallery';
+import TextFieldGallery from '@/components/TextField/TextField.gallery';
 import TopAppBarGallery from '@/components/TopAppBar/TopAppBar.gallery';
 import VoiceOverlayGallery from '@/components/VoiceOverlay/VoiceOverlay.gallery';
 import { color, radius, space, type } from '@theme/tokens';
@@ -55,6 +58,11 @@ const SECTIONS = [
   'SubjectChip',
   'Tabs',
   'QueueNotification',
+  // The sign-in flow's three: a form field, a non-access button, and the method
+  // card the access gate and Profile both draw.
+  'TextField',
+  'PrimaryButton',
+  'AuthMethodCard',
 ] as const;
 
 type Section = (typeof SECTIONS)[number];
@@ -111,6 +119,9 @@ export default function StateGallery() {
       {section === 'SubjectChip' && <SubjectChipGallery />}
       {section === 'Tabs' && <TabsGallery />}
       {section === 'QueueNotification' && <QueueNotificationGallery />}
+      {section === 'TextField' && <TextFieldGallery />}
+      {section === 'PrimaryButton' && <PrimaryButtonGallery />}
+      {section === 'AuthMethodCard' && <AuthMethodCardGallery />}
     </View>
   );
 }
