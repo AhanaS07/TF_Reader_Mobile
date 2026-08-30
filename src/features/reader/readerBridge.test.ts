@@ -423,6 +423,23 @@ describe('buildCommandScript', () => {
         type: 'paintHighlights',
         highlights: [{ id: 'hl-2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' }],
       }),
+      // Same rule, same trap, one step further along: a `SearchHit.locator` is the frozen `Locator`
+      // union tagged with those literals, so forwarding one — or "tidying" the payload's two
+      // nullable sides back into a single tagged object — puts a frozen enum on the wire.
+      // `toReaderSearchMatch` partitions it host-side; this is that partition, asserted.
+      //
+      // The term is neutral DELIBERATELY. `matchText` is whatever the reader typed, so a search for
+      // the literal word "PDF" legitimately puts that string on the wire — this assertion is about
+      // the payload's SHAPE, not about arbitrary user text, and a term chosen to collide with it
+      // would be testing the wrong thing.
+      buildCommandScript({
+        type: 'paintSearchMatch',
+        match: { epub: { startCfi: 'epubcfi(/6/4!/4/2/1:0)', matchText: 'compass' }, pdf: null },
+      }),
+      buildCommandScript({
+        type: 'paintSearchMatch',
+        match: { epub: null, pdf: { page: 4, startOffset: 10, matchText: 'compass' } },
+      }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
         expect(script).not.toContain(`'${format}'`);
@@ -500,6 +517,7 @@ describe('what the compiler cannot check about the WebView half', () => {
       selection: { selection: null },
       highlightPressed: { id: 'hl-1' },
       highlightTouchActive: { active: false },
+      searchMatchPainted: { painted: true },
     };
 
     for (const type of READER_MESSAGE_TYPES) {

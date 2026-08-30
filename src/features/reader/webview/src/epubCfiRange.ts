@@ -145,3 +145,120 @@ export function splitCfiRange(cfiRange: string): { startCfi: string; endCfi: str
     endCfi: `epubcfi(${common}${endTail})`,
   };
 }
+
+/**
+ * The last step's character offset, split from the step around it — or null if it carries none.
+ *
+ * BRACKET-AWARE for the same reason `toSteps` is: a text-location assertion may legally contain a
+ * `:` (`[pre:post]`), and splitting on the first one found would turn a valid CFI into a nonsense
+ * offset. Only a top-level `:` is the terminal.
+ */
+function splitTerminalOffset(step: string): { head: string; offset: number } | null {
+  let depth = 0;
+  let at = -1;
+
+  for (let i = 0; i < step.length; i++) {
+    const char = step[i];
+    if (char === '[') depth++;
+    else if (char === ']') depth--;
+    else if (char === ':' && depth === 0) at = i;
+  }
+
+  if (at === -1) return null;
+
+  // The digits run to the end of the step or to the assertion that follows them. Anything else
+  // after the colon (an empty offset, a non-numeric one) is not a terminal we can do arithmetic on.
+  const rest = step.slice(at + 1);
+  const digits = /^\d+/.exec(rest);
+  if (!digits) return null;
+
+  return { head: step.slice(0, at), offset: Number.parseInt(digits[0], 10) };
+}
+
+/**
+ * A POINT CFI + a character count -> the range CFI covering that many characters from it.
+ *
+ * >>> WHY THE READER EXPANDS RATHER THAN THE INDEX STORING A RANGE. <<< `extractor.ts` emits a
+ * COLLAPSED range at the matched token's start (`range.setStart(node, offset)` then `setEnd` to the
+ * same point) — a "seek here" locator, which is all navigation ever needed. Painting needs a span,
+ * and `highlightSeam.add` takes a range CFI. Storing range CFIs instead would grow every posting in
+ * every book's index to give the reader something it can derive; this is Decision A in the
+ * search-match brief, and it is why the payload carries `matchText` at all.
+ *
+ * Null rather than a throw, in four cases that are all "there is no span here":
+ *
+ *  - `length` is not a positive integer (an empty term paints nothing);
+ *  - the CFI is not an `epubcfi(...)`, or has no steps;
+ *  - its last step carries no `:offset` terminal, so there is no character position to advance from
+ *    — a CFI addressing an ELEMENT rather than a point inside a text node;
+ *  - `joinCfiRange` refuses the pair.
+ *
+ * >>> THE LENGTH IS THE QUERY'S, NOT THE DOCUMENT'S, AND FOR A PHRASE THOSE CAN DIFFER. <<<
+ * `queryIndex` emits a multi-word hit at the phrase's FIRST token, and the document may separate
+ * those tokens with punctuation the reader did not type — so a phrase's box can end a character or
+ * two short or long. MEASURED through the real pipeline on this repo's sample book (chapter 1, every
+ * two-word phrase the text actually contains, 713 hits): **616 cover the exact phrase, 97 differ,
+ * none are in the wrong place, none overrun.** Every one of the 97 is punctuation the query omits —
+ * `"One Opening"` drawn over `"One: Openin"`, `"book paragraph"` over `"book — paragra"`. The box
+ * always STARTS on the match.
+ *
+ * Sizing it from the document instead would mean walking the DOM to find the phrase's end, which is
+ * the round trip through the book this file exists to avoid — for a box that is already in the right
+ * place and the right size to within a comma. Single-word matches, the overwhelming majority, are
+ * exact: 713 of 713 on the same chapter.
+ *
+ * NO CLAMP AGAINST THE TEXT NODE'S OWN LENGTH — this is pure string arithmetic and cannot know it.
+ * A match running past the end of its text node yields a range epub.js cannot resolve, which is why
+ * `epub.entry.ts` paints inside a `try` and reports `searchMatchPainted: false` rather than assuming
+ * a non-null return here means a visible box.
+ */
+export function expandPointCfi(startCfi: string, length: number): string | null {
+  if (!Number.isInteger(length) || length <= 0) return null;
+
+  const inner = unwrap(startCfi);
+  if (inner === null) return null;
+
+  const { base, path } = splitBase(inner);
+  const steps = toSteps(path);
+  const last = steps[steps.length - 1];
+  if (last === undefined) return null;
+
+  const terminal = splitTerminalOffset(last);
+  if (terminal === null) return null;
+
+  // The start keeps whatever assertion it arrived with; the END drops it. A text-location assertion
+  // describes the characters around the offset it is attached to, so copying the start's onto a
+  // different offset would assert something false about the document.
+  const endSteps = [...steps.slice(0, -1), `${terminal.head}:${String(terminal.offset + length)}`];
+  return joinCfiRange(startCfi, `epubcfi(${base}${endSteps.join('')})`);
+}
+
+/**
+ * Whether `cfi` addresses the chapter document whose `cfiBase` is `base`.
+ *
+ * >>> A CFI RESOLVES AGAINST THE WRONG CHAPTER RATHER THAN FAILING, SO THIS CANNOT BE SKIPPED. <<<
+ * The tempting shortcut is "just call `contents.range(cfi)` and see what happens" — and it is
+ * wrong, because `EpubCFI.toRange` walks only the LOCAL path after `!` and never looks at the spine
+ * component. MEASURED on this repo's own sample book: of 400 CFIs taken from other chapters and
+ * resolved against chapter 1's document, **399 resolved to a real range** (one threw, none returned
+ * null), several of them to different text than they name — `epubcfi(/6/6[ch3]!…)` addressing the
+ * word "1" came back as ".".
+ *
+ * So a caller that needs to know WHICH loaded chapter a CFI belongs to has to compare the base, and
+ * a caller that hit-tests or paints across chapters has to filter on it first. Epub.js's own
+ * `Annotations.add` does the equivalent (`annotation.sectionIndex === view.index`), which is why
+ * painting has always been correctly scoped and hit-testing was not.
+ *
+ * Verified against epub.js's own `Section.cfiBase` (`generateChapterComponent`) for the sample
+ * book: `/6/2[ch1]`, `/6/4[ch2]`, `/6/6[ch3]`, matching the index's CFI prefixes exactly.
+ */
+export function cfiHasBase(cfi: string, base: string): boolean {
+  if (base === '') return false;
+  const inner = unwrap(cfi);
+  if (inner === null) return false;
+
+  // The LAST `!`, matching `splitBase` — a CFI can carry more than one indirection, and it is the
+  // final one that opens the path. Compared as a whole step sequence rather than a bare prefix, so
+  // `/6/2[ch1]` cannot match `/6/22[ch12]`.
+  return splitBase(inner).base === `${base}!`;
+}

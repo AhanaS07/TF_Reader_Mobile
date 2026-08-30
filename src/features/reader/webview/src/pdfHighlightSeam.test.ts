@@ -22,6 +22,7 @@ import {
   ensureSurface,
   highlightAtClientPoint,
   paintPage,
+  paintSearchPage,
   selectionInSurface,
   setPageText,
   type PdfPageSurface,
@@ -138,6 +139,31 @@ describe('the layers a page needs', () => {
     ensureSurface(1, surface.root);
     expect(surface.root.querySelectorAll('.pdf-text-layer')).toHaveLength(1);
     expect(surface.root.querySelectorAll('.pdf-highlight-layer')).toHaveLength(1);
+  });
+
+  it('hands back a NEW surface object over the SAME elements, which is what makes a stale render dangerous', () => {
+    // >>> THE PROPERTY THE RENDER TOKEN IN `pdf.entry.ts` EXISTS TO CONTAIN. <<< Two overlapping
+    // `renderPageSurface` passes for one page — rapid zoom, where nothing serialises them — get two
+    // surface OBJECTS that share one set of DOM layers. So the older pass finishing last is not
+    // merely redundant: `paintPage` is a whole-layer `replaceChildren`, so painting through the
+    // stale object ERASES what the live one drew, and the live object's own `boxes` array still
+    // claims the boxes are there. Correct pixels, no hit-testing.
+    //
+    // Asserted here rather than in the entry because this seam is where the sharing is decided; the
+    // guard is `surfaceRenderTokens`, which is the half that cannot be reached from a unit test.
+    const live = makeSurface(1, LINES);
+    paintPage(live, [highlight(0, 5)]);
+    expect(boxesOf(live)).toHaveLength(1);
+
+    const stale = ensureSurface(1, live.root);
+    expect(stale).not.toBe(live);
+    expect(stale.highlightLayer).toBe(live.highlightLayer);
+
+    // A stale pass painting nothing (its `divs` are empty, as a fresh surface's always are) still
+    // clears the layer the live pass owns.
+    paintPage(stale, [highlight(0, 5)]);
+    expect(boxesOf(live)).toHaveLength(0);
+    expect(live.boxes).toHaveLength(1);
   });
 
   it('paints the highlight layer OVER the text layer', () => {
@@ -381,5 +407,150 @@ describe('turning a selection into the span to store', () => {
 
     expect(selectionInSurface(left, selection as Selection)).toBeNull();
     expect(selectionInSurface(right, selection as Selection)).toBeNull();
+  });
+});
+
+// --- the search-match layer ----------------------------------------------------------------------
+//
+// Same harness, third layer. What is under test here is what jsdom CAN see and a device screenshot
+// cannot argue with: which layer a box lands in, which page of a spread paints, and whether the
+// fallback fires instead of a confidently-wrong box.
+
+const STROKE = '#0a84ff';
+
+function searchBoxesOf(surface: PdfPageSurface): { left: number; top: number; width: number }[] {
+  return [...surface.searchLayer.children].map((el) => {
+    const style = (el as HTMLElement).style;
+    return {
+      left: Number.parseFloat(style.left),
+      top: Number.parseFloat(style.top),
+      width: Number.parseFloat(style.width),
+    };
+  });
+}
+
+/** `{page, startOffset, matchText}` — the payload `toReaderSearchMatch` builds. `startOffset` is in
+ * the SEARCH INDEX's space (a separator after every run), which is the whole reason the seam
+ * converts before it paints. */
+function match(page: number, startOffset: number, matchText: string) {
+  return { page, startOffset, matchText };
+}
+
+describe('painting the search match', () => {
+  it('boxes the matched word, and puts it in the SEARCH layer, not the highlight layer', () => {
+    const surface = makeSurface(1, LINES);
+    // 'brave' is at index-space offset 12: 'Hello there' (11) + one separator.
+    expect(paintSearchPage(surface, match(1, 12, 'brave'), STROKE)).toBe('painted');
+
+    expect(searchBoxesOf(surface)).toEqual([{ left: 0, top: LINE_PX, width: 5 * CHAR_PX }]);
+    // The user layer is untouched — the two compose (HIGHLIGHT_LAYERS.md §3) rather than sharing a
+    // layer where one repaint would wipe the other.
+    expect(surface.highlightLayer.children).toHaveLength(0);
+  });
+
+  it('converts the index-space offset rather than trusting it — the off-by-N guard, on a real DOM', () => {
+    const surface = makeSurface(1, LINES);
+    // 'world' is at page offset 20 and index offset 22 (two separators passed). Painting at the raw
+    // offset would box 'd again' on the wrong side of the word.
+    paintSearchPage(surface, match(1, 22, 'world'), STROKE);
+    expect(searchBoxesOf(surface)).toEqual([{ left: 0, top: 2 * LINE_PX, width: 5 * CHAR_PX }]);
+  });
+
+  it('composes over a user highlight instead of replacing it', () => {
+    // The case HIGHLIGHT_LAYERS.md §3 makes an acceptance criterion: a search hit inside a saved
+    // highlight, both still legible.
+    const surface = makeSurface(1, LINES);
+    paintPage(surface, [highlight(11, 20)], '#ffffff');
+    paintSearchPage(surface, match(1, 12, 'brave'), STROKE);
+
+    expect(surface.highlightLayer.children).toHaveLength(1);
+    expect(surface.searchLayer.children).toHaveLength(1);
+    // DOM order is the z-order, and search has to be the later sibling.
+    const layers = [...surface.root.children].map((el) => el.className);
+    expect(layers.indexOf('pdf-search-layer')).toBeGreaterThan(layers.indexOf('pdf-highlight-layer'));
+  });
+
+  it('routes to the right page of a spread, and clears the other one', () => {
+    // Spread-awareness, exercised as two surfaces rather than as a mode. This is the same filter
+    // `paintPage` uses, which is why a double spread, single page and continuous scroll are one
+    // code path with a different number of surfaces.
+    const left = makeSurface(4, LINES);
+    const right = makeSurface(5, LINES);
+
+    expect(paintSearchPage(left, match(5, 0, 'Hello'), STROKE)).toBe('cleared');
+    expect(paintSearchPage(right, match(5, 0, 'Hello'), STROKE)).toBe('painted');
+
+    expect(left.searchLayer.children).toHaveLength(0);
+    expect(right.searchLayer.children).toHaveLength(1);
+  });
+
+  it('re-measures against the new geometry after a zoom', () => {
+    // The defect this whole file was written for, now for the third layer: a box painted once and
+    // never re-measured looks perfect in every screenshot taken before the reader zooms.
+    const surface = makeSurface(1, LINES);
+    paintSearchPage(surface, match(1, 12, 'brave'), STROKE);
+    expect(searchBoxesOf(surface)[0].width).toBe(5 * CHAR_PX);
+
+    scale = 2;
+    paintSearchPage(surface, match(1, 12, 'brave'), STROKE);
+    expect(searchBoxesOf(surface)).toEqual([
+      { left: 0, top: LINE_PX * 2, width: 5 * CHAR_PX * 2 },
+    ]);
+  });
+
+  it('replaces the previous match rather than accumulating them — one match at a time', () => {
+    const surface = makeSurface(1, LINES);
+    paintSearchPage(surface, match(1, 0, 'Hello'), STROKE);
+    paintSearchPage(surface, match(1, 12, 'brave'), STROKE);
+    expect(searchBoxesOf(surface)).toEqual([{ left: 0, top: LINE_PX, width: 5 * CHAR_PX }]);
+  });
+
+  it('clears on a null match, which is how the panel closing un-paints', () => {
+    const surface = makeSurface(1, LINES);
+    paintSearchPage(surface, match(1, 0, 'Hello'), STROKE);
+    expect(paintSearchPage(surface, null, STROKE)).toBe('cleared');
+    expect(surface.searchLayer.children).toHaveLength(0);
+  });
+
+  it('cues the whole page when the term cannot be located on it', () => {
+    // The v1 fallback under the v2 box. A phrase split across two runs is the known case: this
+    // space has no separators, so 'there brave' reads as 'therebrave' and is not findable. Saying
+    // "it is on this page" beats saying nothing, and beats a box in an invented place.
+    const surface = makeSurface(1, LINES);
+    expect(paintSearchPage(surface, match(1, 6, 'there brave'), STROKE)).toBe('cued');
+
+    const cue = surface.searchLayer.children[0] as HTMLElement;
+    expect(cue.className).toBe('tf-hl-search--page');
+    expect(cue.style.borderColor).toBeTruthy();
+    // Sized by the stylesheet, not by measurement — nothing inline that would pin it to a stale
+    // layout the way a box is pinned.
+    expect(cue.style.left).toBe('');
+  });
+
+  it('reports PENDING rather than failure for a page whose text has not been laid out', () => {
+    // A page mid-render is not a miss. `pdf.entry.ts` repaints right after `setPageText`, so
+    // reporting a failure here would flash a notice for a match that paints correctly a frame later.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const surface = ensureSurface(1, root);
+    expect(paintSearchPage(surface, match(1, 0, 'Hello'), STROKE)).toBe('pending');
+  });
+
+  it('drops the outline when the text layer is cleared for a re-render', () => {
+    // Same reasoning `clearTextLayer` gives for the highlight boxes: between "start re-rendering"
+    // and "the new text arrives" a standing box describes a layout that no longer exists.
+    const surface = makeSurface(1, LINES);
+    paintSearchPage(surface, match(1, 0, 'Hello'), STROKE);
+    clearTextLayer(surface);
+    expect(surface.searchLayer.children).toHaveLength(0);
+    expect(surface.texts).toEqual([]);
+  });
+
+  it('reuses the same three layers when a page is re-rendered', () => {
+    // `ensureSurface` is idempotent; a fourth and fifth layer would leave the previous outline
+    // standing underneath the new one.
+    const surface = makeSurface(1, LINES);
+    ensureSurface(1, surface.root);
+    expect(surface.root.querySelectorAll('.pdf-search-layer')).toHaveLength(1);
   });
 });

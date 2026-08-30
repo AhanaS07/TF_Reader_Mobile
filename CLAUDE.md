@@ -21,7 +21,8 @@ tests that used to read the templates as text are gone, and deleting them was th
 | `webview/src/readerMetrics.ts`                          | typography arithmetic + the stylesheet — **pure, unit-tested**      |
 | `webview/src/epubOutline.ts`, `pdfOutline.ts`            | navigation/outline → `toc`, page + scale maths — **pure, unit-tested** |
 | `webview/src/highlightSeam.ts`, `pdfHighlightSeam.ts`   | the ONLY callers of `rendition.annotations` / the PDF text+box layers |
-| `webview/src/highlightNaming.ts`, `highlightPaint.ts`, `epubCfiRange.ts`, `pdfTextRange.ts`, `touchGesture.ts`, `selectionTheme.ts` | owner naming, paint diffing, CFI range join/split, PDF offset maths, swipe/long-press thresholds, `::selection` colour — **pure, unit-tested** |
+| `webview/src/epubViewGeometry.ts`                       | the ONLY caller of epub.js's `View.expand()` — makes a re-styled chapter re-measure |
+| `webview/src/highlightNaming.ts`, `highlightPaint.ts`, `epubCfiRange.ts`, `epubLayoutSignature.ts`, `pdfTextRange.ts`, `touchGesture.ts`, `selectionTheme.ts` | owner naming, paint diffing, CFI range join/split, which appearance changes move a glyph, PDF offset maths, swipe/long-press thresholds, `::selection` colour — **pure, unit-tested** |
 | `webview/reader-{epub,pdf}.template.html`               | **HTML and CSS only** — the DOM each entry queries                  |
 
 `buildReaderHtml.ts` compiles each entry with **esbuild** (one IIFE per format) and inlines it beside
@@ -108,6 +109,17 @@ device and neither ducks, and `useTtsSession`'s `autoContinueChapter` turns page
 `announce()` (`a11yAnnounce.ts`) is the shared transport and is deliberately opinion-free; the rules
 and wording are `readerAnnouncements.ts`, which is pure. Search results are **declined**, not
 overlooked — `SearchMatchBar.tsx:50-64` carries the argument.
+
+**A painted highlight's RECTS live for one layout, and epub.js will not re-measure them for you.**
+marks-pane re-measures only inside `View.reframe()`, which a stylesheet change never reaches — the
+chapter body is pinned to a fixed size in paginated flow, so more text means more columns and no
+observed box changes; and even when it does fire, the reframe is gated on the strip's *rounded* width
+moving. So `epub.entry.ts` asks for the re-measure itself (`scheduleGeometryRefresh` →
+`forceReflow` + `repaintLiveAnnotations`), and `epubLayoutSignature.ts` decides when. That module is
+exhaustive over `ReaderAppearance` by a compile-time canary: **adding a typography field there fails
+to compile until it is classified as geometry or paint-only.** Classifying a new field as paint-only
+when the shell renders with it is how the drift comes back, and no test can see it —
+`HIGHLIGHT_LAYERS.md` §3a is the full account.
 
 ## Generated and tracked artifacts
 

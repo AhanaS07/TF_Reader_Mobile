@@ -198,6 +198,55 @@
       }
 
       /*
+        THE SEARCH-MATCH LAYER — HIGHLIGHT_LAYERS.md §3's third channel, and the third layer over a
+        page: text (transparent, selectable), then the user's fill, then this.
+
+        ITS ORDER IN THE DOM IS THE Z-ORDER (§4: `tts > search > user`), which is why
+        `ensureSurface` appends it AFTER `.pdf-highlight-layer` rather than styling one layer twice.
+        A user fill painted over this outline is exactly the "losing search context" regression §3
+        names.
+
+        AN OUTLINE, WITH NO BACKGROUND AND NO `mix-blend-mode` — both are the point rather than
+        omissions. The user layer is the solid channel and multiplies so its fill darkens the glyphs
+        beneath; a search match has to remain findable OVER that fill without hiding it, so it draws
+        only a border and leaves every pixel inside it alone. `border-color` is set inline by
+        `paintSearchPage` because it is theme-derived (`matchStroke`); everything about the box's
+        SHAPE lives here, where a `.ts` file cannot carry it.
+
+        `pointer-events: none` for the same load-bearing reason the layer below has it: a box that
+        takes touches swallows the drag that starts inside it.
+
+        NO TRANSITION AND NO ANIMATION. A flashing cue was the obvious first idea and is the wrong
+        one twice over: readerTemplate.test.ts asserts both shells declare no animation at all, and
+        motion under the reader's eyes is the thing `reduceMotion` exists to suppress.
+      */
+      .pdf-search-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-search-layer > div {
+        position: absolute;
+        background: transparent;
+        border: 2px solid;
+        border-radius: 2px;
+      }
+      /*
+        The whole-page fallback cue, when the match is known to be on this page but its offset could
+        not be resolved to a box (a phrase split across two text runs is the known case). Inset by a
+        hair so the border is not clipped by the layer's own `overflow: hidden`.
+      */
+      .pdf-search-layer > div.tf-hl-search--page {
+        left: 1px;
+        top: 1px;
+        right: 1px;
+        bottom: 1px;
+        border-width: 3px;
+        border-radius: 6px;
+      }
+
+      /*
         CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
         display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
         surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of
@@ -452,6 +501,13 @@ ${text}`;
     }
     return { fill: color, blend: "multiply" };
   }
+  function matchStroke(bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return "#0a84ff";
+    if (luminance(page) < 0.35) return "#64d2ff";
+    if (page.r > page.b && page.g > page.b && luminance(page) > 0.6) return "#0a5fd0";
+    return "#0a84ff";
+  }
 
   // src/features/reader/webview/src/touchGesture.ts
   var LONG_PRESS_MS = 500;
@@ -482,6 +538,40 @@ ${text}`;
   // src/features/reader/webview/src/highlightNaming.ts
   function annotationClassName(owner, variant) {
     return `tf-hl-${owner}--${variant}`;
+  }
+
+  // src/features/reader/webview/src/pdfSearchMatch.ts
+  function indexOffsetToPageOffset(lengths, indexOffset) {
+    if (!Number.isInteger(indexOffset) || indexOffset < 0) return null;
+    let indexStart = 0;
+    let pageStart = 0;
+    for (const raw of lengths) {
+      const length = Math.max(0, raw);
+      if (indexOffset <= indexStart + length) return pageStart + (indexOffset - indexStart);
+      indexStart += length + 1;
+      pageStart += length;
+    }
+    return null;
+  }
+  function resolveMatchOffset(texts, hintOffset, matchText) {
+    const needle = matchText.trim().toLowerCase();
+    if (needle === "") return null;
+    const haystack = texts.join("").toLowerCase();
+    if (haystack === "") return null;
+    if (Number.isInteger(hintOffset) && hintOffset >= 0 && haystack.startsWith(needle, hintOffset)) {
+      return hintOffset;
+    }
+    let best = null;
+    for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+      if (best === null || Math.abs(at - hintOffset) < Math.abs(best - hintOffset)) best = at;
+    }
+    return best;
+  }
+  function aggregateSearchOutcome(outcomes, hasSurfaceForMatch) {
+    if (outcomes.includes("painted")) return "painted";
+    if (outcomes.includes("cued")) return "cued";
+    if (outcomes.includes("pending")) return "pending";
+    return hasSurfaceForMatch ? "cleared" : "pending";
   }
 
   // src/features/reader/webview/src/pdfTextRange.ts
@@ -529,6 +619,8 @@ ${text}`;
   // src/features/reader/webview/src/pdfHighlightSeam.ts
   var PDF_TEXT_LAYER_CLASS = "pdf-text-layer";
   var USER_BOX_CLASS = annotationClassName("user", "saved");
+  var SEARCH_BOX_CLASS = annotationClassName("search", "match");
+  var SEARCH_PAGE_CLASS = annotationClassName("search", "page");
   function ensureSurface(page, root) {
     let textLayer = root.querySelector(`.${PDF_TEXT_LAYER_CLASS}`);
     if (!textLayer) {
@@ -542,19 +634,38 @@ ${text}`;
       highlightLayer.className = "pdf-highlight-layer";
       root.appendChild(highlightLayer);
     }
+    let searchLayer = root.querySelector(".pdf-search-layer");
+    if (!searchLayer) {
+      searchLayer = document.createElement("div");
+      searchLayer.className = "pdf-search-layer";
+      root.appendChild(searchLayer);
+    }
     root.dataset.pdfPage = String(page);
-    return { page, root, textLayer, highlightLayer, divs: [], lengths: [], boxes: [] };
+    return {
+      page,
+      root,
+      textLayer,
+      highlightLayer,
+      searchLayer,
+      divs: [],
+      lengths: [],
+      texts: [],
+      boxes: []
+    };
   }
   function clearTextLayer(surface) {
     surface.textLayer.replaceChildren();
     surface.highlightLayer.replaceChildren();
+    surface.searchLayer.replaceChildren();
     surface.divs = [];
     surface.lengths = [];
+    surface.texts = [];
     surface.boxes = [];
   }
   function setPageText(surface, divs, itemsStr) {
     surface.divs = divs;
     surface.lengths = itemsStr.map((item) => item.length);
+    surface.texts = [...itemsStr];
   }
   function paintPage(surface, highlights, bg) {
     surface.highlightLayer.replaceChildren();
@@ -602,6 +713,50 @@ ${text}`;
       }
     }
     surface.highlightLayer.appendChild(fragment);
+  }
+  function paintSearchPage(surface, match, stroke) {
+    surface.searchLayer.replaceChildren();
+    if (match === null || match.page !== surface.page) return "cleared";
+    if (surface.divs.length === 0) return "pending";
+    const origin = surface.root.getBoundingClientRect();
+    const fragment = document.createDocumentFragment();
+    const hint = indexOffsetToPageOffset(surface.lengths, match.startOffset);
+    const start = resolveMatchOffset(surface.texts, hint ?? 0, match.matchText);
+    if (start !== null) {
+      for (const slice of slicesForRange(surface.lengths, start, start + match.matchText.trim().length)) {
+        const div = surface.divs[slice.index];
+        const text = div?.firstChild;
+        if (!text || text.nodeType !== Node.TEXT_NODE) continue;
+        const range = document.createRange();
+        try {
+          const limit = text.textContent?.length ?? 0;
+          range.setStart(text, Math.min(slice.from, limit));
+          range.setEnd(text, Math.min(slice.to, limit));
+        } catch {
+          continue;
+        }
+        for (const rect of range.getClientRects()) {
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const el = document.createElement("div");
+          el.className = SEARCH_BOX_CLASS;
+          el.style.left = `${String(rect.left - origin.left)}px`;
+          el.style.top = `${String(rect.top - origin.top)}px`;
+          el.style.width = `${String(rect.width)}px`;
+          el.style.height = `${String(rect.height)}px`;
+          el.style.borderColor = stroke;
+          fragment.appendChild(el);
+        }
+      }
+    }
+    if (!fragment.hasChildNodes()) {
+      const cue = document.createElement("div");
+      cue.className = SEARCH_PAGE_CLASS;
+      cue.style.borderColor = stroke;
+      surface.searchLayer.appendChild(cue);
+      return "cued";
+    }
+    surface.searchLayer.appendChild(fragment);
+    return "painted";
   }
   function highlightAtClientPoint(surface, clientX, clientY) {
     const origin = surface.root.getBoundingClientRect();
@@ -719,33 +874,59 @@ ${text}`;
   var pageSurfaces = /* @__PURE__ */ new Map();
   var userHighlights = [];
   var currentBg = "#ffffff";
+  var surfaceRenderTokens = /* @__PURE__ */ new Map();
   async function renderPageSurface(pageNumber, page, root, cssScale) {
     const pdfjs = lib();
-    if (!pdfjs) return;
+    if (!pdfjs) return null;
+    const token = (surfaceRenderTokens.get(pageNumber) ?? 0) + 1;
+    surfaceRenderTokens.set(pageNumber, token);
     const surface = ensureSurface(pageNumber, root);
     pageSurfaces.set(pageNumber, surface);
     clearTextLayer(surface);
     surface.textLayer.style.setProperty("--scale-factor", String(cssScale));
     const textDivs = [];
     const textContentItemsStr = [];
+    const textContentSource = await page.getTextContent();
+    if (surfaceRenderTokens.get(pageNumber) !== token) return null;
     await pdfjs.renderTextLayer({
       // The UNSCALED viewport, deliberately: pdf.js positions each span as a PERCENTAGE of the page
       // and sizes it as `calc(var(--scale-factor) * <unscaled>px)`, so the scale belongs in the custom
       // property and passing a scaled viewport here would apply it twice.
-      textContentSource: await page.getTextContent(),
+      textContentSource,
       container: surface.textLayer,
       viewport: page.getViewport({ scale: 1 }),
       textDivs,
       textContentItemsStr
     }).promise;
+    if (surfaceRenderTokens.get(pageNumber) !== token) return null;
     setPageText(surface, textDivs, textContentItemsStr);
     paintPage(surface, userHighlights, currentBg);
+    reportSearchPaint(repaintSearchMatch());
+    return surface;
   }
-  function forgetPageSurface(pageNumber) {
+  function forgetPageSurface(pageNumber, only) {
+    if (only !== void 0 && pageSurfaces.get(pageNumber) !== only) return;
     pageSurfaces.delete(pageNumber);
   }
   function repaintUserHighlights() {
     for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
+  }
+  var searchMatch = null;
+  function repaintSearchMatch() {
+    const stroke = matchStroke(currentBg);
+    const outcomes = [];
+    for (const surface of pageSurfaces.values()) {
+      outcomes.push(paintSearchPage(surface, searchMatch, stroke));
+    }
+    return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+  }
+  var reportedSearchPainted = null;
+  function reportSearchPaint(outcome) {
+    if (outcome === "pending" || outcome === "cleared") return;
+    const painted = outcome === "painted";
+    if (reportedSearchPainted === painted) return;
+    reportedSearchPainted = painted;
+    post({ type: "searchMatchPainted", painted });
   }
   var SPREAD_GAP_PX = 8;
   var renderToken = 0;
@@ -777,6 +958,7 @@ ${text}`;
     pageWrappers.clear();
     renderedPages.clear();
     pageRenderTokens.clear();
+    surfaceRenderTokens.clear();
     const box = viewportSize();
     const pages = await Promise.all(
       Array.from({ length: pageCount }, (_unused, i) => doc.getPage(i + 1))
@@ -828,8 +1010,10 @@ ${text}`;
       if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) return;
       const pageBox = wrapper.querySelector(".pdf-page") ?? wrapper;
       pageBox.replaceChildren(canvas);
-      await renderPageSurface(pageNumber, page, pageBox, fit);
-      if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) forgetPageSurface(pageNumber);
+      const surface = await renderPageSurface(pageNumber, page, pageBox, fit);
+      if (surface !== null && (pageRenderTokens.get(pageNumber) !== token || !scrollMode)) {
+        forgetPageSurface(pageNumber, surface);
+      }
     } catch (error) {
       renderedPages.delete(pageNumber);
       throw error;
@@ -1020,8 +1204,8 @@ ${text}`;
       if (!pages.includes(page)) forgetPageSurface(page);
     }
     for (const work of surfaceWork) {
-      void renderPageSurface(work.page, work.proxy, work.root, fit * currentZoom).then(() => {
-        if (token !== renderToken) forgetPageSurface(work.page);
+      void renderPageSurface(work.page, work.proxy, work.root, fit * currentZoom).then((surface) => {
+        if (surface !== null && token !== renderToken) forgetPageSurface(work.page, surface);
       }).catch(() => {
       });
     }
@@ -1179,6 +1363,8 @@ ${text}`;
           pageCount = pdfDoc.numPages;
           pageSurfaces.clear();
           userHighlights = [];
+          searchMatch = null;
+          reportedSearchPainted = null;
           await renderCurrent(1);
           if (wantsScroll) {
             await enterScrollMode(pdfDoc);
@@ -1263,6 +1449,7 @@ ${text}`;
       currentBg = appearance.bg;
       document.body.style.background = appearance.bg;
       repaintUserHighlights();
+      repaintSearchMatch();
       document.documentElement.style.setProperty(
         "--tf-selection",
         selectionBackground(appearance.link, appearance.bg)
@@ -1311,6 +1498,31 @@ ${text}`;
      * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
      * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
     setSpokenRange: () => {
+    },
+    /**
+     * Paint or clear the one active search match. Unlike `setSpokenRange` above this is REAL here,
+     * not a no-op: search has PDF locators (`{page, offset}`), and `pdfHighlightSeam.ts` has had the
+     * text layer a box needs since user highlights landed.
+     *
+     * A NON-NULL `epub` SIDE IS A HOST BUG, reported exactly as `paintHighlights` reports a foreign
+     * entry — the host chose `openPdf` for this book, so a CFI-shaped match means it picked the wrong
+     * side of a payload it had already routed correctly.
+     *
+     * Reports `pending` as SILENCE. The host normally sends this immediately after `goTo`, before the
+     * target page has finished rasterising, so a miss here is "not yet" rather than "cannot" —
+     * `renderPageSurface` repaints and reports for real a frame later.
+     */
+    paintSearchMatch: (match) => {
+      if (match.epub !== null) {
+        fail(
+          "NAVIGATION_FAILED",
+          "paintSearchMatch: the match addresses a CFI, and this shell renders PDF"
+        );
+        return;
+      }
+      searchMatch = match.pdf;
+      reportedSearchPainted = null;
+      reportSearchPaint(repaintSearchMatch());
     },
     /**
      * Paint the user's saved highlights — the whole set, idempotently, exactly as the EPUB shell does.

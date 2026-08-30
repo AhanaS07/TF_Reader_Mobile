@@ -198,6 +198,55 @@
       }
 
       /*
+        THE SEARCH-MATCH LAYER — HIGHLIGHT_LAYERS.md §3's third channel, and the third layer over a
+        page: text (transparent, selectable), then the user's fill, then this.
+
+        ITS ORDER IN THE DOM IS THE Z-ORDER (§4: `tts > search > user`), which is why
+        `ensureSurface` appends it AFTER `.pdf-highlight-layer` rather than styling one layer twice.
+        A user fill painted over this outline is exactly the "losing search context" regression §3
+        names.
+
+        AN OUTLINE, WITH NO BACKGROUND AND NO `mix-blend-mode` — both are the point rather than
+        omissions. The user layer is the solid channel and multiplies so its fill darkens the glyphs
+        beneath; a search match has to remain findable OVER that fill without hiding it, so it draws
+        only a border and leaves every pixel inside it alone. `border-color` is set inline by
+        `paintSearchPage` because it is theme-derived (`matchStroke`); everything about the box's
+        SHAPE lives here, where a `.ts` file cannot carry it.
+
+        `pointer-events: none` for the same load-bearing reason the layer below has it: a box that
+        takes touches swallows the drag that starts inside it.
+
+        NO TRANSITION AND NO ANIMATION. A flashing cue was the obvious first idea and is the wrong
+        one twice over: readerTemplate.test.ts asserts both shells declare no animation at all, and
+        motion under the reader's eyes is the thing `reduceMotion` exists to suppress.
+      */
+      .pdf-search-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-search-layer > div {
+        position: absolute;
+        background: transparent;
+        border: 2px solid;
+        border-radius: 2px;
+      }
+      /*
+        The whole-page fallback cue, when the match is known to be on this page but its offset could
+        not be resolved to a box (a phrase split across two text runs is the known case). Inset by a
+        hair so the border is not clipped by the layer's own `overflow: hidden`.
+      */
+      .pdf-search-layer > div.tf-hl-search--page {
+        left: 1px;
+        top: 1px;
+        right: 1px;
+        bottom: 1px;
+        border-width: 3px;
+        border-radius: 6px;
+      }
+
+      /*
         CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
         display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
         surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of

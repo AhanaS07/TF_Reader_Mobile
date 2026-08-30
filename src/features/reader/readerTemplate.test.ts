@@ -680,6 +680,35 @@ describe("the PDF shell carries the layers a highlight is selected and painted i
     // compositing epub.js's own highlight defaults give the EPUB shell.
     expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*>\s*div\s*\{[^}]*mix-blend-mode:\s*multiply/);
   });
+
+  it('keeps the search outline out of the touch path too', () => {
+    // Same load-bearing reason as the layer below it, and it sits ABOVE that one — so a search box
+    // that took touches would swallow the drag over any highlight it happened to cover.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-search-layer\s*\{[^}]*pointer-events:\s*none/);
+  });
+
+  it('draws the search match as an OUTLINE, with nothing filling it', () => {
+    // HIGHLIGHT_LAYERS.md §3 gives `search` the border channel precisely so a match stays findable
+    // OVER a user's fill without hiding it. A background here — or a `mix-blend-mode`, which only
+    // makes sense for a fill — would turn the transient layer into a second opaque one and lose the
+    // user highlight underneath, which §3 calls a regression rather than a simplification.
+    const rule = /\.pdf-search-layer\s*>\s*div\s*\{([^}]*)\}/.exec(PDF_TEMPLATE);
+    expect(rule).not.toBeNull();
+    expect(rule?.[1]).toMatch(/background:\s*transparent/);
+    expect(rule?.[1]).toMatch(/border:\s*\d+px solid/);
+    expect(rule?.[1]).not.toMatch(/mix-blend-mode/);
+  });
+
+  it('puts the search layer after the highlight layer in the stylesheet AND in the DOM', () => {
+    // §4's z-order (`tts > search > user`) is bought by DOM order on this side, and `ensureSurface`
+    // is where that is decided — a `.ts` file, so the assertion has to read it rather than the CSS.
+    // Reversing the two appends would put a user fill over the outline meant to be found on top of
+    // it, which no stylesheet rule would reveal.
+    const seam = webviewFile('src', 'pdfHighlightSeam.ts');
+    expect(seam.indexOf("root.appendChild(searchLayer)")).toBeGreaterThan(
+      seam.indexOf("root.appendChild(highlightLayer)"),
+    );
+  });
 });
 
 describe('reduceMotion has nothing to suppress, and must not quietly acquire one', () => {

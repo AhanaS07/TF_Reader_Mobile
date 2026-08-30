@@ -22,6 +22,7 @@ import type { Book, Contents, Rendition } from 'epubjs';
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { EpubHighlightPaint } from '@/features/personalization/readerHighlights';
+import type { EpubSearchMatch } from '@/features/search/readerSearchMatch';
 import type { ReaderSelection } from '@/features/reader/readerBridge';
 
 import {
@@ -33,12 +34,14 @@ import {
   type TFReaderApi,
 } from './bridge';
 import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
-import { joinCfiRange, splitCfiRange } from './epubCfiRange';
+import { cfiHasBase, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
+import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
+import { forceReflow } from './epubViewGeometry';
 import { highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
-import { highlightFill } from './selectionTheme';
+import { highlightFill, matchStroke } from './selectionTheme';
 import {
   LONG_PRESS_MS,
   movedBeyondSlop,
@@ -125,7 +128,7 @@ const TTS_SPOKEN_VARIANT = 'spoken';
  * A FUNCTION, NOT A CONSTANT, for the same reason `userHighlightStyles` is: `multiply` against a
  * near-black page multiplies towards black, so a fixed blend made the spoken word invisible on the
  * dark theme — the layer that most needs to be seen, since it is what tells the reader where the
- * voice is. Re-derived on every paint and re-applied by `retintUserHighlights` on a theme change. */
+ * voice is. Re-derived on every paint and re-applied by `repaintLiveAnnotations` on a theme change. */
 const TTS_SPOKEN_COLOR = '#ffd500';
 
 function ttsSpokenStyles(): Record<string, string> {
@@ -143,6 +146,58 @@ const USER_SAVED_VARIANT = 'saved';
 function userHighlightStyles(color: string): Record<string, string> {
   const { fill, blend } = highlightFill(color, currentAppearance?.bg);
   return { fill, 'fill-opacity': '0.25', 'mix-blend-mode': blend };
+}
+
+const SEARCH_OWNER = 'search';
+const SEARCH_MATCH_VARIANT = 'match';
+
+/** The range CFI the search match is currently painted at, or null if nothing is. The caller-side
+ * "what did I last paint" the seam deliberately does not keep — same shape as `currentSpokenCfi`,
+ * and needed for the same three reasons: to remove before the next paint, to re-add after a flow
+ * rebuild, and to re-derive the stroke when the page changes colour. */
+let currentSearchRange: string | null = null;
+
+/**
+ * What one attempt to paint the search match did.
+ *
+ * `refused` and `pending` are the two that matter and they are NOT the same thing: `refused` means
+ * this range will never draw (so say so), `pending` means the chapter it lives in is not on screen
+ * yet (so say nothing and try again). Collapsing them into a boolean is what put a notice on screen
+ * for every match, since the chapter is normally still loading when the payload arrives.
+ *
+ * The PDF shell has its own four-valued sibling in `pdfSearchMatch.ts`, differing only in `cued`
+ * (a fallback this shell has no equivalent of — an EPUB has no page to outline).
+ */
+type SearchPaintOutcome = 'cleared' | 'pending' | 'painted' | 'refused';
+
+/** What the host last ASKED for, as opposed to what is painted.
+ *
+ * Kept because a match usually cannot be painted at the moment it arrives: the host sends
+ * `paintSearchMatch` right after `goTo`, and the chapter it addresses is still loading. Rather than
+ * file an annotation into a document nobody has checked (see `applySearchMatch`), the paint is
+ * deferred and retried when a chapter document lands. */
+let pendingSearchMatch: EpubSearchMatch | null = null;
+
+/** What the host was last told about `pendingSearchMatch`, so a deferred retry does not re-say it.
+ * Reset when a new payload arrives. */
+let reportedSearchPainted: boolean | null = null;
+
+/** Search's channel (HIGHLIGHT_LAYERS.md §3): an OUTLINE, with no fill at all, so a match sitting
+ * inside a user highlight is findable without hiding it. `fill: 'none'` is load-bearing, not a
+ * default — epub.js merges its own `fill: yellow, fill-opacity: 0.3` UNDER whatever is passed, so
+ * omitting it paints a yellow box and loses the whole point of the channel.
+ *
+ * SVG PRESENTATION ATTRIBUTES, not CSS declarations — marks-pane applies these with
+ * `setAttribute`, so a camelCased property name is silently ignored. `stroke-width`, not
+ * `strokeWidth`. A function rather than a constant for the same reason `ttsSpokenStyles` is: the
+ * stroke is derived from the page colour. */
+function searchMatchStyles(): Record<string, string> {
+  return {
+    fill: 'none',
+    stroke: matchStroke(currentAppearance?.bg),
+    'stroke-width': '2',
+    'stroke-opacity': '0.9',
+  };
 }
 
 /**
@@ -465,6 +520,20 @@ function highlightBoxes(contents: Contents): HighlightBox[] {
 
   const boxes: HighlightBox[] = [];
   for (const [id, cfiRange] of paintedUserHighlights) {
+    // >>> SCOPE TO THIS CHAPTER FIRST. RESOLVING A FOREIGN CFI DOES NOT FAIL — IT LIES. <<<
+    // This loop used to rely on `rangeForCfi` returning null for a highlight in another spine
+    // document. It does not: `EpubCFI.toRange` walks only the local path after `!` and never looks
+    // at the spine component, so a chapter-2 CFI resolves against chapter 1 to whatever happens to
+    // sit at the same tree position. Measured on the sample book — 399 of 400 foreign CFIs resolved
+    // to a real range, several to different text than they name.
+    //
+    // The consequence was not cosmetic: these boxes are what a long press is hit-tested against, so
+    // a press in chapter 1 could land on a phantom box belonging to a chapter-2 highlight and
+    // `confirmDeleteHighlight` would delete THAT one — the wrong highlight, silently, with no undo.
+    // Painting was never affected (epub.js checks `sectionIndex === view.index` itself), which is
+    // why nothing on screen ever hinted at it.
+    if (!cfiHasBase(cfiRange, contents.cfiBase)) continue;
+
     const range = rangeForCfi(contents, cfiRange);
     if (!range) continue;
     // One rect per line the highlight covers, exactly as marks-pane draws it — so a highlight that
@@ -479,9 +548,14 @@ function highlightBoxes(contents: Contents): HighlightBox[] {
   return boxes;
 }
 
-/** One painted highlight's CFI resolved against THIS chapter, or null. The map is not
- * chapter-scoped, so a CFI belonging to another spine document simply fails to resolve — epub.js
- * signals that by throwing as often as by returning nothing, hence the catch. */
+/** One painted highlight's CFI resolved against THIS chapter, or null.
+ *
+ * The catch is for a range that is genuinely unresolvable IN THIS DOCUMENT — an end offset past its
+ * text node throws `IndexSizeError` out of `EpubCFI.toRange`, which `fixMiss` does not recover.
+ *
+ * IT IS NOT A CHAPTER FILTER, though it was once documented as one. A CFI from another spine
+ * document resolves here rather than failing; callers must scope with `cfiHasBase` first, and
+ * `highlightBoxes` above says what that cost. */
 function rangeForCfi(contents: Contents, cfiRange: string): Range | null {
   try {
     return contents.range(cfiRange) ?? null;
@@ -686,6 +760,19 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
     const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
     if (cfiRange === null) continue;
 
+    // >>> THE SAME COLLISION FROM THE OTHER SIDE: THE TRANSIENT LAYER GIVES WAY. <<< The search
+    // outline refuses a range the user layer already owns; here the user layer is arriving at a
+    // range the outline owns (highlight the word you just searched for). Painting over it would
+    // displace the outline's map entry, and the outline's next `remove` would then detach THIS
+    // annotation and orphan its rect — the reader's saved work lost to a layer that disappears on
+    // the next arrow press. So un-paint the outline first. `liftSearchMatch` below then has
+    // nothing to re-add, and the host is told the match is no longer marked.
+    if (currentSearchRange === cfiRange) {
+      highlightRemove(active, SEARCH_OWNER, currentSearchRange);
+      currentSearchRange = null;
+      reportSearchPaint('refused');
+    }
+
     // TWO IDS ON ONE RANGE COLLIDE INSIDE epub.js, so refuse the second rather than paint it.
     // `Annotations` hashes on `encodeURI(cfiRange + type)` (highlightSeam.ts's header), and its
     // `add` overwrites that entry WITHOUT detaching the mark already attached — so the loser stays
@@ -709,10 +796,29 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
     highlightAdd(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
     paintedUserHighlights.set(highlight.id, cfiRange);
   }
+
+  // Anything just added was appended AFTER the search outline, so put it back on top — §4's
+  // z-order. Only when something was actually added: a repaint that changed nothing must not
+  // detach and re-attach a mark for no reason.
+  if (added.length > 0) liftSearchMatch();
 }
 
 /**
- * Re-tint every painted highlight for the CURRENT theme, against a LIVE rendition.
+ * Re-paint every annotation this shell owns against a LIVE rendition — re-measuring its geometry and
+ * re-deriving its colour in one pass.
+ *
+ * >>> IT IS THE RE-MEASURE, NOT JUST THE RE-TINT, AND THAT IS WHY IT IS NOT GATED ON `bg`. <<<
+ * A painted highlight is SVG rects that marks-pane measured once, from a `Range` it captured at
+ * attach time. It re-measures only when `pane.render()` runs, and epub.js runs that from exactly one
+ * place — `View.reframe()`, behind two gates a stylesheet change slips past (see
+ * `epubViewGeometry.ts`, which documents both). So after a text-size, font, spacing, margin or
+ * spread change the rects keep the coordinates they were given for the old layout and the highlight
+ * visibly detaches from its words.
+ *
+ * Remove-then-add is what repairs that, and it repairs it for free rather than as a second
+ * mechanism: `Annotations.add` -> `IframeView.highlight` resolves the CFI to a FRESH `Range` and
+ * marks-pane measures it on `addMark`. So the call that re-derives the theme shade is already the
+ * call that re-measures, and one path serves both.
  *
  * >>> NOT `repaintUserHighlights()`, AND THE DIFFERENCE IS NOT COSMETIC. <<< That one clears the
  * map first, which leaves `diffHighlights` with nothing in `removedIds` — correct only when the old
@@ -725,7 +831,7 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
  * The spoken range rides along: `ttsSpokenStyles()` is theme-derived for the same reason, and it is
  * removed and re-added through the same seam so it keeps its place above the user layer.
  */
-function retintUserHighlights(): void {
+function repaintLiveAnnotations(): void {
   if (!rendition) return;
   const active = rendition;
 
@@ -735,10 +841,93 @@ function retintUserHighlights(): void {
   paintedUserHighlights.clear();
   applyUserHighlights(lastUserHighlights);
 
+  // Unconditional, unlike the lift inside `applyUserHighlights`: `matchStroke` is derived from the
+  // page colour, so a theme change has to re-derive it even in a book with no user highlights at
+  // all (where that lift never fires because nothing was added).
+  liftSearchMatch();
+
   if (currentSpokenCfi !== null) {
     highlightRemove(active, TTS_OWNER, currentSpokenCfi);
     highlightAdd(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
   }
+}
+
+/** The pending geometry-refresh frame, or 0. */
+let geometryRaf = 0;
+
+/** Whether the coalesced refresh should also put the reader back where they were. OR-ed across every
+ * request in one frame, so a re-anchoring appearance change is never demoted by a plain contents
+ * resize arriving alongside it. */
+let geometryReanchor = false;
+
+/**
+ * Re-measure everything after the chapter has been re-laid-out.
+ *
+ * >>> THE EPUB COUNTERPART OF `renderPageSurface` -> `paintPage`. <<< The PDF shell states the
+ * invariant outright: every path that re-rasterises a page rebuilds its text layer and repaints it,
+ * which is why a PDF highlight tracks through any zoom. This is the same invariant for this shell —
+ * every path that re-lays out a chapter re-measures every painted mark — and it has to be explicit
+ * here for the reason `epubViewGeometry.ts` documents at length: epub.js will not do it for us when
+ * only the stylesheet changed.
+ *
+ * COALESCED ONTO ONE FRAME, exactly like `pdf.entry.ts`'s `scheduleVirtualize`. A font-size stepper
+ * emits an `applyAppearance` per tap and a book's own late reflow (images, a web font) can emit
+ * several contents resizes in a row; each one would otherwise detach and re-attach every annotation
+ * in the chapter.
+ *
+ * ORDER IS LOAD-BEARING: the layout must be current BEFORE anything measures against it.
+ *  1. `forceReflow` re-runs epub.js's own post-reflow pass, so the column strip's width — which its
+ *     page count and every scroll offset derive from — stops describing the old type size.
+ *  2. the reader is put back at `lastCfi` when asked, because a reflow leaves them parked at a pixel
+ *     offset chosen for the old layout (see the re-anchor note below).
+ *  3. `repaintLiveAnnotations` re-measures the user, search and TTS layers.
+ *  4. the press hit-test cache is dropped, because it holds pre-reflow rects and a stale one deletes
+ *     the wrong highlight.
+ *
+ * THIS CANNOT LOOP, which is what makes it safe to hang off a contents resize: the marks live in the
+ * OUTER document (the view element), not the chapter iframe, so re-adding them cannot move anything
+ * the chapter's own `ResizeObserver` is watching.
+ */
+function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
+  if (options.reanchor === true) geometryReanchor = true;
+  if (geometryRaf !== 0) return;
+
+  geometryRaf = window.requestAnimationFrame(() => {
+    geometryRaf = 0;
+    const reanchor = geometryReanchor;
+    geometryReanchor = false;
+
+    if (!rendition) return;
+    const active = rendition;
+
+    forceReflow(active);
+
+    const finish = (): void => {
+      repaintLiveAnnotations();
+      invalidateHighlightBoxes();
+    };
+
+    // >>> RE-ANCHORING IS NOT COSMETIC EITHER. <<< A re-flow changes how much text fits on a page,
+    // but the manager is still scrolled to the offset that showed the old page 5, so the reader is
+    // silently moved to different words. Re-displaying at the last reported CFI is what keeps them
+    // on the sentence they were reading, and it is the same anchor `rebuildForFlowIfNeeded` uses for
+    // the same reason. Skipped while an open is in flight, because `openEpub` owns the rendition
+    // until its first `display()` resolves.
+    if (reanchor && lastCfi !== null && !openInFlight) {
+      // Re-measured in BOTH settlements rather than only on success: `display()` re-renders the
+      // view, so the marks epub.js re-injects are already fresh — but a rejected display leaves the
+      // old view standing with the old rects, which is exactly the case that still needs repairing.
+      active
+        .display(lastCfi)
+        .then(finish)
+        .catch(() => {
+          finish();
+        });
+      return;
+    }
+
+    finish();
+  });
 }
 
 /**
@@ -751,11 +940,146 @@ function retintUserHighlights(): void {
  * user's highlights would silently disappear on a paginated <-> scrolled switch.
  *
  * ONLY FOR A RENDITION THAT WAS JUST REBUILT. Against a live one it leaks the marks it means to
- * replace — use `retintUserHighlights()` there, and see its note for what epub.js does.
+ * replace — use `repaintLiveAnnotations()` there, and see its note for what epub.js does.
  */
 function repaintUserHighlights(): void {
   paintedUserHighlights.clear();
   applyUserHighlights(lastUserHighlights);
+}
+
+/** The loaded chapter document a CFI addresses, or null if that chapter is not on screen.
+ *
+ * Matched on `cfiBase` through the pure `cfiHasBase`, NOT by trying to resolve the CFI and seeing
+ * whether it works — that read is measurably wrong, and that function's own note has the numbers.
+ * epub.js's `Annotations.add` makes the same comparison before attaching (`sectionIndex ===
+ * view.index`); this is the readable half of it. */
+function contentsForCfi(cfi: string): Contents | null {
+  if (!rendition) return null;
+  for (const contents of rendition.getContents() as unknown as Contents[]) {
+    if (cfiHasBase(cfi, contents.cfiBase)) return contents;
+  }
+  return null;
+}
+
+/**
+ * Paint the ONE active search match, or clear it.
+ *
+ * REMOVE-THEN-ADD off `currentSearchRange`, exactly like `setSpokenRange`: there is only ever one
+ * match, the seam is stateless, and the caller keeps the state. A clear is the same call with
+ * `null`, which is why the bridge needs no second command.
+ *
+ * NOT DIFFED like the user layer. `diffHighlights` earns its keep across a set of durable
+ * highlights where most of them are unchanged between repaints; one transient range that moves on
+ * every arrow press has nothing to diff against.
+ *
+ * NO `invalidateHighlightBoxes()`: that cache is built from `paintedUserHighlights` alone (see
+ * `highlightBoxes`), and a search outline is not something the reader can press. Dropping it here
+ * would throw away a still-valid cache on every step through the results.
+ *
+ * >>> NOTHING IS FILED UNTIL IT HAS BEEN RESOLVED IN ITS OWN CHAPTER, AND THAT IS NOT CAUTION. <<<
+ * A range whose end offset runs past its text node throws `IndexSizeError` out of
+ * `EpubCFI.toRange` — confirmed against this repo's sample book; `fixMiss` does not recover it. If
+ * that annotation has already been filed, the throw does not come back here: `Annotations.inject`
+ * re-attaches every annotation for a section from `hooks.render` WITH NO try/catch, so the next
+ * time the reader opens that chapter it throws inside the render chain, which surfaces as
+ * `WEBVIEW_UNHANDLED_REJECTION` and the reader's error banner — and repeats on every visit until
+ * something removes it. A match that cannot be drawn must cost a quiet notice, not a broken
+ * chapter.
+ *
+ * So `pending` is a real answer and the common one: the host sends this immediately after `goTo`,
+ * so the chapter is usually still loading and there is nothing to verify against yet. The retry
+ * lives on `hooks.content`, which is where the document arrives.
+ */
+function applySearchMatch(match: EpubSearchMatch | null): SearchPaintOutcome {
+  if (!rendition) {
+    // Nothing to paint onto. Forget the range rather than keep it: whatever rendition it was
+    // painted into is gone, and a stale value would make the next `remove` address the wrong one.
+    currentSearchRange = null;
+    return match === null ? 'cleared' : 'pending';
+  }
+  const active = rendition;
+
+  if (currentSearchRange !== null) {
+    highlightRemove(active, SEARCH_OWNER, currentSearchRange);
+    currentSearchRange = null;
+  }
+
+  pendingSearchMatch = match;
+  if (match === null) return 'cleared';
+
+  // Null for a term with no length, a CFI addressing an element rather than a character, or a pair
+  // `joinCfiRange` refuses. All three mean "no span here", and none of them are worth an error
+  // banner: the `goTo` that preceded this already landed the reader on the right words.
+  const cfiRange = expandPointCfi(match.startCfi, match.matchText.length);
+  if (cfiRange === null) return 'refused';
+
+  const contents = contentsForCfi(cfiRange);
+  if (contents === null) return 'pending';
+
+  // It IS this chapter, and it still does not resolve — so the range is genuinely bad (a phrase
+  // running past its text node is the reachable case). Refuse before filing it, per the note above.
+  if (rangeForCfi(contents, cfiRange) === null) return 'refused';
+
+  // >>> REFUSE A RANGE THE USER LAYER ALREADY OWNS. <<< epub.js hashes its annotation map on
+  // `encodeURI(cfiRange + type)` and every owner passes the same kind now (highlightSeam.ts's
+  // header), so painting the identical range string DISPLACES the user's map entry without
+  // detaching its mark — and this layer's next `remove` then orphans a rect nothing can ever
+  // delete. Reached by highlighting a word and then searching for it, which is not exotic.
+  // Refusing costs nothing the reader can see: their own highlight is already marking the spot.
+  for (const painted of paintedUserHighlights.values()) {
+    if (painted === cfiRange) return 'refused';
+  }
+
+  try {
+    highlightAdd(active, SEARCH_OWNER, cfiRange, SEARCH_MATCH_VARIANT, searchMatchStyles());
+  } catch {
+    return 'refused';
+  }
+
+  currentSearchRange = cfiRange;
+  return 'painted';
+}
+
+/** Tell the host the outcome, if it is one worth saying and has not been said. `pending` and
+ * `cleared` are silence: a chapter still loading has not failed, and a clear cannot. */
+function reportSearchPaint(outcome: SearchPaintOutcome): void {
+  if (outcome === 'pending' || outcome === 'cleared') return;
+  const painted = outcome === 'painted';
+  if (reportedSearchPainted === painted) return;
+  reportedSearchPainted = painted;
+  post({ type: 'searchMatchPainted', painted });
+}
+
+/** Re-attempt a match that could not be painted when it arrived. Called where a chapter document
+ * becomes available, which is the one thing that changes the answer. Guarded on nothing being
+ * painted, so a page turn inside the chapter the match is already drawn in does not churn it. */
+function retrySearchMatch(): void {
+  if (pendingSearchMatch === null || currentSearchRange !== null) return;
+  reportSearchPaint(applySearchMatch(pendingSearchMatch));
+}
+
+/**
+ * Re-add the search match ON TOP of whatever was just painted beneath it.
+ *
+ * Z-ORDER IS DOM ORDER in marks-pane, and HIGHLIGHT_LAYERS.md §4 puts `search` above `user`. Every
+ * `applyUserHighlights` that adds anything appends a rect after the outline, so a highlight created
+ * while a match is showing would sit over it. Re-adding is cheap and keeps the two legible at once,
+ * which §3 makes an acceptance criterion rather than a nicety.
+ *
+ * Also the retint path: the stroke is derived from the page colour, so a theme change has to
+ * re-derive it — and it must REMOVE first for the reason `repaintLiveAnnotations` documents at
+ * length (a bare re-add leaves the old-coloured mark attached underneath).
+ */
+function liftSearchMatch(): void {
+  if (!rendition || currentSearchRange === null) return;
+  highlightRemove(rendition, SEARCH_OWNER, currentSearchRange);
+  highlightAdd(
+    rendition,
+    SEARCH_OWNER,
+    currentSearchRange,
+    SEARCH_MATCH_VARIANT,
+    searchMatchStyles(),
+  );
 }
 
 /**
@@ -797,6 +1121,15 @@ function rebuildForFlowIfNeeded(): boolean {
       // reappears on the next sentence, but a user highlight would simply be gone until the
       // book was reopened.
       repaintUserHighlights();
+      // And the search outline, THROUGH `liftSearchMatch` rather than a bare `highlightAdd`. The
+      // bare add looks right for a rendition that was just built — there is nothing to detach — and
+      // is wrong for a reason that is invisible from here: `repaintUserHighlights` above may have
+      // already re-added the outline (its own lift fires whenever it adds anything), and a second
+      // `Annotations.add` on the same range overwrites the map entry WITHOUT detaching the mark
+      // already attached. That is the duplicate-mark defect `repaintLiveAnnotations` documents,
+      // arriving by a different route. Remove-then-add is idempotent either way, and epub.js's
+      // `remove` tolerates a miss.
+      liftSearchMatch();
     })
     .catch((error: unknown) => {
       fail('NAVIGATION_FAILED', error);
@@ -827,10 +1160,24 @@ function createRendition(): Rendition {
     capExcessiveIndents(contents.document, viewportSize().width);
     insertStylesheet(contents, finalCssFor(contents.document));
     watchTouches(contents);
+    // >>> THE REFLOWS NOBODY ANNOUNCES. <<< `applyAppearance` covers every change the READER makes,
+    // and the book makes its own: a late image, a web font resolving, a script-free but slow
+    // stylesheet. Each re-flows the lines under marks that were measured before it, and none of them
+    // arrives as a command. epub.js emits this whenever the chapter's measured text size moves
+    // (`Contents.resizeCheck`), so it is the one signal that covers them all. Cheap to over-fire:
+    // the handler coalesces onto a frame and a refresh that finds the layout unchanged paints
+    // nothing.
+    contents.on('resize', () => {
+      scheduleGeometryRefresh();
+    });
     // A newly loaded chapter is a different document with different geometry, and the cache is
     // keyed on the document it measured — but drop it explicitly rather than leaning on that, so
     // a re-styled reload of the SAME document cannot serve boxes measured before the restyle.
     invalidateHighlightBoxes();
+    // THE DEFERRED SEARCH PAINT LANDS HERE. A match arrives while its chapter is still loading
+    // (the host sends it straight after `goTo`), and this hook is the moment that stops being
+    // true — it is the EPUB counterpart of `renderPageSurface` reporting for the PDF shell.
+    retrySearchMatch();
   });
 
   // Rotation changes the type size AND the line-grid remainder, so a sheet built for portrait
@@ -839,6 +1186,16 @@ function createRendition(): Rendition {
   rendition.on('resized', () => {
     applyBaselineCss();
     invalidateHighlightBoxes();
+    // The sheet this just rebuilt is derived from the viewport, so rotation moves every glyph even
+    // though no preference changed, and the marks need re-measuring against it.
+    //
+    // >>> NO `reanchor` HERE, AND THAT IS NOT AN OVERSIGHT. <<< epub.js re-displays at the current
+    // location ITSELF on this event — `Rendition.onResized` emits it and then calls
+    // `display(this.location.start.cfi)` on the very next line (`epubjs/lib/rendition.js:463-478`).
+    // Asking for a second display would put two of them in flight over one rotation, racing to
+    // decide where the reader ends up. `applyAppearance` re-anchors because on that path nothing
+    // else does.
+    scheduleGeometryRefresh();
   });
 
   /** Keeps `lastSelection` current, and re-answers the menu toggle now that there is a selection to
@@ -892,6 +1249,13 @@ function createRendition(): Rendition {
       // later requestCurrentSelection must not answer with words nobody can see any more.
       lastSelection = null;
       invalidateHighlightBoxes();
+
+      // SECOND RETRY SITE, and not redundant with the one in `hooks.content`. That hook runs WHILE a
+      // chapter document is being set up, and `rendition.getContents()` — which is how the match
+      // finds the document it belongs to — is not guaranteed to list the new view yet. `relocated`
+      // fires after `display()` resolves, when it certainly does. Both are guarded on nothing being
+      // painted, so whichever gets there first wins and the other is a no-op.
+      retrySearchMatch();
 
       // epub.js's own location already carries both, so this costs no extra call: `href` is the
       // spine item's and `index` its spine position. Sent whole or not at all — a section with an
@@ -957,6 +1321,12 @@ const api: TFReaderApi<'openEpub'> = {
         // the new book diff against the old book's set and skip paints it should make.
         paintedUserHighlights.clear();
         lastUserHighlights = [];
+        // Same reasoning again for the search layer, and "resolve somewhere arbitrary" is not a
+        // figure of speech here: `EpubCFI.toRange` ignores the spine component, so a CFI from the
+        // previous book resolves happily against this one's first chapter (see `cfiHasBase`).
+        currentSearchRange = null;
+        pendingSearchMatch = null;
+        reportedSearchPainted = null;
 
         const buffer = base64ToArrayBuffer(base64);
         book = ePub();
@@ -1065,6 +1435,9 @@ const api: TFReaderApi<'openEpub'> = {
    */
   applyAppearance: (appearance) => {
     const previousBg = currentAppearance?.bg;
+    // Captured BEFORE `currentAppearance` moves, and against the viewport as it is now — the same
+    // two inputs `applyBaselineCss` will feed to `readerMetrics` a few lines down.
+    const previousSignature = layoutSignature(currentAppearance, viewportSize());
     currentAppearance = appearance;
 
     if (!rendition) return;
@@ -1085,10 +1458,44 @@ const api: TFReaderApi<'openEpub'> = {
     // created under until the book was reopened. On a light -> dark switch that means `multiply`
     // against a near-black page, which is very nearly invisible.
     //
-    // Guarded on `bg` so a font-size or spread change does not detach and re-attach every
-    // annotation in the chapter for a colour that did not move. The PDF shell needs no guard — its
-    // repaint is a `replaceChildren` over a handful of divs it re-measures anyway.
-    if (previousBg !== appearance.bg) retintUserHighlights();
+    // >>> AND THE GEOMETRY IS A FUNCTION OF THE TYPE, SO NEW TYPE MEANS NEW RECTS. <<< This used to
+    // be guarded on `bg` ALONE, on the reasoning that a font-size or spread change should not detach
+    // and re-attach every annotation for a colour that did not move. The colour half of that is
+    // right; the implication that nothing else needs the repaint is what left every highlight
+    // stranded on the words it used to cover. epub.js re-measures a mark only inside
+    // `View.reframe()`, and a stylesheet change does not reach it — `epubViewGeometry.ts` has both
+    // gates. So the guard is now "did anything move", not "did the colour move".
+    //
+    // `layoutSignature` is the whole of that question and is unit-tested next door, which is also
+    // what makes ADDING a typography field to `ReaderAppearance` fail to compile until someone
+    // classifies it: silence there is how this defect would come back.
+    //
+    // Deferred to a frame rather than run inline, because the two triggers coalesce: a stepper emits
+    // one payload per tap, and the reflow this handler just caused will emit a contents resize of
+    // its own.
+    const nextSignature = layoutSignature(appearance, viewportSize());
+    if (previousSignature !== nextSignature) {
+      scheduleGeometryRefresh({ reanchor: true });
+    } else if (previousBg !== appearance.bg) {
+      // Colour only. Same repaint, but the reader must not be moved for it — re-displaying on a
+      // theme toggle would jump the page for a change that did not shift a single glyph.
+      scheduleGeometryRefresh();
+    }
+
+    // >>> A CUSTOM FONT LANDS AFTER THIS TURN, NOT DURING IT. <<< `baselineCss` declares the face as
+    // an `@font-face` over a data: URI, and the text re-flows only once WebKit has parsed the file —
+    // after the refresh scheduled above has already measured. Nothing else brings us back, because
+    // the swap arrives as a stylesheet edit rather than as a resize of anything observed. So the
+    // font's own readiness is the second trigger. Best-effort: `document.fonts` is not in every
+    // engine this could theoretically run in, and a reader whose custom font never resolves is
+    // reading in the fallback face, which is not a reason to fail anything.
+    if (previousSignature !== nextSignature && appearance.customFontUri !== null) {
+      for (const contents of rendition.getContents() as unknown as Contents[]) {
+        void contents.document.fonts?.ready.then(() => {
+          scheduleGeometryRefresh();
+        });
+      }
+    }
   },
 
   /**
@@ -1157,6 +1564,30 @@ const api: TFReaderApi<'openEpub'> = {
         `paintHighlights: ${String(foreign)} highlight(s) address pages, and this shell renders EPUB`,
       );
     }
+  },
+
+  /**
+   * Paint or clear the one active search match. See `ReaderCommand`'s own note for why the payload
+   * arrives partitioned rather than tagged, and why the whole object crosses rather than this
+   * shell's half of it.
+   *
+   * A NON-NULL `pdf` SIDE IS A HOST BUG, reported the way `paintHighlights` reports a foreign
+   * entry: the host chose `openEpub` for this book, so a PDF-shaped match means it picked the wrong
+   * side while having picked the right shell. Structurally impossible, and it must not be able to
+   * hide as "no match found".
+   */
+  paintSearchMatch: (match) => {
+    if (match.pdf !== null) {
+      fail(
+        'NAVIGATION_FAILED',
+        'paintSearchMatch: the match addresses a page, and this shell renders EPUB',
+      );
+      return;
+    }
+
+    // A new payload is a new question, so whatever was said about the last one no longer counts.
+    reportedSearchPainted = null;
+    reportSearchPaint(applySearchMatch(match.epub));
   },
 
   setSpokenRange: (cfi) => {

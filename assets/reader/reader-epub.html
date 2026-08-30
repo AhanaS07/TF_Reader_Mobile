@@ -497,6 +497,61 @@ ${text}`;
       endCfi: `epubcfi(${common}${endTail})`
     };
   }
+  function splitTerminalOffset(step) {
+    let depth = 0;
+    let at = -1;
+    for (let i = 0; i < step.length; i++) {
+      const char = step[i];
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      else if (char === ":" && depth === 0) at = i;
+    }
+    if (at === -1) return null;
+    const rest = step.slice(at + 1);
+    const digits = /^\d+/.exec(rest);
+    if (!digits) return null;
+    return { head: step.slice(0, at), offset: Number.parseInt(digits[0], 10) };
+  }
+  function expandPointCfi(startCfi, length) {
+    if (!Number.isInteger(length) || length <= 0) return null;
+    const inner = unwrap(startCfi);
+    if (inner === null) return null;
+    const { base, path } = splitBase(inner);
+    const steps = toSteps(path);
+    const last = steps[steps.length - 1];
+    if (last === void 0) return null;
+    const terminal = splitTerminalOffset(last);
+    if (terminal === null) return null;
+    const endSteps = [...steps.slice(0, -1), `${terminal.head}:${String(terminal.offset + length)}`];
+    return joinCfiRange(startCfi, `epubcfi(${base}${endSteps.join("")})`);
+  }
+  function cfiHasBase(cfi, base) {
+    if (base === "") return false;
+    const inner = unwrap(cfi);
+    if (inner === null) return false;
+    return splitBase(inner).base === `${base}!`;
+  }
+
+  // src/features/reader/webview/src/epubLayoutSignature.ts
+  function fontFingerprint(uri) {
+    if (uri === null) return "-";
+    return `${String(uri.length)}:${uri.slice(0, 32)}:${uri.slice(-32)}`;
+  }
+  function layoutSignature(appearance, viewport) {
+    const box = `${String(viewport.width)}x${String(viewport.height)}`;
+    if (appearance === null) return `none|${box}`;
+    return [
+      String(appearance.fontSizePt),
+      String(appearance.lineHeight),
+      String(appearance.letterSpacingPx),
+      String(appearance.marginPx),
+      appearance.fontFamily,
+      fontFingerprint(appearance.customFontUri),
+      appearance.flow,
+      appearance.spread,
+      box
+    ].join("|");
+  }
 
   // src/features/reader/readerBridge.ts
   var MAX_TOC_DEPTH = 6;
@@ -514,6 +569,25 @@ ${text}`;
       flattenToc(item.subitems, Math.min(depth + 1, MAX_TOC_DEPTH), into);
     }
     return into;
+  }
+
+  // src/features/reader/webview/src/epubViewGeometry.ts
+  function viewList(rendition2) {
+    const views = rendition2.views();
+    if (Array.isArray(views)) return views;
+    return typeof views.all === "function" ? views.all() : [];
+  }
+  function forceReflow(rendition2) {
+    for (const view of viewList(rendition2)) {
+      if (view.displayed === false) continue;
+      try {
+        view.expand?.();
+        const contents = view.contents;
+        if (contents) view.layout?.format?.(contents);
+      } catch {
+        continue;
+      }
+    }
   }
 
   // src/features/reader/webview/src/highlightGeometry.ts
@@ -623,6 +697,13 @@ ${text}`;
       }
     }
     return { fill: color, blend: "multiply" };
+  }
+  function matchStroke(bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return "#0a84ff";
+    if (luminance(page) < 0.35) return "#64d2ff";
+    if (page.r > page.b && page.g > page.b && luminance(page) > 0.6) return "#0a5fd0";
+    return "#0a84ff";
   }
 
   // src/features/reader/webview/src/touchGesture.ts
@@ -932,6 +1013,19 @@ ${text}`;
     const { fill, blend } = highlightFill(color, currentAppearance?.bg);
     return { fill, "fill-opacity": "0.25", "mix-blend-mode": blend };
   }
+  var SEARCH_OWNER = "search";
+  var SEARCH_MATCH_VARIANT = "match";
+  var currentSearchRange = null;
+  var pendingSearchMatch = null;
+  var reportedSearchPainted = null;
+  function searchMatchStyles() {
+    return {
+      fill: "none",
+      stroke: matchStroke(currentAppearance?.bg),
+      "stroke-width": "2",
+      "stroke-opacity": "0.9"
+    };
+  }
   var paintedUserHighlights = /* @__PURE__ */ new Map();
   var lastUserHighlights = [];
   var lastSelection = null;
@@ -1066,6 +1160,7 @@ ${columnOverrideCss()}` : currentCss;
     if (cached && cached.doc === contents.document) return cached.boxes;
     const boxes = [];
     for (const [id, cfiRange] of paintedUserHighlights) {
+      if (!cfiHasBase(cfiRange, contents.cfiBase)) continue;
       const range = rangeForCfi(contents, cfiRange);
       if (!range) continue;
       for (const rect of range.getClientRects()) {
@@ -1191,6 +1286,11 @@ ${columnOverrideCss()}` : currentCss;
     for (const highlight of added) {
       const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
       if (cfiRange === null) continue;
+      if (currentSearchRange === cfiRange) {
+        remove(active, SEARCH_OWNER, currentSearchRange);
+        currentSearchRange = null;
+        reportSearchPaint("refused");
+      }
       const collidingId = [...paintedUserHighlights].find(
         ([, painted]) => painted === cfiRange
       )?.[0];
@@ -1204,8 +1304,9 @@ ${columnOverrideCss()}` : currentCss;
       add(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
       paintedUserHighlights.set(highlight.id, cfiRange);
     }
+    if (added.length > 0) liftSearchMatch();
   }
-  function retintUserHighlights() {
+  function repaintLiveAnnotations() {
     if (!rendition) return;
     const active = rendition;
     for (const cfiRange of paintedUserHighlights.values()) {
@@ -1213,14 +1314,97 @@ ${columnOverrideCss()}` : currentCss;
     }
     paintedUserHighlights.clear();
     applyUserHighlights(lastUserHighlights);
+    liftSearchMatch();
     if (currentSpokenCfi !== null) {
       remove(active, TTS_OWNER, currentSpokenCfi);
       add(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
     }
   }
+  var geometryRaf = 0;
+  var geometryReanchor = false;
+  function scheduleGeometryRefresh(options = {}) {
+    if (options.reanchor === true) geometryReanchor = true;
+    if (geometryRaf !== 0) return;
+    geometryRaf = window.requestAnimationFrame(() => {
+      geometryRaf = 0;
+      const reanchor = geometryReanchor;
+      geometryReanchor = false;
+      if (!rendition) return;
+      const active = rendition;
+      forceReflow(active);
+      const finish = () => {
+        repaintLiveAnnotations();
+        invalidateHighlightBoxes();
+      };
+      if (reanchor && lastCfi !== null && !openInFlight) {
+        active.display(lastCfi).then(finish).catch(() => {
+          finish();
+        });
+        return;
+      }
+      finish();
+    });
+  }
   function repaintUserHighlights() {
     paintedUserHighlights.clear();
     applyUserHighlights(lastUserHighlights);
+  }
+  function contentsForCfi(cfi) {
+    if (!rendition) return null;
+    for (const contents of rendition.getContents()) {
+      if (cfiHasBase(cfi, contents.cfiBase)) return contents;
+    }
+    return null;
+  }
+  function applySearchMatch(match) {
+    if (!rendition) {
+      currentSearchRange = null;
+      return match === null ? "cleared" : "pending";
+    }
+    const active = rendition;
+    if (currentSearchRange !== null) {
+      remove(active, SEARCH_OWNER, currentSearchRange);
+      currentSearchRange = null;
+    }
+    pendingSearchMatch = match;
+    if (match === null) return "cleared";
+    const cfiRange = expandPointCfi(match.startCfi, match.matchText.length);
+    if (cfiRange === null) return "refused";
+    const contents = contentsForCfi(cfiRange);
+    if (contents === null) return "pending";
+    if (rangeForCfi(contents, cfiRange) === null) return "refused";
+    for (const painted of paintedUserHighlights.values()) {
+      if (painted === cfiRange) return "refused";
+    }
+    try {
+      add(active, SEARCH_OWNER, cfiRange, SEARCH_MATCH_VARIANT, searchMatchStyles());
+    } catch {
+      return "refused";
+    }
+    currentSearchRange = cfiRange;
+    return "painted";
+  }
+  function reportSearchPaint(outcome) {
+    if (outcome === "pending" || outcome === "cleared") return;
+    const painted = outcome === "painted";
+    if (reportedSearchPainted === painted) return;
+    reportedSearchPainted = painted;
+    post({ type: "searchMatchPainted", painted });
+  }
+  function retrySearchMatch() {
+    if (pendingSearchMatch === null || currentSearchRange !== null) return;
+    reportSearchPaint(applySearchMatch(pendingSearchMatch));
+  }
+  function liftSearchMatch() {
+    if (!rendition || currentSearchRange === null) return;
+    remove(rendition, SEARCH_OWNER, currentSearchRange);
+    add(
+      rendition,
+      SEARCH_OWNER,
+      currentSearchRange,
+      SEARCH_MATCH_VARIANT,
+      searchMatchStyles()
+    );
   }
   function rebuildForFlowIfNeeded() {
     if (!rendition || openInFlight) return false;
@@ -1232,6 +1416,7 @@ ${columnOverrideCss()}` : currentCss;
         add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
       }
       repaintUserHighlights();
+      liftSearchMatch();
     }).catch((error) => {
       fail("NAVIGATION_FAILED", error);
     });
@@ -1256,11 +1441,16 @@ ${columnOverrideCss()}` : currentCss;
       capExcessiveIndents(contents.document, viewportSize().width);
       insertStylesheet(contents, finalCssFor(contents.document));
       watchTouches(contents);
+      contents.on("resize", () => {
+        scheduleGeometryRefresh();
+      });
       invalidateHighlightBoxes();
+      retrySearchMatch();
     });
     rendition.on("resized", () => {
       applyBaselineCss();
       invalidateHighlightBoxes();
+      scheduleGeometryRefresh();
     });
     rendition.on("selected", (cfiRange, contents) => {
       const selection = contents.document.defaultView?.getSelection();
@@ -1282,6 +1472,7 @@ ${columnOverrideCss()}` : currentCss;
         lastCfi = location?.start?.cfi ?? null;
         lastSelection = null;
         invalidateHighlightBoxes();
+        retrySearchMatch();
         const href = location?.start?.href;
         const index = location?.start?.index;
         const section = typeof href === "string" && href !== "" && typeof index === "number" ? { index, href } : null;
@@ -1328,6 +1519,9 @@ ${columnOverrideCss()}` : currentCss;
           currentSpokenCfi = null;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
+          currentSearchRange = null;
+          pendingSearchMatch = null;
+          reportedSearchPainted = null;
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
@@ -1410,12 +1604,25 @@ ${columnOverrideCss()}` : currentCss;
      */
     applyAppearance: (appearance) => {
       const previousBg = currentAppearance?.bg;
+      const previousSignature = layoutSignature(currentAppearance, viewportSize());
       currentAppearance = appearance;
       if (!rendition) return;
       if (rebuildForFlowIfNeeded()) return;
       applyBaselineCss();
       rendition.spread(mapSpread(appearance.spread));
-      if (previousBg !== appearance.bg) retintUserHighlights();
+      const nextSignature = layoutSignature(appearance, viewportSize());
+      if (previousSignature !== nextSignature) {
+        scheduleGeometryRefresh({ reanchor: true });
+      } else if (previousBg !== appearance.bg) {
+        scheduleGeometryRefresh();
+      }
+      if (previousSignature !== nextSignature && appearance.customFontUri !== null) {
+        for (const contents of rendition.getContents()) {
+          void contents.document.fonts?.ready.then(() => {
+            scheduleGeometryRefresh();
+          });
+        }
+      }
     },
     /**
      * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
@@ -1476,6 +1683,27 @@ ${columnOverrideCss()}` : currentCss;
           `paintHighlights: ${String(foreign)} highlight(s) address pages, and this shell renders EPUB`
         );
       }
+    },
+    /**
+     * Paint or clear the one active search match. See `ReaderCommand`'s own note for why the payload
+     * arrives partitioned rather than tagged, and why the whole object crosses rather than this
+     * shell's half of it.
+     *
+     * A NON-NULL `pdf` SIDE IS A HOST BUG, reported the way `paintHighlights` reports a foreign
+     * entry: the host chose `openEpub` for this book, so a PDF-shaped match means it picked the wrong
+     * side while having picked the right shell. Structurally impossible, and it must not be able to
+     * hide as "no match found".
+     */
+    paintSearchMatch: (match) => {
+      if (match.pdf !== null) {
+        fail(
+          "NAVIGATION_FAILED",
+          "paintSearchMatch: the match addresses a page, and this shell renders EPUB"
+        );
+        return;
+      }
+      reportedSearchPainted = null;
+      reportSearchPaint(applySearchMatch(match.epub));
     },
     setSpokenRange: (cfi) => {
       try {
