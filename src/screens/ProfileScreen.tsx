@@ -39,7 +39,9 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { InstitutionRow } from '@components/InstitutionRow';
 import { ListRow } from '@components/ListRow';
+import { PrimaryButton } from '@components/PrimaryButton';
 import { useInstitutionStore } from '@store/institutionStore';
+import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { useSessionStore } from '@store/sessionStore';
 import type {
   ProfileStackParamList,
@@ -69,10 +71,12 @@ type Nav = CompositeNavigationProp<
 // now traceable to the scale.
 const SETTING_ICON_SIZE = space.md + space.xs;
 
-// Avatar sizes composed from the spacing scale rather than written as numbers,
-// the way InstitutionRow composes its own CREST_SIZE.
-const AVATAR_SIZE = space.xl * 2 + space.md;
-const AVATAR_GLYPH_SIZE = space.xl + space.sm;
+// Avatar sizes composed from the spacing scale rather than written as numbers.
+// Matched to InstitutionRow's own CREST_SIZE rather than invented — the avatar
+// and a crest are the same job, "identity glyph beside a name", so they read at
+// the same scale wherever they appear.
+const AVATAR_SIZE = space.xl + space.md;
+const AVATAR_GLYPH_SIZE = space.md + space.xs;
 
 export default function ProfileScreen() {
   const navigation = useNavigation<Nav>();
@@ -80,6 +84,10 @@ export default function ProfileScreen() {
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const clearSelectedInstitution = useInstitutionStore((s) => s.clearSelectedInstitution);
   const clearSession = useSessionStore((s) => s.clearSession);
+  const isAuthenticated = useSessionStore((s) => s.isAuthenticated);
+  const sessionUserId = useSessionStore((s) => s.userId);
+  const sessionInstitutionId = useSessionStore((s) => s.institutionId);
+  const clearPendingIntent = usePendingIntentStore((s) => s.clear);
 
   const handleChangeInstitution = useCallback(() => {
     // Screen 06 is the institution list, and it lives in the Catalogue stack as
@@ -95,6 +103,25 @@ export default function ProfileScreen() {
     navigation.navigate('ReaderPreferences');
   }, [navigation]);
 
+  // WHY THE PENDING INTENT IS CLEARED FIRST, on both of these. An intent is set by
+  // the access gate to mean "resume this item once you are signed in", and
+  // PersonalAccountScreen replays it with `popTo('ItemDetail')`. There is no
+  // ItemDetail in the Profile stack, so a leftover intent from an abandoned gate
+  // visit would send the reader to a route that does not exist here. Signing in
+  // from Profile is not resuming anything, and this says so.
+  const handleSignIn = useCallback(() => {
+    clearPendingIntent();
+    navigation.navigate('SignInMethod');
+  }, [clearPendingIntent, navigation]);
+
+  // Straight to the form, skipping the method chooser: an institution already owns
+  // its readers' accounts, so there is nothing to create on the SAML side and no
+  // choice to offer here.
+  const handleSignUp = useCallback(() => {
+    clearPendingIntent();
+    navigation.navigate('PersonalAccount', { mode: 'signUp' });
+  }, [clearPendingIntent, navigation]);
+
   const handleSignOut = useCallback(() => {
     // ORDER: session first, institution second, then navigate.
     // clearSession() drops the access token immediately so any in-flight request
@@ -105,6 +132,22 @@ export default function ProfileScreen() {
     navigation.navigate('Catalogue', { screen: 'CatalogueHome' });
   }, [clearSession, clearSelectedInstitution, navigation]);
 
+  // The account line shows what the session actually knows. There is still no name
+  // or email in AuthMeResponse (see the note at the top of this file), so an
+  // institutional reader gets their institution and a personal one gets the
+  // identifier the stub carries — never an invented display name.
+  let accountName = 'Not signed in';
+  let accountMeta = 'Sign in to sync your library';
+  if (isAuthenticated) {
+    if (sessionInstitutionId !== null && selectedInstitution !== null) {
+      accountName = selectedInstitution.name;
+      accountMeta = 'Institutional access';
+    } else {
+      accountName = sessionUserId ?? 'Signed in';
+      accountMeta = 'Personal account';
+    }
+  }
+
   return (
     // Scrolls because the row count is fixed and already taller than a small
     // handset — the settings block, sign out and the dev entry cannot all fit.
@@ -112,21 +155,58 @@ export default function ProfileScreen() {
       {/* Account header — see the note at the top of this file for why the name
           slot reads the way it does and why there is no email line yet. */}
       <View style={styles.account}>
-        {/* Decorative: a generic glyph standing in for a person, carrying no
-            information a screen reader needs. Hidden from the accessibility
-            tree on both platforms, the way VoiceOverlay hides its own. */}
-        <View
-          testID="profile-avatar"
-          style={styles.avatar}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-        >
-          <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.white} />
+        <View style={styles.accountIdentity}>
+          {/* Decorative: a generic glyph standing in for a person, carrying no
+              information a screen reader needs. Hidden from the accessibility
+              tree on both platforms, the way VoiceOverlay hides its own. */}
+          <View
+            testID="profile-avatar"
+            style={styles.avatar}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            <Ionicons name="person" size={AVATAR_GLYPH_SIZE} color={color.white} />
+          </View>
+
+          <View style={styles.accountText}>
+            <Text style={styles.accountName}>{accountName}</Text>
+            <Text style={styles.accountMeta}>{accountMeta}</Text>
+          </View>
         </View>
 
-        <View style={styles.accountText}>
-          <Text style={styles.accountName}>Not signed in</Text>
-        </View>
+        {/* THE TWO WAYS IN, side by side and matched — both `outlined`, no
+            icons, each stretched to fill half the row so the pair spans the
+            header the way the mockup does. `size="compact"` is what keeps
+            that full-width pair from reading as heavy as the settings list
+            below it — PrimaryButton's default height is ActionButton's own
+            44pt target, right for a page's main action; this is a header
+            prompt, so it takes the smaller size FilterChip already
+            established for exactly that case (see PrimaryButton.tsx). They
+            sit inside the account block rather than the settings list below:
+            they belong to the account, not to a setting. Sign-up is the
+            personal path only — see handleSignUp. */}
+        {!isAuthenticated && (
+          <View style={styles.authActions}>
+            <View style={styles.authAction}>
+              <PrimaryButton
+                testID="profile-sign-in"
+                label="Sign in"
+                emphasis="outlined"
+                size="compact"
+                onPress={handleSignIn}
+              />
+            </View>
+            <View style={styles.authAction}>
+              <PrimaryButton
+                testID="profile-sign-up"
+                label="Create account"
+                emphasis="outlined"
+                size="compact"
+                onPress={handleSignUp}
+              />
+            </View>
+          </View>
+        )}
       </View>
 
       <View style={styles.section}>
@@ -225,10 +305,9 @@ export default function ProfileScreen() {
         />
       </View>
 
-      {/* Offered only when there is something to sign out of. With no session
-          store, a selected institution is the only "signed in" the app has, and
-          a Sign out on an empty profile would be a button that does nothing. */}
-      {selectedInstitution !== null && (
+      {/* Offered only when there is something to sign out of — now either a real
+          session or, as before, a selected institution on its own. */}
+      {(isAuthenticated || selectedInstitution !== null) && (
         <View style={styles.signOut}>
           <ListRow title="Sign out" variant="destructive" onPress={handleSignOut} />
         </View>
@@ -286,17 +365,34 @@ const styles = StyleSheet.create({
   content: {
     paddingBottom: space.xl,
   },
+  // Now a column: the avatar-and-name row, then the two sign-in buttons beneath
+  // it when signed out. The row itself moved into `accountIdentity`. `md`
+  // vertical padding rather than `lg` — this is a compact header, the same
+  // weight as a ListRow's own padding, not a hero banner.
   account: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
+    gap: space.sm,
     paddingHorizontal: space.md,
-    paddingVertical: space.lg,
+    paddingVertical: space.md,
     backgroundColor: color.surface,
     // The divider the mockup draws under this block. Sections below it are
     // separated by their own top margin, which is the existing layout.
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: color.border,
+  },
+  accountIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+  },
+  // Side by side, not stacked — two full-height buttons stacked would double
+  // the block's height. `flex: 1` on each of `authAction` below splits the
+  // row evenly, so the pair spans the header the way the mockup does.
+  authActions: {
+    flexDirection: 'row',
+    gap: space.sm,
+  },
+  authAction: {
+    flex: 1,
   },
   avatar: {
     width: AVATAR_SIZE,
@@ -310,13 +406,25 @@ const styles = StyleSheet.create({
   },
   accountText: {
     flex: 1,
-    gap: space.xs,
+    gap: space.xs / 2,
   },
+  // sectionHeader, not pageTitle — the avatar dropped from a hero size to
+  // CREST_SIZE, and a 24px heading next to a 48px glyph reads top-heavy. This
+  // is a name label beside an icon, the same weight InstitutionRow gives its
+  // own institution name.
   accountName: {
-    fontWeight: type.pageTitle.weight,
-    fontSize: type.pageTitle.size,
-    lineHeight: type.pageTitle.lineHeight,
+    fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
+  },
+  accountMeta: {
+    fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
   },
   section: {
     marginTop: space.lg,

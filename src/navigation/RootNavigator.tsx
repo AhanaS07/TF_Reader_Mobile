@@ -27,6 +27,8 @@ import ItemDetailScreen from '../screens/ItemDetailScreen';
 import ShelfScreen from '../screens/ShelfScreen';
 import SignInScreen from '../screens/SignInScreen';
 import AccessGateScreen from '../screens/AccessGateScreen';
+import SignInMethodScreen from '../screens/SignInMethodScreen';
+import PersonalAccountScreen from '../screens/PersonalAccountScreen';
 
 import type {
   RootStackParamList,
@@ -35,7 +37,15 @@ import type {
   SearchStackParamList,
   LibraryStackParamList,
   ProfileStackParamList,
+  PersonalAccountMode,
 } from './types';
+
+// The header echoes the form the reader is looking at, and that form comes off the
+// route param, so the title is read from it rather than fixed per registration.
+function personalAccountTitle(mode: PersonalAccountMode) {
+  if (mode === 'signUp') return 'Create account';
+  return 'Sign in';
+}
 
 const styles = StyleSheet.create({
   splash: { flex: 1, backgroundColor: color.white },
@@ -127,6 +137,11 @@ function CatalogueNavigator() {
         component={AccessGateScreen}
         options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
       />
+      <CatalogueStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -158,6 +173,11 @@ function SearchNavigator() {
         name="InstitutionList"
         component={InstitutionListScreen}
         options={{ title: 'Select Institution' }}
+      />
+      <SearchStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
       />
     </SearchStack.Navigator>
   );
@@ -192,6 +212,29 @@ function ProfileNavigator() {
         name="ReaderPreferences"
         component={ReaderPreferencesScreen}
         options={{ title: 'Reading Preferences' }}
+      />
+      {/* The signed-out sign-in flow. All four are registered here rather than
+          reused from Catalogue so the reader stays on the Profile tab they
+          started from — see the note on ProfileStackParamList. */}
+      <ProfileStack.Screen
+        name="SignInMethod"
+        component={SignInMethodScreen}
+        options={{ title: 'Sign in' }}
+      />
+      <ProfileStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      <ProfileStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <ProfileStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
       />
     </ProfileStack.Navigator>
   );

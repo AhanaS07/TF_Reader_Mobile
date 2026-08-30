@@ -2,6 +2,12 @@
 // Keep in sync with RootNavigator.tsx. If a param changes here, update the navigator.
 import type { NavigatorScreenParams } from '@react-navigation/native';
 
+/**
+ * Which form PersonalAccountScreen shows. It rides in the route params rather than
+ * the screen's own state so the header title and the form cannot disagree.
+ */
+export type PersonalAccountMode = 'signIn' | 'signUp';
+
 /** Root stack wraps the tab navigator + the dev Gallery modal. */
 export type RootStackParamList = {
   Main: undefined;
@@ -44,6 +50,10 @@ export type CatalogueStackParamList = {
   // store, so a caller cannot reach the screen without naming an institution.
   // A shelf only exists inside one institution's catalogue.
   Shelf: { shelfId: string; title: string; institutionId: string };
+  // Personal-account (OIDC) form, reached from the access gate's "Personal
+  // account" card. Registered here as well as in Profile for the same reason
+  // SignIn is: a flow that started in this tab finishes in it.
+  PersonalAccount: { mode: PersonalAccountMode };
 };
 
 /** Search nested stack — shares ItemDetail shape. */
@@ -58,6 +68,7 @@ export type SearchStackParamList = {
   AccessGate: { itemId: string; title: string; authors: string };
   SignIn: undefined;
   InstitutionList: undefined;
+  PersonalAccount: { mode: PersonalAccountMode };
 };
 
 /** Single-screen stack — no pushed screens in Week 1. */
@@ -75,4 +86,15 @@ export type ProfileStackParamList = {
   // reason). There is no id to pass, so a caller cannot reach this screen with
   // the wrong one.
   ReaderPreferences: undefined;
+
+  // ─── Signed-out sign-in flow, pushed from the account block on screen 10 ────
+  //
+  // ALL FOUR LIVE IN THIS STACK ON PURPOSE. Sending the reader to Catalogue's
+  // copies would relocate them to a tab they never chose, and land them there
+  // after signing in. Same argument that already registers SignIn and
+  // InstitutionList in the Search stack.
+  SignInMethod: undefined;
+  PersonalAccount: { mode: PersonalAccountMode };
+  InstitutionList: undefined;
+  SignIn: undefined;
 };
