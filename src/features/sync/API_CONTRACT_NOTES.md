@@ -285,4 +285,4 @@ highlights/downloads don't set `mergeFields`, so neither code path touches them.
 | --- | --- | --- |
 | `C4` | wokay caps `items:batch` at 100 ids; flambeau's `GET /api/v1/library` deliberately doesn't paginate *because* of that cap | Whoever builds a library shelf hits both constraints together — a shelf over 100 must use the paged `GET /api/v1/loans`. Worth designing once rather than discovering |
 | `B5` | Loans are borrowed and never returned, so ELITE copies leak | `downloadStore` is where a downloads row is written; a return-on-delete flow touches it |
-| `B1` | There is no auth anywhere in the app | When a token exists, `syncApi.ts`'s `request()` needs the header too — it has none today either |
+| `B1` | ✅ **closed 2026-08-30** — `syncApi.ts`'s `request()` now sends a bearer token on every call (`sync/devAuthToken.ts`, `POST /api/v1/auth/dev-token` against `syncConfig.ts`'s own `API_BASE_URL`). Deliberately NOT a re-export of `download/devAuthToken.ts` — that module's token endpoint follows `download/config.ts`'s mock/real switch, which sync's `API_BASE_URL` doesn't have | — |
