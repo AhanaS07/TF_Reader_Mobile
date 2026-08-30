@@ -1274,7 +1274,7 @@ ${columnOverrideCss()}` : currentCss;
     );
   }
   function applyUserHighlights(highlights) {
-    if (!rendition) return;
+    if (!rendition) return false;
     const active = rendition;
     const { added, removedIds } = diffHighlights(new Set(paintedUserHighlights.keys()), highlights);
     if (removedIds.length > 0 || added.length > 0) invalidateHighlightBoxes();
@@ -1304,7 +1304,7 @@ ${columnOverrideCss()}` : currentCss;
       add(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
       paintedUserHighlights.set(highlight.id, cfiRange);
     }
-    if (added.length > 0) liftSearchMatch();
+    return added.length > 0;
   }
   function repaintLiveAnnotations() {
     if (!rendition) return;
@@ -1676,7 +1676,7 @@ ${columnOverrideCss()}` : currentCss;
     paintHighlights: (highlights) => {
       const { mine, foreign } = epubHighlights(highlights);
       lastUserHighlights = mine;
-      applyUserHighlights(mine);
+      if (applyUserHighlights(mine)) liftSearchMatch();
       if (foreign > 0) {
         fail(
           "NAVIGATION_FAILED",

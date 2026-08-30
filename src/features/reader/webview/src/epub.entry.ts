@@ -735,9 +735,18 @@ function watchTouches(contents: Contents): void {
  * An id already painted is left completely alone rather than re-painted — that is what makes a
  * repaint after every add/remove cost one annotation instead of all of them, and it is also why
  * `diffHighlights` compares ids only (highlights are create-and-delete-only; see its own note).
+ *
+ * >>> RETURNS WHETHER IT ADDED ANYTHING, AND DOES NOT TOUCH THE SEARCH LAYER ITSELF. <<< A new user
+ * rect is appended AFTER the search outline, so the outline has to be lifted back on top (§4's
+ * z-order) — but by the CALLER, at the end of its own batch. This function used to lift for itself,
+ * which meant the two callers that also lift afterwards (`repaintLiveAnnotations` and the flow
+ * rebuild's `repaintUserHighlights`) detached and re-attached the outline twice for one refresh.
+ * Harmless, since a lift is remove-then-add and ends in the same state either way — but it made a
+ * "sync the user layer" function quietly mutate a different owner's, which is the sort of reach a
+ * later edit gets wrong. One lift per batch, owned by whoever knows where the batch ends.
  */
-function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
-  if (!rendition) return;
+function applyUserHighlights(highlights: EpubHighlightPaint[]): boolean {
+  if (!rendition) return false;
   const active = rendition;
 
   const { added, removedIds } = diffHighlights(new Set(paintedUserHighlights.keys()), highlights);
@@ -765,8 +774,8 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
     // range the outline owns (highlight the word you just searched for). Painting over it would
     // displace the outline's map entry, and the outline's next `remove` would then detach THIS
     // annotation and orphan its rect — the reader's saved work lost to a layer that disappears on
-    // the next arrow press. So un-paint the outline first. `liftSearchMatch` below then has
-    // nothing to re-add, and the host is told the match is no longer marked.
+    // the next arrow press. So un-paint the outline first — whichever caller lifts at the end of
+    // this batch then has nothing to re-add, and the host is told the match is no longer marked.
     if (currentSearchRange === cfiRange) {
       highlightRemove(active, SEARCH_OWNER, currentSearchRange);
       currentSearchRange = null;
@@ -797,10 +806,7 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): void {
     paintedUserHighlights.set(highlight.id, cfiRange);
   }
 
-  // Anything just added was appended AFTER the search outline, so put it back on top — §4's
-  // z-order. Only when something was actually added: a repaint that changed nothing must not
-  // detach and re-attach a mark for no reason.
-  if (added.length > 0) liftSearchMatch();
+  return added.length > 0;
 }
 
 /**
@@ -841,9 +847,10 @@ function repaintLiveAnnotations(): void {
   paintedUserHighlights.clear();
   applyUserHighlights(lastUserHighlights);
 
-  // Unconditional, unlike the lift inside `applyUserHighlights`: `matchStroke` is derived from the
-  // page colour, so a theme change has to re-derive it even in a book with no user highlights at
-  // all (where that lift never fires because nothing was added).
+  // UNCONDITIONAL, and the return value above is deliberately ignored here. Every user rect was just
+  // re-added, so the outline needs putting back on top — but it also needs re-deriving even in a
+  // book with no user highlights at all, because `matchStroke` is a function of the page colour and
+  // the re-add is what re-measures the range. Both reasons hold independently of what the diff did.
   liftSearchMatch();
 
   if (currentSpokenCfi !== null) {
@@ -941,6 +948,9 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
  *
  * ONLY FOR A RENDITION THAT WAS JUST REBUILT. Against a live one it leaks the marks it means to
  * replace — use `repaintLiveAnnotations()` there, and see its note for what epub.js does.
+ *
+ * DOES NOT LIFT THE SEARCH OUTLINE, and its one caller does it directly afterwards — see
+ * `liftSearchMatch`'s note on one lift per batch. A second caller would have to do the same.
  */
 function repaintUserHighlights(): void {
   paintedUserHighlights.clear();
@@ -1061,14 +1071,20 @@ function retrySearchMatch(): void {
 /**
  * Re-add the search match ON TOP of whatever was just painted beneath it.
  *
- * Z-ORDER IS DOM ORDER in marks-pane, and HIGHLIGHT_LAYERS.md §4 puts `search` above `user`. Every
- * `applyUserHighlights` that adds anything appends a rect after the outline, so a highlight created
- * while a match is showing would sit over it. Re-adding is cheap and keeps the two legible at once,
- * which §3 makes an acceptance criterion rather than a nicety.
+ * Z-ORDER IS DOM ORDER in marks-pane, and HIGHLIGHT_LAYERS.md §4 puts `search` above `user`. A user
+ * rect added while a match is showing is appended AFTER the outline and would sit over it, so
+ * whatever added it lifts the outline back on top.
  *
- * Also the retint path: the stroke is derived from the page colour, so a theme change has to
- * re-derive it — and it must REMOVE first for the reason `repaintLiveAnnotations` documents at
- * length (a bare re-add leaves the old-coloured mark attached underneath).
+ * >>> CALLED ONCE PER BATCH, BY THE CALLER THAT KNOWS WHERE THE BATCH ENDS. <<< Never from inside
+ * `applyUserHighlights`, which is where it used to live: `repaintLiveAnnotations` and the flow
+ * rebuild both call that AND lift afterwards, so the outline was detached and re-attached twice for
+ * one refresh. The three batch boundaries are `paintHighlights` (conditionally, when the diff added
+ * something), `repaintLiveAnnotations`, and `rebuildForFlowIfNeeded`.
+ *
+ * Also the retint path: the stroke is derived from the page colour and the re-add re-resolves the
+ * CFI to a fresh `Range`, so this is the re-measure as well as the re-tint. It must REMOVE first for
+ * the reason `repaintLiveAnnotations` documents at length (a bare re-add leaves the old-coloured
+ * mark attached underneath).
  */
 function liftSearchMatch(): void {
   if (!rendition || currentSearchRange === null) return;
@@ -1556,7 +1572,12 @@ const api: TFReaderApi<'openEpub'> = {
   paintHighlights: (highlights) => {
     const { mine, foreign } = epubHighlights(highlights);
     lastUserHighlights = mine;
-    applyUserHighlights(mine);
+    // THE ONLY CALLER THAT HAS TO ASK. The other two (`repaintLiveAnnotations`, and the flow
+    // rebuild via `repaintUserHighlights`) lift unconditionally at the end of their own batch. Here
+    // the lift is worth skipping when the diff added nothing: a repaint that changed nothing must
+    // not detach and re-attach a mark for no reason, and this command is re-sent on every change to
+    // the host's highlight state.
+    if (applyUserHighlights(mine)) liftSearchMatch();
 
     if (foreign > 0) {
       fail(
