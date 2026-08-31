@@ -169,6 +169,21 @@ async function push(report: SyncReport): Promise<void> {
         continue;
       }
 
+      // Same resolution as LocatorCollision, keyed on (userId, bookId) instead of a locator: a
+      // different id already owns this book's one `downloads` row. Adopt it, discard ours - see
+      // `DownloadScopeCollision`'s own doc comment for why this is its own branch rather than
+      // folded into the locator path, and for the live-backend trace that found it.
+      if (error instanceof DownloadScopeCollision) {
+        const existing = await findDownloadForScope(error.payload);
+        if (existing) {
+          await TABLES.downloads.applyServerRecord(existing);
+        }
+        await TABLES.downloads.hardDeleteLocal(op.entity_id);
+        report.conflicts += 1;
+        await outboxStore.remove([op.id]);
+        continue;
+      }
+
       const apiError = error instanceof ApiError ? error : null;
 
       // Reserved for a server that compares timestamps itself and keeps its own
@@ -278,9 +293,15 @@ async function findDuplicateRecord(
   const fields = DUPLICATE_LOOKUP_FIELDS[entityType];
   if (!fields) return null;
 
+  // The OP'S OWN book, not the hardcoded BOOK_ID constant - a collision on, say,
+  // `dev-fixture-pdf` must list that book's bookmarks, not `book-001`'s. Latent since
+  // pull() went multi-book (§7, API_CONTRACT_NOTES.md): a duplicate on any book other than
+  // the prototype's original hardcoded one would never find its match here and would fall
+  // through to the plain PUT-under-own-id path, which 404s the same way DownloadScopeCollision
+  // exists to avoid below.
   const response = await api.list<any>(ENTITY_PATHS[entityType], {
     userId: USER_ID,
-    bookId: BOOK_ID,
+    bookId: String(payload.bookId ?? BOOK_ID),
   });
 
   return (
@@ -293,6 +314,45 @@ async function findDuplicateRecord(
 }
 
 /**
+ * Thrown by `sendCreate` when a `downloads` CREATE 409s and the record that already occupies
+ * this (userId, bookId) scope carries a DIFFERENT id than ours - the backend enforces one
+ * download row per book, but a re-download, a dev-fixture re-seed, or a "Clear All Downloads"
+ * followed by downloading again all mint a FRESH local id every time, with no id continuity to
+ * the row the server already has.
+ *
+ * Same shape as `LocatorCollision` and for the same reason: PUT-ing to our own id here 404s,
+ * because our id never existed server-side - a different id owns the scope. **Confirmed live**
+ * against a running backend, 2026-08-31: `POST /api/v1/downloads` for a book already downloaded
+ * under another id answers `409 CODE_TAKEN "A record already exists for this scope."`, and the
+ * generic 409 fallback's `PUT /api/v1/downloads/{our-id}` then answers `404`. That 404 is not a
+ * conflict or a validation failure, so `push()`'s catch-all re-threw it and ABORTED THE ENTIRE
+ * RUN - every op queued behind the poisoned one (bookmarks, highlights, anything) sat unsynced
+ * indefinitely, because `execute()` never reaches `pull()` when `push()` throws, and the abort is
+ * swallowed into `report.error`, which nothing surfaces. `sync_metadata.last_push_at` stuck at a
+ * week old is the fingerprint of exactly this failure mode.
+ *
+ * Not folded into `LocatorCollision`/`DUPLICATE_LOOKUP_FIELDS`: downloads has no locator, and the
+ * server's own 409 `message` for this case ("A record already exists for this scope.") is not one
+ * of the two `LOCATOR_DUPLICATION_MESSAGES` strings - it is downloads' OWN conflict shape, keyed
+ * on (userId, bookId) rather than a locator field, so it gets its own small parallel path rather
+ * than overloading a mechanism built for a different key.
+ */
+class DownloadScopeCollision {
+  constructor(readonly payload: Record<string, unknown>) {}
+}
+
+/** The server's current record for this (userId, bookId), if any - what `DownloadScopeCollision`
+ * resolves against. A book has at most one live `downloads` row per user by the backend's own
+ * constraint, so the first non-deleted match is the answer. */
+async function findDownloadForScope(payload: Record<string, unknown>): Promise<any | null> {
+  const response = await api.list<any>(ENTITY_PATHS.downloads, {
+    userId: String(payload.userId ?? USER_ID),
+    bookId: String(payload.bookId ?? BOOK_ID),
+  });
+  return (response.data ?? []).find((record: any) => !record.isDeleted) ?? null;
+}
+
+/**
  * POST, falling back to PUT.
  *
  * The 409 means a previous attempt already created the document and we never
@@ -300,10 +360,11 @@ async function findDuplicateRecord(
  * right answer because the payload is a full snapshot, and it is what makes a
  * retried push idempotent rather than a duplicate.
  *
- * UNLESS the 409 is a locator collision (see `LocatorCollision`) - PUT-ing to our own id there
- * would 404, because our id never existed server-side; the document that does exist has someone
- * else's id. That case is not retried here at all - it is thrown for `push()` to resolve, since
- * resolving it means discarding this device's local row, not sending anything further for it.
+ * UNLESS the 409 is a locator collision (see `LocatorCollision`) or a downloads scope collision
+ * (see `DownloadScopeCollision`) - PUT-ing to our own id in either case would 404, because our id
+ * never existed server-side; the document that does exist has someone else's id. Neither case is
+ * retried here at all - both are thrown for `push()` to resolve, since resolving them means
+ * discarding this device's local row, not sending anything further for it.
  */
 async function sendCreate(
   entityPath: string,
@@ -317,6 +378,12 @@ async function sendCreate(
     if (error instanceof ApiError && error.isConflict) {
       if (isLocatorDuplication(error)) {
         throw new LocatorCollision(entityType, payload);
+      }
+      if (entityType === 'downloads') {
+        const existing = await findDownloadForScope(payload);
+        if (existing && existing.id !== id) {
+          throw new DownloadScopeCollision(payload);
+        }
       }
       return (await api.update<any>(entityPath, id, payload)).data;
     }

@@ -72,6 +72,7 @@
 
 import * as Crypto from 'expo-crypto';
 import type { BookId, ContentFormat, EncryptedPackage, ReadingSessionResponse } from '@/shared/contracts';
+import { base64ToBytes } from '../encryption/base64';
 import { contentStore, maxDecryptedBytesFor } from '../encryption/contentStore';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { downloadTable } from '../sync/stores/downloadStore';
@@ -327,6 +328,16 @@ export async function downloadBook(
         cause,
       );
     }
+  } else if (session.index?.encryptedBytes) {
+    // The embedded-bytes convention `openBook.ts` handles for STREAM sessions — added for the
+    // mock backend alongside a signed `url`'s alternative, per reading-session.ts's `IndexUrl`.
+    // Missing here until now: a DOWNLOAD-intent session that comes back with `encryptedBytes` and
+    // no `url` fell through this whole block with `indexBytes` left `undefined`, silently
+    // persisting the book with no search index at all rather than a corrupted one — a different
+    // symptom from openBook.ts's bug (decode failure), but the same root gap. MUST base64-decode,
+    // not assign directly — `encryptedBytes` is base64 text on the wire (JSON has no binary type;
+    // see `IndexUrl`'s own doc comment for the on-device failure this caused when skipped once).
+    indexBytes = base64ToBytes(session.index.encryptedBytes);
   }
 
   // Synthesized locally by checkLicense() — the real response has no `licence` field at all (see
