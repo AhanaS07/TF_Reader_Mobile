@@ -310,7 +310,22 @@ export function createSyncableTable<TRow extends RowShape>(
         return true;
       }
 
-      if (existing && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
+      // Deletes are STICKY, regardless of timestamp - once either side has deleted this record,
+      // it stays deleted. Without this, a same-id update-in-place (e.g. bookmarkStore.rename())
+      // could resurrect a row another device deleted, just by carrying a later stamp than the
+      // delete - the exact race the original create-and-delete-only design (union via distinct
+      // ids) never had to consider. See READER_BOOKMARKS_WIRING.md's "Real rename op" open item.
+      //
+      // A tombstone already held locally rejects ANY incoming record outright (nothing to
+      // change - includes another delete arriving late, which is a no-op here). A live local row
+      // meeting an incoming delete applies it unconditionally, skipping the timestamp compare
+      // below entirely: this is "deletes win", not "the newer write wins and happens to be a
+      // delete" - a delete that is chronologically OLDER than a rename still must not be
+      // out-voted, or the two directions of this guard would contradict each other.
+      if (existing?.is_deleted === 1) {
+        return false;
+      }
+      if (existing && incoming.is_deleted !== 1 && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
         return false;
       }
 

@@ -117,18 +117,15 @@ SAME format. **Item 8's `target.kind` mitigation is now redundant** for correctn
 distinguishes books) — it still harmlessly filters by format and can be simplified whenever Reader
 touches it. Only the `USER_ID` half stays single-user prototype (separate identity item).
 
-**Real rename op — LOCAL HALVES LANDED 2026-08-26, engine resolution still Karthik's.** The op the
-2026-08-24 note asked for now exists: `renameBookmark(bookId, id, name)` (`readerBookmarks.ts`) →
-`bookmarkStore.rename(id, name)` (a same-id UPDATE through the shared `saveLocal` primitive). Both are
-tested and green. What is NOT decided, and is **Karthik's engine call**, is the delete-vs-rename
-cross-device race an update-in-place op reintroduces: under the current uniform whole-row LWW in
-`applyServerRecord`, a rename carrying a later stamp than a delete would **resurrect** a bookmark
-another device deleted. Recommended resolution (ours, per the annotations design): **deletes win**
-(make `is_deleted` sticky in `applyServerRecord` so a tombstone cannot be un-set by a later non-delete
-UPDATE); **rename-vs-rename stays plain LWW** (later name wins — that is fine, no data loss). Until
-Karthik confirms and, if needed, adds that guard, rename works correctly single-device and syncs; the
-only exposed edge is the concurrent delete-vs-rename-on-the-same-id case. `bookmarkStore.rename` and
-this facade both carry a NOTE pointing here. Once resolved, strike this item.
+**Real rename op — RESOLVED 2026-08-27 (Karthik).** The op landed 2026-08-26:
+`renameBookmark(bookId, id, name)` (`readerBookmarks.ts`) → `bookmarkStore.rename(id, name)` (a
+same-id UPDATE through the shared `saveLocal` primitive). The delete-vs-rename cross-device race it
+reintroduced is now closed: `applyServerRecord` (`syncableTable.ts`) makes deletes STICKY regardless
+of timestamp — a local tombstone rejects any incoming non-delete update outright, and an incoming
+delete applies unconditionally over a live local row (both directions, or the guard would contradict
+itself on ordering). Rename-vs-rename stays plain LWW, as recommended (later name wins, no data
+loss). Pinned by `syncableTable.test.ts` (generic mechanism) and `bookmarkStore.test.ts`'s
+"delete-vs-rename (cross-device)" block (the real scenario).
 
 **AUDIO locator — bookmarks skip it, deliberately (2026-08-26).** Since AUDIO joined the frozen
 `Locator` union (Karthik, for future audio-progress sync), a bookmark row can carry one. `toTarget`

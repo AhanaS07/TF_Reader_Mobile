@@ -1,7 +1,7 @@
 // Covers bookmarkStore.add()'s dedup guard - see the identical note on highlightStore.test.ts.
 
 import { getDatabase } from '../localDb/database';
-import { bookmarkStore } from './bookmarkStore';
+import { bookmarkStore, bookmarkTable } from './bookmarkStore';
 
 async function resetTable(): Promise<void> {
   const db = await getDatabase();
@@ -76,6 +76,30 @@ describe('rename()', () => {
     await bookmarkStore.remove(created.id);
 
     expect(await bookmarkStore.rename(created.id, 'New name')).toBeNull();
+  });
+});
+
+describe('delete-vs-rename (cross-device, via applyServerRecord)', () => {
+  it('a local delete is not resurrected by an incoming rename from a device that never saw it', async () => {
+    const created = await bookmarkStore.addForPage(7, 'Old name');
+    await bookmarkStore.remove(created.id); // this device deletes it
+
+    // Some other device, still unaware of the delete, renamed the same bookmark AFTER the
+    // delete happened - a later timestamp than the local tombstone.
+    const applied = await bookmarkTable.applyServerRecord({
+      id: created.id,
+      userId: 'user-001',
+      bookId: 'book-001',
+      chapterId: 'page-7',
+      locator: JSON.parse(created.locator),
+      name: 'Renamed elsewhere',
+      createdAt: created.created_at,
+      updatedAt: '2099-01-01T00:00:00.000Z',
+      isDeleted: false,
+    });
+
+    expect(applied).toBe(false);
+    expect(await bookmarkStore.list()).toHaveLength(0); // still gone, not resurrected
   });
 });
 
