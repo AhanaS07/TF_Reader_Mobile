@@ -2222,6 +2222,7 @@ export function ReaderScreen({
             activeIndex={search.activeIndex}
             onSelectHit={selectHit}
             awaitingSeek={awaitingSeek}
+            indexMissing={search.indexMissing}
           />
         )}
 

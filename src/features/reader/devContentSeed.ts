@@ -399,7 +399,18 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
  * no accessor for it. Adding one is Abhinav's call, and not worth it for scaffolding —
  * a version marker this file owns outright does the same job with no seam change.
  */
-const SEED_VERSION = 5;
+const SEED_VERSION = 6;
+// 6: NOT a shape change — a forced re-seed, which is the only lever this file has over an install
+//    that is already holding something stale. Reported 2026-08-31: search in the SAMPLE EPUB
+//    (`dev-sample-epub`) returned "no matches" for every term on a simulator, while the sample PDF
+//    searched fine. Everything checkable off-device was healthy — the shipped index has 2139
+//    postings and `queryIndex` finds 134 hits for "the" in it (more than the PDF's), the fixture
+//    wiring is pinned by devSearchIndex.test.ts, and no commit had touched search, encryption or
+//    ContentStore. That leaves exactly one candidate: `getIndex` returning null because the stored
+//    package on that install has no `.index.bin`, which is the failure v2 and v4 below were each
+//    bumped for. Costs one re-seed per install; if the symptom survives it, the cause is NOT stale
+//    state and `SearchPanel` now says which case it is ("This book has no search index" vs "No
+//    matches for X") instead of leaving the two indistinguishable.
 // 5: TWO DIFFERENT v4s existed before this branch was rebased onto dev_T4 — one that swapped
 //    SAMPLE_PDF_MODULE's bytes (Abhinav's, for on-device PDF testing) and one that gave the PDF
 //    fixtures their own search index (Reader's, below). Neither is what this file now seeds: the
