@@ -198,10 +198,19 @@ filed throws inside the render chain every time the reader opens that chapter, s
 `WEBVIEW_UNHANDLED_REJECTION` and the error banner. A match that cannot be drawn must cost a quiet
 notice, never a broken chapter.
 
-The verification has to match the chapter on `cfiBase` (`epubCfiRange.ts`'s `cfiHasBase`), not by
-resolving and seeing: `EpubCFI.toRange` ignores the spine component, so a CFI from another chapter
-resolves against the wrong document rather than failing. Measured on the sample book — 399 of 400
-foreign CFIs came back as real ranges.
+The verification has to find the chapter by SPINE POSITION (`epubCfiRange.ts`'s `cfiSpinePos`,
+compared against `contents.sectionIndex`), not by resolving and seeing: `EpubCFI.toRange` ignores the
+spine component, so a CFI from another chapter resolves against the wrong document rather than
+failing. Measured on the sample book — 399 of 400 foreign CFIs came back as real ranges.
+
+**And not by comparing `contents.cfiBase` either, which is how this shipped and why the feature
+painted nothing on a device.** The search index spells a chapter's base `/6/2[ch1]` and epub.js
+spells it `/6/2` — `spine.js:59` builds the assertion from the `<itemref>`'s `id` ATTRIBUTE, not its
+`idref`, and normal EPUBs (this repo's sample included) have no `id` there. The comparison answered
+"different chapter" forever and the paint was gated off in silence. `cfiSpinePos` is immune to that
+and to the second divergence behind it (the two producers also count spine steps differently); it is
+the comparison epub.js itself makes in `Annotations.add`. `searchCfiAnchoring.test.ts` runs both
+producers for real and pins the agreement.
 
 **`searchMatchPainted` is a NOTICE, not an ack.** The command is fire-and-forget; nothing waits on
 the reply. It exists because the failure is otherwise invisible — the `goTo` that precedes every

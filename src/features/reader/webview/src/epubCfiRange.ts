@@ -234,7 +234,7 @@ export function expandPointCfi(startCfi: string, length: number): string | null 
 }
 
 /**
- * Whether `cfi` addresses the chapter document whose `cfiBase` is `base`.
+ * The SPINE POSITION a CFI addresses — epub.js's `sectionIndex` — or null if it names none.
  *
  * >>> A CFI RESOLVES AGAINST THE WRONG CHAPTER RATHER THAN FAILING, SO THIS CANNOT BE SKIPPED. <<<
  * The tempting shortcut is "just call `contents.range(cfi)` and see what happens" — and it is
@@ -242,23 +242,52 @@ export function expandPointCfi(startCfi: string, length: number): string | null 
  * component. MEASURED on this repo's own sample book: of 400 CFIs taken from other chapters and
  * resolved against chapter 1's document, **399 resolved to a real range** (one threw, none returned
  * null), several of them to different text than they name — `epubcfi(/6/6[ch3]!…)` addressing the
- * word "1" came back as ".".
+ * word "1" came back as ".". So anything that paints or hit-tests across chapters must scope on the
+ * spine component FIRST, and cannot learn it by trying.
  *
- * So a caller that needs to know WHICH loaded chapter a CFI belongs to has to compare the base, and
- * a caller that hit-tests or paints across chapters has to filter on it first. Epub.js's own
- * `Annotations.add` does the equivalent (`annotation.sectionIndex === view.index`), which is why
- * painting has always been correctly scoped and hit-testing was not.
+ * >>> WHY A NUMBER AND NOT A BASE-STRING COMPARISON. THIS IS WHERE THE FEATURE DIED ON DEVICE. <<<
+ * The obvious test is `cfi.startsWith(contents.cfiBase)`. It never matches, because the two things
+ * that mint a base for the same chapter disagree about how to spell it:
  *
- * Verified against epub.js's own `Section.cfiBase` (`generateChapterComponent`) for the sample
- * book: `/6/2[ch1]`, `/6/4[ch2]`, `/6/6[ch3]`, matching the index's CFI prefixes exactly.
+ *   `search/extractor.ts`  ->  `/6/2[ch1]`   `/${spineStep}/${itemrefStep}[${idref}]`
+ *   epub.js at runtime     ->  `/6/2`        spine.js:59 passes `item.id` — the <itemref>'s own
+ *                                            `id` ATTRIBUTE, not its `idref` — and
+ *                                            `generateChapterComponent` appends `[…]` only `if (id)`
+ *
+ * An `<itemref idref="ch1"/>` with no `id` (the normal case, and this repo's sample book) therefore
+ * gets a bare `/6/2` at runtime while every indexed CFI carries the assertion. Nothing fails loudly:
+ * the comparison just answers "different chapter" forever, and the paint is gated off in silence.
+ *
+ * Stripping assertions would fix only half of it. The two producers can also disagree on the STEP
+ * NUMBERS — `extractor.ts` indexes over every element child of `<spine>`, epub.js's `item.index`
+ * counts only `<itemref>`s — so a spine with any other child would drift again. The spine POSITION
+ * is immune to both, and it is the comparison epub.js itself makes: `Annotations.add` attaches on
+ * `annotation.sectionIndex === view.index`. That is why painting was always correctly scoped while
+ * everything built on base strings was not.
+ *
+ * The arithmetic is epub.js's `parseStep`: an even step `n` is the `n / 2 - 1`'th element child. Null
+ * for a CFI with no indirection, a spine component of fewer than two steps, or an ODD second step
+ * (odd means a text node, which is not a spine item and means the CFI is malformed for this use).
  */
-export function cfiHasBase(cfi: string, base: string): boolean {
-  if (base === '') return false;
+export function cfiSpinePos(cfi: string): number | null {
   const inner = unwrap(cfi);
-  if (inner === null) return false;
+  if (inner === null) return null;
 
-  // The LAST `!`, matching `splitBase` — a CFI can carry more than one indirection, and it is the
-  // final one that opens the path. Compared as a whole step sequence rather than a bare prefix, so
-  // `/6/2[ch1]` cannot match `/6/22[ch12]`.
-  return splitBase(inner).base === `${base}!`;
+  // `splitBase` keeps the trailing `!`; drop it before reading steps. An empty base means the CFI
+  // has no indirection at all, so it addresses no spine item.
+  const { base } = splitBase(inner);
+  if (base === '') return null;
+
+  // The LAST `!` is what `splitBase` finds, so with a nested indirection this base is longer than
+  // the spine component — but the first two steps are still the spine component, which is all this
+  // reads. epub.js's own `getChapterComponent` splits on the FIRST `!` and lands on the same steps.
+  const steps = toSteps(base.slice(0, -1));
+  if (steps.length < 2) return null;
+
+  // Digits only, ignoring any `[assertion]` that follows them — which is the entire point.
+  const digits = /^\/(\d+)/.exec(steps[1]);
+  if (digits === null) return null;
+
+  const step = Number.parseInt(digits[1], 10);
+  return step % 2 === 0 ? step / 2 - 1 : null;
 }

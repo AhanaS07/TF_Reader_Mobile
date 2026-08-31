@@ -342,10 +342,20 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
  * without needing to reach into ContentStore's private metadata.
  */
 const SEED_VERSION = 6;
-// 6: Search indices are no longer seeded locally — they come from the backend as part of
-//    EncryptedPackage.index. An old v5 package with a seeded index no longer has a reason
-//    to exist; bump the version to trigger a re-seed (which now produces a package without
-//    an index, so the backend path is exercised).
+// 6: Two independent reasons landed on the same bump. Shape change: search indices are no longer
+//    seeded locally — they come from the backend as part of EncryptedPackage.index, so an old v5
+//    package with a seeded index no longer has a reason to exist. Separately, NOT a shape change
+//    on its own — a forced re-seed, which is the only lever this file has over an install that is
+//    already holding something stale. Reported 2026-08-31: search in the SAMPLE EPUB
+//    (`dev-sample-epub`) returned "no matches" for every term on a simulator, while the sample PDF
+//    searched fine. Everything checkable off-device was healthy — the shipped index has 2139
+//    postings and `queryIndex` finds 134 hits for "the" in it (more than the PDF's), the fixture
+//    wiring is pinned by devSearchIndex.test.ts, and no commit had touched search, encryption or
+//    ContentStore. That leaves exactly one candidate: `getIndex` returning null because the stored
+//    package on that install has no `.index.bin`, which is the failure v2 and v4 below were each
+//    bumped for. Costs one re-seed per install; if the symptom survives it, the cause is NOT stale
+//    state and `SearchPanel` now says which case it is ("This book has no search index" vs "No
+//    matches for X") instead of leaving the two indistinguishable.
 // 5: TWO DIFFERENT v4s existed before this branch was rebased onto dev_T4 — one that swapped
 //    SAMPLE_PDF_MODULE's bytes (Abhinav's, for on-device PDF testing) and one that gave the PDF
 //    fixtures their own search index (Reader's). Staying at 4 would let an install seeded by

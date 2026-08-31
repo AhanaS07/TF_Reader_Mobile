@@ -34,7 +34,7 @@ import {
   type TFReaderApi,
 } from './bridge';
 import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
-import { cfiHasBase, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
+import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
 import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
 import { forceReflow } from './epubViewGeometry';
@@ -182,6 +182,22 @@ let pendingSearchMatch: EpubSearchMatch | null = null;
  * Reset when a new payload arrives. */
 let reportedSearchPainted: boolean | null = null;
 
+/**
+ * Whether a match is still waiting for the navigation it arrived with to finish.
+ *
+ * >>> "PENDING FOREVER" AND "BROKEN" LOOK IDENTICAL, AND THAT COST A DEVICE SESSION. <<< `pending` is
+ * the right answer while a chapter is loading, and the wrong one once the reader has landed — but
+ * the first `paintSearchMatch` cannot tell those apart, so it stays silent for both. It stayed
+ * silent for a comparison that could never match (see `cfiSpinePos`), and the feature simply did
+ * nothing, with no notice and no error, for as long as it took to open a simulator.
+ *
+ * Set when a match arrives, cleared on the FIRST `relocated` after it — by then `goTo` has settled,
+ * so "still cannot find its chapter" is a real failure rather than a race. First-relocated ONLY:
+ * that event fires on every page turn, and a reader who simply turns away from the match's chapter
+ * must not be told anything.
+ */
+let awaitingSearchLanding = false;
+
 /** Search's channel (HIGHLIGHT_LAYERS.md §3): an OUTLINE, with no fill at all, so a match sitting
  * inside a user highlight is findable without hiding it. `fill: 'none'` is load-bearing, not a
  * default — epub.js merges its own `fill: yellow, fill-opacity: 0.3` UNDER whatever is passed, so
@@ -197,6 +213,14 @@ function searchMatchStyles(): Record<string, string> {
     stroke: matchStroke(currentAppearance?.bg),
     'stroke-width': '2',
     'stroke-opacity': '0.9',
+    // >>> NAMED EXPLICITLY BECAUSE epub.js MERGES ITS OWN UNDERNEATH US. <<< `IframeView.highlight`
+    // does `Object.assign({fill:'yellow','fill-opacity':'0.3','mix-blend-mode':'multiply'}, styles)`,
+    // so any key this function omits keeps epub.js's default. Omitting this one left `multiply` on
+    // the `<g>` every rect inherits from — and multiply against a near-black page returns the page
+    // colour, so on the dark theme the outline was drawn and then composited out of existence. It is
+    // the same trap `highlightFill`'s `screen` branch exists to dodge for the FILL channels; an
+    // outline has nothing to blend with the glyphs beneath it, so it wants no blending at all.
+    'mix-blend-mode': 'normal',
   };
 }
 
@@ -531,8 +555,10 @@ function highlightBoxes(contents: Contents): HighlightBox[] {
     // a press in chapter 1 could land on a phantom box belonging to a chapter-2 highlight and
     // `confirmDeleteHighlight` would delete THAT one — the wrong highlight, silently, with no undo.
     // Painting was never affected (epub.js checks `sectionIndex === view.index` itself), which is
-    // why nothing on screen ever hinted at it.
-    if (!cfiHasBase(cfiRange, contents.cfiBase)) continue;
+    // why nothing on screen ever hinted at it — and comparing the same way it does is what this now
+    // is. A base-string comparison worked here only by luck: these CFIs are minted by epub.js, so
+    // they happened to spell the base the way it does. The search layer's are not, and did not.
+    if (cfiSpinePos(cfiRange) !== contents.sectionIndex) continue;
 
     const range = rangeForCfi(contents, cfiRange);
     if (!range) continue;
@@ -554,7 +580,7 @@ function highlightBoxes(contents: Contents): HighlightBox[] {
  * text node throws `IndexSizeError` out of `EpubCFI.toRange`, which `fixMiss` does not recover.
  *
  * IT IS NOT A CHAPTER FILTER, though it was once documented as one. A CFI from another spine
- * document resolves here rather than failing; callers must scope with `cfiHasBase` first, and
+ * document resolves here rather than failing; callers must scope with `cfiSpinePos` first, and
  * `highlightBoxes` above says what that cost. */
 function rangeForCfi(contents: Contents, cfiRange: string): Range | null {
   try {
@@ -959,14 +985,20 @@ function repaintUserHighlights(): void {
 
 /** The loaded chapter document a CFI addresses, or null if that chapter is not on screen.
  *
- * Matched on `cfiBase` through the pure `cfiHasBase`, NOT by trying to resolve the CFI and seeing
- * whether it works — that read is measurably wrong, and that function's own note has the numbers.
- * epub.js's `Annotations.add` makes the same comparison before attaching (`sectionIndex ===
- * view.index`); this is the readable half of it. */
+ * Matched on SPINE POSITION, not by trying to resolve the CFI and seeing whether it works — that
+ * read is measurably wrong, and `cfiSpinePos`'s own note has the numbers. It is also not matched on
+ * `contents.cfiBase`, which is the version of this that shipped and never matched anything: the
+ * search index spells the base `/6/2[ch1]` and epub.js spells it `/6/2`. Same note.
+ *
+ * `sectionIndex === spinePos` is exactly what epub.js's `Annotations.add` compares before attaching,
+ * which is why painting was always scoped correctly while this was not. */
 function contentsForCfi(cfi: string): Contents | null {
   if (!rendition) return null;
+  const spinePos = cfiSpinePos(cfi);
+  if (spinePos === null) return null;
+
   for (const contents of rendition.getContents() as unknown as Contents[]) {
-    if (cfiHasBase(cfi, contents.cfiBase)) return contents;
+    if (contents.sectionIndex === spinePos) return contents;
   }
   return null;
 }
@@ -1273,6 +1305,15 @@ function createRendition(): Rendition {
       // painted, so whichever gets there first wins and the other is a no-op.
       retrySearchMatch();
 
+      // AND THIS IS WHERE SILENCE STOPS BEING ACCEPTABLE. The navigation the match arrived with has
+      // now settled, so a match that still is not painted is not waiting for anything — say so, and
+      // let the host's notice explain the absence rather than leaving the reader hunting for a word
+      // they were told is on the page. See `awaitingSearchLanding`.
+      if (awaitingSearchLanding) {
+        awaitingSearchLanding = false;
+        if (currentSearchRange === null && pendingSearchMatch !== null) reportSearchPaint('refused');
+      }
+
       // epub.js's own location already carries both, so this costs no extra call: `href` is the
       // spine item's and `index` its spine position. Sent whole or not at all — a section with an
       // index and no href cannot be compared against the previous one (see `ReaderSection`), so a
@@ -1339,10 +1380,11 @@ const api: TFReaderApi<'openEpub'> = {
         lastUserHighlights = [];
         // Same reasoning again for the search layer, and "resolve somewhere arbitrary" is not a
         // figure of speech here: `EpubCFI.toRange` ignores the spine component, so a CFI from the
-        // previous book resolves happily against this one's first chapter (see `cfiHasBase`).
+        // previous book resolves happily against this one's first chapter (see `cfiSpinePos`).
         currentSearchRange = null;
         pendingSearchMatch = null;
         reportedSearchPainted = null;
+        awaitingSearchLanding = false;
 
         const buffer = base64ToArrayBuffer(base64);
         book = ePub();
@@ -1608,6 +1650,8 @@ const api: TFReaderApi<'openEpub'> = {
 
     // A new payload is a new question, so whatever was said about the last one no longer counts.
     reportedSearchPainted = null;
+    // Only a paint has a landing to wait for; a clear has nothing to report either way.
+    awaitingSearchLanding = match.epub !== null;
     reportSearchPaint(applySearchMatch(match.epub));
   },
 
