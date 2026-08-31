@@ -6,7 +6,7 @@
 // two have to survive a round trip in both directions or a saved highlight paints in the wrong place
 // (or not at all), which no unit test that stopped at the entry's door could see.
 
-import { cfiHasBase, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
+import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
 
 const RANGE = 'epubcfi(/6/4[chap01]!/4/2,/2/1:0,/6/1:10)';
 const START = 'epubcfi(/6/4[chap01]!/4/2/2/1:0)';
@@ -167,49 +167,67 @@ describe('expanding a point CFI to cover a match', () => {
 
 // --- which chapter a CFI belongs to --------------------------------------------------------------
 //
-// >>> THE REASON THIS FUNCTION EXISTS IS A MEASUREMENT, NOT A HUNCH. <<< Resolving a CFI against the
-// wrong chapter's document does not fail — `EpubCFI.toRange` walks only the local path after `!` and
-// ignores the spine component entirely. Probed against this repo's own sample EPUB: of 400 CFIs
-// taken from chapters 2 and 3 and resolved against chapter 1, 399 came back as real ranges (one
-// threw, none returned null), several of them addressing different text than they name. So "just try
-// it and see" is not a chapter test, and every caller that crosses chapters needs this first.
+// >>> THIS BLOCK USED TO TEST THE WRONG THING, AND THE WRONG THING SHIPPED. <<< It covered a
+// `cfiHasBase(cfi, base)` that compared base STRINGS, and one of its cases asserted
+// `cfiHasBase('epubcfi(/6/2[ch1]!…)', '/6/2') === false` — "requires the assertion to agree too".
+// That is exactly the comparison the reader makes against `contents.cfiBase` at runtime, and
+// `contents.cfiBase` for this repo's books IS `/6/2`. So the test locked in the answer that gated
+// the whole feature off, and it was green the entire time.
+//
+// The lesson is not "add a case". It is that a comparison between two INDEPENDENT producers cannot
+// be pinned by a hand-written fixture, because the fixture is written from the same assumption the
+// code makes. `searchCfiAnchoring.test.ts` next door runs both producers for real; these cases only
+// pin the arithmetic.
 
-describe('matching a CFI to the chapter document it addresses', () => {
-  const CH1 = 'epubcfi(/6/2[ch1]!/4/4,/1:29,/1:33)';
-
-  it('matches its own base', () => {
-    expect(cfiHasBase(CH1, '/6/2[ch1]')).toBe(true);
+describe('the spine position a CFI addresses', () => {
+  it('reads the second step, halved — epub.js\'s own parseStep arithmetic', () => {
+    expect(cfiSpinePos('epubcfi(/6/2!/4/4/1:0)')).toBe(0);
+    expect(cfiSpinePos('epubcfi(/6/4!/4/4/1:0)')).toBe(1);
+    expect(cfiSpinePos('epubcfi(/6/6!/4/4/1:0)')).toBe(2);
   });
 
-  it('rejects another chapter, which is the whole point', () => {
-    expect(cfiHasBase(CH1, '/6/4[ch2]')).toBe(false);
-    expect(cfiHasBase(CH1, '/6/6[ch3]')).toBe(false);
+  it('IGNORES an id assertion, which is the whole reason it replaced a string compare', () => {
+    // The two producers spell the same chapter differently — `search/extractor.ts` emits the
+    // assertion, epub.js omits it (its `<itemref>` has no `id`). Both must answer the same.
+    expect(cfiSpinePos('epubcfi(/6/2[ch1]!/4/4,/1:29,/1:33)')).toBe(
+      cfiSpinePos('epubcfi(/6/2!/4/4,/1:29,/1:33)'),
+    );
+    expect(cfiSpinePos('epubcfi(/6/2[ch1]!/4/4,/1:29,/1:33)')).toBe(0);
   });
 
-  it('compares whole steps, so /6/2 does not match /6/22', () => {
-    // A bare `startsWith` on the string would pass this and mis-scope a book with twelve chapters.
-    expect(cfiHasBase('epubcfi(/6/22[ch12]!/4/4,/1:0,/1:4)', '/6/2')).toBe(false);
-    expect(cfiHasBase('epubcfi(/6/22[ch12]!/4/4,/1:0,/1:4)', '/6/22[ch12]')).toBe(true);
+  it('is unmoved by an assertion containing a slash or a digit', () => {
+    // `toSteps` is bracket-aware; the digit scan must stop at the `[`, not read into it.
+    expect(cfiSpinePos('epubcfi(/6/2[part/two]!/4/2/1:3)')).toBe(0);
+    expect(cfiSpinePos('epubcfi(/6/4[ch99]!/4/2/1:3)')).toBe(1);
   });
 
-  it('requires the assertion to agree too, rather than ignoring it', () => {
-    expect(cfiHasBase(CH1, '/6/2')).toBe(false);
+  it('reads the FIRST indirection when a CFI has more than one', () => {
+    // The spine component is always the first; `splitBase` finds the last `!`, so this pins that
+    // the extra steps after it are not mistaken for the spine.
+    expect(cfiSpinePos('epubcfi(/6/4[ch2]!/4/2!/4/4,/1:0,/1:4)')).toBe(1);
   });
 
-  it('splits on the LAST indirection, matching splitCfiRange and joinCfiRange', () => {
-    // A CFI may carry more than one `!`; the final one opens the path the ends live in, so the base
-    // is everything before it.
-    expect(cfiHasBase('epubcfi(/6/2[ch1]!/4/2!/4/4,/1:0,/1:4)', '/6/2[ch1]!/4/2')).toBe(true);
-    expect(cfiHasBase('epubcfi(/6/2[ch1]!/4/2!/4/4,/1:0,/1:4)', '/6/2[ch1]')).toBe(false);
+  it('distinguishes chapters that a bare string prefix would confuse', () => {
+    expect(cfiSpinePos('epubcfi(/6/2!/4/4/1:0)')).not.toBe(cfiSpinePos('epubcfi(/6/22!/4/4/1:0)'));
+    expect(cfiSpinePos('epubcfi(/6/22!/4/4/1:0)')).toBe(10);
   });
 
-  it('is false for an empty base and for a non-CFI, rather than matching everything', () => {
-    // `Contents.cfiBase` is a plain string field; an unset one must not turn this into "yes".
-    expect(cfiHasBase(CH1, '')).toBe(false);
-    expect(cfiHasBase('/6/2[ch1]!/4/4', '/6/2[ch1]')).toBe(false);
+  it('is null for a CFI with no indirection — it addresses no spine item', () => {
+    expect(cfiSpinePos('epubcfi(/6/2/4/4/1:0)')).toBeNull();
   });
 
-  it('is false for a CFI with no indirection at all', () => {
-    expect(cfiHasBase('epubcfi(/6/2/4/4,/1:0,/1:4)', '/6/2[ch1]')).toBe(false);
+  it('is null for an ODD second step, which is a text node rather than a spine item', () => {
+    // epub.js\'s `parseStep` treats odd as a text node. A CFI shaped like that is malformed for this
+    // use, and guessing `(3-1)/2` would silently name a real chapter.
+    expect(cfiSpinePos('epubcfi(/6/3!/4/4/1:0)')).toBeNull();
+  });
+
+  it('is null for a spine component too short to have an item step', () => {
+    expect(cfiSpinePos('epubcfi(/6!/4/4/1:0)')).toBeNull();
+  });
+
+  it('is null for anything that is not an epubcfi', () => {
+    expect(cfiSpinePos('/6/2[ch1]!/4/4')).toBeNull();
+    expect(cfiSpinePos('')).toBeNull();
   });
 });

@@ -222,14 +222,35 @@ itself. Two other things were:
   `highlightBoxes` built its box list from every painted highlight, relying on a foreign CFI failing
   to resolve. It does not, so a chapter-2 highlight contributed phantom boxes to chapter 1, and a
   long press landing on one made `confirmDeleteHighlight` delete that highlight instead — silently,
-  with no undo. Fixed by scoping on `cfiHasBase(cfiRange, contents.cfiBase)` first. **This predates
-  the search client**; it was found by the same probe and is fixed in the same change.
+  with no undo. Fixed by scoping on `cfiSpinePos(cfiRange) === contents.sectionIndex` first. **This
+  predates the search client**; it was found by the same probe and is fixed in the same change.
 - **The `search` layer must verify before it files.** See §1's collision note and
   `WEBVIEW_BRIDGE.md`'s search-match section: an unverifiable range filed into `Annotations` throws
   from `hooks.render` on every later visit to that chapter, not once.
 
-`cfiHasBase` (pure, in `epubCfiRange.ts`, unit-tested) is the scoping test. Use it before resolving
-any CFI you did not just mint from the document in front of you.
+`cfiSpinePos` (pure, in `epubCfiRange.ts`, unit-tested) is the scoping test: compare it against
+`contents.sectionIndex`, which is what epub.js's own `Annotations.add` compares. Use it before
+resolving any CFI you did not just mint from the document in front of you.
+
+> ### ⚠️ Do NOT scope by comparing `contents.cfiBase` as a string
+>
+> That is what shipped first, and it silently disabled search-match painting entirely — no box, no
+> notice, no error, found only on a simulator. **Two producers spell the same chapter differently:**
+>
+> | | Base it mints | Why |
+> | --- | --- | --- |
+> | `search/extractor.ts` | `/6/2[ch1]` | `` `/${spineStep}/${itemrefStep}[${idref}]` `` |
+> | epub.js at runtime | `/6/2` | `spine.js:59` passes the `<itemref>`'s **`id` attribute**, not its `idref`, and the assertion is appended only `if (id)` |
+>
+> An `<itemref idref="ch1"/>` with no `id` is the normal case. Stripping assertions is not enough
+> either: `extractor.ts` indexes over every element child of `<spine>` while epub.js's `item.index`
+> counts only `<itemref>`s, so the step numbers can diverge too. The spine POSITION is immune to
+> both. `searchCfiAnchoring.test.ts` runs epub.js's real `Packaging`/`Spine` against the shipped
+> index and fails if the two ever stop agreeing.
+>
+> User highlights were never affected: epub.js mints their CFIs, so they happened to spell the base
+> its way. That is exactly why a hand-written fixture could not catch this — it agrees with whichever
+> assumption the code already made.
 
 ### 4. Z-order — TTS on top, and only for the same-channel tie
 
