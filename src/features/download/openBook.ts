@@ -125,10 +125,21 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
     );
   }
 
+  // Search index can be provided as embedded encrypted bytes or a URL.
+  // For now, the mock backend provides embedded bytes; a real backend would provide a URL.
+  let searchIndex: Uint8Array | undefined;
+  if (session.index?.encryptedBytes) {
+    searchIndex = session.index.encryptedBytes;
+  } else if (session.index?.url) {
+    // TODO: fetch from URL if backend provides one instead of embedded bytes
+    // For now, only the embedded bytes path is implemented
+  }
+
   const pkg: EncryptedPackage = {
     bookId,
     format,
     content: bytes,
+    index: searchIndex,
     encryption: session.encryption ?? null,
     licence: {
       ...licence,

@@ -106,9 +106,15 @@ export interface SignedUrl {
  *
  * `url`/`encrypted` are OPTIONAL on the real spec too (same "test for presence" convention as
  * `SignedUrl` above) — only present when the caller asked for an index (`wantSearchIndex`) AND
- * the book actually has one. */
+ * the book actually has one.
+ *
+ * EXTENDED FOR MOCK/DEV: `encryptedBytes` carries embedded encrypted index bytes instead of a URL.
+ * For a production backend with object storage, `url` would be a signed URL. For the mock backend,
+ * `encryptedBytes` can be provided instead (embedded), and the app uses them directly. Both are
+ * optional — either one can be present. */
 export interface IndexUrl {
   url?: string;
+  encryptedBytes?: Uint8Array;
   encrypted?: boolean;
   termCount?: number;
 }
