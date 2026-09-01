@@ -20,11 +20,12 @@
 // than sending a `Locator`, and `openEpub`/`openPdf` routing by name rather than value.
 
 import {
+  highlightStore,
   toPaintable,
   type HighlightPaint,
   type SelectionRange,
 } from '@/features/sync/stores/highlightStore';
-import { annotationsRouter } from '@/features/personalization/annotationsRouter';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
 /**
  * One EPUB highlight the reader can paint, format-free. `id` is what tap-to-delete removes by; the
@@ -106,11 +107,12 @@ export function toReaderHighlights(paintable: HighlightPaint[]): ReaderHighlight
  * list (scoped to THIS book) -> paintable -> format-free payload, surfacing skipped rows. Shared by
  * every call-site below.
  *
- * Goes through `annotationsRouter`: Mongo-direct when online (refreshing the SQLite snapshot for a
- * downloaded book), SQLite when offline — see annotationsRouter.ts. `bookId` pins the open book.
+ * `bookId` is passed explicitly rather than letting `highlightStore.list` fall back to the single
+ * hardcoded `BOOK_ID` — that fallback is why every book would show every other book's highlights.
+ * `list(undefined, bookId)` keeps the store's single-user default while pinning the open book.
  */
 async function reload(bookId: string): Promise<LoadedHighlights> {
-  const rows = await annotationsRouter.highlights.list(bookId);
+  const rows = await highlightStore.list(undefined, bookId);
   const { paintable, skipped } = toPaintable(rows);
   return {
     highlights: toReaderHighlights(paintable),
@@ -127,10 +129,14 @@ export function loadReaderHighlights(bookId: string): Promise<LoadedHighlights> 
 }
 
 /**
- * CALL-SITE 2a — user highlights an EPUB selection. Persists via `annotationsRouter` (online → Mongo,
- * offline → SQLite pending for the reconcile) and returns the FRESH full set, so the caller re-sends
- * one authoritative `paintHighlights`. Returning the whole set rather than the one new highlight keeps
+ * CALL-SITE 2a — user highlights an EPUB selection. Persists via the store (which enqueues the sync
+ * outbox in the same transaction) and returns the FRESH full set, so the caller re-sends one
+ * authoritative `paintHighlights`. Returning the whole set rather than the one new highlight keeps
  * paint idempotent and matches the reader keeping an `id -> painted-range` map it diffs against.
+ *
+ * `pushNow()` after the write kicks a sync so a highlight made while already online reaches the server
+ * now, not on the next reconnect — fire-and-forget, never a precondition of the local save. See
+ * pushOnEdit.ts.
  */
 export async function addEpubHighlight(
   bookId: string,
@@ -138,7 +144,8 @@ export async function addEpubHighlight(
   endCfi: string,
   color?: string,
 ): Promise<LoadedHighlights> {
-  await annotationsRouter.highlights.addFromCfi(startCfi, endCfi, color, bookId);
+  await highlightStore.addFromCfi(startCfi, endCfi, color, bookId);
+  pushNow();
   return reload(bookId);
 }
 
@@ -148,7 +155,8 @@ export async function addPdfHighlight(
   selection: SelectionRange,
   color?: string,
 ): Promise<LoadedHighlights> {
-  await annotationsRouter.highlights.addFromSelection(selection, color, bookId);
+  await highlightStore.addFromSelection(selection, color, bookId);
+  pushNow();
   return reload(bookId);
 }
 
@@ -159,6 +167,7 @@ export async function addPdfHighlight(
  * the same diff every repaint does.
  */
 export async function removeHighlight(bookId: string, id: string): Promise<LoadedHighlights> {
-  await annotationsRouter.highlights.remove(id);
+  await highlightStore.remove(id);
+  pushNow();
   return reload(bookId);
 }
