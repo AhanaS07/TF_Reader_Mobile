@@ -150,6 +150,50 @@ describe('applyServerRecord (pull, Last-Write-Wins)', () => {
     expect(row?.server_updated_at).toBe('2026-02-01T00:00:00.000Z');
   });
 
+  it('a local tombstone rejects an incoming non-delete update, even carrying a later stamp', async () => {
+    // The delete-vs-rename race a same-id update-in-place op reintroduces (bookmarkStore.rename()) -
+    // see READER_BOOKMARKS_WIRING.md's "Real rename op" open item. Exercised generically here via
+    // progressTable since the guard lives in the shared applyServerRecord, not per-entity.
+    const id = 'p-sticky-delete-local';
+    await progressTable.writeRow({
+      ...progressRow(id, 1, '2026-01-01T00:00:00.000Z'),
+      is_deleted: 1,
+    });
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 99,
+      updatedAt: '2026-06-01T00:00:00.000Z', // later than the local tombstone
+      isDeleted: false,
+    });
+
+    expect(applied).toBe(false);
+    const row = await progressById(id);
+    expect(row?.is_deleted).toBe(1); // still a tombstone - not resurrected
+    expect(row?.offset).toBe(1); // untouched
+  });
+
+  it('an incoming delete wins over a live local row, even carrying an EARLIER stamp', async () => {
+    // The other half of "deletes are sticky": a delete must not be out-voted by the timestamp
+    // compare either, or the two directions of the guard would contradict each other.
+    const id = 'p-sticky-delete-incoming';
+    await progressTable.writeRow(progressRow(id, 1, '2026-06-01T00:00:00.000Z'));
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z', // earlier than the local row
+      isDeleted: true,
+    });
+
+    expect(applied).toBe(true);
+    expect((await progressById(id))?.is_deleted).toBe(1);
+  });
+
   it('leaves a newer local edit alone so its queued push still wins', async () => {
     const id = 'p-pull-older';
     await progressTable.writeRow(progressRow(id, 99, '2026-05-01T00:00:00.000Z'));

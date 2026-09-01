@@ -247,4 +247,14 @@ export const api = {
     request<T[]>(
       `${collection(entityPath)}${queryString({ ...params, includeDeleted: 'true' })}`,
     ),
+
+  /**
+   * Un-deletes a tombstoned record in place, under its OWN id. `downloads` only today: a create
+   * for a (bookId, format) that already has a record - even a soft-deleted one - answers 409
+   * CODE_TAKEN rather than creating a second one, and the only path back from that tombstone is
+   * this endpoint on the record's real id (confirmed against the real backend, 2026-08-31) - see
+   * `DownloadRestoreCollision` in syncEngine.ts.
+   */
+  restore: <T>(entityPath: string, id: string) =>
+    request<T>(`${collection(entityPath)}/${id}/restore`, { method: 'POST' }),
 };

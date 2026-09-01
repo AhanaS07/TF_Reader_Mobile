@@ -86,6 +86,8 @@ import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAss
 import { fetchEncryptedAsset } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
 import { checkLicense } from './licenseCheck';
+import { api } from '../sync/syncApi';
+import { findExistingDownload } from '../sync/syncEngine';
 
 export const BOOK_LIMIT = 5;
 
@@ -410,9 +412,28 @@ export async function downloadBook(
     }
 
     const existing = rows.find((row) => row.book_id === bookId) ?? null;
+
+    // No ACTIVE local row - but the server may already have history for this book (another
+    // device downloaded it, or this device did and its local row was lost), possibly tombstoned
+    // from an earlier delete. Minting a fresh id in that case is exactly what makes the server's
+    // create answer 409 CODE_TAKEN - check first instead of reacting to that after the fact.
+    // syncEngine.ts's DownloadRestoreCollision handling stays as the safety net for the race this
+    // narrows but cannot close (two devices re-downloading the same book at nearly the same
+    // moment), not the primary path for it.
+    let downloadId = existing?.id ?? null;
+    if (!downloadId) {
+      const remote = await findExistingDownload({ userId: USER_ID, bookId, format });
+      if (remote) {
+        if (remote.isDeleted) {
+          await api.restore<any>('downloads', remote.id);
+        }
+        downloadId = remote.id as string;
+      }
+    }
+
     const now = nowIso();
     const row: DownloadRow = {
-      id: existing?.id ?? newId(),
+      id: downloadId ?? newId(),
       user_id: USER_ID,
       book_id: bookId,
       format,
@@ -424,7 +445,7 @@ export async function downloadBook(
       is_deleted: 0,
       synced: 0,
     };
-    await downloadTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', { locked: true });
+    await downloadTable.saveLocal(row, downloadId ? 'UPDATE' : 'CREATE', { locked: true });
   });
 }
 

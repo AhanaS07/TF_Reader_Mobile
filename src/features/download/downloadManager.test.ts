@@ -24,6 +24,19 @@ import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
 import type { FlambeauError, Loan, ReadingSessionResponse } from '@/shared/contracts';
 
+// downloadBook() now checks the server for existing history (any device, possibly tombstoned)
+// before minting a new local id (2026-08-31, closes the downloads-CODE_TAKEN investigation) - this
+// file's global.fetch mocks below are shaped for Download's own endpoints only (reading-sessions,
+// asset bytes), so a real request through Sync's syncApi to /api/v1/downloads would 404 against
+// them. Mocked separately: every test here is a fresh, first-time download, so "no existing
+// record" is the correct default throughout.
+jest.mock('@/features/sync/syncApi', () => ({
+  api: {
+    list: jest.fn().mockResolvedValue({ data: [], serverTime: '' }),
+    restore: jest.fn().mockResolvedValue({ data: {}, serverTime: '' }),
+  },
+}));
+
 // A plain OPEN_ACCESS loan — canPersist:true (open access always persists; there's no key
 // material to protect by refusing to write it), no dueAt (open access never expires, per
 // reading-session.ts's own header).
