@@ -4,7 +4,7 @@ import {
   SUPPORTS_UPDATED_AFTER,
   USER_ID,
 } from './syncConfig';
-import { ENTITY_PATHS } from './localDb/mappers';
+import { downloadMapper, ENTITY_PATHS } from './localDb/mappers';
 import { SYNC_KEYS } from './localDb/schema';
 import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
@@ -169,6 +169,60 @@ async function push(report: SyncReport): Promise<void> {
         continue;
       }
 
+      // The server already has a (possibly tombstoned) record for this book+format, under a
+      // DIFFERENT id than this device's own - see `DownloadRestoreCollision`. Un-delete THAT
+      // record via `restore`, then PUT this device's current fields onto it (restore only
+      // reverses the delete; it does not know about whatever changed here since), and adopt the
+      // result under its real id. This device's own id never existed server-side, so - same
+      // reasoning as `LocatorCollision` - there is nothing to tombstone, only to discard.
+      if (error instanceof DownloadRestoreCollision) {
+        try {
+          const existing = await findExistingDownload(error.payload);
+          if (existing) {
+            await api.restore<any>('downloads', existing.id);
+            // error.payload still carries THIS device's stale id (it was the CREATE body that
+            // just got rejected) - sending it as-is would PUT to the real record's URL with a
+            // body that disagrees with it about which record this is, and if the response
+            // echoes the body's id back, applyServerRecord below writes the "restored" record
+            // under the WRONG (stale) id - which hardDeleteLocal then immediately deletes,
+            // erasing what was just written. Override it before it goes anywhere near the id.
+            const updated = await api.update<any>('downloads', existing.id, {
+              ...error.payload,
+              id: existing.id,
+            });
+            // writeRow, NOT applyServerRecord: this is the confirmed, authoritative result of a
+            // restore THIS device just performed, not a generic incoming pull that might be
+            // stale or adversarial - it must not go through applyServerRecord's sticky-delete
+            // guard. That guard's job is to stop a stale/unaware device's edit from undoing
+            // ANOTHER device's delete; here it was instead blocking THIS device's own,
+            // just-confirmed un-delete, because this id had an old local tombstone from before
+            // it was ever deleted server-side (e.g. from an earlier clearAllDownloads()) -
+            // applyServerRecord silently returned false, and the code below deleted the stale
+            // attempt's row anyway, leaving nothing active locally at all.
+            await TABLES.downloads.writeRow(downloadMapper.toRow(updated.data));
+            await TABLES[op.entity_type].hardDeleteLocal(op.entity_id);
+            report.conflicts += 1;
+            await outboxStore.remove([op.id]);
+            continue;
+          }
+        } catch {
+          // Falls through to the park-and-preserve branch below - any failure while resolving
+          // this (list, restore, or update all reach the network) must not risk the local row,
+          // and must not propagate and abort every other queued operation either.
+        }
+        // Could not find, or could not restore, whatever the server thinks already occupies
+        // this scope - do NOT discard the local row on a guess. Unlike LocatorCollision
+        // (bookmarks/highlights, trivial content), a download backs an actually-downloaded
+        // book: hardDeleteLocal here with nothing to replace it would make an already-downloaded,
+        // already-readable book vanish from the local `downloads` table for nothing. Park the
+        // operation and leave the local row exactly as it is - the book stays downloaded and
+        // usable offline either way, and this is revisited on the next retry rather than losing
+        // local state to find out why.
+        report.failed += 1;
+        await outboxStore.markFailed(op, 'download restore collision: could not resolve');
+        continue;
+      }
+
       const apiError = error instanceof ApiError ? error : null;
 
       // Reserved for a server that compares timestamps itself and keeps its own
@@ -183,8 +237,13 @@ async function push(report: SyncReport): Promise<void> {
         continue;
       }
 
-      // The payload is unacceptable. Back it off rather than blocking the queue.
-      if (apiError?.isValidation) {
+      // The payload is unacceptable, or (isNotFound) every recovery already tried above -
+      // create-fallback, update-fallback, restore - still came back 404. Either way this ONE
+      // operation cannot succeed as sent right now; back it off rather than blocking the queue.
+      // Without this, one permanently-failing operation aborts every other operation queued
+      // behind it, forever (see the downloads-CODE_TAKEN investigation, 2026-08-31) - a single
+      // poison operation must not prevent unrelated ones from syncing.
+      if (apiError?.isValidation || apiError?.isNotFound) {
         report.failed += 1;
         await outboxStore.markFailed(op, apiError.message);
         continue;
@@ -293,6 +352,44 @@ async function findDuplicateRecord(
 }
 
 /**
+ * Thrown by `sendCreate` for `downloads` only, when the 409 is the backend's "this (bookId,
+ * format) already has a record, even a soft-deleted one" scope rule (`CODE_TAKEN`) - confirmed
+ * against the real backend 2026-08-31: a download tombstoned on a previous delete permanently
+ * blocks a plain create for the same book+format, under ANY id, because the uniqueness check
+ * runs against every record regardless of `isDeleted` while `findById`/`update` only see live
+ * ones. There is nothing to retry under this device's own id - the record that needs to come
+ * back to life lives under a DIFFERENT id this device does not know yet, and the only path back
+ * from that tombstone is `POST /{id}/restore` on the real one (see `api.restore`).
+ */
+class DownloadRestoreCollision {
+  constructor(readonly payload: Record<string, unknown>) {}
+}
+
+function isDownloadScopeCollision(error: ApiError): boolean {
+  return error.body?.code === 'CODE_TAKEN';
+}
+
+/**
+ * Finds this device's book+format under whatever id the server actually stored it, tombstoned or
+ * not - `api.list` already sends `includeDeleted=true`. Scoped by the payload's OWN userId/bookId
+ * (not the single-book-prototype `USER_ID`/`BOOK_ID` constants `findDuplicateRecord` uses above):
+ * a download can be for any book, unlike bookmarks/highlights' single-open-book assumption.
+ *
+ * Exported for `downloadManager.ts` (Download, Abhinav): checking this BEFORE a create avoids
+ * the CODE_TAKEN round trip entirely for the common case (re-downloading a book this device or
+ * another one already has server-side history for) - this function's own resolution here in
+ * `push()` stays as the safety net for the race that check narrows but cannot close (two devices
+ * re-downloading the same book at nearly the same moment), not the primary path for it.
+ */
+export async function findExistingDownload(payload: Record<string, unknown>): Promise<any | null> {
+  const response = await api.list<any>('downloads', {
+    userId: payload.userId as string,
+    bookId: payload.bookId as string,
+  });
+  return (response.data ?? []).find((record: any) => record.format === payload.format) ?? null;
+}
+
+/**
  * POST, falling back to PUT.
  *
  * The 409 means a previous attempt already created the document and we never
@@ -317,6 +414,9 @@ async function sendCreate(
     if (error instanceof ApiError && error.isConflict) {
       if (isLocatorDuplication(error)) {
         throw new LocatorCollision(entityType, payload);
+      }
+      if (entityType === 'downloads' && isDownloadScopeCollision(error)) {
+        throw new DownloadRestoreCollision(payload);
       }
       return (await api.update<any>(entityPath, id, payload)).data;
     }

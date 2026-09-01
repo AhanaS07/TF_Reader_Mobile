@@ -15,6 +15,16 @@ import { USER_ID } from '../sync/syncConfig';
 import { API_BASE_URL } from './config';
 import type { Loan, ReadingSessionResponse } from '@/shared/contracts';
 
+// See downloadManager.test.ts's identical mock for why this exists (2026-08-31 downloads-
+// CODE_TAKEN fix): every test here is a fresh, first-time download, so "no existing record" is
+// the correct default.
+jest.mock('@/features/sync/syncApi', () => ({
+  api: {
+    list: jest.fn().mockResolvedValue({ data: [], serverTime: '' }),
+    restore: jest.fn().mockResolvedValue({ data: {}, serverTime: '' }),
+  },
+}));
+
 function openAccessLoanFor(bookId: string): Loan {
   return {
     loanId: `loan-${bookId}`,

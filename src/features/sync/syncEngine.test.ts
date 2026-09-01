@@ -9,6 +9,7 @@ import { getDatabase } from './localDb/database';
 import { SYNC_KEYS } from './localDb/schema';
 import type { OutboxRow, ProgressRow } from './localDb/types';
 import { bookmarkStore, bookmarkTable } from './stores/bookmarkStore';
+import { downloadTable } from './stores/downloadStore';
 import { personalizationId, personalizationStore, personalizationTable } from './stores/personalizationStore';
 import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
@@ -29,6 +30,7 @@ jest.mock('./syncApi', () => {
       remove: jest.fn(),
       findById: jest.fn(),
       list: jest.fn(),
+      restore: jest.fn(),
       health: jest.fn(),
     },
   };
@@ -154,6 +156,31 @@ describe('push', () => {
     expect(queued.status).toBe('FAILED');
     expect(queued.retry_count).toBe(1);
     expect(queued.next_retry_at).not.toBeNull();
+  });
+
+  it('a permanently-404-ing operation is parked, not left to abort every operation queued behind it', async () => {
+    // The downloads-CODE_TAKEN investigation (2026-08-31): a create's fallback-to-PUT 404 used to
+    // propagate raw out of sendCreate/push, aborting the whole drain - so an unrelated, perfectly
+    // healthy operation queued right behind it never even got attempted. Two records, oldest
+    // first: the first can never succeed as sent, the second must still go through.
+    await progressTable.saveLocal(progressRow('p-poison', 1, '2026-08-01T00:00:00.000Z'), 'CREATE');
+    await progressTable.saveLocal(progressRow('p-behind', 2, '2026-08-01T00:00:01.000Z'), 'CREATE');
+
+    mockApi.create.mockImplementation((_path, body: any) => {
+      if (body.id === 'p-poison') return Promise.reject(new ApiError('not found', 404));
+      return ok({ ...body, updatedAt: '2026-08-13T09:58:00.000Z' }) as any;
+    });
+
+    const report = await syncEngine.run();
+
+    expect(report.pushed).toBe(1);
+    expect(report.failed).toBe(1);
+    expect(report.error).toBeUndefined(); // the run completed; nothing propagated out of push()
+
+    const remaining = await outboxAll();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].entity_id).toBe('p-poison');
+    expect(remaining[0].status).toBe('FAILED');
   });
 
   it('falls back to PUT when a create answers 409 (a retried push is idempotent)', async () => {
@@ -507,6 +534,278 @@ describe('locator collision (bookmarks/highlights created independently on two d
     expect(report.pushed).toBe(1);
     expect(mockApi.update).toHaveBeenCalledWith('bookmarks', mine.id, expect.any(Object));
     expect(await bookmarkTable.findById(mine.id)).not.toBeNull(); // our own row survives, unchanged id
+  });
+});
+
+describe('download restore collision (downloaded, deleted, then re-downloaded with a fresh local id)', () => {
+  it("restores the server's tombstoned record under its OWN id, brings it up to date, and discards this device's stale id", async () => {
+    const mine = await downloadTable.saveLocal(
+      {
+        id: 'my-stale-download-id',
+        user_id: USER,
+        book_id: BOOK,
+        format: 'PDF',
+        local_path: null,
+        status: 'COMPLETED',
+        is_valid: 1,
+        downloaded_at: '2026-08-31T00:00:00.000Z',
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    // The server already has a record for this (bookId, format) - tombstoned from an earlier
+    // delete - under a DIFFERENT id than this device's fresh local one. Confirmed against the
+    // real backend, 2026-08-31: CODE_TAKEN fires regardless of which userId/id the create sends,
+    // because the uniqueness check runs against every record, deleted or not.
+    const theirs = {
+      id: 'their-download-id',
+      userId: USER,
+      bookId: BOOK,
+      format: 'PDF',
+      status: 'COMPLETED',
+      isValid: true,
+      downloadedAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      isDeleted: true,
+    };
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    // Reflects the real sequence: still tombstoned until THIS test's own restore() call fires,
+    // live afterward - so pull()'s own later list() call (same run) sees the post-restore state
+    // instead of naively re-applying a stale tombstone over what push() just fixed.
+    mockApi.list.mockImplementation((path: string) => {
+      if (path !== 'downloads') return ok([]) as any;
+      const restored = mockApi.restore.mock.calls.length > 0;
+      return ok([{ ...theirs, isDeleted: !restored }]) as any;
+    });
+    mockApi.restore.mockResolvedValue(ok({ ...theirs, isDeleted: false }) as any);
+    // Echoes back whatever `id` is in the BODY, exactly like the real backend does (confirmed
+    // 2026-08-31) - NOT the URL param. A naive mock that always trusted the URL param here
+    // would hide the real bug this pins: sending the stale local id in the body makes
+    // applyServerRecord adopt the restored record under the WRONG id, which hardDeleteLocal
+    // then immediately deletes - the write and its own undo, back to back.
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...theirs, ...body, isDeleted: false, updatedAt: '2026-08-31T10:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.restore).toHaveBeenCalledWith('downloads', 'their-download-id');
+    // The body's `id` must be the REAL id, not the stale local one from the failed create.
+    expect(mockApi.update).toHaveBeenCalledWith(
+      'downloads',
+      'their-download-id',
+      expect.objectContaining({ id: 'their-download-id' }),
+    );
+    expect(await outboxAll()).toHaveLength(0); // not stuck retrying forever
+
+    expect(await downloadTable.findById(mine.id)).toBeNull(); // our own stale row is gone
+    const adopted = await downloadTable.findById('their-download-id');
+    expect(adopted?.is_deleted).toBe(0); // restored, not still a tombstone
+  });
+
+  it('adopts the restored record even when THIS device already has an old local tombstone under that same id', async () => {
+    // Regression pin, found on-device 2026-08-31: this device previously deleted this exact
+    // download itself (e.g. via clearAllDownloads), so its OWN local row for the server's real
+    // id is already a tombstone here, separate from the fresh attempt's stale id. Routing the
+    // adoption through applyServerRecord hit its own sticky-delete guard (syncableTable.ts) -
+    // correct for an unrelated device's stale edit, but wrong here: this restore/update is the
+    // confirmed, authoritative result of an action THIS device just took, not a generic incoming
+    // pull to arbitrate. The guard silently returned false, and the fresh attempt's row got
+    // discarded anyway - leaving NOTHING active locally for a book that just got "restored".
+    await downloadTable.writeRow({
+      id: 'their-download-id',
+      user_id: USER,
+      book_id: BOOK,
+      format: 'PDF',
+      local_path: null,
+      status: 'COMPLETED',
+      is_valid: 1,
+      downloaded_at: '2026-08-25T00:00:00.000Z',
+      updated_at: '2026-08-28T00:00:00.000Z',
+      is_deleted: 1,
+      synced: 1,
+    });
+
+    const mine = await downloadTable.saveLocal(
+      {
+        id: 'my-stale-download-id-2',
+        user_id: USER,
+        book_id: BOOK,
+        format: 'PDF',
+        local_path: null,
+        status: 'COMPLETED',
+        is_valid: 1,
+        downloaded_at: '2026-08-31T00:00:00.000Z',
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    // Stateful, same reasoning as the first test in this block: still tombstoned until THIS
+    // test's own restore() call fires, live afterward - so pull()'s own later list() call (same
+    // run) sees the post-restore state instead of naively re-applying a stale tombstone over
+    // what push() just fixed.
+    mockApi.list.mockImplementation((path: string) => {
+      if (path !== 'downloads') return ok([]) as any;
+      const restored = mockApi.restore.mock.calls.length > 0;
+      return ok([
+        {
+          id: 'their-download-id',
+          userId: USER,
+          bookId: BOOK,
+          format: 'PDF',
+          status: 'COMPLETED',
+          isValid: true,
+          downloadedAt: '2026-08-25T00:00:00.000Z',
+          updatedAt: restored ? '2026-08-31T10:00:00.000Z' : '2026-08-28T00:00:00.000Z',
+          isDeleted: !restored,
+        },
+      ]) as any;
+    });
+    mockApi.restore.mockResolvedValue(
+      ok({
+        id: 'their-download-id',
+        userId: USER,
+        bookId: BOOK,
+        format: 'PDF',
+        status: 'COMPLETED',
+        isValid: true,
+        downloadedAt: '2026-08-25T00:00:00.000Z',
+        updatedAt: '2026-08-31T10:00:00.000Z',
+        isDeleted: false,
+      }) as any,
+    );
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...body, isDeleted: false, updatedAt: '2026-08-31T10:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(await downloadTable.findById(mine.id)).toBeNull(); // stale attempt discarded
+
+    const restored = await downloadTable.findById('their-download-id');
+    expect(restored?.is_deleted).toBe(0); // the OLD local tombstone did not block this
+  });
+
+  it('preserves the local row instead of deleting it when no matching server record can be found', async () => {
+    // Regression pin: an earlier version of this handling called hardDeleteLocal
+    // UNCONDITIONALLY, even when nothing was found to adopt instead - silently making an
+    // already-downloaded book vanish from the local `downloads` table for nothing.
+    const mine = await downloadTable.saveLocal(
+      {
+        id: 'my-download-id',
+        user_id: USER,
+        book_id: BOOK,
+        format: 'PDF',
+        local_path: null,
+        status: 'COMPLETED',
+        is_valid: 1,
+        downloaded_at: '2026-08-31T00:00:00.000Z',
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    mockApi.list.mockImplementation(() => ok([]) as any); // nothing found for ANY lookup
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(0);
+    expect(report.failed).toBe(1);
+    expect(mockApi.restore).not.toHaveBeenCalled();
+
+    const [queued] = await outboxAll();
+    expect(queued.status).toBe('FAILED'); // parked, not stuck silently and not lost
+
+    const local = await downloadTable.findById(mine.id);
+    expect(local).not.toBeNull(); // the local row survives untouched
+    expect(local?.is_deleted).toBe(0);
+  });
+
+  it('preserves the local row when the restore/update calls themselves fail, and does not abort the drain', async () => {
+    const mine = await downloadTable.saveLocal(
+      {
+        id: 'my-download-id-2',
+        user_id: USER,
+        book_id: BOOK,
+        format: 'PDF',
+        local_path: null,
+        status: 'COMPLETED',
+        is_valid: 1,
+        downloaded_at: '2026-08-31T00:00:00.000Z',
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+    // A second, unrelated queued operation - proves this failure does not take the whole
+    // drain down with it, same guarantee as the general 404 case.
+    await progressTable.saveLocal(progressRow('p-behind-restore', 1, '2026-08-01T00:00:00.000Z'), 'CREATE');
+
+    const theirs = {
+      id: 'their-download-id-2',
+      userId: USER,
+      bookId: BOOK,
+      format: 'PDF',
+      status: 'COMPLETED',
+      isValid: true,
+      downloadedAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      isDeleted: true,
+    };
+
+    mockApi.create.mockImplementation((_path, body: any) => {
+      if (body.id === 'my-download-id-2') {
+        return Promise.reject(
+          new ApiError('409 Conflict', 409, {
+            code: 'CODE_TAKEN',
+            message: 'A record already exists for this scope.',
+          }),
+        );
+      }
+      return ok({ ...body, updatedAt: '2026-08-13T09:58:00.000Z' }) as any;
+    });
+    mockApi.list.mockImplementation(
+      (path: string) => (path === 'downloads' ? ok([theirs]) : ok([])) as any,
+    );
+    mockApi.restore.mockRejectedValue(new ApiError('server fault', 500));
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(0);
+    expect(report.error).toBeUndefined(); // the run completed; nothing propagated out of push()
+    expect(report.pushed).toBe(1); // the unrelated progress op still went through
+
+    const local = await downloadTable.findById(mine.id);
+    expect(local).not.toBeNull(); // our own row survives, not deleted on a failed restore attempt
   });
 });
 
