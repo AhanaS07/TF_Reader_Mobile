@@ -76,6 +76,7 @@ const SAMPLE_APPEARANCE: ReaderAppearance = {
   dyslexiaFont: false,
   readableSpacing: false,
   announcePageChanges: true,
+  announceChapterChanges: true,
 };
 
 const webviewFile = (...parts: string[]): string =>
@@ -117,6 +118,7 @@ describe('parseReaderMessage', () => {
       position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/2)' },
       atStart: true,
       atEnd: false,
+      section: null,
     });
     expect(
       parseReaderMessage(
@@ -127,6 +129,7 @@ describe('parseReaderMessage', () => {
       position: { kind: 'page', page: 4, pageCount: 50 },
       atStart: false,
       atEnd: false,
+      section: null,
     });
     expect(
       parseReaderMessage(
@@ -158,6 +161,7 @@ describe('parseReaderMessage', () => {
       position: { kind: 'cfi', cfi: null },
       atStart: false,
       atEnd: false,
+      section: null,
     });
     // Non-conforming TOC entries are dropped, not passed through — and since the target became
     // discriminated that now includes a row whose TARGET is unusable, which the old shape could not
@@ -228,6 +232,57 @@ describe('the reported position', () => {
     expect(relocated('{"kind":"cfi"}')).toMatchObject({
       position: { kind: 'cfi', cfi: null },
     });
+  });
+});
+
+/**
+ * `section` is validated on the OPPOSITE rule to `position`, and the asymmetry is the whole design:
+ * an unusable position makes the message meaningless, an unusable section costs one word.
+ */
+describe("the relocated message's section", () => {
+  const withSection = (section: string): unknown =>
+    parseReaderMessage(
+      `{"type":"relocated","position":{"kind":"cfi","cfi":"epubcfi(/6/4!/2)"},` +
+        `"atStart":false,"atEnd":false,"section":${section}}`,
+    );
+
+  it('parses a well-formed section', () => {
+    expect(withSection('{"index":3,"href":"ch4.xhtml"}')).toMatchObject({
+      section: { index: 3, href: 'ch4.xhtml' },
+    });
+  });
+
+  it('accepts spine index 0 — the first chapter is not a missing one', () => {
+    expect(withSection('{"index":0,"href":"ch1.xhtml"}')).toMatchObject({
+      section: { index: 0, href: 'ch1.xhtml' },
+    });
+  });
+
+  it.each([
+    ['absent', 'null'],
+    ['not an object', '"ch4.xhtml"'],
+    ['missing an href', '{"index":3}'],
+    ['missing an index', '{"href":"ch4.xhtml"}'],
+    ['carrying an empty href', '{"index":3,"href":""}'],
+    ['carrying a fractional index', '{"index":1.5,"href":"ch2.xhtml"}'],
+    ['carrying a negative index', '{"index":-1,"href":"ch2.xhtml"}'],
+  ])('keeps the relocation and drops a section that is %s', (_label, section) => {
+    // DEFAULTED, NOT DROPPED. The relocation still has to reach the page indicator, TTS and
+    // session progress; refusing the whole message over a garbled chapter name would trade a
+    // missing word for a reader stuck on the previous page.
+    expect(withSection(section)).toMatchObject({
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4!/2)' },
+      section: null,
+    });
+  });
+
+  it('still drops the whole message when the POSITION is unusable, section or not', () => {
+    expect(
+      parseReaderMessage(
+        '{"type":"relocated","position":{"kind":"page","page":7,"pageCount":3},' +
+          '"atStart":false,"atEnd":false,"section":{"index":0,"href":"ch1.xhtml"}}',
+      ),
+    ).toBeNull();
   });
 });
 
@@ -356,6 +411,35 @@ describe('buildCommandScript', () => {
       buildCommandScript({ type: 'next' }),
       buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
       buildCommandScript({ type: 'applyAppearance', appearance: SAMPLE_APPEARANCE }),
+      // The newest way this rule could have been broken: `HighlightPaint` (Sync's stored shape) DOES
+      // discriminate on `format: 'EPUB' | 'PDF'`, so forwarding it as-is would put a frozen enum
+      // value on the wire. `toReaderHighlights` strips it host-side into these per-shell shapes;
+      // this is that stripping, asserted rather than trusted.
+      buildCommandScript({
+        type: 'paintHighlights',
+        highlights: [{ id: 'hl-1', startCfi: 'epubcfi(/6/4!/4/2/1:0)', endCfi: 'epubcfi(/6/4!/4/2/1:9)', color: 'yellow' }],
+      }),
+      buildCommandScript({
+        type: 'paintHighlights',
+        highlights: [{ id: 'hl-2', page: 4, startOffset: 10, endOffset: 25, color: 'yellow' }],
+      }),
+      // Same rule, same trap, one step further along: a `SearchHit.locator` is the frozen `Locator`
+      // union tagged with those literals, so forwarding one — or "tidying" the payload's two
+      // nullable sides back into a single tagged object — puts a frozen enum on the wire.
+      // `toReaderSearchMatch` partitions it host-side; this is that partition, asserted.
+      //
+      // The term is neutral DELIBERATELY. `matchText` is whatever the reader typed, so a search for
+      // the literal word "PDF" legitimately puts that string on the wire — this assertion is about
+      // the payload's SHAPE, not about arbitrary user text, and a term chosen to collide with it
+      // would be testing the wrong thing.
+      buildCommandScript({
+        type: 'paintSearchMatch',
+        match: { epub: { startCfi: 'epubcfi(/6/4!/4/2/1:0)', matchText: 'compass' }, pdf: null },
+      }),
+      buildCommandScript({
+        type: 'paintSearchMatch',
+        match: { epub: null, pdf: { page: 4, startOffset: 10, matchText: 'compass' } },
+      }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
         expect(script).not.toContain(`'${format}'`);
@@ -427,6 +511,13 @@ describe('what the compiler cannot check about the WebView half', () => {
       toc: {},
       error: {},
       ttsSentence: { requestId: 0, result: { status: 'unavailable' } },
+      // `null` IS the minimum valid payload here, not a placeholder for one — "nothing was selected"
+      // is a legitimate reply to `requestCurrentSelection`, so a case that only accepted a real
+      // selection would drop it.
+      selection: { selection: null },
+      highlightPressed: { id: 'hl-1' },
+      highlightTouchActive: { active: false },
+      searchMatchPainted: { painted: true },
     };
 
     for (const type of READER_MESSAGE_TYPES) {

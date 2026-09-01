@@ -53,6 +53,11 @@
 //      protocol change with a host-side half, not a change of how one file is produced.
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+import type {
+  EpubHighlightPaint,
+  PdfHighlightPaint,
+} from '@/features/personalization/readerHighlights';
+import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
 import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
 
 /**
@@ -206,6 +211,8 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *   rendered  — first display() resolved; the book is on screen.
  *   relocated — the page changed (also fires for the first page). Carries a
  *               `ReaderPosition`: a CFI from the EPUB shell, a page + page count from the PDF one.
+ *               Also carries the current `ReaderSection` where the format has one (EPUB), which is
+ *               what a chapter-change announcement is built from — see `ReaderSection`.
  *   toc       — navigation resolved, as one depth-first flattened list (a book's
  *               nav document is a tree). Arrives AFTER rendered, not with it.
  *   error     — anything went wrong; always coded, never bare.
@@ -233,9 +240,46 @@ export type ReaderPosition =
   | { kind: 'cfi'; cfi: string | null }
   | { kind: 'page'; page: number; pageCount: number };
 
+/**
+ * Which section of the book the reader is in, when the format has sections at all.
+ *
+ * NOT PART OF `ReaderPosition`, and the split is the point: a position is where to RESUME, a
+ * section is what to CALL where you are. They change on different events (every page turn moves the
+ * position; only a chapter boundary moves the section) and only one of them is worth announcing.
+ * Folding a chapter name into `ReaderPosition` would also put it into `sessionProgress` and
+ * `progressStore.savePosition()`, neither of which has any use for it.
+ *
+ * `index` is the SPINE index, 0-based — the same numbering `epubOutline.ts` uses. `href` is the
+ * spine item's own, and is what a chapter CHANGE is detected on: a `goTo` within the current
+ * chapter reports the same href, and a book whose spine repeats an href would look like a change on
+ * index alone.
+ */
+export interface ReaderSection {
+  index: number;
+  href: string;
+}
+
 // Discriminated on `kind` for the same reason `ReaderTarget` is — see the note there. Read it as "the
 // position is a CFI" / "the position is a page", not as "the book is an EPUB".
 
+/**
+ * A live text selection in the book, as the shell that owns it describes it.
+ *
+ * >>> DISCRIMINATED ON `kind`, NOT ON FORMAT — the same rule `ReaderTarget` and `ReaderPosition`
+ * already follow, and for the same reason: `ContentFormat` is a frozen contract and its values do
+ * not cross this bridge. Read `cfiRange` as "this selection is addressed by a pair of CFIs" and
+ * `pageRange` as "this selection is addressed by character offsets into one page", not as "this is
+ * the EPUB one" / "this is the PDF one".
+ *
+ * THE TWO SHAPES ARE EXACTLY WHAT `addEpubHighlight`/`addPdfHighlight` TAKE. That is deliberate:
+ * the host does not re-derive anything from this, it forwards it, so there is no second place for
+ * a selection's meaning to drift from what gets stored. `pageRange`'s `startOffset`/`endOffset` are
+ * character offsets into that page's text layer — see pdfTextRange.ts for why a PDF highlight is
+ * addressed by characters and not by a rectangle.
+ */
+export type ReaderSelection =
+  | { kind: 'cfiRange'; startCfi: string; endCfi: string }
+  | { kind: 'pageRange'; page: number; startOffset: number; endOffset: number };
 
 /**
  * The reply to a `requestTtsSentence` command. `requestId` is the same value the command carried —
@@ -249,10 +293,65 @@ export type ReaderPosition =
 export type ReaderMessage =
   | { type: 'ready' }
   | { type: 'rendered' }
-  | { type: 'relocated'; position: ReaderPosition; atStart: boolean; atEnd: boolean }
+  | {
+      type: 'relocated';
+      position: ReaderPosition;
+      atStart: boolean;
+      atEnd: boolean;
+      /**
+       * The section the position lands in, or null for a format with no spine (PDF always) and for
+       * a shell that could not name one.
+       */
+      section: ReaderSection | null;
+    }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string }
-  | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult };
+  | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
+  /**
+   * The currently selected text, in reply to `requestCurrentSelection` — or null if nothing is
+   * selected, or if the selection meets an existing highlight (refused; see that command's note).
+   * Sent only on request, not passively — creation is a native `menuItems` entry now, not a
+   * floating host UI tracking a live selection. No anchor: nothing positions a menu against this.
+   */
+  | { type: 'selection'; selection: ReaderSelection | null }
+  /**
+   * The reader chose "Delete Highlight" from the native menu, in reply to a
+   * `confirmDeleteHighlight` command, or never sent if that press wasn't on one. Carries only the
+   * id (`removeHighlight` takes an id, not a range). No anchor: nothing positions a menu against
+   * this any more — delete has no RN popup, it deletes directly on arrival.
+   */
+  | { type: 'highlightPressed'; id: string }
+  /**
+   * Whether the reader's current gesture is acting on a painted highlight. Drives which native menu
+   * item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection` and
+   * `confirmDeleteHighlight` re-decide for themselves, so a wrong/late value here only shows the
+   * "wrong" item, never causes a wrong action.
+   *
+   * SENT TWICE PER GESTURE BY THE EPUB SHELL, and the second one is the accurate one. At
+   * `touchstart` nothing is selected yet, so the only question answerable is "is the finger on a
+   * highlight" — while the reader's question is "does what I selected meet one". epub.js's
+   * `selected` event answers the real one 250ms after the selection settles, which is usually still
+   * before `touchend` (when WebKit builds the menu).
+   *
+   * ONLY EVER CLEARED FROM THE NEXT `touchstart`, not `touchend`/`touchcancel` — clearing there
+   * previously crashed the app: `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` at TAP
+   * time, not at menu-build time, with no bounds check, and the menu is built around `touchend`.
+   */
+  | { type: 'highlightTouchActive'; active: boolean }
+  /**
+   * Whether the shell managed to draw the search match it was last given a non-clear
+   * `paintSearchMatch` for. Reported rather than swallowed because the failure is INVISIBLE
+   * otherwise: the `goTo` that precedes it has already succeeded, so a match that never painted
+   * looks exactly like one that painted off screen, and no unit test can tell the two apart.
+   *
+   * NOT AN ERROR. `fail()` drives the reader's error banner and the in-page fallback, which is the
+   * right response to a corrupt book and a wildly disproportionate one to a search hit whose CFI
+   * would not expand. The host turns this into a quiet notice instead.
+   *
+   * Sent only for a payload that asked for a paint — a clear always succeeds, so there is nothing
+   * to report for one, and the host resets its own notice when it sends.
+   */
+  | { type: 'searchMatchPainted'; painted: boolean };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -276,6 +375,10 @@ export const READER_MESSAGE_TYPES = [
   'toc',
   'error',
   'ttsSentence',
+  'selection',
+  'highlightPressed',
+  'highlightTouchActive',
+  'searchMatchPainted',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -311,6 +414,10 @@ export const READER_COMMANDS = {
   applyAppearance: 'applyAppearance',
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
+  paintHighlights: 'paintHighlights',
+  requestCurrentSelection: 'requestCurrentSelection',
+  confirmDeleteHighlight: 'confirmDeleteHighlight',
+  paintSearchMatch: 'paintSearchMatch',
 } as const;
 
 /**
@@ -388,7 +495,69 @@ export type ReaderCommand =
    * `ReaderTextProvider.setSpokenRange`'s own contract: best-effort, never a reply, never a
    * reason to interrupt speech if it fails.
    */
-  | { type: 'setSpokenRange'; cfi: string | null };
+  | { type: 'setSpokenRange'; cfi: string | null }
+  /**
+   * Paint the user's saved highlights — the WHOLE set, every time, never a patch.
+   *
+   * >>> ONE IDEMPOTENT REPAINT, NOT AN ADD/REMOVE PAIR, AND THAT IS A DESIGN CHOICE. <<<
+   * `readerHighlights.ts`'s call-sites each return the fresh, full, authoritative set (its own
+   * contract), so the host has nothing else to send. The shell diffs the incoming set against what
+   * it has painted (`diffHighlights` in highlightPaint.ts): new ids get painted, ids that fell out
+   * get un-painted. A delete is therefore just an absence, which means there is exactly one way for
+   * the shell's paint to differ from storage — and re-sending after a reconnect or a re-render
+   * costs nothing rather than double-painting.
+   *
+   * THE PAYLOAD IS FORMAT-FREE, and that is not incidental. `HighlightPaint` (Sync's stored shape)
+   * discriminates on `format: 'EPUB' | 'PDF'` — frozen `ContentFormat` literals, which must never
+   * cross this bridge. `toReaderHighlights` splits them host-side into these two per-shell shapes
+   * with no `format` field at all, and the host sends whichever matches the shell it opened. Same
+   * move as `goTo` unwrapping `.cfi` from a `Locator`, and `openEpub`/`openPdf` routing by name.
+   *
+   * Fire-and-forget, like `setSpokenRange`: a highlight that cannot be painted must not be able to
+   * fail an open or interrupt reading.
+   */
+  | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] }
+  /**
+   * Fired when the reader taps the native "Highlight" item. Reads the selection fresh (not
+   * cached), so a selection extended right up to the tap is used. Answers `null` if the gesture
+   * meets an existing highlight — refuses rather than duplicating.
+   *
+   * "Meets" is the SELECTION's overlap first, the pressed point only as a fallback. Checking the
+   * pressed point alone let a selection dragged from plain text into a highlight paint a second
+   * annotation over the first, which then collided with it in epub.js's own map.
+   */
+  | { type: 'requestCurrentSelection' }
+  /**
+   * Fired when the reader taps the native "Delete Highlight" item. Replies with `highlightPressed`
+   * for whichever highlight the gesture is acting on — the same "selection first, pressed point as
+   * fallback" rule as above, so a highlight reached by dragging over it deletes like one reached by
+   * pressing it. Silent when neither applies (nothing to delete).
+   */
+  | { type: 'confirmDeleteHighlight' }
+  /**
+   * Paint the ONE active search match, or clear it. `NO_SEARCH_MATCH` (`{epub: null, pdf: null}`)
+   * is the clear, so there is no second command and no add/remove pair — the host sends one
+   * authoritative payload every time `activeIndex`/`hits` change, exactly as `paintHighlights`
+   * sends one authoritative set.
+   *
+   * >>> THE PAYLOAD IS PARTITIONED, NOT DISCRIMINATED, AND THAT IS THE POINT. <<<
+   * A `SearchHit.locator` is the frozen `Locator` union, tagged `type: 'EPUB' | 'PDF' | 'AUDIO'` —
+   * `ContentFormat` literals, which must never cross this bridge. Search's `toReaderSearchMatch`
+   * splits it host-side into two nullable per-shell sides carrying no tag at all, and each shell
+   * reads its own side: THE PARTITION IS THE ROUTING. Do not "tidy" the two sides back into one
+   * tagged object, and do not forward a `Locator` — `readerBridge.test.ts`'s ContentFormat check
+   * and `readerSearchMatch.test.ts`'s own serialisation check both fail if you do.
+   *
+   * Carries the WHOLE `ReaderSearchMatch` rather than the host-selected side, for the reason
+   * `CommandArgs.paintHighlights` gives: one entry per COMMAND, and both shells share this one.
+   * The cost, stated rather than hidden: unlike `paintHighlights` there is no host-side exhaustive
+   * `switch (format)` here, so a fourth `ContentFormat` would not be a compile error at the send
+   * site — a wrong-shell payload is caught by the receiving shell instead, and reported.
+   *
+   * Replies `searchMatchPainted` for a paint (not for a clear). That is a NOTICE, not an ack: the
+   * command is fire-and-forget like `paintHighlights`, and nothing waits on it.
+   */
+  | { type: 'paintSearchMatch'; match: ReaderSearchMatch };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -473,6 +642,21 @@ function asPosition(value: unknown): ReaderPosition | null {
   return null;
 }
 
+/**
+ * A `ReaderSection` from an untrusted payload, or null.
+ *
+ * LENIENT ON PURPOSE, unlike `asPosition`: see the note at its call site. An empty `href` is
+ * rejected rather than passed through, because it is the value `epubOutline.ts` already treats as
+ * "this entry addresses nothing" — a section that addresses nothing cannot be compared against the
+ * previous one, so it would announce a chapter change on every page turn.
+ */
+function asSection(value: unknown): ReaderSection | null {
+  if (!isRecord(value)) return null;
+  if (!isNonNegativeInteger(value.index)) return null;
+  if (typeof value.href !== 'string' || value.href === '') return null;
+  return { index: value.index, href: value.href };
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
@@ -481,6 +665,43 @@ function isPositiveInteger(value: unknown): value is number {
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
+
+/**
+ * A `ReaderSelection` from an untrusted payload, or null if it is not one.
+ *
+ * STRICT, and deliberately so even though a selection looks cosmetic: what this validates is what
+ * `addEpubHighlight`/`addPdfHighlight` will PERSIST and then sync. A CFI here is minted from the
+ * book's own text, and a page range's offsets index into the book's own extracted text, so this is
+ * exactly the untrusted-content path `parseReaderMessage` exists for.
+ *
+ * A REVERSED OR EMPTY PAGE RANGE IS REFUSED, not normalised. The shell already normalises a
+ * backwards drag (`offsetsForSelection` in pdfTextRange.ts); one arriving reversed here means the
+ * shell's own arithmetic is wrong, and quietly repairing it would hide that while storing a
+ * highlight nobody can see.
+ */
+function asSelection(value: unknown): ReaderSelection | null {
+  if (!isRecord(value)) return null;
+
+  if (value.kind === 'cfiRange') {
+    return typeof value.startCfi === 'string' &&
+      typeof value.endCfi === 'string' &&
+      value.startCfi !== '' &&
+      value.endCfi !== ''
+      ? { kind: 'cfiRange', startCfi: value.startCfi, endCfi: value.endCfi }
+      : null;
+  }
+
+  if (value.kind === 'pageRange') {
+    const { page, startOffset, endOffset } = value;
+    if (!isPositiveInteger(page)) return null;
+    if (!isNonNegativeInteger(startOffset) || !isNonNegativeInteger(endOffset)) return null;
+    if (endOffset <= startOffset) return null;
+    return { kind: 'pageRange', page, startOffset, endOffset };
+  }
+
+  return null;
+}
+
 
 /**
  * A `TtsSentence` from an untrusted payload, or null if it is not one.
@@ -566,6 +787,13 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
         position,
         atStart: parsed.atStart === true,
         atEnd: parsed.atEnd === true,
+        // DEFAULTED TO NULL, NOT DROPPED — the opposite of `position` two lines up, and the
+        // asymmetry is deliberate. A position that cannot be understood makes the whole message
+        // meaningless, and a confidently wrong page number is worse than none. A section that
+        // cannot be understood costs a chapter NAME on one announcement, while the relocation
+        // itself is still valid and still has to reach the page indicator, TTS and session
+        // progress. Dropping the message over it would trade a missing word for a stuck reader.
+        section: asSection(parsed.section),
       };
     }
 
@@ -587,6 +815,37 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
       if (result === null || !isNonNegativeInteger(parsed.requestId)) return null;
       return { type: 'ttsSentence', requestId: parsed.requestId, result };
     }
+
+    case 'selection': {
+      // NULL IS A REAL VALUE HERE, not a parse failure — "nothing was selected" is a legitimate
+      // reply to `requestCurrentSelection` (the reader tapped "Highlight" after the selection had
+      // already cleared). Anything that is neither null nor a valid selection IS a failure and
+      // drops the message, so a malformed payload can never be mistaken for that deliberate reply.
+      if (parsed.selection === null) return { type: 'selection', selection: null };
+      const selection = asSelection(parsed.selection);
+      return selection === null ? null : { type: 'selection', selection };
+    }
+
+    case 'highlightPressed':
+      // Dropped rather than defaulted, on the same reasoning as `relocated`'s position and more
+      // sharply: this id is about to be passed to `removeHighlight`, and a fabricated one either
+      // deletes nothing or deletes something the reader did not choose.
+      return typeof parsed.id === 'string' && parsed.id !== ''
+        ? { type: 'highlightPressed', id: parsed.id }
+        : null;
+
+    case 'highlightTouchActive':
+      // Malformed collapses to `false` rather than dropping the message — this only ever affects
+      // which menu item is offered, never destroys anything, so the safe default is "assume plain
+      // text" rather than "leave the previous gesture's state standing".
+      return { type: 'highlightTouchActive', active: parsed.active === true };
+
+    case 'searchMatchPainted':
+      // Malformed collapses to `false` — the same "safe default" reasoning as
+      // `highlightTouchActive` above, pointed the other way: this only drives a quiet notice, and a
+      // notice shown for a match that did paint is a smaller failure than silence for one that did
+      // not. That is the whole reason this message exists.
+      return { type: 'searchMatchPainted', painted: parsed.painted === true };
 
     default:
       return null;
@@ -629,7 +888,19 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : '';
+              : command.type === 'paintHighlights'
+                ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                  // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                  // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                  // storage rather than from a locator, and JSON.stringify escapes it like any other
+                  // string; nothing here is pasted into the script unquoted.
+                  JSON.stringify(command.highlights)
+                : command.type === 'paintSearchMatch'
+                  ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                    // book's text, so this is the payload rule 1 above is actually about — both are
+                    // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                    JSON.stringify(command.match)
+                  : '';
 
   return `(function(){
     try {

@@ -5,6 +5,11 @@ fixtures not yet exercised (real pre-existing book tested instead — see note a
 `WEBVIEW_A11Y_FINDINGS.md` in this same directory for the desk research this spike is meant to
 validate.
 
+> **UPDATE 2026-08-28 (Reader/Ahana) — F1 is fixed, F5 was misdiagnosed, and F4 has been attributed
+> to two code-level causes and fixed on both. §11 is the re-verification protocol; run it before
+> treating any row below as current.** Every result cell in §4-§7 still describes the 2026-08-24/25
+> pass and has NOT been re-measured. See the per-finding notes in §8.
+
 > Fill this in during the spike. Empty cells mean untested, not passing. Test protocol is the
 > DOM-inspection checklist, area matrix, and journey test in §3–5 below.
 
@@ -179,11 +184,17 @@ Where the same DOM behaved differently. This table is the argument for testing b
 > `epub.js`, our WebView glue, native RN, or the EPUB source itself.
 
 ```text
-F1. [native RN] Contents/TOC toggle announces as "Contents quantity 22, double tap to activate" on
+F1. [native RN] ~~Contents/TOC toggle announces as "Contents quantity 22, double tap to activate" on
     TalkBack (Android, pre-existing book) - confusing, not a clean announcement of what the control
     does or what "22" refers to (likely the visible "Contents (22)" label text, with the parenthetical
     number read oddly rather than as a normal quantity/count). Matches the pre-spike code audit's
-    flag that this button has no explicit `accessibilityLabel`.
+    flag that this button has no explicit `accessibilityLabel`.~~
+    **FIXED 2026-08-26, one day after this pass ran** - `ReaderScreen.tsx`'s Contents button now has
+    an explicit `accessibilityLabel` ("Contents" / "Close contents") plus `accessibilityState`, and
+    the count is deliberately kept OUT of the accessible name: it changes from "Contents (0)" to
+    "Contents (37)" when the `toc` message lands, which would rename a control the user may already
+    have focused. `expanded` is omitted while the button is disabled, because a control that can
+    never open is not "collapsed". No further work; re-verify the announcement text in §11.
 F2. [native RN, positive] The TTS toggle button correctly announces its on/off state via
     `accessibilityState` - "TTS off, button" when off, and after activating, the control reads back
     with selected/unselected state ("TTS on, selected" / "TTS off, unselected"). Android, pre-existing
@@ -209,6 +220,46 @@ F5. [native RN, likely a distinct bug from F4] After the TOC panel is used to na
     `accessibilityElementsHidden`/`importantForAccessibility="no-hide-descendants"` equivalent to
     what `ReaderScreen.tsx` already applies to the swipe-catcher and privacy-cover overlays), separate
     from F4's WebView-content problem.
+    **THE SUGGESTED FIX IS NOT THE FIX, and the observation is probably F4 (Reader/Ahana,
+    2026-08-28).** The TOC panel is `{showToc && <View .../>}` - it UNMOUNTS on close, so
+    `accessibilityElementsHidden` on the panel would be a no-op on a node that is not in the tree.
+    What was genuinely missing is the other half, and it landed 2026-08-26: `anyPanelOpen` now drives
+    that two-prop pair on the BACKGROUND (toolbar, WebView container, on-page badges, bottom row),
+    and `closeToc(restoreFocus)` plus the chapter-row's `focusOn(contentsButtonRef)` move focus back
+    to the Contents button. Both postdate this pass. That leaves the "and then nothing further is
+    reachable" tail, which is F4 itself - with no book content reachable, running out of elements
+    after the toolbar is the expected symptom, not a second bug. Re-verify in §11 rather than
+    patching blind.
+    DECLINED, with a reason: `accessibilityViewIsModal` on the TOC panel. It hides SIBLINGS (see
+    `VoicePicker.test.tsx`'s regression test for that sharp edge), and the Contents button in the
+    bottom row IS the TOC's only close affordance - setting it would strand a screen-reader user
+    inside the panel. That is the same trap the `controlsHidden`-vs-`anyPanelOpen` asymmetry in
+    `ReaderScreen.tsx` already exists to avoid.
+    **F4 ATTRIBUTED AND FIXED (Reader/Ahana, 2026-08-28) - TWO causes, not one, which is why the
+    targeted touch on a real-bounds node was also silent.**
+    (a) [our WebView glue] `ReaderWebView.tsx` wrapped the `<WebView>` in a `View` carrying
+        `accessibilityLabel="Book content"` AND `importantForAccessibility="yes"`. On Android RN maps
+        `accessibilityLabel` to `setContentDescription`, and a ViewGroup that is
+        important-for-accessibility with a contentDescription is a screen-reader focus LEAF - TalkBack
+        announces it and does not descend into the WebView's virtual node tree. This is verbatim the
+        "accessibilityLabel trap" that `ACCESSIBILITY_ARCHITECTURE_MAP.md` §1 and
+        `WEBVIEW_A11Y_FINDINGS.md` §3.6 name, using this exact string as the example. NOTE THE DATE:
+        it landed 2026-08-26, two days AFTER this pass, as item 9 of `READER_FOCUS_ORDER_HANDOFF.md` -
+        so it did not cause the original observation, but it would have made any fix unobservable and
+        invalidated a naive re-run. The named stop is now a 1x1 sibling node inside the container.
+    (b) [epub.js] Paginated flow is a CSS multi-column strip (this doc's own §3 measured ~12,741px
+        wide with `overflow: hidden`), which is exactly the layout F6 fingers. A block fragmented
+        across columns has no single box to report and everything outside the scrollport clips to
+        empty - which is why only "a couple of nodes near the bottom of the visible viewport" had real
+        bounds. The Reader now forces `flow: 'scrolled-doc'` (and `spread: 'single'`) whenever a
+        screen reader is running: normal document flow, native scroll, no columns. See
+        `src/features/reader/readerA11yLayout.ts`. It rides the `applyAppearance` flow-change path
+        that already rebuilds the rendition, restores the CFI and re-paints highlights.
+    NOT SILENT: the user set "Paginated", so `ReaderScreen` shows a one-time explanation with a
+    "Use pages anyway" opt-out, and `DevPreferencesMenu` disables and annotates its Flow/Spread rows
+    while the override is in effect.
+    STILL UNVERIFIED ON A DEVICE. Both fixes are reasoned from the mechanism and covered by unit
+    tests; neither has been observed against TalkBack. §11 is the A/B that separates (a) from (b).
 F6. [likely epub.js, pending confirmation] `adb shell uiautomator dump` was used to inspect the raw
     Android accessibility node tree directly (independent of live TalkBack interaction). It shows the
     WebView's DOM content IS present as native accessibility nodes - full paragraph text, headings,
@@ -245,8 +296,8 @@ Day-1 risks, re-rated against what was actually observed.
 | Excessive announcements | Medium | Not testable - there are currently zero announcements of book content to be excessive or not. | **Blocked/unconfirmed** |
 | ARIA overuse/misuse | Medium | No `aria-hidden` or other ARIA misuse found in the one page inspected. | **Low** (no evidence of this specific risk in what was inspected, though scope was limited to one page) |
 | *(new)* WebView content nodes exist in the native a11y tree but report degenerate zero-size bounds, and even a real-bounds node was unreachable by touch | — | Confirmed via `uiautomator` dump + targeted touch test (F4/F6) - this is the specific, novel mechanism behind the two rows above, not previously named in the Day-1 register. | **Critical/Blocking** |
-| *(new)* TOC panel leaves elements in the accessibility tree after being dismissed via chapter selection | — | Confirmed (F5) - distinct from the general "modal focus restoration" risk, since simple Close-button dismissal behaves correctly. | **Medium** |
-| *(new)* Confusing native-control announcement ("Contents quantity 22") | — | Confirmed (F1) - a native RN labelling gap, cheap to fix independent of the WebView-content blocker. | **Low** |
+| *(new)* TOC panel leaves elements in the accessibility tree after being dismissed via chapter selection | — | Confirmed (F5) - distinct from the general "modal focus restoration" risk, since simple Close-button dismissal behaves correctly. | ~~**Medium**~~ → **Unconfirmed, likely F4.** The panel unmounts; background-hiding and focus restoration landed 2026-08-26. See F5's note |
+| *(new)* Confusing native-control announcement ("Contents quantity 22") | — | Confirmed (F1) - a native RN labelling gap, cheap to fix independent of the WebView-content blocker. | ~~**Low**~~ → **CLOSED 2026-08-26.** Explicit label + `accessibilityState`; see F1 |
 
 ---
 
@@ -293,3 +344,101 @@ Carried to Day 3:
     accessibility bounds computation (F6), to move F4 from "confirmed symptom" to "attributed layer
     and fix."
 ```
+
+---
+
+## 11. Re-verification protocol (added 2026-08-28, Reader/Ahana — NOT YET RUN)
+
+Everything in §4–§10 describes the 2026-08-24/25 pass. Since then F1 was fixed, F5 was re-diagnosed,
+and F4 was attributed to two causes and fixed on both (see §8). **None of that has been observed on a
+device.** This section is the instrument for doing so. It needs an Android emulator with TalkBack,
+`adb`, and a dev build — none of which exist on the machine the fixes were written on.
+
+### 11.1 Environment
+
+Same as §1, so the two runs are comparable rather than merely both "run": emulator
+`sdk_gphone64_arm64`, Android 16 (API 36), TalkBack 16.x, Android System WebView 151.x, epub.js
+0.3.93. Record any drift in §1's table rather than in this section.
+
+```bash
+npm run reader:build-html     # both artifacts; CI diffs them, so confirm the tree is clean after
+npm run android               # expo run:android — expo-dev-client, NOT Expo Go
+adb shell settings put secure enabled_accessibility_services \
+  com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService
+adb shell uiautomator dump /sdcard/win.xml && adb pull /sdcard/win.xml
+adb forward tcp:9222 localabstract:webview_devtools_remote_$(adb shell pidof -s <pkg>)
+```
+
+The `uiautomator` dump is the instrument that matters: it shows the raw node tree independent of live
+TalkBack interaction, which is how F6 established that the content was present-but-degenerate rather
+than absent. **Grep it for `bounds="[0,0][0,0]"` on nodes carrying real book text** — that single
+count is the before/after number for cause (b).
+
+### 11.2 Loading Sample A and Sample B — the step the first pass could not complete
+
+§2's fixtures were never exercised: `ensureSeeded()` short-circuits on `isAvailableOffline()`, so
+`EXPO_PUBLIC_READER_FIXTURE_EPUB` had no effect once a book was already stored, and there was an
+explicit decision not to clear app data mid-session. Two ways past it, in order of preference:
+
+1. **Use the fixture rows, which seed under their own ids.** `npm run a11y:build-spike-fixtures`,
+   then set `EXPO_PUBLIC_READER_FIXTURE_EPUB` to
+   `samples/fixtures/a11y-spike-sample-a-wellformed.epub` and pick the **Big EPUB** row in
+   `BookListScreen`. `DEV_FIXTURE_EPUB_BOOK_ID` is a distinct id from `DEV_SAMPLE_EPUB_BOOK_ID`, so
+   it does not collide with an already-stored book — that distinctness is load-bearing, see
+   CLAUDE.md's note on `ensureSeeded()`.
+2. `adb shell pm clear <pkg>` before launch, which wipes the store entirely and re-seeds from
+   scratch. Slower, and it destroys any other state you were mid-way through.
+
+Point the env var at `samples/fixtures/` (gitignored), **not** at a copy pushed into the app
+container — an unencrypted book in the app's own Documents directory is exactly what a storage-leak
+sweep should flag.
+
+### 11.3 The A/B that attributes F4
+
+Both fixes landed together, so running the app once and finding it works attributes nothing. Run
+rows 1–6 in four configurations and record all four:
+
+| # | Container label | Flow | What a PASS here would mean |
+| - | --------------- | ---- | --------------------------- |
+| A | absent (current) | scrolled (current) | The combination ships. Says nothing about which half did the work |
+| B | absent | paginated (decline the override) | Cause (b) was not real — multi-column is fine and only the contentDescription mattered |
+| C | present (re-add it temporarily) | scrolled | Cause (a) was not real |
+| D | present | paginated | Reproduces the original F4. If this PASSES, neither attribution is right and §8 needs reopening |
+
+B is reachable without a code change — the override notice's **"Use pages anyway"** button produces
+exactly that state. C and D need `accessibilityLabel` put back on the container `View` in
+`ReaderWebView.tsx` for the run and taken off again; do not commit that.
+
+### 11.4 Rows to re-run
+
+Against **Sample A**, **Sample B**, and the real pre-existing book, per §2's reasoning that "works on
+a clean EPUB" is not a complete answer:
+
+- **1–6** (enter WebView navigation, heading with level, paragraphs, links, images + alt, decorative
+  images ignored) — the block F4 took down.
+- **14** (focus order across the native↔web seam) and **16** (chapter-change announcement). 16 now has
+  a real implementation behind it — see `src/features/reader/READER_ANNOUNCEMENTS.md`.
+- **18**, *including the focus-trap half that was never confirmed*: with the TOC open, can a swipe
+  reach background content? Note the deliberate asymmetry it must NOT break — the bottom controls row
+  stays reachable while the TOC is open, because the Contents button in it is the TOC's only way out.
+- **19** (focus restoration after the TOC), to confirm the 2026-08-26 focus work did not regress it.
+- **The heading-navigation sub-check in §4.1**, still untested for both samples. It is the single
+  best proxy for whether the EPUB's semantic structure survived epub.js.
+
+### 11.5 New rows, for what these fixes introduce
+
+| Question | Why it is asked |
+| -------- | --------------- |
+| Does `ContinuousViewManager` put OFF-SCREEN chapters into the a11y tree? | Scrolled flow keeps several sections mounted, unlike paginated. This is the one thing the fix could trade one problem for. §3's "are off-screen pages hidden" question, re-asked for the new layout |
+| Does one page turn produce exactly ONE utterance? | Unit tests can prove the announcement fires once; they cannot see what the WebView's own DOM changes provoke on top of it |
+| Does a page or chapter change while TTS is reading stay silent? | Gate 3 in READER_ANNOUNCEMENTS.md. `autoContinueChapter` makes this the ordinary case, not a corner one |
+| Does the override notice appear exactly once, and does "Use pages anyway" work? | It is the user's only escape from a forced layout |
+| Is the reading position kept across the flow switch? | The override rebuilds the epub.js rendition. `epub.entry.ts` restores `lastCfi` and re-paints highlights; confirm both |
+
+### 11.6 What this protocol does NOT cover
+
+**iOS / VoiceOver.** Every VoiceOver cell in all 21 rows of §4 is still `—`, and §1 says in bold not
+to infer iOS results from Android. Both causes in §8 are Android-specific in mechanism —
+`contentDescription` focus-merging is an Android behaviour, and the degenerate bounds were measured
+on Android's WebView bridge — so a green Android run says nothing about WKWebView. A VoiceOver pass
+is still outstanding and is still the larger of the two remaining unknowns.

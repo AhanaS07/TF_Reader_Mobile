@@ -5,8 +5,9 @@
 // else's rows.
 //
 // There is no health-check skip. If the backend is down or answers 401 (see B1 in
-// API_CONTRACT_NOTES.md - the app sends no auth header today), the failure IS the useful signal,
-// and swallowing it would make a genuine outage or an unauthenticated call read as a green suite.
+// API_CONTRACT_NOTES.md - syncApi.ts now sends a dev bearer token, devAuthToken.ts, but that
+// endpoint itself can be down, or the token rejected), the failure IS the useful signal, and
+// swallowing it would make a genuine outage or an unauthenticated call read as a green suite.
 //
 // global.fetch is replaced below with a plain node:http/https client BEFORE anything else runs.
 // jest-expo's `fetch` is React Native's own polyfill, which talks to RN's native XHR bridge - a

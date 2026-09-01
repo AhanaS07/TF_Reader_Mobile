@@ -50,11 +50,14 @@
 // whenever the active book's format is `'PDF'`. `fontFamily`/`fontSizePt`/etc. stay in
 // `ReaderAppearance` regardless — EPUB still needs them.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { LayoutChangeEvent } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
+import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
+import { flowOverrideApplied } from '@/features/reader/readerA11yLayout';
+import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
@@ -98,6 +101,15 @@ function toggleFontFamily(current: SharedPrefs, family: string): PrefsPatch {
 const FLOW_OPTIONS: readonly { label: string; flow: LayoutPrefs['flow'] }[] = [
   { label: 'Paginated', flow: 'paginated' },
   { label: 'Scrolled', flow: 'scrolled-doc' },
+];
+
+/** Labels kept short — these two sit side by side in one row, like every other pair in this menu. */
+const ANNOUNCE_OPTIONS: readonly {
+  label: string;
+  field: 'pageChanges' | 'chapterChanges';
+}[] = [
+  { label: 'Pages', field: 'pageChanges' },
+  { label: 'Chapters', field: 'chapterChanges' },
 ];
 
 const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[] = [
@@ -163,6 +175,30 @@ function toggleTtsEnabled(current: SharedPrefs): PrefsPatch {
     accessibility: {
       ...current.accessibility,
       tts: { ...current.accessibility.tts, enabled: !current.accessibility.tts.enabled },
+    },
+  };
+}
+
+/**
+ * The two `announce.*` gates, flipped the same way `toggleTtsEnabled` flips its one.
+ *
+ * A PLAIN FLIP, not this file's usual revert-to-default toggle, and the difference is worth stating
+ * because it looks like an inconsistency: both of these DEFAULT TO TRUE (they are two of the four
+ * defaults `DEFAULT_ACCESSIBILITY_PREFS` calls out as not being "off"), so "press the active option
+ * again to revert to the default" would mean the Off button could never stay pressed.
+ *
+ * TWO CONTROLS BECAUSE THEY ARE TWO PREFERENCES. A page turn announces constantly and a chapter
+ * change a handful of times a book; a reader who silenced pages has not asked to stop being told
+ * which chapter they are in. `AccessibilityPrefs` already separates them.
+ */
+function toggleAnnounce(current: SharedPrefs, field: 'pageChanges' | 'chapterChanges'): PrefsPatch {
+  return {
+    accessibility: {
+      ...current.accessibility,
+      announce: {
+        ...current.accessibility.announce,
+        [field]: !current.accessibility.announce[field],
+      },
     },
   };
 }
@@ -369,6 +405,58 @@ export interface DevPreferencesMenuProps {
 export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
+  /**
+   * Where the dropdown paints, in SCREEN coordinates — required because the dropdown now renders
+   * inside a `Modal` (see below) rather than as an absolutely-positioned sibling of the ☰ button.
+   *
+   * >>> WHY A MODAL AT ALL. <<< Confirmed on-device, Android only: this menu's `open` state is
+   * local to this component (deliberately — see the file header on why `toolbarExtra` is a plain
+   * prop slot with no callback into ReaderScreen). `ReaderScreen`'s `anyPanelOpen` — the switch that
+   * hides `ReaderWebView` while TOC/Search/Bookmarks are open, which is the ONLY reason those panels
+   * paint over the book without any zIndex — has no way to know this menu opened, so the WebView
+   * stays mounted and visible. On Android, a WebView composites through its own hardware layer that
+   * ignores sibling `elevation`/`zIndex` (a well-known react-native-webview limitation; not true on
+   * iOS, where the equivalent overlay painted correctly). The result: the accessibility tree showed
+   * the dropdown's controls existed and were focusable (`open` really did flip, `getPrefs()` really
+   * did resolve), but nothing was visible on screen — indistinguishable from "the button does
+   * nothing" to a user tapping it, which is exactly what was reported. A `Modal` renders in its own
+   * native Android Window, which always paints above the Activity's entire view tree, WebView
+   * included — the same fix this class of bug gets in every RN+WebView app, and it needs no change
+   * to ReaderScreen or the `toolbarExtra` contract this file's header is careful to keep isolated.
+   *
+   * MEASURED, NOT HARDCODED: a `Modal`'s content positions against the whole screen, not against
+   * this component's own small `container`, so the dropdown's on-screen position has to be
+   * measured from the button rather than inherited from a relatively-positioned parent the way the
+   * old absolute-overlay version could rely on.
+   *
+   * `open` ITSELF DOES NOT WAIT ON THE MEASUREMENT. `measureInWindow`'s callback is fire-and-forget
+   * on a real device (next frame, imperceptibly late) but NEVER FIRES AT ALL against the test
+   * renderer — `DevPreferencesMenu.test.tsx` presses the button and immediately queries for the
+   * dropdown's contents, so gating `open` on the callback made every one of those queries fail
+   * against a menu that (as far as the test tree is concerned) never opened. `anchor` starting
+   * `null` and `styles.dropdown`'s own `top`/`right` staying as a fallback is what keeps this safe
+   * either way: a real device repaints one frame later at the precise position, and the test
+   * renderer — which never calls back — just keeps the fallback, which is fine, since no test
+   * asserts on-screen pixel position.
+   */
+  const buttonRef = useRef<RNView>(null);
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
+
+  const toggleOpen = useCallback(() => {
+    setOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next) {
+        buttonRef.current?.measureInWindow((x, y, width, height) => {
+          setAnchor({
+            top: y + height,
+            right: Math.max(0, Dimensions.get('window').width - (x + width)),
+          });
+        });
+      }
+      return next;
+    });
+  }, []);
+
   // Local, live copy of prefs — needed to know which toggle is currently "on" (so pressing it again
   // can revert rather than re-apply), same live channel ReaderScreen itself subscribes to.
   const [prefs, setPrefs] = useState<SharedPrefs | null>(null);
@@ -397,6 +485,20 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
     void prefsStore.savePrefs({ zoom: { level } });
   }, []);
 
+  /**
+   * Whether the Reader is currently overriding `layout.flow` for a screen reader — see
+   * readerA11yLayout.ts for why it does, and ReaderScreen for the notice that says so.
+   *
+   * DERIVED FROM THE SAME THREE INPUTS ReaderScreen uses, rather than passed down, because this
+   * component is not its child: it arrives through the `toolbarExtra` slot, constructed in
+   * ReaderRouteScreen. The one input that could not be re-derived — whether the user declined — is
+   * why `a11yOverrideChoice` is a module instead of local state.
+   */
+  const screenReaderEnabled = useScreenReaderEnabled();
+  const overrideDeclined = useOverrideDeclined();
+  const flowOverridden =
+    prefs !== null && flowOverrideApplied(prefs.layout.flow, screenReaderEnabled && !overrideDeclined);
+
   // Unlike `commitZoom`, this spreads the CURRENT typography group rather than `DEFAULT_PREFS`'s —
   // `typography` has siblings (lineHeight/spacing/margins) a bare `{ size }` patch would silently
   // reset, the exact "one rule that bites" this file's header already warns about for layout. That
@@ -415,16 +517,39 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
   return (
     <View style={styles.container}>
       <Pressable
+        ref={buttonRef}
         accessibilityRole="button"
         accessibilityLabel={open ? 'Close preferences menu' : 'Open preferences menu'}
-        onPress={() => setOpen((wasOpen) => !wasOpen)}
+        onPress={toggleOpen}
         style={styles.menuButton}
       >
         <Text style={styles.menuIcon}>☰</Text>
       </Pressable>
 
-      {open && prefs && (
-        <View style={styles.dropdown}>
+      {/* Guarded on `prefs` exactly like the old `{open && prefs && (...)}` was, so nothing inside
+          ever reads a field off a null `prefs` — the Modal's own `visible` only toggles display
+          once this subtree exists.
+          `transparent` + no `animationType` so this reads as the same instant dropdown the
+          absolutely-positioned version was, not a sheet/dialog — see the Modal note on `anchor`
+          above for why this is a Modal at all. `onRequestClose` is Android's hardware/gesture back
+          button; without it, back would fall through to whatever's under this screen instead of
+          just closing the menu. */}
+      {prefs && (
+        <Modal transparent visible={open} onRequestClose={() => setOpen(false)}>
+          {/* Full-screen backdrop, BEFORE the dropdown so the dropdown's own Pressables (rendered
+              after, in document order) still receive their taps rather than this one swallowing
+              them. Tapping outside the dropdown closes it — there was no such affordance before
+              (only re-pressing ☰ closed it), but a Modal without one traps the user behind an
+              invisible full-screen Pressable, which is worse than not having it. */}
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            onPress={() => setOpen(false)}
+          />
+          <View
+            style={[styles.dropdown, anchor && { position: 'absolute', top: anchor.top, right: anchor.right }]}
+          >
           <Text style={styles.sectionLabel}>Theme</Text>
           <View style={styles.row}>
             {THEME_OPTIONS.map(({ label, theme }) => {
@@ -483,6 +608,22 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
           )}
 
           <Text style={styles.sectionLabel}>Layout</Text>
+          {/*
+            DISABLED, NOT HIDDEN, while the Reader is overriding `flow` for a screen reader
+            (readerA11yLayout.ts). Both are the same principle this file already applies to Zoom on
+            EPUB — a control with nothing to control is worse than no control — but the treatments
+            differ deliberately: Zoom is hidden because it can NEVER apply to a reflowable book,
+            while this is conditional and reversible, so the user has to be able to find out why
+            their toggle stopped responding. It is also where the one-time alert ReaderScreen shows
+            stays reachable after being dismissed. Choosing "Use pages anyway" there clears the
+            override, and these rows come back.
+          */}
+          {flowOverridden && (
+            <Text style={styles.sectionNote} testID="prefs-flow-override-note">
+              Scrolled layout is on so screen readers can reach the text. Your saved preference is
+              unchanged.
+            </Text>
+          )}
           <View style={styles.row}>
             {FLOW_OPTIONS.map(({ label, flow }) => {
               const active = prefs.layout.flow === flow;
@@ -490,12 +631,17 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 <Pressable
                   key={flow}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: flowOverridden }}
                   accessibilityLabel={`Flow: ${label}${active ? ', selected' : ''}`}
+                  disabled={flowOverridden}
                   onPress={() => {
                     void prefsStore.savePrefs(toggleFlow(prefs, flow));
                   }}
-                  style={[styles.toggle, active && styles.toggleActive]}
+                  style={[
+                    styles.toggle,
+                    active && styles.toggleActive,
+                    flowOverridden && styles.toggleDisabled,
+                  ]}
                 >
                   <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
                     {label}
@@ -511,12 +657,17 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 <Pressable
                   key={spread}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: flowOverridden }}
                   accessibilityLabel={`Spread: ${label}${active ? ', selected' : ''}`}
+                  disabled={flowOverridden}
                   onPress={() => {
                     void prefsStore.savePrefs(toggleSpread(prefs, spread));
                   }}
-                  style={[styles.toggle, active && styles.toggleActive]}
+                  style={[
+                    styles.toggle,
+                    active && styles.toggleActive,
+                    flowOverridden && styles.toggleDisabled,
+                  ]}
                 >
                   <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
                     {label}
@@ -557,6 +708,37 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             </Pressable>
           </View>
 
+          {/*
+            THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a
+            device — nothing else in the app writes `accessibility.announce.*`, so the announcements
+            they gate could only ever be tested by hand-editing SQLite. Same standing as the TTS
+            toggle above: temporary, and it goes with this file when a real settings screen lands.
+
+            SEPARATE ROWS BECAUSE THEY ARE SEPARATE PREFERENCES — see `toggleAnnounce`. Both default
+            ON, which is why they are plain flips and not this file's revert-to-default toggles.
+          */}
+          <View style={styles.row}>
+            {ANNOUNCE_OPTIONS.map(({ label, field }) => {
+              const on = prefs.accessibility.announce[field];
+              return (
+                <Pressable
+                  key={field}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={`${label} announcements: ${on ? 'On' : 'Off'}`}
+                  onPress={() => {
+                    void prefsStore.savePrefs(toggleAnnounce(prefs, field));
+                  }}
+                  style={[styles.toggle, on && styles.toggleActive]}
+                >
+                  <Text style={[styles.toggleLabel, on && styles.toggleLabelActive]}>
+                    {label}: {on ? 'On' : 'Off'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
           {/* ZOOM REMOVED FOR EPUB — NOT FORMAT APPLICABLE. See this file's header note: a
               reflowable EPUB scales via fontSizePt, epub.entry.ts never reads appearance.zoom, and
               a control with nothing to control is worse than no control. Shown for PDF and for the
@@ -567,7 +749,8 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
-        </View>
+          </View>
+        </Modal>
       )}
     </View>
   );
@@ -586,6 +769,12 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   menuIcon: { fontSize: 22, color: '#111111' },
+
+  // Matches the visual weight of a `disabled` Pressable elsewhere in the reader (ReaderScreen's
+  // Prev/Next), so a row the screen-reader override has taken over reads as unavailable rather than
+  // as broken.
+  toggleDisabled: { opacity: 0.4 },
+  sectionNote: { fontSize: 11, lineHeight: 15, color: '#555555', marginBottom: 6 },
 
   // Floats over the reader — z-indexed above it and NOT part of the header's own layout flow, so
   // opening it never resizes the WebView underneath (which would re-paginate for no reason).

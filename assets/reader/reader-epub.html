@@ -428,6 +428,137 @@ ${text}`;
     return found ? ok(found) : { status: "endOfBook" };
   }
 
+  // src/features/reader/webview/src/epubCfiRange.ts
+  function unwrap(cfi) {
+    const trimmed = cfi.trim();
+    if (!trimmed.startsWith("epubcfi(") || !trimmed.endsWith(")")) return null;
+    return trimmed.slice("epubcfi(".length, -1);
+  }
+  function splitBase(inner) {
+    const at = inner.lastIndexOf("!");
+    return at === -1 ? { base: "", path: inner } : { base: inner.slice(0, at + 1), path: inner.slice(at + 1) };
+  }
+  function toSteps(path) {
+    const steps = [];
+    let current = "";
+    let depth = 0;
+    for (const char of path) {
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      if (char === "/" && depth === 0) {
+        if (current !== "") steps.push(current);
+        current = "/";
+        continue;
+      }
+      current += char;
+    }
+    if (current !== "") steps.push(current);
+    return steps;
+  }
+  function joinCfiRange(startCfi, endCfi) {
+    const startInner = unwrap(startCfi);
+    const endInner = unwrap(endCfi);
+    if (startInner === null || endInner === null) return null;
+    const start = splitBase(startInner);
+    const end = splitBase(endInner);
+    if (start.base !== end.base) return null;
+    const startSteps = toSteps(start.path);
+    const endSteps = toSteps(end.path);
+    const maxCommon = Math.min(startSteps.length, endSteps.length) - 1;
+    let common = 0;
+    while (common < maxCommon && startSteps[common] === endSteps[common]) common++;
+    const startTail = startSteps.slice(common).join("");
+    const endTail = endSteps.slice(common).join("");
+    if (startTail === "" || endTail === "" || startTail === endTail) return null;
+    return `epubcfi(${start.base}${startSteps.slice(0, common).join("")},${startTail},${endTail})`;
+  }
+  function splitCfiRange(cfiRange) {
+    const inner = unwrap(cfiRange);
+    if (inner === null) return null;
+    const parts = [];
+    let current = "";
+    let depth = 0;
+    for (const char of inner) {
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      if (char === "," && depth === 0) {
+        parts.push(current);
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    parts.push(current);
+    if (parts.length !== 3) return null;
+    const [common, startTail, endTail] = parts;
+    if (startTail === "" || endTail === "") return null;
+    return {
+      startCfi: `epubcfi(${common}${startTail})`,
+      endCfi: `epubcfi(${common}${endTail})`
+    };
+  }
+  function splitTerminalOffset(step) {
+    let depth = 0;
+    let at = -1;
+    for (let i = 0; i < step.length; i++) {
+      const char = step[i];
+      if (char === "[") depth++;
+      else if (char === "]") depth--;
+      else if (char === ":" && depth === 0) at = i;
+    }
+    if (at === -1) return null;
+    const rest = step.slice(at + 1);
+    const digits = /^\d+/.exec(rest);
+    if (!digits) return null;
+    return { head: step.slice(0, at), offset: Number.parseInt(digits[0], 10) };
+  }
+  function expandPointCfi(startCfi, length) {
+    if (!Number.isInteger(length) || length <= 0) return null;
+    const inner = unwrap(startCfi);
+    if (inner === null) return null;
+    const { base, path } = splitBase(inner);
+    const steps = toSteps(path);
+    const last = steps[steps.length - 1];
+    if (last === void 0) return null;
+    const terminal = splitTerminalOffset(last);
+    if (terminal === null) return null;
+    const endSteps = [...steps.slice(0, -1), `${terminal.head}:${String(terminal.offset + length)}`];
+    return joinCfiRange(startCfi, `epubcfi(${base}${endSteps.join("")})`);
+  }
+  function cfiSpinePos(cfi) {
+    const inner = unwrap(cfi);
+    if (inner === null) return null;
+    const { base } = splitBase(inner);
+    if (base === "") return null;
+    const steps = toSteps(base.slice(0, -1));
+    if (steps.length < 2) return null;
+    const digits = /^\/(\d+)/.exec(steps[1]);
+    if (digits === null) return null;
+    const step = Number.parseInt(digits[1], 10);
+    return step % 2 === 0 ? step / 2 - 1 : null;
+  }
+
+  // src/features/reader/webview/src/epubLayoutSignature.ts
+  function fontFingerprint(uri) {
+    if (uri === null) return "-";
+    return `${String(uri.length)}:${uri.slice(0, 32)}:${uri.slice(-32)}`;
+  }
+  function layoutSignature(appearance, viewport) {
+    const box = `${String(viewport.width)}x${String(viewport.height)}`;
+    if (appearance === null) return `none|${box}`;
+    return [
+      String(appearance.fontSizePt),
+      String(appearance.lineHeight),
+      String(appearance.letterSpacingPx),
+      String(appearance.marginPx),
+      appearance.fontFamily,
+      fontFingerprint(appearance.customFontUri),
+      appearance.flow,
+      appearance.spread,
+      box
+    ].join("|");
+  }
+
   // src/features/reader/readerBridge.ts
   var MAX_TOC_DEPTH = 6;
 
@@ -446,6 +577,67 @@ ${text}`;
     return into;
   }
 
+  // src/features/reader/webview/src/epubViewGeometry.ts
+  function viewList(rendition2) {
+    const views = rendition2.views();
+    if (Array.isArray(views)) return views;
+    return typeof views.all === "function" ? views.all() : [];
+  }
+  function forceReflow(rendition2) {
+    for (const view of viewList(rendition2)) {
+      if (view.displayed === false) continue;
+      try {
+        view.expand?.();
+        const contents = view.contents;
+        if (contents) view.layout?.format?.(contents);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  // src/features/reader/webview/src/highlightGeometry.ts
+  var HIT_TEST_TOLERANCE_PX = 4;
+  function highlightAt(boxes, x, y) {
+    for (let index = boxes.length - 1; index >= 0; index--) {
+      const box = boxes[index];
+      if (x >= box.left - HIT_TEST_TOLERANCE_PX && x <= box.left + box.width + HIT_TEST_TOLERANCE_PX && y >= box.top - HIT_TEST_TOLERANCE_PX && y <= box.top + box.height + HIT_TEST_TOLERANCE_PX) {
+        return box.id;
+      }
+    }
+    return null;
+  }
+  function rangesOverlap(a, b) {
+    return a.compareBoundaryPoints(Range.START_TO_END, b) > 0 && a.compareBoundaryPoints(Range.END_TO_START, b) < 0;
+  }
+
+  // src/features/reader/webview/src/highlightPaint.ts
+  function isEpub(entry) {
+    return typeof entry.startCfi === "string";
+  }
+  function epubHighlights(payload) {
+    const mine = [];
+    let foreign = 0;
+    for (const entry of payload) {
+      if (isEpub(entry)) mine.push(entry);
+      else foreign++;
+    }
+    return { mine, foreign };
+  }
+  function diffHighlights(painted, next) {
+    const incoming = /* @__PURE__ */ new Set();
+    const added = [];
+    for (const entry of next) {
+      incoming.add(entry.id);
+      if (!painted.has(entry.id)) added.push(entry);
+    }
+    const removedIds = [];
+    for (const id of painted) {
+      if (!incoming.has(id)) removedIds.push(id);
+    }
+    return { added, removedIds };
+  }
+
   // src/features/reader/webview/src/highlightNaming.ts
   function annotationType(owner) {
     return `tf-hl-${owner}`;
@@ -455,18 +647,85 @@ ${text}`;
   }
 
   // src/features/reader/webview/src/highlightSeam.ts
-  function add(rendition2, owner, cfiRange, variant, styles) {
+  var EPUBJS_KIND = "highlight";
+  function add(rendition2, owner, cfiRange, variant, styles, onTap) {
     rendition2.annotations.add(
-      annotationType(owner),
+      EPUBJS_KIND,
       cfiRange,
-      {},
-      void 0,
+      // Lands on the painted element's `dataset` (marks-pane's `Highlight.bind`), so which owner drew
+      // a given rect is inspectable in the DOM rather than only inferable from its class name.
+      { tfOwner: annotationType(owner) },
+      onTap,
       annotationClassName(owner, variant),
       styles
     );
   }
-  function remove(rendition2, owner, cfiRange) {
-    rendition2.annotations.remove(cfiRange, annotationType(owner));
+  function remove(rendition2, _owner, cfiRange) {
+    rendition2.annotations.remove(cfiRange, EPUBJS_KIND);
+  }
+
+  // src/features/reader/webview/src/selectionTheme.ts
+  function parseHex(color) {
+    const hex = color.trim().replace(/^#/, "");
+    const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
+    if (full.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(full)) return null;
+    return {
+      r: Number.parseInt(full.slice(0, 2), 16),
+      g: Number.parseInt(full.slice(2, 4), 16),
+      b: Number.parseInt(full.slice(4, 6), 16)
+    };
+  }
+  function luminance(color) {
+    return (0.299 * color.r + 0.587 * color.g + 0.114 * color.b) / 255;
+  }
+  function selectionBackground(link, bg) {
+    const accent = link ? parseHex(link) : null;
+    if (accent) return `rgba(${accent.r}, ${accent.g}, ${accent.b}, 0.32)`;
+    const page = bg ? parseHex(bg) : null;
+    return page && luminance(page) < 0.5 ? "rgba(255, 255, 255, 0.30)" : "rgba(0, 0, 0, 0.18)";
+  }
+  var NAMED_COLOR_HEX = { yellow: "#ffff00" };
+  function resolveChannels(color) {
+    return parseHex(NAMED_COLOR_HEX[color.toLowerCase()] ?? color);
+  }
+  function highlightFill(color, bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return { fill: color, blend: "multiply" };
+    if (luminance(page) < 0.35) return { fill: color, blend: "screen" };
+    const swatch = resolveChannels(color);
+    if (swatch) {
+      const warm = (c) => c.r > c.b && c.g > c.b;
+      const closeInLightness = Math.abs(luminance(page) - luminance(swatch)) < 0.25;
+      if (warm(page) && warm(swatch) && closeInLightness) {
+        return {
+          fill: `rgb(${Math.round(swatch.r * 0.7)}, ${Math.round(swatch.g * 0.55)}, ${Math.round(swatch.b * 0.7)})`,
+          blend: "multiply"
+        };
+      }
+    }
+    return { fill: color, blend: "multiply" };
+  }
+  function matchStroke(bg) {
+    const page = bg ? parseHex(bg) : null;
+    if (!page) return "#0a84ff";
+    if (luminance(page) < 0.35) return "#64d2ff";
+    if (page.r > page.b && page.g > page.b && luminance(page) > 0.6) return "#0a5fd0";
+    return "#0a84ff";
+  }
+
+  // src/features/reader/webview/src/touchGesture.ts
+  var LONG_PRESS_MS = 500;
+  var LONG_PRESS_SLOP_PX = 10;
+  var SWIPE_MIN_DISTANCE_PX = 50;
+  function movedBeyondSlop(from, to, slop = LONG_PRESS_SLOP_PX) {
+    return Math.abs(to.x - from.x) > slop || Math.abs(to.y - from.y) > slop;
+  }
+  function swipeDirection(from, to, minDistance = SWIPE_MIN_DISTANCE_PX) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < minDistance) return null;
+    if (Math.abs(dx) <= Math.abs(dy)) return null;
+    return dx < 0 ? "next" : "prev";
   }
 
   // src/shared/contracts/accessibility.ts
@@ -585,6 +844,15 @@ ${text}`;
       "html, body {",
       "  -webkit-text-size-adjust: 100% !important;",
       "  text-size-adjust: 100% !important;",
+      // SELECTION MUST SURVIVE THE BOOK'S OWN CSS, and it is the one thing here a book can switch off
+      // outright rather than merely restyle. `user-select: none` and `-webkit-touch-callout: none` are
+      // routine in publisher and Calibre-converted stylesheets (they are the copy-prevention idiom),
+      // and either one makes a long press select nothing at all — no menu, no highlight, and nothing
+      // on screen to say why. `!important` for the same reason as every other rule in this sheet.
+      // The PDF shell never needs this: its text layer is our own DOM, not the book's.
+      "  -webkit-user-select: text !important;",
+      "  user-select: text !important;",
+      "  -webkit-touch-callout: default !important;",
       ...bg ? [`  background: ${bg} !important;`] : [],
       "}",
       "body {",
@@ -607,11 +875,21 @@ ${text}`;
       "  overflow-wrap: normal !important;",
       "}",
       ...link ? [`a { color: ${link} !important; }`] : [],
+      // SELECTION IS PART OF THE READING SURFACE NOW, not incidental chrome: a long press selects
+      // text and the host offers to highlight it, so what the selection looks like is what tells the
+      // reader the gesture worked. `::selection` only ever sets a background — the theme's `fg` stays,
+      // because a tint composites over the text where an opaque swatch replaces it.
+      `::selection { background: ${selectionBackground(link, bg)}; }`,
       // One size for every text-bearing element. `div` and `span` are in the list because
       // Calibre-converted books put their scaling on wrappers.
       "p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {",
       `  font-size: ${f}px !important;`,
       `  line-height: ${l}px !important;`,
+      // Repeated from the html/body rule above because `user-select` is inherited but overridable:
+      // a book that sets it on its own paragraphs beats an ancestor's `!important`, since both are
+      // important declarations and the more specific match wins.
+      "  -webkit-user-select: text !important;",
+      "  user-select: text !important;",
       "}",
       // Raised/lowered glyphs must not grow the line box, or the grid drifts by a fraction of a line
       // on every citation marker — and the test fixture is full of them. line-height: 0 is the
@@ -725,11 +1003,48 @@ ${text}`;
   var STYLESHEET_KEY = "tf-baseline";
   var currentCss = "";
   var currentAppearance = null;
+  var renditionFlow = null;
+  var openInFlight = false;
   var lastCfi = null;
   var currentSpokenCfi = null;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
-  var TTS_SPOKEN_STYLES = { backgroundColor: "rgba(255, 213, 0, 0.4)" };
+  var TTS_SPOKEN_COLOR = "#ffd500";
+  function ttsSpokenStyles() {
+    const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
+    return { fill, "fill-opacity": "0.2", "mix-blend-mode": blend };
+  }
+  var USER_OWNER = "user";
+  var USER_SAVED_VARIANT = "saved";
+  function userHighlightStyles(color) {
+    const { fill, blend } = highlightFill(color, currentAppearance?.bg);
+    return { fill, "fill-opacity": "0.25", "mix-blend-mode": blend };
+  }
+  var SEARCH_OWNER = "search";
+  var SEARCH_MATCH_VARIANT = "match";
+  var currentSearchRange = null;
+  var pendingSearchMatch = null;
+  var reportedSearchPainted = null;
+  var awaitingSearchLanding = false;
+  function searchMatchStyles() {
+    return {
+      fill: "none",
+      stroke: matchStroke(currentAppearance?.bg),
+      "stroke-width": "2",
+      "stroke-opacity": "0.9",
+      // >>> NAMED EXPLICITLY BECAUSE epub.js MERGES ITS OWN UNDERNEATH US. <<< `IframeView.highlight`
+      // does `Object.assign({fill:'yellow','fill-opacity':'0.3','mix-blend-mode':'multiply'}, styles)`,
+      // so any key this function omits keeps epub.js's default. Omitting this one left `multiply` on
+      // the `<g>` every rect inherits from — and multiply against a near-black page returns the page
+      // colour, so on the dark theme the outline was drawn and then composited out of existence. It is
+      // the same trap `highlightFill`'s `screen` branch exists to dodge for the FILL channels; an
+      // outline has nothing to blend with the glyphs beneath it, so it wants no blending at all.
+      "mix-blend-mode": "normal"
+    };
+  }
+  var paintedUserHighlights = /* @__PURE__ */ new Map();
+  var lastUserHighlights = [];
+  var lastSelection = null;
   function currentTypography() {
     if (!currentAppearance) return void 0;
     return {
@@ -848,8 +1163,286 @@ ${text}`;
     return isPaginated(currentFlow()) && hasAuthoredColumns(doc) ? `${currentCss}
 ${columnOverrideCss()}` : currentCss;
   }
+  var touchOrigin = null;
+  var longPressTimer = 0;
+  var longPressFired = false;
+  var pressedHighlightId = null;
+  var highlightBoxCache = null;
+  function invalidateHighlightBoxes() {
+    highlightBoxCache = null;
+  }
+  function highlightBoxes(contents) {
+    const cached = highlightBoxCache;
+    if (cached && cached.doc === contents.document) return cached.boxes;
+    const boxes = [];
+    for (const [id, cfiRange] of paintedUserHighlights) {
+      if (cfiSpinePos(cfiRange) !== contents.sectionIndex) continue;
+      const range = rangeForCfi(contents, cfiRange);
+      if (!range) continue;
+      for (const rect of range.getClientRects()) {
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        boxes.push({ id, left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+      }
+    }
+    highlightBoxCache = { doc: contents.document, boxes };
+    return boxes;
+  }
+  function rangeForCfi(contents, cfiRange) {
+    try {
+      return contents.range(cfiRange) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function highlightIdAtPoint(contents, x, y) {
+    return highlightAt(highlightBoxes(contents), x, y);
+  }
+  function highlightIdForRange(contents, selected) {
+    for (const [id, cfiRange] of paintedUserHighlights) {
+      const range = rangeForCfi(contents, cfiRange);
+      if (!range) continue;
+      try {
+        if (rangesOverlap(selected, range)) return id;
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+  function currentSelectionRange() {
+    if (!rendition) return null;
+    for (const contents of rendition.getContents()) {
+      const selection = contents.document.defaultView?.getSelection();
+      if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+        return { contents, range: selection.getRangeAt(0) };
+      }
+    }
+    return null;
+  }
+  function activeHighlightId() {
+    const selected = currentSelectionRange();
+    if (selected) {
+      const overlapped = highlightIdForRange(selected.contents, selected.range);
+      if (overlapped !== null) return overlapped;
+    }
+    return pressedHighlightId;
+  }
+  function cancelLongPress() {
+    if (longPressTimer) window.clearTimeout(longPressTimer);
+    longPressTimer = 0;
+  }
+  function onLongPress() {
+    longPressFired = true;
+  }
+  function watchTouches(contents) {
+    const doc = contents.document;
+    const view = doc.defaultView;
+    if (!view) return;
+    doc.addEventListener(
+      "touchstart",
+      (event) => {
+        const touch = event.touches[0];
+        if (!touch) return;
+        cancelLongPress();
+        touchOrigin = { x: touch.clientX, y: touch.clientY };
+        longPressFired = false;
+        pressedHighlightId = highlightIdAtPoint(contents, touch.clientX, touch.clientY);
+        post({ type: "highlightTouchActive", active: pressedHighlightId !== null });
+        longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchmove",
+      (event) => {
+        const touch = event.touches[0];
+        if (!touch || !touchOrigin) return;
+        if (movedBeyondSlop(touchOrigin, { x: touch.clientX, y: touch.clientY })) cancelLongPress();
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchend",
+      (event) => {
+        cancelLongPress();
+        const origin = touchOrigin;
+        touchOrigin = null;
+        const touch = event.changedTouches[0];
+        if (!origin || !touch || longPressFired) return;
+        if (!view.getSelection()?.isCollapsed) return;
+        if (!isPaginated(currentFlow())) return;
+        const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+        if (direction === null || !rendition) return;
+        const turn = direction === "next" ? rendition.next() : rendition.prev();
+        turn.catch((error) => {
+          fail("NAVIGATION_FAILED", error);
+        });
+      },
+      { passive: true }
+    );
+    doc.addEventListener(
+      "touchcancel",
+      () => {
+        cancelLongPress();
+        touchOrigin = null;
+      },
+      { passive: true }
+    );
+  }
+  function applyUserHighlights(highlights) {
+    if (!rendition) return false;
+    const active = rendition;
+    const { added, removedIds } = diffHighlights(new Set(paintedUserHighlights.keys()), highlights);
+    if (removedIds.length > 0 || added.length > 0) invalidateHighlightBoxes();
+    for (const id of removedIds) {
+      const cfiRange = paintedUserHighlights.get(id);
+      if (cfiRange !== void 0) remove(active, USER_OWNER, cfiRange);
+      paintedUserHighlights.delete(id);
+    }
+    for (const highlight of added) {
+      const cfiRange = joinCfiRange(highlight.startCfi, highlight.endCfi);
+      if (cfiRange === null) continue;
+      if (currentSearchRange === cfiRange) {
+        remove(active, SEARCH_OWNER, currentSearchRange);
+        currentSearchRange = null;
+        reportSearchPaint("refused");
+      }
+      const collidingId = [...paintedUserHighlights].find(
+        ([, painted]) => painted === cfiRange
+      )?.[0];
+      if (collidingId !== void 0) {
+        fail(
+          "NAVIGATION_FAILED",
+          `paintHighlights: ${highlight.id} and ${collidingId} address the same range`
+        );
+        continue;
+      }
+      add(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+      paintedUserHighlights.set(highlight.id, cfiRange);
+    }
+    return added.length > 0;
+  }
+  function repaintLiveAnnotations() {
+    if (!rendition) return;
+    const active = rendition;
+    for (const cfiRange of paintedUserHighlights.values()) {
+      remove(active, USER_OWNER, cfiRange);
+    }
+    paintedUserHighlights.clear();
+    applyUserHighlights(lastUserHighlights);
+    liftSearchMatch();
+    if (currentSpokenCfi !== null) {
+      remove(active, TTS_OWNER, currentSpokenCfi);
+      add(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    }
+  }
+  var geometryRaf = 0;
+  var geometryReanchor = false;
+  function scheduleGeometryRefresh(options = {}) {
+    if (options.reanchor === true) geometryReanchor = true;
+    if (geometryRaf !== 0) return;
+    geometryRaf = window.requestAnimationFrame(() => {
+      geometryRaf = 0;
+      const reanchor = geometryReanchor;
+      geometryReanchor = false;
+      if (!rendition) return;
+      const active = rendition;
+      forceReflow(active);
+      const finish = () => {
+        repaintLiveAnnotations();
+        invalidateHighlightBoxes();
+      };
+      if (reanchor && lastCfi !== null && !openInFlight) {
+        active.display(lastCfi).then(finish).catch(() => {
+          finish();
+        });
+        return;
+      }
+      finish();
+    });
+  }
+  function repaintUserHighlights() {
+    paintedUserHighlights.clear();
+    applyUserHighlights(lastUserHighlights);
+  }
+  function contentsForCfi(cfi) {
+    if (!rendition) return null;
+    const spinePos = cfiSpinePos(cfi);
+    if (spinePos === null) return null;
+    for (const contents of rendition.getContents()) {
+      if (contents.sectionIndex === spinePos) return contents;
+    }
+    return null;
+  }
+  function applySearchMatch(match) {
+    if (!rendition) {
+      currentSearchRange = null;
+      return match === null ? "cleared" : "pending";
+    }
+    const active = rendition;
+    if (currentSearchRange !== null) {
+      remove(active, SEARCH_OWNER, currentSearchRange);
+      currentSearchRange = null;
+    }
+    pendingSearchMatch = match;
+    if (match === null) return "cleared";
+    const cfiRange = expandPointCfi(match.startCfi, match.matchText.length);
+    if (cfiRange === null) return "refused";
+    const contents = contentsForCfi(cfiRange);
+    if (contents === null) return "pending";
+    if (rangeForCfi(contents, cfiRange) === null) return "refused";
+    for (const painted of paintedUserHighlights.values()) {
+      if (painted === cfiRange) return "refused";
+    }
+    try {
+      add(active, SEARCH_OWNER, cfiRange, SEARCH_MATCH_VARIANT, searchMatchStyles());
+    } catch {
+      return "refused";
+    }
+    currentSearchRange = cfiRange;
+    return "painted";
+  }
+  function reportSearchPaint(outcome) {
+    if (outcome === "pending" || outcome === "cleared") return;
+    const painted = outcome === "painted";
+    if (reportedSearchPainted === painted) return;
+    reportedSearchPainted = painted;
+    post({ type: "searchMatchPainted", painted });
+  }
+  function retrySearchMatch() {
+    if (pendingSearchMatch === null || currentSearchRange !== null) return;
+    reportSearchPaint(applySearchMatch(pendingSearchMatch));
+  }
+  function liftSearchMatch() {
+    if (!rendition || currentSearchRange === null) return;
+    remove(rendition, SEARCH_OWNER, currentSearchRange);
+    add(
+      rendition,
+      SEARCH_OWNER,
+      currentSearchRange,
+      SEARCH_MATCH_VARIANT,
+      searchMatchStyles()
+    );
+  }
+  function rebuildForFlowIfNeeded() {
+    if (!rendition || openInFlight) return false;
+    if (renditionFlow === currentFlow()) return false;
+    const cfi = lastCfi;
+    rendition.destroy();
+    createRendition().display(cfi ?? void 0).then(() => {
+      if (currentSpokenCfi !== null && rendition) {
+        add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+      }
+      repaintUserHighlights();
+      liftSearchMatch();
+    }).catch((error) => {
+      fail("NAVIGATION_FAILED", error);
+    });
+    return true;
+  }
   function createRendition() {
     if (!book) throw new Error("createRendition() called before a book was opened");
+    renditionFlow = currentFlow();
     rendition = book.renderTo("viewer", {
       flow: currentFlow(),
       manager: mapManager(currentFlow()),
@@ -865,22 +1458,58 @@ ${columnOverrideCss()}` : currentCss;
       if (isPaginated(currentFlow())) applyAuthoredBreaks(contents.document);
       capExcessiveIndents(contents.document, viewportSize().width);
       insertStylesheet(contents, finalCssFor(contents.document));
+      watchTouches(contents);
+      contents.on("resize", () => {
+        scheduleGeometryRefresh();
+      });
+      invalidateHighlightBoxes();
+      retrySearchMatch();
     });
     rendition.on("resized", () => {
       applyBaselineCss();
+      invalidateHighlightBoxes();
+      scheduleGeometryRefresh();
     });
-    rendition.on("relocated", (location) => {
-      lastCfi = location?.start?.cfi ?? null;
+    rendition.on("selected", (cfiRange, contents) => {
+      const selection = contents.document.defaultView?.getSelection();
+      const overlapped = selection && selection.rangeCount > 0 && !selection.isCollapsed ? highlightIdForRange(contents, selection.getRangeAt(0)) : null;
       post({
-        type: "relocated",
-        // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
-        // the whole reason ReaderPosition is discriminated by format rather than carrying both shapes
-        // flat with one of them always null.
-        position: { kind: "cfi", cfi: lastCfi },
-        atStart: !!location?.atStart,
-        atEnd: !!location?.atEnd
+        type: "highlightTouchActive",
+        active: overlapped !== null || pressedHighlightId !== null
       });
+      const ends = splitCfiRange(cfiRange);
+      if (ends === null) {
+        lastSelection = null;
+        return;
+      }
+      lastSelection = { kind: "cfiRange", startCfi: ends.startCfi, endCfi: ends.endCfi };
     });
+    rendition.on(
+      "relocated",
+      (location) => {
+        lastCfi = location?.start?.cfi ?? null;
+        lastSelection = null;
+        invalidateHighlightBoxes();
+        retrySearchMatch();
+        if (awaitingSearchLanding) {
+          awaitingSearchLanding = false;
+          if (currentSearchRange === null && pendingSearchMatch !== null) reportSearchPaint("refused");
+        }
+        const href = location?.start?.href;
+        const index = location?.start?.index;
+        const section = typeof href === "string" && href !== "" && typeof index === "number" ? { index, href } : null;
+        post({
+          type: "relocated",
+          // A CFI, not a page: this book is reflowable, so there is no stable page to report. That is
+          // the whole reason ReaderPosition is discriminated by format rather than carrying both
+          // shapes flat with one of them always null.
+          position: { kind: "cfi", cfi: lastCfi },
+          atStart: !!location?.atStart,
+          atEnd: !!location?.atEnd,
+          section
+        });
+      }
+    );
     return rendition;
   }
   var api = {
@@ -910,15 +1539,28 @@ ${columnOverrideCss()}` : currentCss;
         try {
           resetTtsState();
           currentSpokenCfi = null;
+          paintedUserHighlights.clear();
+          lastUserHighlights = [];
+          currentSearchRange = null;
+          pendingSearchMatch = null;
+          reportedSearchPainted = null;
+          awaitingSearchLanding = false;
           const buffer = base64ToArrayBuffer(base64);
           book = ePub();
           await book.open(buffer, "binary");
+          openInFlight = true;
           const newRendition = createRendition();
-          await newRendition.display();
+          try {
+            await newRendition.display();
+          } finally {
+            openInFlight = false;
+          }
           post({ type: "rendered" });
+          void rebuildForFlowIfNeeded();
           const navigation = await book.loaded.navigation;
           post({ type: "toc", items: flattenToc(navigation?.toc ?? [], 0, []) });
         } catch (error) {
+          openInFlight = false;
           fail("OPEN_FAILED", error);
         }
       })();
@@ -984,23 +1626,26 @@ ${columnOverrideCss()}` : currentCss;
      * idempotent, and is not epub.js's manager choice.
      */
     applyAppearance: (appearance) => {
-      const previousFlow = currentAppearance?.flow;
+      const previousBg = currentAppearance?.bg;
+      const previousSignature = layoutSignature(currentAppearance, viewportSize());
       currentAppearance = appearance;
       if (!rendition) return;
-      if (previousFlow !== void 0 && previousFlow !== appearance.flow) {
-        const cfi = lastCfi;
-        rendition.destroy();
-        createRendition().display(cfi ?? void 0).then(() => {
-          if (currentSpokenCfi !== null && rendition) {
-            add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
-          }
-        }).catch((error) => {
-          fail("NAVIGATION_FAILED", error);
-        });
-        return;
-      }
+      if (rebuildForFlowIfNeeded()) return;
       applyBaselineCss();
       rendition.spread(mapSpread(appearance.spread));
+      const nextSignature = layoutSignature(appearance, viewportSize());
+      if (previousSignature !== nextSignature) {
+        scheduleGeometryRefresh({ reanchor: true });
+      } else if (previousBg !== appearance.bg) {
+        scheduleGeometryRefresh();
+      }
+      if (previousSignature !== nextSignature && appearance.customFontUri !== null) {
+        for (const contents of rendition.getContents()) {
+          void contents.document.fonts?.ready.then(() => {
+            scheduleGeometryRefresh();
+          });
+        }
+      }
     },
     /**
      * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
@@ -1037,13 +1682,96 @@ ${columnOverrideCss()}` : currentCss;
      * cannot be painted must not be able to interrupt speech, so this never posts a message and never
      * throws out of the try.
      */
+    /**
+     * Paint the user's saved highlights — the whole set, idempotently. See `ReaderCommand`'s own note
+     * for why the host always sends everything rather than a patch.
+     *
+     * The payload is narrowed on arrival because the command is shared by both shells and its argument
+     * is the union of their two shapes (highlightPaint.ts explains why it cannot be discriminated by
+     * format). A PDF-shaped entry reaching the EPUB shell means the host chose the wrong array while
+     * having correctly chosen `openEpub` — structurally impossible, and reported the same way a
+     * wrong-format `goTo` target is rather than quietly dropped, so it cannot hide as "no highlights".
+     *
+     * `lastUserHighlights` is updated even when there is no rendition yet: `paintHighlights` can
+     * legitimately arrive before the book has finished opening (the host sends it after `rendered`,
+     * but nothing in the protocol forces that), and the rebuild path re-reads it.
+     */
+    paintHighlights: (highlights) => {
+      const { mine, foreign } = epubHighlights(highlights);
+      lastUserHighlights = mine;
+      if (applyUserHighlights(mine)) liftSearchMatch();
+      if (foreign > 0) {
+        fail(
+          "NAVIGATION_FAILED",
+          `paintHighlights: ${String(foreign)} highlight(s) address pages, and this shell renders EPUB`
+        );
+      }
+    },
+    /**
+     * Paint or clear the one active search match. See `ReaderCommand`'s own note for why the payload
+     * arrives partitioned rather than tagged, and why the whole object crosses rather than this
+     * shell's half of it.
+     *
+     * A NON-NULL `pdf` SIDE IS A HOST BUG, reported the way `paintHighlights` reports a foreign
+     * entry: the host chose `openEpub` for this book, so a PDF-shaped match means it picked the wrong
+     * side while having picked the right shell. Structurally impossible, and it must not be able to
+     * hide as "no match found".
+     */
+    paintSearchMatch: (match) => {
+      if (match.pdf !== null) {
+        fail(
+          "NAVIGATION_FAILED",
+          "paintSearchMatch: the match addresses a page, and this shell renders EPUB"
+        );
+        return;
+      }
+      reportedSearchPainted = null;
+      awaitingSearchLanding = match.epub !== null;
+      reportSearchPaint(applySearchMatch(match.epub));
+    },
     setSpokenRange: (cfi) => {
       try {
         if (!rendition) return;
         if (currentSpokenCfi !== null) remove(rendition, TTS_OWNER, currentSpokenCfi);
         currentSpokenCfi = cfi;
-        if (cfi !== null) add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, TTS_SPOKEN_STYLES);
+        if (cfi !== null) add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
       } catch {
+      }
+    },
+    /**
+     * The reader tapped "Highlight". Forces `triggerSelectedEvent` (epub.js's own CFI computation,
+     * `contents.js`) rather than reading `lastSelection` as-is, so a selection extended a moment ago
+     * is what gets read.
+     *
+     * REFUSES (`null`) WHENEVER THE GESTURE ALREADY MEETS A HIGHLIGHT — `activeHighlightId`, which is
+     * the SELECTION's overlap first and the pressed point only as a fallback. Refusing on
+     * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null,
+     * so this happily created a second annotation over the first. See `highlightIdForRange`.
+     */
+    requestCurrentSelection: () => {
+      if (activeHighlightId() !== null) {
+        post({ type: "selection", selection: null });
+        return;
+      }
+      const selected = currentSelectionRange();
+      if (selected) {
+        const view = selected.contents.document.defaultView;
+        const selection = view?.getSelection();
+        if (selection) {
+          selected.contents.triggerSelectedEvent(selection);
+          post({ type: "selection", selection: lastSelection });
+          return;
+        }
+      }
+      post({ type: "selection", selection: null });
+    },
+    /** The reader tapped "Delete Highlight". Answers with whatever the gesture is acting on —
+     * `activeHighlightId`, so a highlight reached by dragging a selection over it deletes just like
+     * one reached by pressing it. Silent when neither applies, as before. */
+    confirmDeleteHighlight: () => {
+      const id = activeHighlightId();
+      if (id !== null) {
+        post({ type: "highlightPressed", id });
       }
     }
   };

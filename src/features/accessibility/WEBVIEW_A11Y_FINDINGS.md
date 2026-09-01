@@ -1,7 +1,13 @@
 # WebView Screen-Reader Findings — Consolidated
 
-**Owner: Hruthik. Status: desk research only — the device spike
-(`WEBVIEW_A11Y_SPIKE.md`) has not been run. Last reviewed: 2026-08-17.**
+**Owner: Hruthik. Status: desk research only. Last reviewed: 2026-08-17.**
+
+> **THE SPIKE HAS RUN — this document has not been updated for it, and §2 below is wrong.**
+> The Android/TalkBack pass happened 2026-08-24/25 and found a total failure (F4), which has since
+> been attributed and fixed (2026-08-28). iOS/VoiceOver is still unrun. Read
+> `WEBVIEW_A11Y_SPIKE.md` for what is actually known; treat §2, §4's "all nine items are still
+> open", and §6 here as superseded. Everything in §3 (the Day-1 desk research) still stands, and
+> §3.6's "accessibilityLabel trap" turned out to be exactly right — see the spike's F4(a).
 
 > This document rolls up everything the team has learned or decided about WebView (VoiceOver /
 > TalkBack) accessibility for the Reader's EPUB/PDF surface, across Day 1, Day 2, and Day 3. It is a
@@ -46,7 +52,15 @@ settle this — it requires on-device testing, which is the Day-2 spike that has
 
 ---
 
-## 2. Day-2 spike status: NOT RUN
+## 2. Day-2 spike status: ~~NOT RUN~~ — RAN 2026-08-24/25 (Android only)
+
+> **SUPERSEDED.** This section described the state before the spike ran. Its list of what the spike
+> was designed to test is still an accurate description of the instrument; its claim that every
+> result cell is a placeholder is not. `WEBVIEW_A11Y_SPIKE.md` §4–§10 has the results, §8 has the
+> findings and their current status, and §11 is the re-verification protocol.
+
+### Original text (kept for the record)
+
 
 The Day-2 spike (`WEBVIEW_A11Y_SPIKE.md`, in this same directory) is the instrument designed to
 answer the open question above. **Every result cell in it is still a placeholder.** It has not been
@@ -208,8 +222,9 @@ spike (§2), not by further desk research.
 | Excessive announcements | Medium | Live-region overuse interrupts reading | Audit every `aria-live` usage |
 | ARIA overuse | Medium | Incorrect ARIA makes semantics worse than no ARIA | Semantic-HTML-first review rule |
 
-All nine items are still open — the Day-2 spike template (§2) carries this exact table forward
-with "Observed" / "New severity" columns still to be filled in.
+~~All nine items are still open~~ — **re-rated 2026-08-24/25**; see `WEBVIEW_A11Y_SPIKE.md` §9,
+which carries this exact table forward with the "Observed" / "New severity" columns filled in. Three
+were escalated to Critical/Blocking on the Android evidence, and three new rows were added.
 
 ---
 
@@ -241,12 +256,16 @@ shares the unrun spike as a passing dependency mention, not as new research.
 
 ## 6. Consolidated open items / next step
 
-One item is actually blocking further confidence in this area:
+~~One item is actually blocking further confidence in this area~~ — **the Android half is done.**
+What remains:
 
-> **Run the Day-2 device spike** (`WEBVIEW_A11Y_SPIKE.md`) — load both sample
-> EPUBs through the real `epub.js` setup, run the DOM inspection checklist, the 21-area matrix,
-> and the end-to-end journey test on both VoiceOver and TalkBack, and re-rate the Day-1 risk
-> register (§4) against what was actually observed.
+> **1. Run the iOS/VoiceOver pass.** Never run; every VoiceOver cell in all 21 matrix rows is still
+> `—`, and both causes behind F4 are Android-specific in mechanism, so the Android result says
+> nothing about WKWebView.
+>
+> **2. Re-run Android against the Sample A/B fixtures and the F4 fixes.** The 2026-08-24/25 pass used
+> a real pre-existing book because `ensureSeeded()` short-circuited the fixture path. The protocol,
+> including how to get past that, is `WEBVIEW_A11Y_SPIKE.md` §11.
 
 Nothing else in this workstream is blocked on new research — the Day-3 decisions in §5 already
 work around the unresolved risk conservatively (native surfaces, no WebView rendering of

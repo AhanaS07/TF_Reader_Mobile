@@ -19,9 +19,11 @@
 // imported (erased at compile time) and that is exactly why the cast below is checked rather than
 // hopeful.
 
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PageViewport, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
+import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
+import type { PdfSearchMatch } from '@/features/search/readerSearchMatch';
 
 import {
   base64ToArrayBuffer,
@@ -31,6 +33,25 @@ import {
   publish,
   type TFReaderApi,
 } from './bridge';
+import { pdfHighlights } from './highlightPaint';
+import { matchStroke, selectionBackground } from './selectionTheme';
+import {
+  LONG_PRESS_MS,
+  movedBeyondSlop,
+  swipeDirection,
+  type TouchPoint,
+} from './touchGesture';
+import {
+  clearTextLayer,
+  ensureSurface,
+  highlightAtClientPoint,
+  paintPage,
+  paintSearchPage,
+  selectionInSurface,
+  setPageText,
+  type PdfPageSurface,
+} from './pdfHighlightSeam';
+import { aggregateSearchOutcome, type SearchPaintOutcome } from './pdfSearchMatch';
 import {
   buildOutlineToc,
   fitScale,
@@ -51,11 +72,36 @@ import {
  * rather than imported because pdf.js's own `DocumentInitParameters` is far wider than what a shell
  * with no network access may pass — see the deliberate omissions in `openPdf`.
  */
+/**
+ * What `page.getTextContent()` resolves to.
+ *
+ * Derived from the method rather than imported: pdf.js's root types re-export `PageViewport` but not
+ * `TextContent`, and reaching into `pdfjs-dist/types/src/display/api` for it would pin this file to
+ * the package's internal layout for the sake of one alias.
+ */
+type PageTextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
+
 interface PdfJsLib {
   GlobalWorkerOptions: { workerSrc: string };
   getDocument: (src: { data: ArrayBuffer; useSystemFonts: boolean }) => {
     promise: Promise<PDFDocumentProxy>;
   };
+  /**
+   * pdf.js's own text-layer renderer, used rather than hand-laying spans from `getTextContent()`.
+   *
+   * WHY BORROW IT INSTEAD OF WRITING ONE: the placement is not "put each string where its transform
+   * says". It is font-ascent correction, per-item horizontal scaling measured against a canvas, and
+   * marked-content nesting — several hundred lines of typography that pdf.js already gets right and
+   * that a highlight's character offsets depend on being right. `textContentItemsStr` (an OUTPUT
+   * parameter) is the index the offsets are counted against; see pdfHighlightSeam.ts.
+   */
+  renderTextLayer: (params: {
+    textContentSource: PageTextContent;
+    container: HTMLElement;
+    viewport: PageViewport;
+    textDivs: HTMLElement[];
+    textContentItemsStr: string[];
+  }) => { promise: Promise<void> };
 }
 
 /**
@@ -90,6 +136,189 @@ let currentZoom = 1.0;
  * `ReaderAppearance`'s pre-payload baseline the same way `currentZoom` defaults to 1.0.
  */
 let spreadPref: 'single' | 'double' = 'single';
+
+// --- user highlights -----------------------------------------------------------------------------
+//
+// The PDF side of `paintHighlights`. The mechanics (text layer, boxes, hit-testing, the offset
+// arithmetic) live in pdfHighlightSeam.ts and pdfTextRange.ts; what is here is the part that has to
+// know about THIS shell's page lifecycle — which pages are on screen, and when their geometry moved.
+//
+// >>> EVERY PATH THAT RE-RASTERISES A PAGE MUST ALSO REBUILD ITS TEXT LAYER AND REPAINT IT. <<<
+// The boxes are absolutely-positioned pixels measured from the text layer, so a zoom, a rotation, a
+// spread flip or a scroll-buffer re-render leaves them describing a geometry that no longer exists.
+// There is no "re-measure" shortcut: the spans themselves are laid out for the old scale too, so the
+// layer is rebuilt from `getTextContent()` rather than adjusted. That is why `renderPageSurface`
+// below is called from renderCurrent AND renderScrollPage rather than once per page per book.
+
+/** Every visible page's surface, keyed by page number. SPREAD-AWARE by being a map rather than a
+ * single current-page surface: a double-page spread holds two entries at once, continuous scroll
+ * holds up to `2 * SCROLL_BUFFER_PAGES + 1`, and painting simply visits all of them. */
+const pageSurfaces = new Map<number, PdfPageSurface>();
+
+/** The last `paintHighlights` payload. Kept because the shell repaints on its OWN schedule — a zoom
+ * or a scroll re-render must restore the highlights without asking the host to re-send them. */
+let userHighlights: PdfHighlightPaint[] = [];
+
+/** The current page background, as `applyAppearance` last set it — kept as the ORIGINAL hex string
+ * rather than read back from `document.body.style.background`, whose serialised form (`rgb(...)` vs
+ * the hex it was assigned) is not guaranteed across engines and would silently break
+ * `highlightFill`'s `parseHex`, which only reads hex. */
+let currentBg = '#ffffff';
+
+/**
+ * Per-page staleness token for `renderPageSurface`, claimed by the pass itself.
+ *
+ * >>> WHY IT IS NOT `pageRenderTokens`, AND WHY THE CALLERS' OWN TOKENS ARE NOT ENOUGH. <<<
+ * Both callers already hold a token, and both check it only AFTER awaiting this function — which
+ * leaves the whole of it running unguarded. `ensureSurface` hands back a NEW surface object over the
+ * SAME DOM elements, so two overlapping passes for one page (rapid zoom is the reachable case, where
+ * `renderCurrent` starts a fresh render per step with nothing serialising them) end with the older
+ * one landing last: its `paintPage` calls `replaceChildren` on the shared highlight layer and wipes
+ * the boxes the newer pass just drew, and its caller's trailing check then deletes the newer, VALID
+ * `pageSurfaces` entry. The page keeps correct pixels and loses hit-testing and repainting until
+ * something re-renders it.
+ *
+ * A token claimed here is what makes a superseded pass stop before it writes anything. It is a
+ * SEPARATE map from `pageRenderTokens` deliberately: the scroll path compares that one after
+ * awaiting this function, so bumping it from in here would make its check fail on every successful
+ * render and forget every surface it just built.
+ */
+const surfaceRenderTokens = new Map<number, number>();
+
+/** Rebuild one page's text layer at the scale it is currently drawn, then repaint its highlights.
+ *
+ * `cssScale` is the page's on-screen scale (fit x zoom), NOT the canvas backing-store scale — the
+ * text layer is laid out in CSS pixels and pdf.js 3.11 reads that scale from the `--scale-factor`
+ * custom property, which is why it is set on the container rather than passed as an argument.
+ * Getting it wrong does not misplace the text slightly; it misplaces every glyph proportionally, so
+ * selections land on the wrong words. */
+async function renderPageSurface(
+  pageNumber: number,
+  page: PDFPageProxy,
+  root: HTMLElement,
+  cssScale: number,
+): Promise<PdfPageSurface | null> {
+  const pdfjs = lib();
+  if (!pdfjs) return null;
+
+  // Claimed BEFORE the first await, so a later pass for this page supersedes this one from the
+  // moment it starts. Everything destructive below this line is synchronous, so a pass that is
+  // already stale by its first check has not yet touched the shared layers.
+  const token = (surfaceRenderTokens.get(pageNumber) ?? 0) + 1;
+  surfaceRenderTokens.set(pageNumber, token);
+
+  const surface = ensureSurface(pageNumber, root);
+  pageSurfaces.set(pageNumber, surface);
+  clearTextLayer(surface);
+  surface.textLayer.style.setProperty('--scale-factor', String(cssScale));
+
+  const textDivs: HTMLElement[] = [];
+  const textContentItemsStr: string[] = [];
+
+  // Hoisted out of the call below so there is a checkpoint between the two awaits: rendering a
+  // superseded pass's spans into the shared container would interleave them with the live pass's,
+  // and every offset counted against `textContentItemsStr` would then address the wrong span.
+  const textContentSource = await page.getTextContent();
+  if (surfaceRenderTokens.get(pageNumber) !== token) return null;
+
+  await pdfjs.renderTextLayer({
+    // The UNSCALED viewport, deliberately: pdf.js positions each span as a PERCENTAGE of the page
+    // and sizes it as `calc(var(--scale-factor) * <unscaled>px)`, so the scale belongs in the custom
+    // property and passing a scaled viewport here would apply it twice.
+    textContentSource,
+    container: surface.textLayer,
+    viewport: page.getViewport({ scale: 1 }),
+    textDivs,
+    textContentItemsStr,
+  }).promise;
+  // The check that matters most: `paintPage` below is a whole-layer `replaceChildren`, so a stale
+  // pass reaching it erases a newer pass's boxes rather than merely adding nothing.
+  if (surfaceRenderTokens.get(pageNumber) !== token) return null;
+
+  setPageText(surface, textDivs, textContentItemsStr);
+  paintPage(surface, userHighlights, currentBg);
+  // LAST, so the outline is appended over the fill this just drew — HIGHLIGHT_LAYERS.md §4's
+  // z-order, which on this side is bought by the layer's position in the DOM rather than by paint
+  // order, but there is no reason to leave the two disagreeing.
+  //
+  // AND THIS IS WHERE THE OUTCOME IS USUALLY DECIDED, not in the command handler: the host sends
+  // `paintSearchMatch` right after `goTo`, before this page exists. `reportSearchPaint` de-dupes,
+  // so the zoom/scroll/spread-flip re-renders that also land here stay quiet.
+  reportSearchPaint(repaintSearchMatch());
+
+  return surface;
+}
+
+/** Forget a page that is no longer on screen. Its surface elements go with the DOM node that held
+ * them; this only stops a stale entry being repainted (or hit-tested) after the fact.
+ *
+ * `only` narrows it to "forget MY surface" — pass the object `renderPageSurface` returned, and the
+ * entry is left alone if a newer pass has since installed its own. Without it, a caller cleaning up
+ * after a superseded render deletes whatever is in the map, which by then is the live surface: the
+ * page then has correct pixels and no hit-testing at all. Omit it for a page that is genuinely gone
+ * (disposed, or off the current spread), where whatever is filed for it should go regardless. */
+function forgetPageSurface(pageNumber: number, only?: PdfPageSurface): void {
+  if (only !== undefined && pageSurfaces.get(pageNumber) !== only) return;
+  pageSurfaces.delete(pageNumber);
+}
+
+/** Repaint every visible page from the current set. Cheap — `paintPage` rebuilds one layer of a few
+ * absolutely-positioned divs — which is what lets this be the ONE repaint entry point rather than a
+ * diff (see paintPage's own note on why the PDF side does not diff). */
+function repaintUserHighlights(): void {
+  for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
+}
+
+/** The one active search match, or null. Kept for the same reason `userHighlights` is: this shell
+ * repaints on its OWN schedule (a zoom, a spread flip, a scroll re-render) and must restore the
+ * outline without asking the host to re-send it. */
+let searchMatch: PdfSearchMatch | null = null;
+
+/**
+ * Repaint the search match across every visible page, and say what happened.
+ *
+ * >>> THIS IS WHY ORDERING IS A NON-ISSUE ON THIS SIDE. <<< `renderPageSurface` calls it as its last
+ * step, so a `paintSearchMatch` that arrives before the page is rasterised — which is the normal
+ * case, since the host sends it right after `goTo` — is restored the moment the text layer exists.
+ * Every path that re-rasterises a page already funnels through that one function (zoom, rotation,
+ * spread flip, scroll buffer, `window.resize`), so the outline inherits all of them for free.
+ *
+ * The aggregate is deliberately not "did every surface paint": in a double-page spread exactly one
+ * of the two is the match's page and the other correctly clears. `pending` outranks nothing — it
+ * means a page is mid-render and is reported as silence, not as failure.
+ */
+function repaintSearchMatch(): SearchPaintOutcome {
+  const stroke = matchStroke(currentBg);
+  const outcomes: SearchPaintOutcome[] = [];
+  for (const surface of pageSurfaces.values()) {
+    outcomes.push(paintSearchPage(surface, searchMatch, stroke));
+  }
+  // The aggregation is next door and unit-tested, because the case it exists for is invisible from
+  // here: "no surface holds the match's page" has to read as `pending`, not as a failure.
+  return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+}
+
+/**
+ * What the host was last TOLD about the current match, so a repaint does not re-say it.
+ *
+ * Reset to `null` when a new payload arrives. Without it the two reporting sites disagree about who
+ * speaks: `paintSearchMatch` normally cannot answer (the target page is still rasterising) and
+ * `renderPageSurface` is what learns the real outcome a frame later — but that one runs again on
+ * every zoom, scroll and spread flip, and would repeat itself each time.
+ */
+let reportedSearchPainted: boolean | null = null;
+
+/** Tell the host the outcome, if it is one worth saying and has not been said. `pending` and
+ * `cleared` are silence: a page mid-render has not failed, and a clear cannot. */
+function reportSearchPaint(outcome: SearchPaintOutcome): void {
+  if (outcome === 'pending' || outcome === 'cleared') return;
+  // `cued` is a paint the reader can see, but not the one they asked for — it says which page, not
+  // which word — so it reports as unpainted and the host's notice explains the whole-page outline.
+  const painted = outcome === 'painted';
+  if (reportedSearchPainted === painted) return;
+  reportedSearchPainted = painted;
+  post({ type: 'searchMatchPainted', painted });
+}
 
 /** Gutter between the two canvases when a spread is actually showing two pages. Small and fixed —
  * this reader has no other "gap" concept to reuse, and a book's own gutter is not part of the page
@@ -186,6 +415,7 @@ async function buildScrollList(doc: PDFDocumentProxy): Promise<void> {
   pageWrappers.clear();
   renderedPages.clear();
   pageRenderTokens.clear();
+  surfaceRenderTokens.clear();
 
   const box = viewportSize();
   const pages = await Promise.all(
@@ -201,6 +431,18 @@ async function buildScrollList(doc: PDFDocumentProxy): Promise<void> {
     const wrapper = document.createElement('div');
     wrapper.className = 'pdf-scroll-page';
     wrapper.style.height = `${Math.floor(height)}px`;
+
+    // The positioned page box the canvas and its two layers share — the continuous-scroll
+    // equivalent of #pdf-page-1/#pdf-page-2. It is a SEPARATE element from the scroll wrapper, not
+    // the wrapper itself, because the wrapper is full-width and centres its child: absolutely
+    // positioning the text layer against it would stretch the layer across the whole viewport
+    // instead of over the page.
+    const pageBox = document.createElement('div');
+    pageBox.className = 'pdf-page';
+    pageBox.style.width = `${Math.floor(fit > 0 ? base.width * fit : 0)}px`;
+    pageBox.style.height = `${Math.floor(height)}px`;
+    wrapper.appendChild(pageBox);
+
     content.appendChild(wrapper);
     pageWrappers.set(pageNumber, wrapper);
   }
@@ -249,7 +491,18 @@ async function renderScrollPage(pageNumber: number): Promise<void> {
     // (slow) rasterisation above was still running.
     if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) return;
 
-    wrapper.replaceChildren(canvas);
+    // The `.pdf-page` box built by buildScrollList, not the scroll wrapper itself — see its note.
+    // Falls back to the wrapper only if the list was somehow built without one, which would put the
+    // page on screen unhighlightable rather than not at all.
+    const pageBox = wrapper.querySelector<HTMLElement>('.pdf-page') ?? wrapper;
+    pageBox.replaceChildren(canvas);
+
+    // AFTER replaceChildren, because that call is what would otherwise wipe the two layers
+    // `ensureSurface` appends.
+    const surface = await renderPageSurface(pageNumber, page, pageBox, fit);
+    if (surface !== null && (pageRenderTokens.get(pageNumber) !== token || !scrollMode)) {
+      forgetPageSurface(pageNumber, surface);
+    }
   } catch (error) {
     // A failed claim must not be permanent — clear it so the next virtualisation pass retries
     // this page instead of silently leaving it blank forever.
@@ -265,7 +518,12 @@ function disposeScrollPage(pageNumber: number): void {
   if (!renderedPages.has(pageNumber)) return;
   renderedPages.delete(pageNumber);
   nextTokenFor(pageNumber);
-  pageWrappers.get(pageNumber)?.replaceChildren();
+  forgetPageSurface(pageNumber);
+
+  // The `.pdf-page` box is emptied rather than removed: buildScrollList sized it, and the scroll
+  // length depends on it keeping that size while the page is out of the buffer.
+  const wrapper = pageWrappers.get(pageNumber);
+  (wrapper?.querySelector<HTMLElement>('.pdf-page') ?? wrapper)?.replaceChildren();
 }
 
 let scrollRaf = 0;
@@ -309,6 +567,10 @@ function virtualize(): void {
     position: { kind: 'page', page: current, pageCount },
     atStart: current <= 1,
     atEnd: current >= pageCount,
+    // A PDF has no spine, so there is no section to name and nothing for a chapter announcement to
+    // compare against. Null rather than a synthesised "section 1": the outline is a separate thing
+    // (pdfOutline.ts) and a page is not a member of one.
+    section: null,
   });
 }
 
@@ -359,6 +621,7 @@ function leaveScrollMode(): void {
   detachScrollListener();
 
   for (const page of [...renderedPages]) disposeScrollPage(page);
+  pageSurfaces.clear();
   pageWrappers.clear();
   cachedPageTops = [];
   const content = scrollContentEl();
@@ -508,12 +771,20 @@ async function renderCurrent(pageNumber: number): Promise<void> {
   }
 
   const dpr = window.devicePixelRatio || 1;
-  const canvasIds = ['pdf-canvas', 'pdf-canvas-2'] as const;
+  // Each entry is one half of a spread: the positioned wrapper that owns the page's stack (canvas,
+  // text layer, highlight layer) and the canvas inside it. Hiding is done on the WRAPPER — see the
+  // template's own note on why an empty-but-present flex item would keep the spread gutter.
+  const spreadSlots = [
+    { root: 'pdf-page-1', canvas: 'pdf-canvas' },
+    { root: 'pdf-page-2', canvas: 'pdf-canvas-2' },
+  ] as const;
   const renders: Promise<void>[] = [];
+  const surfaceWork: { page: number; proxy: (typeof pageProxies)[number]; root: HTMLElement }[] = [];
 
-  for (let i = 0; i < canvasIds.length; i++) {
-    const canvas = document.getElementById(canvasIds[i]) as HTMLCanvasElement | null;
-    if (!canvas) {
+  for (let i = 0; i < spreadSlots.length; i++) {
+    const root = document.getElementById(spreadSlots[i].root);
+    const canvas = document.getElementById(spreadSlots[i].canvas) as HTMLCanvasElement | null;
+    if (!canvas || !root) {
       fail('NAVIGATION_FAILED', 'the page canvas is missing from the shell');
       return;
     }
@@ -521,13 +792,14 @@ async function renderCurrent(pageNumber: number): Promise<void> {
     if (i >= pageProxies.length) {
       // Not part of this spread. Backing store released rather than left resident — a hidden canvas
       // otherwise keeps its last full-size frame in memory for no reason.
-      canvas.style.display = 'none';
+      root.style.display = 'none';
       canvas.width = 0;
       canvas.height = 0;
       continue;
     }
 
-    canvas.style.display = 'block';
+    root.style.display = 'block';
+    surfaceWork.push({ page: pages[i], proxy: pageProxies[i], root });
     const base = bases[i];
     const viewport = pageProxies[i].getViewport({ scale: fit * dpr * currentZoom });
     canvas.width = Math.floor(viewport.width);
@@ -548,6 +820,29 @@ async function renderCurrent(pageNumber: number): Promise<void> {
   await Promise.all(renders);
   if (token !== renderToken) return;
 
+  // A page that just left the spread must stop being repainted and hit-tested. Its DOM is reused by
+  // the next render, so forgetting the entry is the whole of the cleanup.
+  for (const page of [...pageSurfaces.keys()]) {
+    if (!pages.includes(page)) forgetPageSurface(page);
+  }
+
+  // AFTER the canvases and NOT awaited before `relocated` is posted: the text layer is what makes
+  // the page selectable and highlightable, not what makes it visible, so making the page indicator
+  // wait on `getTextContent()` would delay the whole navigation for a feature nobody is using yet
+  // at that instant. Guarded by the same `renderToken` as the render above — a newer navigation
+  // must not have its text layer overwritten by a stale one finishing late.
+  for (const work of surfaceWork) {
+    void renderPageSurface(work.page, work.proxy, work.root, fit * currentZoom)
+      .then((surface) => {
+        if (surface !== null && token !== renderToken) forgetPageSurface(work.page, surface);
+      })
+      .catch(() => {
+        // Best-effort, exactly like the EPUB shell's `setSpokenRange`: a page that cannot build a
+        // text layer is a page that cannot be highlighted, which must not become a page that cannot
+        // be READ. The canvas is already on screen and stays there.
+      });
+  }
+
   currentPage = pages[0];
 
   // THE PAGE AND THE PAGE COUNT, which this shell tracked privately for a long time and deliberately
@@ -563,6 +858,8 @@ async function renderCurrent(pageNumber: number): Promise<void> {
     position: { kind: 'page', page: currentPage, pageCount },
     atStart: pages[0] <= 1,
     atEnd: pages[pages.length - 1] >= pageCount,
+    // No spine — see the scroll-mode emission above.
+    section: null,
   });
 }
 
@@ -572,6 +869,155 @@ function renderCurrentGuarded(pageNumber: number): void {
     fail('NAVIGATION_FAILED', error);
   });
 }
+
+/**
+ * The reader tapped "Highlight". Reads `document.getSelection()` fresh, so a selection extended
+ * right up to the tap is what's used. `selectionInSurface` finds which page it's on (spread-aware);
+ * refuses (`null`) if the press was on an existing highlight (`pressedHighlightId`).
+ */
+function requestCurrentSelection(): void {
+  if (pressedHighlightId !== null) {
+    post({ type: 'selection', selection: null });
+    return;
+  }
+
+  const selection = document.getSelection();
+
+  if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+    for (const surface of pageSurfaces.values()) {
+      const span = selectionInSurface(surface, selection);
+      if (span) {
+        post({
+          type: 'selection',
+          selection: {
+            kind: 'pageRange',
+            page: surface.page,
+            startOffset: span.startOffset,
+            endOffset: span.endOffset,
+          },
+        });
+        return;
+      }
+    }
+  }
+
+  post({ type: 'selection', selection: null });
+}
+
+// --- gestures ---------------------------------------------------------------------------------
+//
+// The PDF half of what epub.entry.ts does in every chapter document: a long press offers a menu, a
+// directional drag turns the page, and the two are told apart by shape. Simpler here in one way —
+// there is one document rather than an iframe per chapter, so coordinates need no translation — and
+// harder in another, since a highlight is a div this shell painted rather than something a library
+// hit-tests for us. See touchGesture.ts for why both live on this side of the bridge at all.
+
+let touchOrigin: TouchPoint | null = null;
+let longPressTimer = 0;
+let longPressFired = false;
+
+/**
+ * The painted highlight under the finger for the CURRENT gesture, or null — hit-tested at
+ * `touchstart` rather than only when `onLongPress` fires. Read by `requestCurrentSelection` (refuse
+ * a create over an existing highlight) and `confirmDeleteHighlight` (delete only if this is set) —
+ * see their own notes in readerBridge.ts.
+ */
+let pressedHighlightId: string | null = null;
+
+function cancelLongPress(): void {
+  if (longPressTimer) window.clearTimeout(longPressTimer);
+  longPressTimer = 0;
+}
+
+/**
+ * The long press fired. Only sets the flag `touchend` reads to tell a swipe-release from a
+ * press-release — see its own note there. Creating and deleting highlights are both native-menu-
+ * driven now (`requestCurrentSelection`, `confirmDeleteHighlight`), decided when a menu item is
+ * actually tapped rather than at this timer, so there is nothing else to do here any more.
+ */
+function onLongPress(): void {
+  longPressFired = true;
+}
+
+document.addEventListener(
+  'touchstart',
+  (event) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+
+    cancelLongPress();
+    touchOrigin = { x: touch.clientX, y: touch.clientY };
+    longPressFired = false;
+
+    // HIT-TESTED AGAINST THE PAINTED GEOMETRY, not by a listener on each box — the boxes must stay
+    // `pointer-events: none` or they would swallow the very drags that create highlights (see
+    // pdfHighlightSeam.ts's header). Every visible surface is asked, which is what makes this work
+    // across a double-page spread: the press can land on either page.
+    pressedHighlightId = null;
+    for (const surface of pageSurfaces.values()) {
+      const id = highlightAtClientPoint(surface, touch.clientX, touch.clientY);
+      if (id !== null) {
+        pressedHighlightId = id;
+        break;
+      }
+    }
+    // Reset only here, never on touchend/touchcancel — see readerBridge.ts's `highlightTouchActive`
+    // note (clearing on touchend crashed the app).
+    post({ type: 'highlightTouchActive', active: pressedHighlightId !== null });
+
+    longPressTimer = window.setTimeout(onLongPress, LONG_PRESS_MS);
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  'touchmove',
+  (event) => {
+    const touch = event.touches[0];
+    if (!touch || !touchOrigin) return;
+    if (movedBeyondSlop(touchOrigin, { x: touch.clientX, y: touch.clientY })) cancelLongPress();
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  'touchend',
+  (event) => {
+    cancelLongPress();
+    const origin = touchOrigin;
+    touchOrigin = null;
+    // highlightTouchActive is NOT reset here — see readerBridge.ts's note (it used to be, and crashed).
+
+    const touch = event.changedTouches[0];
+    if (!origin || !touch || longPressFired || !pdfDoc) return;
+    // A drag that ends with text selected is a selection being extended, not a page turn.
+    if (!document.getSelection()?.isCollapsed) return;
+    // In continuous scroll the reader scrolls; there is no discrete page to turn. Same rule the RN
+    // overlay applied from the outside, now applied where the touch actually is.
+    if (scrollMode) return;
+
+    const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+    if (direction === null) return;
+
+    const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+    const target =
+      direction === 'next'
+        ? nextSpreadStart(currentPage, pageCount, spreading)
+        : prevSpreadStart(currentPage, pageCount, spreading);
+    if (target === null) return;
+    renderCurrentGuarded(target);
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  'touchcancel',
+  () => {
+    cancelLongPress();
+    touchOrigin = null;
+  },
+  { passive: true },
+);
 
 // Rotation and split-view resizes change the fit scale, so the current page has to be re-rasterised
 // or it stays at the old resolution, stretched by CSS. epub.js does its own resize handling; pdf.js
@@ -631,6 +1077,16 @@ const api: TFReaderApi<'openPdf'> = {
       try {
         pdfDoc = await loading.promise;
         pageCount = pdfDoc.numPages;
+
+        // A fresh document gets a fresh highlight state. Ids and page offsets from whatever was open
+        // before address nothing in this one, and a stale surface map would let a repaint write onto
+        // a page container the previous book laid out.
+        pageSurfaces.clear();
+        userHighlights = [];
+        // Same reasoning for the search layer: a page number and offset from the previous document
+        // address a page in THIS one, which is worse than addressing nothing.
+        searchMatch = null;
+        reportedSearchPainted = null;
         await renderCurrent(1);
 
         // Consults `wantsScroll` rather than defaulting to single-page: `applyAppearance` always
@@ -731,7 +1187,21 @@ const api: TFReaderApi<'openPdf'> = {
    * (one page is one canvas, not a chapter document), so a single direct style write is enough.
    */
   applyAppearance: (appearance: ReaderAppearance) => {
+    currentBg = appearance.bg;
     document.body.style.background = appearance.bg;
+    // Re-tint existing highlights for the new theme immediately, not on the next unrelated repaint.
+    repaintUserHighlights();
+    // The outline's stroke is derived from the page colour too (`matchStroke`), for the same reason
+    // the fill is: a mid-blue line on a near-black page is barely a line.
+    repaintSearchMatch();
+    // The text layer is transparent, so the ONLY visible sign that a long press selected anything is
+    // the `::selection` fill — and WebKit's default is opaque, which hides the words it is selecting.
+    // Delivered as a custom property because the rule that reads it lives in the template's CSS,
+    // which cannot see this payload. Same derivation the EPUB shell's stylesheet uses.
+    document.documentElement.style.setProperty(
+      '--tf-selection',
+      selectionBackground(appearance.link, appearance.bg),
+    );
 
     const zoomChanged = appearance.zoom !== currentZoom;
     currentZoom = appearance.zoom;
@@ -783,8 +1253,76 @@ const api: TFReaderApi<'openPdf'> = {
     post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
   },
 
-  /** Documented no-op — see requestTtsSentence's note. PDF has no highlight seam in this scope. */
+  /** Documented no-op — see requestTtsSentence's note. Reader never constructs a
+   * `ReaderTextProvider` for a PDF book, so nothing ever asks this shell to paint a spoken range.
+   * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
+   * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
   setSpokenRange: () => {},
+
+  /**
+   * Paint or clear the one active search match. Unlike `setSpokenRange` above this is REAL here,
+   * not a no-op: search has PDF locators (`{page, offset}`), and `pdfHighlightSeam.ts` has had the
+   * text layer a box needs since user highlights landed.
+   *
+   * A NON-NULL `epub` SIDE IS A HOST BUG, reported exactly as `paintHighlights` reports a foreign
+   * entry — the host chose `openPdf` for this book, so a CFI-shaped match means it picked the wrong
+   * side of a payload it had already routed correctly.
+   *
+   * Reports `pending` as SILENCE. The host normally sends this immediately after `goTo`, before the
+   * target page has finished rasterising, so a miss here is "not yet" rather than "cannot" —
+   * `renderPageSurface` repaints and reports for real a frame later.
+   */
+  paintSearchMatch: (match) => {
+    if (match.epub !== null) {
+      fail(
+        'NAVIGATION_FAILED',
+        'paintSearchMatch: the match addresses a CFI, and this shell renders PDF',
+      );
+      return;
+    }
+
+    searchMatch = match.pdf;
+    // A new payload is a new question, so whatever was said about the last one no longer counts.
+    reportedSearchPainted = null;
+    reportSearchPaint(repaintSearchMatch());
+  },
+
+  /**
+   * Paint the user's saved highlights — the whole set, idempotently, exactly as the EPUB shell does.
+   * See `ReaderCommand`'s own note for why the host always sends everything rather than a patch.
+   *
+   * Stored before it is applied, and applied to whatever is on screen NOW: pages that are not
+   * currently rasterised have no surface to paint onto, and pick these up when they are next
+   * rendered (`renderPageSurface` ends with a `paintPage`). That is what makes a highlight on page
+   * 400 of a scrolled book appear when it is scrolled to, without this command having to know
+   * anything about the virtualisation window.
+   *
+   * The wrong-shape case is refused rather than dropped, for the reason the EPUB shell gives: an
+   * EPUB-shaped entry reaching here means the host chose the wrong array while having correctly
+   * chosen `openPdf`, and "no highlights" is exactly what that bug would otherwise look like.
+   */
+  paintHighlights: (highlights) => {
+    const { mine, foreign } = pdfHighlights(highlights);
+    userHighlights = mine;
+    repaintUserHighlights();
+
+    if (foreign > 0) {
+      fail(
+        'NAVIGATION_FAILED',
+        `paintHighlights: ${String(foreign)} highlight(s) address CFIs, and this shell renders PDF`,
+      );
+    }
+  },
+
+  requestCurrentSelection,
+
+  /** The reader tapped "Delete Highlight". Replies only if the press landed on a highlight
+   * (`pressedHighlightId`); silent otherwise. */
+  confirmDeleteHighlight: () => {
+    if (pressedHighlightId !== null) {
+      post({ type: 'highlightPressed', id: pressedHighlightId });
+    }
+  },
 };
 
 // Announce last, once the API is fully defined — RN waits for `ready` before injecting any command.

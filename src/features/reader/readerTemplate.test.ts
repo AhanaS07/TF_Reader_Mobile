@@ -208,6 +208,19 @@ describe('the line grid — why a line cannot be sliced by a page edge', () => {
     );
   });
 
+  it('forces text selectable against a book that switches it off', () => {
+    // `user-select: none` / `-webkit-touch-callout: none` are the copy-prevention idiom in publisher
+    // and Calibre-converted stylesheets, and either one makes a long press select nothing — no
+    // menu, no highlight, and nothing on screen explaining it. Selection is half of highlighting
+    // now, so this sheet has to win.
+    const css = baselineCss(readerMetrics(393, 700));
+    expect(css).toMatch(/html, body \{[^}]*-webkit-user-select: text !important/);
+    expect(css).toMatch(/html, body \{[^}]*-webkit-touch-callout: default !important/);
+    // Repeated on the text elements: both declarations are important, so a book's rule on its own
+    // paragraphs beats an ancestor's on specificity unless this sheet matches there too.
+    expect(css).toMatch(/^p, div, span, li,[^{]*\{[^}]*user-select: text !important/m);
+  });
+
   it('does not quantise when the flow has no page edges', () => {
     // Guard on the flow rather than the value: when scrolled-doc arrives, this test is the record
     // of what changes with it.
@@ -598,10 +611,17 @@ describe('the PDF shell carries continuous scroll\'s second surface', () => {
   // pdf.entry.ts toggles which of #pdf-single/#pdf-scroll is visible off applyAppearance's flow —
   // both silently do nothing if their elements go missing, same failure mode the block above guards
   // for the single-page surface.
-  it('defines #pdf-single wrapping both spread canvases', () => {
+  it('defines #pdf-single wrapping both spread pages', () => {
+    // EACH CANVAS SITS IN ITS OWN POSITIONED .pdf-page WRAPPER, which the canvases did not need
+    // before highlighting: the text layer and the highlight boxes are absolutely positioned, and
+    // without a positioned ancestor per page they resolve against the viewport instead of the page.
     expect(PDF_TEMPLATE).toMatch(
-      /<div id="pdf-single"><canvas id="pdf-canvas"><\/canvas><canvas id="pdf-canvas-2"><\/canvas><\/div>/,
+      /<div class="pdf-page" id="pdf-page-1"><canvas id="pdf-canvas"><\/canvas><\/div>/,
     );
+    expect(PDF_TEMPLATE).toMatch(
+      /<div class="pdf-page" id="pdf-page-2"><canvas id="pdf-canvas-2"><\/canvas><\/div>/,
+    );
+    expect(PDF_TEMPLATE).toMatch(/<div id="pdf-single">/);
   });
 
   it('defines the scrollable surface and its page-wrapper content root', () => {
@@ -618,12 +638,76 @@ describe('the PDF shell carries double-page spread\'s second canvas', () => {
   // renderCurrent() (pdf.entry.ts) toggles #pdf-canvas-2's display when a spread has two pages —
   // same failure mode as the rest of this file: an element that goes missing here means the second
   // page of a spread silently never appears, with no error to explain why.
-  it('hides #pdf-canvas-2 by default, so a book always opens on one page absent an appearance', () => {
-    expect(PDF_TEMPLATE).toMatch(/#pdf-canvas-2\s*\{[^}]*display:\s*none/);
+  it('hides #pdf-page-2 by default, so a book always opens on one page absent an appearance', () => {
+    // THE WRAPPER, NOT THE CANVAS — moved when the page wrappers landed. #pdf-single is a flex row
+    // with a gutter, and `gap` applies between IN-FLOW children, so hiding only the canvas would
+    // leave an empty flex item holding an 8px gap beside a single page and shift it off centre.
+    expect(PDF_TEMPLATE).toMatch(/#pdf-page-2\s*\{[^}]*display:\s*none/);
   });
 
   it('gives #pdf-single a gutter for when both canvases are showing', () => {
     expect(PDF_TEMPLATE).toMatch(/#pdf-single\s*\{[^}]*gap:\s*8px/);
+  });
+});
+
+describe("the PDF shell carries the layers a highlight is selected and painted in", () => {
+  // pdf.entry.ts CREATES these elements at runtime but cannot style them — a .ts file carries no
+  // CSS. Both fail silently and differently if their rules go missing: an unstyled text layer is
+  // opaque text stacked on top of the page bitmap, and an unstyled highlight layer is a set of
+  // static-positioned divs pushing the canvas down the page.
+  it('positions the text layer over the page', () => {
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-text-layer\s*\{[^}]*position:\s*absolute/);
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-page\s*\{[^}]*position:\s*relative/);
+  });
+
+  it('keeps the text layer transparent rather than invisible', () => {
+    // `color: transparent`, NOT `opacity: 0`: the OS draws the selection highlight into this layer,
+    // and an opacity-0 layer takes that with it — the user would be selecting text they cannot see
+    // selected, which is indistinguishable from selection being broken.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-text-layer span[^{]*\{[^}]*color:\s*transparent/);
+  });
+
+  it('keeps highlight boxes out of the touch path', () => {
+    // LOAD-BEARING, not tidiness: a box that takes touches swallows the drag that starts inside it,
+    // so an existing highlight could never be selected through or extended. Taps are hit-tested
+    // against the painted geometry instead (highlightGeometry.ts's `highlightAt`).
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*\{[^}]*pointer-events:\s*none/);
+  });
+
+  it('composites a highlight rather than covering the page with it', () => {
+    // `multiply` is what makes a SOLID fill (the user layer's channel in HIGHLIGHT_LAYERS.md §3)
+    // readable: it darkens the rasterised glyphs towards the colour instead of hiding them, the same
+    // compositing epub.js's own highlight defaults give the EPUB shell.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*>\s*div\s*\{[^}]*mix-blend-mode:\s*multiply/);
+  });
+
+  it('keeps the search outline out of the touch path too', () => {
+    // Same load-bearing reason as the layer below it, and it sits ABOVE that one — so a search box
+    // that took touches would swallow the drag over any highlight it happened to cover.
+    expect(PDF_TEMPLATE).toMatch(/\.pdf-search-layer\s*\{[^}]*pointer-events:\s*none/);
+  });
+
+  it('draws the search match as an OUTLINE, with nothing filling it', () => {
+    // HIGHLIGHT_LAYERS.md §3 gives `search` the border channel precisely so a match stays findable
+    // OVER a user's fill without hiding it. A background here — or a `mix-blend-mode`, which only
+    // makes sense for a fill — would turn the transient layer into a second opaque one and lose the
+    // user highlight underneath, which §3 calls a regression rather than a simplification.
+    const rule = /\.pdf-search-layer\s*>\s*div\s*\{([^}]*)\}/.exec(PDF_TEMPLATE);
+    expect(rule).not.toBeNull();
+    expect(rule?.[1]).toMatch(/background:\s*transparent/);
+    expect(rule?.[1]).toMatch(/border:\s*\d+px solid/);
+    expect(rule?.[1]).not.toMatch(/mix-blend-mode/);
+  });
+
+  it('puts the search layer after the highlight layer in the stylesheet AND in the DOM', () => {
+    // §4's z-order (`tts > search > user`) is bought by DOM order on this side, and `ensureSurface`
+    // is where that is decided — a `.ts` file, so the assertion has to read it rather than the CSS.
+    // Reversing the two appends would put a user fill over the outline meant to be found on top of
+    // it, which no stylesheet rule would reveal.
+    const seam = webviewFile('src', 'pdfHighlightSeam.ts');
+    expect(seam.indexOf("root.appendChild(searchLayer)")).toBeGreaterThan(
+      seam.indexOf("root.appendChild(highlightLayer)"),
+    );
   });
 });
 
@@ -655,5 +739,154 @@ describe('reduceMotion has nothing to suppress, and must not quietly acquire one
     ['webview/src/pdf.entry.ts', () => PDF_ENTRY],
   ])('%s declares no animation', (_name, source) => {
     expect(ANIMATED_DECLARATION.filter((re) => re.test(source()))).toEqual([]);
+  });
+});
+
+// --- every re-layout path re-measures EVERY painted layer ---------------------------------------
+//
+// >>> THE INVARIANT THAT KEEPS A HIGHLIGHT ON ITS WORDS, ASSERTED RATHER THAN COMMENTED. <<<
+// A painted mark is absolute pixels: marks-pane measures a CFI (or a text-layer offset) once, at
+// paint time, and re-measures only when something asks it to. The two shells state the same rule in
+// their own vocabulary — "every path that re-lays out a chapter re-measures every painted mark", and
+// "every path that re-rasterises a page rebuilds its text layer and repaints it" — and until now
+// both were held by prose alone.
+//
+// Prose is not enough here, and the reason is concrete: there are THREE owners (`user`, `search`,
+// `tts`; HIGHLIGHT_LAYERS.md §3) sharing one re-measure path, and a refactor that keeps two of them
+// leaves the third silently stranded on the words it used to cover. Nothing on screen explains it,
+// no unit test can see it, and the layer most likely to be dropped is the one added last.
+//
+// These read the entry sources because the subjects are the two untested files by design — they only
+// forward to epub.js and pdf.js. What is checkable without a browser is whether the calls are still
+// wired to each other, which is exactly the thing a rename breaks.
+
+/** A top-level function or object-method body, by brace matching from `marker`.
+ *
+ * Comments are stripped first: both entries carry `{page, offset}` and similar in prose, and a lone
+ * brace in a sentence would otherwise end the body early and make these assertions pass or fail for
+ * reasons that have nothing to do with the code.
+ */
+function blockAfter(source: string, marker: string): string {
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const at = stripped.indexOf(marker);
+  expect(at).toBeGreaterThan(-1);
+
+  // The BODY's brace, not a parameter's. `scheduleGeometryRefresh(options: { reanchor?: boolean })`
+  // opens a brace in its own signature, and taking the first one matches the parameter type instead.
+  // Under this repo's formatting a body brace is always the last thing on its line, and a
+  // destructured parameter or a `= {}` default never is.
+  const bodyOpen = /\{[ \t]*\r?\n/.exec(stripped.slice(at + marker.length));
+  expect(bodyOpen).not.toBeNull();
+  const open = at + marker.length + (bodyOpen?.index ?? 0);
+
+  let depth = 0;
+  for (let i = open; i < stripped.length; i++) {
+    if (stripped[i] === '{') depth++;
+    else if (stripped[i] === '}' && --depth === 0) return stripped.slice(open, i + 1);
+  }
+  throw new Error(`unbalanced braces after ${marker}`);
+}
+
+describe('re-measuring every painted layer after a re-layout', () => {
+  it('the EPUB repaint covers all three owners, not just the durable one', () => {
+    // Named `repaintLiveAnnotations` precisely because it is NOT the user layer's private repaint.
+    // If a fourth owner is added to HIGHLIGHT_LAYERS.md's table, it belongs here too.
+    const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations()');
+    expect(body).toContain('applyUserHighlights('); // user
+    expect(body).toContain('liftSearchMatch('); // search
+    expect(body).toContain('TTS_OWNER'); // tts
+  });
+
+  it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {
+    // The cache holds pre-reflow rects, and a stale one makes a long press delete the wrong
+    // highlight — a silent loss of the reader's own work, so it is not merely a tidy-up.
+    const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(body).toContain('repaintLiveAnnotations()');
+    expect(body).toContain('invalidateHighlightBoxes()');
+  });
+
+  it('every EPUB signal that can move a glyph reaches the refresh', () => {
+    // A stylesheet change does not reach epub.js's own re-measure (`View.reframe` is width-gated and
+    // paginated flow hides the resize), so each of these has to ask explicitly. Listed as call-sites
+    // rather than a count, so deleting one names which.
+    for (const trigger of [
+      "contents.on('resize'", // the book's own late reflow: an image, a web font
+      "rendition.on('resized'", // rotation
+      'scheduleGeometryRefresh({ reanchor: true })', // a typography/spread preference
+      'fonts?.ready', // a custom face arriving after the payload that asked for it
+    ]) {
+      expect(EPUB_ENTRY).toContain(trigger);
+    }
+  });
+
+  it('the PDF page render repaints BOTH layers, not only the user fill', () => {
+    // The text layer is rebuilt from scratch at the new scale on every zoom, rotation, spread flip
+    // and scroll-buffer pass, so both layers' boxes are re-measured here or nowhere.
+    const body = blockAfter(PDF_ENTRY, 'async function renderPageSurface(');
+    expect(body).toContain('paintPage(');
+    expect(body).toContain('repaintSearchMatch()');
+  });
+
+  it('the PDF appearance handler re-tints both layers before it re-renders', () => {
+    // Both colours are theme-derived (`highlightFill`, `matchStroke`), and a theme change alone
+    // does not re-render a page — so without these the layer keeps the shade of the previous theme
+    // until something unrelated repaints it.
+    const body = blockAfter(PDF_ENTRY, 'applyAppearance: (appearance: ReaderAppearance) =>');
+    expect(body).toContain('repaintUserHighlights()');
+    expect(body).toContain('repaintSearchMatch()');
+  });
+
+  it('the PDF zoom and spread changes both go back through the page render', () => {
+    // The two paths that re-scale a page. Continuous scroll re-renders its own list; single/spread
+    // goes through renderCurrent. Either way the surface is rebuilt, which is what re-measures.
+    const body = blockAfter(PDF_ENTRY, 'applyAppearance: (appearance: ReaderAppearance) =>');
+    expect(body).toContain('resizeScrollList(');
+    expect(body).toContain('renderCurrentGuarded(');
+  });
+});
+
+describe('the search outline is lifted exactly once per batch', () => {
+  // >>> WHY A COUNT AND NOT JUST "IT HAPPENS". <<< `liftSearchMatch` is remove-then-add, so calling
+  // it twice ends in the same state as calling it once — which is exactly why the duplicate survived
+  // review: nothing looked wrong. It cost a detach/re-attach of a live annotation on a
+  // frame-coalesced path, and, worse, it came from `applyUserHighlights` reaching into a different
+  // owner's layer. These pin the arrangement that replaced it: the function that syncs the USER
+  // layer reports what it did, and the three callers that own a batch boundary lift once at the end.
+  //
+  // If a fourth batch boundary is added, this test is the place to say so — deliberately, with the
+  // call site named, rather than by a lift quietly reappearing inside a helper.
+
+  it('applyUserHighlights reports what it did and does not lift for itself', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function applyUserHighlights(');
+    expect(body).not.toContain('liftSearchMatch');
+    expect(body).toContain('return added.length > 0;');
+  });
+
+  it('lifts from exactly the three batch boundaries', () => {
+    const stripped = EPUB_ENTRY.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    // The definition plus three calls. Anything more means a helper started lifting for itself
+    // again; anything less means a batch stopped putting the outline back on top of the user rects
+    // it just added, which is HIGHLIGHT_LAYERS.md §4's z-order silently inverted.
+    expect(stripped.match(/liftSearchMatch\(/g)).toHaveLength(4);
+
+    for (const [name, marker] of [
+      ['the paint command', 'paintHighlights: (highlights) =>'],
+      ['the live re-measure', 'function repaintLiveAnnotations()'],
+      ['the flow rebuild', 'function rebuildForFlowIfNeeded('],
+    ] as const) {
+      expect([name, blockAfter(EPUB_ENTRY, marker).includes('liftSearchMatch(')]).toEqual([
+        name,
+        true,
+      ]);
+    }
+  });
+
+  it('only the paint command makes the lift conditional', () => {
+    // The other two lift unconditionally: a re-measure has to re-derive the stroke and re-resolve
+    // the range even in a book with no user highlights at all, where the diff adds nothing. Here the
+    // skip is worth having — the command is re-sent on every change to the host's highlight state,
+    // and a repaint that changed nothing must not detach a live mark.
+    const body = blockAfter(EPUB_ENTRY, 'paintHighlights: (highlights) =>');
+    expect(body).toContain('if (applyUserHighlights(mine)) liftSearchMatch();');
   });
 });

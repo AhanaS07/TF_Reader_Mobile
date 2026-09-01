@@ -78,7 +78,15 @@ describe('AudioPlayerRouteScreen', () => {
   it('mirrors a position change back into the session cache', async () => {
     const { getByText } = await renderAudioPlayerRoute('dev-sample-audio-mirror');
 
-    fireEvent.press(getByText('advance'));
+    // AWAITED, AND THAT IS LOAD-BEARING. `fireEvent` is awaitable in @testing-library/react-native
+    // v14 and does its own `act()` wrapping (same note ReaderScreen.test.tsx carries). Dropped, the
+    // act scope never closes, and every test that runs AFTER this one renders NOTHING — the mocked
+    // screen is simply never called, so the failures read as "unable to find text" rather than as
+    // anything to do with this line. Invisible in declaration order because this is the last test
+    // in the file, and `jest --randomize` is what surfaced it. Type-aware `no-floating-promises`
+    // would have caught it, but it is scoped to `src/features/reader/**` (eslint.config.js) and
+    // this file is `src/navigation/`.
+    await fireEvent.press(getByText('advance'));
 
     await renderAudioPlayerRoute('dev-sample-audio-mirror');
 

@@ -98,15 +98,37 @@ about behaviour changed.
 | ----------- | ------------------------------------------- |
 | `ready`     | —                                           |
 | `rendered`  | —                                           |
-| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd` |
+| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`) |
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
+| `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
+| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection` |
+| `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
+| `highlightTouchActive` | `active` (`boolean`)                                        |
+| `searchMatchPainted` | `painted` (`boolean`) — sent ONLY for a `paintSearchMatch` that asked for a paint, never for a clear |
 
-`ReaderPosition` is **discriminated by format**: `{format:'EPUB', cfi}` or
-`{format:'PDF', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
+`ReaderPosition` is **discriminated by ADDRESSING SCHEME**, not by format: `{kind:'cfi', cfi}` or
+`{kind:'page', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
 a spine offset and has no PDF meaning; a page number has no reflowable meaning — so carrying both flat
 would mean one of them is always `null` and the reader has to know which. That is the same "one field,
 two meanings" arrangement `toc.items[].href` still has, and this is the first place it was undone.
+(Read `kind` as "the position is a CFI", not "the book is an EPUB" — see decision 3 below.)
+
+`ReaderSection` (`{index, href}`) rides the same message but is **not part of the position**, and the
+split is the point: a position is where to RESUME, a section is what to CALL where you are. They move
+on different events — every page turn moves the position, only a chapter boundary moves the section —
+and only one of them is worth announcing. Folding it into `ReaderPosition` would also push it into
+`sessionProgress` and `progressStore.savePosition()`, neither of which has any use for a chapter name.
+`index` is the 0-based SPINE index; `href` is the spine item's own, and is what a chapter CHANGE is
+detected on (a `goTo` inside the current chapter reports the same href, and a spine that repeats an
+href would look like a change on index alone). PDF always sends `null` — it has no spine.
+
+**`section` is validated on the OPPOSITE rule to `position`.** An unparseable position **drops the
+whole message**; an unparseable section is **defaulted to `null`** and the relocation is kept. A
+position nobody can understand makes the message meaningless and a confidently wrong page number is
+worse than none — but a garbled section costs one word on one announcement, while the relocation
+itself still has to reach the page indicator, TTS and session progress. Refusing it there would trade
+a missing chapter name for a reader stuck on the previous page.
 
 `parseReaderMessage` validates a PDF position as two positive integers with `page <= pageCount`, and
 **drops the whole message** if it cannot (rather than substituting a default, as the TOC hardeners do).
@@ -126,6 +148,209 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
+| `requestCurrentSelection` | — | **yes** (`selection`) | both |
+| `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
+| `paintSearchMatch` | `match` (`ReaderSearchMatch`) | **yes** (`searchMatchPainted`), only for a paint | both (real) |
+
+### The search match — `paintSearchMatch` / `searchMatchPainted`
+
+Search's sibling of the highlight set: Search (Vaishnavi) resolves host-side into a bridge-local
+payload (`../search/readerSearchMatch.ts` — `searchMatchFor`, `NO_SEARCH_MATCH`), Reader carries it
+across and paints it. `HIGHLIGHT_LAYERS.md` §3 is the visual channel (`search`, an OUTLINE, composing
+over the user's fill); this is what is bridge-specific.
+
+**The payload is PARTITIONED, not discriminated, and that is a different move from every other
+format-free payload here.** `ReaderSearchMatch` is `{ epub: … | null, pdf: … | null }` with exactly
+one side non-null, and **both sides null is the clear**. `openEpub`/`openPdf` route by command NAME
+and `paintHighlights` sends a union the shell narrows on arrival; this one carries both sides at once
+and each shell reads its own. All three answer the same rule — a frozen `ContentFormat` literal never
+crosses — and this one is the shape it takes when the host has no reason to choose: a
+`SearchHit.locator` is tagged `type: 'EPUB' | 'PDF'`, `toReaderSearchMatch` strips that host-side, and
+the partition IS the routing.
+
+**Do not "tidy" the two nullable sides into one tagged object.** It reads better and puts a frozen
+enum on the wire. `readerBridge.test.ts`'s ContentFormat check and `readerSearchMatch.test.ts`'s own
+serialisation check both fail if you do.
+
+**No clear command, and no add/remove pair.** `NO_SEARCH_MATCH` is one canonical payload, and
+`searchMatchFor` returns it for `activeIndex === -1` and for an index past the end of `hits` — which
+covers dismissing the match bar, closing the panel, and a new `submit()`, since all three reset the
+index. `ReaderScreen` therefore sends from ONE effect over search state, exactly as `paintHighlights`
+sends from one effect over the highlight set.
+
+**THE PAINT IS USUALLY DEFERRED, IN BOTH SHELLS, AND THAT IS WHY THE REPLY IS NOT SENT FROM THE
+COMMAND HANDLER.** The host sends this immediately after `goTo`, and both shells need something that
+does not exist yet: the EPUB shell needs the target chapter's document loaded, the PDF shell needs
+the target page rasterised. So the command handler normally answers `pending` — silence — and the
+real outcome is reported later, from `hooks.content`/`relocated` (EPUB) and `renderPageSurface`
+(PDF). Both de-dupe on what was last said, because those sites also run on every page turn, zoom and
+spread flip.
+
+Reading "not yet" as "could not" is the failure this shape prevents: it would put a notice on screen
+for every match, and nothing would retract it.
+
+**The EPUB shell VERIFIES a range in its own chapter before filing it**, and that is a hard
+requirement rather than caution. A range whose end offset runs past its text node throws
+`IndexSizeError` out of `EpubCFI.toRange` — and `Annotations.inject` re-attaches every stored
+annotation for a section from `hooks.render` **with no try/catch**, so an unverified one that got
+filed throws inside the render chain every time the reader opens that chapter, surfacing as
+`WEBVIEW_UNHANDLED_REJECTION` and the error banner. A match that cannot be drawn must cost a quiet
+notice, never a broken chapter.
+
+The verification has to find the chapter by SPINE POSITION (`epubCfiRange.ts`'s `cfiSpinePos`,
+compared against `contents.sectionIndex`), not by resolving and seeing: `EpubCFI.toRange` ignores the
+spine component, so a CFI from another chapter resolves against the wrong document rather than
+failing. Measured on the sample book — 399 of 400 foreign CFIs came back as real ranges.
+
+**And not by comparing `contents.cfiBase` either, which is how this shipped and why the feature
+painted nothing on a device.** The search index spells a chapter's base `/6/2[ch1]` and epub.js
+spells it `/6/2` — `spine.js:59` builds the assertion from the `<itemref>`'s `id` ATTRIBUTE, not its
+`idref`, and normal EPUBs (this repo's sample included) have no `id` there. The comparison answered
+"different chapter" forever and the paint was gated off in silence. `cfiSpinePos` is immune to that
+and to the second divergence behind it (the two producers also count spine steps differently); it is
+the comparison epub.js itself makes in `Annotations.add`. `searchCfiAnchoring.test.ts` runs both
+producers for real and pins the agreement.
+
+**`searchMatchPainted` is a NOTICE, not an ack.** The command is fire-and-forget; nothing waits on
+the reply. It exists because the failure is otherwise invisible — the `goTo` that precedes every
+paint has already succeeded, so a match that never painted looks exactly like one that painted off
+screen. It is deliberately NOT a `fail()`: that drives the reader's error banner and the in-page
+fallback, which is the right response to a corrupt book and a wildly disproportionate one to a CFI
+that would not expand. The host shows a quiet line above the match bar instead.
+
+The PDF shell answers `painted: false` for its **page-level cue** as well as for a true miss: the cue
+draws something (an outline round the whole page) but not what was asked for, and the notice is what
+explains why the mark is round the page rather than the word.
+
+**Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
+the host retract a notice it has already dropped.
+
+### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
+
+Landed together; they are one feature and none is useful alone. Design and ownership are in
+`../personalization/READER_HIGHLIGHTS_WIRING.md` (Personalization writes, Reader applies) and
+`HIGHLIGHT_LAYERS.md` (the collision convention). What is bridge-specific:
+
+**Both highlight actions are native `menuItems` entries now, not RN popups.** iOS's native
+selection callout is drawn by UIKit above the entire app, including every RN view, so an RN popup
+for either action can be triggered correctly and still be visually unreachable. Both moved to
+`react-native-webview`'s `menuItems`/`onCustomMenuSelection` (backed by Apple's public
+`UIEditMenuInteraction`/`UIMenuController`) for the same reason: a long press on already-highlighted
+text also makes WebKit select the word underneath, so the native menu can sit over an RN "Delete"
+popup and disable it too, not just over the "Highlight" case.
+
+**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT OFFERS DELETE, AND REFUSES CREATE.** Signed off
+2026-08-28. Any overlap at all counts; merely abutting one does not, or highlighting the sentence
+after the one you already did would be impossible. `requestCurrentSelection` answers `null` and
+`confirmDeleteHighlight` answers with the overlapped id.
+
+**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything is a
+separate, post-hoc check — only the second is load-bearing.** `ReaderWebView.tsx` swaps `menuItems`
+between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message.
+`requestCurrentSelection` and `confirmDeleteHighlight` both re-decide at tap time and refuse if it
+doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a display
+mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+
+**The decision is the SELECTION's overlap first, the pressed point only as a fallback** —
+`activeHighlightId()` in `epub.entry.ts`. Deciding from `touchstart` alone was a real bug, not just
+an imprecision: `pressedHighlightId` records where the finger first *landed*, which equals what the
+reader selected only when the press neither moved nor was adjusted. Dragging a selection from plain
+text into a highlight left it null, so the menu offered "Highlight" and taking it painted a second
+annotation over the first — visibly darker, and only half-deletable once the two ids collided in
+epub.js's own map. The EPUB shell therefore posts `highlightTouchActive` twice per gesture: once
+from `touchstart` (a point test, all that is knowable before anything is selected) and again from
+epub.js's `selected` event, which debounces `selectionchange` by 250ms and so lands while the finger
+is usually still down — i.e. before `touchend`, which is when WebKit builds the menu.
+
+Two failure modes so far, both fixed:
+1. **Pre-empting which item showed was unreliable.** An earlier version updated `menuItems` before
+   WebKit built its menu — but that build comes from an independent `UILongPressGestureRecognizer`
+   (`RNCWebViewImpl.m`, 0.4s `minimumPressDuration`), racing our own touchstart round trip with no
+   ordering guarantee, and sometimes losing. Fixed by pairing the toggle with the post-hoc check
+   above rather than relying on the toggle alone.
+2. **Clearing `highlightTouchActive` on `touchend` crashed the app.** The native menu builds around
+   `touchend`, and `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` fresh at TAP time with
+   no bounds check. Clearing on `touchend` flipped `menuItems` back to `[highlight]` right as
+   "Delete Highlight" appeared, so tapping it filtered to an empty array and indexing `[0]` threw.
+   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime.
+
+**EPUB's original press detection (`highlightAdd`'s `onTap`, riding marks-pane's own touch-proxy
+wiring) never fired reliably** — it needs marks-pane to translate coordinates between the chapter
+iframe (where touches fire) and the outer document (where painted marks live), and that translation
+was not reliable enough to use. Replaced with a same-document hit test, `highlightIdAtPoint` in
+`epub.entry.ts`.
+
+**That hit test is GEOMETRIC, like the PDF shell's, and its first version was not.** It briefly
+converted the touch to a text position (`caretRangeFromPoint`) and asked `Range.isPointInRange` — but
+a caret SNAPS to the nearest text position, so a press in a line's trailing whitespace claimed a
+highlight that was not under the finger, and a press inside a highlighted word whose caret snapped to
+the neighbouring character missed one that was; `caretRangeFromPoint` can also hand back an *element*
+container, where `isPointInRange` degrades to a tree-order comparison unrelated to where the reader
+touched. It now measures `contents.range(cfiRange).getClientRects()` — the same rects marks-pane
+paints, already in the chapter document's client coordinates — and calls the same pure `highlightAt`
+the PDF shell does (`webview/src/highlightGeometry.ts`, shared by both since 2026-08-28).
+
+Those boxes are **cached per layout** and dropped on relocate, resize, chapter load and repaint.
+Resolving a CFI walks the chapter tree, `touchstart` fires for every touch including each one of a
+page-turn swipe, and doing that work N-highlights-deep inside the touch handler is what made a
+well-highlighted EPUB feel worse than a PDF, whose hit test is arithmetic over an array measured
+once. A stale box deletes the wrong highlight, so when in doubt the cache is dropped: rebuilding
+costs one tree walk, being wrong costs the reader their note.
+
+**Deleting has no separate RN confirmation step, and that's not a safety regression.** Choosing
+"Delete Highlight" from a menu the reader explicitly opened by pressing the highlight already is the
+confirmation; `highlightPressed` means "the reader confirmed this," and the host deletes on arrival.
+
+**Known limitation: the native menu doesn't reliably reappear after dragging a selection handle.**
+`startLongPress:`'s `UILongPressGestureRecognizer` cancels instead of ending once a drag exceeds
+UIKit's default 10pt `allowableMovement`, so the menu isn't re-shown at drag end. A quick tap on the
+extended selection doesn't help either (it can't hold the 0.4s `minimumPressDuration`) — only a
+fresh, stationary long-press brings the menu back. This is `react-native-webview`'s gesture
+recognizer, not fixable from this side of the bridge; patching it (`patch-package`) is the only
+lever and hasn't been attempted.
+
+- **`paintHighlights` carries the WHOLE set every time, never a patch.** Every `readerHighlights.ts`
+  call-site returns the fresh, full, authoritative set, so the host has nothing else to send. Each
+  shell diffs it against what it has painted (`webview/src/highlightPaint.ts`), paints new ids and
+  un-paints ids that fell out — so **a delete is an absence**, and there is deliberately no
+  `unpaintHighlight` command. Adding one would be a second way for a shell's paint to disagree with
+  storage.
+- **The payload is format-free, and this is the sharpest test that rule has had.** `HighlightPaint`
+  (Sync's stored shape) really does discriminate on `format: 'EPUB' | 'PDF'` — frozen `ContentFormat`
+  literals — so forwarding it as-is would put a frozen enum value on the wire. `toReaderHighlights`
+  splits it host-side into two per-shell shapes carrying no `format` field, and the host picks the
+  array from the same typechecked `switch (format)` that picked `openEpub`/`openPdf`. Pinned by
+  `readerBridge.test.ts`'s "never puts a ContentFormat value into a command payload", which now
+  builds both arms of this command.
+- **Both shells share the command, so both receive the UNION** and narrow it on arrival. Not
+  discriminated by format (that is the whole point) — narrowed on the FIELDS each shape has, exactly
+  as `goTo` narrows `ReaderTarget` on `kind`. A wrong-shape entry is refused with
+  `NAVIGATION_FAILED` rather than dropped: it is structurally unreachable, and "no highlights" is
+  precisely what that bug would otherwise look like.
+- **`selection: null` is a valid `requestCurrentSelection` reply, not a parse failure** — the
+  selection could have cleared between the tap and the reply, and that is an unremarkable answer,
+  not an error. Discriminated on `kind` (`cfiRange` / `pageRange`), the same rule `ReaderTarget` and
+  `ReaderPosition` follow.
+- **`highlightPressed` carries only the id.** Not a range: re-deriving a stored highlight from the
+  pixels under a finger is a fuzzy match, and deleting the wrong one is unrecoverable. The shell
+  knows the id because it painted it. No anchor either — there is no RN popup left for one to
+  position; the pixels-on-the-bridge exception this file used to describe (`ReaderAnchor`) no
+  longer exists, because nothing on this bridge positions anything any more.
+- **Both gestures that drive this are recognised WebView-side**, including page-turn swipe, which
+  used to be an RN overlay. That overlay was the topmost hit-test target for every touch in the
+  viewer, so the document could never receive a `touchstart` — fine for swipes, fatal for selection.
+  `webview/src/touchGesture.ts` holds the thresholds and the fuller account.
+- **The PDF shell grew a text layer for this.** A rasterised page has no text to select and nothing
+  to anchor to, so `pdf.entry.ts` now renders pdf.js's standard text layer over every visible page
+  (`webview/src/pdfHighlightSeam.ts`, `pdfTextRange.ts`). It is spread-aware by construction —
+  everything is keyed on a page number — and `.pdf-text-layer` / `.pdf-highlight-layer` CSS lives in
+  the template, because a `.ts` file cannot carry it.
+- **`::selection` is themed in both shells** (`webview/src/selectionTheme.ts`). WebKit's default fill
+  is opaque and covers the words it is selecting; on this flow the selection IS the feedback that the
+  long press worked, so it has to be a translucent tint. EPUB gets it through `baselineCss`; PDF
+  through a `--tf-selection` custom property `applyAppearance` sets, because the rule that reads it
+  lives in the template.
 
 **`requestTtsSentence`/`ttsSentence` is the FIRST reply-bearing pair on this bridge** — landed for
 TTS_PROVIDER.md's step 5. One command, not two (`current`/`next` share a `mode` discriminant inside
@@ -318,6 +543,15 @@ frozen contract there is the mechanism rather than the risk. It is that everythi
 arrives as JSON and has to be validated on receipt, and a flat primitive payload is the shape that is
 cheapest to validate. Same design, different justification; do not let the old wording justify a
 `SharedPrefs` payload now that the old objection has lapsed.
+
+> **`applyAppearance` DOES MORE THAN RE-STYLE, as of 2026-08-30.** It used to re-style and,
+> for `bg` alone, re-tint. It now also re-measures every painted annotation and puts the reader back
+> at `lastCfi` whenever the layout moved — because epub.js re-measures a highlight only inside
+> `View.reframe()`, which a stylesheet change never reaches, so a text-size change left every
+> highlight stranded on the words it used to cover. **The command surface is unchanged** — no new
+> message, no new command, nothing host-side — so this is a note about what the handler does, not
+> about the contract. `HIGHLIGHT_LAYERS.md` §3a is the rule; `epubLayoutSignature.ts` decides which
+> payloads qualify, and it will not compile if a new `ReaderAppearance` field goes unclassified.
 
 ### Four things the design has to add, found while signing it off
 

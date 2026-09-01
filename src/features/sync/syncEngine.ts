@@ -1,3 +1,4 @@
+
 import {
   BOOK_ID,
   SERVER_RESOLVES_CONFLICTS,
@@ -183,9 +184,9 @@ async function push(report: SyncReport): Promise<void> {
             // error.payload still carries THIS device's stale id (it was the CREATE body that
             // just got rejected) - sending it as-is would PUT to the real record's URL with a
             // body that disagrees with it about which record this is, and if the response
-            // echoes the body's id back, applyServerRecord below writes the "restored" record
-            // under the WRONG (stale) id - which hardDeleteLocal then immediately deletes,
-            // erasing what was just written. Override it before it goes anywhere near the id.
+            // echoes the body's id back, writeRow below writes the "restored" record under the
+            // WRONG (stale) id - which hardDeleteLocal then immediately deletes, erasing what
+            // was just written. Override it before it goes anywhere near the id.
             const updated = await api.update<any>('downloads', existing.id, {
               ...error.payload,
               id: existing.id,
@@ -337,9 +338,15 @@ async function findDuplicateRecord(
   const fields = DUPLICATE_LOOKUP_FIELDS[entityType];
   if (!fields) return null;
 
+  // The OP'S OWN book, not the hardcoded BOOK_ID constant - a collision on, say,
+  // `dev-fixture-pdf` must list that book's bookmarks, not `book-001`'s. Latent since
+  // pull() went multi-book (§7, API_CONTRACT_NOTES.md): a duplicate on any book other than
+  // the prototype's original hardcoded one would never find its match here and would fall
+  // through to the plain PUT-under-own-id path, which 404s the same way DownloadRestoreCollision
+  // exists to avoid below.
   const response = await api.list<any>(ENTITY_PATHS[entityType], {
     userId: USER_ID,
-    bookId: BOOK_ID,
+    bookId: String(payload.bookId ?? BOOK_ID),
   });
 
   return (
@@ -397,10 +404,11 @@ export async function findExistingDownload(payload: Record<string, unknown>): Pr
  * right answer because the payload is a full snapshot, and it is what makes a
  * retried push idempotent rather than a duplicate.
  *
- * UNLESS the 409 is a locator collision (see `LocatorCollision`) - PUT-ing to our own id there
- * would 404, because our id never existed server-side; the document that does exist has someone
- * else's id. That case is not retried here at all - it is thrown for `push()` to resolve, since
- * resolving it means discarding this device's local row, not sending anything further for it.
+ * UNLESS the 409 is a locator collision (see `LocatorCollision`) or a downloads restore collision
+ * (see `DownloadRestoreCollision`) - PUT-ing to our own id in either case would 404, because our
+ * id never existed server-side; the document that does exist has someone else's id. Neither case
+ * is retried here at all - both are thrown for `push()` to resolve, since resolving them means
+ * discarding this device's local row, not sending anything further for it.
  */
 async function sendCreate(
   entityPath: string,

@@ -64,6 +64,8 @@ export interface SearchPanelProps {
   hits: readonly SearchHit[];
   submittedTerm: string;
   failure: string | null;
+  /** The empty result is "this book has no index", not "that word is absent". See `useBookSearch`. */
+  indexMissing: boolean;
   activeIndex: number;
   /** Index into `hits`. The screen decides what selecting one means. */
   onSelectHit: (index: number) => void;
@@ -85,6 +87,7 @@ export function SearchPanel({
   hits,
   submittedTerm,
   failure,
+  indexMissing,
   activeIndex,
   onSelectHit,
   awaitingSeek,
@@ -142,7 +145,7 @@ export function SearchPanel({
         over-announcing failure mode that matters most in a reading app.
       */}
       <Text style={styles.status} accessibilityLiveRegion="polite">
-        {statusLine(status, hits.length, submittedTerm)}
+        {statusLine(status, hits.length, submittedTerm, indexMissing)}
       </Text>
 
       {/*
@@ -191,14 +194,18 @@ export function SearchPanel({
       )}
 
       {status === 'done' && hits.length === 0 && (
-        // The second line names an honest reason the answer is empty. It matters more
-        // than it looks: queryBookIndex returns [] both for "no matches" and for "this
-        // book shipped no index", and it does not say which — so copy that asserted
-        // "this word is not in the book" would sometimes be a lie.
+        // The second line names an honest reason the answer is empty. It used to hedge, because
+        // queryBookIndex returns [] both for "no matches" and for "this book shipped no index" and
+        // did not say which — so copy asserting "this word is not in the book" was sometimes a lie.
+        // `indexMissing` resolves that (see useBookSearch), and the two cases now read differently:
+        // one is about the word, the other is about the book, and only the second is actionable.
         <Text style={styles.hint}>
-          {tokens.length > 1
-            ? 'Whole words only, and every word has to appear in the same chapter.'
-            : 'Whole words only — “bio” will not match “biology”.'}
+          {indexMissing
+            ? 'No text was indexed for this book, so no word can match. Searching needs an index ' +
+              'built when the book is downloaded.'
+            : tokens.length > 1
+              ? 'Whole words only, and every word has to appear in the same chapter.'
+              : 'Whole words only — “bio” will not match “biology”.'}
         </Text>
       )}
 
@@ -300,10 +307,18 @@ export function SearchPanel({
   );
 }
 
-function statusLine(status: SearchStatus, count: number, term: string): string {
+function statusLine(
+  status: SearchStatus,
+  count: number,
+  term: string,
+  indexMissing: boolean,
+): string {
   if (status === 'failed') return 'Search failed.';
   if (status === 'searching') return 'Searching…';
   if (status !== 'done') return '';
+  // Before the term, not after it: an unindexed book gives the same answer for every word, so
+  // naming the word would imply a search happened that never could have.
+  if (count === 0 && indexMissing) return 'This book has no search index.';
   if (count === 0) return `No matches for “${term}” in this book.`;
   return `${count} ${count === 1 ? 'match' : 'matches'} for “${term}”.`;
 }
