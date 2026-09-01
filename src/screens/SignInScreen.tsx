@@ -8,6 +8,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import ActionButton from '@components/ActionButton';
 import ErrorState from '@components/ErrorState';
 import OfflineBanner from '@components/OfflineBanner';
+import { getCatalogueSource } from '@config/catalogue';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { useSessionStore } from '@store/sessionStore';
@@ -36,6 +37,9 @@ export default function SignInScreen({ navigation }: Props) {
     setSignInError(false);
     setSubmitting(true);
     try {
+      const fullInstitution = await getCatalogueSource().getInstitution(institution.id);
+      console.log('getInstitution on sign in:', JSON.stringify(fullInstitution, null, 2));
+
       // STUB — exercises the full pending-intent round trip without a real SAML
       // call. Replace with real steps when flambeau publishes the sign-in contract:
       //   1. Call flambeau.beginSamlSignIn({ institutionId, idpHint }) and open the
