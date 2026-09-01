@@ -205,34 +205,31 @@ async function buildAppearanceWithFont(
 /**
  * ANNOTATION FAILURES — why the six highlight/bookmark call-sites below carry handlers at all.
  *
- * They could not reject in any way worth reacting to until 2026-08-28. `readerHighlights.ts` and
- * `readerBookmarks.ts` reached only SQLite then, so a rejection meant the local database was broken
- * and there was nothing useful to say about it. `annotationsRouter.ts` now sends them at the sync
- * backend whenever NetInfo reports a network — which on a simulator is ALWAYS, since `isConnected`
- * asks whether the device has an interface, not whether the backend answers — and `syncApi.ts`
- * turns a refused connection into `ApiError(status 0)`. With the backend not running these reject
- * on every call, and a bare `void promise` made that an unhandled rejection: a LogBox warning in
- * dev, and nothing whatsoever in release.
+ * `readerHighlights.ts` and `readerBookmarks.ts` write local-first: straight to SQLite via the
+ * offline store, which enqueues the sync outbox in the same transaction, then nudge a sync. So a
+ * write is durable the moment it returns and reaches the backend later on a drain — the edit never
+ * depends on the network being up. A rejection here therefore means the LOCAL write failed (a broken
+ * SQLite layer), not that the backend was unreachable; there is nothing to fall back to, so the most
+ * these handlers can do is make the failure visible instead of silent.
  *
  * Reads and writes get different answers because the cost is different:
  *
  *   READ  — nothing is lost. The panel stays empty and the next open retries, so a warning is the
- *           right weight; an Alert on every open with the backend down would be unusable.
- *   WRITE — the edit has nowhere else to live. The router's online branch POSTs to Mongo and
- *           returns WITHOUT touching SQLite or the outbox — deliberately, since keeping a
- *           non-downloaded book's rows out of the offline store is its whole purpose — so a failed
- *           POST leaves the highlight in no store at all. Nothing else on screen will show the user
- *           that, so it has to be said.
+ *           right weight; an Alert on every failed open would be unusable.
+ *   WRITE — the edit did not persist, and nothing else on screen shows the user that, so it is said
+ *           with an Alert.
  *
  * `Alert.alert` for the same reason the layout notice above uses it: it is this app's idiom for
  * "something changed out from under you", and being native it is announced by a screen reader
  * without any work here.
  *
- * NONE OF THIS RESTORES DURABILITY. It converts silent data loss into visible failure, which is as
- * far as Reader can reach: the fix that makes the edit SURVIVE is a transient-failure fallback to
- * the offline store inside `annotationsRouter.ts`, and that is Personalization's file (Vaishnavi).
- * `annotationDurability.test.ts` pins that defect; the containment below has its own cases in
- * `ReaderScreen.test.tsx`.
+ * HISTORY / FLAG FOR AHANA: these handlers were added on 2026-08-28 for a short-lived
+ * online-vs-offline router (`annotationsRouter.ts`) whose online branch POSTed to Mongo WITHOUT
+ * touching SQLite, so a write to an unreachable backend vanished with no local row. That router has
+ * been reverted and the local-first path restored, so the network-loss case they were built for can
+ * no longer happen — they are kept only as defensive UI for a genuine local-write failure. Worth a
+ * look on whether the WRITE Alert is still warranted. `annotationDurability.test.ts` now pins the
+ * restored guarantee; the containment below has its own cases in `ReaderScreen.test.tsx`.
  */
 function warnAnnotationReadFailed(what: 'highlights' | 'bookmarks', cause: unknown): void {
   console.warn(`ReaderScreen: could not load ${what}`, cause);
