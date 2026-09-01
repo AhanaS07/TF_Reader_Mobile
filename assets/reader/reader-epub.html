@@ -597,10 +597,11 @@ ${text}`;
   }
 
   // src/features/reader/webview/src/highlightGeometry.ts
+  var HIT_TEST_TOLERANCE_PX = 4;
   function highlightAt(boxes, x, y) {
     for (let index = boxes.length - 1; index >= 0; index--) {
       const box = boxes[index];
-      if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
+      if (x >= box.left - HIT_TEST_TOLERANCE_PX && x <= box.left + box.width + HIT_TEST_TOLERANCE_PX && y >= box.top - HIT_TEST_TOLERANCE_PX && y <= box.top + box.height + HIT_TEST_TOLERANCE_PX) {
         return box.id;
       }
     }

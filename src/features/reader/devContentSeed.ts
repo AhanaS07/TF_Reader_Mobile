@@ -341,7 +341,18 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
  * before the index was added. A version marker owned by this file triggers a re-seed
  * without needing to reach into ContentStore's private metadata.
  */
-const SEED_VERSION = 6;
+const SEED_VERSION = 7;
+// 7: THE SAME v4/v5 TRAP, AT v6. Two branches independently bumped to `6` for different, INCOMPATIBLE
+//    shapes — Ahana's 79c6423 kept local index attachment (forcing a re-seed to fix a "no matches"
+//    bug), Abhinav's e961735 removed local index attachment entirely (indices now come from the
+//    backend) — and merged with a conflict in this file (12ef6e5). The merge kept the no-index code
+//    but left SEED_VERSION at `6` for both, so any install that had already seeded under Ahana's
+//    standalone `6` (real index bytes, pre-merge crypto/shape) never re-seeds under the merged code:
+//    `ensureSeeded` only checks `seedVersionOnDisk === SEED_VERSION`, which was already satisfied.
+//    Confirmed on-device, iOS only, 2026-09-01: `queryBookIndex` threw `utf8Decode: invalid UTF-8
+//    leading byte` decoding the stale `.index.bin` — Android's simulator had never run the
+//    conflicting `6`, so it never picked up the leftover bytes. Bumping again is the only lever this
+//    file has over an install already holding one of the two `6`s.
 // 6: Two independent reasons landed on the same bump. Shape change: search indices are no longer
 //    seeded locally — they come from the backend as part of EncryptedPackage.index, so an old v5
 //    package with a seeded index no longer has a reason to exist. Separately, NOT a shape change
