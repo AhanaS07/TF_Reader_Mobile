@@ -16,6 +16,11 @@ export interface InstitutionBranding {
   logoUrl: string;
 }
 
+export interface InstitutionSignIn {
+  method: string;
+  idpHint: string;
+}
+
 export interface Institution {
   id: string;
   name: string;
@@ -29,6 +34,8 @@ export interface Institution {
   catalogueUrl?: string;
   // Absent when the institution has no branding asset.
   branding?: InstitutionBranding;
+  // Sign-in method returned by the detail endpoint. Absent when fetched from list.
+  signIn?: InstitutionSignIn;
 }
 
 // Institutions are not a feed, but the failure codes are the same set (absent
@@ -63,6 +70,12 @@ export function normalizeInstitution(doc: unknown): Institution {
       ? raw.catalogueUrl
       : undefined;
 
+  const signInRaw = raw.signIn as Record<string, unknown> | undefined;
+  const signIn =
+    typeof signInRaw?.method === 'string' && typeof signInRaw?.idpHint === 'string'
+      ? { method: signInRaw.method, idpHint: signInRaw.idpHint }
+      : undefined;
+
   return {
     id: reqString(raw.id, 'id'),
     name: reqString(raw.name, 'name'),
@@ -71,6 +84,7 @@ export function normalizeInstitution(doc: unknown): Institution {
     city: reqString(raw.city, 'city'),
     ...(catalogueUrl !== undefined ? { catalogueUrl } : {}),
     ...(branding !== undefined ? { branding } : {}),
+    ...(signIn !== undefined ? { signIn } : {}),
   };
 }
 
