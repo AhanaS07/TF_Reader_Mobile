@@ -63,14 +63,23 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
    * here must still be visible while reading it online). Offline -> `bookmarkTable.listActive`,
    * the durable local copy, same as before. Falls back to SQLite on a Mongo error too (e.g. the
    * device THINKS it has a route but the backend itself is down) rather than showing nothing.
+   *
+   * Filtered to DOWNLOADED books only, regardless of source: a bookmark for a book this device
+   * hasn't downloaded can't actually be opened from here (openDownloadedBook() only ever gets
+   * called on a row from the Downloaded tab), so showing it would just be a dead entry. Same
+   * downloadTable.listActive() this screen's own Downloaded tab already reads.
    */
   const showBookmarked = async () => {
     setTab('bookmarked');
     setLoading(true);
+    const downloadedBookIds = new Set(
+      (await downloadTable.listActive(USER_ID)).map((row) => row.book_id),
+    );
     if (online) {
       try {
         const response = await api.list<Record<string, unknown>>('bookmarks', { userId: USER_ID });
-        setBookmarks((response.data ?? []).map((record) => bookmarkMapper.toRow(record)));
+        const rows = (response.data ?? []).map((record) => bookmarkMapper.toRow(record));
+        setBookmarks(rows.filter((row) => downloadedBookIds.has(row.book_id)));
         setBookmarkSource('mongo');
         setLoading(false);
         return;
@@ -78,7 +87,8 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
         console.error('showBookmarked: Mongo read failed, falling back to local SQLite', error);
       }
     }
-    setBookmarks(await bookmarkTable.listActive(USER_ID));
+    const rows = await bookmarkTable.listActive(USER_ID);
+    setBookmarks(rows.filter((row) => downloadedBookIds.has(row.book_id)));
     setBookmarkSource('sqlite');
     setLoading(false);
   };
@@ -177,7 +187,7 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
             contentContainerStyle={bookmarks.length === 0 && styles.emptyContainer}
             ListEmptyComponent={
               <Text style={styles.empty}>
-                No bookmarks found ({bookmarkSource === 'mongo' ? 'Mongo' : 'local SQLite'}).
+                No bookmarks for a downloaded book found ({bookmarkSource === 'mongo' ? 'Mongo' : 'local SQLite'}).
               </Text>
             }
             renderItem={({ item }) => (
