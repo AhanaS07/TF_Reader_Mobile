@@ -30,7 +30,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
-import { closeBook } from '@/features/encryption/contentProvider';
+import { closeBook, getIndex } from '@/features/encryption/contentProvider';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -62,6 +62,7 @@ import type { ReaderTocItem } from '@/features/reader/readerBridge';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
+import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { ContentFormat, SearchHit, SharedPrefs } from '@/shared/contracts';
 
@@ -90,6 +91,10 @@ jest.mock('@/features/reader/readerAssets', () => {
 
 jest.mock('@/features/encryption/contentProvider', () => ({
   closeBook: jest.fn(() => Promise.resolve()),
+  // `useBookSearch` asks this after an EMPTY result, to tell "no matches" apart from "this book
+  // ships no index". Bytes by default, so an ordinary empty search reads as "no matches" — the
+  // no-index case sets it to null per test.
+  getIndex: jest.fn(() => Promise.resolve(new Uint8Array([1]))),
 }));
 
 /**
@@ -1303,6 +1308,7 @@ describe('ReaderScreen Contents panel', () => {
 describe('ReaderScreen in-book search', () => {
   beforeEach(() => {
     jest.mocked(queryBookIndex).mockReset().mockResolvedValue([]);
+    jest.mocked(getIndex).mockReset().mockResolvedValue(new Uint8Array([1]));
     __injectJavaScript.mockClear();
   });
 
@@ -1802,6 +1808,67 @@ describe('ReaderScreen in-book search', () => {
     expect(screen.getByText('1 match for “bear”.')).toBeTruthy();
   });
 
+  // --- the two empty answers -------------------------------------------------------------------
+  //
+  // `queryBookIndex` returns [] both for "that word is not in the book" and for "this book has no
+  // index at all", and says nothing about which. The panel could therefore only ever claim the
+  // first — a lie for a book that was never indexed, and one that reads exactly like a broken
+  // feature. Both `Big` fixtures ship `searchIndex: null`, so this is reachable from the book list.
+
+  it('says the book has no index, rather than blaming the word', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([]);
+    jest.mocked(getIndex).mockResolvedValue(null);
+
+    await mountReader();
+    await openSearch();
+    await runSearch('chapter');
+
+    expect(screen.getByText('This book has no search index.')).toBeTruthy();
+    expect(screen.queryByText(/No matches for/)).toBeNull();
+    // And the hint underneath stops explaining whole-word matching, which is not why this is empty.
+    expect(screen.queryByText(/Whole words only/)).toBeNull();
+    expect(screen.getByText(/No text was indexed for this book/)).toBeTruthy();
+  });
+
+  it('still blames the word when the book DOES have an index', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([]);
+    jest.mocked(getIndex).mockResolvedValue(new Uint8Array([1]));
+
+    await mountReader();
+    await openSearch();
+    await runSearch('chapter');
+
+    expect(screen.getByText('No matches for “chapter” in this book.')).toBeTruthy();
+    expect(screen.queryByText('This book has no search index.')).toBeNull();
+  });
+
+  it('does not ask about the index when the search found something', async () => {
+    // A hit proves the index exists. Paying a session round-trip to confirm it would be a decrypt
+    // on the successful path, which is the one path that has no question to answer.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    jest.mocked(getIndex).mockClear();
+
+    await mountReader();
+    await openSearch();
+    await runSearch('wolf');
+
+    expect(getIndex).not.toHaveBeenCalled();
+  });
+
+  it('keeps the failure box for a thrown search, rather than claiming no index', async () => {
+    // A throw already explains itself, and says nothing about whether an index exists. Two
+    // contradictory reasons on screen is worse than one.
+    jest.mocked(queryBookIndex).mockRejectedValue(new Error('boom'));
+    jest.mocked(getIndex).mockResolvedValue(null);
+
+    await mountReader();
+    await openSearch();
+    await runSearch('chapter');
+
+    expect(screen.getByText('Search is unavailable for this book.')).toBeTruthy();
+    expect(screen.queryByText('This book has no search index.')).toBeNull();
+  });
+
   it('dismisses the match bar and forgets the results', async () => {
     jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
     await mountReader();
@@ -1815,6 +1882,156 @@ describe('ReaderScreen in-book search', () => {
     // Reopening the panel starts clean rather than restoring the dismissed hits.
     await openSearch();
     expect(screen.queryByText('…the grey wolf number 1 moved…')).toBeNull();
+  });
+
+  // --- painting the match -----------------------------------------------------------------------
+  //
+  // The applies half of search-match painting. These deliver `rendered` (the others in this file do
+  // not need to) because painting is gated on it for the same reason `paintHighlights` is: there is
+  // no rendition to paint onto before it.
+
+  /** Every `paintSearchMatch` payload sent so far, in order. */
+  function sentMatches(): ReaderSearchMatch[] {
+    return __injectJavaScript.mock.calls
+      .map(([script]: [string]) => /paintSearchMatch\((.*)\);\n/.exec(script as string))
+      .filter((found): found is RegExpExecArray => found !== null)
+      .map((found) => JSON.parse(found[1]) as ReaderSearchMatch);
+  }
+
+  it('paints the active hit, and only the active one', async () => {
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+
+    // A search with nothing selected paints nothing: `activeIndex` is -1 until a hit is tapped.
+    expect(sentMatches().at(-1)).toEqual({ epub: null, pdf: null });
+
+    await fireEvent.press(screen.getByText('…the grey wolf number 2 moved…'));
+
+    expect(sentMatches().at(-1)).toEqual({
+      epub: { startCfi: 'epubcfi(/6/2[ch1]!/4/4/1:2)', matchText: 'wolf' },
+      pdf: null,
+    });
+  });
+
+  it('sends the paint AFTER the jump, and both from one tap', async () => {
+    // Ordering is not load-bearing — an EPUB annotation is CFI-addressed and survives navigation,
+    // and the PDF shell restores the outline whenever a page is rasterised — but it is worth
+    // pinning that the tap does both, since a reader who sees the jump assumes the mark came with
+    // it.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+    __injectJavaScript.mockClear();
+
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    const scripts = __injectJavaScript.mock.calls.map(([script]: [string]) => script);
+    const jump = scripts.findIndex((script: string) => script.includes('TFReader.goTo('));
+    const paint = scripts.findIndex((script: string) => script.includes('TFReader.paintSearchMatch('));
+    expect(jump).toBeGreaterThan(-1);
+    expect(paint).toBeGreaterThan(jump);
+  });
+
+  it('routes a PDF hit to the pdf side, with no format anywhere on the wire', async () => {
+    // The bridge rule, at the send site rather than in a unit test of the mapper: the partition IS
+    // the routing, so a `ContentFormat` literal must not appear in what crosses even though
+    // `SearchHit.locator` is tagged with one.
+    const pdfHit: SearchHit = {
+      bookId: 'test-book',
+      chapterId: 'ch1',
+      locator: { type: 'PDF', page: 4, offset: 120 },
+      snippet: '…a page-addressed hit…',
+    };
+    jest.mocked(queryBookIndex).mockResolvedValue([pdfHit]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…a page-addressed hit…'));
+
+    expect(sentMatches().at(-1)).toEqual({
+      epub: null,
+      pdf: { page: 4, startOffset: 120, matchText: 'wolf' },
+    });
+    const last = __injectJavaScript.mock.calls.at(-1)?.[0] as string;
+    for (const format of ['EPUB', 'PDF', 'AUDIO']) {
+      expect(last).not.toContain(`"${format}"`);
+    }
+  });
+
+  it('clears the match when the bar is dismissed, without a second command to do it', async () => {
+    // `searchMatchFor` answers NO_SEARCH_MATCH for `activeIndex === -1`, and `clear()` resets it —
+    // so the clear rides the same effect and the same command as every paint.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+    expect(sentMatches().at(-1)?.epub).not.toBeNull();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Dismiss search' }));
+
+    expect(sentMatches().at(-1)).toEqual({ epub: null, pdf: null });
+  });
+
+  it('does not paint before the book has rendered', async () => {
+    // `send` exists from `ready`, but a paint needs something to paint onto — the same gate the
+    // highlights effect carries, and the reason it is `isRendered` rather than `send !== null`.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await reportReady();
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(sentMatches()).toEqual([]);
+  });
+
+  it('surfaces a match the shell could not pinpoint, and retracts it on the next one', async () => {
+    // The notice exists because the failure is otherwise INVISIBLE: the jump succeeded, so an
+    // unpainted match looks exactly like one that painted off screen.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1), epubHit(2)]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+
+    expect(screen.queryByText('Could not pinpoint the match on the page')).toBeNull();
+    await deliver({ type: 'searchMatchPainted', painted: false });
+    expect(screen.getByText('Could not pinpoint the match on the page')).toBeTruthy();
+
+    // Stepping to the next match retracts it WITHOUT a reply, because the notice is keyed to the
+    // match it was about rather than being a standing boolean someone has to remember to clear.
+    await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+    expect(screen.queryByText('Could not pinpoint the match on the page')).toBeNull();
+  });
+
+  it('does not raise the reader error banner for an unpaintable match', async () => {
+    // Navigation worked. A banner over the book — the response to a corrupt book — would be wildly
+    // out of proportion, which is why this is its own message type rather than a `fail()`.
+    jest.mocked(queryBookIndex).mockResolvedValue([epubHit(1)]);
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'rendered' });
+    await openSearch();
+    await runSearch('wolf');
+    await fireEvent.press(screen.getByText('…the grey wolf number 1 moved…'));
+    await deliver({ type: 'searchMatchPainted', painted: false });
+
+    expect(screen.queryByText(/Could not open this book/)).toBeNull();
+    expect(screen.getByTestId('reader-search-match-bar')).toBeTruthy();
   });
 });
 

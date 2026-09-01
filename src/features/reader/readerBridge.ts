@@ -57,6 +57,7 @@ import type {
   EpubHighlightPaint,
   PdfHighlightPaint,
 } from '@/features/personalization/readerHighlights';
+import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
 import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
 
 /**
@@ -336,7 +337,21 @@ export type ReaderMessage =
    * previously crashed the app: `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` at TAP
    * time, not at menu-build time, with no bounds check, and the menu is built around `touchend`.
    */
-  | { type: 'highlightTouchActive'; active: boolean };
+  | { type: 'highlightTouchActive'; active: boolean }
+  /**
+   * Whether the shell managed to draw the search match it was last given a non-clear
+   * `paintSearchMatch` for. Reported rather than swallowed because the failure is INVISIBLE
+   * otherwise: the `goTo` that precedes it has already succeeded, so a match that never painted
+   * looks exactly like one that painted off screen, and no unit test can tell the two apart.
+   *
+   * NOT AN ERROR. `fail()` drives the reader's error banner and the in-page fallback, which is the
+   * right response to a corrupt book and a wildly disproportionate one to a search hit whose CFI
+   * would not expand. The host turns this into a quiet notice instead.
+   *
+   * Sent only for a payload that asked for a paint — a clear always succeeds, so there is nothing
+   * to report for one, and the host resets its own notice when it sends.
+   */
+  | { type: 'searchMatchPainted'; painted: boolean };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -363,6 +378,7 @@ export const READER_MESSAGE_TYPES = [
   'selection',
   'highlightPressed',
   'highlightTouchActive',
+  'searchMatchPainted',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -401,6 +417,7 @@ export const READER_COMMANDS = {
   paintHighlights: 'paintHighlights',
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
+  paintSearchMatch: 'paintSearchMatch',
 } as const;
 
 /**
@@ -516,7 +533,31 @@ export type ReaderCommand =
    * fallback" rule as above, so a highlight reached by dragging over it deletes like one reached by
    * pressing it. Silent when neither applies (nothing to delete).
    */
-  | { type: 'confirmDeleteHighlight' };
+  | { type: 'confirmDeleteHighlight' }
+  /**
+   * Paint the ONE active search match, or clear it. `NO_SEARCH_MATCH` (`{epub: null, pdf: null}`)
+   * is the clear, so there is no second command and no add/remove pair — the host sends one
+   * authoritative payload every time `activeIndex`/`hits` change, exactly as `paintHighlights`
+   * sends one authoritative set.
+   *
+   * >>> THE PAYLOAD IS PARTITIONED, NOT DISCRIMINATED, AND THAT IS THE POINT. <<<
+   * A `SearchHit.locator` is the frozen `Locator` union, tagged `type: 'EPUB' | 'PDF' | 'AUDIO'` —
+   * `ContentFormat` literals, which must never cross this bridge. Search's `toReaderSearchMatch`
+   * splits it host-side into two nullable per-shell sides carrying no tag at all, and each shell
+   * reads its own side: THE PARTITION IS THE ROUTING. Do not "tidy" the two sides back into one
+   * tagged object, and do not forward a `Locator` — `readerBridge.test.ts`'s ContentFormat check
+   * and `readerSearchMatch.test.ts`'s own serialisation check both fail if you do.
+   *
+   * Carries the WHOLE `ReaderSearchMatch` rather than the host-selected side, for the reason
+   * `CommandArgs.paintHighlights` gives: one entry per COMMAND, and both shells share this one.
+   * The cost, stated rather than hidden: unlike `paintHighlights` there is no host-side exhaustive
+   * `switch (format)` here, so a fourth `ContentFormat` would not be a compile error at the send
+   * site — a wrong-shell payload is caught by the receiving shell instead, and reported.
+   *
+   * Replies `searchMatchPainted` for a paint (not for a clear). That is a NOTICE, not an ack: the
+   * command is fire-and-forget like `paintHighlights`, and nothing waits on it.
+   */
+  | { type: 'paintSearchMatch'; match: ReaderSearchMatch };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -799,6 +840,13 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
       // text" rather than "leave the previous gesture's state standing".
       return { type: 'highlightTouchActive', active: parsed.active === true };
 
+    case 'searchMatchPainted':
+      // Malformed collapses to `false` — the same "safe default" reasoning as
+      // `highlightTouchActive` above, pointed the other way: this only drives a quiet notice, and a
+      // notice shown for a match that did paint is a smaller failure than silence for one that did
+      // not. That is the whole reason this message exists.
+      return { type: 'searchMatchPainted', painted: parsed.painted === true };
+
     default:
       return null;
   }
@@ -847,7 +895,12 @@ export function buildCommandScript(command: ReaderCommand): string {
                   // storage rather than from a locator, and JSON.stringify escapes it like any other
                   // string; nothing here is pasted into the script unquoted.
                   JSON.stringify(command.highlights)
-                : '';
+                : command.type === 'paintSearchMatch'
+                  ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                    // book's text, so this is the payload rule 1 above is actually about — both are
+                    // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                    JSON.stringify(command.match)
+                  : '';
 
   return `(function(){
     try {

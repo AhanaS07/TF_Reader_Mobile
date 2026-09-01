@@ -36,6 +36,7 @@ import type {
   EpubHighlightPaint,
   PdfHighlightPaint,
 } from '@/features/personalization/readerHighlights';
+import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
 
 type ReaderCommandName = ReaderCommand['type'];
 
@@ -180,6 +181,10 @@ export interface CommandArgs {
   paintHighlights: [highlights: EpubHighlightPaint[] | PdfHighlightPaint[]];
   requestCurrentSelection: [];
   confirmDeleteHighlight: [];
+  // The whole partitioned object, for the same reason `paintHighlights` takes the union: one entry
+  // per COMMAND, and both shells share this one. Each entry reads its own side and treats a
+  // non-null foreign side as a host bug (see either entry's `paintSearchMatch`).
+  paintSearchMatch: [match: ReaderSearchMatch];
 }
 
 /** The values of a command's non-`type` fields — `never` for a command that carries none. */

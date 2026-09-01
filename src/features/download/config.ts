@@ -42,8 +42,22 @@ function resolveBackendHost(): string {
 const MOCK_BACKEND_URL =
   process.env.EXPO_PUBLIC_MOCK_BACKEND_URL ?? `http://${resolveBackendHost()}:${MOCK_BACKEND_PORT}`;
 
-/** Override by setting EXPO_PUBLIC_REAL_BACKEND_URL, e.g. http://192.168.1.20:8080 */
-const REAL_BACKEND_URL = process.env.EXPO_PUBLIC_REAL_BACKEND_URL ?? `http://localhost:${REAL_BACKEND_PORT}`;
+/**
+ * Override by setting EXPO_PUBLIC_REAL_BACKEND_URL, e.g. http://192.168.1.20:8080
+ *
+ * Same `resolveBackendHost()` as the mock, not a hardcoded `localhost` — this used to be
+ * hardcoded, and it is exactly the trap this file's header warns about: on an Android
+ * emulator "localhost" is the EMULATOR'S OWN loopback (nothing listens on :8080 there), not
+ * the host machine running the backend. Confirmed live: `nc localhost 8080` from inside the
+ * emulator refuses; `nc 10.0.2.2 8080` (or the LAN host Metro reports) connects. Every
+ * real-backend call failed with a genuine network error as a result, which `checkLicense()`
+ * treats as offline and reports `OFFLINE_LICENSE_UNAVAILABLE` for any book not already
+ * downloaded — indistinguishable from a real outage without checking this default. iOS
+ * Simulator never showed this, because it shares the host's network namespace and
+ * `localhost` there really does mean the host.
+ */
+const REAL_BACKEND_URL =
+  process.env.EXPO_PUBLIC_REAL_BACKEND_URL ?? `http://${resolveBackendHost()}:${REAL_BACKEND_PORT}`;
 
 /** Defaults to the mock — false unless explicitly set. Flip with EXPO_PUBLIC_USE_REAL_BACKEND=true. */
 const USE_REAL_BACKEND = process.env.EXPO_PUBLIC_USE_REAL_BACKEND === 'true';

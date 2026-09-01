@@ -102,3 +102,38 @@ export function highlightFill(color: string, bg?: string): { fill: string; blend
 
   return { fill: color, blend: 'multiply' };
 }
+
+/**
+ * The search-match OUTLINE colour for the current page — HIGHLIGHT_LAYERS.md §3's third channel.
+ *
+ * >>> AN OUTLINE, NOT A FILL, AND THAT IS THE WHOLE DESIGN OF THE CHANNEL. <<< `user` owns the
+ * solid fill and `tts` owns the translucent wash; `search` is transient and has to be findable
+ * *over* a user highlight without hiding it, so it is a border with no fill at all. §4's z-order
+ * (`tts > search > user`) is priority, not mutual exclusion — nothing below is removed to show it.
+ *
+ * WHY BLUE/CYAN AND NOT THE THEME'S OWN ACCENT: unlike `selectionBackground`, this must not collide
+ * with the layer beneath it. The link colour is already spent on selection, and a highlight's
+ * stored colour is user-chosen (yellow today, anything later) — an outline drawn in a neighbouring
+ * hue reads as part of the fill rather than as a separate mark. Blue is the one hue nothing else in
+ * this reader paints in.
+ *
+ * ONE HELPER, BOTH SHELLS: EPUB passes it as the SVG `stroke` presentation attribute, PDF as a
+ * `border-color`. Splitting it in two is how the user layer's fill and blend drifted apart before.
+ */
+export function matchStroke(bg?: string): string {
+  const page = bg ? parseHex(bg) : null;
+  // No readable page colour is the same case `highlightFill` treats as "neutral light": the shells
+  // default `currentBg` to white, so the light-page answer is the right guess when in doubt.
+  if (!page) return '#0a84ff';
+
+  // Lifted towards cyan on a near-black page for the reason `screen` exists in `highlightFill`: a
+  // mid-blue stroke on dark grey is barely a line, and this layer says "the thing you searched for
+  // is HERE".
+  if (luminance(page) < 0.35) return '#64d2ff';
+
+  // A warm, pale page (sepia) washes out the lighter blue the way it washes out a warm fill —
+  // deepen it rather than change hue, so the channel still reads as one colour across themes.
+  if (page.r > page.b && page.g > page.b && luminance(page) > 0.6) return '#0a5fd0';
+
+  return '#0a84ff';
+}

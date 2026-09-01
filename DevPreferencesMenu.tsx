@@ -50,9 +50,9 @@
 // whenever the active book's format is `'PDF'`. `fontFamily`/`fontSizePt`/etc. stay in
 // `ReaderAppearance` regardless — EPUB still needs them.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { LayoutChangeEvent } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
@@ -405,6 +405,58 @@ export interface DevPreferencesMenuProps {
 export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
 
+  /**
+   * Where the dropdown paints, in SCREEN coordinates — required because the dropdown now renders
+   * inside a `Modal` (see below) rather than as an absolutely-positioned sibling of the ☰ button.
+   *
+   * >>> WHY A MODAL AT ALL. <<< Confirmed on-device, Android only: this menu's `open` state is
+   * local to this component (deliberately — see the file header on why `toolbarExtra` is a plain
+   * prop slot with no callback into ReaderScreen). `ReaderScreen`'s `anyPanelOpen` — the switch that
+   * hides `ReaderWebView` while TOC/Search/Bookmarks are open, which is the ONLY reason those panels
+   * paint over the book without any zIndex — has no way to know this menu opened, so the WebView
+   * stays mounted and visible. On Android, a WebView composites through its own hardware layer that
+   * ignores sibling `elevation`/`zIndex` (a well-known react-native-webview limitation; not true on
+   * iOS, where the equivalent overlay painted correctly). The result: the accessibility tree showed
+   * the dropdown's controls existed and were focusable (`open` really did flip, `getPrefs()` really
+   * did resolve), but nothing was visible on screen — indistinguishable from "the button does
+   * nothing" to a user tapping it, which is exactly what was reported. A `Modal` renders in its own
+   * native Android Window, which always paints above the Activity's entire view tree, WebView
+   * included — the same fix this class of bug gets in every RN+WebView app, and it needs no change
+   * to ReaderScreen or the `toolbarExtra` contract this file's header is careful to keep isolated.
+   *
+   * MEASURED, NOT HARDCODED: a `Modal`'s content positions against the whole screen, not against
+   * this component's own small `container`, so the dropdown's on-screen position has to be
+   * measured from the button rather than inherited from a relatively-positioned parent the way the
+   * old absolute-overlay version could rely on.
+   *
+   * `open` ITSELF DOES NOT WAIT ON THE MEASUREMENT. `measureInWindow`'s callback is fire-and-forget
+   * on a real device (next frame, imperceptibly late) but NEVER FIRES AT ALL against the test
+   * renderer — `DevPreferencesMenu.test.tsx` presses the button and immediately queries for the
+   * dropdown's contents, so gating `open` on the callback made every one of those queries fail
+   * against a menu that (as far as the test tree is concerned) never opened. `anchor` starting
+   * `null` and `styles.dropdown`'s own `top`/`right` staying as a fallback is what keeps this safe
+   * either way: a real device repaints one frame later at the precise position, and the test
+   * renderer — which never calls back — just keeps the fallback, which is fine, since no test
+   * asserts on-screen pixel position.
+   */
+  const buttonRef = useRef<RNView>(null);
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
+
+  const toggleOpen = useCallback(() => {
+    setOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next) {
+        buttonRef.current?.measureInWindow((x, y, width, height) => {
+          setAnchor({
+            top: y + height,
+            right: Math.max(0, Dimensions.get('window').width - (x + width)),
+          });
+        });
+      }
+      return next;
+    });
+  }, []);
+
   // Local, live copy of prefs — needed to know which toggle is currently "on" (so pressing it again
   // can revert rather than re-apply), same live channel ReaderScreen itself subscribes to.
   const [prefs, setPrefs] = useState<SharedPrefs | null>(null);
@@ -465,16 +517,39 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
   return (
     <View style={styles.container}>
       <Pressable
+        ref={buttonRef}
         accessibilityRole="button"
         accessibilityLabel={open ? 'Close preferences menu' : 'Open preferences menu'}
-        onPress={() => setOpen((wasOpen) => !wasOpen)}
+        onPress={toggleOpen}
         style={styles.menuButton}
       >
         <Text style={styles.menuIcon}>☰</Text>
       </Pressable>
 
-      {open && prefs && (
-        <View style={styles.dropdown}>
+      {/* Guarded on `prefs` exactly like the old `{open && prefs && (...)}` was, so nothing inside
+          ever reads a field off a null `prefs` — the Modal's own `visible` only toggles display
+          once this subtree exists.
+          `transparent` + no `animationType` so this reads as the same instant dropdown the
+          absolutely-positioned version was, not a sheet/dialog — see the Modal note on `anchor`
+          above for why this is a Modal at all. `onRequestClose` is Android's hardware/gesture back
+          button; without it, back would fall through to whatever's under this screen instead of
+          just closing the menu. */}
+      {prefs && (
+        <Modal transparent visible={open} onRequestClose={() => setOpen(false)}>
+          {/* Full-screen backdrop, BEFORE the dropdown so the dropdown's own Pressables (rendered
+              after, in document order) still receive their taps rather than this one swallowing
+              them. Tapping outside the dropdown closes it — there was no such affordance before
+              (only re-pressing ☰ closed it), but a Modal without one traps the user behind an
+              invisible full-screen Pressable, which is worse than not having it. */}
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            onPress={() => setOpen(false)}
+          />
+          <View
+            style={[styles.dropdown, anchor && { position: 'absolute', top: anchor.top, right: anchor.right }]}
+          >
           <Text style={styles.sectionLabel}>Theme</Text>
           <View style={styles.row}>
             {THEME_OPTIONS.map(({ label, theme }) => {
@@ -674,7 +749,8 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
-        </View>
+          </View>
+        </Modal>
       )}
     </View>
   );

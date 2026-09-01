@@ -88,6 +88,7 @@ import {
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
+import { searchMatchFor } from '@/features/search/readerSearchMatch';
 import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
 import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
 
@@ -430,6 +431,23 @@ export function ReaderScreen({
   const [skippedHighlightCount, setSkippedHighlightCount] = useState(0);
 
   /**
+   * WHICH search match the shell said it could not pinpoint — not WHETHER it said so.
+   *
+   * SURFACED RATHER THAN LOGGED, on the same reasoning as `skippedHighlightCount` above: the
+   * `goTo` that precedes every paint has already succeeded, so a match that never painted looks
+   * exactly like one that painted off screen, and the reader is left hunting for a word they were
+   * told is on the page.
+   *
+   * >>> A KEY RATHER THAN A BOOLEAN, SO THE NOTICE CANNOT OUTLIVE ITS MATCH. <<< The obvious shape
+   * is a boolean cleared from the send effect — which is a `setState` in an effect body, the thing
+   * `react-hooks/set-state-in-effect` refuses and `useBookSearch`'s own note already records losing
+   * an argument with. Stamping the match the failure was ABOUT needs no retraction: the render
+   * compares it against the current match, so stepping to the next hit hides it, and a reply that
+   * arrives after the reader has already moved on stamps a key nothing is showing.
+   */
+  const [unpaintedMatchKey, setUnpaintedMatchKey] = useState<string | null>(null);
+
+  /**
    * Whether the "Page Bookmarked" tooltip should show, driven by TWO independent triggers:
    *
    * 1. `onHoverIn`/`onHoverOut` — a real mouse/trackpad hover. VERIFIED AGAINST RN's OWN SOURCE
@@ -532,6 +550,13 @@ export function ReaderScreen({
   // Search state lives ABOVE the panel, so closing and reopening it keeps the results
   // and the place you had reached in them.
   const search = useBookSearch(bookId);
+
+  /**
+   * Identifies the match a `searchMatchPainted` reply is about, so a stale reply cannot leave a
+   * notice standing over a different one. The term is in it as well as the index because a new
+   * search resets the index to -1 and can land back on 0 with entirely different hits.
+   */
+  const activeMatchKey = `${search.submittedTerm}#${String(search.activeIndex)}`;
 
   /**
    * A search hit selected while `send` was still null, queued rather than dropped.
@@ -1271,8 +1296,14 @@ export function ReaderScreen({
         // Reply to `confirmDeleteHighlight` — deletes directly, no RN confirmation step.
         void deleteHighlightById(message.id);
         break;
+      case 'searchMatchPainted':
+        // Sent only for a payload that asked for a paint, so this never has to distinguish "cleared"
+        // from "failed". NOT routed through `raiseError`: navigation already worked, and a banner
+        // over the book is the wrong size of response to a box that could not be measured.
+        setUnpaintedMatchKey(message.painted ? null : activeMatchKey);
+        break;
     }
-  }, [createHighlightFromSelection, deleteHighlightById]);
+  }, [activeMatchKey, createHighlightFromSelection, deleteHighlightById]);
 
   /**
    * Flush a search jump that was queued while `send` was still null.
@@ -1554,6 +1585,38 @@ export function ReaderScreen({
       }
     }
   }, [isRendered, send, format, highlights]);
+
+  /**
+   * Paint the active search match — the ONE place `paintSearchMatch` is sent from.
+   *
+   * DERIVED FROM SEARCH STATE, exactly like the highlight effect above, and for the sharper
+   * version of the same reason: `activeIndex` moves from the results panel, from the match bar's
+   * arrows, from a fresh `submit()` and from `clear()`, and pushing a paint from each of those
+   * would be four things to keep in step. One effect over the state they all write is one.
+   *
+   * >>> IT SELF-CLEARS, WHICH IS WHY THERE IS NO SECOND COMMAND AND NO TEARDOWN CALL. <<<
+   * `searchMatchFor` answers `NO_SEARCH_MATCH` for `activeIndex === -1` and for an index past the
+   * end of `hits`, and both `submit()` and `clear()` reset the index to -1. So closing the panel,
+   * dismissing the match bar and swapping result sets all send one authoritative clear through this
+   * same line.
+   *
+   * NO `switch (format)`, UNLIKE `paintHighlights` — and that is a real difference worth naming.
+   * The payload is already partitioned per shell (`{epub, pdf}`, no `ContentFormat` anywhere), so
+   * the partition IS the routing and there is nothing to choose here. The cost is that a fourth
+   * format would not be a compile error at this line; the receiving shell reports a payload meant
+   * for the other one instead. Splitting it here would be a second implementation of a split
+   * `toReaderSearchMatch` already did.
+   *
+   * Gated on `isRendered` for the same reason as the highlights effect: a paint needs a rendition
+   * (EPUB) or a rasterised page (PDF) to land on.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null || format === null) return;
+    send({
+      type: 'paintSearchMatch',
+      match: searchMatchFor(search.hits, search.activeIndex, search.submittedTerm),
+    });
+  }, [isRendered, send, format, search.hits, search.activeIndex, search.submittedTerm]);
 
   /**
    * Jump to a typed page, or refuse without navigating.
@@ -2159,7 +2222,30 @@ export function ReaderScreen({
             activeIndex={search.activeIndex}
             onSelectHit={selectHit}
             awaitingSeek={awaitingSeek}
+            indexMissing={search.indexMissing}
           />
+        )}
+
+        {/*
+          The match is on screen but the shell could not mark the exact words — an EPUB point CFI
+          that would not expand to a range, a range the user's own highlight already owns, or a PDF
+          offset that resolved to a page but not a phrase. Surfaced rather than only logged, the
+          same reasoning as the skipped-highlights notice: navigation SUCCEEDED, so silence here
+          leaves the reader scanning the page for a word they were told is on it.
+
+          "Could not pinpoint" rather than "could not highlight" because it has to be true of both
+          shells: the PDF side falls back to outlining the whole page, so something IS drawn — just
+          not the word.
+
+          Sits directly above the match bar rather than with the highlight notice at the foot of the
+          page: it is about the match the bar is counting, and the two would otherwise stack on the
+          same pixels. OVERLAYS, never reflows — SearchMatchBar.tsx's own header has why that rule
+          binds everything search puts on screen.
+        */}
+        {!showSearch && search.hits.length > 0 && unpaintedMatchKey === activeMatchKey && (
+          <View style={styles.searchNoticeWrap} pointerEvents="none">
+            <Text style={styles.highlightNotice}>Could not pinpoint the match on the page</Text>
+          </View>
         )}
 
         {/* The find bar you read against: only once there is something to step through,
@@ -2409,6 +2495,8 @@ const styles = StyleSheet.create({
   toolbarIcon: { fontSize: 20 },
 
   highlightNoticeWrap: { position: 'absolute', left: 8, right: 8, bottom: 8, alignItems: 'center' },
+  // Clears the match bar (bottom 12, ~48 tall) so the two never overlap.
+  searchNoticeWrap: { position: 'absolute', left: 8, right: 8, bottom: 68, alignItems: 'center' },
   highlightNotice: {
     backgroundColor: 'rgba(31, 31, 31, 0.85)',
     color: '#ffffff',

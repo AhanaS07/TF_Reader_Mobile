@@ -26,6 +26,20 @@ export interface HighlightBox {
 }
 
 /**
+ * Slop around each box's exact edge, in CSS px. `range.getClientRects()` is measured fresh at
+ * touch time (see epub.entry.ts's `highlightBoxes`), by whichever text-layout engine the WebView
+ * is running — WebKit (iOS) and Blink (Android) do not have to agree, sub-pixel, on where a line
+ * or glyph falls for identical CSS. Confirmed on-device, iOS only: a tap visually on a highlighted
+ * word can land a fraction of a pixel outside the box WebKit reports for it, so a zero-tolerance
+ * test answers null, `pressedHighlightId` stays null, and the native menu never offers "Delete
+ * Highlight" for a press that is plainly on one — Android's Blink measurement did not drift the
+ * same way, which is why this was invisible there. A few px costs nothing a reader would notice
+ * (touch targets are never pixel-exact anyway) and does not change WHICH box wins an overlap —
+ * `highlightAt` still returns the last (topmost) match either way.
+ */
+const HIT_TEST_TOLERANCE_PX = 4;
+
+/**
  * Which painted highlight a tap landed on, or null.
  *
  * HIT-TESTED HOST-SIDE-OF-THE-DOM RATHER THAN BY A LISTENER ON EACH BOX, and the reason is
@@ -44,7 +58,12 @@ export function highlightAt(
 ): string | null {
   for (let index = boxes.length - 1; index >= 0; index--) {
     const box = boxes[index];
-    if (x >= box.left && x <= box.left + box.width && y >= box.top && y <= box.top + box.height) {
+    if (
+      x >= box.left - HIT_TEST_TOLERANCE_PX &&
+      x <= box.left + box.width + HIT_TEST_TOLERANCE_PX &&
+      y >= box.top - HIT_TEST_TOLERANCE_PX &&
+      y <= box.top + box.height + HIT_TEST_TOLERANCE_PX
+    ) {
       return box.id;
     }
   }

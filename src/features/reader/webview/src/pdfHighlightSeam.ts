@@ -25,9 +25,15 @@
 // click against the boxes' geometry instead — `highlightAt` in highlightGeometry.ts.
 
 import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
+import type { PdfSearchMatch } from '@/features/search/readerSearchMatch';
 
 import { highlightAt, type HighlightBox } from './highlightGeometry';
 import { annotationClassName } from './highlightNaming';
+import {
+  indexOffsetToPageOffset,
+  resolveMatchOffset,
+  type SearchPaintOutcome,
+} from './pdfSearchMatch';
 import { offsetsForSelection, slicesForRange } from './pdfTextRange';
 import { highlightFill } from './selectionTheme';
 
@@ -39,6 +45,17 @@ export const PDF_TEXT_LAYER_CLASS = 'pdf-text-layer';
  * `highlightNaming.ts` the EPUB seam uses, per HIGHLIGHT_LAYERS.md's "a PDF seam should reuse
  * highlightNaming.ts". `user` is the owner; `saved` is the variant. */
 const USER_BOX_CLASS = annotationClassName('user', 'saved');
+
+/** The class one painted search-match box carries, through the same naming as every other owner.
+ * `search` is the third reserved owner (HIGHLIGHT_LAYERS.md §3) and claims the OUTLINE channel — the
+ * template styles it as a border with no background, so it composes over a user fill instead of
+ * hiding it. */
+const SEARCH_BOX_CLASS = annotationClassName('search', 'match');
+
+/** The whole-page fallback cue, when the match is known to be on this page but its offset cannot be
+ * resolved to a box (see `paintSearchPage`). Same owner, different variant: it is the same layer
+ * saying something less precise, not a different feature. */
+const SEARCH_PAGE_CLASS = annotationClassName('search', 'page');
 
 /**
  * One visible page's painting surface.
@@ -53,8 +70,16 @@ export interface PdfPageSurface {
   root: HTMLElement;
   textLayer: HTMLElement;
   highlightLayer: HTMLElement;
+  /** The search-match overlay. Its OWN layer rather than a second class in `highlightLayer`, so
+   * DOM order alone puts search above user (HIGHLIGHT_LAYERS.md §4) and a whole-layer repaint of
+   * one cannot wipe the other — the two change on completely different schedules. */
+  searchLayer: HTMLElement;
   divs: HTMLElement[];
   lengths: number[];
+  /** The items' strings, in `divs` order. `lengths` is all the user layer needs, but a search match
+   * is VERIFIED against the page's real text before it is painted (`resolveMatchOffset`), and that
+   * needs the characters rather than a count of them. */
+  texts: string[];
   /** Where each highlight was last painted, in `root`'s coordinate space. Rebuilt on every paint. */
   boxes: HighlightBox[];
 }
@@ -84,11 +109,31 @@ export function ensureSurface(page: number, root: HTMLElement): PdfPageSurface {
     root.appendChild(highlightLayer);
   }
 
+  let searchLayer = root.querySelector<HTMLElement>('.pdf-search-layer');
+  if (!searchLayer) {
+    searchLayer = document.createElement('div');
+    searchLayer.className = 'pdf-search-layer';
+    // AFTER the highlight layer, and that ordering IS HIGHLIGHT_LAYERS.md §4's `search > user`
+    // z-order. Appending it before would put a user fill over the outline meant to be findable on
+    // top of it. Same `pointer-events: none` reasoning as the layer below.
+    root.appendChild(searchLayer);
+  }
+
   // Stamped on the container so a selection or a tap can be traced back to a page number without
   // this module having to keep a second element -> page map in step with the first.
   root.dataset.pdfPage = String(page);
 
-  return { page, root, textLayer, highlightLayer, divs: [], lengths: [], boxes: [] };
+  return {
+    page,
+    root,
+    textLayer,
+    highlightLayer,
+    searchLayer,
+    divs: [],
+    lengths: [],
+    texts: [],
+    boxes: [],
+  };
 }
 
 /** Empty a surface's text layer before it is re-rendered. Separate from `ensureSurface` because a
@@ -102,8 +147,12 @@ export function ensureSurface(page: number, root: HTMLElement): PdfPageSurface {
 export function clearTextLayer(surface: PdfPageSurface): void {
   surface.textLayer.replaceChildren();
   surface.highlightLayer.replaceChildren();
+  // The search outline goes with them, for exactly the reason the header note gives for the
+  // highlight boxes: it is pixels measured against a layout that is about to stop existing.
+  surface.searchLayer.replaceChildren();
   surface.divs = [];
   surface.lengths = [];
+  surface.texts = [];
   surface.boxes = [];
 }
 
@@ -122,6 +171,7 @@ export function setPageText(
 ): void {
   surface.divs = divs;
   surface.lengths = itemsStr.map((item) => item.length);
+  surface.texts = [...itemsStr];
 }
 
 /**
@@ -197,6 +247,90 @@ export function paintPage(
   }
 
   surface.highlightLayer.appendChild(fragment);
+}
+
+/**
+ * Paint the one active search match on this surface, or clear it.
+ *
+ * >>> SPREAD-AWARENESS IS THE `page` FILTER, NOT A SPECIAL CASE. <<< Exactly as `paintPage` does:
+ * every surface is asked, and the one whose page number matches paints. A double-page spread is two
+ * surfaces, continuous scroll is up to `2 * SCROLL_BUFFER_PAGES + 1`, and none of them need to know
+ * which mode they are in. `goTo(page)` has already put the right spread on screen; this marks it.
+ *
+ * THE TWO-STEP OFFSET RESOLUTION IS THE WHOLE CORRECTNESS STORY, and `pdfSearchMatch.ts`'s header
+ * has it in full: the hit's offset is in the search index's character space (a separator after every
+ * text item) and this layer addresses the text layer's (no separators). Convert, then VERIFY against
+ * the page's real text, then fall back to a page-level cue rather than draw a confident box on the
+ * wrong word.
+ *
+ * WHOLE-LAYER REPAINT, no diff — one range that moves on every arrow press has nothing to diff
+ * against, and the geometry has to be re-measured on every zoom regardless (see `paintPage`).
+ */
+export function paintSearchPage(
+  surface: PdfPageSurface,
+  match: PdfSearchMatch | null,
+  stroke: string,
+): SearchPaintOutcome {
+  surface.searchLayer.replaceChildren();
+
+  if (match === null || match.page !== surface.page) return 'cleared';
+  if (surface.divs.length === 0) return 'pending';
+
+  const origin = surface.root.getBoundingClientRect();
+  const fragment = document.createDocumentFragment();
+
+  const hint = indexOffsetToPageOffset(surface.lengths, match.startOffset);
+  const start = resolveMatchOffset(surface.texts, hint ?? 0, match.matchText);
+
+  if (start !== null) {
+    for (const slice of slicesForRange(surface.lengths, start, start + match.matchText.trim().length)) {
+      const div = surface.divs[slice.index];
+      const text = div?.firstChild;
+      if (!text || text.nodeType !== Node.TEXT_NODE) continue;
+
+      const range = document.createRange();
+      try {
+        // Clamped against the DOM node's own length for the reason `paintPage` gives: a Range past
+        // a node's end throws, and one bad row must not stop the rest of the match painting.
+        const limit = text.textContent?.length ?? 0;
+        range.setStart(text, Math.min(slice.from, limit));
+        range.setEnd(text, Math.min(slice.to, limit));
+      } catch {
+        continue;
+      }
+
+      for (const rect of range.getClientRects()) {
+        if (rect.width <= 0 || rect.height <= 0) continue;
+
+        const el = document.createElement('div');
+        el.className = SEARCH_BOX_CLASS;
+        el.style.left = `${String(rect.left - origin.left)}px`;
+        el.style.top = `${String(rect.top - origin.top)}px`;
+        el.style.width = `${String(rect.width)}px`;
+        el.style.height = `${String(rect.height)}px`;
+        // The template carries the box's shape (border width, radius, transparent background); only
+        // the COLOUR is theme-derived, so only the colour is set inline. Same division as the user
+        // layer's `multiply` fallback in CSS with the real blend applied here.
+        el.style.borderColor = stroke;
+        fragment.appendChild(el);
+      }
+    }
+  }
+
+  // Boxes were asked for and none could be measured — either the term is not findable in this
+  // page's text (a phrase split across two text items is the known case; see `resolveMatchOffset`)
+  // or every slice resolved to zero-area rects. Say "it is on this page" rather than nothing: that
+  // is the v1 cue, kept as the fail-safe under the precise box rather than instead of it.
+  if (!fragment.hasChildNodes()) {
+    const cue = document.createElement('div');
+    cue.className = SEARCH_PAGE_CLASS;
+    cue.style.borderColor = stroke;
+    surface.searchLayer.appendChild(cue);
+    return 'cued';
+  }
+
+  surface.searchLayer.appendChild(fragment);
+  return 'painted';
 }
 
 /** Which highlight, if any, a tap at client coordinates landed on. */

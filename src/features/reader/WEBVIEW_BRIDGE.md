@@ -105,6 +105,7 @@ about behaviour changed.
 | `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection` |
 | `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
 | `highlightTouchActive` | `active` (`boolean`)                                        |
+| `searchMatchPainted` | `painted` (`boolean`) — sent ONLY for a `paintSearchMatch` that asked for a paint, never for a clear |
 
 `ReaderPosition` is **discriminated by ADDRESSING SCHEME**, not by format: `{kind:'cfi', cfi}` or
 `{kind:'page', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
@@ -150,6 +151,80 @@ wrong one.
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
 | `requestCurrentSelection` | — | **yes** (`selection`) | both |
 | `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
+| `paintSearchMatch` | `match` (`ReaderSearchMatch`) | **yes** (`searchMatchPainted`), only for a paint | both (real) |
+
+### The search match — `paintSearchMatch` / `searchMatchPainted`
+
+Search's sibling of the highlight set: Search (Vaishnavi) resolves host-side into a bridge-local
+payload (`../search/readerSearchMatch.ts` — `searchMatchFor`, `NO_SEARCH_MATCH`), Reader carries it
+across and paints it. `HIGHLIGHT_LAYERS.md` §3 is the visual channel (`search`, an OUTLINE, composing
+over the user's fill); this is what is bridge-specific.
+
+**The payload is PARTITIONED, not discriminated, and that is a different move from every other
+format-free payload here.** `ReaderSearchMatch` is `{ epub: … | null, pdf: … | null }` with exactly
+one side non-null, and **both sides null is the clear**. `openEpub`/`openPdf` route by command NAME
+and `paintHighlights` sends a union the shell narrows on arrival; this one carries both sides at once
+and each shell reads its own. All three answer the same rule — a frozen `ContentFormat` literal never
+crosses — and this one is the shape it takes when the host has no reason to choose: a
+`SearchHit.locator` is tagged `type: 'EPUB' | 'PDF'`, `toReaderSearchMatch` strips that host-side, and
+the partition IS the routing.
+
+**Do not "tidy" the two nullable sides into one tagged object.** It reads better and puts a frozen
+enum on the wire. `readerBridge.test.ts`'s ContentFormat check and `readerSearchMatch.test.ts`'s own
+serialisation check both fail if you do.
+
+**No clear command, and no add/remove pair.** `NO_SEARCH_MATCH` is one canonical payload, and
+`searchMatchFor` returns it for `activeIndex === -1` and for an index past the end of `hits` — which
+covers dismissing the match bar, closing the panel, and a new `submit()`, since all three reset the
+index. `ReaderScreen` therefore sends from ONE effect over search state, exactly as `paintHighlights`
+sends from one effect over the highlight set.
+
+**THE PAINT IS USUALLY DEFERRED, IN BOTH SHELLS, AND THAT IS WHY THE REPLY IS NOT SENT FROM THE
+COMMAND HANDLER.** The host sends this immediately after `goTo`, and both shells need something that
+does not exist yet: the EPUB shell needs the target chapter's document loaded, the PDF shell needs
+the target page rasterised. So the command handler normally answers `pending` — silence — and the
+real outcome is reported later, from `hooks.content`/`relocated` (EPUB) and `renderPageSurface`
+(PDF). Both de-dupe on what was last said, because those sites also run on every page turn, zoom and
+spread flip.
+
+Reading "not yet" as "could not" is the failure this shape prevents: it would put a notice on screen
+for every match, and nothing would retract it.
+
+**The EPUB shell VERIFIES a range in its own chapter before filing it**, and that is a hard
+requirement rather than caution. A range whose end offset runs past its text node throws
+`IndexSizeError` out of `EpubCFI.toRange` — and `Annotations.inject` re-attaches every stored
+annotation for a section from `hooks.render` **with no try/catch**, so an unverified one that got
+filed throws inside the render chain every time the reader opens that chapter, surfacing as
+`WEBVIEW_UNHANDLED_REJECTION` and the error banner. A match that cannot be drawn must cost a quiet
+notice, never a broken chapter.
+
+The verification has to find the chapter by SPINE POSITION (`epubCfiRange.ts`'s `cfiSpinePos`,
+compared against `contents.sectionIndex`), not by resolving and seeing: `EpubCFI.toRange` ignores the
+spine component, so a CFI from another chapter resolves against the wrong document rather than
+failing. Measured on the sample book — 399 of 400 foreign CFIs came back as real ranges.
+
+**And not by comparing `contents.cfiBase` either, which is how this shipped and why the feature
+painted nothing on a device.** The search index spells a chapter's base `/6/2[ch1]` and epub.js
+spells it `/6/2` — `spine.js:59` builds the assertion from the `<itemref>`'s `id` ATTRIBUTE, not its
+`idref`, and normal EPUBs (this repo's sample included) have no `id` there. The comparison answered
+"different chapter" forever and the paint was gated off in silence. `cfiSpinePos` is immune to that
+and to the second divergence behind it (the two producers also count spine steps differently); it is
+the comparison epub.js itself makes in `Annotations.add`. `searchCfiAnchoring.test.ts` runs both
+producers for real and pins the agreement.
+
+**`searchMatchPainted` is a NOTICE, not an ack.** The command is fire-and-forget; nothing waits on
+the reply. It exists because the failure is otherwise invisible — the `goTo` that precedes every
+paint has already succeeded, so a match that never painted looks exactly like one that painted off
+screen. It is deliberately NOT a `fail()`: that drives the reader's error banner and the in-page
+fallback, which is the right response to a corrupt book and a wildly disproportionate one to a CFI
+that would not expand. The host shows a quiet line above the match bar instead.
+
+The PDF shell answers `painted: false` for its **page-level cue** as well as for a true miss: the cue
+draws something (an outline round the whole page) but not what was asked for, and the notice is what
+explains why the mark is round the page rather than the word.
+
+**Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
+the host retract a notice it has already dropped.
 
 ### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
 
@@ -468,6 +543,15 @@ frozen contract there is the mechanism rather than the risk. It is that everythi
 arrives as JSON and has to be validated on receipt, and a flat primitive payload is the shape that is
 cheapest to validate. Same design, different justification; do not let the old wording justify a
 `SharedPrefs` payload now that the old objection has lapsed.
+
+> **`applyAppearance` DOES MORE THAN RE-STYLE, as of 2026-08-30.** It used to re-style and,
+> for `bg` alone, re-tint. It now also re-measures every painted annotation and puts the reader back
+> at `lastCfi` whenever the layout moved — because epub.js re-measures a highlight only inside
+> `View.reframe()`, which a stylesheet change never reaches, so a text-size change left every
+> highlight stranded on the words it used to cover. **The command surface is unchanged** — no new
+> message, no new command, nothing host-side — so this is a note about what the handler does, not
+> about the contract. `HIGHLIGHT_LAYERS.md` §3a is the rule; `epubLayoutSignature.ts` decides which
+> payloads qualify, and it will not compile if a new `ReaderAppearance` field goes unclassified.
 
 ### Four things the design has to add, found while signing it off
 

@@ -6,7 +6,7 @@
 
 import { THEME_PALETTES } from '@/features/personalization/readerAppearance';
 
-import { highlightFill, selectionBackground } from './selectionTheme';
+import { highlightFill, matchStroke, selectionBackground } from './selectionTheme';
 
 describe('the selection fill', () => {
   it('uses the theme accent, translucent so the words show through', () => {
@@ -96,5 +96,46 @@ describe('a saved highlight fill', () => {
       fill: '#3a7bd5',
       blend: 'multiply',
     });
+  });
+});
+
+// --- the search-match outline -------------------------------------------------------------------
+
+describe('the search-match stroke', () => {
+  it('gives every shipped theme a stroke, and a distinct one where the page demands it', () => {
+    const light = matchStroke(THEME_PALETTES.light.bg);
+    const dark = matchStroke(THEME_PALETTES.dark.bg);
+    const sepia = matchStroke(THEME_PALETTES.sepia.bg);
+
+    // Three grounds, three answers — and the dark one is the whole reason this is derived rather
+    // than a constant: a mid-blue line on a near-black page is barely a line, which is the same
+    // failure `highlightFill`'s `screen` branch exists to fix for the fill.
+    expect(new Set([light, dark, sepia]).size).toBe(3);
+    for (const stroke of [light, dark, sepia]) expect(stroke).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it('stays in the blue channel on every theme', () => {
+    // The channel has to read as ONE colour across themes, or the outline stops meaning "search"
+    // and starts meaning "something changed". Deepened or lifted, never re-hued: blue dominant on
+    // all three.
+    for (const bg of Object.values(THEME_PALETTES).map((palette) => palette.bg)) {
+      const stroke = matchStroke(bg);
+      const r = Number.parseInt(stroke.slice(1, 3), 16);
+      const b = Number.parseInt(stroke.slice(5, 7), 16);
+      expect(b).toBeGreaterThan(r);
+    }
+  });
+
+  it('falls back to the light-page stroke when the page colour cannot be read', () => {
+    // Both shells default `currentBg` to white, so light is the right guess when there is nothing
+    // to go on — the same reasoning `highlightFill` uses for its own unparseable case.
+    expect(matchStroke(undefined)).toBe(matchStroke(THEME_PALETTES.light.bg));
+    expect(matchStroke('rgb(255, 255, 255)')).toBe(matchStroke(THEME_PALETTES.light.bg));
+  });
+
+  it('does not deepen for a warm page that is DARK — that is the lifted case, not the sepia one', () => {
+    // A warm dark page (a hypothetical future theme) must take the dark branch. Checking the order
+    // of the two conditions, which is the kind of thing that reads fine and behaves backwards.
+    expect(matchStroke('#3a2010')).toBe(matchStroke(THEME_PALETTES.dark.bg));
   });
 });

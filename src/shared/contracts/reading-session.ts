@@ -106,9 +106,26 @@ export interface SignedUrl {
  *
  * `url`/`encrypted` are OPTIONAL on the real spec too (same "test for presence" convention as
  * `SignedUrl` above) — only present when the caller asked for an index (`wantSearchIndex`) AND
- * the book actually has one. */
+ * the book actually has one.
+ *
+ * EXTENDED FOR MOCK/DEV: `encryptedBytes` carries embedded encrypted index bytes instead of a URL.
+ * For a production backend with object storage, `url` would be a signed URL. For the mock backend,
+ * `encryptedBytes` can be provided instead (embedded), and the app uses them directly. Both are
+ * optional — either one can be present.
+ *
+ * `encryptedBytes` IS BASE64 TEXT, NOT `Uint8Array`, AND THAT IS NOT COSMETIC. This whole object
+ * arrives inside a JSON body (`readingSessionClient.ts`'s `response.json()`), and JSON has no
+ * binary type — Jackson's default `byte[]` serialization is a base64 string, so that is what is
+ * actually on the wire whatever the in-memory shape ends up being. A `Uint8Array` annotation here
+ * used to lie about that and let `openBook.ts` assign the raw string straight into a real
+ * `Uint8Array` slot with no decode step and no compiler complaint — `contentStore.store()` then
+ * persisted the base64 text itself as "the encrypted index", and decrypting it produced UTF-8
+ * garbage (`queryBookIndex` failing with "invalid UTF-8 leading byte 0xfc at index 10", confirmed
+ * on-device). The type now says what actually crosses the wire; `openBook.ts` decodes it with
+ * `base64ToBytes` before it reaches `EncryptedPackage.index`. */
 export interface IndexUrl {
   url?: string;
+  encryptedBytes?: string;
   encrypted?: boolean;
   termCount?: number;
 }

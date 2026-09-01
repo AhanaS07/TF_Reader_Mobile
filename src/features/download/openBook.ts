@@ -12,10 +12,12 @@
 // seam is proven before the Reader-side boundary is crossed.
 
 import type { BookId, ContentFormat, EncryptedPackage } from '@/shared/contracts';
+import { base64ToBytes } from '../encryption/base64';
 import { contentStore, maxDecryptedBytesFor } from '../encryption/contentStore';
 import { NONCE_BYTES, GCM_TAG_BYTES } from '../encryption/cipherLayout';
 import { fetchEncryptedAssetChunked, discardPartialDownload } from './chunkedAssetFetcher';
 import { checkLicense } from './licenseCheck';
+import { fetchEncryptedAsset } from './readingSessionClient';
 import { DownloadError, DownloadFailure } from './errors';
 
 // Same MIME-type fallback as downloadManager.ts — EncryptedPackage.mimeType is not optional.
@@ -125,10 +127,50 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
     );
   }
 
+  // Search index can be provided as embedded encrypted bytes or a signed URL.
+  //
+  // CONFIRMED LIVE, 2026-08-31, AGAINST tf_reader_backend_temp: for a real book on the real
+  // backend, `index` carries `{ url, encrypted, termCount }` - no `encryptedBytes` at all. The
+  // embedded convention is the MOCK backend's own shortcut (added so it could skip standing up
+  // object storage for a small dev payload; see `IndexUrl`'s doc comment) - a real deployment
+  // signs a URL like every other asset. The `url` branch below used to be a bare TODO, so every
+  // STREAM open against the real backend silently got no index at all - "This book has no search
+  // index," which is honest but wrong: the book HAS one, this call just never fetched it.
+  // `downloadManager.ts` already does this fetch for the DOWNLOAD-intent path (`fetchEncryptedAsset`);
+  // this mirrors it for STREAM. Best-effort, like that call site - a failed index fetch must not
+  // fail the book open itself.
+  //
+  // MUST BASE64-DECODE THE EMBEDDED CASE, NOT ASSIGN DIRECTLY. `IndexUrl.encryptedBytes` is typed
+  // `string` (base64) precisely because this value crosses the wire inside a JSON body
+  // (`readingSessionClient.ts`'s `response.json()`) - JSON has no binary type, so what actually
+  // arrives is base64 text (Jackson's default `byte[]` serialization), never a real `Uint8Array`.
+  // An earlier version of this line assigned that string straight into a slot typed
+  // `Uint8Array | undefined` with no runtime check to catch the mismatch, so `contentStore.store()`
+  // persisted the base64 text itself as though it were the encrypted bytes. Decrypting THAT then
+  // "succeeded" (AES-GCM doesn't know the ciphertext is wrong) and handed `utf8Decode` garbage -
+  // confirmed on-device: `queryBookIndex` failed with "invalid UTF-8 leading byte 0xfc at index
+  // 10", index 10 landing inside where the 12-byte nonce would be if this were the raw undecoded
+  // string's char codes. `base64ToBytes` is Encryption's own portable codec (`base64.ts`) - no
+  // native module needed for a payload this small.
+  let searchIndex: Uint8Array | undefined;
+  if (session.index?.encryptedBytes) {
+    searchIndex = base64ToBytes(session.index.encryptedBytes);
+  } else if (session.index?.url) {
+    try {
+      searchIndex = await fetchEncryptedAsset(bookId, session.index.url);
+    } catch (cause) {
+      console.warn(
+        `openBook: failed to fetch search index for ${bookId}, continuing without it`,
+        cause,
+      );
+    }
+  }
+
   const pkg: EncryptedPackage = {
     bookId,
     format,
     content: bytes,
+    index: searchIndex,
     encryption: session.encryption ?? null,
     licence: {
       ...licence,

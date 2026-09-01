@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReaderTarget } from '@/features/reader/readerBridge';
 
+import { getIndex } from '@/features/encryption/contentProvider';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
 import { ContentFailure } from '@/shared/contracts';
 import type { BookId, SearchHit } from '@/shared/contracts';
@@ -38,6 +39,41 @@ export interface BookSearch {
   /** Index into `hits`, or -1 when a search has run but nothing is selected yet. */
   activeIndex: number;
   setActiveIndex: (index: number) => void;
+  /**
+   * The last search came back empty BECAUSE THIS BOOK SHIPS NO SEARCH INDEX, not because the word
+   * is absent. Only ever true alongside `status === 'done'` and no hits.
+   *
+   * >>> THE TWO EMPTY ANSWERS ARE DIFFERENT ANSWERS, AND CONFLATING THEM COSTS HOURS. <<<
+   * `queryBookIndex` returns `[]` for both (`queryBookIndex.ts`'s own note calls that deliberate),
+   * so the panel could only ever say "no matches" — which for an unindexed book asserts something
+   * false about the text and sends the reader looking for a word that was never searched for.
+   * `SearchPanel` already carried a comment admitting the copy "would sometimes be a lie"; this is
+   * what stops it being one.
+   *
+   * Reachable today: both `Big EPUB` and `Big PDF` are seeded with `searchIndex: null`, and a book
+   * stored by an older `SEED_VERSION` has no `.index.bin` either.
+   */
+  indexMissing: boolean;
+}
+
+/**
+ * Whether this book has an index at all — asked ONLY after an empty result, never on open.
+ *
+ * `queryBookIndex` already fetched it and threw the answer away, and asking again is nearly free:
+ * `getIndex` re-enters the same bookId-keyed session, where the decrypted bytes are cached
+ * (`decryptSearchIndex`'s `indexPlaintext`) and the missing case never decrypts anything.
+ *
+ * TRUE ON ERROR, deliberately. This flag exists to explain an empty list, and only "definitely no
+ * index" is worth saying. Anything that throws here has already surfaced through `queryBookIndex` as
+ * a real failure, and guessing "no index" on top of it would replace a precise error with a vaguer
+ * one.
+ */
+async function bookHasIndex(bookId: BookId): Promise<boolean> {
+  try {
+    return (await getIndex(bookId)) !== null;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -131,6 +167,7 @@ export function useBookSearch(bookId: BookId): BookSearch {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [status, setStatus] = useState<SearchStatus>('idle');
   const [failure, setFailure] = useState<string | null>(null);
+  const [indexMissing, setIndexMissing] = useState(false);
 
   /**
    * Monotonic id of the most recent request anyone is allowed to write from.
@@ -161,6 +198,7 @@ export function useBookSearch(bookId: BookId): BookSearch {
     setHits([]);
     setActiveIndex(-1);
     setFailure(null);
+    setIndexMissing(false);
     setStatus('idle');
   }, []);
 
@@ -225,11 +263,26 @@ export function useBookSearch(bookId: BookId): BookSearch {
         setHits(found);
         setActiveIndex(-1);
         setStatus('done');
+
+        // Only when the answer was empty: a hit proves the index exists, and the check costs a
+        // session round-trip that a successful search has no reason to pay. Re-guarded on `seq`
+        // because this awaits again — a newer search may have landed in between, and its own
+        // answer must not be overwritten by this one's footnote.
+        if (found.length === 0) {
+          const present = await bookHasIndex(bookId);
+          if (!mountedRef.current || seq !== requestSeqRef.current) return;
+          setIndexMissing(!present);
+        } else {
+          setIndexMissing(false);
+        }
       } catch (cause) {
         if (!mountedRef.current || seq !== requestSeqRef.current) return;
         setHits([]);
         setActiveIndex(-1);
         setFailure(describeSearchFailure(cause));
+        // A thrown search says nothing about whether an index exists, and the failure box explains
+        // itself — leaving this set from a previous search would stack two contradictory reasons.
+        setIndexMissing(false);
         setStatus('failed');
       }
     })();
@@ -246,5 +299,6 @@ export function useBookSearch(bookId: BookId): BookSearch {
     failure,
     activeIndex,
     setActiveIndex,
+    indexMissing,
   };
 }

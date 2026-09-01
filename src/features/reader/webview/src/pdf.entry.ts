@@ -23,6 +23,7 @@ import type { PageViewport, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 
 import type { ReaderAppearance } from '@/features/personalization/readerAppearance';
 import type { PdfHighlightPaint } from '@/features/personalization/readerHighlights';
+import type { PdfSearchMatch } from '@/features/search/readerSearchMatch';
 
 import {
   base64ToArrayBuffer,
@@ -33,7 +34,7 @@ import {
   type TFReaderApi,
 } from './bridge';
 import { pdfHighlights } from './highlightPaint';
-import { selectionBackground } from './selectionTheme';
+import { matchStroke, selectionBackground } from './selectionTheme';
 import {
   LONG_PRESS_MS,
   movedBeyondSlop,
@@ -45,10 +46,12 @@ import {
   ensureSurface,
   highlightAtClientPoint,
   paintPage,
+  paintSearchPage,
   selectionInSurface,
   setPageText,
   type PdfPageSurface,
 } from './pdfHighlightSeam';
+import { aggregateSearchOutcome, type SearchPaintOutcome } from './pdfSearchMatch';
 import {
   buildOutlineToc,
   fitScale,
@@ -162,6 +165,26 @@ let userHighlights: PdfHighlightPaint[] = [];
  * `highlightFill`'s `parseHex`, which only reads hex. */
 let currentBg = '#ffffff';
 
+/**
+ * Per-page staleness token for `renderPageSurface`, claimed by the pass itself.
+ *
+ * >>> WHY IT IS NOT `pageRenderTokens`, AND WHY THE CALLERS' OWN TOKENS ARE NOT ENOUGH. <<<
+ * Both callers already hold a token, and both check it only AFTER awaiting this function — which
+ * leaves the whole of it running unguarded. `ensureSurface` hands back a NEW surface object over the
+ * SAME DOM elements, so two overlapping passes for one page (rapid zoom is the reachable case, where
+ * `renderCurrent` starts a fresh render per step with nothing serialising them) end with the older
+ * one landing last: its `paintPage` calls `replaceChildren` on the shared highlight layer and wipes
+ * the boxes the newer pass just drew, and its caller's trailing check then deletes the newer, VALID
+ * `pageSurfaces` entry. The page keeps correct pixels and loses hit-testing and repainting until
+ * something re-renders it.
+ *
+ * A token claimed here is what makes a superseded pass stop before it writes anything. It is a
+ * SEPARATE map from `pageRenderTokens` deliberately: the scroll path compares that one after
+ * awaiting this function, so bumping it from in here would make its check fail on every successful
+ * render and forget every surface it just built.
+ */
+const surfaceRenderTokens = new Map<number, number>();
+
 /** Rebuild one page's text layer at the scale it is currently drawn, then repaint its highlights.
  *
  * `cssScale` is the page's on-screen scale (fit x zoom), NOT the canvas backing-store scale — the
@@ -174,9 +197,15 @@ async function renderPageSurface(
   page: PDFPageProxy,
   root: HTMLElement,
   cssScale: number,
-): Promise<void> {
+): Promise<PdfPageSurface | null> {
   const pdfjs = lib();
-  if (!pdfjs) return;
+  if (!pdfjs) return null;
+
+  // Claimed BEFORE the first await, so a later pass for this page supersedes this one from the
+  // moment it starts. Everything destructive below this line is synchronous, so a pass that is
+  // already stale by its first check has not yet touched the shared layers.
+  const token = (surfaceRenderTokens.get(pageNumber) ?? 0) + 1;
+  surfaceRenderTokens.set(pageNumber, token);
 
   const surface = ensureSurface(pageNumber, root);
   pageSurfaces.set(pageNumber, surface);
@@ -186,24 +215,50 @@ async function renderPageSurface(
   const textDivs: HTMLElement[] = [];
   const textContentItemsStr: string[] = [];
 
+  // Hoisted out of the call below so there is a checkpoint between the two awaits: rendering a
+  // superseded pass's spans into the shared container would interleave them with the live pass's,
+  // and every offset counted against `textContentItemsStr` would then address the wrong span.
+  const textContentSource = await page.getTextContent();
+  if (surfaceRenderTokens.get(pageNumber) !== token) return null;
+
   await pdfjs.renderTextLayer({
     // The UNSCALED viewport, deliberately: pdf.js positions each span as a PERCENTAGE of the page
     // and sizes it as `calc(var(--scale-factor) * <unscaled>px)`, so the scale belongs in the custom
     // property and passing a scaled viewport here would apply it twice.
-    textContentSource: await page.getTextContent(),
+    textContentSource,
     container: surface.textLayer,
     viewport: page.getViewport({ scale: 1 }),
     textDivs,
     textContentItemsStr,
   }).promise;
+  // The check that matters most: `paintPage` below is a whole-layer `replaceChildren`, so a stale
+  // pass reaching it erases a newer pass's boxes rather than merely adding nothing.
+  if (surfaceRenderTokens.get(pageNumber) !== token) return null;
 
   setPageText(surface, textDivs, textContentItemsStr);
   paintPage(surface, userHighlights, currentBg);
+  // LAST, so the outline is appended over the fill this just drew — HIGHLIGHT_LAYERS.md §4's
+  // z-order, which on this side is bought by the layer's position in the DOM rather than by paint
+  // order, but there is no reason to leave the two disagreeing.
+  //
+  // AND THIS IS WHERE THE OUTCOME IS USUALLY DECIDED, not in the command handler: the host sends
+  // `paintSearchMatch` right after `goTo`, before this page exists. `reportSearchPaint` de-dupes,
+  // so the zoom/scroll/spread-flip re-renders that also land here stay quiet.
+  reportSearchPaint(repaintSearchMatch());
+
+  return surface;
 }
 
 /** Forget a page that is no longer on screen. Its surface elements go with the DOM node that held
- * them; this only stops a stale entry being repainted (or hit-tested) after the fact. */
-function forgetPageSurface(pageNumber: number): void {
+ * them; this only stops a stale entry being repainted (or hit-tested) after the fact.
+ *
+ * `only` narrows it to "forget MY surface" — pass the object `renderPageSurface` returned, and the
+ * entry is left alone if a newer pass has since installed its own. Without it, a caller cleaning up
+ * after a superseded render deletes whatever is in the map, which by then is the live surface: the
+ * page then has correct pixels and no hit-testing at all. Omit it for a page that is genuinely gone
+ * (disposed, or off the current spread), where whatever is filed for it should go regardless. */
+function forgetPageSurface(pageNumber: number, only?: PdfPageSurface): void {
+  if (only !== undefined && pageSurfaces.get(pageNumber) !== only) return;
   pageSurfaces.delete(pageNumber);
 }
 
@@ -212,6 +267,57 @@ function forgetPageSurface(pageNumber: number): void {
  * diff (see paintPage's own note on why the PDF side does not diff). */
 function repaintUserHighlights(): void {
   for (const surface of pageSurfaces.values()) paintPage(surface, userHighlights, currentBg);
+}
+
+/** The one active search match, or null. Kept for the same reason `userHighlights` is: this shell
+ * repaints on its OWN schedule (a zoom, a spread flip, a scroll re-render) and must restore the
+ * outline without asking the host to re-send it. */
+let searchMatch: PdfSearchMatch | null = null;
+
+/**
+ * Repaint the search match across every visible page, and say what happened.
+ *
+ * >>> THIS IS WHY ORDERING IS A NON-ISSUE ON THIS SIDE. <<< `renderPageSurface` calls it as its last
+ * step, so a `paintSearchMatch` that arrives before the page is rasterised — which is the normal
+ * case, since the host sends it right after `goTo` — is restored the moment the text layer exists.
+ * Every path that re-rasterises a page already funnels through that one function (zoom, rotation,
+ * spread flip, scroll buffer, `window.resize`), so the outline inherits all of them for free.
+ *
+ * The aggregate is deliberately not "did every surface paint": in a double-page spread exactly one
+ * of the two is the match's page and the other correctly clears. `pending` outranks nothing — it
+ * means a page is mid-render and is reported as silence, not as failure.
+ */
+function repaintSearchMatch(): SearchPaintOutcome {
+  const stroke = matchStroke(currentBg);
+  const outcomes: SearchPaintOutcome[] = [];
+  for (const surface of pageSurfaces.values()) {
+    outcomes.push(paintSearchPage(surface, searchMatch, stroke));
+  }
+  // The aggregation is next door and unit-tested, because the case it exists for is invisible from
+  // here: "no surface holds the match's page" has to read as `pending`, not as a failure.
+  return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+}
+
+/**
+ * What the host was last TOLD about the current match, so a repaint does not re-say it.
+ *
+ * Reset to `null` when a new payload arrives. Without it the two reporting sites disagree about who
+ * speaks: `paintSearchMatch` normally cannot answer (the target page is still rasterising) and
+ * `renderPageSurface` is what learns the real outcome a frame later — but that one runs again on
+ * every zoom, scroll and spread flip, and would repeat itself each time.
+ */
+let reportedSearchPainted: boolean | null = null;
+
+/** Tell the host the outcome, if it is one worth saying and has not been said. `pending` and
+ * `cleared` are silence: a page mid-render has not failed, and a clear cannot. */
+function reportSearchPaint(outcome: SearchPaintOutcome): void {
+  if (outcome === 'pending' || outcome === 'cleared') return;
+  // `cued` is a paint the reader can see, but not the one they asked for — it says which page, not
+  // which word — so it reports as unpainted and the host's notice explains the whole-page outline.
+  const painted = outcome === 'painted';
+  if (reportedSearchPainted === painted) return;
+  reportedSearchPainted = painted;
+  post({ type: 'searchMatchPainted', painted });
 }
 
 /** Gutter between the two canvases when a spread is actually showing two pages. Small and fixed —
@@ -309,6 +415,7 @@ async function buildScrollList(doc: PDFDocumentProxy): Promise<void> {
   pageWrappers.clear();
   renderedPages.clear();
   pageRenderTokens.clear();
+  surfaceRenderTokens.clear();
 
   const box = viewportSize();
   const pages = await Promise.all(
@@ -392,8 +499,10 @@ async function renderScrollPage(pageNumber: number): Promise<void> {
 
     // AFTER replaceChildren, because that call is what would otherwise wipe the two layers
     // `ensureSurface` appends.
-    await renderPageSurface(pageNumber, page, pageBox, fit);
-    if (pageRenderTokens.get(pageNumber) !== token || !scrollMode) forgetPageSurface(pageNumber);
+    const surface = await renderPageSurface(pageNumber, page, pageBox, fit);
+    if (surface !== null && (pageRenderTokens.get(pageNumber) !== token || !scrollMode)) {
+      forgetPageSurface(pageNumber, surface);
+    }
   } catch (error) {
     // A failed claim must not be permanent — clear it so the next virtualisation pass retries
     // this page instead of silently leaving it blank forever.
@@ -724,8 +833,8 @@ async function renderCurrent(pageNumber: number): Promise<void> {
   // must not have its text layer overwritten by a stale one finishing late.
   for (const work of surfaceWork) {
     void renderPageSurface(work.page, work.proxy, work.root, fit * currentZoom)
-      .then(() => {
-        if (token !== renderToken) forgetPageSurface(work.page);
+      .then((surface) => {
+        if (surface !== null && token !== renderToken) forgetPageSurface(work.page, surface);
       })
       .catch(() => {
         // Best-effort, exactly like the EPUB shell's `setSpokenRange`: a page that cannot build a
@@ -974,6 +1083,10 @@ const api: TFReaderApi<'openPdf'> = {
         // a page container the previous book laid out.
         pageSurfaces.clear();
         userHighlights = [];
+        // Same reasoning for the search layer: a page number and offset from the previous document
+        // address a page in THIS one, which is worse than addressing nothing.
+        searchMatch = null;
+        reportedSearchPainted = null;
         await renderCurrent(1);
 
         // Consults `wantsScroll` rather than defaulting to single-page: `applyAppearance` always
@@ -1078,6 +1191,9 @@ const api: TFReaderApi<'openPdf'> = {
     document.body.style.background = appearance.bg;
     // Re-tint existing highlights for the new theme immediately, not on the next unrelated repaint.
     repaintUserHighlights();
+    // The outline's stroke is derived from the page colour too (`matchStroke`), for the same reason
+    // the fill is: a mid-blue line on a near-black page is barely a line.
+    repaintSearchMatch();
     // The text layer is transparent, so the ONLY visible sign that a long press selected anything is
     // the `::selection` fill — and WebKit's default is opaque, which hides the words it is selecting.
     // Delivered as a custom property because the rule that reads it lives in the template's CSS,
@@ -1142,6 +1258,34 @@ const api: TFReaderApi<'openPdf'> = {
    * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
    * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
   setSpokenRange: () => {},
+
+  /**
+   * Paint or clear the one active search match. Unlike `setSpokenRange` above this is REAL here,
+   * not a no-op: search has PDF locators (`{page, offset}`), and `pdfHighlightSeam.ts` has had the
+   * text layer a box needs since user highlights landed.
+   *
+   * A NON-NULL `epub` SIDE IS A HOST BUG, reported exactly as `paintHighlights` reports a foreign
+   * entry — the host chose `openPdf` for this book, so a CFI-shaped match means it picked the wrong
+   * side of a payload it had already routed correctly.
+   *
+   * Reports `pending` as SILENCE. The host normally sends this immediately after `goTo`, before the
+   * target page has finished rasterising, so a miss here is "not yet" rather than "cannot" —
+   * `renderPageSurface` repaints and reports for real a frame later.
+   */
+  paintSearchMatch: (match) => {
+    if (match.epub !== null) {
+      fail(
+        'NAVIGATION_FAILED',
+        'paintSearchMatch: the match addresses a CFI, and this shell renders PDF',
+      );
+      return;
+    }
+
+    searchMatch = match.pdf;
+    // A new payload is a new question, so whatever was said about the last one no longer counts.
+    reportedSearchPainted = null;
+    reportSearchPaint(repaintSearchMatch());
+  },
 
   /**
    * Paint the user's saved highlights — the whole set, idempotently, exactly as the EPUB shell does.
