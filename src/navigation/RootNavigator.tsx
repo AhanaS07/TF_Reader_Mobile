@@ -7,6 +7,7 @@ import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
 import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation/bottom-tabs';
 
 import { useInstitutionStore } from '@store/institutionStore';
+import { useSessionStore } from '@store/sessionStore';
 import { color } from '@theme/tokens';
 import QueueNotificationHost from '../features/queue/QueueNotificationHost';
 
@@ -264,8 +265,9 @@ function TabNavigator() {
 
 export default function RootNavigator() {
   const hasHydrated = useInstitutionStore((s) => s._hasHydrated);
+  const authReady = useSessionStore((s) => s._authReady);
 
-  if (!hasHydrated) {
+  if (!hasHydrated || !authReady) {
     return <View style={styles.splash} />;
   }
 

@@ -14,6 +14,7 @@ import { OpenSans_300Light, OpenSans_400Regular, OpenSans_700Bold } from '@expo-
 import { Aleo_300Light, Aleo_400Regular, Aleo_700Bold } from '@expo-google-fonts/aleo';
 import { NotoSans_300Light, NotoSans_400Regular, NotoSans_700Bold } from '@expo-google-fonts/noto-sans';
 import RootNavigator from './src/navigation/RootNavigator';
+import { bootstrapAuth } from './src/auth/tokenRefresh';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -35,6 +36,12 @@ export default function App() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded]);
+
+  // Fire-and-forget: bootstrapAuth flips sessionStore._authReady itself, on
+  // both success and failure, which is what RootNavigator actually gates on.
+  useEffect(() => {
+    bootstrapAuth();
+  }, []);
 
   if (!fontsLoaded) {
     return null;

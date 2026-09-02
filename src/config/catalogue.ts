@@ -13,6 +13,7 @@
 import type { DataSource } from '@adapters/InstitutionSource';
 import { PartialApiAdapter } from '@adapters/PartialApiAdapter';
 import { MockAdapter, type MockAdapterOptions } from '@adapters/MockAdapter';
+import { ensureFreshToken } from '@/auth/tokenRefresh';
 
 export type CatalogueSourceKind = 'mock' | 'api';
 
@@ -49,6 +50,10 @@ export interface CreateCatalogueSourceOptions {
   baseUrl?: string;
   // Latency / error injection, for the gallery and for demoing error states.
   mock?: MockAdapterOptions;
+  // Overridable for tests. Defaults to the real ensureFreshToken, same
+  // provider ApiLicenceClient's token wiring uses — one function, every
+  // authenticated client reads from the same source of truth.
+  getToken?: () => Promise<string | undefined>;
 }
 
 export function createCatalogueSource(
@@ -63,7 +68,8 @@ export function createCatalogueSource(
     }
     // Only institutions has a real endpoint today — everything else on this
     // DataSource still comes from fixtures until more of the backend ships.
-    return new PartialApiAdapter(baseUrl, options.mock);
+    const getToken = options.getToken ?? ensureFreshToken;
+    return new PartialApiAdapter(baseUrl, options.mock, getToken);
   }
 
   return new MockAdapter(options.mock);

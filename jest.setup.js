@@ -51,3 +51,27 @@ jest.mock('@react-native-community/slider', () => {
   const { View } = require('react-native');
   return { __esModule: true, default: View };
 });
+
+// expo-secure-store is a NATIVE module too, and fails the same way: under
+// Jest it resolves to nothing and throws at IMPORT time. secureStorage.ts
+// wraps it directly with no injection seam, and App.tsx's boot-time
+// bootstrapAuth() call now reaches it on every render of <App />, including
+// App.test.tsx.
+//
+// No official jest mock ships with it, so this fakes the three methods
+// secureStorage.ts actually calls, backed by a plain in-memory object — good
+// enough for any test that doesn't care about a specific stored value. Tests
+// that do (none yet) mock '@store/secureStorage' directly instead, same as
+// tokenRefresh.test.ts does.
+jest.mock('expo-secure-store', () => {
+  const store = {};
+  return {
+    getItemAsync: async (key) => (key in store ? store[key] : null),
+    setItemAsync: async (key, value) => {
+      store[key] = value;
+    },
+    deleteItemAsync: async (key) => {
+      delete store[key];
+    },
+  };
+});

@@ -39,14 +39,16 @@ const IMPERIAL: Institution = {
 
 const mockNavigate = jest.fn();
 const mockGoBack = jest.fn();
+const mockPopToTop = jest.fn();
 
 function makeProps() {
-  return { navigation: { navigate: mockNavigate, goBack: mockGoBack } };
+  return { navigation: { navigate: mockNavigate, goBack: mockGoBack, popToTop: mockPopToTop } };
 }
 
 afterEach(() => {
   mockNavigate.mockClear();
   mockGoBack.mockClear();
+  mockPopToTop.mockClear();
   mockUseNetworkStatus.mockReturnValue(true);
   useInstitutionStore.setState({ selectedInstitution: null, recentlyUsedIds: [] });
   useSessionStore.getState().clearSession();
@@ -161,7 +163,11 @@ describe('SignInMethodScreen offline', () => {
 });
 
 describe('SignInMethodScreen — a session arriving', () => {
-  it('pops itself, rather than leaving the reader on a finished chooser', async () => {
+  // popToTop, not goBack: the institutional path pushes SignIn on top of this
+  // screen and never pops itself, so a single goBack() here would only remove
+  // SignIn and leave this screen exposed — popToTop reaches ProfileHome
+  // regardless of how many screens got pushed on top.
+  it('pops to the top of the stack, rather than leaving the reader on a finished chooser', async () => {
     await render(<SignInMethodScreen {...makeProps()} />);
 
     await act(async () => {
@@ -174,6 +180,7 @@ describe('SignInMethodScreen — a session arriving', () => {
       });
     });
 
-    expect(mockGoBack).toHaveBeenCalled();
+    expect(mockPopToTop).toHaveBeenCalled();
+    expect(mockGoBack).not.toHaveBeenCalled();
   });
 });

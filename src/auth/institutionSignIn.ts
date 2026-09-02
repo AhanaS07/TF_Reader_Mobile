@@ -14,6 +14,7 @@
 //      the refresh token to secureStorage (Keychain/Keystore) — the split
 //      the flambeau auth design calls for, same one sessionStore.ts documents.
 import { ApiAuthClient, type TokenPair } from './ApiAuthClient';
+import { getDefaultAuthClient } from './defaultAuthClient';
 import { openSamlBrowser } from './openSamlBrowser';
 import { saveRefreshToken } from '@store/secureStorage';
 import { useSessionStore } from '@store/sessionStore';
@@ -24,21 +25,6 @@ import { useSessionStore } from '@store/sessionStore';
 export interface InstitutionSignInParams {
   institutionId: string;
   idpHint?: string;
-}
-
-let cachedClient: ApiAuthClient | undefined;
-
-// Constructed lazily, on first real call rather than at import time, so Jest
-// never needs EXPO_PUBLIC_FLAMBEAU_BASE_URL set — tests inject their own
-// client via `deps` and never reach this function.
-function getDefaultAuthClient(): ApiAuthClient {
-  if (cachedClient !== undefined) return cachedClient;
-  const baseUrl = process.env.EXPO_PUBLIC_FLAMBEAU_BASE_URL;
-  if (baseUrl === undefined || baseUrl.trim() === '') {
-    throw new Error('EXPO_PUBLIC_FLAMBEAU_BASE_URL must be set to sign in.');
-  }
-  cachedClient = new ApiAuthClient({ baseUrl: baseUrl.trim() });
-  return cachedClient;
 }
 
 export interface BeginSamlSignInDeps {

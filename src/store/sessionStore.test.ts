@@ -1,14 +1,15 @@
 // src/store/sessionStore.test.ts
 //
-// Three concerns:
+// Four concerns:
 //   1. setSession — all fields written, isAuthenticated flips true, expiresAt
 //      is an absolute ms timestamp derived from expiresIn.
 //   2. clearSession — returns every field to initial state and flips
 //      isAuthenticated false; in-flight requests that read the store see no token.
-//   3. getToken — the expiry buffer (30 s) is the line between "serve this token"
+//   3. _authReady — starts false, flipped true by bootstrapAuth once boot-time refresh settles.
+//   4. getToken — the expiry buffer (30 s) is the line between "serve this token"
 //      and "return undefined so the caller gets a 401 it can refresh through".
 //
-// sessionStore is NOT persisted — _hasHydrated is always true on creation.
+// sessionStore is NOT persisted — _authReady starts false until bootstrapAuth runs.
 import { useSessionStore, getToken, type SessionData } from './sessionStore';
 
 const BASE_SESSION: SessionData = {
@@ -22,6 +23,7 @@ const BASE_SESSION: SessionData = {
 
 afterEach(() => {
   useSessionStore.getState().clearSession();
+  useSessionStore.getState().setAuthReady(false);
 });
 
 describe('sessionStore — setSession', () => {
@@ -73,11 +75,18 @@ describe('sessionStore — clearSession', () => {
   });
 });
 
-describe('sessionStore — _hasHydrated', () => {
-  // In-memory store — no AsyncStorage load step, so the flag is true from the
-  // start. When the startup refresh flow lands it will flip to false on init.
-  it('is true by default because there is no async storage step', () => {
-    expect(useSessionStore.getState()._hasHydrated).toBe(true);
+describe('sessionStore — _authReady', () => {
+  // Starts false — tokenRefresh.ts's bootstrapAuth is what flips it, once the
+  // boot-time refresh attempt settles either way. A stuck false means a
+  // permanent splash screen; a wrongly-true default would let RootNavigator
+  // render before boot-time sign-in state is known.
+  it('is false by default, before bootstrapAuth has run', () => {
+    expect(useSessionStore.getState()._authReady).toBe(false);
+  });
+
+  it('flips to true when setAuthReady(true) is called', () => {
+    useSessionStore.getState().setAuthReady(true);
+    expect(useSessionStore.getState()._authReady).toBe(true);
   });
 });
 

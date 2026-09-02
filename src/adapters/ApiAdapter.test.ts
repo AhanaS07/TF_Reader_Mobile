@@ -4,7 +4,7 @@
 // expected to use. That is what makes "interchangeable" checkable today: api.tf
 // does not exist, but the adapter's parsing, URL building and error mapping all
 // do, and all three are exercised here.
-import { ApiAdapter, type FetchLike, type FetchResponse } from '@adapters/ApiAdapter';
+import { ApiAdapter, withAuthHeader, type FetchLike, type FetchResponse } from '@adapters/ApiAdapter';
 import {
   DENIED_BATCH_ITEM_ID,
   describeCatalogueSourceConformance,
@@ -29,7 +29,7 @@ import publicCataloguePage0Fixture from '@model/fixtures/OPDS-samples/08-public-
 import publicCataloguePage1Fixture from '@model/fixtures/OPDS-samples/09-public-catalogue-page1.json';
 import institutionsFixture from '@model/fixtures/institutions.json';
 
-const BASE_URL = 'https://api.tf/opds/v1';
+const BASE_URL = 'https://api.tf';
 
 function ok(body: unknown): FetchResponse {
   return { ok: true, status: 200, json: async () => body };
@@ -174,12 +174,15 @@ const serveFixtures: FetchLike = async (url, init) => {
     return notFound();
   }
 
-  // The institution endpoints. `/institutions` is the list; `/institutions/<id>`
-  // with no trailing collection is a single institution.
-  if (pathname === '/opds/v1/institutions') {
+  // The institution endpoints — /api/v1/..., NOT /opds/v1/..., since these are
+  // the real backend's "shape we invented" endpoints (see ApiAdapter.ts),
+  // a sibling namespace to every OPDS route above rather than nested under it.
+  // `/institutions` is the list; `/institutions/<id>` with no trailing
+  // collection is a single institution.
+  if (pathname === '/api/v1/institutions') {
     return ok(institutionsFixture);
   }
-  const single = /^\/opds\/v1\/institutions\/([^/]+)$/.exec(pathname);
+  const single = /^\/api\/v1\/institutions\/([^/]+)$/.exec(pathname);
   if (single) {
     const institution = normalizeInstitutionList(institutionsFixture).find(
       (candidate) => candidate.id === decodeURIComponent(single[1]),
@@ -212,7 +215,7 @@ describe('ApiAdapter institution endpoints', () => {
 
     await adapter.getInstitutions();
 
-    expect(requested).toEqual([`${BASE_URL}/institutions`]);
+    expect(requested).toEqual([`${BASE_URL}/api/v1/institutions`]);
   });
 
   it('escapes the institution id in the detail path', async () => {
@@ -243,6 +246,74 @@ describe('ApiAdapter institution endpoints', () => {
   });
 });
 
+describe('ApiAdapter authorization header', () => {
+  // Whether a request carries a token is each endpoint's own decision (see
+  // authenticatedHeaders() in ApiAdapter.ts) — not something this shared
+  // adapter applies to every call. None of the current methods have a
+  // confirmed contract requiring one, so none of them opt in; this pins that
+  // down as a regression test, not just an absence of a feature.
+  it('sends no Authorization header even when a getToken that resolves one is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getInstitutions();
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+
+  it('sends no Authorization header on getHomeCatalogue even when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return { ok: true, status: 200, json: async () => homeCatalogueFixture };
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+});
+
+// withAuthHeader is the pure merge logic a future endpoint's own
+// implementation calls (via authenticatedHeaders()) once its contract is
+// confirmed to require a token — unit-tested directly here since no current
+// public method exercises it yet.
+describe('withAuthHeader', () => {
+  it('returns headers unchanged when there is no token', () => {
+    expect(withAuthHeader({ 'If-None-Match': 'W/"v1"' }, undefined)).toEqual({
+      'If-None-Match': 'W/"v1"',
+    });
+  });
+
+  it('returns undefined unchanged when there is no token and no other headers', () => {
+    expect(withAuthHeader(undefined, undefined)).toBeUndefined();
+  });
+
+  it('adds the Authorization header when there is a token and no other headers', () => {
+    expect(withAuthHeader(undefined, 'tok_abc123')).toEqual({
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+
+  it('merges the Authorization header alongside existing headers', () => {
+    expect(withAuthHeader({ 'If-None-Match': 'W/"v1"' }, 'tok_abc123')).toEqual({
+      'If-None-Match': 'W/"v1"',
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+});
+
 describe('ApiAdapter URL construction', () => {
   it('requests the catalogue endpoint for the given institution', async () => {
     const requested: string[] = [];
@@ -256,7 +327,7 @@ describe('ApiAdapter URL construction', () => {
 
     await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
 
-    expect(requested).toEqual([`${BASE_URL}/institutions/${KNOWN_INSTITUTION}/catalogue`]);
+    expect(requested).toEqual([`${BASE_URL}/opds/v1/institutions/${KNOWN_INSTITUTION}/catalogue`]);
   });
 
   it('sends no page parameter when no page was asked for', async () => {
@@ -287,7 +358,7 @@ describe('ApiAdapter URL construction', () => {
     await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 2);
 
     expect(requested[0]).toBe(
-      `${BASE_URL}/institutions/${KNOWN_INSTITUTION}/groups/${KNOWN_SHELF}?page=2`,
+      `${BASE_URL}/opds/v1/institutions/${KNOWN_INSTITUTION}/groups/${KNOWN_SHELF}?page=2`,
     );
   });
 
