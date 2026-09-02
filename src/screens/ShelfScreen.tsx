@@ -36,9 +36,10 @@
 //
 // THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
 // passes only the resulting `.tier` into ContentCard's slot — see the same note
-// in `CatalogueScreen`. The session comes from `handToggledSession` and is
-// never null here, for the same reason `institutionId` never is: a shelf is
-// only ever reached from a signed-in reader's own catalogue.
+// in `CatalogueScreen`. The session comes from `useCurrentSession` (real
+// sign-in, see currentSession.ts) and CAN be null here even though
+// `institutionId` cannot: a reader can browse an institution's catalogue
+// before signing in.
 //
 // 'all' IS THE ONLY SHELF THAT PAGES on mock data today: it is the one with both
 // a page-0 and a page-1 fixture (03 and 04). 'shelf_1' and 'shelf_2' have
@@ -54,7 +55,7 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 
-import { handToggledSession } from '@access/handToggledSession';
+import { useCurrentSession } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { EmptyState } from '@components/EmptyState';
@@ -86,6 +87,10 @@ const SKELETON_COUNT = 3;
 export default function ShelfScreen({ route }: Props) {
   const { shelfId, institutionId } = route.params;
   const navigation = useNavigation<Nav>();
+
+  // Null unless the reader has actually signed in — see currentSession.ts's
+  // note on why this replaced handToggledSession.
+  const session = useCurrentSession();
 
   // F5 — offline is its own state, independent of loading/empty/error: a shelf
   // already on screen stays readable behind the banner, and a shelf that failed
@@ -310,7 +315,7 @@ export default function ShelfScreen({ route }: Props) {
               const access = resolveAccess({
                 item: publication,
                 institutionId,
-                session: handToggledSession(institutionId),
+                session,
               });
               return (
                 <ContentCard

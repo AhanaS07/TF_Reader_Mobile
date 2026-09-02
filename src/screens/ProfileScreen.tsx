@@ -9,23 +9,20 @@
 //   teal disc, not a photograph — there is no avatar URL in it to fetch. So it is
 //   drawn here as designed, and nothing is faked by drawing it.
 //
-//   THE NAME AND EMAIL HAVE NO SOURCE, for two independent reasons:
-//     1. THE CONTRACT HAS NO SUCH FIELDS. `AuthMeResponse` in
-//        `docs/contracts/flambeau-api.yaml` requires exactly
-//        `userId, type, roles, collections, expiresAt, serverTime, token`, with
-//        an optional `institutionId`. There is no name, no email and no avatar
-//        anywhere in it, and the endpoint's own description says every field is
-//        copied from the validated token. A display name cannot be derived from
-//        `user_9c2`. That is a question for flambeau, not grounds to invent one.
-//     2. THERE IS NO SESSION. No auth client, no session store, and nothing that
-//        holds a bearer token — `config/licence.ts` and `access/resolveAccess.ts`
-//        both record the session store as unbuilt, and `SignInScreen`'s handoff
-//        is still a stub pending flambeau's Question 5. A call to `/auth/me`
-//        today would be an unauthenticated one, which is a 401 by design.
+//   THE NAME AND EMAIL HAVE NO SOURCE. THE CONTRACT HAS NO SUCH FIELDS —
+//   `AuthMeResponse` requires exactly `userId, type, roles, collections,
+//   expiresAt, serverTime`, with an optional `institutionId`. There is no
+//   name, no email and no avatar anywhere in it, and the endpoint's own
+//   description says every field is copied from the validated token. A
+//   display name cannot be derived from `user_9c2`. That is a question for
+//   flambeau, not grounds to invent one.
 //
-// So the block renders its signed-out state: the avatar as drawn, and one honest
-// line where the name goes. WHEN THE SESSION LANDS, the edit is to swap that line
-// for the real name and add the email beneath it — the layout does not move.
+// SESSION IS REAL NOW — sessionStore, ApiAuthClient and institutionSignIn.ts's
+// beginSamlSignIn are wired end to end, so `isAuthenticated`/`userId`/
+// `institutionId` below read the actual signed-in state, not a stub. What
+// remains missing is only what reason #1 above says: a name and an email.
+// So the block shows the institution or the userId where a name would go —
+// the same layout, holding an honest line rather than an invented one.
 //
 // IT IS LAID OUT INLINE RATHER THAN AS A COMPONENT. It has exactly one caller and
 // no variants, so a shared component would be the speculative one CONVENTIONS §10
@@ -40,6 +37,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { InstitutionRow } from '@components/InstitutionRow';
 import { ListRow } from '@components/ListRow';
 import { PrimaryButton } from '@components/PrimaryButton';
+import { deleteRefreshToken } from '@store/secureStorage';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { useSessionStore } from '@store/sessionStore';
@@ -122,13 +120,17 @@ export default function ProfileScreen() {
     navigation.navigate('PersonalAccount', { mode: 'signUp' });
   }, [clearPendingIntent, navigation]);
 
-  const handleSignOut = useCallback(() => {
-    // ORDER: session first, institution second, then navigate.
-    // clearSession() drops the access token immediately so any in-flight request
-    // that resolves after this sees no token. clearSelectedInstitution() rescopes
-    // the catalogue before it mounts, so it never flashes the wrong institution.
+  const handleSignOut = useCallback(async () => {
+    // ORDER: session first, institution second, refresh token third, then
+    // navigate. clearSession() drops the access token immediately so any
+    // in-flight request that resolves after this sees no token.
+    // clearSelectedInstitution() rescopes the catalogue before it mounts, so
+    // it never flashes the wrong institution. deleteRefreshToken() removes
+    // the one credential that would otherwise let a cold start sign back in
+    // without the reader asking to.
     clearSession();
     clearSelectedInstitution();
+    await deleteRefreshToken();
     navigation.navigate('Catalogue', { screen: 'CatalogueHome' });
   }, [clearSession, clearSelectedInstitution, navigation]);
 

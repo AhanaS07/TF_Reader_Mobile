@@ -26,7 +26,8 @@
           "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to turn what you say into text so you can search the catalogue by voice."
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-web-browser"
     ]
   }
 }

@@ -26,6 +26,7 @@ import type { Acquisition, Publication } from '@model/types';
 import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
+import { useSessionStore } from '@store/sessionStore';
 
 import ItemDetailScreen, {
   ARTICLE_WORK_TYPE,
@@ -50,6 +51,10 @@ const mockPlaceHold = jest.fn().mockResolvedValue({ holdId: 'hold_1', itemId: 'i
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
 
 jest.mock('@config/licence', () => ({
+  // sessionStore.ts calls this at module load — the currentSession.ts import
+  // chain (ItemDetailScreen → currentSession → sessionStore) now pulls
+  // sessionStore in even though this file never touches it directly.
+  setLicenceToken: jest.fn(),
   getLicenceSource: () => ({
     borrow: (...args: [string]) => mockBorrow(...args),
     returnLoan: (...args: [string]) => mockReturnLoan(...args),
@@ -161,6 +166,23 @@ const INSTITUTION: Institution = {
   catalogueUrl: 'https://api.tf/opds/v1/institutions/inst_a21/catalogue',
 };
 
+// Selecting an institution no longer implies signing in (handToggledSession is
+// gone — see currentSession.ts), so every test below that expects licensed-tier
+// access (Grant access, borrow, hold) has to establish a real session too, not
+// just a selected institution.
+function selectAndSignIn(institution: Institution) {
+  useInstitutionStore.setState({ selectedInstitution: institution });
+  useSessionStore.setState({
+    isAuthenticated: true,
+    accessToken: 'test-access-token',
+    expiresAt: Date.now() + 3_600_000,
+    userId: `test-user:${institution.id}`,
+    institutionId: institution.id,
+    roles: [],
+    collections: [],
+  });
+}
+
 afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
@@ -180,6 +202,15 @@ afterEach(() => {
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useSessionStore.setState({
+    isAuthenticated: false,
+    accessToken: null,
+    expiresAt: null,
+    userId: null,
+    institutionId: null,
+    roles: [],
+    collections: [],
+  });
 });
 
 // A1. A reader who has picked no institution reached this screen from the public
@@ -219,7 +250,7 @@ describe('ItemDetailScreen endpoint choice', () => {
 
   it('asks the institution endpoint once one is selected', async () => {
     const calls: string[] = [];
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     setCatalogueSource(recordingSource(calls));
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -342,7 +373,7 @@ describe('ItemDetailScreen with a book', () => {
   // documents (§6) — Elite's nothing-held case resolves to Grant access, not
   // Read, which is a second real distinction and not this test's point.
   it('resolves a Subscription title to Read once an institution is selected, instead of Sign in', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     setCatalogueSource(
       fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) })),
     );
@@ -357,7 +388,7 @@ describe('ItemDetailScreen with a book', () => {
   // "requires_grant" rather than "available" — and both must be reachable now
   // that session is no longer permanently null.
   it('resolves an Elite title to Grant access once an institution is selected, instead of Sign in', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     setCatalogueSource(
       fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
     );
@@ -819,7 +850,7 @@ describe('ItemDetailScreen selects presentation by workType', () => {
 // owns that).
 describe('ItemDetailScreen — holdings joined from library store', () => {
   it('shows Revoke licence when the reader already holds an active loan for the item', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
     // Pre-populate the store so the first resolved detail already sees the loan.
     // mockGetLibrary returns the same data so refresh() on mount does not overwrite it.
@@ -842,7 +873,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
   // label the app has never rendered; it only went unnoticed because this test
   // was timing out for an unrelated reason.
   it('shows Accept and Reject when the reader has a live hold offer', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const hold = {
       holdId: 'hold_1',
       itemId: 'item_42',
@@ -864,7 +895,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
   });
 
   it('shows no actions when the reader is queued (waiting for a copy)', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const hold = {
       holdId: 'hold_1',
       itemId: 'item_42',
@@ -889,7 +920,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
   });
 
   it('shows the reader their queue position when queued', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const hold = {
       holdId: 'hold_1',
       itemId: 'item_42',
@@ -910,7 +941,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
   });
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const otherLoan = { loanId: 'loan_x', itemId: 'item_OTHER', state: 'active' as const, expiresAt: 9_999_999_999 };
     // Loan for a different itemId — must not affect this screen's item_42.
     useLibraryStore.setState({ loans: [otherLoan], holds: [] });
@@ -930,7 +961,7 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 // reflects the new state without a page reload.
 describe('ItemDetailScreen — invalidate cache after action', () => {
   it('calls borrow and refreshes the library when Grant access is tapped', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
     mockBorrow.mockResolvedValue(loan);
     // First call on mount returns empty → Grant access shown.
@@ -952,7 +983,7 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
   });
 
   it('calls returnLoan and refreshes when Revoke licence is tapped', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
     useLibraryStore.setState({ loans: [loan], holds: [] });
     mockReturnLoan.mockResolvedValue(undefined);
@@ -975,7 +1006,7 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
   });
 
   it('falls through to placeHold when borrow is refused with NO_COPIES_AVAILABLE', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     mockBorrow.mockRejectedValue(
       new LicenceFailure(LicenceError.REFUSED, { errorCode: 'NO_COPIES_AVAILABLE', target: 'item_42' }),
     );
@@ -999,7 +1030,7 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
   });
 
   it('does NOT fall through to placeHold when borrow fails for a different reason', async () => {
-    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    selectAndSignIn(INSTITUTION);
     mockBorrow.mockRejectedValue(
       new LicenceFailure(LicenceError.NETWORK_UNAVAILABLE, { target: 'item_42' }),
     );

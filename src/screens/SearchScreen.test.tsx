@@ -27,6 +27,10 @@ import SearchScreen from './SearchScreen';
 // The licence seam is faked so nothing here reaches a real client. This screen
 // makes no licence call of its own — D12 is item detail only.
 jest.mock('@config/licence', () => ({
+  // sessionStore.ts calls this at module load — the currentSession.ts import
+  // chain (SearchScreen → currentSession → sessionStore) now pulls
+  // sessionStore in even though this file never touches it directly.
+  setLicenceToken: jest.fn(),
   getLicenceSource: () => ({
     getLibrary: () => Promise.resolve({ loans: [], holds: [] }),
     borrow: jest.fn(),

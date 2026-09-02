@@ -1,27 +1,33 @@
 // Screen 02 — Sign-in sheet (CAP-3).
 // transparentModal, not BottomSheet — nesting a Modal inside transparentModal causes z-index issues on Android.
-// STUB: handleSignIn has no real SAML call — replace when flambeau publishes the sign-in contract.
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import ActionButton from '@components/ActionButton';
 import ErrorState from '@components/ErrorState';
 import OfflineBanner from '@components/OfflineBanner';
 import { getCatalogueSource } from '@config/catalogue';
+import { beginSamlSignIn } from '@/auth/institutionSignIn';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
-import { useSessionStore } from '@store/sessionStore';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { color, radius, space, type as typeScale } from '@theme/tokens';
-import type { CatalogueStackParamList } from '../navigation/types';
+import type { CatalogueStackParamList, RootTabParamList } from '../navigation/types';
 
 type Props = NativeStackScreenProps<CatalogueStackParamList, 'SignIn'>;
 
 export default function SignInScreen({ navigation }: Props) {
+  // This screen is registered under three different tab stacks (Catalogue,
+  // Search, Profile — see RootNavigator), so a successful sign-in with no
+  // pending intent needs to reach a sibling tab. The stack-scoped `navigation`
+  // prop only types routes within its own stack; widen it for this one call
+  // rather than declaring a screen-wide composite type, since every other call
+  // on this screen (goBack, popTo) is genuinely stack-local.
+  const tabNavigation = navigation as unknown as BottomTabNavigationProp<RootTabParamList>;
   const institution = useInstitutionStore((s) => s.selectedInstitution);
   const takeIntent = usePendingIntentStore((s) => s.take);
-  const setSession = useSessionStore((s) => s.setSession);
   const isOnline = useNetworkStatus();
 
   const [submitting, setSubmitting] = useState(false);
@@ -38,25 +44,13 @@ export default function SignInScreen({ navigation }: Props) {
     setSubmitting(true);
     try {
       const fullInstitution = await getCatalogueSource().getInstitution(institution.id);
-      console.log('getInstitution on sign in:', JSON.stringify(fullInstitution, null, 2));
 
-      // STUB — exercises the full pending-intent round trip without a real SAML
-      // call. Replace with real steps when flambeau publishes the sign-in contract:
-      //   1. Call flambeau.beginSamlSignIn({ institutionId, idpHint }) and open the
-      //      browser — `idpHint` comes from GET /api/v1/institutions/{id} → signIn.idpHint
-      //   2. Receive the token via deep link (tfreader://auth-complete) or authTxnId
-      //      polling — contract still TBD (Question 5 in the planning doc)
-      //   3. Call setSession() with the real token from step 2, then replay the intent
-      //
-      // Placeholder: synthesise a short-lived session so access resolves correctly
-      // when the reader lands back on ItemDetail after "signing in".
-      setSession({
-        accessToken: `stub:${institution.id}`,
-        expiresIn: 3600,
-        userId: `stub:${institution.id}`,
-        institutionId: institution.id,
-        roles: [],
-        collections: [],
+      // beginSamlSignIn stores the session itself (sessionStore + the
+      // refresh token in secure storage) — see institutionSignIn.ts. Nothing
+      // else to do with its return value here.
+      await beginSamlSignIn({
+        institutionId: fullInstitution.id,
+        idpHint: fullInstitution.signIn?.idpHint,
       });
 
       // `popTo`, NOT `navigate` — for the common case the same ItemDetail is
@@ -64,18 +58,27 @@ export default function SignInScreen({ navigation }: Props) {
       // never left the app), and `navigate` does not reliably collapse back to
       // it, leaving a duplicate with a stranded sheet beneath. `popTo` pops to
       // the existing entry, and pushes a fresh one if it genuinely isn't there.
+      //
+      // With no pending intent, sign-in did not start from a locked book, so
+      // there is nothing to resume — land on the institution's home catalogue
+      // instead of goBack(), which previously just returned to whichever screen
+      // (e.g. SignInMethod) pushed this sheet.
       const intent = takeIntent();
       if (intent?.action === 'read') {
         navigation.popTo('ItemDetail', { itemId: intent.itemId });
       } else {
-        navigation.goBack();
+        tabNavigation.navigate('Catalogue', { screen: 'CatalogueHome' });
       }
-    } catch {
+    } catch (error) {
+      // Logged rather than swallowed: the screen only shows a generic
+      // message, and this is the one place that knows which of getInstitution
+      // or beginSamlSignIn's real network/browser calls actually failed.
+      console.error('SignInScreen: sign-in failed', error);
       setSignInError(true);
     } finally {
       setSubmitting(false);
     }
-  }, [institution, submitting, isOnline, navigation, takeIntent, setSession]);
+  }, [institution, submitting, isOnline, navigation, tabNavigation, takeIntent]);
 
   const handleRetry = useCallback(() => {
     handleSignIn();

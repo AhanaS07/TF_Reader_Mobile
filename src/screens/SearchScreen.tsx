@@ -33,7 +33,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { handToggledSession } from '@access/handToggledSession';
+import { useCurrentSession } from '@access/currentSession';
 import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
 import { EmptyState } from '@components/EmptyState';
@@ -117,6 +117,10 @@ function noopSort() {
 
 export default function SearchScreen() {
   const navigation = useNavigation<Nav>();
+
+  // Null unless the reader has actually signed in — see currentSession.ts's
+  // note on why this replaced handToggledSession.
+  const session = useCurrentSession();
 
   // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
   // where the fixture-vs-api choice gets made — by config, never by this file.
@@ -365,7 +369,7 @@ export default function SearchScreen() {
           const access = resolveAccess({
             item: publication,
             institutionId: PLACEHOLDER_INSTITUTION_ID,
-            session: handToggledSession(PLACEHOLDER_INSTITUTION_ID),
+            session,
           });
 
           return (
