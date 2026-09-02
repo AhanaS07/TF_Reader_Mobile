@@ -1,16 +1,17 @@
 // src/screens/ProfileScreen.test.tsx
 // Screen 10 — profile and settings.
 //
-// WHAT IS NOT TESTED HERE, AND WHY: there is no `/auth/me` call to assert on.
-// The endpoint has a contract (`docs/contracts/flambeau-api.yaml`) but no client
-// in this repo, no session store behind it, and its `AuthMeResponse` carries no
-// name, email or avatar to render — see the header comment on ProfileScreen.tsx.
-// A test for it would be a test of an invention.
+// WHAT IS NOT TESTED HERE, AND WHY: no name or email line, because
+// `AuthMeResponse` carries neither — see the header comment on
+// ProfileScreen.tsx. This file only asserts what ProfileScreen does with an
+// already-set sessionStore; it does not exercise sign-in itself
+// (ApiAuthClient / institutionSignIn.ts), which has no dedicated test yet.
 //
 // `await render(...)` is required — RTL 14's render is async. See App.test.tsx.
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import type { Institution } from '@model/institution';
+import { deleteRefreshToken } from '@store/secureStorage';
 import { useInstitutionStore } from '@store/institutionStore';
 import { usePendingIntentStore } from '@store/pendingIntentStore';
 import { useSessionStore } from '@store/sessionStore';
@@ -24,6 +25,15 @@ const mockNavigate = jest.fn();
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: mockNavigate }),
 }));
+
+// Sign-out now awaits deleteRefreshToken before navigating (it deletes a real
+// Keychain/Keystore entry via expo-secure-store, which has no Jest mock).
+// Mocked resolved so the awaited handler settles on the same tick the tests
+// already assumed.
+jest.mock('@store/secureStorage', () => ({
+  deleteRefreshToken: jest.fn().mockResolvedValue(undefined),
+}));
+const mockDeleteRefreshToken = deleteRefreshToken as jest.MockedFunction<typeof deleteRefreshToken>;
 
 const OXFORD: Institution = {
   id: 'inst_7f3',
@@ -246,17 +256,31 @@ describe('ProfileScreen change institution', () => {
 });
 
 describe('ProfileScreen sign out', () => {
+  afterEach(() => {
+    mockDeleteRefreshToken.mockClear();
+  });
+
   it('drops the institution selection and lands on the catalogue', async () => {
     await render(<ProfileScreen />);
     fireEvent.press(screen.getByRole('button', { name: 'Sign out' }));
 
     expect(useInstitutionStore.getState().selectedInstitution).toBeNull();
-    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'CatalogueHome' });
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'CatalogueHome' }),
+    );
+  });
+
+  it('deletes the stored refresh token before navigating away', async () => {
+    await render(<ProfileScreen />);
+    fireEvent.press(screen.getByRole('button', { name: 'Sign out' }));
+
+    await waitFor(() => expect(mockDeleteRefreshToken).toHaveBeenCalledTimes(1));
   });
 
   it('leaves the recently-used list alone — it is a device history, not a session', async () => {
     await render(<ProfileScreen />);
     fireEvent.press(screen.getByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(mockDeleteRefreshToken).toHaveBeenCalled());
     expect(useInstitutionStore.getState().recentlyUsedIds).toEqual(['inst_7f3']);
   });
 

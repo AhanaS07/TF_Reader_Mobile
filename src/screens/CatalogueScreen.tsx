@@ -31,7 +31,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
-import { handToggledSession } from '@access/handToggledSession';
+import { useCurrentSession } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
@@ -83,6 +83,11 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   const isOnline = useNetworkStatus();
 
   const institutionId = institution.id;
+
+  // Null unless the reader has actually signed in — selecting an institution
+  // alone is no longer enough (see currentSession.ts's note on why this
+  // replaced handToggledSession).
+  const session = useCurrentSession();
 
   // Holdings joined per item so each badge reflects the reader's live state.
   // One fetch per mount — not one per card.
@@ -218,7 +223,7 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
                   const access = resolveAccess({
                     item: publication,
                     institutionId,
-                    session: handToggledSession(institutionId),
+                    session,
                     loan: pubLoan,
                     hold: pubHold,
                   });

@@ -22,6 +22,10 @@ import ShelfScreen from './ShelfScreen';
 // makes no licence call of its own — D12 is item detail only — but the store it
 // shares can, so the source has to answer.
 jest.mock('@config/licence', () => ({
+  // sessionStore.ts calls this at module load — the currentSession.ts import
+  // chain (ShelfScreen → currentSession → sessionStore) now pulls sessionStore
+  // in even though this file never touches it directly.
+  setLicenceToken: jest.fn(),
   getLicenceSource: () => ({
     getLibrary: () => Promise.resolve({ loans: [], holds: [] }),
     borrow: jest.fn(),

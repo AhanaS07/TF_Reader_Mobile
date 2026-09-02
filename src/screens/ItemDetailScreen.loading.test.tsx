@@ -27,8 +27,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import { buildItemDetail } from '@model/detail';
-import type { Acquisition, Publication } from '@model/types';
-import { handToggledSession } from '@access/handToggledSession';
+import type { Acquisition, Publication, Session } from '@model/types';
 import { resolveAccess } from '@access/resolveAccess';
 import { useLibraryStore } from '@store/libraryStore';
 
@@ -54,6 +53,10 @@ jest.mock('@hooks/useNetworkStatus', () => ({
 const mockBorrow = jest.fn();
 const mockGetLibrary = jest.fn();
 jest.mock('@config/licence', () => ({
+  // sessionStore.ts calls this at module load — the currentSession.ts import
+  // chain (ItemDetailScreen → currentSession → sessionStore) now pulls
+  // sessionStore in even though this file never touches it directly.
+  setLicenceToken: jest.fn(),
   getLicenceSource: () => ({
     borrow: (...args: [string]) => mockBorrow(...args),
     getLibrary: () => mockGetLibrary(),
@@ -313,6 +316,18 @@ describe('ItemDetailScreen — D8 not entitled', () => {
   });
 });
 
+// resolveAccess reads nothing off a Session but whether it is null (see that
+// file's own note), so this fixture's field values don't matter — only its
+// presence, standing in for a signed-in reader in the two hand-built
+// resolveAccess calls below.
+const SIGNED_IN_SESSION: Session = {
+  userId: 'test-user:inst_7f3',
+  institutionId: 'inst_7f3',
+  roles: [],
+  collections: [],
+  exp: 0,
+};
+
 // ── D12 — the queued state on the detail screen ───────────────────────────────
 //
 // "Queued shows a position and nothing tappable." resolveAccess returns no
@@ -330,7 +345,7 @@ describe('ItemDetailScreen — D12 queued', () => {
     const access = resolveAccess({
       item: publication,
       institutionId: 'inst_7f3',
-      session: handToggledSession('inst_7f3'),
+      session: SIGNED_IN_SESSION,
       hold: {
         holdId: 'hold_1',
         itemId: 'item_42',
@@ -387,7 +402,7 @@ describe('ItemDetailScreen — D12 grant and offered', () => {
     const access = resolveAccess({
       item: publication,
       institutionId: 'inst_7f3',
-      session: handToggledSession('inst_7f3'),
+      session: SIGNED_IN_SESSION,
       hold: hold as never,
     });
     return buildItemDetail({ publication, workType: ARTICLE_WORK_TYPE, access });

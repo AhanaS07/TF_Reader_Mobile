@@ -42,7 +42,7 @@ import {
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
-import { handToggledSession } from '@access/handToggledSession';
+import { useCurrentSession } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
@@ -583,6 +583,11 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // rather than being papered over with a default id.
   const institutionId = selectedInstitution?.id ?? null;
 
+  // Null unless the reader has actually signed in — selecting an institution
+  // alone is no longer enough (see currentSession.ts's note on why this
+  // replaced handToggledSession).
+  const session = useCurrentSession();
+
   const isOnline = useNetworkStatus();
 
   // Holdings from the session cache. The cache starts empty and is populated by
@@ -614,7 +619,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     const access = resolveAccess({
       item: publication,
       institutionId,
-      session: handToggledSession(institutionId),
+      session,
       loan,
       hold,
     });
@@ -622,7 +627,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // @type values). Once they do, the normalizer fills publication.workType and
     // nothing else here changes.
     return buildItemDetail({ publication, workType: publication.workType ?? BOOK_WORK_TYPE, access });
-  }, [publication, institutionId, loan, hold]);
+  }, [publication, institutionId, session, loan, hold]);
 
   // No synchronous setState in here — only inside the async continuations. Same
   // note as InstitutionDetailScreen: retry is the one path that resets

@@ -34,6 +34,10 @@ const mockPlaceHold = jest.fn();
 const mockAcceptOffer = jest.fn();
 const mockCancelHold = jest.fn();
 jest.mock('@config/licence', () => ({
+  // sessionStore.ts calls this at module load — the currentSession.ts import
+  // chain (CatalogueScreen → currentSession → sessionStore) now pulls
+  // sessionStore in even though this file never touches it directly.
+  setLicenceToken: jest.fn(),
   getLicenceSource: () => ({
     getLibrary: () => mockGetLibrary(),
     borrow: (...args: [string]) => mockBorrow(...args),
