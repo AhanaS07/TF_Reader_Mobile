@@ -127,25 +127,26 @@ export function toAccessibilityPrefs(row: AccessibilityRow | null): Accessibilit
  * the two rows: the merged object is only as fresh as its freshest half, and Reader compares it
  * against nothing else.
  */
-export async function readSharedPrefs(): Promise<SharedPrefs> {
+export async function readSharedPrefs(userId: string = USER_ID): Promise<SharedPrefs> {
   const [personalization, accessibility] = await Promise.all([
-    personalizationStore.current(),
-    accessibilityStore.current(),
+    personalizationStore.current(userId),
+    accessibilityStore.current(userId),
   ]);
 
-  return mergeSharedPrefs(personalization, accessibility);
+  return mergeSharedPrefs(personalization, accessibility, userId);
 }
 
 export function mergeSharedPrefs(
   personalization: PersonalizationRow | null,
   accessibility: AccessibilityRow | null,
+  userId: string = USER_ID,
 ): SharedPrefs {
   const a11y = toAccessibilityPrefs(accessibility);
 
   if (!personalization) {
     return {
-      id: personalizationId(USER_ID),
-      userId: USER_ID,
+      id: personalizationId(userId),
+      userId,
       updatedAt: accessibility ? toMs(accessibility.updated_at) : 0,
       isDeleted: false,
       synced: accessibility ? toBool(accessibility.synced) : false,
@@ -236,10 +237,11 @@ function changedColumns<TRow>(current: TRow | null, desired: Partial<TRow>): Par
  */
 export async function writeSharedPrefs(
   prefs: Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>,
+  userId: string = USER_ID,
 ): Promise<void> {
   const [currentP, currentA] = await Promise.all([
-    personalizationStore.current(),
-    accessibilityStore.current(),
+    personalizationStore.current(userId),
+    accessibilityStore.current(userId),
   ]);
 
   const personalizationPatch = changedColumns<PersonalizationRow>(currentP, {
@@ -255,7 +257,10 @@ export async function writeSharedPrefs(
     zoom: prefs.zoom.level,
   });
   if (Object.keys(personalizationPatch).length > 0) {
-    await personalizationStore.update({ id: personalizationId(USER_ID), ...personalizationPatch });
+    await personalizationStore.update(
+      { id: personalizationId(userId), ...personalizationPatch },
+      userId,
+    );
   }
 
   const a11y = prefs.accessibility;
@@ -281,13 +286,16 @@ export async function writeSharedPrefs(
     screen_reader_hints: toInt(a11y.screenReaderHints),
   });
   if (Object.keys(accessibilityPatch).length > 0) {
-    await accessibilityStore.update({ id: accessibilityId(USER_ID), ...accessibilityPatch });
+    await accessibilityStore.update(
+      { id: accessibilityId(userId), ...accessibilityPatch },
+      userId,
+    );
   }
 }
 
 /** Reset to the frozen defaults. Deep-copies, per the warning on DEFAULT_ACCESSIBILITY_PREFS. */
-export function resetSharedPrefs(): Promise<void> {
-  return writeSharedPrefs(structuredClone(DEFAULT_PREFS));
+export function resetSharedPrefs(userId: string = USER_ID): Promise<void> {
+  return writeSharedPrefs(structuredClone(DEFAULT_PREFS), userId);
 }
 
 /** Exposed for the adapter note in personalizationRow.ts: the column stores ISO-8601 UTC. */
