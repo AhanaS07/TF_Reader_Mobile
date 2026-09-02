@@ -31,6 +31,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
 import { closeBook, getIndex } from '@/features/encryption/contentProvider';
+import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -241,6 +242,17 @@ jest.mock('@/features/personalization/fontFaceLoader', () => ({
   loadFontFaceSrc: jest.fn(() => Promise.resolve(null)),
 }));
 
+/**
+ * The dyslexia-font byte-loading seam. Mocked for the same reason `fontFaceLoader` is — the real
+ * one is expo-asset + expo-file-system — but with one difference that matters: unlike
+ * `loadFontFaceSrc`, the real `loadDyslexiaFontFaceSrc` CAN reject, and the screen's fallback for
+ * that is the whole point of one of the tests below. So this mock is left rejectable rather than
+ * being given a never-throws contract.
+ */
+jest.mock('@/features/accessibility/dyslexiaFontLoader', () => ({
+  loadDyslexiaFontFaceSrc: jest.fn(() => Promise.resolve('data:font/ttf;base64,RFlTTA==')),
+}));
+
 const LIGHT_ENV: AppearanceEnv = {
   osColorScheme: 'light',
   osFontScale: 1,
@@ -271,6 +283,7 @@ beforeEach(() => {
   jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
   jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
+  jest.mocked(loadDyslexiaFontFaceSrc).mockResolvedValue('data:font/ttf;base64,RFlTTA==');
 
   // THE ASSET SEAM IS RESTORED FOR EVERY TEST, not left to whichever block last touched it. Any
   // PDF test anywhere in this file has to point these three somewhere else, and `mockResolvedValue`
@@ -1040,6 +1053,201 @@ describe('routing ContentFormat to a renderer', () => {
     // NOT the asset code: the shells are fine, there just isn't one for this book,
     // and telling the reader to run a build script would be a lie.
     expect(screen.queryByText('ASSET_LOAD_FAILED')).toBeNull();
+  });
+});
+
+describe('applyAppearance — the accessibility overrides', () => {
+  /** The last appearance the WebView was told about, decoded back out of the injected script. */
+  function lastAppearance(): Record<string, unknown> {
+    const calls = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+    const script = calls.reverse().find((call) => call.includes('applyAppearance('));
+    expect(script).toBeDefined();
+    const json = /applyAppearance\((\{.*?\})\);/s.exec(String(script))?.[1];
+    expect(json).toBeDefined();
+    // The script embeds the payload as an escaped JSON string literal inside JS source.
+    return JSON.parse(String(json).replace(/\\"/g, '"')) as Record<string, unknown>;
+  }
+
+  function withA11y(overrides: {
+    dyslexiaFont?: boolean;
+    highContrast?: boolean;
+  }): SharedPrefs {
+    const base = makePrefs();
+    return {
+      ...base,
+      accessibility: {
+        ...base.accessibility,
+        text: { ...base.accessibility.text, dyslexiaFont: overrides.dyslexiaFont ?? false },
+        display: { ...base.accessibility.display, highContrast: overrides.highContrast ?? false },
+      },
+    };
+  }
+
+  afterEach(() => {
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    jest.mocked(prepareBook).mockResolvedValue('EPUB' as ContentFormat);
+  });
+
+  it('lets the dyslexia face beat the chosen bundled font, on both fields at once', async () => {
+    // `baselineCss` emits @font-face only when the family AND the bytes are both present, and the
+    // shell drops a URI with no family to attach it to — so setting one without the other is inert.
+    jest.mocked(loadFontFaceSrc).mockResolvedValue('data:font/ttf;base64,QkJCQg==');
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue({
+      ...withA11y({ dyslexiaFont: true }),
+      font: { ...makePrefs().font, family: 'Poppins' },
+    });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.fontFamily).toBe('OpenDyslexic');
+    expect(appearance.customFontUri).toBe('data:font/ttf;base64,RFlTTA==');
+  });
+
+  it('still sends every other preference when the dyslexia font fails to load', async () => {
+    // THE REGRESSION THIS EXISTS FOR: the load is awaited inside `buildAppearanceWithFont`, which
+    // runs inside `applyAppearanceWith`'s single catch. Without its own try/catch a reject aborts
+    // the whole payload, and the book silently loses theme, text size, margins, flow and every
+    // announce gate — for a font. Losing the face is the correct failure; losing the rest is not.
+    jest.mocked(loadDyslexiaFontFaceSrc).mockRejectedValue(new Error('asset unavailable'));
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue({
+      ...withA11y({ dyslexiaFont: true }),
+      theme: 'dark',
+    });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    // The theme survived, which is the whole point.
+    expect(appearance.colorScheme).toBe('dark');
+    expect(appearance.bg).toBe('#121212');
+    // And the face fell back rather than half-applying.
+    expect(appearance.fontFamily).not.toBe('OpenDyslexic');
+    expect(appearance.customFontUri).toBeNull();
+  });
+
+  it('ignores a stored dyslexiaFont on a PDF, which has no text layer to restyle', async () => {
+    // The preference is one per USER, not per book, so a `true` set while reading an EPUB still
+    // arrives on a PDF's payload. The panel hides its own row for PDFs; this is the host-side half.
+    jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withA11y({ dyslexiaFont: true }));
+    // Cleared HERE rather than relying on a global: this file deliberately has no blanket
+    // clearAllMocks (see the note further down), so the earlier tests in this block have already
+    // called the loader and a bare `not.toHaveBeenCalled()` would be counting their calls.
+    jest.mocked(loadDyslexiaFontFaceSrc).mockClear();
+
+    await mountReader();
+    await reportReady();
+
+    expect(lastAppearance().fontFamily).not.toBe('OpenDyslexic');
+    // Not merely unused — never loaded. The gate is what stops a PDF paying ~330 KB of base64 on
+    // the bridge for a face pdf.js could not render if it arrived.
+    expect(loadDyslexiaFontFaceSrc).not.toHaveBeenCalled();
+  });
+
+  it('overrides the theme palette with the high-contrast pair for the resolved scheme', async () => {
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withA11y({ highContrast: true }));
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.fg).toBe('#000000');
+    expect(appearance.bg).toBe('#FFFFFF');
+    expect(appearance.link).toBe('#0000EE');
+    // The FLAG still rides along — the shells and `appearanceChangeAnnouncement` both read it.
+    expect(appearance.highContrast).toBe(true);
+  });
+
+  it('keeps dark + high contrast a valid combination rather than collapsing to one palette', async () => {
+    // `highContrast` is deliberately independent of colour scheme — the deprecated
+    // `theme: 'highContrast'` could not express this pair, which is why the flag replaced it.
+    jest
+      .mocked(prefsStore.getPrefs)
+      .mockResolvedValue({ ...withA11y({ highContrast: true }), theme: 'dark' });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.colorScheme).toBe('dark');
+    expect(appearance.fg).toBe('#FFFFFF');
+    expect(appearance.bg).toBe('#000000');
+    expect(appearance.link).toBe('#FFFF00');
+  });
+
+  it('leaves the palette alone when high contrast is off', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(lastAppearance().bg).toBe('#ffffff');
+    expect(lastAppearance().link).toBe('#1a4f8b');
+  });
+});
+
+describe('the accessibility settings panel', () => {
+  it('opens from the toolbar and closes back to the button that opened it', async () => {
+    await mountReader();
+
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    expect(screen.getByText('Accessibility')).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText('Close accessibility'));
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
+    expect(focusOn).toHaveBeenCalled();
+  });
+
+  it('names its own close, so a screen reader can tell which panel it is in', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    // Not a bare "Close" — three panels can be open one at a time and each names itself.
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+  });
+
+  it('is mutually exclusive with Search and Bookmarks, both ways round', async () => {
+    // `includeHiddenElements`, same reasoning as `openSearch`/`openContents` elsewhere in this
+    // file: with a panel open the toolbar is hidden from assistive tech but stays visible and
+    // tappable, and a press is a touch. That hidden state is asserted separately.
+    const toolbar = async (name: string): Promise<void> => {
+      await fireEvent.press(screen.getByRole('button', { name, includeHiddenElements: true }));
+    };
+
+    await mountReader();
+
+    await toolbar('Accessibility settings');
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+
+    await toolbar('Search this book');
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+
+    await toolbar('Accessibility settings');
+    expect(screen.queryByLabelText('Close search')).toBeNull();
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+
+    await toolbar('Bookmarks');
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.getByLabelText('Close bookmarks')).toBeTruthy();
+  });
+
+  it('shows the Dyslexia Font row for an EPUB', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    expect(screen.getByLabelText('Dyslexia font: Off')).toBeTruthy();
+  });
+
+  it('passes the format through, so a PDF loses the row it cannot honour', async () => {
+    jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    expect(screen.queryByLabelText(/Dyslexia font/)).toBeNull();
+    // The other two apply to every format, which is why the ENTRY POINT is not format-gated.
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
   });
 });
 

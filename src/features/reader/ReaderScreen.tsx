@@ -21,6 +21,9 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { AccessibilitySettingsPanel } from '@/features/accessibility/AccessibilitySettingsPanel';
+import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
+import { getHighContrastReaderColors } from '@/features/accessibility/highContrastColors';
 import { TtsControls } from '@/features/accessibility/tts/TtsControls';
 import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
 import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
@@ -176,17 +179,109 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
 }
 
 /**
+ * The name the dyslexia face is declared under, in BOTH the `@font-face` rule and the `body` rule
+ * `baselineCss` builds. It has to pass `sanitizeFontFamily`'s `/^[A-Za-z0-9 ,-]*$/` allow-list —
+ * this does, unquoted — or the shell would drop it and render the fallback with no sign why.
+ */
+const DYSLEXIA_FONT_FAMILY = 'OpenDyslexic';
+
+/**
+ * `accessibility.text.dyslexiaFont` applied to the two font fields.
+ *
+ * SPLIT INTO A PREDICATE AND AN ASYNC APPLY, rather than one async function that early-returns.
+ * `await`ing a function costs a microtask hop even when it does nothing, and this runs on EVERY
+ * appearance apply — every prefs write and every OS appearance tick, for every reader, whether or
+ * not the preference is on. The gate is still named once; `buildAppearanceWithFont` asks before it
+ * awaits, so the common path costs nothing.
+ *
+ * >>> IT WINS OUTRIGHT OVER `font.family`, AND ONLY EPUB CAN HONOUR IT. <<<
+ * The two cannot compose — there is one `@font-face` and one `font-family` — so this is a
+ * precedence decision, not a merge, and it goes to the accessibility need for the same reason
+ * `a11yFlowOverride` overrules `layout.flow`. `readerAnnouncements.ts` already encodes the same
+ * ranking: it checks `dyslexiaFont` BEFORE `fontFamily`, so one toggle says "Dyslexia-friendly font
+ * on" rather than "Font: OpenDyslexic". Changing the precedence here without changing that order
+ * makes the reader announce the mechanism instead of the setting.
+ *
+ * >>> THE FAMILY IS SET, NOT JUST THE URI. <<< `baselineCss` emits `@font-face` only when BOTH are
+ * non-empty, and `appearanceCssOptions()` drops a URI with no family to attach it to — so bytes
+ * alone are inert.
+ *
+ * >>> AND THE FORMAT GATE IS NOT REDUNDANT WITH THE PANEL HIDING ITS OWN ROW. <<< The preference is
+ * one per user, not one per book, so a `true` stored while reading an EPUB still arrives on a PDF's
+ * payload. pdf.js rasterises pages and has no text CSS layer to override, so honouring it there
+ * would buy nothing and cost ~330 KB of base64 on the bridge for every preference change.
+ *
+ * BEST-EFFORT, and that is the whole reason this is a separate function with its own `try`. Unlike
+ * `loadFontFaceSrc`, `loadDyslexiaFontFaceSrc` CAN reject — it is two native calls. Letting that
+ * reject escape would abort `buildAppearanceWithFont` inside `applyAppearanceWith`'s single catch,
+ * and the WebView would then be sent NO appearance at all: no theme, no text size, no margins, no
+ * flow, no announce gates. Losing one font is the correct failure; losing every preference is not.
+ */
+function wantsDyslexiaFont(
+  resolved: ReaderAppearance,
+  format: ContentFormat | null,
+): boolean {
+  return resolved.dyslexiaFont && format === 'EPUB';
+}
+
+async function withDyslexiaFont(resolved: ReaderAppearance): Promise<ReaderAppearance> {
+  try {
+    return {
+      ...resolved,
+      fontFamily: DYSLEXIA_FONT_FAMILY,
+      customFontUri: await loadDyslexiaFontFaceSrc(),
+    };
+  } catch (cause) {
+    console.warn('ReaderScreen: could not load the dyslexia font', cause);
+    return resolved;
+  }
+}
+
+/**
+ * `accessibility.display.highContrast` applied to the three colours, or `resolved` untouched.
+ *
+ * The recipe itself is `highContrastColors.ts`'s (Hruthik's) — `readerAppearance.ts` leaves it
+ * unspecified on purpose and `THEME_PALETTES` says so in as many words. This is only the wiring.
+ *
+ * >>> THE SCHEME STILL CHOOSES THE PAIR. <<< `highContrast` is deliberately independent of colour
+ * scheme (dark + high contrast is a valid combination the deprecated `theme: 'highContrast'` could
+ * not express), so the resolved scheme is passed through rather than collapsed to one palette.
+ *
+ * SPREADS RATHER THAN MUTATES, and that is load-bearing: `a11yFlowOverride` returns its input BY
+ * REFERENCE when nothing changes, so editing `resolved` in place would also edit the object
+ * `lastAppearanceRef` is holding — and `appearanceChangeAnnouncement` diffs against exactly that,
+ * so the change would announce nothing.
+ */
+function withHighContrast(resolved: ReaderAppearance): ReaderAppearance {
+  if (!resolved.highContrast) return resolved;
+  return { ...resolved, ...getHighContrastReaderColors(resolved.colorScheme) };
+}
+
+/**
  * `toReaderAppearance`'s own `customFontUri` is a straight passthrough of `FontPrefs.customFontUri`
  * — a separate, still-unused upload-path field (see readerAppearance.ts). This overlays it with the
  * loaded bundled-font data URI for `prefs.font.family` instead (or `null` for `'system'`/unknown) —
  * Reader's chosen meaning for this field on the bridge, per CUSTOM_FONTS_WIRING.md. Both send sites
  * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
  * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
+ *
+ * >>> THE THREE OVERRIDES BELOW ARE ORDERED, NOT INTERCHANGEABLE. <<< The dyslexia face replaces
+ * whatever the bundled-font load just produced, so it has to run after it; the contrast recipe and
+ * the flow override touch disjoint fields (colours vs. flow/spread) and so cannot collide, but
+ * `a11yFlowOverride` stays outermost because it is documented as the last word on the payload.
+ *
+ * >>> NONE OF THEM ADDS A `ReaderAppearance` FIELD, AND THAT IS THE POINT. <<< Every one resolves
+ * into a field that already exists, so `epubLayoutSignature.ts`'s classification does not move and
+ * neither shell needs a line changed: the dyslexia face travels as `fontFamily`/`customFontUri`
+ * (both already GeometryKey, so highlights re-measure for it for free) and the contrast pair as
+ * `fg`/`bg`/`link`. Applying either INSIDE a shell instead would cost the whole nine-step new-field
+ * checklist and would have to reclassify the key.
  */
 async function buildAppearanceWithFont(
   prefs: SharedPrefs,
   env: AppearanceEnv,
   screenReaderEnabled: boolean,
+  format: ContentFormat | null,
 ): Promise<ReaderAppearance> {
   const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
   const resolved: ReaderAppearance = {
@@ -198,8 +293,10 @@ async function buildAppearanceWithFont(
   // primitives, and whether a screen reader is running is not a preference to resolve. Its own
   // header says the apply-time meaning of these fields is Reader's. See readerA11yLayout.ts for
   // why paginated flow makes the book unreachable to TalkBack, and `flowOverrideActive` below for
-  // the notice that stops this being a silent change.
-  return a11yFlowOverride(resolved, screenReaderEnabled);
+  // the notice that stops this being a silent change. The same reasoning is what puts the dyslexia
+  // and contrast overrides here rather than in `toReaderAppearance`.
+  const withFace = wantsDyslexiaFont(resolved, format) ? await withDyslexiaFont(resolved) : resolved;
+  return a11yFlowOverride(withHighContrast(withFace), screenReaderEnabled);
 }
 
 /**
@@ -373,6 +470,7 @@ export function ReaderScreen({
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [showAccessibility, setShowAccessibility] = useState(false);
 
   /**
    * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
@@ -384,23 +482,23 @@ export function ReaderScreen({
    * is why this is a flag applied to several nodes rather than one wrapper around them — see
    * `ReaderWebView`'s `hidden` prop for why reparenting is not an option here.
    */
-  const anyPanelOpen = showToc || showSearch || showBookmarks;
+  const anyPanelOpen = showToc || showSearch || showBookmarks || showAccessibility;
 
   /**
    * The bottom row is hidden on a NARROWER condition than the rest of the background, and the
    * difference is not an oversight.
    *
-   * Search and Bookmarks each carry their own close button inside the panel ("Close search",
-   * "Close bookmarks"), so once one is open the row behind it is pure background. **Contents does
-   * not.** Its close affordance is the Contents button in this very row — the one whose label flips
-   * to "Close contents" while the panel is open. Hiding the row along with everything else left a
-   * screen-reader user inside the TOC with no reachable way out of it: every route back was a
-   * control that had just been removed from the focus order.
+   * Search, Bookmarks and Accessibility each carry their own close button inside the panel ("Close
+   * search", "Close bookmarks", "Close accessibility"), so once one is open the row behind it is
+   * pure background. **Contents does not.** Its close affordance is the Contents button in this very
+   * row — the one whose label flips to "Close contents" while the panel is open. Hiding the row
+   * along with everything else left a screen-reader user inside the TOC with no reachable way out of
+   * it: every route back was a control that had just been removed from the focus order.
    *
    * Caught by `ReaderScreen.test.tsx`'s existing mutual-exclusion tests, which could no longer find
    * the Contents button. They were right to fail.
    */
-  const controlsHidden = showSearch || showBookmarks;
+  const controlsHidden = showSearch || showBookmarks || showAccessibility;
 
   /**
    * The bookmarks panel's own state — loaded once, after the first `rendered`, then kept current by
@@ -572,12 +670,13 @@ export function ReaderScreen({
    * opened closes — without this, dismissing a panel leaves focus on an element that just unmounted
    * and the platform drops the user at the top of the screen.
    *
-   * Only the two panels whose close is a deliberate act have one. Bookmarks closes the same way and
-   * could take a third, but its own close path is not in this handoff's scope; add it when that item
+   * Only the panels whose close is a deliberate act have one. Bookmarks closes the same way and
+   * could take another, but its own close path is not in this handoff's scope; add it when that item
    * comes round rather than guessing at the restore rule for it now.
    */
   const contentsButtonRef = useRef<View | null>(null);
   const searchButtonRef = useRef<View | null>(null);
+  const accessibilityButtonRef = useRef<View | null>(null);
 
   const cancelPendingSeek = useCallback((): void => {
     pendingSeekRef.current = null;
@@ -762,6 +861,20 @@ export function ReaderScreen({
   });
 
   /**
+   * The open book's format, for the dyslexia override's EPUB gate.
+   *
+   * A REF FOR THE SAME REASON THE TWO ABOVE ARE: `applyAppearanceWith` is memoised on `[]`, and
+   * `format` is null until `prepareBook` resolves. Reading it from the closure directly would pin
+   * the funnel to `null` for the life of the screen, so a book opened as EPUB would never get the
+   * dyslexia face. Trigger A runs after the format is known (`handleReady` cannot fire before the
+   * shell for that format is mounted), and triggers B and C read whatever is current.
+   */
+  const formatRef = useRef(format);
+  useEffect(() => {
+    formatRef.current = format;
+  });
+
+  /**
    * The last appearance the WebView was actually sent, and the last position it reported.
    *
    * REFS, NOT STATE, and not because refs are cheaper: nothing renders from either, and state here
@@ -850,7 +963,12 @@ export function ReaderScreen({
     ): Promise<void> => {
       try {
         const prefs = record ?? (await prefsStore.getPrefs());
-        const appearance = await buildAppearanceWithFont(prefs, env, a11yLayoutEnabledRef.current);
+        const appearance = await buildAppearanceWithFont(
+          prefs,
+          env,
+          a11yLayoutEnabledRef.current,
+          formatRef.current,
+        );
         sender({ type: 'applyAppearance', appearance });
 
         // Said AFTER the send, so what the reader hears cannot describe a change the renderer was
@@ -1674,6 +1792,7 @@ export function ReaderScreen({
         setAwaitingSeek(true);
         closeToc(false); // Search is opening over it — see closeToc's own note.
         setShowBookmarks(false);
+        setShowAccessibility(false);
         setShowSearch(true);
         return;
       }
@@ -1848,6 +1967,7 @@ export function ReaderScreen({
             // own merits without renaming a control out from under the test suite.
             closeToc(false); // this panel is taking over — see closeToc's own note.
             setShowBookmarks(false);
+            setShowAccessibility(false);
             setShowSearch((open) => !open);
           }}
           style={styles.toolbarButton}
@@ -1862,11 +1982,34 @@ export function ReaderScreen({
           onPress={() => {
             closeToc(false);
             setShowSearch(false);
+            setShowAccessibility(false);
             setShowBookmarks((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔖</Text>
+        </Pressable>
+
+        {/* NOT GATED ON `format`, unlike the panel's own Dyslexia Font row: High Contrast and
+            Reduce Motion apply to every format, and to the shell before a book has even resolved.
+            Gating the whole entry point on the one control that is EPUB-only would take the other
+            two away from PDF and audio readers. */}
+        <Pressable
+          accessibilityRole="button"
+          // Explicit for the same reason as Search and Bookmarks: the glyph gives a screen reader
+          // nothing to say, and every test finds these buttons by accessible name.
+          accessibilityLabel="Accessibility settings"
+          accessibilityState={{ expanded: showAccessibility }}
+          ref={accessibilityButtonRef}
+          onPress={() => {
+            closeToc(false); // this panel is taking over — see closeToc's own note.
+            setShowSearch(false);
+            setShowBookmarks(false);
+            setShowAccessibility((open) => !open);
+          }}
+          style={styles.toolbarButton}
+        >
+          <Text style={styles.toolbarIcon}>♿</Text>
         </Pressable>
 
         {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
@@ -2256,6 +2399,7 @@ export function ReaderScreen({
             onOpenResults={() => {
               closeToc(false); // the results panel is opening — see closeToc's own note.
               setShowBookmarks(false);
+              setShowAccessibility(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
@@ -2281,6 +2425,51 @@ export function ReaderScreen({
               setShowBookmarks(false);
             }}
           />
+        )}
+
+        {/*
+          AN OVERLAY, not a strip docked under the viewer, even though the panel inside styles
+          itself like `TtsControls` (a border-top and a capped width). Docking it would change the
+          viewer's height, and that re-paginates epub.js — which is the one thing every panel in
+          this file overlays to avoid, because a CFI resolved under one pagination addresses a
+          different page under another. See the note above SearchPanel.
+
+          THE CHROME IS HERE RATHER THAN IN THE PANEL because the panel is Accessibility's file and
+          serves two surfaces: in a standalone Settings screen it needs no title and no close, and
+          it has neither. Supplying them at the mount point is what lets one component serve both
+          without this screen editing another capability's code.
+        */}
+        {showAccessibility && (
+          <View style={styles.accessibilityPanel}>
+            <View style={styles.accessibilityHeaderRow}>
+              <Text style={styles.accessibilityTitle}>Accessibility</Text>
+              {/* NAMES ITS OWN CLOSE, like every other panel here ("Close search", "Close
+                  bookmarks", "Close contents") — a bare "Close" is ambiguous to a screen-reader
+                  user who cannot see which panel is open. */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close accessibility"
+                onPress={() => {
+                  setShowAccessibility(false);
+                  // The explicit-close path, so the button they opened it from is where they were —
+                  // same restore rule as SearchPanel's `onClose`.
+                  focusOn(accessibilityButtonRef);
+                }}
+                style={styles.accessibilityAction}
+              >
+                <Text style={styles.accessibilityActionText}>Close</Text>
+              </Pressable>
+            </View>
+
+            {/* `undefined` rather than a guess while the book is still resolving: the prop's own
+                doc says omitting it means "not scoped to one open book", which shows every control.
+                That is the honest state — High Contrast and Reduce Motion are already usable, and
+                the Dyslexia Font row becomes accurate the moment `prepareBook` lands. The dyslexia
+                override itself is gated separately, host-side, in `withDyslexiaFont`. */}
+            <ScrollView contentContainerStyle={styles.accessibilityContent}>
+              <AccessibilitySettingsPanel format={format ?? undefined} />
+            </ScrollView>
+          </View>
         )}
 
         {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
@@ -2342,6 +2531,7 @@ export function ReaderScreen({
             onPress={() => {
               setShowSearch(false); // mutual exclusion — see the toolbar button above
               setShowBookmarks(false);
+              setShowAccessibility(false);
               setShowToc((open) => !open);
             }}
             style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -2595,6 +2785,37 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
+
+  // The accessibility panel's chrome. Same opaque full-bleed overlay as `tocPanel` and
+  // BookmarksPanel's `panel` — book text showing faintly through a settings list is as unreadable
+  // here as it is there — and the header row copies BookmarksPanel's so the two close buttons are
+  // the same control in the same place.
+  //
+  // SCROLLS, unlike the TOC's own fixed header: the panel's three control groups already overflow a
+  // small phone in landscape once the Dyslexia row is present, and a control the user cannot reach
+  // is worse in this panel than in any other.
+  accessibilityPanel: {
+    ...FILL,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e2e2',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  accessibilityHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  accessibilityTitle: { fontSize: 18, fontWeight: '600', color: '#111111' },
+  accessibilityAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#f2f2f2',
+  },
+  accessibilityActionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  accessibilityContent: { paddingBottom: 48 },
 
   // Only a TOP hairline, to close the header off. There is deliberately no bottom
   // border any more: a hairline and a fade at the same edge fight each other — the

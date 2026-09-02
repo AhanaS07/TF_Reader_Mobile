@@ -221,6 +221,33 @@ describe('the line grid — why a line cannot be sliced by a page edge', () => {
     expect(css).toMatch(/^p, div, span, li,[^{]*\{[^}]*user-select: text !important/m);
   });
 
+  it('gives focused book content a visible ring, in the theme it is reading in', () => {
+    // The only focus indicator in the reader. It has to live in THIS sheet because the links it
+    // rings are in the chapter document, which no other stylesheet reaches.
+    const css = baselineCss(readerMetrics(393, 700), { link: '#0000EE' });
+    expect(css).toMatch(/:focus-visible \{[^}]*outline: 2px solid #0000EE !important/);
+    // Tapping a link is most of what happens in a book; only keyboard/AT navigation should ring.
+    expect(css).toMatch(/:focus:not\(:focus-visible\) \{[^}]*outline: none !important/);
+  });
+
+  it('falls back to currentColor before the first appearance payload arrives', () => {
+    // A book can be on screen with no `applyAppearance` yet (it is sent after `ready`, and prefs are
+    // an async read). A ring that resolved to `undefined` would be no ring at all.
+    expect(baselineCss(readerMetrics(393, 700))).toMatch(
+      /:focus-visible \{[^}]*outline: 2px solid currentColor !important/,
+    );
+  });
+
+  it('keeps the focus ring out of the layout, so it cannot move a glyph', () => {
+    // `outline` does not participate in layout; a border or padding would, and would push text off
+    // the line grid. This is why the rule is not classified as geometry in epubLayoutSignature.ts.
+    const rule = /:focus-visible \{[^}]*\}/.exec(baselineCss(readerMetrics(393, 700), { link: '#1a4f8b' }));
+    expect(rule).not.toBeNull();
+    expect(rule?.[0]).not.toMatch(/border|padding|margin|line-height/);
+    // Spacing comes from outline-offset, the one property that gives room without taking any.
+    expect(rule?.[0]).toMatch(/outline-offset: 2px !important/);
+  });
+
   it('does not quantise when the flow has no page edges', () => {
     // Guard on the flow rather than the value: when scrolled-doc arrives, this test is the record
     // of what changes with it.

@@ -50,13 +50,23 @@ type GeometryKey =
  *    own `bg` path for that), `zoom` (a reflowable EPUB scales through `fontSizePt`; `zoom` is the
  *    PDF shell's), and the three `announce`/`reduceMotion` gates.
  *
- *  - >>> NOT GEOMETRY ONLY BECAUSE THIS SHELL DOES NOT APPLY THEM YET. <<< `highContrast`,
- *    `boldText`, `dyslexiaFont` and `readableSpacing` are absent from `appearanceCssOptions()` and
- *    `currentTypography()` in `epub.entry.ts`, so today they change nothing and re-measuring for
- *    them would be waste. Three of the four are unambiguously typographic — a heavier weight, a
- *    different face and looser spacing all re-flow every line. WHOEVER WIRES ONE OF THEM INTO THE
- *    STYLESHEET MUST MOVE ITS KEY UP TO `GeometryKey` IN THE SAME CHANGE, or highlights will drift
- *    under it exactly the way they did under `fontSizePt`.
+ *  - >>> `highContrast` AND `dyslexiaFont` ARE WIRED, AND STILL BELONG HERE. <<< Both are applied
+ *    HOST-SIDE, in `ReaderScreen.tsx`'s `buildAppearanceWithFont`, by resolving them into fields
+ *    that are already classified above: the dyslexia face arrives as `fontFamily` +
+ *    `customFontUri`, and the contrast pair as `fg`/`bg`/`link`. So the signature already moves for
+ *    a dyslexia toggle — via the two font keys — and a contrast toggle already takes the `bg` path.
+ *    Promoting either key would re-measure a second time for a change the font keys have already
+ *    accounted for. THE RULE BELOW IS UNCHANGED; these two simply do not trigger it, because
+ *    nothing about them reaches this shell as itself.
+ *
+ *  - >>> NOT GEOMETRY ONLY BECAUSE THIS SHELL DOES NOT APPLY THEM YET. <<< `boldText` and
+ *    `readableSpacing` are absent from `appearanceCssOptions()` and `currentTypography()` in
+ *    `epub.entry.ts`, so today they change nothing and re-measuring for them would be waste. Both
+ *    are unambiguously typographic — a heavier weight and looser spacing each re-flow every line.
+ *    WHOEVER WIRES ONE OF THEM INTO THE STYLESHEET MUST MOVE ITS KEY UP TO `GeometryKey` IN THE
+ *    SAME CHANGE, or highlights will drift under it exactly the way they did under `fontSizePt`.
+ *    That obligation binds anything applied INSIDE this shell; it is precisely what the host-side
+ *    route above sidesteps, and the reason that route was chosen.
  */
 type PaintOnlyKey =
   | 'colorScheme'
