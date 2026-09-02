@@ -77,9 +77,7 @@ import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
  * IT TRAVELS IN BOTH DIRECTIONS: out on `toc`, back in on `goTo`. That is the point — the host no
  * longer has to flatten a typed target into an ambiguous string to send it anywhere.
  */
-export type ReaderTarget =
-  | { kind: 'href'; href: string }
-  | { kind: 'page'; page: number };
+export type ReaderTarget = { kind: 'href'; href: string } | { kind: 'page'; page: number };
 
 /**
  * >>> WHY `kind` AND NOT `format`. <<<
@@ -237,8 +235,7 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  * that arrives separately has to be correlated with a position that may already have moved.
  */
 export type ReaderPosition =
-  | { kind: 'cfi'; cfi: string | null }
-  | { kind: 'page'; page: number; pageCount: number };
+  { kind: 'cfi'; cfi: string | null } | { kind: 'page'; page: number; pageCount: number };
 
 /**
  * Which section of the book the reader is in, when the format has sections at all.
@@ -414,6 +411,7 @@ export const READER_COMMANDS = {
   applyAppearance: 'applyAppearance',
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
+  setSpokenWordRange: 'setSpokenWordRange',
   paintHighlights: 'paintHighlights',
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
@@ -496,6 +494,20 @@ export type ReaderCommand =
    * reason to interrupt speech if it fails.
    */
   | { type: 'setSpokenRange'; cfi: string | null }
+  /**
+   * Paint or clear a word-level sub-highlight within the sentence last painted by
+   * `setSpokenRange`. `cfi` is that same sentence CFI (`null` clears); `start`/`end` are
+   * character offsets into the sentence's text. Fire-and-forget, same contract as
+   * `setSpokenRange`.
+   *
+   * EPUB-only — PDF entry is expected to document a no-op, same as `setSpokenRange`'s row.
+   *
+   * PROPOSED, NOT YET LANDED ON THE WEBVIEW HALF: this variant compiles here and on the RN
+   * side (readerTextProvider.ts / real+fake providers), but `webview/src/bridge.ts`'s
+   * `CommandArgs` and both entries (`epub.entry.ts`, `pdf.entry.ts`) do not implement it yet
+   * — see WEBVIEW_BRIDGE.md before adding that half.
+   */
+  | { type: 'setSpokenWordRange'; cfi: string | null; start: number; end: number }
   /**
    * Paint the user's saved highlights — the WHOLE set, every time, never a patch.
    *
@@ -702,7 +714,6 @@ function asSelection(value: unknown): ReaderSelection | null {
   return null;
 }
 
-
 /**
  * A `TtsSentence` from an untrusted payload, or null if it is not one.
  *
@@ -888,19 +899,25 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : command.type === 'paintHighlights'
-                ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
-                  // two locator fields explicitly into a flat per-shell shape, so this is exactly as
-                  // safe as `applyAppearance` above. The COLOUR is the one field that came from
-                  // storage rather than from a locator, and JSON.stringify escapes it like any other
-                  // string; nothing here is pasted into the script unquoted.
-                  JSON.stringify(command.highlights)
-                : command.type === 'paintSearchMatch'
-                  ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
-                    // book's text, so this is the payload rule 1 above is actually about — both are
-                    // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
-                    JSON.stringify(command.match)
-                  : '';
+              : command.type === 'setSpokenWordRange'
+                ? // Three arguments, not one object — matches the (cfi, start, end) signature this
+                  // command's method name implies. Every argument still goes through
+                  // JSON.stringify per rule 1 above, numbers included, for one consistent rule
+                  // rather than "strings get escaped, numbers don't."
+                  `${JSON.stringify(command.cfi)}, ${JSON.stringify(command.start)}, ${JSON.stringify(command.end)}`
+                : command.type === 'paintHighlights'
+                  ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                    // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                    // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                    // storage rather than from a locator, and JSON.stringify escapes it like any other
+                    // string; nothing here is pasted into the script unquoted.
+                    JSON.stringify(command.highlights)
+                  : command.type === 'paintSearchMatch'
+                    ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                      // book's text, so this is the payload rule 1 above is actually about — both are
+                      // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                      JSON.stringify(command.match)
+                    : '';
 
   return `(function(){
     try {

@@ -114,3 +114,55 @@ supposed to make that safe is unimplemented (`B6`/`B7`, Download's list). A long
 already-downloaded book will not be interrupted by a revocation today. That's the current accepted
 behaviour, not a guarantee to build on — if `B6` lands, a revocation mid-session becomes possible and
 a TTS session needs to handle the book's key being destroyed underneath it.
+
+---
+
+## 6. `accessibility.tts.highlightMode === 'word'` — engine half done; WebView half is yours
+
+**2026-09-02.** `TTS_PROVIDER.md`'s "Not done as part of step 5, on purpose" paragraph (word-level
+highlighting) is now stale on the Accessibility side and needs your update, not mine — I'm not
+editing your doc directly, per the ownership line in `CLAUDE.md`. Recording the current state here
+instead, so it's written down even before your doc catches up.
+
+**Done, on this side, with tests:** native `tts-progress` is now subscribed
+(`ttsEngine.ts:TTS_EVENTS`), normalized per-platform in `ttsProgress.ts`
+(`normalizeTtsProgressEvent` — iOS `location`/`length`, Android `start`/`end`, both covered by
+`ttsProgress.test.ts`), and dispatched from `useTtsSession.ts`'s `handleTtsProgress`, gated on
+`livePrefs.highlightMode === 'word'` so sentence mode (the default) never touches it
+(`useTtsSession.test.ts` covers both branches). It calls a new `setSpokenWordRange(cfi, start,
+end)` added to the `ReaderTextProvider` interface (`readerTextProvider.ts`) and implemented in
+`realReaderTextProvider.ts` and both `fakeReaderTextProvider.ts` copies, which sends a new
+`setSpokenWordRange` command already wired into `readerBridge.ts` (`ReaderCommand`,
+`READER_COMMANDS`, `buildCommandScript`) — `cfi` is the sentence CFI `setSpokenRange` already
+painted, `start`/`end` are character offsets into that sentence's text.
+
+**Confirmed still missing, all on the WebView half (yours):**
+- `webview/src/bridge.ts`'s `CommandArgs` has no `setSpokenWordRange` entry — right now this is a
+  real `npm run typecheck` failure (`CommandArgsAreExhaustive`/`CommandArgsMatchPayloads`), by
+  design per `CLAUDE.md`'s bridge workflow, not something I'm trying to silence.
+- `epub.entry.ts` has no `setSpokenWordRange` handler — `TFReaderApi<'openEpub'>` is missing the
+  property, another compile error. My best guess at the shape (yours to confirm or override): reuse
+  `highlightSeam.ts`'s `add`/`remove` with the existing `TTS_OWNER` and a new variant (e.g.
+  `'spoken-word'`) so it doesn't collide with the sentence wash `setSpokenRange` already paints, and
+  `epubCfiRange.ts`'s `splitCfiRange`/`expandPointCfi`/`joinCfiRange` look like they'd turn
+  `(sentenceCfi, start, end)` into a word-range CFI by string arithmetic without needing the DOM —
+  but that's a pointer, not a prescription.
+- `pdf.entry.ts` needs the same no-op row `setSpokenRange` already has.
+- `WEBVIEW_BRIDGE.md`'s "Host → WebView" table needs the new row.
+- `npm run reader:build-html` needs a run once the above lands, both HTML artifacts committed.
+
+Not touching any of the four files above, or `TTS_PROVIDER.md`, myself — this section is the full
+handoff.
+
+**Correction to the "done" list above, same day:** the first version of this engine work called
+`setSpokenWordRange` unconditionally from `handleTtsStart`/`clearHighlight`, not gated on
+`highlightMode`. Since the WebView has no handler yet, that meant every TTS sentence start/stop —
+in the default `'sentence'` mode, for every user, today — hit `buildCommandScript`'s `NOT_READY`
+path and surfaced as `ReaderScreen`'s interrupting error banner
+(`accessibilityRole="alert"`/`accessibilityLiveRegion="polite"`, "the one place in this screen
+allowed to interrupt"). Fixed in `useTtsSession.ts`: both call sites now gate on
+`livePrefs.highlightMode === 'word'`, matching `handleTtsProgress`'s existing gate, so the command
+is never sent until there is a WebView handler to receive it. `useTtsSession.test.ts` updated to
+assert zero `setSpokenWordRange` calls in `'sentence'` mode. Flagging this because it's the kind of
+bug a WebView-side implementer would otherwise inherit silently — nothing to act on now that it's
+fixed, but worth knowing it was there.

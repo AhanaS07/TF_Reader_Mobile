@@ -17,11 +17,12 @@
 // Passing it INTO ReaderScreen's own toolbar row is what makes "share one row, preferences
 // rightmost" a layout guarantee instead of two files' pixel math staying in sync by luck.
 
-import { useCallback, useLayoutEffect, useMemo } from 'react';
+import { Fragment, useCallback, useLayoutEffect, useMemo } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { StyleSheet, View } from 'react-native';
 
+import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import type { ReaderPosition } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import {
@@ -67,7 +68,14 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         bookId={bookId}
         initialTarget={initialTarget}
         onRelocated={handleRelocated}
-        toolbarExtra={<DevPreferencesMenu format={format} />}
+        toolbarExtra={
+          <Fragment>
+            <DevPreferencesMenu format={format} />
+            <AccessibilityInfoButton
+              onPress={() => navigation.navigate('BookInfo', { bookId })}
+            />
+          </Fragment>
+        }
       />
     </View>
   );

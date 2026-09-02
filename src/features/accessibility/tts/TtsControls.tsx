@@ -14,7 +14,9 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { announce } from '@/features/reader/a11yAnnounce';
 import { focusOn } from '@/features/reader/a11yFocus';
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
+import { FOCUS_RING_COLOR, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
 import type { TtsSession } from './useTtsSession';
 import { PITCH_LADDER } from './ttsPitch';
 import { RATE_LADDER } from './ttsRate';
@@ -24,17 +26,24 @@ export interface TtsControlsProps {
   session: TtsSession;
 }
 
-const PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios';
-
 // Matches VoicePicker's own FOCUS_ENTRY_DELAY_MS rationale: the Modal's dismiss animation is
 // still running for a moment after `visible` flips to false, so an immediate focus call can be
 // swallowed by the outgoing native layer.
 const FOCUS_RESTORE_DELAY_MS = 300;
 
 export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
+  const { osFontScale } = useAppearanceEnv();
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const voiceButtonRef = useRef<View>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // One key covers every Pressable below (rather than a `useState` per button) so the rate/pitch
+  // chips — built from a `.map()`, where a hook call would break rules-of-hooks — can share it too.
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const focusRingHandlers = (key: string) => ({
+    onFocus: () => setFocusedKey(key),
+    onBlur: () => setFocusedKey((current) => (current === key ? null : current)),
+  });
 
   useEffect(() => {
     return () => {
@@ -65,23 +74,11 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   const isSpeaking = session.status === 'speaking';
   const isPaused = session.status === 'paused';
 
-  const transportLabel = isSpeaking
-    ? PAUSE_RESUME_SUPPORTED
-      ? 'Pause'
-      : 'Stop'
-    : isPaused
-      ? 'Resume'
-      : 'Play';
+  const transportLabel = isSpeaking ? 'Pause' : isPaused ? 'Resume' : 'Play';
 
   const handleTransportPress = (): void => {
     if (isSpeaking) {
-      // Android has no working pause — see the platform note on TtsSessionStatus. Stopping is
-      // the honest equivalent rather than a button that visibly does nothing.
-      if (PAUSE_RESUME_SUPPORTED) {
-        session.pause();
-      } else {
-        session.stop();
-      }
+      session.pause();
       return;
     }
     session.play();
@@ -90,7 +87,11 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   return (
     <View style={styles.container}>
       {session.status === 'error' && session.errorMessage !== null && (
-        <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.error}>
+        <Text
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          style={[styles.error, { fontSize: 13 * osFontScale }]}
+        >
           {session.errorMessage}
         </Text>
       )}
@@ -100,9 +101,10 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           accessibilityRole="button"
           accessibilityLabel={transportLabel}
           onPress={handleTransportPress}
-          style={styles.button}
+          style={[styles.button, focusedKey === 'transport' && styles.focusRing]}
+          {...focusRingHandlers('transport')}
         >
-          <Text style={styles.buttonText}>{transportLabel}</Text>
+          <Text style={[styles.buttonText, { fontSize: 14 * osFontScale }]}>{transportLabel}</Text>
         </Pressable>
 
         <Pressable
@@ -111,9 +113,14 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           accessibilityState={{ disabled: session.status === 'idle' }}
           disabled={session.status === 'idle'}
           onPress={session.stop}
-          style={[styles.button, session.status === 'idle' && styles.buttonDisabled]}
+          style={[
+            styles.button,
+            session.status === 'idle' && styles.buttonDisabled,
+            focusedKey === 'stop' && styles.focusRing,
+          ]}
+          {...focusRingHandlers('stop')}
         >
-          <Text style={styles.buttonText}>Stop</Text>
+          <Text style={[styles.buttonText, { fontSize: 14 * osFontScale }]}>Stop</Text>
         </Pressable>
 
         <Pressable
@@ -124,16 +131,18 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
             session.reloadVoices();
             setVoicePickerOpen(true);
           }}
-          style={styles.button}
+          style={[styles.button, focusedKey === 'voice' && styles.focusRing]}
+          {...focusRingHandlers('voice')}
         >
-          <Text style={styles.buttonText}>Voice</Text>
+          <Text style={[styles.buttonText, { fontSize: 14 * osFontScale }]}>Voice</Text>
         </Pressable>
       </View>
 
-      <Text style={styles.sectionLabel}>Speed</Text>
+      <Text style={[styles.sectionLabel, { fontSize: 12 * osFontScale }]}>Speed</Text>
       <View style={styles.chipRow} testID="tts-speed-row">
         {RATE_LADDER.map((rate) => {
           const selected = session.prefs.rate === rate;
+          const key = `rate-${rate}`;
           return (
             <Pressable
               accessibilityRole="button"
@@ -141,18 +150,32 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
               accessibilityState={{ selected }}
               key={rate}
               onPress={() => session.setRate(rate)}
-              style={[styles.chip, selected && styles.chipSelected]}
+              style={[
+                styles.chip,
+                selected && styles.chipSelected,
+                focusedKey === key && styles.focusRing,
+              ]}
+              {...focusRingHandlers(key)}
             >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{rate}x</Text>
+              <Text
+                style={[
+                  styles.chipText,
+                  selected && styles.chipTextSelected,
+                  { fontSize: 13 * osFontScale },
+                ]}
+              >
+                {rate}x
+              </Text>
             </Pressable>
           );
         })}
       </View>
 
-      <Text style={styles.sectionLabel}>Pitch</Text>
+      <Text style={[styles.sectionLabel, { fontSize: 12 * osFontScale }]}>Pitch</Text>
       <View style={styles.chipRow} testID="tts-pitch-row">
         {PITCH_LADDER.map((pitch) => {
           const selected = session.prefs.pitch === pitch;
+          const key = `pitch-${pitch}`;
           return (
             <Pressable
               accessibilityRole="button"
@@ -160,9 +183,22 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
               accessibilityState={{ selected }}
               key={pitch}
               onPress={() => session.setPitch(pitch)}
-              style={[styles.chip, selected && styles.chipSelected]}
+              style={[
+                styles.chip,
+                selected && styles.chipSelected,
+                focusedKey === key && styles.focusRing,
+              ]}
+              {...focusRingHandlers(key)}
             >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{pitch}x</Text>
+              <Text
+                style={[
+                  styles.chipText,
+                  selected && styles.chipTextSelected,
+                  { fontSize: 13 * osFontScale },
+                ]}
+              >
+                {pitch}x
+              </Text>
             </Pressable>
           );
         })}
@@ -197,7 +233,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  error: { fontSize: 13, color: '#8a1c1c', marginBottom: 8, textAlign: 'center' },
+  error: { color: '#8a1c1c', marginBottom: 8, textAlign: 'center' },
   // `flex: 1` children already divide the row, so `justifyContent` only matters if one ever stops
   // flexing — cheap insurance against a future fourth button that sizes to its content.
   transportRow: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
@@ -207,15 +243,20 @@ const styles = StyleSheet.create({
     // which fits "Resume". This stops a narrower window (split view, a small Android phone) from
     // shrinking them past a tappable target instead of wrapping the text.
     minWidth: 72,
+    minHeight: MIN_TOUCH_TARGET,
     alignItems: 'center',
+    justifyContent: 'center',
     paddingVertical: 12,
     borderRadius: 8,
     backgroundColor: '#f2f2f2',
+    // Reserved at rest, not added only on focus — toggling `borderColor` alone (rather than adding
+    // the border on focus) keeps the box the same size whether or not the ring is showing.
+    borderWidth: FOCUS_RING_WIDTH,
+    borderColor: 'transparent',
   },
   buttonDisabled: { opacity: 0.4 },
-  buttonText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  buttonText: { fontWeight: '600', color: '#111111' },
   sectionLabel: {
-    fontSize: 12,
     color: '#777777',
     marginTop: 10,
     marginBottom: 4,
@@ -226,12 +267,19 @@ const styles = StyleSheet.create({
   // sits under the middle of the one above it rather than hanging off the left edge.
   chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center' },
   chip: {
+    minWidth: MIN_TOUCH_TARGET,
+    minHeight: MIN_TOUCH_TARGET,
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
     backgroundColor: '#f2f2f2',
+    borderWidth: FOCUS_RING_WIDTH,
+    borderColor: 'transparent',
   },
   chipSelected: { backgroundColor: '#111111' },
-  chipText: { fontSize: 13, color: '#111111', fontWeight: '600' },
+  chipText: { color: '#111111', fontWeight: '600' },
   chipTextSelected: { color: '#ffffff' },
+  focusRing: { borderColor: FOCUS_RING_COLOR },
 });
