@@ -40,6 +40,7 @@ import {
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+  renameBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -300,33 +301,29 @@ async function buildAppearanceWithFont(
 }
 
 /**
- * ANNOTATION FAILURES — why the six highlight/bookmark call-sites below carry handlers at all.
+ * ANNOTATION FAILURES — why the seven highlight/bookmark call-sites below carry handlers at all.
  *
  * `readerHighlights.ts` and `readerBookmarks.ts` write local-first: straight to SQLite via the
  * offline store, which enqueues the sync outbox in the same transaction, then nudge a sync. So a
  * write is durable the moment it returns and reaches the backend later on a drain — the edit never
- * depends on the network being up. A rejection here therefore means the LOCAL write failed (a broken
- * SQLite layer), not that the backend was unreachable; there is nothing to fall back to, so the most
- * these handlers can do is make the failure visible instead of silent.
+ * depends on the network being up, and `annotationDurability.test.ts` pins that.
+ *
+ * WHICH MEANS A REJECTION HERE IS A LOCAL-STORE FAILURE, NOT A CONNECTIVITY ONE, and the copy below
+ * says so. There is nothing to fall back to when SQLite itself refuses the write — the most these
+ * handlers can do is make the failure visible instead of silent, and telling the user to check their
+ * connection would send them after the wrong thing.
  *
  * Reads and writes get different answers because the cost is different:
  *
  *   READ  — nothing is lost. The panel stays empty and the next open retries, so a warning is the
  *           right weight; an Alert on every failed open would be unusable.
  *   WRITE — the edit did not persist, and nothing else on screen shows the user that, so it is said
- *           with an Alert.
+ *           with an Alert. That is still the right weight even though the write is local: "saved"
+ *           and "silently not saved" are indistinguishable on screen, which is the whole reason.
  *
  * `Alert.alert` for the same reason the layout notice above uses it: it is this app's idiom for
  * "something changed out from under you", and being native it is announced by a screen reader
  * without any work here.
- *
- * HISTORY / FLAG FOR AHANA: these handlers were added on 2026-08-28 for a short-lived
- * online-vs-offline router (`annotationsRouter.ts`) whose online branch POSTed to Mongo WITHOUT
- * touching SQLite, so a write to an unreachable backend vanished with no local row. That router has
- * been reverted and the local-first path restored, so the network-loss case they were built for can
- * no longer happen — they are kept only as defensive UI for a genuine local-write failure. Worth a
- * look on whether the WRITE Alert is still warranted. `annotationDurability.test.ts` now pins the
- * restored guarantee; the containment below has its own cases in `ReaderScreen.test.tsx`.
  */
 function warnAnnotationReadFailed(what: 'highlights' | 'bookmarks', cause: unknown): void {
   console.warn(`ReaderScreen: could not load ${what}`, cause);
@@ -1290,7 +1287,7 @@ export function ReaderScreen({
           // there is nothing left on screen to show the user what they lost.
           alertAnnotationWriteFailed(
             'Highlight not saved',
-            'This highlight could not be saved and has not been kept. Check your connection and try again.',
+            'This highlight could not be saved to this device and has not been kept.',
             cause,
           );
         });
@@ -1317,7 +1314,7 @@ export function ReaderScreen({
           // and it did not.
           alertAnnotationWriteFailed(
             'Highlight not deleted',
-            'This highlight could not be removed and is still saved. Check your connection and try again.',
+            'This highlight could not be removed from this device and is still saved.',
             cause,
           );
         }),
@@ -1568,7 +1565,7 @@ export function ReaderScreen({
         .catch((cause: unknown) => {
           alertAnnotationWriteFailed(
             'Bookmark not saved',
-            'This bookmark could not be saved and has not been kept. Check your connection and try again.',
+            'This bookmark could not be saved to this device and has not been kept.',
             cause,
           );
         });
@@ -1587,7 +1584,7 @@ export function ReaderScreen({
         .catch((cause: unknown) => {
           alertAnnotationWriteFailed(
             'Bookmark not deleted',
-            'This bookmark could not be removed and is still saved. Check your connection and try again.',
+            'This bookmark could not be removed from this device and is still saved.',
             cause,
           );
         });
@@ -1596,41 +1593,31 @@ export function ReaderScreen({
   );
 
   /**
-   * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
-   * own `bookmarkStore`/`readerBookmarks.ts` and are expected to add a proper update-in-place op there
-   * later. This function exists so the UI can demonstrate renaming NOW, without Reader adding write
-   * capability to a store it does not own — replace the body with a single call to their update op
-   * once it ships, and delete this note.
+   * CALL-SITE 4: rename an existing bookmark in place. One write and one sync-outbox entry, and the
+   * id and `target` are untouched — only the name changes, so the row keeps its place in the panel
+   * and `isCurrentPositionBookmarked` below keeps matching it.
    *
-   * WHY NOT JUST ADD THE UPDATE OP HERE: `readerBookmarks.ts` is deliberately create-and-delete-only
-   * — see `removeBookmark`'s own note — because that is what lets a plain last-write-wins field
-   * (`updatedAt`) behave as a UNION across devices rather than a real merge. Whether an in-place
-   * rename can be added without breaking that guarantee is a sync-model decision, not a UI one, so it
-   * needs Personalization/Sync's sign-off rather than Reader guessing at it — outside Reader's
-   * ownership per CLAUDE.md.
+   * TAKES AN ID, NOT THE WHOLE BOOKMARK. The panel used to hand over `bookmark.target` because this
+   * function had to re-create the row at the same place; it does not any more.
    *
-   * THE WORKAROUND, until then: compose the two calls Reader already has — create a new bookmark at
-   * the SAME target (so it appears in the same place) under the new name, then delete the old id. The
-   * new row gets a fresh id, which is invisible to the panel — it re-renders from whatever
-   * `readerBookmarks.ts` reports as the current authoritative set either way. This is NOT what the
-   * real fix should look like on the wire (it is two writes and two sync-outbox entries for what is
-   * conceptually one edit); it is what proves the feature works while the real op is pending.
-   *
-   * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
-   * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
+   * `name ?? ''` is the cleared-field case: `labelFor` (`readerBookmarks.ts`) treats an empty name as
+   * absent and falls through to the chapter id, then to "Page N"/"Bookmark" — which is exactly what
+   * the panel means by passing `undefined`. The facade's `name` is a required `string`, so the
+   * conversion happens here rather than widening Personalization's signature for one caller.
    */
-  const renameBookmark = useCallback(
-    (bookmark: ReaderBookmark, name?: string): void => {
-      const add =
-        bookmark.target.kind === 'page'
-          ? addCurrentPdfBookmark(bookId, bookmark.target.page, name)
-          : addCurrentEpubBookmark(bookId, bookmark.target.href, undefined, name);
-
-      void add
-        .then(() => removeBookmark(bookId, bookmark.id))
+  const submitBookmarkRename = useCallback(
+    (id: string, name?: string): void => {
+      void renameBookmark(bookId, id, name ?? '')
         .then(({ bookmarks: fresh, skippedIds }) => {
           setBookmarks(fresh);
           setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not renamed',
+            'This bookmark could not be renamed on this device and is still saved under its old name.',
+            cause,
+          );
         });
     },
     [bookId],
@@ -1835,28 +1822,21 @@ export function ReaderScreen({
   const isBusy = htmlUri === null || (!isRendered && error === null);
 
   /**
-   * `bookmarks`, narrowed to the ones that could even BELONG to the book currently open — a PARTIAL
-   * mitigation for a real defect, not the fix, and that distinction matters enough to spell out.
+   * `bookmarks`, narrowed to the target kinds the open format can actually navigate to.
    *
-   * THE DEFECT: `bookmarkStore.add()` (Sync's, `src/features/sync/stores/bookmarkStore.ts`) stamps
-   * every bookmark with the single hardcoded `BOOK_ID` from `syncConfig.ts`, not the id of whichever
-   * book was actually open when it was created — and `bookmarkStore.list()` filters by that same
-   * singleton. So `loadBookmarks()` returns every bookmark ever created, for every book, always; the
-   * per-book identity this screen would need to filter on correctly does not exist anywhere in the
-   * data it gets back. Fixing that means threading a real `bookId` through `bookmarkStore.ts` AND
-   * `readerBookmarks.ts` (Personalization's) — both outside Reader's ownership per CLAUDE.md, and
-   * deliberately NOT done here; see `READER_BOOKMARKS_WIRING.md`'s open items for the real fix.
+   * REDUNDANT FOR CORRECTNESS, and kept on purpose. `loadBookmarks(bookId)` is scoped to the open
+   * book (`readerBookmarks.ts` passes `bookId` through to `bookmarkStore.list`), and a book has one
+   * format, so every row that reaches here already matches — an AUDIO locator cannot slip through
+   * either, `toReaderBookmarks` sets those aside as `skippedIds` rather than emitting a target.
    *
-   * THE MITIGATION: `target.kind` DOES distinguish EPUB (`'href'`) from PDF (`'page'`) addressing, and
-   * that much Reader already knows for certain from `format` — a PDF book can never navigate to an
-   * href, an EPUB can never navigate to a bare page number, so a bookmark of the wrong kind for the
-   * open book is provably not reachable here regardless of which book it actually belongs to. This
-   * catches the two-book split the dev fixtures already exercise (`DEV_FIXTURES`: two EPUB ids, two
-   * PDF ids) — opening the PDF sample no longer lists the EPUB sample's bookmarks, or vice versa.
+   * What it still buys is a guard on the seam Reader does not own: both store methods default
+   * `bookId` to the single `BOOK_ID` constant in `syncConfig.ts`, so a call-site that stops passing
+   * it silently goes back to serving every book's bookmarks. That regression is invisible from this
+   * file, and this filter catches its cross-format half at the point of use — for the price of one
+   * `Array.filter` over a list the user is looking at.
    *
-   * WHAT THIS DOES NOT FIX: two books of the SAME format (e.g. the bundled sample EPUB and the "Big"
-   * EPUB fixture) still see each other's bookmarks — `target.kind` cannot tell them apart, and nothing
-   * else in the returned data can either. That case needs the real per-book fix above.
+   * Same-format cross-book leakage is what it CANNOT catch, which is why this is a guard and not a
+   * substitute for the scoping.
    */
   const bookmarksForOpenBook = useMemo(() => {
     if (format === null) return bookmarks;
@@ -1874,10 +1854,9 @@ export function ReaderScreen({
    * precise spot that was bookmarked, not "somewhere in this pagination" — the same "exactness over a
    * comforting approximation" the search hints elsewhere in this file already commit to.
    *
-   * Reads `bookmarksForOpenBook`, not raw `bookmarks` — same reasoning as the panel list: a same-format
-   * bookmark from a DIFFERENT book landing on the identical CFI/page would otherwise light this up for
-   * the wrong book, and while `target.kind` can't fully solve that (see the note above), there is no
-   * reason to skip the filter it CAN apply here just because the panel already applies it too.
+   * Reads `bookmarksForOpenBook`, not raw `bookmarks`, so the badge and the panel list can never
+   * disagree about which bookmarks belong to the open book — see that memo's own note for why the
+   * filter is kept now that scoping makes it redundant.
    *
    * `useMemo`, not state-in-an-effect: this is a pure function of `bookmarksForOpenBook` and
    * `position`, both of which are already reactive state — nothing here has a side effect to push
@@ -2418,7 +2397,7 @@ export function ReaderScreen({
             skippedBookmarkCount={skippedBookmarkCount}
             onSelect={selectBookmark}
             onDelete={deleteBookmark}
-            onRename={renameBookmark}
+            onRename={submitBookmarkRename}
             onAddCurrent={addCurrentBookmark}
             canAddCurrent={canAddCurrentBookmark}
             onClose={() => {

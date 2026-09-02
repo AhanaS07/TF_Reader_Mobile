@@ -9,7 +9,7 @@ applies half here is a panel UI, not a bridge change.
 
 ## What is built (writes half — `readerBookmarks.ts`)
 
-A pure mapper plus the three call-sites, unit-tested (`readerBookmarks.test.ts`, 10 cases):
+A pure mapper plus the four call-sites, unit-tested (`readerBookmarks.test.ts`):
 
 | Export | Role |
 | ------ | ---- |
@@ -51,17 +51,18 @@ matching `SearchPanel.tsx`'s split) plus the wiring in `ReaderScreen.tsx`:
    to `addCurrentEpubBookmark`'s/`addCurrentPdfBookmark`'s existing `name` parameter. Blank stays
    `undefined`, so `labelFor`'s own fallback (chapter id, or "Bookmark"/"Page N") still applies rather
    than this panel inventing a second empty-label convention.
-6. **Rename an existing bookmark** — UI landed 2026-08-24. **The real update-in-place op now exists
-   (2026-08-26): `renameBookmark(bookId, id, name)` in `readerBookmarks.ts`** (call-site 4 above),
-   backed by `bookmarkStore.rename(id, name)`. It is one write and one outbox entry, and keeps the id
-   and `target` — only `name` changes. This **replaces** `ReaderScreen.renameBookmark`'s
-   delete-and-recreate stand-in: **Ahana should swap that body to a single `renameBookmark(...)` call**
-   (`BookmarksPanel.tsx`'s `onRename` prop is unchanged — only what `ReaderScreen` does behind it).
-   - The stand-in was create+delete (a new id at the same `target`, then tombstone the old), which kept
-     plain-LWW-as-union trivially because every create has a unique id. The real op is a **same-id
-     UPDATE**, which is safe for the union guarantee EXCEPT the one delete-vs-rename race — see the
-     "real rename op" open item below; that resolution is Karthik's engine call, and the local halves
-     (our facade + his `rename` store method) are already flagged for his confirmation.
+6. **Rename an existing bookmark — DONE, end to end (Reader side swapped 2026-09-02, Ahana).**
+   `renameBookmark(bookId, id, name)` in `readerBookmarks.ts` (call-site 4 above), backed by
+   `bookmarkStore.rename(id, name)`: one write, one outbox entry, id and `target` untouched, only
+   `name` changes. `ReaderScreen`'s delete-and-recreate stand-in is gone — `submitBookmarkRename`
+   there is now a single call to this op. `BookmarksPanel`'s `onRename` narrowed to
+   `(id: string, name?: string)` in the same change, since the whole bookmark was only ever passed so
+   the stand-in could re-create the row at the same `target`.
+   - A cleared name field reaches this op as `''` rather than `undefined` (the signature takes a
+     required `string`); `labelFor` reads an empty name as absent, so the row falls back to its
+     chapter id / positional label exactly as a never-named one does.
+   - The delete-vs-rename race a same-id UPDATE reintroduces is closed engine-side — see the
+     "Real rename op" resolved item below.
 7. **The bookmarked-page badge — PURELY VISUAL, not a control.** `isCurrentPositionBookmarked` (a
    `useMemo` over `bookmarks` and `position`, no store read of its own) drives a small corner badge
    over the viewer, the way Word marks a bookmarked location with an icon rather than a button. It does
@@ -87,13 +88,13 @@ matching `SearchPanel.tsx`'s split) plus the wiring in `ReaderScreen.tsx`:
      `pointerEvents="none"` — the accepted tradeoff is a finger tap landing exactly on this 30x30
      corner being swallowed rather than reaching a swipe gesture underneath it, negligible given the
      badge's size and inset placement, and harmless either way since a plain tap still does nothing.
-8. **Cross-book filtering — PARTIAL, on the honest half of the underlying defect.** See the new "Open
-   item" below: `bookmarkStore.list()` returns every bookmark for every book, always, because
-   `bookmarkStore.add()` stamps every row with the single hardcoded `BOOK_ID`. Reader cannot fix that
-   from its own files, but `bookmarksForOpenBook` (`ReaderScreen.tsx`) filters what it CAN prove:
-   `target.kind` (`'href'` vs `'page'`) can't apply to the wrong format, so an EPUB never lists a PDF's
-   bookmarks and vice versa. Two books of the SAME format still see each other's — nothing in the
-   returned data distinguishes them.
+8. **Cross-book filtering — the real per-book scoping does it now; Reader's format filter is a
+   guard.** Every call above is scoped to `bookId`, so the panel receives only the open book's rows
+   and `bookmarksForOpenBook` (`ReaderScreen.tsx`) has nothing left to exclude. It was kept anyway
+   (recommented 2026-09-02): both store methods still DEFAULT `bookId` to the single `BOOK_ID`
+   constant in `syncConfig.ts`, so a call-site that stops passing it silently goes back to serving
+   every book — and `target.kind` catches the cross-format half of that at the point of use, for the
+   price of one `Array.filter`. Same-format cross-book leakage is what it cannot catch, then as now.
 
 Mutual exclusion with Contents/Search/TTS (all four panels close each other) and swipe-to-turn-page
 are both gated on `showBookmarks` the same way the other three panels already were. Covered by
