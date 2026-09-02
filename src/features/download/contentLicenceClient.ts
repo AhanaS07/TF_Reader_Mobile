@@ -60,12 +60,27 @@ export async function fetchContentLicence(bookId: BookId): Promise<ContentLicenc
 }
 
 /**
- * `encryptedFileUrl` is an ABSOLUTE url the backend chose, and the mock backend always emits
- * `http://localhost:4000/...` for it. "localhost" is resolved by whoever fetches it — on a
- * physical device or a simulator that isn't the machine running the mock backend, that's the
- * DEVICE, and the fetch fails. config.ts already went to the trouble of resolving a LAN-reachable
- * host for `API_BASE_URL` (the content-licence request that produced this url succeeded via it),
- * so reuse that host here: same path and query, the host/port that actually answered.
+ * `encryptedFileUrl` is an ABSOLUTE url the backend chose, and it always carries whatever host the
+ * backend's OWN config names for the service that actually stores the bytes — `localhost` for a
+ * local mock/MinIO, a real host in front of B2 in production. "localhost" is resolved by whoever
+ * fetches it — on a physical device or an emulator that isn't the machine running that service,
+ * that's the DEVICE, and the fetch fails. config.ts already went to the trouble of resolving a
+ * LAN-reachable host for `API_BASE_URL` (the content-licence/reading-session request that produced
+ * this url succeeded via it), so reuse that HOST here.
+ *
+ * THE HOST AND PROTOCOL, BUT NEVER THE PORT — this used to copy `base.port` too, back when the
+ * mock backend served both the API and its mock asset files from the same port (4000), so copying
+ * it was an unobservable no-op. It no longer is: the real backend's API is on :8080, but a signed
+ * asset URL points at MinIO/S3 on a completely different port (:9000). Copying the API's port
+ * turned a valid presigned MinIO url into a request AT THE BACKEND ITSELF for a path it has no
+ * route for, which Spring Security correctly, and unhelpfully, answers with 401 UNAUTHENTICATED
+ * rather than 404 — confirmed live, 2026-09-02: `ASSET_FETCH_FAILED: encrypted asset fetch
+ * responded 401`, and the backend's own log for the same request names the giveaway path —
+ * `/test-books/static/mock-content/...` — the S3 object key, arriving at the API server that has
+ * never heard of it. A presigned URL's signature also covers its own host and port, so rewriting
+ * either would invalidate it even if the backend did have a matching route. The protocol still
+ * follows `API_BASE_URL`'s, deliberately — an https override (a tunnel/proxy) must not leave the
+ * asset fetch stranded on http.
  *
  * Any other host is left completely alone — a real CDN url must not be rewritten.
  */
@@ -83,12 +98,11 @@ export function reachableAssetUrl(url: string): string {
   if (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
     return url;
   }
-  if (base.hostname === parsed.hostname && base.port === parsed.port) {
+  if (base.hostname === parsed.hostname) {
     return url; // API_BASE_URL is itself localhost (e.g. a simulator on the dev machine) — no-op.
   }
   parsed.protocol = base.protocol;
   parsed.hostname = base.hostname;
-  parsed.port = base.port;
   return parsed.toString();
 }
 
