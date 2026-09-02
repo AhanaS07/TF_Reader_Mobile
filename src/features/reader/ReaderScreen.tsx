@@ -37,6 +37,7 @@ import {
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+  renameBookmark as renameBookmarkPref,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -1478,41 +1479,33 @@ export function ReaderScreen({
   );
 
   /**
-   * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
-   * own `bookmarkStore`/`readerBookmarks.ts` and are expected to add a proper update-in-place op there
-   * later. This function exists so the UI can demonstrate renaming NOW, without Reader adding write
-   * capability to a store it does not own — replace the body with a single call to their update op
-   * once it ships, and delete this note.
+   * CALL-SITE 4: rename an existing bookmark in place, by stored id. Re-renders from the returned
+   * fresh set.
    *
-   * WHY NOT JUST ADD THE UPDATE OP HERE: `readerBookmarks.ts` is deliberately create-and-delete-only
-   * — see `removeBookmark`'s own note — because that is what lets a plain last-write-wins field
-   * (`updatedAt`) behave as a UNION across devices rather than a real merge. Whether an in-place
-   * rename can be added without breaking that guarantee is a sync-model decision, not a UI one, so it
-   * needs Personalization/Sync's sign-off rather than Reader guessing at it — outside Reader's
-   * ownership per CLAUDE.md.
+   * A single call to `readerBookmarks.ts`'s real update-in-place op — one write, one outbox entry,
+   * id and target untouched. This REPLACES the earlier add-at-same-target-then-delete stand-in,
+   * which could not work once `bookmarkStore.add` dedups on locator: re-adding at the bookmark's own
+   * position returned the EXISTING row unchanged (the new name silently dropped), and the follow-up
+   * delete then removed it — so "Save" deleted the bookmark instead of renaming it. The real op has
+   * shipped, so this is the swap that note asked for.
    *
-   * THE WORKAROUND, until then: compose the two calls Reader already has — create a new bookmark at
-   * the SAME target (so it appears in the same place) under the new name, then delete the old id. The
-   * new row gets a fresh id, which is invisible to the panel — it re-renders from whatever
-   * `readerBookmarks.ts` reports as the current authoritative set either way. This is NOT what the
-   * real fix should look like on the wire (it is two writes and two sync-outbox entries for what is
-   * conceptually one edit); it is what proves the feature works while the real op is pending.
-   *
-   * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
-   * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
+   * `name ?? ''` for a field cleared back to blank: an empty name falls through to `labelFor`'s own
+   * fallback (chapter id, or "Bookmark"/"Page N"), matching `onAddCurrent`'s convention rather than
+   * storing an empty string.
    */
   const renameBookmark = useCallback(
     (bookmark: ReaderBookmark, name?: string): void => {
-      const add =
-        bookmark.target.kind === 'page'
-          ? addCurrentPdfBookmark(bookId, bookmark.target.page, name)
-          : addCurrentEpubBookmark(bookId, bookmark.target.href, undefined, name);
-
-      void add
-        .then(() => removeBookmark(bookId, bookmark.id))
+      void renameBookmarkPref(bookId, bookmark.id, name ?? '')
         .then(({ bookmarks: fresh, skippedIds }) => {
           setBookmarks(fresh);
           setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not renamed',
+            'This bookmark could not be renamed. Check your connection and try again.',
+            cause,
+          );
         });
     },
     [bookId],
