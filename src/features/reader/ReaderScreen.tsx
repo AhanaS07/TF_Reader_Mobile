@@ -40,7 +40,9 @@ import {
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+
   renameBookmark,
+
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -1592,7 +1594,7 @@ export function ReaderScreen({
     [bookId],
   );
 
-  /**
+    /**
    * CALL-SITE 4: rename an existing bookmark in place. One write and one sync-outbox entry, and the
    * id and `target` are untouched — only the name changes, so the row keeps its place in the panel
    * and `isCurrentPositionBookmarked` below keeps matching it.
