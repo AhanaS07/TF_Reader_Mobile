@@ -43,11 +43,13 @@ jest.mock('../../DevPreferencesMenu', () => ({
 }));
 
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
-function renderReaderRoute(bookId: string) {
+function renderReaderRoute(bookId: string, initialTarget?: unknown) {
   return render(
     <ReaderRouteScreen
       navigation={{ setOptions: jest.fn() } as never}
-      route={{ key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB' } } as never}
+      route={
+        { key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB', initialTarget } } as never
+      }
     />,
   );
 }
@@ -70,6 +72,17 @@ describe('ReaderRouteScreen', () => {
     expect(mockReceivedProps[0]).toEqual({
       bookId: 'dev-sample-epub-resume',
       initialTarget: { kind: 'page', page: 5 },
+    });
+  });
+
+  it('prefers a route-supplied initial target over a recorded session position', async () => {
+    setSessionPosition('dev-sample-epub-bookmark', { kind: 'page', page: 5, pageCount: 20 });
+
+    await renderReaderRoute('dev-sample-epub-bookmark', { kind: 'href', href: 'epubcfi(/6/10)' });
+
+    expect(mockReceivedProps[0]).toEqual({
+      bookId: 'dev-sample-epub-bookmark',
+      initialTarget: { kind: 'href', href: 'epubcfi(/6/10)' },
     });
   });
 

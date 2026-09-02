@@ -144,6 +144,39 @@ describe('appearanceChangeAnnouncement', () => {
     expect(appearanceChangeAnnouncement(appearance(), appearance(change), quiet)).toBe(expected);
   });
 
+  it('names the dyslexia setting, not the face it happens to install', () => {
+    // >>> THIS PINS AN ORDERING THAT IS NOW LOAD-BEARING. <<< ReaderScreen's `withDyslexiaFont`
+    // applies the preference by overwriting `fontFamily` and `customFontUri` host-side, so ONE tap
+    // moves three fields at once. `dyslexiaFont` is checked before `fontFamily` in the cascade, and
+    // that is what makes the reader hear the setting they changed rather than the mechanism behind
+    // it. Reordering the two would announce "Font: OpenDyslexic" for a control labelled
+    // "Dyslexia Font", which is a different thing said about a tap the user did not make.
+    const said = appearanceChangeAnnouncement(
+      appearance(),
+      appearance({
+        dyslexiaFont: true,
+        fontFamily: 'OpenDyslexic',
+        customFontUri: 'data:font/ttf;base64,RFlTTA==',
+      }),
+      quiet,
+    );
+
+    expect(said).toBe('Dyslexia-friendly font on');
+  });
+
+  it('names high contrast, not the three colours it overrides', () => {
+    // Same shape as the dyslexia case: `withHighContrast` rewrites fg/bg/link host-side, so the
+    // boolean and the palette move together. `colorScheme` is checked first and does NOT move here
+    // — high contrast is deliberately independent of it — so the flag is what gets named.
+    const said = appearanceChangeAnnouncement(
+      appearance(),
+      appearance({ highContrast: true, fg: '#000000', bg: '#FFFFFF', link: '#0000EE' }),
+      quiet,
+    );
+
+    expect(said).toBe('High contrast on');
+  });
+
   it('names one field, not every derived one, when a single tap moves several', () => {
     // Changing size from a menu also moves the resolved line height. Reading out every field
     // that shifted turns one tap into a paragraph.

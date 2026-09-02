@@ -108,12 +108,12 @@ export const bookmarkStore = {
    * dedup guard like `add`'s is needed - the locator does not change, so a rename can never create a
    * second row at a position.
    *
-   * NOTE (Sync ownership - Karthik): this store method is the local half. Adding an update-in-place op
-   * reintroduces the delete-vs-edit race the create+delete-only model avoided; the CROSS-DEVICE
-   * resolution (should a late rename resurrect a deleted bookmark, or do deletes win?) is an engine
-   * decision in `applyServerRecord` (currently uniform whole-row LWW, no `is_deleted` guard), not
-   * something this method can settle. Recommended: deletes win (sticky `is_deleted`); rename-vs-rename
-   * stays plain LWW. Flagged for confirmation - see READER_BOOKMARKS_WIRING.md's rename open item.
+   * NOTE (Sync ownership - Karthik): this store method is the local half. The delete-vs-edit race an
+   * update-in-place op reintroduces is settled engine-side and is NOT this method's to re-decide:
+   * `applyServerRecord` (`syncableTable.ts`) makes deletes sticky regardless of timestamp, so a late
+   * rename cannot resurrect a bookmark another device deleted, and rename-vs-rename stays plain LWW
+   * (later name wins). Pinned by `syncableTable.test.ts` and this file's "delete-vs-rename
+   * (cross-device)" block.
    */
   async rename(id: string, name: string): Promise<BookmarkRow | null> {
     const existing = await bookmarkTable.findById(id);

@@ -752,6 +752,16 @@ async function renderCurrent(pageNumber: number): Promise<void> {
   const spreading = shouldRenderSpread(spreadPref, box.width);
   const pages = spreadPages(pageNumber, pageCount, spreading);
 
+  // SET EAGERLY, BEFORE THE AWAITS BELOW — not just where it used to live, at the end once the
+  // render actually finished. `window.resize`'s handler reads `currentPage` to decide what to
+  // re-render (`renderCurrentGuarded(currentPage)`); if a resize fires while THIS render is still
+  // in flight and `currentPage` still held the page from before this call, the resize's own render
+  // would target the stale page and — sharing the same `renderToken` guard below — win the race
+  // against this one purely by being issued later, silently reverting a just-requested navigation.
+  // Updating it now means a mid-flight resize re-renders the SAME page this call already intends,
+  // which is redundant but never wrong.
+  currentPage = pages[0];
+
   const token = ++renderToken;
   const pageProxies = await Promise.all(pages.map((p) => doc.getPage(p)));
   if (token !== renderToken) return;
@@ -843,7 +853,7 @@ async function renderCurrent(pageNumber: number): Promise<void> {
       });
   }
 
-  currentPage = pages[0];
+  // `currentPage` is already set (see the top of this function) — not repeated here.
 
   // THE PAGE AND THE PAGE COUNT, which this shell tracked privately for a long time and deliberately
   // did not report: `relocated` was at the payload-size boundary that would have forced the

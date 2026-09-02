@@ -649,6 +649,65 @@ Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than 
   templates **and both entries** now — before the conversion an animation could only have come from
   CSS; a `.ts` entry can add one imperatively.
 
+### The accessibility overrides are resolved HOST-SIDE, and no field was added for them
+
+Landed alongside Accessibility's settings panel. `accessibility.display.highContrast` and
+`accessibility.text.dyslexiaFont` are applied in `ReaderScreen.tsx`'s `buildAppearanceWithFont`,
+beside `a11yFlowOverride` and for the same stated reason — `readerAppearance.ts` resolves prefs into
+primitives and says in as many words that the apply-time meaning of these fields is Reader's.
+
+**What that means for anyone reading a payload off the wire.** Three fields no longer mean quite
+what their names suggest:
+
+| Field | Also carries |
+| --- | --- |
+| `fontFamily` | `'OpenDyslexic'` when `dyslexiaFont` is on and the book is an EPUB — **not** the user's `font.family` |
+| `customFontUri` | the dyslexia face's bytes in that case, in place of the bundled font's |
+| `fg` / `bg` / `link` | the WCAG-AAA pair from `highContrastColors.ts` when `highContrast` is on, in place of `THEME_PALETTES`' |
+
+The booleans still ride along unchanged — the shells and `appearanceChangeAnnouncement` both read
+them — so nothing downstream had to be told about this.
+
+**Why host-side rather than in the shells**, which is the part worth not re-litigating:
+
+- It adds **no `ReaderAppearance` field**, so the nine-step new-field checklist does not apply and
+  neither entry needed a line changed.
+- `fontFamily` and `customFontUri` are already `GeometryKey` in `epubLayoutSignature.ts`, so a
+  dyslexia toggle already moves the layout signature and every painted highlight re-measures for it
+  **for free**. Applying the same preference inside `epub.entry.ts` would have obliged promoting
+  `dyslexiaFont` itself, and then re-measuring twice for one change. That file's classification
+  comment now records this; it stays a `PaintOnlyKey`.
+- The contrast pair reaches the PDF shell too, through the `bg`/`link` it already consumes, with no
+  PDF-side work at all.
+
+**`dyslexiaFont` is gated on `format === 'EPUB'` at the same seam.** The preference is one per user,
+not one per book, so a `true` set while reading an EPUB still arrives on a PDF's payload; pdf.js
+rasterises pages and has no text CSS layer, so honouring it there would buy nothing and cost ~330 KB
+of base64 on the bridge for every preference change.
+
+**`loadDyslexiaFontFaceSrc` has its own try/catch, and that is not defensive padding.** Unlike
+`loadFontFaceSrc`, it can reject. It is awaited inside `buildAppearanceWithFont`, which runs inside
+`applyAppearanceWith`'s single catch — so an escaping reject means **no `applyAppearance` is sent at
+all**, and the book silently loses theme, text size, margins, flow, spread and both announce gates
+for the sake of a font. `ReaderScreen.test.tsx` pins the fallback.
+
+### `reduceMotion` stays unconsumed by both shells, deliberately
+
+Asked for as a `currentReduceMotion` module variable in `pdf.entry.ts`, mirroring `epub.entry.ts`'s
+`currentAppearance`, and **declined** — recorded here rather than left looking overlooked.
+
+There is still no animation anywhere in the reader (see decision #2 above), both scroll paths are
+documented as instant, and `readerTemplate.test.ts` asserts the absence across both templates and
+both entries. A variable holding a value nothing reads is reported by `no-unused-vars`, and
+`npm run lint` runs at `--max-warnings=0`, so it could only exist behind a suppression whose sole
+purpose was keeping dead code alive. It would also break `pdf.entry.ts`'s own pattern: that file
+keeps no whole-appearance object, only `currentBg`/`currentZoom`/`spreadPref`/`wantsScroll`, and
+every one of them is read.
+
+`reduceMotion` is already on the payload and already classified in `epubLayoutSignature.ts`, so the
+first page-turn animation is one line away from honouring it. That obligation is decision #2's, and
+it has not moved.
+
 ## Before you change the bridge
 
 - [ ] Change `readerBridge.ts` and let the compiler find the rest. A new `ReaderMessage` case fails to

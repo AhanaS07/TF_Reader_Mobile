@@ -77,10 +77,10 @@ let the payload split into a second `applyA11y` sibling — one command carries 
 renders with, for all three claimants (Personalization's typography/theme, Reader's `reduceMotion`,
 Accessibility's `announce.pageChanges`).
 
-## Reader accessibility — three rules that are easy to undo by accident
+## Reader accessibility — four rules that are easy to undo by accident
 
 `src/features/reader/READER_ANNOUNCEMENTS.md` is the source of truth for the announcement seam;
-`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Three things in the code
+`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Four things in the code
 look like tidy-ups and are not:
 
 **1. `ReaderWebView`'s container must NOT carry an `accessibilityLabel`.** On Android RN maps it to
@@ -109,6 +109,22 @@ device and neither ducks, and `useTtsSession`'s `autoContinueChapter` turns page
 `announce()` (`a11yAnnounce.ts`) is the shared transport and is deliberately opinion-free; the rules
 and wording are `readerAnnouncements.ts`, which is pure. Search results are **declined**, not
 overlooked — `SearchMatchBar.tsx:50-64` carries the argument.
+
+**4. Accessibility's two applied overrides are resolved HOST-SIDE, and that is why both are still
+`PaintOnlyKey`.** `highContrast` and `dyslexiaFont` are applied in `ReaderScreen.tsx`'s
+`buildAppearanceWithFont`, beside `a11yFlowOverride` — the dyslexia face lands as
+`fontFamily`/`customFontUri`, the contrast pair as `fg`/`bg`/`link`. Both target keys are ALREADY
+`GeometryKey`, so a toggle moves the layout signature and every painted highlight re-measures for
+free, with no shell change and no new `ReaderAppearance` field. Wiring either one into
+`appearanceCssOptions()` instead would oblige promoting its own key in `epubLayoutSignature.ts` and
+would then re-measure twice for one change. **`dyslexiaFont` is gated on `format === 'EPUB'` at that
+same seam** — the preference is per user, not per book, so a `true` set on an EPUB still arrives on a
+PDF's payload, and pdf.js has no text CSS layer to override.
+`loadDyslexiaFontFaceSrc` **can reject** where `loadFontFaceSrc` cannot, so it carries its own
+try/catch: an escaping reject would abort `buildAppearanceWithFont` inside `applyAppearanceWith`'s
+single catch and send the WebView NO appearance at all — losing theme, text size, margins, flow and
+both announce gates for the sake of a font. `WEBVIEW_BRIDGE.md` has the full account, including why
+`reduceMotion` stays unconsumed by both shells.
 
 **A painted highlight's RECTS live for one layout, and epub.js will not re-measure them for you.**
 marks-pane re-measures only inside `View.reframe()`, which a stylesheet change never reaches — the

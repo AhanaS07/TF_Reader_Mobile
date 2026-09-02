@@ -15,7 +15,9 @@ import {
   loadBookmarks,
   removeBookmark,
   renameBookmark,
+  subscribeToBookmarkChanges,
   toReaderBookmarks,
+  toTarget,
 } from './readerBookmarks';
 
 // A write nudges a sync (pushOnEdit.ts's `pushNow`); mock the engine so it neither hits the real DB
@@ -107,6 +109,25 @@ describe('toReaderBookmarks', () => {
   });
 });
 
+describe('toTarget', () => {
+  // Exported so a caller elsewhere in the app (e.g. a list of bookmarks that isn't Reader's own
+  // panel) can turn a stored Locator into a `goTo` target without re-deriving these three cases.
+  it('maps an EPUB locator to an href target carrying its CFI', () => {
+    expect(toTarget({ type: 'EPUB', cfi: 'epubcfi(/6/4)' })).toEqual({
+      kind: 'href',
+      href: 'epubcfi(/6/4)',
+    });
+  });
+
+  it('maps a PDF locator to a page target', () => {
+    expect(toTarget({ type: 'PDF', page: 7 })).toEqual({ kind: 'page', page: 7 });
+  });
+
+  it('has no target for an AUDIO locator — goTo is bridge-local to the text reader', () => {
+    expect(toTarget({ type: 'AUDIO', positionMs: 872_000 })).toBeNull();
+  });
+});
+
 // --- the host call-sites: list-on-open, add/remove-on-action ------------------
 
 afterEach(() => {
@@ -183,5 +204,19 @@ describe('add / remove call-sites', () => {
     expect(bookmarks[0].label).toBe('New name');
     // A rename is an update-in-place write — one sync nudge, same as add/remove.
     expect(syncEngine.run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('subscribeToBookmarkChanges', () => {
+  it('delegates to bookmarkStore.subscribe — the seam that also hears a pulled change, not just a local edit', () => {
+    const listener = jest.fn();
+    const storeUnsubscribe = jest.fn();
+    const subscribeSpy = jest.spyOn(bookmarkStore, 'subscribe').mockReturnValue(storeUnsubscribe);
+
+    const unsubscribe = subscribeToBookmarkChanges(listener);
+
+    expect(subscribeSpy).toHaveBeenCalledWith(listener);
+    unsubscribe();
+    expect(storeUnsubscribe).toHaveBeenCalledTimes(1);
   });
 });
