@@ -298,14 +298,12 @@ files specifically.
 
 **Two more items, consolidated here rather than left scattered across plan files:**
 
-3. **A `customFontUri` collision, ahead of you wiring in the dyslexia-font override.**
-   `src/features/accessibility/dyslexiaFontLoader.ts` now exists (`loadDyslexiaFontFaceSrc()`,
-   complete and tested) for Handoff B item 1 below. It targets the same `customFontUri`/`fontFamily`
-   fields that Vaishnavi's bundled-font loader already overlays in `buildAppearanceWithFont()`
-   (`ReaderScreen.tsx:190-194`, `loadFontFaceSrc(prefs.font.family)`). When you wire the dyslexia
-   override in, that same call site needs to decide precedence — does `dyslexiaFont === true` win
-   over whatever the bundled-font loader already produced? Not decided anywhere yet; your call, since
-   it's your seam.
+3. **The `customFontUri` collision is decided and implemented — this item is closed.**
+   `ReaderScreen.tsx:215-221` now documents and applies the precedence: `dyslexiaFont === true` WINS
+   OUTRIGHT over `font.family`/`customFontUri`, not a merge, because the two cannot compose (one
+   `@font-face`, one `font-family`). Ahana's call, confirmed 2026-09-03. `readerAnnouncements.ts`
+   already checks `dyslexiaFont` before `fontFamily` for the same ranking, so the announcement wording
+   and the applied precedence agree.
 4. **Handoff B (Dyslexia Font / High Contrast / Reduce Motion) is open whenever you pick it up.**
    Full detail lives in `~/.claude/plans/day-5-accessibility-compressed-whistle.md` — not urgent,
    just flagging its existence here too since a plan file isn't somewhere you'd otherwise look.
