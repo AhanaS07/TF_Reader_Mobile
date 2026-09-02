@@ -146,7 +146,6 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
   addCurrentEpubBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
-  renameBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
 }));
 
 /**
@@ -2266,7 +2265,6 @@ describe('ReaderScreen bookmarks panel', () => {
       .mockReset()
       .mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
-    jest.mocked(renameBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
     // Redundant with the file-level beforeEach, which now resets the whole asset seam and the
     // command log for every test — kept because `bookmarksForOpenBook` (ReaderScreen.tsx) filters
     // the panel's list by `format`, so this block breaks in a particularly confusing way (every
@@ -2486,10 +2484,12 @@ describe('ReaderScreen bookmarks panel', () => {
   });
 
   describe('renaming a bookmark', () => {
+
     // A rename is ONE update-in-place write, not a composed create-then-delete. These tests pin the
     // two things that distinguishes: neither add call-site is touched, and the row keeps its id —
     // which is what lets the panel's ordering and the corner badge survive a rename untouched.
     it('renames in place by id, without touching either add call-site', async () => {
+
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
           bookmark({
@@ -2500,10 +2500,25 @@ describe('ReaderScreen bookmarks panel', () => {
         ],
         skippedIds: [],
       });
-      jest.mocked(renameBookmark).mockResolvedValue({
+      jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
         bookmarks: [
           bookmark({
             id: 'old',
+            label: 'Untitled',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+          bookmark({
+            id: 'new',
+            label: 'Renamed',
+            target: { kind: 'href', href: 'epubcfi(/6/10)' },
+          }),
+        ],
+        skippedIds: [],
+      });
+      jest.mocked(removeBookmark).mockResolvedValue({
+        bookmarks: [
+          bookmark({
+            id: 'new',
             label: 'Renamed',
             target: { kind: 'href', href: 'epubcfi(/6/10)' },
           }),
@@ -2561,9 +2576,16 @@ describe('ReaderScreen bookmarks panel', () => {
         bookmarks: [bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } })],
         skippedIds: [],
       });
-      jest.mocked(renameBookmark).mockResolvedValue({
+      jest.mocked(addCurrentPdfBookmark).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+          bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } }),
+          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+        ],
+        skippedIds: [],
+      });
+      jest.mocked(removeBookmark).mockResolvedValue({
+        bookmarks: [
+          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
         ],
         skippedIds: [],
       });
@@ -2599,16 +2621,20 @@ describe('ReaderScreen bookmarks panel', () => {
       );
       await fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
 
+
       expect(renameBookmark).not.toHaveBeenCalled();
+
       expect(screen.getByText('Original')).toBeTruthy();
       expect(screen.queryByTestId('reader-bookmark-edit-input-a')).toBeNull();
     });
+
 
     it('clearing the field back to blank resets to the fallback label, not a literal empty name', async () => {
       // The panel reports a cleared field as `undefined`; ReaderScreen forwards it as `''`, which
       // `labelFor` (readerBookmarks.ts) reads as absent and replaces with the chapter id or
       // "Bookmark"/"Page N". Passing `undefined` straight through is not an option — the facade's
       // `name` is a required string.
+
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [bookmark({ id: 'a', label: 'Custom name' })],
         skippedIds: [],
@@ -2621,7 +2647,9 @@ describe('ReaderScreen bookmarks panel', () => {
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
 
+
       expect(renameBookmark).toHaveBeenCalledWith('test-book', 'a', '');
+
     });
   });
 
