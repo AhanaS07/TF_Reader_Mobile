@@ -53,7 +53,7 @@ export interface LoadedBookmarks {
  * opens through `goTo`. Not a gap to close in this file; a navigable audio bookmark needs its own
  * seam into AudioPlayerScreen, which is a call for whoever owns that route.
  */
-function toTarget(locator: Locator): ReaderTarget | null {
+export function toTarget(locator: Locator): ReaderTarget | null {
   if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
   if (locator.type === 'PDF') return { kind: 'page', page: locator.page };
   return null;

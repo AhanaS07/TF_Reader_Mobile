@@ -13,6 +13,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAutoSync } from '@/features/sync/useAutoSync';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
+import type { ReaderTarget } from '@/features/reader/readerBridge';
 
 import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 import { BookListScreen } from './BookListScreen';
@@ -24,7 +25,12 @@ export type RootStackParamList = {
   // it's fixture metadata BookListScreen already knows statically (same reasoning as the old
   // DevFixture table in App.tsx), and ReaderRouteScreen needs it before ReaderScreen has resolved
   // anything, to gate DevPreferencesMenu's format-specific sections.
-  Reader: { bookId: BookId; format: ContentFormat };
+  //
+  // `initialTarget` is optional and orthogonal to `sessionProgress`'s own resume mechanism —
+  // ReaderRouteScreen prefers this when a caller supplies it (e.g. tapping a bookmark elsewhere in
+  // the app) and falls back to the session-resume position otherwise. Most callers (BookListScreen)
+  // never pass it.
+  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
   // AUDIO PHASE 3. No `format` param — this route only ever hosts AUDIO, so there's nothing to
   // gate the way ReaderRouteScreen gates DevPreferencesMenu's sections. `title` is fixture
   // metadata BookListScreen already has statically, same reasoning `format` was passed for
