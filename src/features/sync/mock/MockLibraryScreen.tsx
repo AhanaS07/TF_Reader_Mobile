@@ -64,6 +64,14 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
    * downloaded here must still be visible while reading it online. Filtering this list to
    * downloaded books would hide exactly the case this branch is for.
    *
+   * "EVERY ACTIVE bookmark" WAS THE INTENT, NOT "EVERY RECORD" — `api.list` answers with every
+   * document Mongo holds, tombstones included, and this branch used to render all of them
+   * unfiltered. `bookmarkTable.listActive` (the offline branch right below) filters `is_deleted = 0`
+   * in SQL; this branch has to do the equivalent itself, in JS, since a REST list response carries
+   * no such WHERE clause. Confirmed live 2026-09-02: a deleted bookmark named '456' (soft-deleted on
+   * BOTH sides, same `updatedAt` — the delete propagated correctly, this was never a sync conflict)
+   * still showed up here as a tappable row, because nothing after the map ever checked `isDeleted`.
+   *
    * Offline -> `bookmarkTable.listActive`, the durable local copy, filtered to downloaded books -
    * harmless rather than load-bearing, since `pull()` only ever syncs bookmarks for books this
    * device has downloaded in the first place, so a local row for an undownloaded book cannot
@@ -76,7 +84,11 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
     if (online) {
       try {
         const response = await api.list<Record<string, unknown>>('bookmarks', { userId: USER_ID });
-        setBookmarks((response.data ?? []).map((record) => bookmarkMapper.toRow(record)));
+        setBookmarks(
+          (response.data ?? [])
+            .map((record) => bookmarkMapper.toRow(record))
+            .filter((row) => row.is_deleted !== 1),
+        );
         setBookmarkSource('mongo');
         setLoading(false);
         return;

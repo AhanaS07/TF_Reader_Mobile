@@ -3,9 +3,9 @@
 // decrypt-or-stream) BEFORE navigating, then navigates to Reader with a `goTo` target derived from
 // the bookmark's own stored Locator, so Reader lands on that exact position instead of page 1.
 //
-// Forced offline throughout (NetInfo mocked to never report a connection) so `showBookmarked()`
-// takes its local-SQLite branch — the Mongo/online branch is a separate read path with its own
-// concerns and isn't what this file is pinning.
+// Offline throughout by default (NetInfo mocked to never report a connection) so `showBookmarked()`
+// takes its local-SQLite branch. The one online-branch describe below overrides `useConnectivity`
+// directly rather than fighting the NetInfo mock's async resolution — see its own note.
 
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
@@ -14,6 +14,8 @@ import { openBook } from '@/features/download/openBook';
 import { DownloadFailure, DownloadError } from '@/features/download/errors';
 import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { downloadTable } from '@/features/sync/stores/downloadStore';
+import { api } from '@/features/sync/syncApi';
+import { useConnectivity } from '@/features/sync/useConnectivity';
 import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
 
 jest.mock('@react-native-community/netinfo', () => ({
@@ -23,6 +25,11 @@ jest.mock('@react-native-community/netinfo', () => ({
     fetch: jest.fn().mockResolvedValue({ isConnected: false }),
   },
 }));
+
+// Overridden per-test in the online-branch describe below. Mocking the hook directly, rather than
+// only the NetInfo module underneath it, avoids depending on `useConnectivity`'s own async
+// fetch-then-setState timing in every other test in this file that doesn't care about it.
+jest.mock('@/features/sync/useConnectivity', () => ({ useConnectivity: jest.fn(() => false) }));
 
 jest.mock('@/features/download/openBook', () => ({
   openBook: jest.fn().mockResolvedValue(new Uint8Array()),
@@ -196,5 +203,55 @@ describe('MockLibraryScreen — Bookmarked tab', () => {
 
     await waitFor(() => expect(openBook).toHaveBeenCalled());
     expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
+// `api.list('bookmarks', ...)` asks the server for `includeDeleted=true` (syncApi.ts) — the sync
+// engine needs tombstones to propagate deletes locally. This branch used to hand every one of them
+// straight to the FlatList unfiltered, so a bookmark the user had already deleted (soft-deleted
+// identically on both local SQLite and Mongo — never a sync conflict, the delete propagated fine)
+// still rendered as a tappable row. Confirmed live 2026-09-02 against a bookmark named '456'.
+describe('MockLibraryScreen — Bookmarked tab (online, reading straight from Mongo)', () => {
+  beforeEach(() => {
+    jest.mocked(useConnectivity).mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    jest.mocked(useConnectivity).mockReturnValue(false);
+    jest.restoreAllMocks();
+  });
+
+  it('does not render a bookmark the server has soft-deleted', async () => {
+    jest.spyOn(api, 'list').mockResolvedValue({
+      serverTime: '2026-09-02T00:00:00.000Z',
+      data: [
+        {
+          id: 'active-1',
+          userId: 'user-001',
+          bookId: 'book-epub',
+          locator: { type: 'EPUB', cfi: 'epubcfi(/6/4)' },
+          name: 'Still here',
+          createdAt: '2026-09-01T00:00:00.000Z',
+          updatedAt: '2026-09-01T00:00:00.000Z',
+          isDeleted: false,
+        },
+        {
+          id: 'deleted-1',
+          userId: 'user-001',
+          bookId: 'book-epub',
+          locator: { type: 'EPUB', cfi: 'epubcfi(/6/10)' },
+          name: 'Gone',
+          createdAt: '2026-08-01T00:00:00.000Z',
+          updatedAt: '2026-09-01T10:42:45.231Z',
+          isDeleted: true,
+        },
+      ],
+    });
+
+    const { getByText, queryByText } = await renderMockLibrary(jest.fn());
+    fireEvent.press(getByText('Bookmarked'));
+
+    await waitFor(() => expect(getByText('Still here')).toBeTruthy());
+    expect(queryByText('Gone')).toBeNull();
   });
 });

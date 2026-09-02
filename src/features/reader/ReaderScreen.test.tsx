@@ -42,6 +42,7 @@ import {
   loadBookmarks,
   removeBookmark,
   renameBookmark,
+  subscribeToBookmarkChanges,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -147,6 +148,9 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
   addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   renameBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  // Inert by default: real behaviour (re-loading on a pulled change) is covered by its own
+  // describe block below, which overrides this per test.
+  subscribeToBookmarkChanges: jest.fn(() => () => {}),
 }));
 
 /**
@@ -2851,6 +2855,46 @@ describe('ReaderScreen bookmark badge', () => {
 
     expect(screen.queryByText('Page Bookmarked')).toBeNull();
   });
+
+  it('reloads and hides the badge when a pulled change removes the bookmark, with no reopen', async () => {
+    // The gap `bookmarkStore.subscribe`'s own doc names: a delete made on another device, or
+    // directly against the backend, must reach an already-open panel — not wait for this book to
+    // be reopened before the badge catches up.
+    let pulledChangeListener: (() => void) | undefined;
+    jest.mocked(subscribeToBookmarkChanges).mockImplementation((listener) => {
+      pulledChangeListener = listener;
+      return () => {
+        pulledChangeListener = undefined;
+      };
+    });
+
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/10)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+
+    // Simulate a pull that soft-deleted this exact bookmark on another device: the NEXT load
+    // this triggers comes back without it.
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({ bookmarks: [], skippedIds: [] });
+    await act(async () => {
+      pulledChangeListener?.();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    jest.mocked(subscribeToBookmarkChanges).mockReset().mockReturnValue(() => {});
+  });
 });
 
 describe('TTS is driven by the preference, not by a button in the reader', () => {
@@ -4326,7 +4370,7 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     expect(goToCallCount({ kind: 'page', page: 5 })).toBe(3); // flush + two resends
   });
 
-  it('gives up after MAX_INITIAL_TARGET_RESENDS mismatches rather than retrying forever', async () => {
+  it('gives up eventually rather than retrying forever', async () => {
     await render(
       <ReaderScreen bookId="test-book-verify-retry-cap" initialTarget={{ kind: 'page', page: 5 }} />,
     );
@@ -4334,13 +4378,38 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     await reportReady();
     await deliver({ type: 'rendered' });
 
-    // One more mismatch than the retry budget — the last one must not provoke a further resend.
-    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
-    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
-    await deliver({ type: 'relocated', position: { kind: 'page', page: 3, pageCount: 20 } });
-    await deliver({ type: 'relocated', position: { kind: 'page', page: 4, pageCount: 20 } });
+    // Comfortably more mismatches than any reasonable retry budget — deliberately not asserting the
+    // exact cap value here, so this test doesn't need editing every time MAX_INITIAL_TARGET_RESENDS
+    // is retuned. What matters is that it STOPS, not the precise number of attempts it took.
+    for (let page = 1; page <= 20; page++) {
+      await deliver({ type: 'relocated', position: { kind: 'page', page, pageCount: 20 } });
+    }
+    const totalAfterBudgetSpent = goToCallCount({ kind: 'page', page: 5 });
 
-    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(4); // flush + 3 resends, capped
+    // One more mismatch, once the budget is already spent, must not provoke yet another resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 999, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(totalAfterBudgetSpent);
+  });
+
+  it('stops correcting once the reader takes over navigation, rather than fighting a real page turn', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-user-takes-over" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The flush landed wrong once — still well within budget, so this alone would normally resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    const sendsBeforeUserAction = goToCallCount({ kind: 'page', page: 5 });
+
+    // The reader taps Next themselves — a deliberate navigation, not a race to correct.
+    await fireEvent.press(screen.getByRole('button', { name: 'Next page' }));
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+
+    // No further attempt to correct back to page 5 — the reader's own navigation wins.
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeUserAction);
   });
 });
 

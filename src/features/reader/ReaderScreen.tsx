@@ -41,6 +41,7 @@ import {
   loadBookmarks,
   removeBookmark,
   renameBookmark,
+  subscribeToBookmarkChanges,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -132,14 +133,16 @@ const OPEN_TIMEOUT_MS = 20_000;
  * landed somewhere else, before giving up. MORE THAN ONE, DELIBERATELY: there are at least two
  * INDEPENDENT sources of the race this guards against — a resize mid-render, and a geometry-changing
  * `applyAppearance` arriving in the same narrow window and reanchoring to the book's stale start
- * position (Trigger C, `useAppearanceEnv`, can resolve asynchronously shortly after mount). Either
- * alone is rare; both landing wrong IN THE SAME OPEN, one after the other, is rarer but confirmed
- * reachable, and a one-shot retry has nothing left for the second. Small and bounded rather than
- * unbounded: this only ever fires in the volatile open-time window, driven by real WebView events
- * (never a tight loop), and retrying forever would mask a genuinely broken target instead of
- * surfacing it.
+ * position (Trigger C, `useAppearanceEnv`, can resolve asynchronously shortly after mount). On a
+ * slow device or a genuinely bursty resize storm (the transition animation firing several layout
+ * passes, each one a fresh chance to race), TWO is not always enough headroom either — raised from 3
+ * to 8 after on-device reports of the badge landing wrong more often than a 3-attempt budget could
+ * explain. Still bounded, not unbounded: every attempt here is provoked by a REAL WebView event
+ * (never a tight self-driven loop), and it is abandoned the instant the reader takes over navigation
+ * itself (`goTo`/`selectBookmark`/`prev`/`next` all clear `pendingInitialVerifyRef`) — so a generous
+ * budget only ever spends itself racing the open, never fighting a deliberate page turn.
  */
-const MAX_INITIAL_TARGET_RESENDS = 3;
+const MAX_INITIAL_TARGET_RESENDS = 8;
 
 /**
  * Raised only by `withOpenTimeout`. A distinct class rather than a flag on Error so
@@ -1390,7 +1393,18 @@ export function ReaderScreen({
             target.kind === 'page'
               ? message.position.kind === 'page' && message.position.page === target.page
               : message.position.kind === 'cfi' && message.position.cfi === target.href;
+          // Silent unless EXPO_PUBLIC_READER_TIMING=1 (readerTiming.ts) — real device evidence for
+          // whatever keeps landing this wrong, rather than more guessing from a simulator.
+          logEvent('initial-target relocated', {
+            attempt: attempts,
+            landedCorrectly: String(landedCorrectly),
+            requested: target.kind === 'page' ? target.page : target.href,
+            got: message.position.kind === 'page' ? message.position.page : message.position.cfi ?? 'null',
+          });
           if (landedCorrectly || attempts >= MAX_INITIAL_TARGET_RESENDS) {
+            if (!landedCorrectly) {
+              logEvent('initial-target abandoned', { attempts });
+            }
             pendingInitialVerifyRef.current = null;
           } else {
             pendingInitialVerifyRef.current = { target, attempts: attempts + 1 };
@@ -1495,6 +1509,7 @@ export function ReaderScreen({
     pendingSeekRef.current = null;
     setAwaitingSeek(false);
     setShowSearch(false);
+    pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
     send({ type: 'goTo', target });
   }, [send]);
 
@@ -1517,6 +1532,9 @@ export function ReaderScreen({
     if (target === null) return;
     initialTargetRef.current = null;
     pendingInitialVerifyRef.current = { target, attempts: 0 };
+    logEvent('initial-target sent', {
+      target: target.kind === 'page' ? target.page : target.href,
+    });
     send({ type: 'goTo', target });
   }, [isRendered, send]);
 
@@ -1553,6 +1571,10 @@ export function ReaderScreen({
       // row restores focus at its own onPress instead, where "this was the TOC" is actually known.
       closeToc(false);
       setShowBookmarks(false);
+      // A deliberate navigation elsewhere supersedes whatever the initial-target flush was still
+      // trying to correct — see `pendingInitialVerifyRef`'s own doc for why fighting a real user
+      // action to get back to the ORIGINAL target would be wrong, not merely redundant.
+      pendingInitialVerifyRef.current = null;
       send?.({ type: 'goTo', target });
     },
     [closeToc, send],
@@ -1563,27 +1585,45 @@ export function ReaderScreen({
    * `rendered` — matching the resume-target flush effect above, and for the same reason: nothing
    * downstream needs them before there is a page on screen, and `isRendered` only ever goes
    * false -> true once per mount (this component is keyed on `bookId`, see its own prop doc).
+   *
+   * ALSO RE-LOADS on `subscribeToBookmarkChanges` — the gap that store's own doc names: a delete
+   * (or any other edit) that arrives via a PULL, not through this screen's own add/remove/rename,
+   * used to sit unseen in an already-open panel until the book was reopened, because this effect
+   * only ever ran once. A local edit through THIS screen does not need this path — `addCurrentBookmark`
+   * /`deleteBookmark`/`submitBookmarkRename` already update `bookmarks` from their own return value —
+   * but the subscription still fires for those too (`bookmarkStore.subscribe` notifies on every
+   * write, local or pulled) and simply re-runs the same query redundantly; harmless, not a loop,
+   * since a reload cannot itself trigger a further change.
    */
   useEffect(() => {
     if (!isRendered) return;
     let cancelled = false;
-    void loadBookmarks(bookId)
-      .then(({ bookmarks: loaded, skippedIds }) => {
-        if (cancelled) return;
-        setBookmarks(loaded);
-        setSkippedBookmarkCount(skippedIds.length);
-        setBookmarksLoaded(true);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        // `bookmarksLoaded` IS STILL SET. It distinguishes "still reading" from "finished reading"
-        // (see its own note) — not "read successfully". Left false on a failure the panel sits on
-        // its loading state forever, which reads as a hang rather than as an empty list.
-        setBookmarksLoaded(true);
-        warnAnnotationReadFailed('bookmarks', cause);
-      });
+
+    const reload = () => {
+      void loadBookmarks(bookId)
+        .then(({ bookmarks: loaded, skippedIds }) => {
+          if (cancelled) return;
+          setBookmarks(loaded);
+          setSkippedBookmarkCount(skippedIds.length);
+          setBookmarksLoaded(true);
+        })
+        .catch((cause: unknown) => {
+          if (cancelled) return;
+          // `bookmarksLoaded` IS STILL SET. It distinguishes "still reading" from "finished
+          // reading" (see its own note) — not "read successfully". Left false on a failure the
+          // panel sits on its loading state forever, which reads as a hang rather than an empty
+          // list.
+          setBookmarksLoaded(true);
+          warnAnnotationReadFailed('bookmarks', cause);
+        });
+    };
+
+    reload();
+    const unsubscribe = subscribeToBookmarkChanges(reload);
+
     return () => {
       cancelled = true;
+      unsubscribe();
     };
     // bookId: bookmarks are now scoped to the open book (was the global BOOK_ID constant).
   }, [isRendered, bookId]);
@@ -1596,6 +1636,7 @@ export function ReaderScreen({
   const selectBookmark = useCallback(
     (bookmark: ReaderBookmark): void => {
       setShowBookmarks(false);
+      pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
       send?.({ type: 'goTo', target: bookmark.target });
     },
     [send],
@@ -1812,6 +1853,7 @@ export function ReaderScreen({
     }
 
     setPageJump(null);
+    pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
     send?.({ type: 'goTo', target: { kind: 'page', page } });
   }, [pageJump, position, send]);
 
@@ -1856,6 +1898,7 @@ export function ReaderScreen({
 
       setShowSearch(false);
       setShowBookmarks(false);
+      pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
       send({ type: 'goTo', target });
     },
     [closeToc, search, send],
@@ -2555,7 +2598,10 @@ export function ReaderScreen({
             accessibilityLabel="Previous page"
             accessibilityState={{ disabled: prevDisabled }}
             disabled={prevDisabled}
-            onPress={() => send?.({ type: 'prev' })}
+            onPress={() => {
+              pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
+              send?.({ type: 'prev' });
+            }}
             style={[styles.button, prevDisabled && styles.buttonDisabled]}
           >
             <Text style={styles.buttonText}>‹ Prev</Text>
@@ -2642,7 +2688,10 @@ export function ReaderScreen({
             accessibilityLabel="Next page"
             accessibilityState={{ disabled: nextDisabled }}
             disabled={nextDisabled}
-            onPress={() => send?.({ type: 'next' })}
+            onPress={() => {
+              pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
+              send?.({ type: 'next' });
+            }}
             style={[styles.button, nextDisabled && styles.buttonDisabled]}
           >
             <Text style={styles.buttonText}>Next ›</Text>

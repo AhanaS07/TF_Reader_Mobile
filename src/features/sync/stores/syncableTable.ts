@@ -121,6 +121,35 @@ export function createSyncableTable<TRow extends RowShape>(
 ) {
   const { table, entityType, toServer, toRow, mergeFields } = options;
 
+  /**
+   * Live-change notification, ONE PER TABLE (closed over here, not shared across `bookmarks` vs
+   * `highlights` vs ...). Mirrors `prefsStore.subscribe`'s shape and its own documented gap:
+   * that store's header comment says outright "a prefs row pulled by Sync from the server does
+   * not pass through here... if that path ever needs to drive a live re-apply it must notify too
+   * — call it out then rather than assuming this covers it." This is that call-out, for bookmarks:
+   * a delete (or any other edit) that arrives via `pull()`'s `applyServerRecord` now notifies too,
+   * not just a local `saveLocal` edit — so a panel already open on this book can reload instead of
+   * showing a bookmark that was deleted on another device (or directly against the backend) until
+   * the book happens to be reopened. No payload on purpose: every current subscriber (Reader's
+   * bookmarks-panel effect) already re-fetches its own book-scoped list on any signal, and a
+   * generic "something in this table changed" is enough to trigger that — see `bookmarkStore.ts`'s
+   * re-export and `ReaderScreen.tsx`'s subscribing effect for the one call site that needs it today.
+   */
+  const changeListeners = new Set<() => void>();
+
+  function notifyChanged(): void {
+    // A throwing subscriber must not fail the write that already succeeded — same reasoning as
+    // prefsStore.ts's own `notify`. Snapshot first so a listener that unsubscribes mid-notify
+    // does not skip a sibling.
+    for (const listener of [...changeListeners]) {
+      try {
+        listener();
+      } catch {
+        // Swallowed deliberately — one bad subscriber must not take out the others or the caller.
+      }
+    }
+  }
+
   const columnsOf = (row: TRow) => Object.keys(row) as (keyof TRow & string)[];
 
   const upsertSql = (row: TRow) => {
@@ -143,6 +172,19 @@ export function createSyncableTable<TRow extends RowShape>(
 
     /** Set only for a field-merge table - see {@link SyncableTableOptions.mergeFields}. */
     mergeFields,
+
+    /**
+     * Subscribe to this table's changes — a local edit (`saveLocal`) or a pulled server change
+     * that actually applied (`applyServerRecord` returning `true`). See `changeListeners`'s own
+     * doc above for why this exists and what it deliberately does not do (no payload; a listener
+     * that needs to know WHICH row changed re-reads its own scoped list). Returns an unsubscribe.
+     */
+    subscribe(listener: () => void): () => void {
+      changeListeners.add(listener);
+      return () => {
+        changeListeners.delete(listener);
+      };
+    },
 
     /**
      * Rebuilds the wire payload from a row currently on disk - see `push()`'s field-merge path.
@@ -208,6 +250,7 @@ export function createSyncableTable<TRow extends RowShape>(
         // Outside the transaction: this only schedules a future sync attempt, it is not part of
         // the write itself, and must run even if the caller never awaits push draining it.
         requestSync();
+        notifyChanged();
         return stamped;
       };
 
@@ -307,6 +350,7 @@ export function createSyncableTable<TRow extends RowShape>(
         // (keyed on the ORIGINAL op's id) would never find and clean up.
         const { sql, values } = upsertSql(merged.row as unknown as TRow);
         await db.runAsync(sql, values);
+        notifyChanged();
         return true;
       }
 
@@ -331,6 +375,7 @@ export function createSyncableTable<TRow extends RowShape>(
 
       const { sql, values } = upsertSql(mergeLocalColumns(existing, incoming));
       await db.runAsync(sql, values);
+      notifyChanged();
       return true;
     },
 

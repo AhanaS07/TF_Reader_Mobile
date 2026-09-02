@@ -109,6 +109,21 @@ export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
 }
 
 /**
+ * Subscribe to this table changing — a local edit through this facade's own add/remove/rename, OR
+ * (the gap this closes) a PULLED server change, such as a delete made on another device or
+ * directly against the backend. `bookmarkStore.subscribe` (`syncableTable.ts`) notifies on both;
+ * this just re-exports it so Reader does not have to reach past this facade into Sync's store
+ * directly — the same layering `loadBookmarks`/`addCurrentEpubBookmark`/etc. already keep.
+ *
+ * No payload, by design: the listener already knows which book it cares about and re-calls
+ * `loadBookmarks(bookId)` itself — see `ReaderScreen.tsx`'s subscribing effect. Returns an
+ * unsubscribe.
+ */
+export function subscribeToBookmarkChanges(listener: () => void): () => void {
+  return bookmarkStore.subscribe(listener);
+}
+
+/**
  * CALL-SITE 2a — user bookmarks the current EPUB position. Persists via the store (which enqueues the
  * sync outbox in the same transaction — offline-safe) and returns the fresh full set for the panel.
  * `cfi` is the current reading position the reader already reports on `relocated`.

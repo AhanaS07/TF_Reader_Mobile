@@ -15,6 +15,7 @@ import {
   loadBookmarks,
   removeBookmark,
   renameBookmark,
+  subscribeToBookmarkChanges,
   toReaderBookmarks,
   toTarget,
 } from './readerBookmarks';
@@ -203,5 +204,19 @@ describe('add / remove call-sites', () => {
     expect(bookmarks[0].label).toBe('New name');
     // A rename is an update-in-place write — one sync nudge, same as add/remove.
     expect(syncEngine.run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('subscribeToBookmarkChanges', () => {
+  it('delegates to bookmarkStore.subscribe — the seam that also hears a pulled change, not just a local edit', () => {
+    const listener = jest.fn();
+    const storeUnsubscribe = jest.fn();
+    const subscribeSpy = jest.spyOn(bookmarkStore, 'subscribe').mockReturnValue(storeUnsubscribe);
+
+    const unsubscribe = subscribeToBookmarkChanges(listener);
+
+    expect(subscribeSpy).toHaveBeenCalledWith(listener);
+    unsubscribe();
+    expect(storeUnsubscribe).toHaveBeenCalledTimes(1);
   });
 });
