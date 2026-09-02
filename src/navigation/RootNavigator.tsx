@@ -127,15 +127,19 @@ function CatalogueNavigator() {
         component={ShelfScreen}
         options={({ route }) => ({ title: route.params.title })}
       />
+      {/* 'fade', not 'slide_from_bottom' — the sheet's navy backdrop is part of
+          this screen, so a slide animation would translate the backdrop along
+          with the sheet, reading as a dark tint wiping up from the bottom.
+          The sheet still slides up on its own — see its Animated.View. */}
       <CatalogueStack.Screen
         name="SignIn"
         component={SignInScreen}
-        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
       />
       <CatalogueStack.Screen
         name="AccessGate"
         component={AccessGateScreen}
-        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
       />
       <CatalogueStack.Screen
         name="PersonalAccount"
@@ -162,12 +166,12 @@ function SearchNavigator() {
       <SearchStack.Screen
         name="AccessGate"
         component={AccessGateScreen}
-        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
       />
       <SearchStack.Screen
         name="SignIn"
         component={SignInScreen}
-        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
       />
       <SearchStack.Screen
         name="InstitutionList"
@@ -234,7 +238,7 @@ function ProfileNavigator() {
       <ProfileStack.Screen
         name="SignIn"
         component={SignInScreen}
-        options={{ presentation: 'transparentModal', animation: 'slide_from_bottom', headerShown: false }}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
       />
     </ProfileStack.Navigator>
   );

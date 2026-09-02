@@ -2,8 +2,8 @@
 // transparentModal, not BottomSheet — same z-index reason as SignInScreen.
 // Both options are now wired: institution goes to SAML, personal account goes to
 // the email-and-password form. No auth here — navigation and intent only.
-import { useCallback, useEffect, useRef } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AuthMethodCard } from '@components/AuthMethodCard';
 import { OfflineBanner } from '@components/OfflineBanner';
@@ -32,12 +32,21 @@ interface Props {
   };
 }
 
+const WINDOW_HEIGHT = Dimensions.get('window').height;
+
 export default function AccessGateScreen({ route, navigation }: Props) {
   const { itemId, title, authors } = route.params;
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
   const remember = usePendingIntentStore((s) => s.remember);
   const isOnline = useNetworkStatus();
+
+  // The screen itself only fades in (see RootNavigator) — this animates the
+  // sheet sliding up on top of that static backdrop, the way BottomSheet does.
+  const [translateY] = useState(() => new Animated.Value(WINDOW_HEIGHT));
+  useEffect(() => {
+    Animated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+  }, [translateY]);
 
   // Set right before sending the reader to InstitutionList with nothing
   // selected yet; cleared once the effect below fires, or on dismiss. Not
@@ -115,7 +124,10 @@ export default function AccessGateScreen({ route, navigation }: Props) {
       {/* Stop taps on the sheet itself from bubbling up to the dismiss pressable.
           View + onStartShouldSetResponder claims the touch without wrapping children
           in an accessibility container (a Pressable would group them into one unit). */}
-      <View style={styles.sheet} onStartShouldSetResponder={() => true}>
+      <Animated.View
+        style={[styles.sheet, { transform: [{ translateY }] }]}
+        onStartShouldSetResponder={() => true}
+      >
         <View style={styles.handleArea}>
           <View style={styles.handle} />
         </View>
@@ -168,7 +180,7 @@ export default function AccessGateScreen({ route, navigation }: Props) {
             <Text style={styles.laterLabel}>I&apos;ll decide later</Text>
           </Pressable>
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }

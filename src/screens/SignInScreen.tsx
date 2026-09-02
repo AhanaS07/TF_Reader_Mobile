@@ -1,7 +1,7 @@
 // Screen 02 — Sign-in sheet (CAP-3).
 // transparentModal, not BottomSheet — nesting a Modal inside transparentModal causes z-index issues on Android.
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
@@ -18,6 +18,8 @@ import type { CatalogueStackParamList, RootTabParamList } from '../navigation/ty
 
 type Props = NativeStackScreenProps<CatalogueStackParamList, 'SignIn'>;
 
+const WINDOW_HEIGHT = Dimensions.get('window').height;
+
 export default function SignInScreen({ navigation }: Props) {
   // This screen is registered under three different tab stacks (Catalogue,
   // Search, Profile — see RootNavigator), so a successful sign-in with no
@@ -32,6 +34,13 @@ export default function SignInScreen({ navigation }: Props) {
 
   const [submitting, setSubmitting] = useState(false);
   const [signInError, setSignInError] = useState(false);
+
+  // The screen itself only fades in (see RootNavigator) — this animates the
+  // sheet sliding up on top of that static backdrop, the way BottomSheet does.
+  const [translateY] = useState(() => new Animated.Value(WINDOW_HEIGHT));
+  useEffect(() => {
+    Animated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+  }, [translateY]);
 
   const handleDismiss = useCallback(() => {
     if (submitting) return;
@@ -100,7 +109,11 @@ export default function SignInScreen({ navigation }: Props) {
           View + onStartShouldSetResponder claims the touch without wrapping children
           in an accessibility container (a default-accessible Pressable would group
           all children into one unit, hiding inner buttons from assistive technology). */}
-      <View testID="sign-in-sheet" style={styles.sheet} onStartShouldSetResponder={() => true}>
+      <Animated.View
+        testID="sign-in-sheet"
+        style={[styles.sheet, { transform: [{ translateY }] }]}
+        onStartShouldSetResponder={() => true}
+      >
         <View style={styles.handleArea}>
           <View style={styles.handle} />
         </View>
@@ -140,7 +153,7 @@ export default function SignInScreen({ navigation }: Props) {
             <Text style={styles.cancelLabel}>Cancel</Text>
           </Pressable>
         </View>
-      </View>
+      </Animated.View>
       <OfflineBanner visible={!isOnline} />
     </View>
   );
