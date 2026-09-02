@@ -42,6 +42,7 @@ import {
   loadBookmarks,
   removeBookmark,
   renameBookmark,
+  subscribeToBookmarkChanges,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -147,6 +148,9 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
   addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   renameBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  // Inert by default: real behaviour (re-loading on a pulled change) is covered by its own
+  // describe block below, which overrides this per test.
+  subscribeToBookmarkChanges: jest.fn(() => () => {}),
 }));
 
 /**
@@ -2851,6 +2855,46 @@ describe('ReaderScreen bookmark badge', () => {
 
     expect(screen.queryByText('Page Bookmarked')).toBeNull();
   });
+
+  it('reloads and hides the badge when a pulled change removes the bookmark, with no reopen', async () => {
+    // The gap `bookmarkStore.subscribe`'s own doc names: a delete made on another device, or
+    // directly against the backend, must reach an already-open panel — not wait for this book to
+    // be reopened before the badge catches up.
+    let pulledChangeListener: (() => void) | undefined;
+    jest.mocked(subscribeToBookmarkChanges).mockImplementation((listener) => {
+      pulledChangeListener = listener;
+      return () => {
+        pulledChangeListener = undefined;
+      };
+    });
+
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/10)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+
+    // Simulate a pull that soft-deleted this exact bookmark on another device: the NEXT load
+    // this triggers comes back without it.
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({ bookmarks: [], skippedIds: [] });
+    await act(async () => {
+      pulledChangeListener?.();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    jest.mocked(subscribeToBookmarkChanges).mockReset().mockReturnValue(() => {});
+  });
 });
 
 describe('TTS is driven by the preference, not by a button in the reader', () => {
@@ -4265,5 +4309,171 @@ describe('screen-reader announcements', () => {
 
       expect(said()).toEqual([]);
     });
+  });
+});
+
+// Both the PDF shell's `window.resize` handler and epub.js's own `Rendition.onResized` can
+// silently re-navigate over a `goTo` sent in the first moments after `rendered` — the volatile
+// window while the screen's own push-transition is still resizing the WebView's container, or an
+// `applyAppearance` reanchor lands in that same window. This pins the host-side safety net: verify
+// every `relocated` after an `initialTarget` flush against what was requested, and resend — up to
+// `MAX_INITIAL_TARGET_RESENDS` times — if it landed somewhere else. More than one resend matters
+// because those two races are INDEPENDENT and can both land wrong in the same open.
+describe('the initial-target flush verifies and resends on a mismatch', () => {
+  /** How many times `goTo` was sent for this exact target, across the whole test. */
+  function goToCallCount(target: { kind: 'page'; page: number }): number {
+    const script = buildCommandScript({ type: 'goTo', target });
+    return __injectJavaScript.mock.calls.filter(([sent]) => sent === script).length;
+  }
+
+  it('resends when the first relocated lands somewhere else', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-mismatch" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The resize-race case this guards against: the shell reports page 1 instead of the requested 5.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(2); // the original flush, plus one resend
+  });
+
+  it('does not resend when the first relocated already matches', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-match" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(1); // only the original flush
+  });
+
+  it('corrects TWO independent mismatches in the same open, not just one', async () => {
+    // The case a one-shot retry could not cover: a resize race lands wrong, the resend corrects it
+    // to... also wrong (a SEPARATE appearance-reanchor race), and a second resend finally lands right.
+    await render(
+      <ReaderScreen bookId="test-book-verify-two-mismatches" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(3); // flush + two resends
+  });
+
+  it('gives up eventually rather than retrying forever', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-retry-cap" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // Comfortably more mismatches than any reasonable retry budget — deliberately not asserting the
+    // exact cap value here, so this test doesn't need editing every time MAX_INITIAL_TARGET_RESENDS
+    // is retuned. What matters is that it STOPS, not the precise number of attempts it took.
+    for (let page = 1; page <= 20; page++) {
+      await deliver({ type: 'relocated', position: { kind: 'page', page, pageCount: 20 } });
+    }
+    const totalAfterBudgetSpent = goToCallCount({ kind: 'page', page: 5 });
+
+    // One more mismatch, once the budget is already spent, must not provoke yet another resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 999, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(totalAfterBudgetSpent);
+  });
+
+  it('stops correcting once the reader takes over navigation, rather than fighting a real page turn', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-user-takes-over" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The flush landed wrong once — still well within budget, so this alone would normally resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    const sendsBeforeUserAction = goToCallCount({ kind: 'page', page: 5 });
+
+    // The reader taps Next themselves — a deliberate navigation, not a race to correct.
+    await fireEvent.press(screen.getByRole('button', { name: 'Next page' }));
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+
+    // No further attempt to correct back to page 5 — the reader's own navigation wins.
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeUserAction);
+  });
+});
+
+// Neither non-default appearance nor existing highlights had a test combined with `initialTarget`
+// before this — each was proven correct in isolation (appearance ordering in "applyAppearance — the
+// prefs-application wiring", highlight painting in "ReaderScreen highlights"), but never together
+// with a bookmark-style open. This pins that the three don't interfere: a non-default layout is
+// still applied BEFORE the book opens, the initial target still lands, and highlights still paint.
+describe('opening to an initial target with a non-default appearance and existing highlights', () => {
+  const EPUB_HL = {
+    id: 'h1',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+    color: 'yellow',
+  };
+
+  it('applies the non-default layout before open, lands on the target, and paints the highlight', async () => {
+    jest
+      .mocked(prefsStore.getPrefs)
+      .mockResolvedValue(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'double' } }));
+    jest
+      .mocked(loadReaderHighlights)
+      .mockResolvedValue({ highlights: { epub: [EPUB_HL], pdf: [] }, skippedIds: [] });
+
+    await render(
+      <ReaderScreen
+        bookId="test-book-appearance-and-highlights"
+        initialTarget={{ kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' }}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // applyAppearance must be sent, and land, BEFORE openEpub — the signed-off ordering
+    // (WEBVIEW_BRIDGE.md) that lets the book open directly into the right layout.
+    const scripts = __injectJavaScript.mock.calls.map(([script]: [string]) => script as string);
+    const appearanceIndex = scripts.findIndex((s) => s.includes('"flow":"scrolled-doc"'));
+    const openIndex = scripts.findIndex((s) => s.includes('openEpub('));
+    expect(appearanceIndex).toBeGreaterThanOrEqual(0);
+    expect(openIndex).toBeGreaterThan(appearanceIndex);
+
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' },
+    });
+
+    // The initial target landed on the first try — no resend needed — despite the non-default
+    // layout already in effect.
+    expect(
+      __injectJavaScript.mock.calls.filter(
+        ([sent]) =>
+          sent ===
+          buildCommandScript({
+            type: 'goTo',
+            target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' },
+          }),
+      ).length,
+    ).toBe(1);
+
+    // Highlights still load and paint for this book, unaffected by the bookmark-style open.
+    expect(loadReaderHighlights).toHaveBeenCalledWith('test-book-appearance-and-highlights');
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
   });
 });

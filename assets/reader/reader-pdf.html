@@ -1152,6 +1152,7 @@ ${text}`;
     const box = viewportSize();
     const spreading = shouldRenderSpread(spreadPref, box.width);
     const pages = spreadPages(pageNumber, pageCount, spreading);
+    currentPage = pages[0];
     const token = ++renderToken;
     const pageProxies = await Promise.all(pages.map((p) => doc.getPage(p)));
     if (token !== renderToken) return;
@@ -1210,7 +1211,6 @@ ${text}`;
       }).catch(() => {
       });
     }
-    currentPage = pages[0];
     post({
       type: "relocated",
       position: { kind: "page", page: currentPage, pageCount },

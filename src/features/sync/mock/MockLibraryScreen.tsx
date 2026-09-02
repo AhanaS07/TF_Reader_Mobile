@@ -24,9 +24,10 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { DownloadFailure } from '@/features/download/errors';
 import { openBook } from '@/features/download/openBook';
+import { toTarget } from '@/features/personalization/readerBookmarks';
 import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
 import { bookmarkMapper } from '@/features/sync/localDb/mappers';
-import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
+import { bookmarkTable, parseLocator } from '@/features/sync/stores/bookmarkStore';
 import { downloadTable } from '@/features/sync/stores/downloadStore';
 import { api } from '@/features/sync/syncApi';
 import { USER_ID } from '@/features/sync/syncConfig';
@@ -63,6 +64,14 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
    * downloaded here must still be visible while reading it online. Filtering this list to
    * downloaded books would hide exactly the case this branch is for.
    *
+   * "EVERY ACTIVE bookmark" WAS THE INTENT, NOT "EVERY RECORD" — `api.list` answers with every
+   * document Mongo holds, tombstones included, and this branch used to render all of them
+   * unfiltered. `bookmarkTable.listActive` (the offline branch right below) filters `is_deleted = 0`
+   * in SQL; this branch has to do the equivalent itself, in JS, since a REST list response carries
+   * no such WHERE clause. Confirmed live 2026-09-02: a deleted bookmark named '456' (soft-deleted on
+   * BOTH sides, same `updatedAt` — the delete propagated correctly, this was never a sync conflict)
+   * still showed up here as a tappable row, because nothing after the map ever checked `isDeleted`.
+   *
    * Offline -> `bookmarkTable.listActive`, the durable local copy, filtered to downloaded books -
    * harmless rather than load-bearing, since `pull()` only ever syncs bookmarks for books this
    * device has downloaded in the first place, so a local row for an undownloaded book cannot
@@ -75,7 +84,11 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
     if (online) {
       try {
         const response = await api.list<Record<string, unknown>>('bookmarks', { userId: USER_ID });
-        setBookmarks((response.data ?? []).map((record) => bookmarkMapper.toRow(record)));
+        setBookmarks(
+          (response.data ?? [])
+            .map((record) => bookmarkMapper.toRow(record))
+            .filter((row) => row.is_deleted !== 1),
+        );
         setBookmarkSource('mongo');
         setLoading(false);
         return;
@@ -106,6 +119,43 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
       navigation.navigate('Reader', {
         bookId: row.book_id,
         format: row.format as ContentFormat,
+      });
+    } catch (error) {
+      const message =
+        error instanceof DownloadFailure ? `${error.code}: ${error.message}` : String(error);
+      console.error('openBook failed:', error instanceof DownloadFailure ? error.cause : error);
+      Alert.alert('Cannot open book', message);
+    } finally {
+      setOpening(null);
+    }
+  };
+
+  /**
+   * Tapping a bookmark row — same licence gate as `openDownloadedBook` above, PLUS a `goTo` target
+   * so Reader lands on the bookmark's exact position instead of the book's start. The format comes
+   * from the bookmark's own `Locator.type` (EPUB/PDF share the exact literals `ContentFormat` uses,
+   * see annotations.ts) rather than a separate lookup — a Mongo-sourced bookmark for a book this
+   * device has never downloaded still carries its own format, so `openBook()` can run the same
+   * checkLicense -> decrypt-or-stream gate it always does, undownloaded or not.
+   */
+  const openBookmark = async (row: BookmarkRow) => {
+    const locator = parseLocator(row.locator);
+    if (!locator) {
+      Alert.alert('Cannot open bookmark', 'Stored position is corrupt.');
+      return;
+    }
+    if (locator.type === 'AUDIO') {
+      Alert.alert('Audiobook', 'Open audiobooks from the real BookList screen, not this mock.');
+      return;
+    }
+
+    setOpening(row.id);
+    try {
+      await openBook(row.book_id, locator.type);
+      navigation.navigate('Reader', {
+        bookId: row.book_id,
+        format: locator.type,
+        initialTarget: toTarget(locator) ?? undefined,
       });
     } catch (error) {
       const message =
@@ -190,10 +240,18 @@ export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
               </Text>
             }
             renderItem={({ item }) => (
-              <View style={styles.row}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => openBookmark(item)}
+                disabled={opening === item.id}
+                style={styles.row}
+              >
                 <Text style={styles.rowTitle}>{item.name ?? item.chapter_id ?? item.id}</Text>
-                <Text style={styles.rowSubtitle}>book: {item.book_id}</Text>
-              </View>
+                <Text style={styles.rowSubtitle}>
+                  book: {item.book_id}
+                  {opening === item.id ? ' · opening…' : ''}
+                </Text>
+              </Pressable>
             )}
           />
         </>

@@ -36,7 +36,7 @@ import type { RootStackParamList } from './RootNavigator';
 type Props = NativeStackScreenProps<RootStackParamList, 'Reader'>;
 
 export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Element {
-  const { bookId, format } = route.params;
+  const { bookId, format, initialTarget: routeTarget } = route.params;
 
   // Title only. DevPreferencesMenu is NOT headerRight — see this file's header note for why.
   useLayoutEffect(() => {
@@ -45,7 +45,13 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
 
   // Read once per bookId — see ReaderScreen's `initialTarget` doc for why a live update here would
   // be pointless (this component remounts, via ReaderScreen's own key, on every distinct route).
-  const initialTarget = useMemo(() => targetFromPosition(getSessionPosition(bookId)), [bookId]);
+  //
+  // A caller-supplied target (e.g. a tapped bookmark elsewhere in the app) wins over the session-
+  // resume position — it is a deliberate "go here" instruction, not a fallback for one.
+  const initialTarget = useMemo(
+    () => routeTarget ?? targetFromPosition(getSessionPosition(bookId)) ?? undefined,
+    [bookId, routeTarget],
+  );
 
   const handleRelocated = useCallback(
     (position: ReaderPosition) => {
@@ -59,7 +65,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
       <ReaderScreen
         key={bookId}
         bookId={bookId}
-        initialTarget={initialTarget ?? undefined}
+        initialTarget={initialTarget}
         onRelocated={handleRelocated}
         toolbarExtra={<DevPreferencesMenu format={format} />}
       />
