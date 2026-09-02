@@ -14,7 +14,7 @@
 // and then throws "Unable to resolve module" the moment it executes. Importing
 // a real runtime value (ContentError is an enum, so it survives erasure) proves
 // the babel half is wired. A `import type` here would prove nothing.
-import { render } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
 
 import { ContentError } from '@/shared/contracts';
 
@@ -35,14 +35,17 @@ describe('toolchain', () => {
   // "getByText is not a function", because you destructured a Promise.
   it('renders the app root', async () => {
     // App now mounts the full navigator. 'Taylor & Francis' is the title
-    // TopAppBar renders on the Catalogue home screen.
+    // TopAppBar renders on the Catalogue home screen. waitFor is needed
+    // here because bootstrapAuth() (an async secure-storage read) must
+    // settle and flip sessionStore._authReady before RootNavigator renders
+    // anything past the splash screen.
     //
     // getAllByText, not getByText: with no institution selected the home route
     // is the public catalogue, and a publisher in that feed is legitimately
     // called 'Taylor & Francis' too. Matching more than once is correct here —
     // this is a toolchain smoke test, and the claim is that the tree rendered.
     const { getAllByText } = await render(<App />);
-    expect(getAllByText('Taylor & Francis').length).toBeGreaterThan(0);
+    await waitFor(() => expect(getAllByText('Taylor & Francis').length).toBeGreaterThan(0));
   });
 
   it('resolves the @/ alias to a runtime value', () => {

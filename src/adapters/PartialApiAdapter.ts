@@ -19,8 +19,12 @@ export class PartialApiAdapter implements DataSource {
   private readonly api: ApiAdapter;
   private readonly mock: MockAdapter;
 
-  constructor(baseUrl: string, mockOptions?: MockAdapterOptions) {
-    this.api = new ApiAdapter({ baseUrl });
+  constructor(
+    baseUrl: string,
+    mockOptions?: MockAdapterOptions,
+    getToken?: () => Promise<string | undefined>,
+  ) {
+    this.api = new ApiAdapter({ baseUrl, getToken });
     this.mock = new MockAdapter(mockOptions);
   }
 

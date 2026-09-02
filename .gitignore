@@ -37,6 +37,7 @@ GoogleService-Info.plist
 
 # Personal Claude Code files — not shared with the team.
 CLAUDE.md
+AUTH_CONTEXT.md
 .claude/
 docs/superpowers/
 .idea/

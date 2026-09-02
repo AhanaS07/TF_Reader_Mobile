@@ -34,3 +34,11 @@ export function useCurrentSession(): Session | null {
     exp: expiresAt !== null ? Math.floor(expiresAt / 1000) : 0,
   };
 }
+
+// The plain "is anyone signed in" check, for screens/components that don't
+// need per-item entitlement — Account/Profile-type screens, mainly.
+// resolveAccess() + useCurrentSession() above remain the only path for
+// catalogue-item access decisions; this is a separate, simpler question.
+export function useIsSignedIn(): boolean {
+  return useSessionStore((s) => s.isAuthenticated);
+}

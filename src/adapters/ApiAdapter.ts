@@ -42,6 +42,21 @@ function fold(str: string): string {
   return str.normalize('NFD').replace(/\p{M}/gu, '');
 }
 
+// NOT called automatically for every request — see authenticatedHeaders()
+// below for why. Sent when there is one and omitted entirely when there is
+// not, rather than sent empty: an `Authorization: Bearer undefined` reads as
+// a malformed token, not the honest "no token" case. Returns `headers`
+// unchanged (possibly `undefined`) when there's no token, so a caller with no
+// other headers either still gets `undefined` through to fetch() rather than
+// an empty object.
+export function withAuthHeader(
+  headers: Record<string, string> | undefined,
+  token: string | undefined,
+): Record<string, string> | undefined {
+  if (token === undefined) return headers;
+  return { ...headers, Authorization: `Bearer ${token}` };
+}
+
 // Only the two members of Response this adapter actually uses.
 //
 // Structural, rather than the DOM `Response`, so tests can hand over a plain
@@ -65,13 +80,24 @@ export type FetchLike = (
 ) => Promise<FetchResponse>;
 
 export interface ApiAdapterOptions {
-  // e.g. 'https://api.tf/opds/v1'. No trailing slash required either way.
+  // Scheme + host (+ port) ONLY, e.g. 'https://api.tf' or
+  // 'http://192.168.0.6:8083' — no '/api/v1' or '/opds/v1' suffix. The real
+  // backend splits institutions (/api/v1/...) and OPDS catalogue
+  // (/opds/v1/...) into separate namespaces on the same host; every method
+  // below appends its own, so baseUrl itself must be namespace-free. No
+  // trailing slash required either way.
   baseUrl: string;
   // Injected so tests can serve fixtures. Defaults to global fetch.
   fetch?: FetchLike;
   // Per-request deadline. A mobile client hanging on a stalled socket is
   // indistinguishable from a broken app, so there is always a deadline.
   timeoutMs?: number;
+  // Supplies the bearer token for every request this adapter makes. Optional,
+  // defaulting to "no token" — a caller that doesn't pass one keeps sending
+  // unauthenticated requests exactly as before this existed. Async because a
+  // real provider may need to refresh one — same reason ApiLicenceClient's
+  // getToken is async.
+  getToken?: () => Promise<string | undefined>;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -80,6 +106,7 @@ export class ApiAdapter implements DataSource {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
   private readonly timeoutMs: number;
+  private readonly getToken: () => Promise<string | undefined>;
 
   // ETag + the catalogue it was served with, keyed by URL (so per institution
   // — each has its own `/catalogue` endpoint). See the file header.
@@ -89,6 +116,23 @@ export class ApiAdapter implements DataSource {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.fetch = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.getToken = options.getToken ?? (async () => undefined);
+  }
+
+  // Opt-in, not automatic: whether a given endpoint sends a bearer token is
+  // that endpoint's own decision, the same way ApiAuthClient's four methods
+  // each decide for themselves (getCurrentSession takes a token; the other
+  // three are `security: []` by contract and must never send one). api.tf's
+  // real contract is still unconfirmed (see the file header), so nothing here
+  // calls this yet — a future method that IS confirmed to require auth calls
+  // `await this.authenticatedHeaders(...)` for its own request and nothing
+  // else changes: every other method keeps calling fetchWithTimeout exactly
+  // as it does today, with no token attached.
+  private async authenticatedHeaders(
+    headers?: Record<string, string>,
+  ): Promise<Record<string, string> | undefined> {
+    const token = await this.getToken();
+    return withAuthHeader(headers, token);
   }
 
   async getHomeCatalogue(institutionId: string): Promise<Catalogue> {
@@ -191,7 +235,7 @@ export class ApiAdapter implements DataSource {
   // is the contract's answer for this feed, and a second caching strategy beside
   // the home feed's would be two things to reason about for no gain.
   async getPublicFeed(page?: number): Promise<Shelf> {
-    const base = `${this.baseUrl}/public/catalogue`;
+    const base = `${this.baseUrl}/opds/v1/public/catalogue`;
     // Omitted entirely when absent, so the server applies its own default rather
     // than being told "page 0".
     const url = page === undefined ? base : `${base}?page=${page}`;
@@ -205,7 +249,7 @@ export class ApiAdapter implements DataSource {
 
   async getPublicPublication(bookId: BookId): Promise<Publication> {
     const body = await this.getJson(
-      `${this.baseUrl}/public/publications/${encodeURIComponent(bookId)}`,
+      `${this.baseUrl}/opds/v1/public/publications/${encodeURIComponent(bookId)}`,
       bookId,
     );
 
@@ -224,7 +268,7 @@ export class ApiAdapter implements DataSource {
   // DataSource contract (params actually filter/page) true for every caller,
   // even though the real API can't do it server-side yet.
   async getInstitutions(params?: InstitutionQueryParams): Promise<Institution[]> {
-    const body = await this.getJson(`${this.baseUrl}/institutions`, 'institutions');
+    const body = await this.getJson(`${this.baseUrl}/api/v1/institutions`, 'institutions');
     let results = normalizeInstitutionList(body);
 
     if (params?.institutionId !== undefined) {
@@ -251,40 +295,35 @@ export class ApiAdapter implements DataSource {
 
   async getInstitution(institutionId: string): Promise<Institution> {
     const body = await this.getJson(
-      `${this.baseUrl}/institutions/${encodeURIComponent(institutionId)}`,
+      `${this.baseUrl}/api/v1/institutions/${encodeURIComponent(institutionId)}`,
       institutionId,
     );
 
     return normalizeInstitution(body);
   }
 
-  // Turns a list of item ids into thin summaries in one call. batchGetItems
-  // lives at the API host's root (/api/v1/...), a sibling namespace to the
-  // OPDS routes every other method here builds off `baseUrl` — so this uses
-  // apiOrigin() instead.
+  // Turns a list of item ids into thin summaries in one call. Same
+  // /api/v1/... namespace as getInstitutions/getInstitution above, a sibling
+  // to the /opds/v1/... routes every catalogue method below builds.
   async getItemsBatch(ids: BookId[]): Promise<BatchItemsResult> {
     if (ids.length > MAX_BATCH_IDS) {
       throw new CatalogueFailure(CatalogueError.TOO_MANY_IDS, `${ids.length} ids`);
     }
 
-    const url = `${this.apiOrigin()}/api/v1/catalogue/items:batch`;
+    const url = `${this.baseUrl}/api/v1/catalogue/items:batch`;
     const body = await this.postJson(url, 'items:batch', { ids });
     return normalizeBatchItemsResponse(body);
   }
 
   // Ids are percent-encoded on the way into the path. Without this, an id
   // containing '../' or '?' would silently rewrite which endpoint gets called.
+  //
+  // /opds/v1/..., NOT /api/v1/... — unlike getInstitutions/getInstitution
+  // above, these paths were derived from the self-hrefs inside wokay's real
+  // OPDS fixtures (see the file header), not guessed, so they stay under the
+  // OPDS namespace those fixtures actually live in.
   private institutionPath(institutionId: string): string {
-    return `${this.baseUrl}/institutions/${encodeURIComponent(institutionId)}`;
-  }
-
-  // baseUrl is OPDS-rooted ('.../opds/v1'), but items:batch is pinned by the
-  // frozen contract at the host root ('/api/v1/...'), a sibling path — so this
-  // takes the scheme+host only, not baseUrl's OPDS suffix.
-  private apiOrigin(): string {
-    const afterScheme = this.baseUrl.indexOf('://') + 3;
-    const pathStart = this.baseUrl.indexOf('/', afterScheme);
-    return pathStart === -1 ? this.baseUrl : this.baseUrl.slice(0, pathStart);
+    return `${this.baseUrl}/opds/v1/institutions/${encodeURIComponent(institutionId)}`;
   }
 
   // POST counterpart to getJson. Kept separate rather than widening getJson,
@@ -326,6 +365,9 @@ export class ApiAdapter implements DataSource {
   // `getJson` so `getHomeCatalogue` can inspect the raw response (status 304,
   // the ETag header) before `getJson`'s ok-check and JSON parsing would
   // otherwise force a decision on it.
+  // Does NOT attach a token on its own — see authenticatedHeaders() below for
+  // why that decision belongs to each calling method, not to this shared
+  // transport step.
   private async fetchWithTimeout(
     url: string,
     target: string,

@@ -7,20 +7,12 @@
 // that expires in 15 minutes; the risk is real and the benefit is zero.
 //
 // The refresh token is the long-lived credential — it goes to expo-secure-store
-// via secureStorage.ts, not here. On a cold start, the startup refresh flow reads
-// it from secure storage and calls setSession once the new access token arrives.
-// That flow is not built yet (depends on POST /api/v1/auth/refresh being live);
-// when it lands, _hasHydrated flips false on init and true on completion so
-// RootNavigator can gate on it the same way it gates on institutionStore.
-//
-// TOKEN PROVIDER IS WIRED ONCE AT MODULE LOAD — see the bottom of this file.
-// `getToken` always reads the current store state, so a single setLicenceToken
-// call handles every sign-in, sign-out, and refresh without touching config/licence.ts
-// again. ApiLicenceClient's comment ("a signature that cannot await would have to
-// be widened later") is why getToken is async even though reading getState() is not.
+// via secureStorage.ts, not here. On a cold start, tokenRefresh.ts's bootstrapAuth
+// reads it from secure storage and calls setSession once a new access token
+// arrives (or clearSession if there's no valid refresh token). _authReady starts
+// false and bootstrapAuth flips it true once that attempt settles, either way,
+// so RootNavigator can gate on it the same way it gates on institutionStore.
 import { create } from 'zustand';
-
-import { setLicenceToken } from '@/config/licence';
 
 // 30-second buffer: treat a token expiring within this window as already expired
 // so we never hand a request a token that will expire mid-flight.
@@ -47,15 +39,13 @@ interface SessionState {
   roles: string[];
   collections: string[];
   isAuthenticated: boolean;
-  // Always true today — no AsyncStorage means no async hydration step. The flag is
-  // here so RootNavigator can gate on it when the startup refresh flow lands without
-  // needing a store shape change at that point.
-  _hasHydrated: boolean;
+  // False until tokenRefresh.ts's bootstrapAuth has run once, at app boot.
+  _authReady: boolean;
 
   setSession: (data: SessionData) => void;
   clearSession: () => void;
-  // Called internally by the startup refresh flow when it lands. Not for screens.
-  setHasHydrated: (value: boolean) => void;
+  // Called internally by bootstrapAuth once the boot-time refresh settles.
+  setAuthReady: (value: boolean) => void;
 }
 
 export const useSessionStore = create<SessionState>()((set) => ({
@@ -66,7 +56,7 @@ export const useSessionStore = create<SessionState>()((set) => ({
   roles: [],
   collections: [],
   isAuthenticated: false,
-  _hasHydrated: true,
+  _authReady: false,
 
   setSession: ({ accessToken, expiresIn, userId, institutionId, roles, collections }) =>
     set({
@@ -92,18 +82,18 @@ export const useSessionStore = create<SessionState>()((set) => ({
       isAuthenticated: false,
     }),
 
-  setHasHydrated: (value) => set({ _hasHydrated: value }),
+  setAuthReady: (value) => set({ _authReady: value }),
 }));
 
 /**
- * Supplies the bearer token to ApiLicenceClient via config/licence.ts.
+ * Reads the current access token, applying the expiry buffer.
  *
- * Returns `undefined` (no Authorization header sent) when:
+ * Returns `undefined` (meaning "not usable, refresh it") when:
  * - not authenticated (accessToken is null), or
  * - the token is within EXPIRY_BUFFER_MS of expiry or already past it.
  *
- * The second case causes a 401, which the HTTP interceptor (not yet built)
- * will handle by reading the refresh token from secureStorage and rotating.
+ * tokenRefresh.ts's ensureFreshToken is what acts on an `undefined` result —
+ * this function only reads the store, it never refreshes anything itself.
  */
 export function getToken(): Promise<string | undefined> {
   const { accessToken, expiresAt } = useSessionStore.getState();
@@ -113,8 +103,3 @@ export function getToken(): Promise<string | undefined> {
   }
   return Promise.resolve(accessToken);
 }
-
-// Wire the token provider once at module load. This is the one edit that connects
-// the session to the licence client — no further changes needed when the startup
-// refresh flow lands or when sign-in is wired up.
-setLicenceToken(getToken);

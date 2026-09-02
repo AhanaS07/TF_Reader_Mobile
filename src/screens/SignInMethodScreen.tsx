@@ -29,6 +29,7 @@ interface Props {
       params?: { mode: PersonalAccountMode },
     ) => void;
     goBack: () => void;
+    popToTop: () => void;
   };
 }
 
@@ -49,10 +50,14 @@ export default function SignInMethodScreen({ navigation }: Props) {
   }, [selectedInstitution, navigation]);
 
   // Both paths land back here when they finish, so this is the one place that has
-  // to notice a session arrived. Without it the reader signs in and is left staring
-  // at the chooser they have just finished with.
+  // to notice a session arrived. popToTop, not goBack: the institutional path
+  // pushes SignIn on top of this screen and never pops itself (it switches tabs
+  // instead), so a single goBack() here would only remove SignIn and leave this
+  // screen exposed as the stack's new top — popToTop reaches ProfileHome (index 0
+  // of this stack, which SignInMethodScreen only ever lives in) regardless of how
+  // many screens got pushed on top of it.
   useEffect(() => {
-    if (isAuthenticated) navigation.goBack();
+    if (isAuthenticated) navigation.popToTop();
   }, [isAuthenticated, navigation]);
 
   const handleInstitution = useCallback(() => {

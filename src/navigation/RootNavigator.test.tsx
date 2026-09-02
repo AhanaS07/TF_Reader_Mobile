@@ -19,6 +19,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { useInstitutionStore } from '@store/institutionStore';
+import { useSessionStore } from '@store/sessionStore';
 import RootNavigator from './RootNavigator';
 
 // ─── Screen stubs ─────────────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ function renderNavigator() {
 
 afterEach(() => {
   useInstitutionStore.setState({ _hasHydrated: false });
+  useSessionStore.setState({ _authReady: false });
 });
 
 // ─── Hydration gate ───────────────────────────────────────────────────────────
@@ -129,10 +131,31 @@ describe('RootNavigator — hydration gate', () => {
   it('renders the full navigator once the store has hydrated', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
     expect(screen.getByTestId('screen-catalogue-home')).toBeTruthy();
+  });
+
+  it('shows a blank splash while auth has not resolved, even if institutions have hydrated', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: false });
+      renderNavigator();
+    });
+
+    expect(screen.queryByTestId('screen-catalogue-home')).toBeNull();
+  });
+
+  it('shows a blank splash while institutions have not hydrated, even if auth has resolved', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: false });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    expect(screen.queryByTestId('screen-catalogue-home')).toBeNull();
   });
 });
 
@@ -142,6 +165,7 @@ describe('RootNavigator — tab wiring', () => {
   it('renders all four bottom tabs', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
@@ -154,6 +178,7 @@ describe('RootNavigator — tab wiring', () => {
   it('starts on the Catalogue tab with CatalogueHome as the initial screen', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
@@ -163,6 +188,7 @@ describe('RootNavigator — tab wiring', () => {
   it('switches to Search when the Search tab is pressed', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
@@ -176,6 +202,7 @@ describe('RootNavigator — tab wiring', () => {
   it('switches to Profile when the Profile tab is pressed', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
@@ -195,6 +222,7 @@ describe('RootNavigator — QueueNotificationHost', () => {
   it('mounts QueueNotificationHost above the tab navigator', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true });
+      useSessionStore.setState({ _authReady: true });
       renderNavigator();
     });
 
