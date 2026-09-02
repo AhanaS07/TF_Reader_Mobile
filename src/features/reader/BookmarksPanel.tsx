@@ -5,13 +5,6 @@
 // and knows no bookId. Everything it does is a prop call, which is what lets ReaderScreen own the
 // writes (via readerBookmarks.ts, Personalization's) and this file own layout.
 //
-// RENAME IS "EDIT" HERE, NOT "UPDATE" ON THE WIRE, AND THAT IS TEMPORARY. readerBookmarks.ts is
-// create-and-delete-only by design (see `onRename`'s own prop doc); this panel's Save button just
-// calls a prop, and ReaderScreen's current implementation behind that prop is a stand-in that proves
-// the feature works while Karthik/Vaishnavi decide whether and how a real update-in-place op can be
-// added to their store without breaking its sync guarantees. Nothing in THIS file changes when that
-// lands — it stays a Save button calling `onRename`, only ReaderScreen's implementation swaps.
-//
 // NO NEW BRIDGE COMMAND HERE. A bookmark does not paint — it is a place to jump to — and the jump is
 // the existing `goTo` command every TOC entry and search hit already uses. See
 // READER_BOOKMARKS_WIRING.md for the full writes/applies split.
@@ -49,14 +42,15 @@ export interface BookmarksPanelProps {
   onSelect: (bookmark: ReaderBookmark) => void;
   onDelete: (id: string) => void;
   /**
-   * Edit an EXISTING bookmark's name. Takes the whole bookmark, not just its id: ReaderScreen's
-   * CURRENT (temporary) implementation has to re-create the row at the same target — see
-   * `renameBookmark`'s own note in ReaderScreen.tsx for why this is a stand-in for a real
-   * update-in-place op Personalization/Sync are expected to add later — and `bookmark.target` is what
-   * tells it where. `name: undefined` for a field cleared back to blank, same convention as
-   * `onAddCurrent` — resets to `labelFor`'s own fallback rather than storing an empty string.
+   * Edit an EXISTING bookmark's name. Takes the id, matching `onDelete` beside it — the rename is an
+   * update in place, so nothing about the bookmark except its name is needed to perform it.
+   *
+   * `name: undefined` for a field cleared back to blank, same convention as `onAddCurrent`: the row
+   * falls back to `labelFor`'s own default (chapter id, then "Bookmark"/"Page N") rather than
+   * displaying an empty label. ReaderScreen forwards that as the empty string the store's `name`
+   * column takes, which `labelFor` reads as absent — see `submitBookmarkRename` there.
    */
-  onRename: (bookmark: ReaderBookmark, name?: string) => void;
+  onRename: (id: string, name?: string) => void;
   /**
    * `name` is exactly what `addCurrentEpubBookmark`/`addCurrentPdfBookmark` accept — `undefined` for
    * a blank field, so an untouched input falls through to `labelFor`'s own fallback (chapter id, or
@@ -116,7 +110,7 @@ export function BookmarksPanel({
 
   const saveEdit = (bookmark: ReaderBookmark): void => {
     const trimmed = editingText.trim();
-    onRename(bookmark, trimmed === '' ? undefined : trimmed);
+    onRename(bookmark.id, trimmed === '' ? undefined : trimmed);
     setEditingId(null);
   };
 

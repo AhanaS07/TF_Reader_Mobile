@@ -21,6 +21,9 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { AccessibilitySettingsPanel } from '@/features/accessibility/AccessibilitySettingsPanel';
+import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
+import { getHighContrastReaderColors } from '@/features/accessibility/highContrastColors';
 import { TtsControls } from '@/features/accessibility/tts/TtsControls';
 import { useTtsEnabled } from '@/features/accessibility/tts/useTtsEnabled';
 import { useTtsSession } from '@/features/accessibility/tts/useTtsSession';
@@ -37,6 +40,7 @@ import {
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+  renameBookmark,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -176,17 +180,109 @@ function withOpenTimeout<T>(work: Promise<T>): Promise<T> {
 }
 
 /**
+ * The name the dyslexia face is declared under, in BOTH the `@font-face` rule and the `body` rule
+ * `baselineCss` builds. It has to pass `sanitizeFontFamily`'s `/^[A-Za-z0-9 ,-]*$/` allow-list —
+ * this does, unquoted — or the shell would drop it and render the fallback with no sign why.
+ */
+const DYSLEXIA_FONT_FAMILY = 'OpenDyslexic';
+
+/**
+ * `accessibility.text.dyslexiaFont` applied to the two font fields.
+ *
+ * SPLIT INTO A PREDICATE AND AN ASYNC APPLY, rather than one async function that early-returns.
+ * `await`ing a function costs a microtask hop even when it does nothing, and this runs on EVERY
+ * appearance apply — every prefs write and every OS appearance tick, for every reader, whether or
+ * not the preference is on. The gate is still named once; `buildAppearanceWithFont` asks before it
+ * awaits, so the common path costs nothing.
+ *
+ * >>> IT WINS OUTRIGHT OVER `font.family`, AND ONLY EPUB CAN HONOUR IT. <<<
+ * The two cannot compose — there is one `@font-face` and one `font-family` — so this is a
+ * precedence decision, not a merge, and it goes to the accessibility need for the same reason
+ * `a11yFlowOverride` overrules `layout.flow`. `readerAnnouncements.ts` already encodes the same
+ * ranking: it checks `dyslexiaFont` BEFORE `fontFamily`, so one toggle says "Dyslexia-friendly font
+ * on" rather than "Font: OpenDyslexic". Changing the precedence here without changing that order
+ * makes the reader announce the mechanism instead of the setting.
+ *
+ * >>> THE FAMILY IS SET, NOT JUST THE URI. <<< `baselineCss` emits `@font-face` only when BOTH are
+ * non-empty, and `appearanceCssOptions()` drops a URI with no family to attach it to — so bytes
+ * alone are inert.
+ *
+ * >>> AND THE FORMAT GATE IS NOT REDUNDANT WITH THE PANEL HIDING ITS OWN ROW. <<< The preference is
+ * one per user, not one per book, so a `true` stored while reading an EPUB still arrives on a PDF's
+ * payload. pdf.js rasterises pages and has no text CSS layer to override, so honouring it there
+ * would buy nothing and cost ~330 KB of base64 on the bridge for every preference change.
+ *
+ * BEST-EFFORT, and that is the whole reason this is a separate function with its own `try`. Unlike
+ * `loadFontFaceSrc`, `loadDyslexiaFontFaceSrc` CAN reject — it is two native calls. Letting that
+ * reject escape would abort `buildAppearanceWithFont` inside `applyAppearanceWith`'s single catch,
+ * and the WebView would then be sent NO appearance at all: no theme, no text size, no margins, no
+ * flow, no announce gates. Losing one font is the correct failure; losing every preference is not.
+ */
+function wantsDyslexiaFont(
+  resolved: ReaderAppearance,
+  format: ContentFormat | null,
+): boolean {
+  return resolved.dyslexiaFont && format === 'EPUB';
+}
+
+async function withDyslexiaFont(resolved: ReaderAppearance): Promise<ReaderAppearance> {
+  try {
+    return {
+      ...resolved,
+      fontFamily: DYSLEXIA_FONT_FAMILY,
+      customFontUri: await loadDyslexiaFontFaceSrc(),
+    };
+  } catch (cause) {
+    console.warn('ReaderScreen: could not load the dyslexia font', cause);
+    return resolved;
+  }
+}
+
+/**
+ * `accessibility.display.highContrast` applied to the three colours, or `resolved` untouched.
+ *
+ * The recipe itself is `highContrastColors.ts`'s (Hruthik's) — `readerAppearance.ts` leaves it
+ * unspecified on purpose and `THEME_PALETTES` says so in as many words. This is only the wiring.
+ *
+ * >>> THE SCHEME STILL CHOOSES THE PAIR. <<< `highContrast` is deliberately independent of colour
+ * scheme (dark + high contrast is a valid combination the deprecated `theme: 'highContrast'` could
+ * not express), so the resolved scheme is passed through rather than collapsed to one palette.
+ *
+ * SPREADS RATHER THAN MUTATES, and that is load-bearing: `a11yFlowOverride` returns its input BY
+ * REFERENCE when nothing changes, so editing `resolved` in place would also edit the object
+ * `lastAppearanceRef` is holding — and `appearanceChangeAnnouncement` diffs against exactly that,
+ * so the change would announce nothing.
+ */
+function withHighContrast(resolved: ReaderAppearance): ReaderAppearance {
+  if (!resolved.highContrast) return resolved;
+  return { ...resolved, ...getHighContrastReaderColors(resolved.colorScheme) };
+}
+
+/**
  * `toReaderAppearance`'s own `customFontUri` is a straight passthrough of `FontPrefs.customFontUri`
  * — a separate, still-unused upload-path field (see readerAppearance.ts). This overlays it with the
  * loaded bundled-font data URI for `prefs.font.family` instead (or `null` for `'system'`/unknown) —
  * Reader's chosen meaning for this field on the bridge, per CUSTOM_FONTS_WIRING.md. Both send sites
  * below (open/OS-change via `applyAppearanceWith`, and the prefs-subscribe re-apply) go through this
  * one function so neither can drift from the other. `loadFontFaceSrc` never throws.
+ *
+ * >>> THE THREE OVERRIDES BELOW ARE ORDERED, NOT INTERCHANGEABLE. <<< The dyslexia face replaces
+ * whatever the bundled-font load just produced, so it has to run after it; the contrast recipe and
+ * the flow override touch disjoint fields (colours vs. flow/spread) and so cannot collide, but
+ * `a11yFlowOverride` stays outermost because it is documented as the last word on the payload.
+ *
+ * >>> NONE OF THEM ADDS A `ReaderAppearance` FIELD, AND THAT IS THE POINT. <<< Every one resolves
+ * into a field that already exists, so `epubLayoutSignature.ts`'s classification does not move and
+ * neither shell needs a line changed: the dyslexia face travels as `fontFamily`/`customFontUri`
+ * (both already GeometryKey, so highlights re-measure for it for free) and the contrast pair as
+ * `fg`/`bg`/`link`. Applying either INSIDE a shell instead would cost the whole nine-step new-field
+ * checklist and would have to reclassify the key.
  */
 async function buildAppearanceWithFont(
   prefs: SharedPrefs,
   env: AppearanceEnv,
   screenReaderEnabled: boolean,
+  format: ContentFormat | null,
 ): Promise<ReaderAppearance> {
   const fontFaceSrc = await loadFontFaceSrc(prefs.font.family);
   const resolved: ReaderAppearance = {
@@ -198,38 +294,36 @@ async function buildAppearanceWithFont(
   // primitives, and whether a screen reader is running is not a preference to resolve. Its own
   // header says the apply-time meaning of these fields is Reader's. See readerA11yLayout.ts for
   // why paginated flow makes the book unreachable to TalkBack, and `flowOverrideActive` below for
-  // the notice that stops this being a silent change.
-  return a11yFlowOverride(resolved, screenReaderEnabled);
+  // the notice that stops this being a silent change. The same reasoning is what puts the dyslexia
+  // and contrast overrides here rather than in `toReaderAppearance`.
+  const withFace = wantsDyslexiaFont(resolved, format) ? await withDyslexiaFont(resolved) : resolved;
+  return a11yFlowOverride(withHighContrast(withFace), screenReaderEnabled);
 }
 
 /**
- * ANNOTATION FAILURES — why the six highlight/bookmark call-sites below carry handlers at all.
+ * ANNOTATION FAILURES — why the seven highlight/bookmark call-sites below carry handlers at all.
  *
  * `readerHighlights.ts` and `readerBookmarks.ts` write local-first: straight to SQLite via the
  * offline store, which enqueues the sync outbox in the same transaction, then nudge a sync. So a
  * write is durable the moment it returns and reaches the backend later on a drain — the edit never
- * depends on the network being up. A rejection here therefore means the LOCAL write failed (a broken
- * SQLite layer), not that the backend was unreachable; there is nothing to fall back to, so the most
- * these handlers can do is make the failure visible instead of silent.
+ * depends on the network being up, and `annotationDurability.test.ts` pins that.
+ *
+ * WHICH MEANS A REJECTION HERE IS A LOCAL-STORE FAILURE, NOT A CONNECTIVITY ONE, and the copy below
+ * says so. There is nothing to fall back to when SQLite itself refuses the write — the most these
+ * handlers can do is make the failure visible instead of silent, and telling the user to check their
+ * connection would send them after the wrong thing.
  *
  * Reads and writes get different answers because the cost is different:
  *
  *   READ  — nothing is lost. The panel stays empty and the next open retries, so a warning is the
  *           right weight; an Alert on every failed open would be unusable.
  *   WRITE — the edit did not persist, and nothing else on screen shows the user that, so it is said
- *           with an Alert.
+ *           with an Alert. That is still the right weight even though the write is local: "saved"
+ *           and "silently not saved" are indistinguishable on screen, which is the whole reason.
  *
  * `Alert.alert` for the same reason the layout notice above uses it: it is this app's idiom for
  * "something changed out from under you", and being native it is announced by a screen reader
  * without any work here.
- *
- * HISTORY / FLAG FOR AHANA: these handlers were added on 2026-08-28 for a short-lived
- * online-vs-offline router (`annotationsRouter.ts`) whose online branch POSTed to Mongo WITHOUT
- * touching SQLite, so a write to an unreachable backend vanished with no local row. That router has
- * been reverted and the local-first path restored, so the network-loss case they were built for can
- * no longer happen — they are kept only as defensive UI for a genuine local-write failure. Worth a
- * look on whether the WRITE Alert is still warranted. `annotationDurability.test.ts` now pins the
- * restored guarantee; the containment below has its own cases in `ReaderScreen.test.tsx`.
  */
 function warnAnnotationReadFailed(what: 'highlights' | 'bookmarks', cause: unknown): void {
   console.warn(`ReaderScreen: could not load ${what}`, cause);
@@ -373,6 +467,7 @@ export function ReaderScreen({
   const [showToc, setShowToc] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [showAccessibility, setShowAccessibility] = useState(false);
 
   /**
    * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
@@ -384,23 +479,23 @@ export function ReaderScreen({
    * is why this is a flag applied to several nodes rather than one wrapper around them — see
    * `ReaderWebView`'s `hidden` prop for why reparenting is not an option here.
    */
-  const anyPanelOpen = showToc || showSearch || showBookmarks;
+  const anyPanelOpen = showToc || showSearch || showBookmarks || showAccessibility;
 
   /**
    * The bottom row is hidden on a NARROWER condition than the rest of the background, and the
    * difference is not an oversight.
    *
-   * Search and Bookmarks each carry their own close button inside the panel ("Close search",
-   * "Close bookmarks"), so once one is open the row behind it is pure background. **Contents does
-   * not.** Its close affordance is the Contents button in this very row — the one whose label flips
-   * to "Close contents" while the panel is open. Hiding the row along with everything else left a
-   * screen-reader user inside the TOC with no reachable way out of it: every route back was a
-   * control that had just been removed from the focus order.
+   * Search, Bookmarks and Accessibility each carry their own close button inside the panel ("Close
+   * search", "Close bookmarks", "Close accessibility"), so once one is open the row behind it is
+   * pure background. **Contents does not.** Its close affordance is the Contents button in this very
+   * row — the one whose label flips to "Close contents" while the panel is open. Hiding the row
+   * along with everything else left a screen-reader user inside the TOC with no reachable way out of
+   * it: every route back was a control that had just been removed from the focus order.
    *
    * Caught by `ReaderScreen.test.tsx`'s existing mutual-exclusion tests, which could no longer find
    * the Contents button. They were right to fail.
    */
-  const controlsHidden = showSearch || showBookmarks;
+  const controlsHidden = showSearch || showBookmarks || showAccessibility;
 
   /**
    * The bookmarks panel's own state — loaded once, after the first `rendered`, then kept current by
@@ -572,12 +667,13 @@ export function ReaderScreen({
    * opened closes — without this, dismissing a panel leaves focus on an element that just unmounted
    * and the platform drops the user at the top of the screen.
    *
-   * Only the two panels whose close is a deliberate act have one. Bookmarks closes the same way and
-   * could take a third, but its own close path is not in this handoff's scope; add it when that item
+   * Only the panels whose close is a deliberate act have one. Bookmarks closes the same way and
+   * could take another, but its own close path is not in this handoff's scope; add it when that item
    * comes round rather than guessing at the restore rule for it now.
    */
   const contentsButtonRef = useRef<View | null>(null);
   const searchButtonRef = useRef<View | null>(null);
+  const accessibilityButtonRef = useRef<View | null>(null);
 
   const cancelPendingSeek = useCallback((): void => {
     pendingSeekRef.current = null;
@@ -762,6 +858,20 @@ export function ReaderScreen({
   });
 
   /**
+   * The open book's format, for the dyslexia override's EPUB gate.
+   *
+   * A REF FOR THE SAME REASON THE TWO ABOVE ARE: `applyAppearanceWith` is memoised on `[]`, and
+   * `format` is null until `prepareBook` resolves. Reading it from the closure directly would pin
+   * the funnel to `null` for the life of the screen, so a book opened as EPUB would never get the
+   * dyslexia face. Trigger A runs after the format is known (`handleReady` cannot fire before the
+   * shell for that format is mounted), and triggers B and C read whatever is current.
+   */
+  const formatRef = useRef(format);
+  useEffect(() => {
+    formatRef.current = format;
+  });
+
+  /**
    * The last appearance the WebView was actually sent, and the last position it reported.
    *
    * REFS, NOT STATE, and not because refs are cheaper: nothing renders from either, and state here
@@ -850,7 +960,12 @@ export function ReaderScreen({
     ): Promise<void> => {
       try {
         const prefs = record ?? (await prefsStore.getPrefs());
-        const appearance = await buildAppearanceWithFont(prefs, env, a11yLayoutEnabledRef.current);
+        const appearance = await buildAppearanceWithFont(
+          prefs,
+          env,
+          a11yLayoutEnabledRef.current,
+          formatRef.current,
+        );
         sender({ type: 'applyAppearance', appearance });
 
         // Said AFTER the send, so what the reader hears cannot describe a change the renderer was
@@ -1172,7 +1287,7 @@ export function ReaderScreen({
           // there is nothing left on screen to show the user what they lost.
           alertAnnotationWriteFailed(
             'Highlight not saved',
-            'This highlight could not be saved and has not been kept. Check your connection and try again.',
+            'This highlight could not be saved to this device and has not been kept.',
             cause,
           );
         });
@@ -1199,7 +1314,7 @@ export function ReaderScreen({
           // and it did not.
           alertAnnotationWriteFailed(
             'Highlight not deleted',
-            'This highlight could not be removed and is still saved. Check your connection and try again.',
+            'This highlight could not be removed from this device and is still saved.',
             cause,
           );
         }),
@@ -1450,7 +1565,7 @@ export function ReaderScreen({
         .catch((cause: unknown) => {
           alertAnnotationWriteFailed(
             'Bookmark not saved',
-            'This bookmark could not be saved and has not been kept. Check your connection and try again.',
+            'This bookmark could not be saved to this device and has not been kept.',
             cause,
           );
         });
@@ -1469,7 +1584,7 @@ export function ReaderScreen({
         .catch((cause: unknown) => {
           alertAnnotationWriteFailed(
             'Bookmark not deleted',
-            'This bookmark could not be removed and is still saved. Check your connection and try again.',
+            'This bookmark could not be removed from this device and is still saved.',
             cause,
           );
         });
@@ -1478,41 +1593,31 @@ export function ReaderScreen({
   );
 
   /**
-   * TEMPORARY STAND-IN for a real rename, agreed with the user rather than assumed: Karthik/Vaishnavi
-   * own `bookmarkStore`/`readerBookmarks.ts` and are expected to add a proper update-in-place op there
-   * later. This function exists so the UI can demonstrate renaming NOW, without Reader adding write
-   * capability to a store it does not own — replace the body with a single call to their update op
-   * once it ships, and delete this note.
+   * CALL-SITE 4: rename an existing bookmark in place. One write and one sync-outbox entry, and the
+   * id and `target` are untouched — only the name changes, so the row keeps its place in the panel
+   * and `isCurrentPositionBookmarked` below keeps matching it.
    *
-   * WHY NOT JUST ADD THE UPDATE OP HERE: `readerBookmarks.ts` is deliberately create-and-delete-only
-   * — see `removeBookmark`'s own note — because that is what lets a plain last-write-wins field
-   * (`updatedAt`) behave as a UNION across devices rather than a real merge. Whether an in-place
-   * rename can be added without breaking that guarantee is a sync-model decision, not a UI one, so it
-   * needs Personalization/Sync's sign-off rather than Reader guessing at it — outside Reader's
-   * ownership per CLAUDE.md.
+   * TAKES AN ID, NOT THE WHOLE BOOKMARK. The panel used to hand over `bookmark.target` because this
+   * function had to re-create the row at the same place; it does not any more.
    *
-   * THE WORKAROUND, until then: compose the two calls Reader already has — create a new bookmark at
-   * the SAME target (so it appears in the same place) under the new name, then delete the old id. The
-   * new row gets a fresh id, which is invisible to the panel — it re-renders from whatever
-   * `readerBookmarks.ts` reports as the current authoritative set either way. This is NOT what the
-   * real fix should look like on the wire (it is two writes and two sync-outbox entries for what is
-   * conceptually one edit); it is what proves the feature works while the real op is pending.
-   *
-   * Sequenced (add awaited before remove), not fired in parallel: if the add failed, the original
-   * bookmark must still exist afterwards rather than being deleted with nothing to replace it.
+   * `name ?? ''` is the cleared-field case: `labelFor` (`readerBookmarks.ts`) treats an empty name as
+   * absent and falls through to the chapter id, then to "Page N"/"Bookmark" — which is exactly what
+   * the panel means by passing `undefined`. The facade's `name` is a required `string`, so the
+   * conversion happens here rather than widening Personalization's signature for one caller.
    */
-  const renameBookmark = useCallback(
-    (bookmark: ReaderBookmark, name?: string): void => {
-      const add =
-        bookmark.target.kind === 'page'
-          ? addCurrentPdfBookmark(bookId, bookmark.target.page, name)
-          : addCurrentEpubBookmark(bookId, bookmark.target.href, undefined, name);
-
-      void add
-        .then(() => removeBookmark(bookId, bookmark.id))
+  const submitBookmarkRename = useCallback(
+    (id: string, name?: string): void => {
+      void renameBookmark(bookId, id, name ?? '')
         .then(({ bookmarks: fresh, skippedIds }) => {
           setBookmarks(fresh);
           setSkippedBookmarkCount(skippedIds.length);
+        })
+        .catch((cause: unknown) => {
+          alertAnnotationWriteFailed(
+            'Bookmark not renamed',
+            'This bookmark could not be renamed on this device and is still saved under its old name.',
+            cause,
+          );
         });
     },
     [bookId],
@@ -1674,6 +1779,7 @@ export function ReaderScreen({
         setAwaitingSeek(true);
         closeToc(false); // Search is opening over it — see closeToc's own note.
         setShowBookmarks(false);
+        setShowAccessibility(false);
         setShowSearch(true);
         return;
       }
@@ -1716,28 +1822,21 @@ export function ReaderScreen({
   const isBusy = htmlUri === null || (!isRendered && error === null);
 
   /**
-   * `bookmarks`, narrowed to the ones that could even BELONG to the book currently open — a PARTIAL
-   * mitigation for a real defect, not the fix, and that distinction matters enough to spell out.
+   * `bookmarks`, narrowed to the target kinds the open format can actually navigate to.
    *
-   * THE DEFECT: `bookmarkStore.add()` (Sync's, `src/features/sync/stores/bookmarkStore.ts`) stamps
-   * every bookmark with the single hardcoded `BOOK_ID` from `syncConfig.ts`, not the id of whichever
-   * book was actually open when it was created — and `bookmarkStore.list()` filters by that same
-   * singleton. So `loadBookmarks()` returns every bookmark ever created, for every book, always; the
-   * per-book identity this screen would need to filter on correctly does not exist anywhere in the
-   * data it gets back. Fixing that means threading a real `bookId` through `bookmarkStore.ts` AND
-   * `readerBookmarks.ts` (Personalization's) — both outside Reader's ownership per CLAUDE.md, and
-   * deliberately NOT done here; see `READER_BOOKMARKS_WIRING.md`'s open items for the real fix.
+   * REDUNDANT FOR CORRECTNESS, and kept on purpose. `loadBookmarks(bookId)` is scoped to the open
+   * book (`readerBookmarks.ts` passes `bookId` through to `bookmarkStore.list`), and a book has one
+   * format, so every row that reaches here already matches — an AUDIO locator cannot slip through
+   * either, `toReaderBookmarks` sets those aside as `skippedIds` rather than emitting a target.
    *
-   * THE MITIGATION: `target.kind` DOES distinguish EPUB (`'href'`) from PDF (`'page'`) addressing, and
-   * that much Reader already knows for certain from `format` — a PDF book can never navigate to an
-   * href, an EPUB can never navigate to a bare page number, so a bookmark of the wrong kind for the
-   * open book is provably not reachable here regardless of which book it actually belongs to. This
-   * catches the two-book split the dev fixtures already exercise (`DEV_FIXTURES`: two EPUB ids, two
-   * PDF ids) — opening the PDF sample no longer lists the EPUB sample's bookmarks, or vice versa.
+   * What it still buys is a guard on the seam Reader does not own: both store methods default
+   * `bookId` to the single `BOOK_ID` constant in `syncConfig.ts`, so a call-site that stops passing
+   * it silently goes back to serving every book's bookmarks. That regression is invisible from this
+   * file, and this filter catches its cross-format half at the point of use — for the price of one
+   * `Array.filter` over a list the user is looking at.
    *
-   * WHAT THIS DOES NOT FIX: two books of the SAME format (e.g. the bundled sample EPUB and the "Big"
-   * EPUB fixture) still see each other's bookmarks — `target.kind` cannot tell them apart, and nothing
-   * else in the returned data can either. That case needs the real per-book fix above.
+   * Same-format cross-book leakage is what it CANNOT catch, which is why this is a guard and not a
+   * substitute for the scoping.
    */
   const bookmarksForOpenBook = useMemo(() => {
     if (format === null) return bookmarks;
@@ -1755,10 +1854,9 @@ export function ReaderScreen({
    * precise spot that was bookmarked, not "somewhere in this pagination" — the same "exactness over a
    * comforting approximation" the search hints elsewhere in this file already commit to.
    *
-   * Reads `bookmarksForOpenBook`, not raw `bookmarks` — same reasoning as the panel list: a same-format
-   * bookmark from a DIFFERENT book landing on the identical CFI/page would otherwise light this up for
-   * the wrong book, and while `target.kind` can't fully solve that (see the note above), there is no
-   * reason to skip the filter it CAN apply here just because the panel already applies it too.
+   * Reads `bookmarksForOpenBook`, not raw `bookmarks`, so the badge and the panel list can never
+   * disagree about which bookmarks belong to the open book — see that memo's own note for why the
+   * filter is kept now that scoping makes it redundant.
    *
    * `useMemo`, not state-in-an-effect: this is a pure function of `bookmarksForOpenBook` and
    * `position`, both of which are already reactive state — nothing here has a side effect to push
@@ -1848,6 +1946,7 @@ export function ReaderScreen({
             // own merits without renaming a control out from under the test suite.
             closeToc(false); // this panel is taking over — see closeToc's own note.
             setShowBookmarks(false);
+            setShowAccessibility(false);
             setShowSearch((open) => !open);
           }}
           style={styles.toolbarButton}
@@ -1862,11 +1961,34 @@ export function ReaderScreen({
           onPress={() => {
             closeToc(false);
             setShowSearch(false);
+            setShowAccessibility(false);
             setShowBookmarks((open) => !open);
           }}
           style={styles.toolbarButton}
         >
           <Text style={styles.toolbarIcon}>🔖</Text>
+        </Pressable>
+
+        {/* NOT GATED ON `format`, unlike the panel's own Dyslexia Font row: High Contrast and
+            Reduce Motion apply to every format, and to the shell before a book has even resolved.
+            Gating the whole entry point on the one control that is EPUB-only would take the other
+            two away from PDF and audio readers. */}
+        <Pressable
+          accessibilityRole="button"
+          // Explicit for the same reason as Search and Bookmarks: the glyph gives a screen reader
+          // nothing to say, and every test finds these buttons by accessible name.
+          accessibilityLabel="Accessibility settings"
+          accessibilityState={{ expanded: showAccessibility }}
+          ref={accessibilityButtonRef}
+          onPress={() => {
+            closeToc(false); // this panel is taking over — see closeToc's own note.
+            setShowSearch(false);
+            setShowBookmarks(false);
+            setShowAccessibility((open) => !open);
+          }}
+          style={styles.toolbarButton}
+        >
+          <Text style={styles.toolbarIcon}>♿</Text>
         </Pressable>
 
         {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
@@ -2256,6 +2378,7 @@ export function ReaderScreen({
             onOpenResults={() => {
               closeToc(false); // the results panel is opening — see closeToc's own note.
               setShowBookmarks(false);
+              setShowAccessibility(false);
               setShowSearch(true);
             }}
             onDismiss={() => {
@@ -2274,13 +2397,58 @@ export function ReaderScreen({
             skippedBookmarkCount={skippedBookmarkCount}
             onSelect={selectBookmark}
             onDelete={deleteBookmark}
-            onRename={renameBookmark}
+            onRename={submitBookmarkRename}
             onAddCurrent={addCurrentBookmark}
             canAddCurrent={canAddCurrentBookmark}
             onClose={() => {
               setShowBookmarks(false);
             }}
           />
+        )}
+
+        {/*
+          AN OVERLAY, not a strip docked under the viewer, even though the panel inside styles
+          itself like `TtsControls` (a border-top and a capped width). Docking it would change the
+          viewer's height, and that re-paginates epub.js — which is the one thing every panel in
+          this file overlays to avoid, because a CFI resolved under one pagination addresses a
+          different page under another. See the note above SearchPanel.
+
+          THE CHROME IS HERE RATHER THAN IN THE PANEL because the panel is Accessibility's file and
+          serves two surfaces: in a standalone Settings screen it needs no title and no close, and
+          it has neither. Supplying them at the mount point is what lets one component serve both
+          without this screen editing another capability's code.
+        */}
+        {showAccessibility && (
+          <View style={styles.accessibilityPanel}>
+            <View style={styles.accessibilityHeaderRow}>
+              <Text style={styles.accessibilityTitle}>Accessibility</Text>
+              {/* NAMES ITS OWN CLOSE, like every other panel here ("Close search", "Close
+                  bookmarks", "Close contents") — a bare "Close" is ambiguous to a screen-reader
+                  user who cannot see which panel is open. */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close accessibility"
+                onPress={() => {
+                  setShowAccessibility(false);
+                  // The explicit-close path, so the button they opened it from is where they were —
+                  // same restore rule as SearchPanel's `onClose`.
+                  focusOn(accessibilityButtonRef);
+                }}
+                style={styles.accessibilityAction}
+              >
+                <Text style={styles.accessibilityActionText}>Close</Text>
+              </Pressable>
+            </View>
+
+            {/* `undefined` rather than a guess while the book is still resolving: the prop's own
+                doc says omitting it means "not scoped to one open book", which shows every control.
+                That is the honest state — High Contrast and Reduce Motion are already usable, and
+                the Dyslexia Font row becomes accurate the moment `prepareBook` lands. The dyslexia
+                override itself is gated separately, host-side, in `withDyslexiaFont`. */}
+            <ScrollView contentContainerStyle={styles.accessibilityContent}>
+              <AccessibilitySettingsPanel format={format ?? undefined} />
+            </ScrollView>
+          </View>
         )}
 
         {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
@@ -2342,6 +2510,7 @@ export function ReaderScreen({
             onPress={() => {
               setShowSearch(false); // mutual exclusion — see the toolbar button above
               setShowBookmarks(false);
+              setShowAccessibility(false);
               setShowToc((open) => !open);
             }}
             style={[styles.button, toc.length === 0 && styles.buttonDisabled]}
@@ -2595,6 +2764,37 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
+
+  // The accessibility panel's chrome. Same opaque full-bleed overlay as `tocPanel` and
+  // BookmarksPanel's `panel` — book text showing faintly through a settings list is as unreadable
+  // here as it is there — and the header row copies BookmarksPanel's so the two close buttons are
+  // the same control in the same place.
+  //
+  // SCROLLS, unlike the TOC's own fixed header: the panel's three control groups already overflow a
+  // small phone in landscape once the Dyslexia row is present, and a control the user cannot reach
+  // is worse in this panel than in any other.
+  accessibilityPanel: {
+    ...FILL,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e2e2',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  accessibilityHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  accessibilityTitle: { fontSize: 18, fontWeight: '600', color: '#111111' },
+  accessibilityAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#f2f2f2',
+  },
+  accessibilityActionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  accessibilityContent: { paddingBottom: 48 },
 
   // Only a TOP hairline, to close the header off. There is deliberately no bottom
   // border any more: a hairline and a fade at the same edge fight each other — the
