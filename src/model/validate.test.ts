@@ -47,18 +47,23 @@ it('accepts an audiobook that is plaintext and unindexed', () => {
   expect(() => assertPublication(audiobook)).not.toThrow();
 });
 
-// primitives.ts, verbatim: "AUDIO is never encrypted and never has a search index."
-it('rejects encrypted audio', () => {
+// Reversed 3 Sep 2026: the backend team confirmed audio WILL be encrypted —
+// primitives.ts's old "AUDIO is never encrypted" claim no longer holds. This
+// used to be a rejects-encrypted-audio test; audio's encryption slot is no
+// longer constrained either way, same as PDF/EPUB.
+it('accepts encrypted audio', () => {
   const encryptedAudio = publication({
     format: 'AUDIO',
     acquisition: {
       ...publication().acquisition,
       encryption: { algorithm: 'AES-256-GCM', originalLength: 10 },
+      // Isolates the claim under test: audio's search-index rule is
+      // untouched by this reversal, so it must stay false here or the
+      // still-valid rule below would throw for an unrelated reason.
+      hasSearchIndex: false,
     },
   });
-  expect(() => assertPublication(encryptedAudio)).toThrow(
-    expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),
-  );
+  expect(() => assertPublication(encryptedAudio)).not.toThrow();
 });
 
 it('rejects audio claiming a search index', () => {

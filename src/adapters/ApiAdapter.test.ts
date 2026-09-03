@@ -249,9 +249,9 @@ describe('ApiAdapter institution endpoints', () => {
 describe('ApiAdapter authorization header', () => {
   // Whether a request carries a token is each endpoint's own decision (see
   // authenticatedHeaders() in ApiAdapter.ts) — not something this shared
-  // adapter applies to every call. None of the current methods have a
-  // confirmed contract requiring one, so none of them opt in; this pins that
-  // down as a regression test, not just an absence of a feature.
+  // adapter applies to every call. getInstitutions is `security: []` by
+  // wokay's contract and must never send one; this pins that down as a
+  // regression test, not just an absence of a feature.
   it('sends no Authorization header even when a getToken that resolves one is configured', async () => {
     const requestInits: { headers?: Record<string, string> }[] = [];
     const adapter = new ApiAdapter({
@@ -268,7 +268,10 @@ describe('ApiAdapter authorization header', () => {
     expect(requestInits[0]?.headers).toBeUndefined();
   });
 
-  it('sends no Authorization header on getHomeCatalogue even when a getToken is configured', async () => {
+  // getHomeCatalogue/getShelf/getPublication/getItemsBatch are all
+  // `security: [{ appToken }]` by wokay's contract, so these are the mirror
+  // image of the test above: the token must actually go out.
+  it('sends the Authorization header on getHomeCatalogue when a getToken is configured', async () => {
     const requestInits: { headers?: Record<string, string> }[] = [];
     const adapter = new ApiAdapter({
       baseUrl: BASE_URL,
@@ -281,14 +284,80 @@ describe('ApiAdapter authorization header', () => {
 
     await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
 
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getShelf when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getPublication when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getPublication(KNOWN_INSTITUTION, KNOWN_PUBLICATION);
+
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getItemsBatch when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url, init);
+      },
+    });
+
+    await adapter.getItemsBatch(['item_42']);
+
+    expect(requestInits[0]?.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+
+  it('sends no Authorization header on getPublicFeed even when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getPublicFeed();
+
     expect(requestInits[0]?.headers).toBeUndefined();
   });
 });
 
-// withAuthHeader is the pure merge logic a future endpoint's own
-// implementation calls (via authenticatedHeaders()) once its contract is
-// confirmed to require a token — unit-tested directly here since no current
-// public method exercises it yet.
+// withAuthHeader is the pure merge logic authenticatedHeaders() calls for
+// every appToken-gated method — unit-tested directly here as well as via the
+// 'ApiAdapter authorization header' describe block above.
 describe('withAuthHeader', () => {
   it('returns headers unchanged when there is no token', () => {
     expect(withAuthHeader({ 'If-None-Match': 'W/"v1"' }, undefined)).toEqual({
