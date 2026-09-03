@@ -9,14 +9,9 @@
 // These announcements are ABOUT the speech; suppressing them while speaking would silence exactly
 // the transitions they exist to report.
 //
-// TWO PLATFORM ASYMMETRIES, DOCUMENTED RATHER THAN PAPERED OVER (see useTtsSession.ts's own notes
-// on `PAUSE_RESUME_SUPPORTED` and the iOS `tts-error` gap) — NEITHER NEEDS A Platform.OS CHECK
-// HERE, because the runtime already makes them structurally impossible rather than merely
-// discouraged:
-//   - Android never reaches 'paused'. `Tts.pause()`/`resume()` are documented no-ops there, so the
-//     native `tts-pause`/`tts-resume` events this session's status is driven off of never arrive —
-//     `updateStatus('paused')` is simply never called on Android. An explicit platform check here
-//     would be redundant, not protective.
+// ONE PLATFORM ASYMMETRY, DOCUMENTED RATHER THAN PAPERED OVER (see useTtsSession.ts's own note on
+// the iOS `tts-error` gap) — IT NEEDS NO Platform.OS CHECK HERE, because the runtime already makes
+// it structurally impossible rather than merely discouraged:
 //   - iOS never reaches 'error' from the engine. `'tts-error'` is absent from
 //     `@iternio/react-native-tts`'s iOS `supportedEvents`, so `handleTtsError` never fires there —
 //     `next === 'error'` cannot happen on iOS. Returning `null` for it below is for Android's

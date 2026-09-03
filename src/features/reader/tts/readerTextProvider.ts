@@ -228,6 +228,17 @@ export interface ReaderTextProvider {
   setSpokenRange(cfi: string | null): void;
 
   /**
+   * Paint or move a word-level sub-highlight within the sentence last given to
+   * `setSpokenRange`. `cfi` is that same sentence CFI (`null` clears); `start`/`end` are
+   * character offsets into the sentence's `text`, from the native TTS engine's per-word
+   * progress event, normalized to one shape by Accessibility's `normalizeTtsProgressEvent`.
+   *
+   * EPUB-only. PDF providers are expected to no-op, mirroring `setSpokenRange`'s PDF row.
+   * Fire-and-forget and best-effort, same contract as `setSpokenRange`.
+   */
+  setSpokenWordRange(cfi: string | null, start: number, end: number): void;
+
+  /**
    * Subscribe to teardown and navigation. Returns an unsubscribe.
    *
    * ONE SUBSCRIPTION COVERS ALL OF IT, including the case a caller cannot otherwise see:

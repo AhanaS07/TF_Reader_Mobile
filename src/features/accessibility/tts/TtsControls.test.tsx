@@ -7,13 +7,22 @@
 // the component's own contract: it only knows how to drive the session it's handed.
 
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs } from '@/shared/contracts';
 
+import { FOCUS_RING_COLOR } from '../a11yConstants';
 import { TtsControls } from './TtsControls';
 import type { Voice } from './ttsEngine';
 import type { TtsSession } from './useTtsSession';
+
+// Mocked for the same reason ReaderScreen.test.tsx mocks it: `osFontScale` has no dedicated change
+// event, so tests control it directly rather than depending on a real PixelRatio read.
+jest.mock('@/features/reader/useAppearanceEnv', () => ({
+  useAppearanceEnv: jest.fn(),
+}));
 
 function makeSession(overrides: Partial<TtsSession> = {}): TtsSession {
   const prefs: A11yTtsPrefs = { ...DEFAULT_ACCESSIBILITY_PREFS.tts, ...overrides.prefs };
@@ -47,6 +56,59 @@ function makeVoice(overrides: Partial<Voice> = {}): Voice {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  jest.mocked(useAppearanceEnv).mockReturnValue({
+    osColorScheme: 'light',
+    osFontScale: 1,
+    osReduceMotionEnabled: false,
+  });
+});
+
+describe('TtsControls — touch targets and focus ring', () => {
+  it('gives every transport button and chip at least a 44x44 touch target', async () => {
+    const session = makeSession();
+    await render(<TtsControls session={session} />);
+
+    for (const label of ['Play', 'Stop', 'Choose voice']) {
+      const style = StyleSheet.flatten(screen.getByLabelText(label).props.style);
+      expect(style.minHeight).toBeGreaterThanOrEqual(44);
+      expect(style.minWidth).toBeGreaterThanOrEqual(44);
+    }
+
+    const chipStyle = StyleSheet.flatten(screen.getByLabelText('1x speed').props.style);
+    expect(chipStyle.minHeight).toBeGreaterThanOrEqual(44);
+    expect(chipStyle.minWidth).toBeGreaterThanOrEqual(44);
+  });
+
+  it('shows the focus ring while a button is focused and hides it on blur', async () => {
+    const session = makeSession();
+    await render(<TtsControls session={session} />);
+    const voiceButton = screen.getByLabelText('Choose voice');
+
+    expect(StyleSheet.flatten(voiceButton.props.style).borderColor).toBe('transparent');
+
+    await fireEvent(voiceButton, 'focus');
+    expect(StyleSheet.flatten(voiceButton.props.style).borderColor).toBe(FOCUS_RING_COLOR);
+
+    await fireEvent(voiceButton, 'blur');
+    expect(StyleSheet.flatten(voiceButton.props.style).borderColor).toBe('transparent');
+  });
+
+  it('scales button and chip text with the OS font scale', async () => {
+    jest.mocked(useAppearanceEnv).mockReturnValue({
+      osColorScheme: 'light',
+      osFontScale: 2,
+      osReduceMotionEnabled: false,
+    });
+    const session = makeSession();
+    await render(<TtsControls session={session} />);
+
+    expect(StyleSheet.flatten(screen.getByText('Play').props.style).fontSize).toBe(28);
+    const speedRow = within(screen.getByTestId('tts-speed-row'));
+    expect(StyleSheet.flatten(speedRow.getByText('1x').props.style).fontSize).toBe(26);
+  });
+});
 
 describe('TtsControls', () => {
   it('renders a chip for every pitch stop, marking the current pitch selected', async () => {

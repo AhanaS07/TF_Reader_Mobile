@@ -16,12 +16,17 @@
 //     cleared it — this session must not clear it again for that reason.
 //   - `current`/`next` never reject; every non-`ok` status is handled explicitly, not caught.
 //
-// STATUS IS EVENT-DRIVEN, NOT ACTION-DRIVEN. Android's pause()/resume() in
-// @iternio/react-native-tts are documented no-ops (they resolve `false` without touching the
-// native engine) — see ttsEngine.ts. Flipping status to 'paused' the moment pause() is CALLED
-// would lie on Android: speech keeps playing while the UI claims otherwise. Driving status off
-// the tts-pause/tts-resume EVENTS instead means Android simply never shows 'paused', because the
-// event never arrives — which is the honest outcome given the platform limitation.
+// PAUSE/RESUME ON ANDROID IS STOP-AND-REMEMBER, NOT A NATIVE SUSPEND. Android's pause()/resume()
+// in @iternio/react-native-tts are documented no-ops (they resolve `false` without touching the
+// native engine) — see ttsEngine.ts — so there is nothing to suspend. Instead, pause() there
+// snapshots `currentlySpeaking` into `pausedSentence` (a closure variable, never persisted to
+// sharedPrefs/SQLite — it dies with this effect) and calls the real Tts.stop(), then drives status
+// to 'paused' directly rather than waiting for a tts-pause EVENT that Android's engine will never
+// emit. This is no longer a lie: the engine really did stop, and play() really can resume this
+// exact sentence (from its start, not the exact word — the native engine gives us no finer
+// resolution than one speak() call). iOS keeps the real native path: Tts.pause()/resume() suspend
+// and continue AVSpeechSynthesizer at the exact word, so status there is still driven off the
+// genuine tts-pause/tts-resume events.
 //
 // ALL SESSION STATE LIVES INSIDE ONE EFFECT, deliberately. `provider` is the only thing this
 // hook depends on (its lifetime belongs to whoever owns the book, per TTS_PROVIDER.md, so it is
@@ -52,6 +57,7 @@ import type { A11yTtsPrefs } from '@/shared/contracts';
 import Tts from './ttsEngine';
 import type { Voice } from './ttsEngine';
 import { mapRate } from './ttsRate';
+import { normalizeTtsProgressEvent } from './ttsProgress';
 import { ttsStatusAnnouncement } from './ttsAnnouncements';
 
 export type TtsSessionStatus = 'idle' | 'speaking' | 'paused' | 'error';
@@ -64,9 +70,13 @@ export interface TtsSession {
   currentSentence: TtsSentence | null;
   prefs: A11yTtsPrefs;
   voices: Voice[];
-  /** Starts from the reader's live position, or resumes if paused (iOS only — see status note). */
+  /**
+   * Starts from the reader's live position, or resumes if paused. On iOS, resuming continues the
+   * native engine at the exact word; on Android it re-speaks the paused sentence from its start
+   * (see the platform note on TtsSessionStatus above).
+   */
   play(): void;
-  /** No-op on Android; see the platform note on TtsSessionStatus above. */
+  /** Pauses. On Android this stops the engine but remembers the sentence so play() resumes it. */
   pause(): void;
   stop(): void;
   reloadVoices(): void;
@@ -132,6 +142,10 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     let liveStatus: TtsSessionStatus = 'idle';
 
     let currentlySpeaking: TtsSentence | null = null;
+    // Android-only: the sentence pause() snapshotted, so play() can re-speak it instead of
+    // re-resolving the reader's live position. In-memory only — never persisted. Cleared on
+    // resume, on a real stop, and when the reader navigates away while paused.
+    let pausedSentence: TtsSentence | null = null;
     let awaitingUtterance = false;
     let pendingNext: Promise<TtsFetchResult> | null = null;
     // Opt-in diagnostic only (readerTiming.ts's EXPO_PUBLIC_READER_TIMING flag) — set when a fresh
@@ -165,6 +179,11 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     function clearHighlight(): void {
       source.setSpokenRange(null);
+      // Gated the same as handleTtsProgress below: the WebView has no setSpokenWordRange handler
+      // outside 'word' mode's own rollout, so calling it unconditionally would hit the bridge's
+      // NOT_READY path on every stop/clear and surface as ReaderScreen's interrupting error banner
+      // for every TTS user, not just 'word' mode's.
+      if (livePrefs.highlightMode === 'word') source.setSpokenWordRange(null, 0, 0);
     }
 
     function stopInternal(opts?: { clearHighlight?: boolean; status?: TtsSessionStatus }): void {
@@ -172,6 +191,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       awaitingUtterance = false;
       pendingNext = null;
       currentlySpeaking = null;
+      pausedSentence = null;
       playPressedAt = null;
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
@@ -237,7 +257,13 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       }
       setErrorMessage(null);
       updateStatus('speaking');
-      if (currentlySpeaking) source.setSpokenRange(currentlySpeaking.cfi);
+      if (currentlySpeaking) {
+        source.setSpokenRange(currentlySpeaking.cfi);
+        // Clears any word-level sub-highlight left over from the previous sentence, so there is
+        // nothing stale on screen in the gap before this sentence's first tts-progress event.
+        // Same highlightMode gate as clearHighlight — see its note.
+        if (livePrefs.highlightMode === 'word') source.setSpokenWordRange(null, 0, 0);
+      }
     }
 
     async function handleTtsFinish(): Promise<void> {
@@ -283,6 +309,22 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (!awaitingUtterance) return;
       setErrorMessage(event.message ?? 'The TTS engine reported an error.');
       stopInternal({ status: 'error' });
+    }
+
+    // Gated on highlightMode inside the handler rather than by conditionally subscribing, so a
+    // runtime pref change never needs to resubscribe — same trade-off as the awaitingUtterance
+    // guards above. Both platforms emit tts-progress, so this listener is always registered.
+    function handleTtsProgress(event: {
+      location?: number;
+      length?: number;
+      start?: number;
+      end?: number;
+    }): void {
+      if (!awaitingUtterance) return;
+      if (livePrefs.highlightMode !== 'word') return;
+      if (!currentlySpeaking) return;
+      const range = normalizeTtsProgressEvent(event);
+      source.setSpokenWordRange(currentlySpeaking.cfi, range.start, range.end);
     }
 
     // Neither native TTS module observes app backgrounding itself (confirmed by reading
@@ -360,20 +402,44 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       // status change and no error would leave a caller unable to tell a real press from one
       // this session declined to honour.
       if (liveStatus === 'speaking') return;
-      if (liveStatus === 'paused' && PAUSE_RESUME_SUPPORTED) {
-        void Tts.resume().catch(noop);
-        return;
+      if (liveStatus === 'paused') {
+        if (PAUSE_RESUME_SUPPORTED) {
+          void Tts.resume().catch(noop);
+          return;
+        }
+        if (pausedSentence) {
+          const sentence = pausedSentence;
+          pausedSentence = null;
+          playPressedAt = now();
+          speakSentence(sentence, generation);
+          return;
+        }
+        // Defensive fallback only — pausedSentence should always be set alongside 'paused' on
+        // Android. Falls through to the same re-resolve every fresh play() uses.
       }
       playPressedAt = now();
       void beginFrom(null, generation);
     };
 
     pauseRef.current = () => {
-      if (!PAUSE_RESUME_SUPPORTED) return;
+      if (!awaitingUtterance) return;
+      if (PAUSE_RESUME_SUPPORTED) {
+        try {
+          void Tts.pause().catch(noop);
+        } catch {
+          // Best-effort — the engine may already be paused.
+        }
+        return;
+      }
+      // Android has no native pause — stop the engine but remember the sentence so play() can
+      // re-speak it. See the file header note on PAUSE/RESUME ON ANDROID.
+      awaitingUtterance = false;
+      pausedSentence = currentlySpeaking;
+      updateStatus('paused');
       try {
-        void Tts.pause().catch(noop);
+        void Tts.stop().catch(noop);
       } catch {
-        // Best-effort — the engine may already be paused.
+        // Best-effort — the engine may already be stopped.
       }
     };
 
@@ -410,6 +476,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
+      Tts.addListener('tts-progress', handleTtsProgress),
       // 'tts-error' is absent from @iternio/react-native-tts's iOS `supportedEvents`
       // (TextToSpeech.m declares only start/finish/pause/resume/progress/cancel, and never calls
       // sendEventWithName:@"tts-error" — AVSpeechSynthesizerDelegate has no error callback for the
@@ -427,9 +494,11 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     const unsubscribeInterrupted = source.onInterrupted((reason) => {
       if (reason === 'navigated') {
         // Not a teardown, and Reader already cleared the highlight itself. Just drop any
-        // prefetch tied to the position we've now moved away from.
+        // prefetch tied to the position we've now moved away from, and any Android paused-sentence
+        // snapshot — resuming a sentence tied to a cfi the reader has since left would be wrong.
         generation += 1;
         pendingNext = null;
+        pausedSentence = null;
         return;
       }
       // closed / revoked are terminal.
