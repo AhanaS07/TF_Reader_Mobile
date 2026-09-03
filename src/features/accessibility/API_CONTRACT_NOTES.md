@@ -141,12 +141,18 @@ painted, `start`/`end` are character offsets into that sentence's text.
   real `npm run typecheck` failure (`CommandArgsAreExhaustive`/`CommandArgsMatchPayloads`), by
   design per `CLAUDE.md`'s bridge workflow, not something I'm trying to silence.
 - `epub.entry.ts` has no `setSpokenWordRange` handler — `TFReaderApi<'openEpub'>` is missing the
-  property, another compile error. My best guess at the shape (yours to confirm or override): reuse
-  `highlightSeam.ts`'s `add`/`remove` with the existing `TTS_OWNER` and a new variant (e.g.
-  `'spoken-word'`) so it doesn't collide with the sentence wash `setSpokenRange` already paints, and
-  `epubCfiRange.ts`'s `splitCfiRange`/`expandPointCfi`/`joinCfiRange` look like they'd turn
-  `(sentenceCfi, start, end)` into a word-range CFI by string arithmetic without needing the DOM —
-  but that's a pointer, not a prescription.
+  property, another compile error. Painting should reuse `highlightSeam.ts`'s `add`/`remove` with
+  the existing `TTS_OWNER` and a new variant (e.g. `'spoken-word'`) so it doesn't collide with the
+  sentence wash `setSpokenRange` already paints — same pattern `setSpokenRange` uses with
+  `currentSpokenCfi`. **Correction to what I said before:** resolving `(sentenceCfi, start, end)`
+  into a word-range CFI is not just gluing together `epubCfiRange.ts`'s existing exports.
+  `expandPointCfi(startCfi, length)` only extends a GIVEN start point forward into a range — it has
+  no way to produce a NEW point CFI offset from an existing one, which is exactly what the leading
+  `start` offset needs (the word's own beginning within the sentence, not the sentence's own start).
+  Checked its body: the offset arithmetic that would do this lives inline and unexported inside that
+  function. So this needs new code — either exporting a point-advance step from `epubCfiRange.ts` (a
+  natural, testable addition next to its siblings) or writing the equivalent in `epub.entry.ts`
+  itself — not a pure reuse. Confirmed by reading `expandPointCfi`'s source, not inferred.
 - `pdf.entry.ts` needs the same no-op row `setSpokenRange` already has.
 - `WEBVIEW_BRIDGE.md`'s "Host → WebView" table needs the new row.
 - `npm run reader:build-html` needs a run once the above lands, both HTML artifacts committed.
@@ -166,3 +172,28 @@ is never sent until there is a WebView handler to receive it. `useTtsSession.tes
 assert zero `setSpokenWordRange` calls in `'sentence'` mode. Flagging this because it's the kind of
 bug a WebView-side implementer would otherwise inherit silently — nothing to act on now that it's
 fixed, but worth knowing it was there.
+
+---
+
+## 7. `C1`/§4 follow-up — accessibility prefs stay account-scoped for now; `accessibilityGateway.ts` deleted
+
+**2026-09-03.** Two closures from the same review pass:
+
+**Per-account vs per-device sync scope (§4 above), decided:** staying account-scoped for now,
+revisited when real multi-device auth lands. Nothing forces the decision today — `B1`'s dev token
+is one identity with no per-device concept behind it yet, so "per-device" has no seam to attach to
+without inventing one speculatively. The risk §4 named is real (TTS voice/rate/pitch and especially
+`reduceMotion` are device/OS properties, not account properties) but is not yet observable: nobody
+has two devices signed into the same dev token today. Writing it down here rather than leaving it
+implicit, per §4's own warning that retrofitting per-device scope onto an already-syncing pref
+later is a migration, not a field. Revisit this entry when real per-device identity exists —
+`reduceMotion` is the field most likely to need to defer to live OS state instead of the synced
+value at that point.
+
+**`src/features/accessibility/persistence/accessibilityGateway.ts` and its test are deleted.** That
+pair (`sqliteAccessibilityGateway`/`mongoAccessibilityGateway`) was unreferenced outside its own
+test — confirmed by a repo-wide grep before removing it — and its Mongo half called the backend
+directly (`api.create`/`api.update`), which was never a real seam: accessibility code has no
+endpoint of its own to call, and Karthik's sync engine is the only thing that talks to Mongo.
+Accessibility's job stays exactly `accessibilityStore.update()` writing to SQLite; nothing here
+should ever reach past that. Verified no other file imported either half before deleting.
