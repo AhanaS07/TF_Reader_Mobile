@@ -215,8 +215,14 @@ export const FAIL_CLOSED_CODES: ReadonlySet<DownloadError> = new Set([
  * (reader is at their device limit on *this* device, a concurrency refusal not a revocation, but
  * still fail-closed: this device cannot read right now). See API_CONTRACT_NOTES.md B7 for the
  * rationale — the caller should treat a DEVICE_LIMIT_REACHED as fatal to this per-open attempt.
+ *
+ * RETURNS whether this was a GENUINE server confirmation (`true`) or a fail-open (`false`) —
+ * added for `readingAccessMonitor.ts`'s online-licence-rollover call, which must only bump
+ * `lastValidatedAt` on a real "yes, still allowed", never on "couldn't tell, allowing anyway".
+ * Existing callers (`readerAssets.ts`) that only `await` this for its side effect are unaffected —
+ * `void` widened to `boolean` is not a breaking change for a caller that ignores the result.
  */
-export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat): Promise<void> {
+export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat): Promise<boolean> {
   try {
     // Deliberately INSIDE the try, not above it: this fails open on the same terms as the
     // network call below. Found in review — with this call outside the try, a keychain hiccup
@@ -231,6 +237,7 @@ export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat)
       devicePublicKey: publicKeyToRawBase64(publicKey),
       wantSearchIndex: false,
     });
+    return true;
   } catch (cause) {
     if (cause instanceof DownloadFailure && FAIL_CLOSED_CODES.has(cause.code)) {
       throw cause;
@@ -241,5 +248,6 @@ export async function verifyReadingAccess(bookId: BookId, format: ReadingFormat)
       `readingSessionClient: per-open access re-verification failed for ${bookId}, allowing the read (fail-open)`,
       cause,
     );
+    return false;
   }
 }

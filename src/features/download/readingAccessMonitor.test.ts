@@ -5,13 +5,19 @@
 
 import { startAccessMonitor, ACCESS_CHECK_INTERVAL_MS } from './readingAccessMonitor';
 import { verifyReadingAccess } from './readingSessionClient';
+import { recordLicenceValidation } from '../encryption/contentStore';
 import { DownloadError, DownloadFailure } from './errors';
 
 jest.mock('./readingSessionClient', () => ({
   verifyReadingAccess: jest.fn(),
 }));
 
+jest.mock('../encryption/contentStore', () => ({
+  recordLicenceValidation: jest.fn().mockResolvedValue(undefined),
+}));
+
 const mockVerify = verifyReadingAccess as jest.MockedFunction<typeof verifyReadingAccess>;
+const mockRecordValidation = recordLicenceValidation as jest.MockedFunction<typeof recordLicenceValidation>;
 
 // Flushes the microtask queue so a rejected/resolved promise created inside a timer callback
 // (tick() calls verifyReadingAccess().catch(...), both async) settles before assertions run —
@@ -25,6 +31,7 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   jest.useFakeTimers();
   mockVerify.mockReset();
+  mockRecordValidation.mockClear();
 });
 
 afterEach(() => {
@@ -39,7 +46,7 @@ describe('startAccessMonitor', () => {
   });
 
   it('re-checks every ACCESS_CHECK_INTERVAL_MS while left running', async () => {
-    mockVerify.mockResolvedValue(undefined);
+    mockVerify.mockResolvedValue(true);
     startAccessMonitor('book-001', 'EPUB', jest.fn());
 
     jest.advanceTimersByTime(ACCESS_CHECK_INTERVAL_MS);
@@ -87,7 +94,7 @@ describe('startAccessMonitor', () => {
   });
 
   it('stop() prevents any further tick', async () => {
-    mockVerify.mockResolvedValue(undefined);
+    mockVerify.mockResolvedValue(true);
     const handle = startAccessMonitor('book-001', 'EPUB', jest.fn());
 
     handle.stop();
@@ -97,7 +104,7 @@ describe('startAccessMonitor', () => {
   });
 
   it('pause() suspends ticking and resume() restarts a full interval (not a resumed partial one)', async () => {
-    mockVerify.mockResolvedValue(undefined);
+    mockVerify.mockResolvedValue(true);
     const handle = startAccessMonitor('book-001', 'EPUB', jest.fn());
 
     // Most of the way through the first interval, then paused.
@@ -119,7 +126,7 @@ describe('startAccessMonitor', () => {
   });
 
   it('resume() is a no-op once stopped', async () => {
-    mockVerify.mockResolvedValue(undefined);
+    mockVerify.mockResolvedValue(true);
     const handle = startAccessMonitor('book-001', 'EPUB', jest.fn());
 
     handle.stop();
@@ -130,12 +137,49 @@ describe('startAccessMonitor', () => {
   });
 
   it('resume() while already running does not double the interval', async () => {
-    mockVerify.mockResolvedValue(undefined);
+    mockVerify.mockResolvedValue(true);
     const handle = startAccessMonitor('book-001', 'EPUB', jest.fn());
 
     handle.resume(); // already running from startAccessMonitor's own initial resume() — must be inert
     jest.advanceTimersByTime(ACCESS_CHECK_INTERVAL_MS);
     await flushMicrotasks();
     expect(mockVerify).toHaveBeenCalledTimes(1);
+  });
+
+  // ── online licence rollover ─────────────────────────────────────────────────
+
+  it('bumps lastValidatedAt (recordLicenceValidation) on a GENUINE tick success', async () => {
+    mockVerify.mockResolvedValue(true);
+    startAccessMonitor('book-001', 'EPUB', jest.fn());
+
+    jest.advanceTimersByTime(ACCESS_CHECK_INTERVAL_MS);
+    await flushMicrotasks();
+
+    expect(mockRecordValidation).toHaveBeenCalledWith('book-001');
+  });
+
+  it('does NOT bump lastValidatedAt on a fail-open tick (verifyReadingAccess resolves false)', async () => {
+    // false means "couldn't confirm, allowing the read anyway" — the whole point of separating
+    // this from a genuine `true` is that a device that's actually offline must not have its
+    // offline window quietly extended just because this tick's own fail-open policy let it pass.
+    mockVerify.mockResolvedValue(false);
+    startAccessMonitor('book-001', 'EPUB', jest.fn());
+
+    jest.advanceTimersByTime(ACCESS_CHECK_INTERVAL_MS);
+    await flushMicrotasks();
+
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+    expect(mockRecordValidation).not.toHaveBeenCalled();
+  });
+
+  it('does NOT bump lastValidatedAt on an explicit denial', async () => {
+    const failure = new DownloadFailure(DownloadError.ENTITLEMENT_REVOKED, 'book-001');
+    mockVerify.mockRejectedValue(failure);
+
+    startAccessMonitor('book-001', 'EPUB', jest.fn());
+    jest.advanceTimersByTime(ACCESS_CHECK_INTERVAL_MS);
+    await flushMicrotasks();
+
+    expect(mockRecordValidation).not.toHaveBeenCalled();
   });
 });

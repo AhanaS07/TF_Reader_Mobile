@@ -1,9 +1,16 @@
 // Owner: Reader (Ahana).
 //
 // Segmentation and CFI-minting against a REAL epub.js book — the DOM/library-touching half of the
-// TTS seam. Not unit-tested, same tier as `epub.entry.ts`: it walks live DOM and calls epub.js
-// instance methods, neither of which a Jest/jsdom test can stand in for meaningfully. The PURE
-// splitting/skip logic lives in `ttsSegmentation.ts`, which is tested.
+// TTS seam. The PURE splitting/skip logic lives in `ttsSegmentation.ts` and the PURE offset
+// arithmetic in `ttsWordOffsets.ts`; both are tested.
+//
+// >>> TWO HALVES, TWO TIERS. <<< The DOM-walking half IS jsdom-testable and is now tested
+// (`epubTtsResolver.test.ts`) — a Range's text content and tree order are real DOM behaviour with
+// no layout involved, which jsdom answers exactly as WebKit does, the same argument
+// `highlightGeometry.test.ts` already makes. The epub.js instance-method half — `cfiFromRange`,
+// `Rendition.getRange`, `Section.load` — is NOT: a fake for those would be a fake of CFI
+// arithmetic, and asserting against it would be testing the fake. That half stays untested, same
+// tier as `epub.entry.ts`, and the test asserts on the resolved Range's own text instead.
 //
 // >>> THREE SHIPPED epub.js TYPES ARE WRONG, in the same way `addStylesheetCss`'s already documented
 // in epub.entry.ts. Each is narrowed ONCE, here, with a local cast — never assumed at a call site. <<<
@@ -35,6 +42,7 @@ import type { Book, Contents, Rendition } from 'epubjs';
 import type { TtsFetchResult, TtsSentence } from '@/features/reader/tts/readerTextProvider';
 
 import { isSkippableByAttributes, isSkippableTagName, splitIntoSentences } from './ttsSegmentation';
+import { collapseWithMap, indexOfOffset, rawSpanForCollapsed } from './ttsWordOffsets';
 
 /** Structural alias for epub.js's un-exported `Section` class — `Book`/`Spine`'s own declarations
  * reference it internally, so it needs no import; only naming it publicly would. */
@@ -114,20 +122,7 @@ function buildRuns(root: Node): { runs: TextRun[]; concatenated: string } {
 /** Map one offset in the concatenated string back to a (node, localOffset) DOM position, via binary
  * search over `runs` (sorted by `concatStart` by construction). */
 function locate(runs: TextRun[], globalOffset: number): { node: Text; offset: number } | null {
-  let lo = 0;
-  let hi = runs.length - 1;
-  let found = -1;
-
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (runs[mid].concatStart <= globalOffset) {
-      found = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-
+  const found = indexOfOffset(runs.length, (index) => runs[index].concatStart, globalOffset);
   if (found === -1) return null;
   const run = runs[found];
   const localOffset = globalOffset - run.concatStart;
@@ -374,4 +369,165 @@ export async function resolveNext(book: Book, rendition: Rendition, after: strin
 
   const found = await firstSentenceFrom(book, rendition, anchor.spineIndex + 1, 0);
   return found ? ok(found) : { status: 'endOfBook' };
+}
+
+/** One text node's contribution to a Range's string, and where that contribution lands in it. */
+export interface TextPiece {
+  node: Text;
+  /** Offset into `node.data` this piece starts at — non-zero only for the range's first node. */
+  nodeStart: number;
+  /** Offset into the assembled raw string this piece starts at. Strictly ascending across pieces. */
+  rawStart: number;
+  length: number;
+}
+
+/**
+ * The text a Range stringifies to, plus the per-node provenance of every character in it.
+ *
+ * >>> EXPORTED SO THE TEST CAN ASSERT `raw === range.toString()` DIRECTLY. <<< That equality is the
+ * whole warrant for using this instead of `range.toString()`, and it is not obvious from the
+ * implementation: `intersectsNode` is a LOOSER predicate than the DOM standard's "contained", so
+ * this agrees with the stringifier only because a boundary node outside the range slices to an
+ * empty string and is dropped. Verified by test rather than argued from the spec.
+ *
+ * >>> THE WALK ROOT IS NOT `commonAncestorContainer`. <<< `createTreeWalker(root, …)` never yields
+ * the root itself — `nextNode()` only descends. A sentence lying within a single text node has that
+ * text node AS its common ancestor, so rooting there walks nothing, `raw` comes back empty, and
+ * every word highlight in the most common case in a book silently fails to paint. The DOM
+ * standard's own stringifier special-cases `start === end && isText` for the same reason.
+ */
+export function collectTextPieces(range: Range): { raw: string; pieces: TextPiece[] } {
+  const ancestor = range.commonAncestorContainer;
+  const root = ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode : ancestor;
+  const pieces: TextPiece[] = [];
+  let raw = '';
+  if (!root) return { raw, pieces };
+
+  const doc = root.ownerDocument ?? document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+
+  let current = walker.nextNode();
+  while (current) {
+    const node = current as Text;
+    if (range.intersectsNode(node)) {
+      const from = node === range.startContainer ? range.startOffset : 0;
+      const to = node === range.endContainer ? range.endOffset : node.data.length;
+      // Empty slices are dropped rather than recorded: they are what a boundary node outside the
+      // range degrades to, and a zero-length piece would break `rawStart`'s strict ascent.
+      if (to > from) {
+        pieces.push({ node, nodeStart: from, rawStart: raw.length, length: to - from });
+        raw += node.data.slice(from, to);
+      }
+    }
+    current = walker.nextNode();
+  }
+
+  return { raw, pieces };
+}
+
+/** Carve a half-open span of the assembled raw string back out as a Range over the same nodes. */
+function subRangeForRawSpan(
+  doc: Document,
+  pieces: TextPiece[],
+  rawStart: number,
+  rawEnd: number,
+): Range | null {
+  const at = (index: number): number => pieces[index].rawStart;
+
+  const startIndex = indexOfOffset(pieces.length, at, rawStart);
+  if (startIndex === -1) return null;
+
+  let endIndex = indexOfOffset(pieces.length, at, rawEnd);
+  if (endIndex === -1) return null;
+  // An end landing EXACTLY on a piece boundary belongs to the piece before it. Ending at offset 0
+  // of the next node stringifies identically but mints a different CFI, and leaves marks-pane a
+  // zero-width box to draw at the head of the following node — a stray sliver on screen with
+  // nothing in the highlight's own state to explain it.
+  if (endIndex > startIndex && pieces[endIndex].rawStart === rawEnd) endIndex--;
+
+  const startPiece = pieces[startIndex];
+  const endPiece = pieces[endIndex];
+  const startOffset = startPiece.nodeStart + (rawStart - startPiece.rawStart);
+  const endOffset = endPiece.nodeStart + (rawEnd - endPiece.rawStart);
+  if (startOffset > startPiece.node.data.length) return null;
+  if (endOffset > endPiece.node.data.length) return null;
+
+  const range = doc.createRange();
+  range.setStart(startPiece.node, startOffset);
+  range.setEnd(endPiece.node, endOffset);
+  return range;
+}
+
+/**
+ * `(sentenceCfi, start, end)` — offsets into the sentence's spoken text — to a CFI covering just
+ * that word, or `null`.
+ *
+ * FIRE-AND-FORGET AND BEST-EFFORT, matching `ReaderTextProvider.setSpokenRange`'s contract: every
+ * failure returns `null` silently. A word highlight that cannot be resolved must never interrupt
+ * speech or post an error, so there is one catch-all around the whole body and no path out of here
+ * that throws.
+ *
+ * NOTHING IS RETAINED PER SENTENCE, AND THAT IS NOT A MEMORY DECISION. `resolveSection` segments
+ * from EITHER the live rendered document OR an offline `loadSectionDocument()` parse, and which one
+ * it used is invisible to `CachedSentence`. A retained `TextRun[]` could therefore hold Text nodes
+ * belonging to a detached document that was never rendered and never will be — not stale, *wrong*,
+ * with no correct moment to use them and no hook that would repair them. That is why
+ * `resolveSection` already extracts only strings. The Range is re-resolved from the CFI instead,
+ * which is the one handle that survives a re-render. If this ever profiles hot, memo the PURE piece
+ * map — numbers only — keyed on the sentence CFI so it self-evicts when the sentence changes, and
+ * clear it in `resetTtsState()`. Never cache a live Range or a Text node.
+ */
+export function resolveSpokenWordCfi(
+  rendition: Rendition,
+  sentenceCfi: string,
+  start: number,
+  end: number,
+): string | null {
+  try {
+    const anchor = cfiIndex.get(sentenceCfi);
+    if (!anchor) return null;
+
+    const sentence = sectionCache.get(anchor.spineIndex)?.sentences[anchor.sentenceIndex];
+    if (!sentence) return null;
+
+    const contents = findRenderedContents(rendition, anchor.spineIndex);
+    if (!contents) return null;
+
+    // Documented at the top of this file: `Rendition.getRange` is typed non-optional and really
+    // returns undefined when no VISIBLE view matches the CFI's spine position. Reachable whenever
+    // the reader pages away mid-utterance, and across a chapter boundary during auto-continue.
+    // Nothing to paint into a section that is not on screen, so this is a skip, not a failure.
+    const range = renditionGetRange(rendition, sentenceCfi);
+    if (!range) return null;
+
+    const { raw, pieces } = collectTextPieces(range);
+    if (pieces.length === 0) return null;
+
+    const map = collapseWithMap(raw);
+    // THE GATE. The offsets index what was SPOKEN; this proves the Range still covers exactly that
+    // before any of them are believed. Without it a shifted or re-flowed range yields a plausible
+    // box over the wrong word — a failure with nothing on screen to explain it.
+    //
+    // It also happens to be the first runtime check of an assumption this file's header only
+    // asserts: that a CFI minted from the offline XHTML parse resolves to the same text once the
+    // section is rendered as HTML. If those two parses ever disagree, this bails instead of
+    // painting.
+    if (map.text !== sentence.text) return null;
+
+    const rawSpan = rawSpanForCollapsed(map, start, end);
+    if (!rawSpan) return null;
+
+    const subRange = subRangeForRawSpan(contents.document, pieces, rawSpan.start, rawSpan.end);
+    if (!subRange || subRange.collapsed) return null;
+
+    const cfi = contents.cfiFromRange(subRange);
+    // `highlightSeam.ts` files EVERY owner under the same epub.js annotation type, so its map is
+    // keyed on the cfiRange alone: a word range equal to the sentence range would displace the
+    // sentence highlight, and removing either would remove whichever was filed. A distinct owner
+    // would NOT help. Costs one word highlight on a single-word sentence, which the sentence
+    // highlight already covers exactly.
+    return cfi === sentenceCfi ? null : cfi;
+  } catch {
+    return null;
+  }
 }

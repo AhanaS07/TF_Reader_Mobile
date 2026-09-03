@@ -254,46 +254,53 @@ for recording it here: it is shared (`contentStore.ts` is its other consumer). I
 exist, rather than returning `[]`, so a caller that stops guarding on `.exists` fails in the test
 run instead of silently passing.
 
-### Known open items — both are Abhinav's call
+### Known open items — Abhinav's call
 
-This list used to have four. **The stale keychain-cached BEK is fixed:** `store()` now clears the
-cached BEK when the incoming `wrappedBek` differs from the persisted one
+This list used to have four, then two. **The stale keychain-cached BEK is fixed:** `store()` now
+clears the cached BEK when the incoming `wrappedBek` differs from the persisted one
 (`invalidateStaleCachedKeyIfRotated`, `contentStore.ts:206`), and
 `contentStore.edgecases.test.ts` pins the fix rather than the defect. `devContentSeed.ts`'s
 `destroy()`-before-`store()` stays, but for the other things destroy() clears, not for this.
 
-The two below are memory/lifecycle defects found from Reader's side. They are **not** the whole
-list of open items in Download/Encryption — the contract-driven ones live in those directories'
+The one below is a memory defect found from Reader's side. It is **not** the whole list of open
+items in Download/Encryption — the contract-driven ones live in those directories'
 `API_CONTRACT_NOTES.md` (see the table above).
 
 **The resident-ciphertext-after-`close()` item is FIXED**, by Abhinav on 2026-08-18: `close()` now
 does `packageCache.delete(bookId)`, and `decryptBook()` additionally empties `pkg.content` for
-non-Elite packages once the plaintext exists (two of the "roughly six" copies item 2 counts). The
+non-Elite packages once the plaintext exists (two of the "roughly six" copies item 1 counts). The
 cold-read trade-off it names below was taken deliberately and is documented at both call sites. The
 cost lands in Reader — `prepareBook`'s `getFormat` is now only cheap WARM, because a cold
 `resolvePackage` reads the whole ciphertext with a synchronous `bytesSync()`; `readerAssets.ts`
 records that where the call is made.
 
-**1. `close()` is now TERMINAL for Elite, which the frozen contract says only `destroy()` is.**
-Introduced by the fix above: `close()` deletes the `packageCache` entry unconditionally, but Elite
-(`licence.canPersist === false`) never persists — `store()` returns before its `writeFile` calls, so
-that cache entry is the **only** copy. After `close()` an Elite book cannot be reopened at all:
-`openSession` → `resolvePackage` → cache miss → `loadPersisted` finds no meta → the whole read fails
-`DECRYPTION_FAILED` ("no stored package for this book"). Confirmed by probe, 2026-08-18.
+**The `close()`-is-TERMINAL-for-Elite item is FIXED**, by Abhinav on 2026-08-26, and it stopped
+being hypothetical before it was closed. That entry said the defect was invisible "because nothing
+ships Elite content" — that ceased to be true when `openBook()` began forcing `canPersist: false`
+on every STREAMED book, which makes every streamed book Elite. The symptom in the app was a
+backend audiobook (`dev-sample-audio-encrypted`) failing `DECRYPTION_FAILED` on re-entry, since
+`audioAssetResolver` calls `closeBook()` after every resolve.
 
-`content-provider.ts` draws exactly the distinction this erases: `openSession` is specified for "a
-stored (**or in-memory Elite**) book", `close()` is "REVERSIBLE", and `destroy()` is the "TERMINAL"
-one. So this is a frozen-contract divergence, not a preference. It is invisible today because
-nothing ships Elite content — `devContentSeed.ts` seeds `canPersist: true` — which is precisely why
-it needs writing down rather than discovering later. **No test covers Elite close-then-reopen**;
-`contentStore.test.ts`'s Elite block stops at `store()` and `decryptBook()`.
+`close()` now exempts Elite from the `packageCache` delete — the guard that entry proposed — so it
+is REVERSIBLE for every tier and `destroy()` is the only terminal one, as `content-provider.ts`
+specifies. No RAM is given up: `decryptBook()` already skips its `pkg.content` release for Elite
+for the same reason, so there was never a second copy to reclaim, and the plaintext is still zeroed.
+`contentStore.test.ts` now pins the whole lifecycle per tier, and the `EDGE:` block in
+`contentStore.edgecases.test.ts` that pinned the defect is gone, per its own instruction.
 
-The fix is to guard the delete on the package rather than drop it unconditionally (Elite has no disk
-copy to fall back to, so it must stay cached until `destroy()`). Reader has no workaround and this is
-Abhinav's call — same reasoning as the item it replaced: `contentProvider.ts` exposes only
-`closeBook`, and reaching past that seam is what the seam exists to prevent.
+**A second defect travelled with it, in Reader, and is fixed in the same change.** `contentStore`
+sessions are keyed by bookId with **no reference counting** — one session per book, not one per
+caller — so two concurrent `resolveAudioAssetUri()` calls tore each other down: the first to finish
+called `closeBook()`, which both dropped the package (the `DECRYPTION_FAILED` above) *and* zeroed
+the shared plaintext buffer the second was about to write, silently producing a scratch file of
+pure zeros. `AudioPlayerScreen`'s load effect is the caller that overlaps — its `cancelled` flag
+suppresses a stale `setUri` but does not abort the in-flight promise, so leaving the screen
+mid-load and re-entering leaves two acquires running against one session.
+`audioAssetResolver.ts` now dedupes in-flight acquires per bookId (`inFlight`), cleared on settle
+so it stays a dedupe and not a URI cache. **If you add another caller of a `contentStore` session,
+assume no refcounting and do not close a book someone else may be reading.**
 
-**2. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
+**1. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
 holds and is now proven twice over: **both** codec swaps have landed, time fell by ~30x, and the
 peak did not move. Measured on a real 20 MB EPUB (iPhone 17 Pro simulator, dev build):
 
@@ -479,19 +486,84 @@ code typed against the interface cannot reach them; if deleting the fake breaks 
 ownership boundary, the sequencing, and the open items. Read it before changing
 `readerTextProvider.ts`, and update it in the same change.
 
-## Session-only reading progress — not a Sync/Personalization concern
+## Reading-position resume — one store, all three formats, no in-memory cache
 
-`src/features/reader/sessionProgress.ts` is an in-memory `Map<BookId, ReaderPosition>`, written from
-`ReaderScreen`'s `onRelocated` prop and read by `src/navigation/ReaderRouteScreen.tsx` to resume a
-book at the position it was left at, as long as `BookListScreen -> Reader -> BookListScreen ->
-Reader` all happens within one app run. It is **not** durable: module state, gone on relaunch, on
-purpose — that is what "session" means here.
+Every format's resume is durable and synced through `progressStore.savePosition()`/`currentLocator()`
+(Sync's side) — there is no session-only cache layered in front of it for any format. An earlier
+version of `src/navigation/ReaderRouteScreen.tsx` kept one (`sessionProgress.ts`, an in-memory
+`Map<BookId, ReaderPosition>`) as a same-app-run fast path, on the reasoning that `progressStore` was
+only needed for a cold start or a different device. That reasoning had a real hole: the cache had no
+way to learn about a position written elsewhere while THIS book merely sat backgrounded — not
+relaunched — on this device, so a stale in-memory value could outrank the genuinely current row in
+`progressStore` for the rest of that app run. It was deleted for that reason, not just for symmetry
+with AUDIO (which never had one, for lack of a cheap synchronous source in the first place).
 
-**Do not confuse this with `progressStore.savePage()`/`savePosition()`** (Sync's side, referenced in
-`ReaderScreen.tsx`'s own note on its `position` state) — that is the durable, cross-device progress
-record, and writing it is deliberately Personalization/Sync's stage, not Reader's. This module solves
-a narrower, permanent-Reader-scaffolding problem: an in-app navigator with no durable-progress wiring
-behind it yet would otherwise always reopen a book at its start.
+`ReaderRouteScreen.tsx` now always awaits `progressStore.currentLocator()` before mounting
+`ReaderScreen` (behind a loading gate, same shape as `AudioPlayerRouteScreen.tsx`), converting via
+`readerProgressStore.ts`'s pure `Locator ⇄ ReaderTarget` functions, unless a caller supplies an
+explicit `initialTarget` (e.g. a tapped bookmark), which skips the read entirely. Every `relocated`
+writes through to `progressStore` too — throttled, with an unthrottled flush on unmount and on app
+backgrounding. `AudioPlayerRouteScreen.tsx` follows the identical shape for AUDIO.
+
+**Both resolve effects also await `syncEngine.run()` before reading `currentLocator()` — a new,
+deliberate call from Reader's own files into Sync's already-public API, not a change to
+`src/features/sync/` itself, but Karthik should know it exists.** Without it, the local
+`progressStore` row can itself be stale: `src/features/sync/useAutoSync.ts` (mounted once, at the
+app root) only re-syncs on an actual NetInfo offline→online EDGE, and backgrounding/foregrounding
+the app while the connection never drops — the common case — fires no such edge. A book advanced on
+a second device while this one sat merely backgrounded, not relaunched, would otherwise resume from
+a stale local position, and a write from this device afterward would diverge from a starting point
+it never actually caught up to. `syncEngine.run()` is safe to call this way — concurrent calls share
+one run rather than racing, so this costs nothing extra when `useAutoSync`'s own trigger already has
+one in flight, and it never rejects (`execute()` catches internally).
+
+**An already-open EPUB/PDF screen is covered too — by asking, not by jumping silently.**
+`ReaderRouteScreen.tsx` subscribes to `progressStore.subscribe()` (fired on every local write AND
+on every pulled server record that actually applies — `syncableTable.ts`'s own doc) once the initial
+resume has resolved. On each notification it re-reads `currentLocator()` and compares it (via
+`readerProgressStore.ts`'s `locatorsEqual`, not `===`) against what is CURRENTLY DISPLAYED
+(`toLocator(lastPositionRef.current)`) — stable to compare against because text only moves on a
+discrete `relocated` event. Equal means "unchanged, or an echo of this device's own write," and
+nothing happens. Different means another device genuinely moved this book while this one was open,
+and `Alert.alert` offers a choice rather than silently relocating a reader who may already be well
+past either position: "Continue here" flushes the CURRENT on-screen position through with a fresh,
+later timestamp (wins the next comparison anywhere else this book syncs to); "Resume from there"
+adopts the incoming locator as a new `initialTarget` and forces a remount (`resumeGeneration` folded
+into `ReaderScreen`'s `key`) — the same mechanism a cold-start resume already needs, since
+`ReaderScreen`'s own contract says a new `initialTarget` requires a new instance, not a live prop
+change. Either choice goes through the same `progressStore`/outbox path every other write does, so a
+second device converges on it the ordinary way, next time it syncs.
+
+**AUDIO does NOT use that shape — it gates the Play button instead, and that is a deliberate
+divergence, not a gap to close later.** A background subscription is wrong for audio specifically:
+position drifts continuously WHILE PLAYING, and this device's own throttled writes
+(`AUDIO_PROGRESS_WRITE_THROTTLE_MS`) still land during that time, so a subscription comparing
+against a moving position would flag this device's own advancing playback as a conflict roughly
+every throttle interval — and a genuinely idle second device with the same book open would see the
+same false alarms every time its own sync engine happened to pull. `AudioPlayerScreen.tsx` instead
+takes an `onBeforePlay?: () => Promise<boolean>` prop — resolve `true` to let `player.play()`
+proceed, `false` to refuse — and disables the Play button (showing "Checking…") for the promise's
+whole duration, so a slow check cannot race a second tap into a second one.
+`AudioPlayerRouteScreen.tsx` implements the gate: it tracks `lastPausedPositionSecondsRef`, set ONLY
+by `onPositionCommit` (pause/seek/unmount — never by the continuous `onPositionChange` ticks), and
+on every Play press awaits a fresh `syncEngine.run()` + `currentLocator()` and compares the two
+PAUSED positions. **Within `CONFLICT_THRESHOLD_MS` (5s), it resolves last-write-wins SILENTLY rather
+than merely ignoring the difference**: `syncEngine.run()` already resolved local-vs-remote for this
+exact row (`syncableTable.ts`'s row-level LWW), so the freshly-read value is not a guess, it is the
+answer — `lastPausedPositionSecondsRef` is updated to it before returning `true`, so the NEXT
+play-gate check (and the next write) compares against/builds on the winning position instead of the
+one that just lost. No reseek, no remount — a sub-5s difference is inaudible on resume. Past the
+threshold, it escalates to the same `Alert.alert` choice `ReaderRouteScreen.tsx` uses, and playback
+is blocked until the user answers. This means audio and text differ on purpose: EPUB/PDF can warn
+about a divergence while the reader keeps reading (nothing is running that a stale read could
+corrupt); audio's "keep going" is an OS-level irreversible action, so audio checks IMMEDIATELY
+BEFORE it, not passively in the background. Porting one screen's mechanism onto the other verbatim
+would reintroduce exactly the failure mode each shape was chosen to avoid.
+
+The corrupt/legacy-row fallback hazard in `progressStore.currentLocator()` — a null or unparseable
+`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is unrelated to this
+wiring and still open; see `src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and
+the pinning test in `src/features/sync/contractConformance.test.ts` (Karthik's call to fix or accept).
 
 ## Verifying a change
 

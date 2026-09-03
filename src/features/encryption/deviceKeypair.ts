@@ -160,13 +160,13 @@ export function publicKeyToRawBase64(publicKeyPem: string): string {
 
 /**
  * SHA-256 fingerprint of the device's own public key, in the "sha256:<hex>" format the real
- * backend uses on EncryptionDescriptor.keyFingerprint/SignedLicence.keyFingerprint. Computed over
+ * backend uses on EncryptionDescriptor.keyFingerprint/LocalLicenceRecord.keyFingerprint. Computed over
  * the RAW DER bytes (same bytes publicKeyToRawBase64 sends on the wire), not the PEM text —
  * hashing the wrong representation would make this "fingerprint of the raw key" claim false even
  * though it would still produce SOME string.
  *
  * This is the ONE PLACE this app decides what its own key's fingerprint is. downloadManager.ts
- * uses this value for SignedLicence.keyFingerprint — NOT the server's own reported
+ * uses this value for LocalLicenceRecord.keyFingerprint — NOT the server's own reported
  * EncryptionDescriptor.keyFingerprint — specifically so contentStore.ts's existing
  * `licence.keyFingerprint !== encryption.keyFingerprint` check is comparing two INDEPENDENTLY
  * derived values (ours vs. the server's claim) instead of a value against itself.

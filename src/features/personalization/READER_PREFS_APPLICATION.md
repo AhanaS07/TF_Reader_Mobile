@@ -127,12 +127,33 @@ a PDF open raises `NOT_READY`, and `flow`/`spread` miss `renderTo()`.
 | `spread` | `rendition.spread(...)` — `single`→`'none'`, `double`→`'auto'` (Ahana). `'always'` is identical in epub.js; `minSpreadWidth` (800) gates it, so **`double` is inert on a phone** — the settings picker should be honest about that. Today hard-coded `spread: 'none'`. |
 | `zoom` | PDF renderer (pdf.js scale) + images; reflowable EPUB scales via `fontSizePt` so the EPUB template may ignore it. Carried so one payload serves both renderers. **Pinch-zoom inside the WebView is ruled out (Ahana)** — zoom changes arrive only through prefs. |
 | `reduceMotion` | Already **resolved to a boolean** host-side (tri-state × OS). Reader suppresses the page-turn animation when true (prefs.ts DECISION LOG #2, confirmed). |
-| `highContrast`, `boldText`, `dyslexiaFont`, `readableSpacing` | Hruthik's flags, carried as booleans. Apply-time meaning is **Reader/Hruthik's** — including `dyslexiaFont`'s precedence over `fontFamily`, and the contrast recipe. `readerAppearance.ts` only forwards them. |
+| `highContrast`, `boldText`, `dyslexiaFont`, `readableSpacing` | Hruthik's flags, carried as booleans. Apply-time meaning is **Reader/Hruthik's** — including `dyslexiaFont`'s precedence over `fontFamily`, and the contrast recipe. `readerAppearance.ts` only forwards them. **Both have since been decided** — see the note under this table. |
 | `announcePageChanges` | `announce.pageChanges` (defaults true). Gates the WebView's `polite` page-change announcement — Hruthik `WEBVIEW_A11Y_FINDINGS.md` §3.7, which requires it through this composed-prefs path. |
 
 fontFamily/customFontUri **sanitising before they enter CSS is Ahana's, at apply time** — this file
 keeps passing them through unresolved. The a11y flags above are carried, not interpreted here: their
 meaning is applied Reader/Hruthik-side, which is what "one command, one resolve seam" buys.
+
+**Where the two delegated calls actually landed** (citation added 2026-09-03 by Reader/Ahana, in
+Personalization's file — flagged to Vaishnavi rather than made silently; the row above delegates
+without saying the answer, which is how a settled call gets re-litigated). Nothing in this file's
+own behaviour changes: both are resolved host-side in Reader and reach the shell through fields this
+table already lists.
+
+- **`dyslexiaFont` beats `font.family` outright**, and is gated on `format === 'EPUB'`.
+  `ReaderScreen.tsx`'s `buildAppearanceWithFont` — see the block comment above `wantsDyslexiaFont`
+  ("IT WINS OUTRIGHT OVER `font.family`, AND ONLY EPUB CAN HONOUR IT") and the ordering note above
+  `buildAppearanceWithFont` itself. It travels as `fontFamily` + `customFontUri`, so this table's
+  rows for those two are what carries it. `readerAnnouncements.ts` encodes the same ranking — it
+  checks `dyslexiaFont` before `fontFamily`, so one toggle announces "Dyslexia-friendly font on"
+  rather than "Font: OpenDyslexic"; the two must move together.
+- **The contrast recipe is `highContrastColors.ts`'s (Hruthik's)**, applied by `withHighContrast` at
+  the same seam and travelling as `fg`/`bg`/`link`. Independent of colour scheme, deliberately —
+  dark + high contrast is a valid pair.
+
+`src/features/reader/WEBVIEW_BRIDGE.md`, "The accessibility overrides are resolved HOST-SIDE, and no
+field was added for them", is the full account, including why neither one added a `ReaderAppearance`
+field.
 
 ---
 

@@ -27,7 +27,7 @@ import { getBook } from '@/features/encryption/contentProvider';
 import { contentStore, MAX_DECRYPTED_BYTES } from '@/features/encryption/contentStore';
 import { storeBek } from '@/features/encryption/keyStorage';
 import { ContentError } from '@/shared/contracts';
-import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 
 // THIRD COPY of these builders. The other two are contentStore.test.ts:29-89 and
 // contentStore.edgecases.test.ts:32-95. They are duplicated rather than shared because importing
@@ -44,7 +44,7 @@ function plaintextOf(sizeBytes: number, seed: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function licenceFor(bookId: string): SignedLicence {
+function licenceFor(bookId: string): LocalLicenceRecord {
   return {
     licenceId: `lic-${bookId}`,
     itemId: bookId,
@@ -52,7 +52,6 @@ function licenceFor(bookId: string): SignedLicence {
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
   };
 }
 

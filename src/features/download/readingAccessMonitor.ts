@@ -23,9 +23,17 @@
 // FIXED INTERVAL, NOT SELF-SCHEDULED OFF THE SESSION'S OWN expiresAt: a deliberate simplification.
 // self-scheduling would track the server's real TTL exactly, but this fixed value already sits
 // right at that TTL (see ACCESS_CHECK_INTERVAL_MS below) and needs no response parsing to drive it.
+//
+// ALSO THE ONLINE-LICENCE-ROLLOVER TICK, since 2026-09-03: every tick that GENUINELY confirms
+// access (verifyReadingAccess() resolves `true`, not a fail-open `false`) bumps this book's
+// `lastValidatedAt` (contentStore.ts's recordLicenceValidation), which is the anchor
+// licenseCheck.ts's 4-day offline cap counts from. A book being actively read resets its own
+// offline window every 5 minutes for as long as the device stays online — no separate rollover
+// mechanism, just this tick's success case doing one more thing.
 
 import type { BookId, ContentFormat } from '@/shared/contracts';
 import { verifyReadingAccess } from './readingSessionClient';
+import { recordLicenceValidation } from '../encryption/contentStore';
 import { DownloadFailure } from './errors';
 
 // Matches the real backend's own reading-session TTL (reading-session.ts's `expiresAt`, ~5
@@ -63,14 +71,23 @@ export function startAccessMonitor(
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function tick(): void {
-    void verifyReadingAccess(bookId, format).catch((cause: unknown) => {
-      // verifyReadingAccess rejects ONLY for FAIL_CLOSED_CODES (its own doc comment) — anything
-      // else already resolved silently (fail-open). A rejection here is therefore always a
-      // genuine, explicit denial worth stopping for, never a network hiccup.
-      if (stopped || !(cause instanceof DownloadFailure)) return;
-      stop();
-      onRevoked(cause);
-    });
+    void verifyReadingAccess(bookId, format)
+      .then((confirmed) => {
+        // Only a GENUINE confirmation rolls the offline window forward — a fail-open (`false`)
+        // means this tick couldn't actually reach the server, so it must not look like a
+        // check-in. recordLicenceValidation() is itself a no-op for a book that was never
+        // downloaded (nothing persisted to bump), so this is safe to call unconditionally for
+        // every open book, Elite included.
+        if (confirmed && !stopped) void recordLicenceValidation(bookId);
+      })
+      .catch((cause: unknown) => {
+        // verifyReadingAccess rejects ONLY for FAIL_CLOSED_CODES (its own doc comment) — anything
+        // else already resolved silently (fail-open). A rejection here is therefore always a
+        // genuine, explicit denial worth stopping for, never a network hiccup.
+        if (stopped || !(cause instanceof DownloadFailure)) return;
+        stop();
+        onRevoked(cause);
+      });
   }
 
   function clearTimer(): void {

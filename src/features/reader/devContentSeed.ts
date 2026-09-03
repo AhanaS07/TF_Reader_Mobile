@@ -26,7 +26,7 @@ import {
   publicKeyFingerprint,
   wrapBek,
 } from '@/features/encryption/deviceKeypair';
-import type { BookId, ContentFormat, EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { BookId, ContentFormat, EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 
 /* eslint-disable-next-line @typescript-eslint/no-require-imports -- Metro asset handle; `.epub` resolves via metro.config.js assetExts. */
 const SAMPLE_EPUB_MODULE = require('../../../assets/reader/sample-plaintext.epub') as number;
@@ -290,7 +290,7 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
   // wokay — see `src/shared/contracts/CONTRACT_ALIGNMENT.md`, C7.
   const keyFingerprint = await publicKeyFingerprint(publicKey);
 
-  const licence: SignedLicence = {
+  const licence: LocalLicenceRecord = {
     licenceId: `dev-licence-${bookId}`,
     // contentStore asserts itemId === bookId and that the two keyFingerprints match.
     itemId: bookId,
@@ -299,10 +299,6 @@ async function buildPackage(bookId: BookId, bytes: Uint8Array): Promise<Encrypte
     // true => Subscription: ciphertext persists and is reopenable offline.
     canPersist: true,
     rights: { print: false },
-    // Empty on purpose: contentStore does not verify RS256 yet (only expiry), so
-    // a value here would be decorative. When verification lands this fixture must
-    // start signing for real, or it will correctly stop loading.
-    signature: { alg: 'RS256', kid: 'dev-unverified', value: '' },
   };
 
   return {

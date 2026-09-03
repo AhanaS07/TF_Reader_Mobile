@@ -54,7 +54,8 @@ describe('the fail-open policy on Reader’s open path', () => {
     global.fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
     Keychain.getGenericPassword.mockRejectedValue(new Error('User interaction is not allowed.'));
 
-    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).resolves.toBeUndefined();
+    // Resolves `false` (unconfirmed, fail-open) rather than throwing — the read still proceeds.
+    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).resolves.toBe(false);
   });
 
   it('does cover a network failure — the read proceeds, as intended', async () => {
@@ -65,7 +66,8 @@ describe('the fail-open policy on Reader’s open path', () => {
     Keychain.setGenericPassword.mockResolvedValue({ service: 'x', storage: 'KeychainStorage' });
     global.fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
 
-    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).resolves.toBeUndefined();
+    // Resolves `false` (unconfirmed, fail-open) rather than throwing — the read still proceeds.
+    await expect(verifyReadingAccess('book-on-this-device', 'EPUB')).resolves.toBe(false);
   });
 
   it('still fails closed when the server explicitly revokes access', async () => {

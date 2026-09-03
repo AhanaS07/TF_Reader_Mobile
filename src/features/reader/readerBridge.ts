@@ -229,8 +229,8 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  *
  * Before the conversion the PDF page was DELIBERATELY NOT REPORTED: `relocated` was at the field
  * boundary that would have forced the conversion, nothing consumed a reading position, so the field
- * bought nothing and cost a day. Both halves of that have changed — the conversion has happened, and
- * `progressStore.savePage()` exists on Sync's side with nothing to feed it.
+ * bought nothing and cost a day. All three things that changed since: the conversion happened,
+ * `progressStore.savePosition()` on Sync's side is real, and `ReaderRouteScreen.tsx` now feeds it.
  *
  * `pageCount` rides along with `page` rather than arriving as its own message because they are only
  * meaningful together: "page 4" with no total is not something a reader can be shown, and a total
@@ -246,8 +246,8 @@ export type ReaderPosition =
  * NOT PART OF `ReaderPosition`, and the split is the point: a position is where to RESUME, a
  * section is what to CALL where you are. They change on different events (every page turn moves the
  * position; only a chapter boundary moves the section) and only one of them is worth announcing.
- * Folding a chapter name into `ReaderPosition` would also put it into `sessionProgress` and
- * `progressStore.savePosition()`, neither of which has any use for it.
+ * Folding a chapter name into `ReaderPosition` would also put it into `progressStore.savePosition()`,
+ * which has no use for it.
  *
  * `index` is the SPINE index, 0-based — the same numbering `epubOutline.ts` uses. `href` is the
  * spine item's own, and is what a chapter CHANGE is detected on: a `goTo` within the current

@@ -381,23 +381,22 @@ interface ReaderScreenProps {
   bookId: BookId;
 
   /**
-   * Where to `goTo` once, right after this open's first `rendered` — the resume half of session
-   * progress (`sessionProgress.ts`). Read ONCE, at mount: this component is already keyed on
-   * `bookId` (see above), so a genuinely new target means a remount, not a prop change on a live
-   * instance. Omit it and the book opens at its normal default location, same as before this prop
-   * existed.
+   * Where to `goTo` once, right after this open's first `rendered` — the resume half of reading
+   * progress. Read ONCE, at mount: this component is already keyed on `bookId` (see above), so a
+   * genuinely new target means a remount, not a prop change on a live instance. Omit it and the
+   * book opens at its normal default location, same as before this prop existed.
    *
    * NOT this component's concern to source or persist — same division as `onRelocated` below. A
-   * caller (`ReaderRouteScreen.tsx`) reads `sessionProgress.getSessionPosition` and converts it via
-   * `targetFromPosition`; this file just knows how to seek once, having no opinion on where the
-   * target came from.
+   * caller (`ReaderRouteScreen.tsx`) reads it from `progressStore.currentLocator()` and converts it
+   * via `readerProgressStore.ts`'s `targetFromLocator`; this file just knows how to seek once,
+   * having no opinion on where the target came from.
    */
   initialTarget?: ReaderTarget;
 
   /**
-   * Mirrors every `relocated` position outward, so a caller can keep `sessionProgress` current
-   * without this component knowing that store exists. Fired from the SAME `relocated` branch that
-   * already updates local `position` state — additive, not a second subscription.
+   * Mirrors every `relocated` position outward, so a caller can persist it without this component
+   * knowing where or how. Fired from the SAME `relocated` branch that already updates local
+   * `position` state — additive, not a second subscription.
    */
   onRelocated?: (position: ReaderPosition) => void;
 
@@ -454,10 +453,11 @@ export function ReaderScreen({
   /**
    * Where the reader is, as last reported.
    *
-   * NOT PERSISTED HERE, deliberately. `progressStore.savePage()` / `savePosition()` exist on Sync's
-   * side and this is finally the value they need, but writing a progress record is Personalization's
-   * stage and its own decisions (when to write, how often, what wins on conflict). Surfacing it is
-   * Reader's half; storing it is not, and doing both here would prejudge those.
+   * NOT PERSISTED HERE, deliberately. `progressStore.savePosition()` (Sync's side) now IS wired up —
+   * from `ReaderRouteScreen.tsx`'s `onRelocated` handler, via `readerProgressStore.ts`'s
+   * conversions — but the write policy (throttling, unmount/backgrounding flush, what wins on
+   * conflict) belongs to that caller, not to this component. Surfacing the position is Reader's
+   * half; deciding when to store it is not, and doing both here would prejudge that for every caller.
    */
   const [position, setPosition] = useState<ReaderPosition | null>(null);
 
@@ -692,6 +692,17 @@ export function ReaderScreen({
   const searchButtonRef = useRef<View | null>(null);
   const accessibilityButtonRef = useRef<View | null>(null);
 
+  /**
+   * Where focus ENTERS the Contents panel — the first chapter row, and the counterpart to
+   * `contentsButtonRef` above. See the effect next to `closeToc` for why it is the only entry ref
+   * the panel needs and why it carries no `setTimeout`.
+   *
+   * Attached to the row at index 0 only. The rows are a `map`, so every other one gets `null`
+   * rather than sharing this ref — a ref handed to N elements holds whichever mounted last, which
+   * for a 40-chapter book would send focus to the bottom of a list the user has not scrolled.
+   */
+  const firstTocRowRef = useRef<View | null>(null);
+
   const cancelPendingSeek = useCallback((): void => {
     pendingSeekRef.current = null;
     setAwaitingSeek(false);
@@ -770,9 +781,9 @@ export function ReaderScreen({
    * they were never exposed to this race the way session-resume and a fresh bookmark-open are.
    *
    * Safe to compare exactly, not just "close enough": every value that ever reaches
-   * `initialTargetRef` is already either an exact page number (`sessionProgress.ts`,
-   * `readerBookmarks.ts`'s `toTarget`) or an exact CFI string — never a spine href, which is the only
-   * case an exact compare would be the wrong question to ask.
+   * `initialTargetRef` is already either an exact page number (`readerProgressStore.ts`'s
+   * `targetFromLocator`, `readerBookmarks.ts`'s `toTarget`) or an exact CFI string — never a spine
+   * href, which is the only case an exact compare would be the wrong question to ask.
    */
   const pendingInitialVerifyRef = useRef<{ target: ReaderTarget; attempts: number } | null>(null);
 
@@ -875,8 +886,9 @@ export function ReaderScreen({
    *
    * `overrideDeclined` IS SESSION-ONLY AND IN-MEMORY, deliberately. It is not written to prefs:
    * Reader does not own `accessibility.*`, and "ignore accessibility" is not a flag to persist by
-   * accident. Same scope as sessionProgress.ts — it lasts as long as this screen does. It is also
-   * the escape hatch if scrolled flow ever renders badly on some book.
+   * accident. Module state, lasting only as long as this screen does — not written to disk and not
+   * synced, unlike reading position, which now IS both (`progressStore`, via `ReaderRouteScreen.tsx`).
+   * It is also the escape hatch if scrolled flow ever renders badly on some book.
    */
   const screenReaderEnabled = useScreenReaderEnabled();
   const overrideDeclined = useOverrideDeclined();
@@ -1560,6 +1572,37 @@ export function ReaderScreen({
     if (restoreFocus) focusOn(contentsButtonRef);
   }, []);
 
+  /**
+   * The other half of that pair: ENTER the Contents panel when it opens, so a screen-reader user
+   * lands on the first chapter instead of being left on the button behind a panel that just covered
+   * the screen. Item 2 of `READER_FOCUS_ORDER_HANDOFF.md`.
+   *
+   * KEYED ON THE TRANSITION, NOT ON THE FLAG, which is what makes this a legitimate exception to
+   * `a11yFocus.ts`'s warning against "is the panel open" effects. The early return leaves the CLOSE
+   * half entirely to `closeToc`, whose whole argument is which of the two closes this is; and the
+   * open half fires only from the Contents button's own press, since that is the one place that
+   * OPENS it — the `setShowToc((open) => !open)` toggle at ~2682. (Do not go looking for a
+   * `setShowToc(true)`: there is no such call, which is the point — one toggle is the whole
+   * surface.) So there is no render this can steal focus on that the user did not cause, and
+   * nothing here can race a panel opening over the TOC — that path goes through `closeToc(false)`
+   * and returns above.
+   *
+   * NO `setTimeout`, and not by omission. `VoicePicker` needs one because a `Modal` attaches its
+   * content on a native layer asynchronously, so focusing the instant `visible` flips no-ops. This
+   * panel is a plain conditionally-rendered `View` in the same tree, so its host node is attached by
+   * the time effects run for the commit that mounted it. Add one only with device evidence.
+   *
+   * ONE TARGET IS ENOUGH, though the handoff spec asks for two. It also names the empty-state
+   * `Text`, but the panel cannot be opened empty: the Contents button is `disabled` while
+   * `toc.length === 0` (pinned by "the Contents button reports disabled with no outline"), and that
+   * press is the only way in. A second ref for the empty branch would be unreachable code, and
+   * `focusOn` already no-ops silently if the row is somehow not mounted.
+   */
+  useEffect(() => {
+    if (!showToc) return;
+    focusOn(firstTocRowRef);
+  }, [showToc]);
+
   // `target` is a `ReaderTarget` — discriminated by format, so the host never has to know whether a
   // Contents row addresses a spine href or a page number. It hands back exactly what the shell sent.
   const goTo = useCallback(
@@ -1644,8 +1687,9 @@ export function ReaderScreen({
 
   /**
    * Whether the current position can be bookmarked. False before the first `relocated` — EPUB's `cfi`
-   * starts `null` until epub.js resolves a location (same nullability `sessionProgress.ts` guards) —
-   * and while the WebView is not ready, matching `submitPageJump`'s own guards on `send`.
+   * starts `null` until epub.js resolves a location (the same nullability `readerProgressStore.ts`'s
+   * `toLocator` guards against) — and while the WebView is not ready, matching `submitPageJump`'s
+   * own guards on `send`.
    */
   const canAddCurrentBookmark =
     send !== null && position !== null && (position.kind === 'page' || position.cfi !== null);
@@ -2340,6 +2384,16 @@ export function ReaderScreen({
                     return (
                       <Pressable
                         key={`${index}-${targetKey(item.target)}`}
+                        // THE PANEL'S FOCUS ENTRY POINT, on this row and no other — see
+                        // `firstTocRowRef`'s own note. `null` rather than `undefined` for the rest:
+                        // both leave the element unref'd, but `null` says the omission is a choice.
+                        //
+                        // NOT SKIPPED WHEN THE ROW IS DISABLED. A grouping heading with no href is
+                        // still a real, announceable stop in the traversal, and it is where a
+                        // sighted user's eye lands too; sending focus past it to the first
+                        // NAVIGABLE row would silently hide the outline's top level from a screen
+                        // reader.
+                        ref={index === 0 ? firstTocRowRef : null}
                         disabled={!isNavigable}
                         accessibilityState={{ disabled: !isNavigable }}
                         onPress={() => {
