@@ -110,15 +110,18 @@ export interface BootstrapAuthDeps {
 }
 
 export async function bootstrapAuth(deps: BootstrapAuthDeps = {}): Promise<void> {
+  // Wired here, not at module scope: a bare top-level setLicenceToken(...)
+  // call used to run the instant ANYTHING imported this file — including
+  // tests with no interest in auth at all, which mock '@config/licence' for
+  // their own reasons and don't supply setLicenceToken in that mock, and
+  // crashed on import as a result. Calling it here means it only ever runs
+  // when bootstrapAuth is actually invoked (real app boot, or a test that
+  // deliberately calls it), and it's idempotent — safe to call every time
+  // bootstrapAuth runs, which is once, at app start.
+  setLicenceToken(ensureFreshToken);
+
   console.log('bootstrapAuth: starting boot-time token check');
   await ensureFreshToken(deps);
   console.log('bootstrapAuth: done, isAuthenticated =', useSessionStore.getState().isAuthenticated);
   useSessionStore.getState().setAuthReady(true);
 }
-
-// Wired here, not in sessionStore.ts: this file already depends on
-// sessionStore.ts (for getToken/setSession/clearSession), so wiring the
-// provider the other way would make the two files import each other.
-// App.tsx imports this file at module scope specifically so this line runs
-// before any screen can mount and make a licence call.
-setLicenceToken(ensureFreshToken);
