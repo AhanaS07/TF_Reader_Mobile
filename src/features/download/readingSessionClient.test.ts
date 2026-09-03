@@ -194,7 +194,9 @@ describe('verifyReadingAccess', () => {
     mockGenerateDeviceKeypair.mockRejectedValue(new Error('keychain rejected storing the private key'));
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(verifyReadingAccess('book-001', 'EPUB')).resolves.toBeUndefined();
+    // Resolves `false` (fail-open, unconfirmed) rather than `true` (genuine confirmation) — the
+    // distinction readingAccessMonitor.ts's online-licence-rollover call depends on.
+    await expect(verifyReadingAccess('book-001', 'EPUB')).resolves.toBe(false);
 
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();

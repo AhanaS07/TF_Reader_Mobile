@@ -116,6 +116,18 @@ interface PersistedMeta {
    *  licence to seal) and for anything persisted before this field existed. decryptBook() treats
    *  a licence with no seal as ContentError.LICENCE_INVALID for anything that should have one. */
   licenceSeal?: SealedLicence;
+  /** ISO timestamp of the last time this device PROVED to flambeau it still has access to this
+   *  book — set at store() time (a download IS a validation) and bumped by
+   *  recordLicenceValidation() on every later genuine online success (licenseCheck.ts's online
+   *  path, readingAccessMonitor.ts's periodic re-check). This is the anchor the 4-day offline cap
+   *  (licenseCheck.ts's computeOfflineLicenceExpiry) counts from — "4 days since we last actually
+   *  heard from the server," not "4 days from whenever someone happens to check," which is what a
+   *  naive `Date.now() + 4 days` recomputed on every check would silently reduce to (it would
+   *  never expire, since the check and the anchor would always be the same instant). Absent only
+   *  for a meta.json written before this field existed; treated as already-due for revalidation
+   *  rather than granted a fresh window — see computeOfflineLicenceExpiry's own comment. Optional
+   *  in the type for that reason — every store() from this change onward always sets it. */
+  lastValidatedAt?: string;
 }
 
 function writeFile(file: File, content: string | Uint8Array): void {
@@ -388,6 +400,7 @@ async function store(pkg: EncryptedPackage): Promise<void> {
     mimeType: pkg.mimeType,
     hasIndex: !!pkg.index,
     licenceSeal: undefined, // a re-download/re-licence invalidates any previous seal (see below)
+    lastValidatedAt: new Date().toISOString(), // a download IS a validation — resets the 4-day cap
   };
   writeFile(metaFile(pkg.bookId), JSON.stringify(meta));
   // A fresh store() means a fresh licence (possibly a fresh BEK too) — do not let a STALE seal
@@ -866,27 +879,59 @@ async function invalidateLicence(bookId: BookId): Promise<void> {
  * - `licence: null, downloaded: true, revoked: true` — post-revocation: ciphertext on disk but
  *   the licence + BEK were stripped by `invalidateLicence()`. Not readable.
  * - `licence: present, expired: bool` — subscription/elite book with a real licence
+ *
+ * `lastValidatedAt` is `null` only for a meta.json written before that field existed —
+ * `licenseCheck.ts`'s `computeOfflineLicenceExpiry` treats that as already due for revalidation,
+ * not as a free pass. `expired` here is the licence's OWN stated expiry (`licence.expiresAt`,
+ * always a far-future placeholder today) — a DIFFERENT, narrower check than the 4-day rolling cap,
+ * which the caller computes separately from `lastValidatedAt`.
  */
-export async function getPersistedLicenceStatus(
-  bookId: BookId,
-): Promise<{ licence: LocalLicenceRecord | null; expired: boolean; downloaded: boolean; revoked: boolean }> {
+export async function getPersistedLicenceStatus(bookId: BookId): Promise<{
+  licence: LocalLicenceRecord | null;
+  expired: boolean;
+  downloaded: boolean;
+  revoked: boolean;
+  lastValidatedAt: string | null;
+}> {
   const parsed = parseMetaSafe(bookId);
-  if (!parsed) return { licence: null, expired: false, downloaded: false, revoked: false };
+  if (!parsed) return { licence: null, expired: false, downloaded: false, revoked: false, lastValidatedAt: null };
 
   // Post-revocation: licence was stripped by invalidateLicence(), ciphertext still on disk.
   // Distinct from genuine open-access: this book WAS encrypted and had a licence, but the
   // rights were revoked server-side.
   if (parsed.revokedAt) {
-    return { licence: null, expired: false, downloaded: true, revoked: true };
+    return { licence: null, expired: false, downloaded: true, revoked: true, lastValidatedAt: null };
   }
 
   if (!parsed.licence) {
-    return { licence: null, expired: false, downloaded: true, revoked: false };
+    return { licence: null, expired: false, downloaded: true, revoked: false, lastValidatedAt: null };
   }
 
   const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
   const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
-  return { licence: parsed.licence, expired, downloaded: true, revoked: false };
+  return {
+    licence: parsed.licence,
+    expired,
+    downloaded: true,
+    revoked: false,
+    lastValidatedAt: parsed.lastValidatedAt ?? null,
+  };
+}
+
+/**
+ * Bump `lastValidatedAt` to now for a previously-downloaded book — called on every GENUINE online
+ * confirmation that this device still has access (licenseCheck.ts's online success path,
+ * readingAccessMonitor.ts's periodic re-check succeeding for real, not fail-open). This is the
+ * "online licence rollover": a device that checks in on day 3 of a 4-day offline window gets a
+ * fresh 4 days from day 3, not a countdown that keeps running from the original download.
+ *
+ * No-op if the book was never downloaded (nothing persisted to update) or is Elite (no meta.json
+ * at all) — safe to call unconditionally from a caller that doesn't know which tier it's holding.
+ */
+export async function recordLicenceValidation(bookId: BookId): Promise<void> {
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return;
+  writeFile(metaFile(bookId), JSON.stringify({ ...parsed, lastValidatedAt: new Date().toISOString() }));
 }
 
 /**

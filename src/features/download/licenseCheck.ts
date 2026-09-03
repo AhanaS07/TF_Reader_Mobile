@@ -19,7 +19,7 @@
 
 import type { BookId, ContentFormat, ReadingSessionResponse, LocalLicenceRecord } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
-import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
+import { getPersistedLicenceStatus, invalidateLicence, recordLicenceValidation } from '../encryption/contentStore';
 import { openReadingSession } from './readingSessionClient';
 import { DownloadError, DownloadFailure, UnmappedServerResponse } from './errors';
 import { downloadStore } from '../sync/stores/downloadStore';
@@ -93,24 +93,39 @@ function synthesiseLicence(
 
 // 4-day offline licence cap: the maximum time a previously-downloaded book can be opened without
 // contacting the server. Computed at OPEN time (not at download time) as:
-//   min(now + 4 days, candidateExpiry)
+//   min(lastValidatedAt + 4 days, candidateExpiry)
 //
 // `candidateExpiry` is the licence's own `expiresAt` — a real due-date from the backend, once one
-// exists. Today it is always the FAR_FUTURE_PLACEHOLDER, so the result is always `now + 4 days`.
-// When the backend starts publishing real due dates, the cap naturally shortens to whichever
-// comes first: the server's own expiry, or 4 days from the last successful open.
+// exists. Today it is always the FAR_FUTURE_PLACEHOLDER, so the result is always
+// `lastValidatedAt + 4 days`. When the backend starts publishing real due dates, the cap naturally
+// shortens to whichever comes first: the server's own expiry, or 4 days from the last validation.
+//
+// ANCHORED ON `lastValidatedAt`, NOT `Date.now()` — this used to compute `Date.now() + 4 days`
+// right here and compare that to `Date.now()` moments later in the caller, which can never be
+// true: it was measuring "has 4 days passed between this line and the next one", not "has 4 days
+// passed since we last heard from the server". The offline cap never actually fired. Fixed by
+// anchoring on `lastValidatedAt` (`contentStore.ts`'s `PersistedMeta`, bumped by
+// `recordLicenceValidation()` at download time and on every later genuine online success) instead
+// — which is also what makes "online licence rollover" the SAME mechanism as the cap itself: a
+// device that checks in on day 3 moves the anchor to day 3, and the window is 4 fresh days from
+// there, not a countdown from the original download that a later check-in can't affect.
 const OFFLINE_LICENCE_TTL_MS = 4 * 24 * 60 * 60 * 1000; // 4 days
 
-export function computeOfflineLicenceExpiry(candidateExpiry: string): Date {
-  const now = Date.now();
+export function computeOfflineLicenceExpiry(lastValidatedAt: string | null, candidateExpiry: string): Date {
+  // No recorded validation at all — a meta.json from before this field existed. Fail closed:
+  // treat it as already due, rather than granting a fresh 4-day window for free. One online check
+  // resolves it going forward (recordLicenceValidation runs on every store()/online success).
+  const anchorMs = lastValidatedAt === null ? Number.NaN : new Date(lastValidatedAt).getTime();
+  const anchor = Number.isNaN(anchorMs) ? 0 : anchorMs;
+
   const candidateMs = new Date(candidateExpiry).getTime();
+  const fourDaysFromAnchor = anchor + OFFLINE_LICENCE_TTL_MS;
   if (Number.isNaN(candidateMs)) {
     // Malformed expiry — fall back to the 4-day window (fail-open on date parsing, fail-closed
     // on the licence itself: the 4-day cap still applies).
-    return new Date(now + OFFLINE_LICENCE_TTL_MS);
+    return new Date(fourDaysFromAnchor);
   }
-  const fourDaysFromNow = now + OFFLINE_LICENCE_TTL_MS;
-  return new Date(Math.min(fourDaysFromNow, candidateMs));
+  return new Date(Math.min(fourDaysFromAnchor, candidateMs));
 }
 
 // ── main gate ─────────────────────────────────────────────────────────────
@@ -194,6 +209,13 @@ export async function checkLicense(
     return { ok: true, mode: 'open-access', session, licence };
   }
 
+  // Online licence rollover: this is a GENUINE, just-succeeded server contact (not a fail-open —
+  // those never reach this line, they return earlier). Bumps `lastValidatedAt` for a book that
+  // was previously downloaded; a no-op otherwise (nothing persisted to update for a fresh Open of
+  // a book that was never downloaded, or for Elite). See computeOfflineLicenceExpiry's comment for
+  // why this is the same mechanism as the 4-day cap, not a separate feature bolted on beside it.
+  await recordLicenceValidation(bookId);
+
   return { ok: true, mode: 'online', session, licence };
 }
 
@@ -214,7 +236,7 @@ export async function checkLicense(
  *    last successful open.
  */
 async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
-  const { licence, expired, downloaded, revoked } = await getPersistedLicenceStatus(bookId);
+  const { licence, expired, downloaded, revoked, lastValidatedAt } = await getPersistedLicenceStatus(bookId);
 
   if (!downloaded) {
     return { ok: false, reason: DownloadError.OFFLINE_LICENSE_UNAVAILABLE };
@@ -254,7 +276,7 @@ async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
   // 4-day offline cap: even if the licence's own expiresAt is a far-future placeholder, the
   // offline window is bounded. This is the only place the cap is applied — the synthesised
   // licence carries the placeholder, and the real bound is checked here at open-time.
-  const offlineExpiry = computeOfflineLicenceExpiry(licence.expiresAt);
+  const offlineExpiry = computeOfflineLicenceExpiry(lastValidatedAt, licence.expiresAt);
   if (Date.now() >= offlineExpiry.getTime()) {
     return { ok: false, reason: DownloadError.ENTITLEMENT_EXPIRED };
   }

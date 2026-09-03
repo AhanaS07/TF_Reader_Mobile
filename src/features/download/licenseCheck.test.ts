@@ -10,7 +10,7 @@ import type { ReadingSessionResponse } from '@/shared/contracts';
 import { checkLicense, computeOfflineLicenceExpiry } from './licenseCheck';
 import { DownloadError } from './errors';
 import { API_BASE_URL } from './config';
-import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
+import { getPersistedLicenceStatus, invalidateLicence, recordLicenceValidation } from '../encryption/contentStore';
 import { downloadStore } from '../sync/stores/downloadStore';
 
 // ── module mocks ──────────────────────────────────────────────────────────
@@ -33,8 +33,9 @@ jest.mock('../encryption/contentStore', () => ({
     store: jest.fn(),
     destroy: jest.fn(),
   },
-  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false, revoked: false }),
+  getPersistedLicenceStatus: jest.fn().mockResolvedValue({ licence: null, expired: false, downloaded: false, revoked: false, lastValidatedAt: null }),
   invalidateLicence: jest.fn().mockResolvedValue(undefined),
+  recordLicenceValidation: jest.fn().mockResolvedValue(undefined),
   MAX_DECRYPTED_BYTES: 25 * 1024 * 1024,
   MAX_AUDIO_DECRYPTED_BYTES: 20 * 1024 * 1024,
   maxDecryptedBytesFor: (format: string) => (format === 'AUDIO' ? 20 * 1024 * 1024 : 25 * 1024 * 1024),
@@ -87,6 +88,7 @@ describe('checkLicense', () => {
     // values persist across tests.
     jest.mocked(downloadStore.isBookValid).mockResolvedValue(true);
     jest.mocked(invalidateLicence).mockResolvedValue(undefined);
+    jest.mocked(recordLicenceValidation).mockClear();
   });
   afterEach(() => {
     global.fetch = originalFetch;
@@ -211,6 +213,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -238,6 +241,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
@@ -267,6 +271,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockRejectedValue(new Error('Network request failed'));
 
@@ -293,6 +298,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockResolvedValue(
       new Response('<html>not json</html>', { status: 500 }),
@@ -311,6 +317,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: false,
       revoked: false,
+      lastValidatedAt: null,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -329,6 +336,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: null,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -355,6 +363,7 @@ describe('checkLicense', () => {
       expired: true,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -383,6 +392,7 @@ describe('checkLicense', () => {
       expired: false, // getPersistedLicenceStatus checks this with its own Date.now()
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(), // fresh — candidateExpiry alone drives this test
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -393,13 +403,7 @@ describe('checkLicense', () => {
     expect(result.reason).toBe(DownloadError.ENTITLEMENT_EXPIRED);
   });
 
-  it('returns ENTITLEMENT_EXPIRED when offline and the4-day window has elapsed past a far-future licence', async () => {
-    // When the licence's own expiresAt is far-future, the effective offline expiry is
-    // `now + 4 days`. If we mock Date.now() to be far enough in the future relative to
-    // the download, `Date.now() >= computeOfflineLicenceExpiry(expiresAt)` is still false
-    // because the cap rolls forward. So instead test with an expiresAt that is 3 days from
-    // now — the effective expiry is min(now + 4 days,3 days from now) = 3 days from now,
-    // which is still in the future, so it should NOT expire.
+  it('returns ok:true when a nearer candidateExpiry (3 days out) is still in the future', async () => {
     jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
       licence: {
         licenceId: 'future-4day-licence',
@@ -412,6 +416,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -420,6 +425,60 @@ describe('checkLicense', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.mode).toBe('offline-license');
+  });
+
+  it('returns ENTITLEMENT_EXPIRED when the 4-day window has genuinely elapsed since lastValidatedAt', async () => {
+    // This is the case the OLD implementation could never actually produce: it anchored the
+    // 4-day window on Date.now() AT CHECK TIME, so "now + 4 days" was always in the future no
+    // matter how long the book had been sitting offline. Anchoring on the PERSISTED
+    // lastValidatedAt instead means a real elapsed window can now genuinely expire it.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'stale-anchor-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: '9999-12-31T23:59:59.000Z', // far-future — the anchor is what matters here
+        canPersist: true,
+        rights: { print: true },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+      lastValidatedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), // validated 5 days ago
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.ENTITLEMENT_EXPIRED);
+  });
+
+  it('returns ENTITLEMENT_EXPIRED when there is no recorded lastValidatedAt at all (fails closed, no free grant)', async () => {
+    // A meta.json written before this field existed. Must NOT be treated as "just validated" —
+    // that would hand every pre-existing download an unearned fresh 4-day window.
+    jest.mocked(getPersistedLicenceStatus).mockResolvedValue({
+      licence: {
+        licenceId: 'no-anchor-licence',
+        itemId: 'test-book',
+        keyFingerprint: 'sha256:mock-fingerprint',
+        expiresAt: '9999-12-31T23:59:59.000Z',
+        canPersist: true,
+        rights: { print: true },
+      },
+      expired: false,
+      downloaded: true,
+      revoked: false,
+      lastValidatedAt: null,
+    });
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(DownloadError.ENTITLEMENT_EXPIRED);
   });
 
   it('returns ok:true when offline and the far-future licence is within the 4-day rolling window', async () => {
@@ -435,6 +494,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false,
+      lastValidatedAt: new Date().toISOString(),
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -460,6 +520,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: false, // not yet revoked in meta — this is the first time we're checking
+      lastValidatedAt: new Date().toISOString(),
     });
     jest.mocked(downloadStore.isBookValid).mockResolvedValue(false);
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
@@ -478,6 +539,7 @@ describe('checkLicense', () => {
       expired: false,
       downloaded: true,
       revoked: true, // already revoked by a previous open attempt
+      lastValidatedAt: null,
     });
     global.fetch = jest.fn().mockRejectedValue(new TypeError('Network request failed'));
 
@@ -513,34 +575,101 @@ describe('checkLicense', () => {
     if (result.mode !== 'online') return;
     expect(result.licence.rights.print).toBe(false);
   });
+
+  // ── online licence rollover ─────────────────────────────────────────────────
+
+  it('bumps lastValidatedAt (recordLicenceValidation) on a genuine online success', async () => {
+    const session = makeSession();
+    global.fetch = mockFetchFor(session);
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(true);
+    expect(recordLicenceValidation).toHaveBeenCalledWith('test-book');
+  });
+
+  it('does NOT call recordLicenceValidation on an explicit denial', async () => {
+    const flambeauError = {
+      timestamp: new Date().toISOString(),
+      status: 403,
+      code: 'NO_ENTITLEMENT' as const,
+      message: 'No entitlement',
+      path: '/api/v1/reading-sessions',
+    };
+    global.fetch = jest.fn().mockResolvedValue(new Response(JSON.stringify(flambeauError), { status: 403 }));
+
+    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
+
+    expect(result.ok).toBe(false);
+    expect(recordLicenceValidation).not.toHaveBeenCalled();
+  });
 });
 
 // ── computeOfflineLicenceExpiry unit tests ────────────────────────────────────
 
 describe('computeOfflineLicenceExpiry', () => {
-  it('returns now+4 days when the candidate expiry is far-future', () => {
+  const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+
+  it('returns lastValidatedAt+4 days when the candidate expiry is far-future', () => {
     const before = Date.now();
-    const result = computeOfflineLicenceExpiry('9999-12-31T23:59:59.000Z');
+    const result = computeOfflineLicenceExpiry(new Date().toISOString(), '9999-12-31T23:59:59.000Z');
     const after = Date.now();
-    const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
 
     expect(result.getTime()).toBeGreaterThanOrEqual(before + fourDaysMs);
     expect(result.getTime()).toBeLessThanOrEqual(after + fourDaysMs);
   });
 
-  it('returns the candidate expiry when it is sooner than now+4 days', () => {
+  it('returns the candidate expiry when it is sooner than lastValidatedAt+4 days', () => {
     const twoDaysFromNow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
-    const result = computeOfflineLicenceExpiry(twoDaysFromNow.toISOString());
+    const result = computeOfflineLicenceExpiry(new Date().toISOString(), twoDaysFromNow.toISOString());
 
     // Should be approximately 2 days from now (within 1 second tolerance)
     expect(Math.abs(result.getTime() - twoDaysFromNow.getTime())).toBeLessThan(1000);
   });
 
-  it('falls back to now+4 days when the candidate expiry is malformed', () => {
-    const result = computeOfflineLicenceExpiry('not-a-date');
-    const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+  it('falls back to lastValidatedAt+4 days when the candidate expiry is malformed', () => {
+    const now = new Date().toISOString();
+    const result = computeOfflineLicenceExpiry(now, 'not-a-date');
 
-    // Should be approximately 4 days from now (within 1 second tolerance)
-    expect(Math.abs(result.getTime() - (Date.now() + fourDaysMs))).toBeLessThan(1000);
+    expect(Math.abs(result.getTime() - (new Date(now).getTime() + fourDaysMs))).toBeLessThan(1000);
+  });
+
+  it('ANCHORS ON lastValidatedAt, not Date.now() — this is the bug fix', () => {
+    // The old implementation computed `Date.now() + 4 days` INSIDE this function, so it was
+    // always ~4 days in the future relative to whenever it happened to be called, no matter how
+    // stale the book actually was. Anchoring on a lastValidatedAt from 3 days ago must produce an
+    // expiry ~1 day from now, not ~4.
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const result = computeOfflineLicenceExpiry(threeDaysAgo, '9999-12-31T23:59:59.000Z');
+    const oneDayFromNow = Date.now() + 24 * 60 * 60 * 1000;
+
+    expect(Math.abs(result.getTime() - oneDayFromNow)).toBeLessThan(1000);
+  });
+
+  it('a later lastValidatedAt (rollover) moves the expiry forward, not just holds it', () => {
+    // This is "online licence rollover" at the unit level: checking in again on day 3 of a
+    // 4-day window resets the clock to day 3 + 4, not day 0 + 4.
+    const day0 = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const day3CheckIn = new Date(Date.now());
+
+    const expiryFromDay0 = computeOfflineLicenceExpiry(day0.toISOString(), '9999-12-31T23:59:59.000Z');
+    const expiryFromDay3 = computeOfflineLicenceExpiry(day3CheckIn.toISOString(), '9999-12-31T23:59:59.000Z');
+
+    expect(expiryFromDay3.getTime()).toBeGreaterThan(expiryFromDay0.getTime());
+    expect(expiryFromDay3.getTime() - expiryFromDay0.getTime()).toBeGreaterThanOrEqual(
+      3 * 24 * 60 * 60 * 1000 - 1000,
+    );
+  });
+
+  it('fails closed (already-expired) when lastValidatedAt is null — no free grant for a missing anchor', () => {
+    const result = computeOfflineLicenceExpiry(null, '9999-12-31T23:59:59.000Z');
+
+    expect(result.getTime()).toBeLessThan(Date.now());
+  });
+
+  it('fails closed when lastValidatedAt is present but malformed', () => {
+    const result = computeOfflineLicenceExpiry('not-a-date-either', '9999-12-31T23:59:59.000Z');
+
+    expect(result.getTime()).toBeLessThan(Date.now());
   });
 });

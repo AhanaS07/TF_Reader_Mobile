@@ -22,6 +22,7 @@ import {
   contentStore,
   invalidateLicence,
   getPersistedLicenceStatus,
+  recordLicenceValidation,
   MAX_DECRYPTED_BYTES,
   MAX_AUDIO_DECRYPTED_BYTES,
 } from './contentStore';
@@ -687,5 +688,66 @@ describe('contentStore — invalidateLicence (revocation without full destroy)',
     await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({
       code: ContentError.KEYSTORE_UNAVAILABLE,
     });
+  });
+});
+
+// Online licence rollover's anchor (see licenseCheck.ts's computeOfflineLicenceExpiry): store()
+// sets it, recordLicenceValidation() bumps it, getPersistedLicenceStatus() surfaces it.
+describe('contentStore — lastValidatedAt (online licence rollover anchor)', () => {
+  it('store() sets lastValidatedAt to a fresh timestamp', async () => {
+    const bookId = 'validated-fresh-store';
+    const key = randomKey();
+    const before = Date.now();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'fresh'), key));
+    const after = Date.now();
+
+    const status = await getPersistedLicenceStatus(bookId);
+    expect(status.lastValidatedAt).not.toBeNull();
+    const validatedMs = new Date(status.lastValidatedAt!).getTime();
+    expect(validatedMs).toBeGreaterThanOrEqual(before);
+    expect(validatedMs).toBeLessThanOrEqual(after);
+  });
+
+  it('recordLicenceValidation() bumps lastValidatedAt forward for a previously-downloaded book', async () => {
+    const bookId = 'validated-bump';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'bump'), key));
+
+    const original = (await getPersistedLicenceStatus(bookId)).lastValidatedAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await recordLicenceValidation(bookId);
+    const bumped = (await getPersistedLicenceStatus(bookId)).lastValidatedAt;
+
+    expect(new Date(bumped!).getTime()).toBeGreaterThan(new Date(original!).getTime());
+  });
+
+  it('recordLicenceValidation() is a no-op (does not throw) for a book that was never downloaded', async () => {
+    await expect(recordLicenceValidation('never-downloaded-book')).resolves.toBeUndefined();
+    expect((await getPersistedLicenceStatus('never-downloaded-book')).downloaded).toBe(false);
+  });
+
+  it('getPersistedLicenceStatus returns lastValidatedAt:null for a never-downloaded book', async () => {
+    const status = await getPersistedLicenceStatus('truly-never-downloaded');
+    expect(status.downloaded).toBe(false);
+    expect(status.lastValidatedAt).toBeNull();
+  });
+
+  it('a later store() (re-download) resets lastValidatedAt rather than inheriting the old one', async () => {
+    const bookId = 'validated-redownload';
+    const key1 = randomKey();
+    const key2 = randomKey();
+    await storeBek(bookId, key1);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'v1'), key1));
+    const firstValidatedAt = (await getPersistedLicenceStatus(bookId)).lastValidatedAt;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await storeBek(bookId, key2);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'v2, longer'), key2));
+    const secondValidatedAt = (await getPersistedLicenceStatus(bookId)).lastValidatedAt;
+
+    expect(new Date(secondValidatedAt!).getTime()).toBeGreaterThan(new Date(firstValidatedAt!).getTime());
   });
 });
