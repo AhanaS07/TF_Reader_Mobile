@@ -3332,6 +3332,114 @@ describe('screen-reader focus order', () => {
     });
   });
 
+  describe('focus entry', () => {
+    // WHAT THESE CAN AND CANNOT SEE. `focusOn` is mocked (see the note at the top of this block), so
+    // there is no way to ask "did the first row get focus" directly — under react-test-renderer a
+    // host ref's `current` stays null anyway. What IS observable is the ref OBJECT each call was
+    // handed, and that is enough to pin the two decisions this code actually makes: the panel's
+    // entry target is not the button focus is restored to, and it is stable across reopens.
+
+    // Not `openContents()` again: it is the same Pressable, but its accessible name flips to
+    // "Close contents" while the panel is open (so a screen reader announces what the press will
+    // actually do), and the shared helper queries by the open-state name.
+    async function closeContents(): Promise<void> {
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Close contents', includeHiddenElements: true }),
+      );
+    }
+
+    it('moves focus into the panel when Contents opens', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+
+      await openContents();
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends it somewhere other than the button focus is restored to', async () => {
+      // Entry and restore are opposite ends of the same journey; if they resolved to the same ref
+      // the panel would "open" with the cursor still outside it, which is the defect item 2 names.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+
+      await openContents(); // entry
+      await fireEvent.press(screen.getByText('Chapter 2')); // restore, via the row's own onPress
+
+      expect(focusOnMock).toHaveBeenCalledTimes(2);
+      expect(focusOnMock.mock.calls[0][0]).not.toBe(focusOnMock.mock.calls[1][0]);
+    });
+
+    it('enters the same target every time the panel is reopened', async () => {
+      // The ref is attached to the row at index 0 only. Sharing one ref across the whole `map` would
+      // leave it holding whichever row mounted last, so this would drift with the chapter count —
+      // 40 rows here rather than the 3 the case above uses, for exactly that reason.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(40) });
+
+      await openContents();
+      await closeContents(); // the toggle's own close — focus is already on it, so it moves nothing
+      await openContents();
+
+      expect(focusOnMock).toHaveBeenCalledTimes(2);
+      expect(focusOnMock.mock.calls[0][0]).toBe(focusOnMock.mock.calls[1][0]);
+    });
+
+    it('does not move focus when the panel is closed from the Contents toggle', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await closeContents(); // same button, now labelled "Close contents" — this is the close
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('does not re-enter when a fresh outline lands while the panel is open', async () => {
+      // The effect is keyed on `showToc` ALONE. Adding `toc` to its deps would re-fire here and yank
+      // a reader who has already scrolled the list back to its first row.
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+      await openContents();
+      focusOnMock.mockClear();
+
+      await deliver({ type: 'toc', items: flatToc(6) });
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('never enters an empty panel, because an empty TOC cannot be opened', async () => {
+      // The premise behind having ONE entry ref rather than a second for the empty-state `Text` the
+      // handoff spec also names. No `toc` message here, so the button is disabled and the press is
+      // inert — the empty branch is unreachable, not merely unlikely. The disabled state itself is
+      // pinned separately, by "the Contents button reports disabled with no outline".
+      await mountReader();
+      await reportReady();
+
+      await openContents();
+
+      expect(screen.queryByTestId('reader-toc-list')).toBeNull();
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('does not enter the TOC when a different panel is what opened', async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: flatToc(3) });
+
+      await openSearchPanel();
+
+      // Search brings its own entry focus (`autoFocus` on its field), so nothing here should fire.
+      expect(focusOnMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('focus restoration', () => {
     it('returns focus to Contents when a TOC row is chosen', async () => {
       await mountReader();
