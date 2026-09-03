@@ -15,8 +15,13 @@
 // progressStore, including the caller-supplied-target case, which is why every test below awaits
 // the resolved state rather than asserting synchronously. See ReaderRouteScreen.tsx's header for
 // why an earlier, faster-looking version of this file's subject was wrong to keep one.
+//
+// `progressStore.subscribe` is faked with a real listener registry (not a bare jest.fn()) so a
+// test can actually fire a notification the way a completed sync pull would — the cross-device
+// conflict tests below drive it directly rather than going through a real syncEngine.
 
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 import type { Locator } from '@/shared/contracts';
 
@@ -29,6 +34,12 @@ const mockSyncRun = jest.fn<Promise<void>, []>();
 // `currentLocator()` rather than merely that both happened.
 const callOrder: string[] = [];
 
+let mockProgressListeners: (() => void)[] = [];
+/** Simulates a `progressStore` change notification — a local write OR a pulled record applying. */
+function notifyProgressChanged() {
+  for (const listener of [...mockProgressListeners]) listener();
+}
+
 jest.mock('@/features/sync/stores/progressStore', () => ({
   progressStore: {
     currentLocator: (...args: [string?, string?]) => {
@@ -36,6 +47,12 @@ jest.mock('@/features/sync/stores/progressStore', () => ({
       return mockCurrentLocator(...args);
     },
     savePosition: (...args: unknown[]) => mockSavePosition(...args),
+    subscribe: (listener: () => void) => {
+      mockProgressListeners.push(listener);
+      return () => {
+        mockProgressListeners = mockProgressListeners.filter((l) => l !== listener);
+      };
+    },
   },
 }));
 
@@ -92,13 +109,33 @@ function renderReaderRoute(bookId: string, initialTarget?: unknown) {
   );
 }
 
+// Which button (by text) to auto-press the MOMENT `Alert.alert` is called, or null to leave the
+// dialog "showing" (unanswered). Auto-pressing synchronously, inside `Alert.alert`'s own mocked
+// call, is deliberate: it keeps the press inside the SAME microtask as the `currentLocator().then()`
+// that triggered it, which is itself flushed by `waitFor`'s own `act()` wrapping below — a button
+// press captured and re-invoked later, from outside any `act()` scope, is a real native dialog's
+// behaviour but not one React Test Renderer resolves the same way.
+let mockAlertAutoPress: string | null = null;
+const mockAlert = jest
+  .spyOn(Alert, 'alert')
+  .mockImplementation((_title, _message, buttons) => {
+    if (mockAlertAutoPress === null) return;
+    const button = (buttons as { text: string; onPress?: () => void }[] | undefined)?.find(
+      (candidate) => candidate.text === mockAlertAutoPress,
+    );
+    button?.onPress?.();
+  });
+
 describe('ReaderRouteScreen', () => {
   beforeEach(() => {
     mockReceivedProps.length = 0;
     callOrder.length = 0;
+    mockProgressListeners = [];
+    mockAlertAutoPress = null;
     mockCurrentLocator.mockReset();
     mockSavePosition.mockReset();
     mockSyncRun.mockReset();
+    mockAlert.mockClear();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
   });
@@ -194,5 +231,92 @@ describe('ReaderRouteScreen', () => {
       { type: 'PDF', page: 7 },
       'dev-sample-epub-throttle',
     );
+  });
+
+  describe('cross-device conflict while the screen is open', () => {
+    it('does not prompt when a progressStore notification reflects what is already displayed', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-echo');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+
+      // Same as displayed — an unchanged row, or an echo of this device's own write.
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 7 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockAlert).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('prompts and adopts the incoming position as a new initialTarget on "Resume from there"', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-jump');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+      mockSavePosition.mockClear();
+
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      mockAlertAutoPress = 'Resume from there';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // A remount with the adopted target — the mocked ReaderScreen renders again and pushes a
+      // fresh entry, distinct from the one recorded at initial mount.
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual({
+        bookId: 'dev-sample-epub-conflict-jump',
+        initialTarget: { kind: 'page', page: 20 },
+      });
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Reading progress updated',
+        expect.any(String),
+        expect.any(Array),
+      );
+      // Adopting is not itself a write — it's a read the user chose to trust.
+      expect(mockSavePosition).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('pushes the current on-screen position back out, unchanged, on "Continue here"', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-stay');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+      mockSavePosition.mockClear();
+      const lastReceivedBeforeAnswer = mockReceivedProps[mockReceivedProps.length - 1];
+
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      mockAlertAutoPress = 'Continue here';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Pushes THIS device's displayed position — not the incoming page 20 — with a fresh
+      // timestamp, so it wins the next comparison anywhere else this book syncs to.
+      expect(mockSavePosition).toHaveBeenCalledWith(
+        { type: 'PDF', page: 7 },
+        'dev-sample-epub-conflict-stay',
+      );
+      // No remount: the screen keeps showing what it already had.
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual(lastReceivedBeforeAnswer);
+      await act(async () => {
+        unmount();
+      });
+    });
   });
 });

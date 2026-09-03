@@ -36,3 +36,21 @@ export function targetFromLocator(locator: Locator | null): ReaderTarget | null 
   if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
   return null;
 }
+
+/**
+ * Structural equality for the fields each `Locator` variant actually carries meaning in — NOT
+ * `JSON.stringify` comparison, which would depend on key order matching between two values built
+ * by different code paths (one from `toLocator`, one from `progressStore`'s own row mapper) and
+ * happens to hold today only by accident. Used by `ReaderRouteScreen.tsx`'s cross-device conflict
+ * check to tell "the sync pull that just landed changed nothing I don't already know" from "someone
+ * else moved this book" — `PDF`'s optional `offset` is deliberately excluded, since it is a lower
+ * bound Sync derives, not part of what a reader would recognise as "the same position".
+ */
+export function locatorsEqual(a: Locator | null, b: Locator | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.type !== b.type) return false;
+  if (a.type === 'EPUB' && b.type === 'EPUB') return a.cfi === b.cfi;
+  if (a.type === 'PDF' && b.type === 'PDF') return a.page === b.page;
+  if (a.type === 'AUDIO' && b.type === 'AUDIO') return a.positionMs === b.positionMs;
+  return false;
+}

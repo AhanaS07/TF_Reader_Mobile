@@ -36,14 +36,23 @@
 // is a new coupling Karthik should know about — noted in CLAUDE.md's "Reading-position resume"
 // section rather than left to be discovered from a git blame.
 //
-// SCOPED TO RESOLVING A RESUME TARGET, DELIBERATELY NOT TO AN ALREADY-OPEN SCREEN. If this screen
-// stays mounted across a background/foreground cycle (the reader never navigated away), nothing
-// re-checks `progressStore` mid-session — the resolve effect only reruns on a `bookId`/`routeTarget`
-// change. Silently yanking an active reader to a position synced from another device while they
-// might already be several pages past it would be its own defect; the fix here is "the NEXT time
-// this book is opened resumes correctly," not "two devices reading the same book stay converged
-// live." A future cross-device nudge (a non-blocking "also read to page N elsewhere" affordance,
-// the way most reading apps handle this) is a product decision, not something to do silently here.
+// AN ALREADY-OPEN SCREEN IS ALSO COVERED NOW, BUT BY ASKING RATHER THAN BY JUMPING SILENTLY. Once
+// resolved, this screen subscribes to `progressStore`'s change notifications (fired on every local
+// write AND on every pulled server record that actually applied — `syncableTable.ts`'s own doc).
+// On each one, it compares the freshly-read `currentLocator()` against what THIS device currently
+// has on screen (`toLocator(lastPositionRef.current)`, not the last thing written — the two can
+// differ inside the write throttle window, and it's what's DISPLAYED that a conflict is relative
+// to). Equal (via `locatorsEqual`, not `===`) covers both "unchanged" and "that notification was
+// just an echo of this device's own write" — nothing to do either way. Different means another
+// device really did move this book while this one was open, and rather than silently relocating a
+// reader who may already be several pages past either position, `Alert.alert` offers the choice:
+// "Continue here" flushes the CURRENT on-screen position through (a fresh, later timestamp than the
+// one that just arrived, so it wins the next comparison anywhere else this book syncs to);
+// "Resume from there" adopts the incoming locator as a new `initialTarget` and forces a remount
+// (`resumeGeneration` in the `key` below) — the same mechanism a cold-start resume already uses,
+// since `ReaderScreen`'s own contract says a new `initialTarget` needs a remount, not a live prop
+// change. Either choice goes through the SAME `progressStore`/outbox path every other write does,
+// so a second device converges on it the ordinary way, next time IT syncs — no new wire format.
 //
 // DevPreferencesMenu GOES THROUGH `toolbarExtra`, NOT a sibling overlay. Two earlier shapes each
 // broke something: `headerRight` got clipped by react-native-screens' native header (no visible
@@ -55,14 +64,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
 
 import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
-import { targetFromLocator, toLocator } from '@/features/reader/readerProgressStore';
+import { locatorsEqual, targetFromLocator, toLocator } from '@/features/reader/readerProgressStore';
 import { syncEngine } from '@/features/sync/syncEngine';
 import { progressStore } from '@/features/sync/stores/progressStore';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, Locator } from '@/shared/contracts';
 
 import { DevPreferencesMenu } from '../../DevPreferencesMenu';
 import type { RootStackParamList } from './RootNavigator';
@@ -91,6 +100,12 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   // reason: setting state synchronously at the top of the effect body, before the query resolves,
   // is exactly what this repo's `react-hooks/set-state-in-effect` lint rule forbids.
   const [resolved, setResolved] = useState<{ bookId: BookId; target?: ReaderTarget } | null>(null);
+
+  // Bumped only by "Resume from there" below, to force `ReaderScreen` to remount with the adopted
+  // `initialTarget` — the same requirement a cold-start resume already has (see `initialTarget`'s
+  // own doc comment in ReaderScreen.tsx: read once, at mount, a genuinely new target needs a new
+  // instance). Not touched by anything else, so it never causes an unrelated remount.
+  const [resumeGeneration, setResumeGeneration] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +136,9 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   // without re-rendering on every relocate.
   const lastPositionRef = useRef<ReaderPosition | null>(null);
   const lastWriteAtRef = useRef(0);
+  // Guards against stacking a second cross-device conflict Alert — declared here, not beside the
+  // effect that uses it below, so the per-book reset effect can clear it too.
+  const conflictPendingRef = useRef(false);
 
   const flushProgress = useCallback(() => {
     const position = lastPositionRef.current;
@@ -148,6 +166,12 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   useEffect(() => {
     lastWriteAtRef.current = 0;
     lastPositionRef.current = null;
+    // Also clears a conflict prompt left pending for the PREVIOUS book. React Native's `Alert` has
+    // no imperative dismiss, so a dialog already on screen can briefly outlive the book it was
+    // about if the user switches without answering — but its buttons already no-op via the
+    // subscription effect's own `cancelled` guard, and this at least stops it from permanently
+    // blocking a genuine conflict prompt for the NEW book.
+    conflictPendingRef.current = false;
     return () => {
       flushProgress();
     };
@@ -164,6 +188,70 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     return () => subscription.remove();
   }, [flushProgress]);
 
+  const resolveConflictContinueHere = useCallback(() => {
+    conflictPendingRef.current = false;
+    // Re-flushes the CURRENTLY DISPLAYED position (not the one that just arrived) with a fresh,
+    // later timestamp, so it wins the next LWW comparison anywhere else this book syncs to —
+    // same monotonic stamping every other write already relies on (syncableTable.ts's own note).
+    flushProgress();
+  }, [flushProgress]);
+
+  const resolveConflictJumpThere = useCallback(
+    (locator: Locator) => {
+      conflictPendingRef.current = false;
+      // Cleared, not left stale: the remount below will report a fresh `relocated` for the
+      // adopted position shortly, but until then there is nothing on screen to compare a NEW
+      // notification against, and a stale pre-jump position would produce a false positive.
+      lastPositionRef.current = null;
+      setResolved({ bookId, target: targetFromLocator(locator) ?? undefined });
+      setResumeGeneration((generation) => generation + 1);
+    },
+    [bookId],
+  );
+
+  // Cross-device conflict detection for an ALREADY-OPEN screen — see this file's header for the
+  // full account of why this asks rather than jumps silently. Only starts once the initial resume
+  // has resolved, so it never reacts to the very sync pull that fed that resolution.
+  useEffect(() => {
+    if (!resolvedReady) return;
+    let cancelled = false;
+    const unsubscribe = progressStore.subscribe(() => {
+      if (conflictPendingRef.current || cancelled) return;
+      const displayed = lastPositionRef.current !== null ? toLocator(lastPositionRef.current) : null;
+      if (displayed === null) return; // nothing on screen yet to compare against
+      void progressStore.currentLocator(undefined, bookId).then((incoming) => {
+        if (cancelled || incoming === null) return;
+        if (locatorsEqual(incoming, displayed)) return; // unchanged, or an echo of our own write
+        const incomingTarget = targetFromLocator(incoming);
+        if (incomingTarget === null) return; // e.g. a corrupt/AUDIO-shaped row — nothing to offer
+        conflictPendingRef.current = true;
+        Alert.alert(
+          'Reading progress updated',
+          'Your progress in this book was updated on another device. Resume from there, or continue reading here?',
+          [
+            {
+              text: 'Continue here',
+              style: 'cancel',
+              onPress: () => {
+                if (!cancelled) resolveConflictContinueHere();
+              },
+            },
+            {
+              text: 'Resume from there',
+              onPress: () => {
+                if (!cancelled) resolveConflictJumpThere(incoming);
+              },
+            },
+          ],
+        );
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [resolvedReady, bookId, resolveConflictContinueHere, resolveConflictJumpThere]);
+
   if (!resolvedReady) {
     return (
       <View style={styles.container}>
@@ -175,7 +263,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   return (
     <View style={styles.container}>
       <ReaderScreen
-        key={bookId}
+        key={`${bookId}:${resumeGeneration}`}
         bookId={bookId}
         initialTarget={resolved.target}
         onRelocated={handleRelocated}

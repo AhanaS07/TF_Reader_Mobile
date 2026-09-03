@@ -33,18 +33,37 @@
 // `syncEngine.run()` is public for exactly this (concurrent calls share one run rather than racing,
 // so this costs nothing extra if `useAutoSync`'s own trigger already has one in flight) and never
 // rejects (`execute()` catches internally). Same fix, same reasoning, as
-// `ReaderRouteScreen.tsx`'s equivalent effect for EPUB/PDF — see that file's header for the fuller
-// account, including why this is scoped to resolving a resume target and not to an already-open
-// screen.
+// `ReaderRouteScreen.tsx`'s equivalent effect for EPUB/PDF.
+//
+// CROSS-DEVICE CONFLICTS ARE CAUGHT AT THE PLAY BUTTON, NOT BY A BACKGROUND SUBSCRIPTION — AND
+// THAT IS THE POINT, NOT A SIMPLER FALLBACK. An earlier version of this file subscribed to
+// `progressStore.subscribe()` and compared on every notification, the same shape
+// `ReaderRouteScreen.tsx` uses for EPUB/PDF. That shape is wrong for audio specifically: text only
+// moves on a discrete `relocated` event, so comparing against "what is on screen" is stable between
+// events. Audio's position drifts continuously WHILE PLAYING, and this device's own throttled
+// writes (`AUDIO_PROGRESS_WRITE_THROTTLE_MS`) still land during that time — so a background
+// subscription watching for divergence would flag its own device's advancing playback as a
+// conflict roughly every throttle interval, and a genuinely idle SECOND device with the same book
+// open would see the SAME false alarms every time its own sync engine happened to pull. The
+// question that actually matters for audio is not "has this row changed since a moment ago" but
+// "am I about to resume playback from a position that might already be stale" — which is exactly
+// the moment `onBeforePlay` intercepts. The check only runs when the transport is at rest (the
+// player is paused — nothing plays until this resolves `true`), and splits on `CONFLICT_THRESHOLD_MS`:
+// within it, the difference is adopted SILENTLY (last-write-wins — `syncEngine.run()` already
+// resolved local-vs-remote for this row, so `incoming` is simply the correct value; adopting it is
+// bookkeeping, not a decision) rather than merely ignored, because leaving this device's stale
+// value on record would make the NEXT comparison wrong too. Past the threshold, it escalates to
+// the same prompt `ReaderRouteScreen.tsx` uses for EPUB/PDF.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
 
 import { AudioPlayerScreen } from '@/features/reader/audio/AudioPlayerScreen';
 import { syncEngine } from '@/features/sync/syncEngine';
 import { progressStore } from '@/features/sync/stores/progressStore';
+import type { Locator } from '@/shared/contracts';
 
 import type { RootStackParamList } from './RootNavigator';
 
@@ -56,29 +75,44 @@ type Props = NativeStackScreenProps<RootStackParamList, 'AudioPlayer'>;
 // pause/seek/unmount edge (onPositionCommit) always writes through immediately, same as before.
 const AUDIO_PROGRESS_WRITE_THROTTLE_MS = 5_000;
 
+// Below this, two positions count as "the same place" — clock/rounding noise between devices, not
+// a real divergence. Chosen to be well above the ~1s round-trip a seek+commit can introduce, and
+// well below anything a listener would notice as "picked up somewhere I didn't leave off."
+const CONFLICT_THRESHOLD_MS = 5_000;
+
 export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   const { bookId, title } = route.params;
 
   const [resolved, setResolved] = useState<{ bookId: string; positionSeconds?: number } | null>(
     null,
   );
+  // Bumped only by "Resume from there" below, to force `AudioPlayerScreen` to remount with the
+  // adopted `initialPosition` — its own `key={bookId}` already forces one on a genuine book change,
+  // this extends that to "the same book, a newly adopted position."
+  const [resumeGeneration, setResumeGeneration] = useState(0);
   const lastWriteAtRef = useRef(0);
+  // The freshest PAUSED/settled position this device knows — set by onPositionCommit only (pause,
+  // seek, unmount), NOT by the continuous onPositionChange ticks. This is deliberately narrower
+  // than ReaderRouteScreen's equivalent ref: `onBeforePlay` only ever fires while paused (Play is
+  // only reachable from a paused state), so this is always "the position about to be resumed from"
+  // when it matters, never a live-playing value the comparison would need to unwind.
+  const lastPausedPositionSecondsRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     // Reset to "not yet written this run" for the NEW book — the throttle is per-book, and a stale
     // timestamp from a previous book must not swallow this book's first write.
     lastWriteAtRef.current = 0;
+    lastPausedPositionSecondsRef.current = null;
 
     void syncEngine
       .run()
       .then(() => progressStore.currentLocator(undefined, bookId))
       .then((locator) => {
         if (cancelled) return;
-        setResolved({
-          bookId,
-          positionSeconds: locator?.type === 'AUDIO' ? locator.positionMs / 1000 : undefined,
-        });
+        const positionSeconds = locator?.type === 'AUDIO' ? locator.positionMs / 1000 : undefined;
+        lastPausedPositionSecondsRef.current = positionSeconds ?? null;
+        setResolved({ bookId, positionSeconds });
       });
 
     return () => {
@@ -107,14 +141,85 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   );
 
   // The pause/seek/unmount edges: a tick may never arrive to report this position, so this bypasses
-  // the throttle rather than waiting for it.
+  // the throttle rather than waiting for it. Also the ONLY place `lastPausedPositionSecondsRef`
+  // updates — see that ref's own comment for why tracking every tick would be the wrong signal.
   const handlePositionCommit = useCallback(
     (positionSeconds: number) => {
+      lastPausedPositionSecondsRef.current = positionSeconds;
       lastWriteAtRef.current = Date.now();
       writeProgress(positionSeconds);
     },
     [writeProgress],
   );
+
+  const resolveConflictJumpThere = useCallback(
+    (locator: Locator & { type: 'AUDIO' }) => {
+      // Cleared, not left stale: this resolves to a REMOUNT below, and nothing has reported a
+      // fresh paused position for the new instance yet.
+      lastPausedPositionSecondsRef.current = null;
+      setResolved({ bookId, positionSeconds: locator.positionMs / 1000 });
+      setResumeGeneration((generation) => generation + 1);
+    },
+    [bookId],
+  );
+
+  // The play-gate: see this file's header for why this replaces a background subscription for
+  // AUDIO specifically. Runs a fresh sync + read on every Play press — cheap relative to the
+  // alternative (playing from a position another device has already moved past) — and only
+  // escalates past `CONFLICT_THRESHOLD_MS`.
+  const handleBeforePlay = useCallback(async (): Promise<boolean> => {
+    const displayedSeconds = lastPausedPositionSecondsRef.current;
+    if (displayedSeconds === null) return true; // nothing paused-and-known yet to compare against
+
+    await syncEngine.run();
+    const incoming = await progressStore.currentLocator(undefined, bookId);
+    if (incoming === null || incoming.type !== 'AUDIO') return true;
+
+    const displayedMs = Math.round(displayedSeconds * 1000);
+    const diffMs = Math.abs(incoming.positionMs - displayedMs);
+
+    if (diffMs <= CONFLICT_THRESHOLD_MS) {
+      // Last-write-wins, SILENTLY, for a difference too small to bother a listener over.
+      // `incoming` is not a guess — the `syncEngine.run()` above already resolved local-vs-remote
+      // for this exact row (`syncableTable.ts`'s own row-level LWW), so it IS the correct value;
+      // the only thing left undone was updating THIS device's bookkeeping to match. Adopting it
+      // here (rather than leaving `displayedSeconds` on record) is what makes the NEXT play-gate
+      // check, and the NEXT write, compare against/build on the winning position instead of the
+      // one that just lost. No reseek, no remount — a sub-5s difference is inaudible on resume,
+      // so playback proceeds from wherever the player already sits paused.
+      lastPausedPositionSecondsRef.current = incoming.positionMs / 1000;
+      return true;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      Alert.alert(
+        'Playback progress updated',
+        'Your progress in this audiobook was updated on another device. Resume from there, or continue playing here?',
+        [
+          {
+            text: 'Continue here',
+            style: 'cancel',
+            onPress: () => {
+              // Re-confirms THIS device's position with a fresh, later timestamp, so it wins the
+              // next comparison anywhere else this book syncs to — same reasoning as
+              // ReaderRouteScreen.tsx's "Continue here".
+              writeProgress(displayedSeconds);
+              resolve(true);
+            },
+          },
+          {
+            text: 'Resume from there',
+            onPress: () => {
+              resolveConflictJumpThere(incoming);
+              // The screen is about to remount at the adopted position — this specific Play press
+              // targets a position that is going away, so it does not proceed.
+              resolve(false);
+            },
+          },
+        ],
+      );
+    });
+  }, [bookId, writeProgress, resolveConflictJumpThere]);
 
   const positionReady = resolved?.bookId === bookId;
 
@@ -129,12 +234,13 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   return (
     <View style={styles.container}>
       <AudioPlayerScreen
-        key={bookId}
+        key={`${bookId}:${resumeGeneration}`}
         bookId={bookId}
         title={title}
         initialPosition={resolved.positionSeconds}
         onPositionChange={handlePositionChange}
         onPositionCommit={handlePositionCommit}
+        onBeforePlay={handleBeforePlay}
       />
     </View>
   );
