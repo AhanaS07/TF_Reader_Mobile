@@ -171,9 +171,31 @@ is not a substitute** — no value that constant can hold makes a 10-hour audiob
 the two non-obvious findings any redraft would need, and the recovery path for the withdrawn document
 are in `reader/audio/AUDIO_PLAYER_DECISION.md` Part 2.
 
-**The one audio item still ON the Gate agenda** is cross-device *position*: `Locator` has no
-time-based variant (`reader/audio/CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md` — Karthik + Vaishnavi).
-Single-device resume already ships and is not waiting on it.
+**Cross-device audio position is landed end-to-end, as of 2026-09-02.** `Locator` gained its `AUDIO`
+variant (`positionMs`/`trackId?`) in `bf3e4e8` (2026-08-25, per Ahana's proposal in
+`reader/audio/CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md`), `progressStore.ts` writes `offset: 0` for
+it, and — closing Karthik's "Task B" — `AudioPlayerScreen`/`AudioPlayerRouteScreen` now call
+`progressStore.savePosition`/`currentLocator` directly; `reader/audio/audioSessionProgress.ts` (the
+local-JSON bridge this all stood in for) is deleted. Two things worth knowing if this needs
+revisiting: (1) `AudioPlayerRouteScreen`'s render-time resume read is now async (SQLite, not a
+synchronous file read), so it gates on a loading state before mounting the player — see that file's
+header; (2) `commitCurrentPlayerPosition()` (`audioPlayerInstance.ts`, the app-backgrounding edge)
+used to be a synchronous write specifically because it runs at the last reliable callback before the
+OS may kill the process — it is now a fire-and-forget async write, a real (accepted) reduction in
+guarantee at exactly that edge. See also the `currentLocator()` legacy-fallback hazard the
+proposal's §4 flagged and that is STILL open: an AUDIO or EPUB row whose `locator` column is
+null/corrupt gets misreported as `PDF` (pinned by a test in `contractConformance.test.ts` — Karthik's
+call to fix or accept).
+
+**EPUB/PDF now call `progressStore` too, as of this change** — parity with AUDIO reached for all
+three formats, with no in-memory cache in front of it for any of them. `reader/sessionProgress.ts`
+(the session-only fast path this used to lean on) is deleted: it could hold a stale position past
+the point another device had written a fresher one for a book that was merely backgrounded, not
+relaunched, on this device — the same class of staleness AUDIO never risked, having no such cache to
+begin with. `ReaderRouteScreen.tsx` now always awaits `progressStore.currentLocator()` (behind a
+loading gate, same shape as `AudioPlayerRouteScreen.tsx`) unless a caller supplies an explicit
+target, and writes every relocate through (throttled, unthrottled flush on unmount/backgrounding),
+converting via `reader/readerProgressStore.ts`. See `CLAUDE.md`'s "Reading-position resume" section.
 
 ---
 

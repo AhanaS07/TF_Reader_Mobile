@@ -118,7 +118,7 @@ two meanings" arrangement `toc.items[].href` still has, and this is the first pl
 split is the point: a position is where to RESUME, a section is what to CALL where you are. They move
 on different events — every page turn moves the position, only a chapter boundary moves the section —
 and only one of them is worth announcing. Folding it into `ReaderPosition` would also push it into
-`sessionProgress` and `progressStore.savePosition()`, neither of which has any use for a chapter name.
+`progressStore.savePosition()`, which has no use for a chapter name.
 `index` is the 0-based SPINE index; `href` is the spine item's own, and is what a chapter CHANGE is
 detected on (a `goTo` inside the current chapter reports the same href, and a spine that repeats an
 href would look like a change on index alone). PDF always sends `null` — it has no spine.

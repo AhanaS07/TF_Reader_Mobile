@@ -479,19 +479,50 @@ code typed against the interface cannot reach them; if deleting the fake breaks 
 ownership boundary, the sequencing, and the open items. Read it before changing
 `readerTextProvider.ts`, and update it in the same change.
 
-## Session-only reading progress — not a Sync/Personalization concern
+## Reading-position resume — one store, all three formats, no in-memory cache
 
-`src/features/reader/sessionProgress.ts` is an in-memory `Map<BookId, ReaderPosition>`, written from
-`ReaderScreen`'s `onRelocated` prop and read by `src/navigation/ReaderRouteScreen.tsx` to resume a
-book at the position it was left at, as long as `BookListScreen -> Reader -> BookListScreen ->
-Reader` all happens within one app run. It is **not** durable: module state, gone on relaunch, on
-purpose — that is what "session" means here.
+Every format's resume is durable and synced through `progressStore.savePosition()`/`currentLocator()`
+(Sync's side) — there is no session-only cache layered in front of it for any format. An earlier
+version of `src/navigation/ReaderRouteScreen.tsx` kept one (`sessionProgress.ts`, an in-memory
+`Map<BookId, ReaderPosition>`) as a same-app-run fast path, on the reasoning that `progressStore` was
+only needed for a cold start or a different device. That reasoning had a real hole: the cache had no
+way to learn about a position written elsewhere while THIS book merely sat backgrounded — not
+relaunched — on this device, so a stale in-memory value could outrank the genuinely current row in
+`progressStore` for the rest of that app run. It was deleted for that reason, not just for symmetry
+with AUDIO (which never had one, for lack of a cheap synchronous source in the first place).
 
-**Do not confuse this with `progressStore.savePage()`/`savePosition()`** (Sync's side, referenced in
-`ReaderScreen.tsx`'s own note on its `position` state) — that is the durable, cross-device progress
-record, and writing it is deliberately Personalization/Sync's stage, not Reader's. This module solves
-a narrower, permanent-Reader-scaffolding problem: an in-app navigator with no durable-progress wiring
-behind it yet would otherwise always reopen a book at its start.
+`ReaderRouteScreen.tsx` now always awaits `progressStore.currentLocator()` before mounting
+`ReaderScreen` (behind a loading gate, same shape as `AudioPlayerRouteScreen.tsx`), converting via
+`readerProgressStore.ts`'s pure `Locator ⇄ ReaderTarget` functions, unless a caller supplies an
+explicit `initialTarget` (e.g. a tapped bookmark), which skips the read entirely. Every `relocated`
+writes through to `progressStore` too — throttled, with an unthrottled flush on unmount and on app
+backgrounding. `AudioPlayerRouteScreen.tsx` follows the identical shape for AUDIO.
+
+**Both resolve effects also await `syncEngine.run()` before reading `currentLocator()` — a new,
+deliberate call from Reader's own files into Sync's already-public API, not a change to
+`src/features/sync/` itself, but Karthik should know it exists.** Without it, the local
+`progressStore` row can itself be stale: `src/features/sync/useAutoSync.ts` (mounted once, at the
+app root) only re-syncs on an actual NetInfo offline→online EDGE, and backgrounding/foregrounding
+the app while the connection never drops — the common case — fires no such edge. A book advanced on
+a second device while this one sat merely backgrounded, not relaunched, would otherwise resume from
+a stale local position, and a write from this device afterward would diverge from a starting point
+it never actually caught up to. `syncEngine.run()` is safe to call this way — concurrent calls share
+one run rather than racing, so this costs nothing extra when `useAutoSync`'s own trigger already has
+one in flight, and it never rejects (`execute()` catches internally).
+
+**This is scoped to RESOLVING a resume target, not to keeping an already-open reader converged
+live.** If a `ReaderRouteScreen`/`AudioPlayerRouteScreen` instance stays mounted across a
+background/foreground cycle without navigating away, nothing re-checks `progressStore` mid-session —
+each resolve effect only reruns on a `bookId`/`routeTarget` change. That is deliberate: silently
+yanking an active reader to a position synced from another device mid-scroll would be its own
+defect. The fix guarantees "the next time this book is opened, it resumes correctly," not "two
+devices reading the same book stay converged in real time" — a live cross-device nudge is a product
+decision, not something to do silently from this seam.
+
+The corrupt/legacy-row fallback hazard in `progressStore.currentLocator()` — a null or unparseable
+`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is unrelated to this
+wiring and still open; see `src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and
+the pinning test in `src/features/sync/contractConformance.test.ts` (Karthik's call to fix or accept).
 
 ## Verifying a change
 
