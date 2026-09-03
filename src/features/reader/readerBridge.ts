@@ -197,6 +197,15 @@ export const HOST_ERROR_CODES = [
   // revocation/expiry/suspension, never a network hiccup (that fails open,
   // silently, by design — see verifyReadingAccess's own doc comment).
   'ACCESS_REVOKED',
+  // Sync's `content.lock` bus signal (src/shared/contracts/offline-lock.ts) fired for the book
+  // that is CURRENTLY OPEN. Distinct from both neighbours above: ACCESS_REVOKED is Download's
+  // per-open POLL discovering the same kind of thing on its own schedule (every
+  // ACCESS_CHECK_INTERVAL_MS); CONTENT_LOAD_FAILED means the book never opened at all. This one
+  // is a PUSH — `useContentLock` (readerLock.ts) subscribes to the bus directly — and can land at
+  // any point in an already-open read, including mid-decrypt; see ReaderScreen.tsx's lock effect
+  // and its `lockedRef` guards in `handleReady` for why the ordering there is load-bearing rather
+  // than cosmetic. Never raised by the WebView — host-only, same reason ACCESS_REVOKED is.
+  'CONTENT_LOCKED',
 ] as const;
 
 export type WebViewErrorCode = (typeof WEBVIEW_ERROR_CODES)[number];

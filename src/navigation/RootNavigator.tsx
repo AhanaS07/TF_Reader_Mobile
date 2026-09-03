@@ -59,18 +59,20 @@ export function RootNavigator(): React.JSX.Element {
           title is set from inside the screen (ReaderRouteScreen's own useLayoutEffect) — it
           depends on the route's `format` param, which isn't known here.
 
-          `gestureEnabled: false`: native-stack's default is an iOS edge-swipe-to-go-back gesture,
-          and ReaderScreen mounts its OWN full-bleed swipe handler over the same area (a raw
-          PanResponder, for its next/prev page-turn swipe — see ReaderScreen.tsx's `panResponder`).
-          The two compete for the same touch stream. Symptom reported on device: after going back
-          from Reader, BookList's own Pressables stopped responding to any tap, with no error — and
-          only after visiting Reader, never from the other routes (none has a competing gesture).
-          This is
-          the standard fix for that class of bug (a screen with its own horizontal PanResponder
-          swipe needs `gestureEnabled: false`, or the OS's edge-swipe-back gesture intermittently
-          wins the same touch and leaves RN's responder state stuck) — it has not been re-confirmed
-          against the reported symptom on a device since. The header back button is untouched by
-          this and is the only way back now; that is a fine trade since it already worked.
+          `gestureEnabled: false`: native-stack's default is an iOS edge-swipe-to-go-back gesture.
+          THE MECHANISM THIS ORIGINALLY DEFENDED AGAINST IS GONE: it named a raw PanResponder
+          ReaderScreen mounted over the whole book for its next/prev page-turn swipe, competing
+          with native-stack's own gesture for the same touch stream. That PanResponder was removed
+          when both reading gestures (long-press-to-select, directional-drag-to-turn-page) moved
+          INSIDE the WebView (see ReaderScreen.tsx's own note near its `viewer`, and
+          webview/src/touchGesture.ts) — there is no RN-side gesture responder over the book any
+          more. Whether the WebView's OWN internal gesture recognizer still conflicts with the
+          native-stack edge-swipe (a partial-then-cancelled swipe-back is a known trigger for
+          flaky blur/focus ordering) is UNVERIFIED — flip this only with a device check covering
+          that specifically, not on the strength of this comment. The symptom this was originally
+          fixed for (BookList's Pressables going dead after visiting Reader, no error) has not been
+          re-confirmed on a device either way. The header back button is untouched regardless and
+          is the only way back now; that is a fine trade since it already worked.
         */}
         <Stack.Screen
           name="Reader"
