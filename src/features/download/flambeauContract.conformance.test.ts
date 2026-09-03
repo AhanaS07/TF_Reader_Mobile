@@ -118,7 +118,7 @@ describe('request shape — POST /api/v1/reading-sessions (ReadingSessionRequest
 // index?, encryption?}. NEITHER has a licence/signature object anywhere (B4). This section pins
 // two things: (1) the client must not require anything beyond the documented REQUIRED fields to
 // parse a response successfully, and (2) a minimal, spec-legal response genuinely carries no
-// `licence` — so `downloadManager.ts`'s SignedLicence really is synthesized locally, not read off
+// `licence` — so `downloadManager.ts`'s LocalLicenceRecord really is synthesized locally, not read off
 // the wire. If flambeau's contract ever grows a real signed licence, THIS assertion is what should
 // start failing, on purpose, as the signal to revisit B4's "no" recommendation.
 
@@ -145,7 +145,7 @@ describe('response shape — POST /api/v1/reading-sessions (ReadingSessionRespon
 
     expect(result).toEqual(minimalResponse);
     // The B4 assertion: nothing about a real response — not even a minimal one, not even a fully
-    // populated one — ever carries a licence. content-provider.ts's SignedLicence is a
+    // populated one — ever carries a licence. content-provider.ts's LocalLicenceRecord is a
     // downloadManager.ts-side construction, never a field this client reads off the wire.
     expect(result).not.toHaveProperty('licence');
   });

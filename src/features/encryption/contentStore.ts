@@ -44,7 +44,7 @@ import type {
   ContentStore,
   EncryptedPackage,
   SessionHandle,
-  SignedLicence,
+  LocalLicenceRecord,
 } from '@/shared/contracts';
 import {
   ContentError,
@@ -155,7 +155,7 @@ function parseMetaSafe(bookId: BookId): PersistedMeta | null {
 }
 
 
-// "false ⇒ Elite, memory-only, no keystore write" (SignedLicence.canPersist). No licence at all
+// "false ⇒ Elite, memory-only, no keystore write" (LocalLicenceRecord.canPersist). No licence at all
 // is open access, which DOES persist — there is no key material to protect by keeping it memory-only.
 function isElite(pkg: EncryptedPackage): boolean {
   return pkg.licence !== null && pkg.licence.canPersist === false;
@@ -164,7 +164,7 @@ function isElite(pkg: EncryptedPackage): boolean {
 // Pure value check, extracted so decryptBook() can evaluate expiry against the SEAL-VERIFIED
 // licence (licenceSeal.ts) instead of the possibly-hand-edited copy sitting in pkg.licence — see
 // decryptBook()'s "trustedLicence" below.
-function isLicenceValueExpired(licence: SignedLicence | null): boolean {
+function isLicenceValueExpired(licence: LocalLicenceRecord | null): boolean {
   if (!licence) return false;
   const expiresAtMs = new Date(licence.expiresAt).getTime();
   // `new Date(x).getTime()` is NaN for an unparseable/missing expiresAt, and `Date.now() >= NaN`
@@ -225,14 +225,14 @@ function assertLicenceMatchesPackage(pkg: EncryptedPackage): void {
   // An encrypted package with NO licence at all would never have an expiry (or anything else)
   // enforced: isLicenceExpired() short-circuits to "not expired" when pkg.licence is null, so
   // this combination — type-legal, since `licence` and `encryption` are independently nullable —
-  // would let crypto material live forever with no rights attached. SignedLicence's own doc says
+  // would let crypto material live forever with no rights attached. LocalLicenceRecord's own doc says
   // "null ⇒ open access (no licence)"; a package that IS encrypted is not open access, so it must
   // ship a licence. Reject loudly rather than silently accept it.
   if (pkg.encryption && !pkg.licence) {
     throw new ContentFailure(
       ContentError.LICENCE_INVALID,
       pkg.bookId,
-      new Error('encrypted package has no licence — an encrypted book must ship a SignedLicence')
+      new Error('encrypted package has no licence — an encrypted book must ship a LocalLicenceRecord')
     );
   }
   if (!pkg.licence) return;
@@ -294,7 +294,7 @@ const sessions = new Map<BookId, OpenSession>();
 
 // Kept OUT of EncryptedPackage/PersistedMeta's in-memory shape deliberately — SealedLicence is
 // not part of the frozen `EncryptedPackage` contract (content-provider.ts), and adding a field to
-// a Week-1 frozen type is its own Gate conversation (see that file's SignedLicence comment). This
+// a Week-1 frozen type is its own Gate conversation (see that file's LocalLicenceRecord comment). This
 // side table carries the same lifecycle as packageCache (populated by store()/loadPersisted(),
 // consulted by decryptBook()) without touching the frozen shape.
 const licenceSealCache = new Map<BookId, SealedLicence | undefined>();
@@ -814,7 +814,7 @@ async function destroy(bookId: BookId): Promise<void> {
 
 /**
  * Strip the licence and BEK for a previously-downloaded book, leaving the ciphertext on disk.
- * REVERSIBLE — a fresh `store()` with a new `SignedLicence` re-attaches rights and the BEK can
+ * REVERSIBLE — a fresh `store()` with a new `LocalLicenceRecord` re-attaches rights and the BEK can
  * be re-unwrapped on the next open. Used by the offline fallback's revocation path: the server
  * has signalled `is_valid = false`, so the local copy's rights are void, but the ciphertext
  * stays so a later online open can re-attach a valid licence without re-downloading.
@@ -869,7 +869,7 @@ async function invalidateLicence(bookId: BookId): Promise<void> {
  */
 export async function getPersistedLicenceStatus(
   bookId: BookId,
-): Promise<{ licence: SignedLicence | null; expired: boolean; downloaded: boolean; revoked: boolean }> {
+): Promise<{ licence: LocalLicenceRecord | null; expired: boolean; downloaded: boolean; revoked: boolean }> {
   const parsed = parseMetaSafe(bookId);
   if (!parsed) return { licence: null, expired: false, downloaded: false, revoked: false };
 

@@ -16,7 +16,7 @@ import { getBek, storeBek } from './keyStorage';
 import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
 import { contentStore, MAX_DECRYPTED_BYTES } from './contentStore';
 import { ContentError } from '@/shared/contracts';
-import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 
 // Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
 // cleanup in the stale-cached-BEK block below (deviceKeypair.ts exposes no reset of its own).
@@ -53,7 +53,7 @@ function plaintextOf(sizeBytes: number, seed: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): SignedLicence {
+function licenceFor(bookId: string, overrides: Partial<LocalLicenceRecord> = {}): LocalLicenceRecord {
   return {
     licenceId: `lic-${bookId}`,
     itemId: bookId,
@@ -61,7 +61,6 @@ function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): Sig
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     ...overrides,
   };
 }
@@ -70,7 +69,7 @@ async function buildEncryptedPackage(
   bookId: string,
   plaintext: Uint8Array,
   key: Uint8Array,
-  licenceOverrides: Partial<SignedLicence> = {},
+  licenceOverrides: Partial<LocalLicenceRecord> = {},
   opts: { withLicence?: boolean; index?: Uint8Array } = {}
 ): Promise<EncryptedPackage> {
   const payload = await encrypt(plaintext, key);
@@ -562,7 +561,7 @@ describe('EDGE: type-legal but contract-inconsistent field combinations', () => 
 
     // Without a licence, isLicenceExpired() trivially returns false forever (it short-circuits
     // on `!pkg.licence`), so a package like this would decrypt with NO expiry check, ever. That
-    // contradicts the contract's SignedLicence doc ("null ⇒ open access (no licence)") for a
+    // contradicts the contract's LocalLicenceRecord doc ("null ⇒ open access (no licence)") for a
     // package that is NOT open access (encryption is non-null here). store() must reject this
     // combination rather than silently accept crypto material with no rights/expiry attached.
     await expect(contentStore.store(pkg)).rejects.toMatchObject({

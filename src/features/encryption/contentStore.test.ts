@@ -31,7 +31,7 @@ import {
   EVENT_CHANNELS,
   OFFLINE_LOCK_EVENTS,
 } from '@/shared/contracts';
-import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 import { eventBus } from '@/shared/eventBus';
 
 // Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
@@ -48,7 +48,7 @@ function plaintextOf(sizeBytes: number, seed: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): SignedLicence {
+function licenceFor(bookId: string, overrides: Partial<LocalLicenceRecord> = {}): LocalLicenceRecord {
   return {
     licenceId: `lic-${bookId}`,
     itemId: bookId,
@@ -56,7 +56,6 @@ function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): Sig
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(), // +1 day
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     ...overrides,
   };
 }
@@ -65,7 +64,7 @@ async function buildEncryptedPackage(
   bookId: string,
   plaintext: Uint8Array,
   key: Uint8Array,
-  licenceOverrides: Partial<SignedLicence> = {}
+  licenceOverrides: Partial<LocalLicenceRecord> = {}
 ): Promise<EncryptedPackage> {
   const payload = await encrypt(plaintext, key);
   return {

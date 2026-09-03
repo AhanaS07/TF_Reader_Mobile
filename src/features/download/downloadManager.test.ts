@@ -219,7 +219,7 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
     const payload = await encrypt(plaintext, bek);
     const encryptedBytes = new Uint8Array(payload.content);
 
-    // downloadManager.ts now derives SignedLicence.keyFingerprint from the device's OWN key
+    // downloadManager.ts now derives LocalLicenceRecord.keyFingerprint from the device's OWN key
     // (publicKeyFingerprint), independently of whatever encryption.keyFingerprint the server
     // reports — contentStore.ts's licence/encryption fingerprint check only means anything if
     // this mock server "claim" genuinely matches the same device key downloadBook wraps the BEK

@@ -4,13 +4,13 @@
 
 import * as crypto from 'crypto';
 import { sealLicence, openSealedLicence } from './licenceSeal';
-import type { SignedLicence } from '@/shared/contracts';
+import type { LocalLicenceRecord } from '@/shared/contracts';
 
 function randomKey(): Uint8Array {
   return new Uint8Array(crypto.randomBytes(32));
 }
 
-function licenceFor(overrides: Partial<SignedLicence> = {}): SignedLicence {
+function licenceFor(overrides: Partial<LocalLicenceRecord> = {}): LocalLicenceRecord {
   return {
     licenceId: 'lic-1',
     itemId: 'book-1',
@@ -18,7 +18,6 @@ function licenceFor(overrides: Partial<SignedLicence> = {}): SignedLicence {
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     ...overrides,
   };
 }

@@ -11,7 +11,7 @@ import { contentStore, decryptSearchIndex } from './contentStore';
 import { createMockSearchIndex, encryptMockSearchIndex, decodeSearchIndex } from './mockSearchIndex';
 import { utf8Encode } from './utf8';
 import { ContentError, ContentFailure } from '@/shared/contracts';
-import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 
 function randomKey(): Uint8Array {
   return new Uint8Array(crypto.randomBytes(32));
@@ -23,7 +23,7 @@ function plaintextOf(sizeBytes: number, seed: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): SignedLicence {
+function licenceFor(bookId: string, overrides: Partial<LocalLicenceRecord> = {}): LocalLicenceRecord {
   return {
     licenceId: `lic-${bookId}`,
     itemId: bookId,
@@ -31,7 +31,6 @@ function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): Sig
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     ...overrides,
   };
 }

@@ -17,10 +17,9 @@
 // generic SESSION_FETCH_FAILED fallback means the request never got a structured response at all
 // (timeout, DNS, offline). Only the latter triggers the offline fallback.
 
-import type { BookId, ContentFormat, ReadingSessionResponse, SignedLicence } from '@/shared/contracts';
+import type { BookId, ContentFormat, ReadingSessionResponse, LocalLicenceRecord } from '@/shared/contracts';
 import { generateDeviceKeypair, publicKeyToRawBase64, publicKeyFingerprint } from '../encryption/deviceKeypair';
 import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
-import { verifyLicenceSignature } from '../encryption/licenceSignature';
 import { openReadingSession } from './readingSessionClient';
 import { DownloadError, DownloadFailure, UnmappedServerResponse } from './errors';
 import { downloadStore } from '../sync/stores/downloadStore';
@@ -42,9 +41,9 @@ export type LicenseCheckResult =
   // session (downloadBook) must check for its presence; openBook.ts never needs to, because it
   // checks contentStore.isAvailableOffline() first and that is guaranteed true whenever this
   // variant lacks a session.
-  | { ok: true; mode: 'open-access'; session?: ReadingSessionResponse; licence?: SignedLicence }
-  | { ok: true; mode: 'online'; session: ReadingSessionResponse; licence: SignedLicence }
-  | { ok: true; mode: 'offline-license'; licence: SignedLicence };
+  | { ok: true; mode: 'open-access'; session?: ReadingSessionResponse; licence?: LocalLicenceRecord }
+  | { ok: true; mode: 'online'; session: ReadingSessionResponse; licence: LocalLicenceRecord }
+  | { ok: true; mode: 'offline-license'; licence: LocalLicenceRecord };
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -81,7 +80,7 @@ function synthesiseLicence(
   session: ReadingSessionResponse,
   deviceKeyFingerprint: string,
   intent: 'STREAM' | 'DOWNLOAD',
-): SignedLicence {
+): LocalLicenceRecord {
   return {
     licenceId: session.licenceId ?? session.sessionId,
     itemId: session.itemId,
@@ -89,7 +88,6 @@ function synthesiseLicence(
     expiresAt: FAR_FUTURE_PLACEHOLDER,
     canPersist: session.canPersist ?? true,
     rights: { print: intent === 'DOWNLOAD' },
-    signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
   };
 }
 
@@ -190,12 +188,6 @@ export async function checkLicense(
 
   const licence = synthesiseLicence(session, deviceKeyFingerprint, intent);
 
-  // ── verify licence signature (stub — always true today) ──────────────────
-
-  if (!verifyLicenceSignature(licence)) {
-    return { ok: false, reason: DownloadError.KEY_SUBSTITUTION };
-  }
-
   // Branch AFTER the call, not before — the real backend puts `licenceModel` on the session
   // response itself now, so there is no separate check to do earlier (see this file's header).
   if (session.licenceModel === 'OPEN_ACCESS') {
@@ -253,10 +245,6 @@ async function offlineFallback(bookId: BookId): Promise<LicenseCheckResult> {
   if (!isValid) {
     await invalidateLicence(bookId);
     return { ok: false, reason: DownloadError.ENTITLEMENT_REVOKED };
-  }
-
-  if (!verifyLicenceSignature(licence)) {
-    return { ok: false, reason: DownloadError.OFFLINE_LICENSE_UNAVAILABLE };
   }
 
   if (expired) {

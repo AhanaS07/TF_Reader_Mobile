@@ -18,7 +18,7 @@
 // Sync's first attempt at offline entitlement was withdrawn in review, and the reason is the
 // thing this contract has to fix. That attempt added a `downloads.is_valid` column driven by
 // `GET /api/v1/licences/book/{id}/expired` — a SECOND source of entitlement truth, from a
-// different backend collection than the `SignedLicence` that ships inside the
+// different backend collection than the `LocalLicenceRecord` that ships inside the
 // `EncryptedPackage` and that Encryption already verifies at decrypt time. Two sources that
 // can disagree in both directions, with `is_valid` also being a synced column, so one device's
 // verdict propagated to every other device.
@@ -26,7 +26,7 @@
 // The division of labour below is the correction:
 //
 //   Encryption OWNS ENFORCEMENT. It already refuses to decrypt an expired licence, offline
-//   included, from `SignedLicence.expiresAt` — raising ContentError.LICENCE_EXPIRED. That is
+//   included, from `LocalLicenceRecord.expiresAt` — raising ContentError.LICENCE_EXPIRED. That is
 //   the only gate. Nothing Sync writes can open a book that Encryption will not decrypt, and
 //   nothing Sync fails to write can close one.
 //
@@ -62,7 +62,7 @@ export type LockReason =
   | 'unknown'
   /** The server says this licence no longer entitles the user. Privileged — see LockSignal. */
   | 'revoked'
-  /** `SignedLicence.expiresAt` has passed. Encryption detects this alone, offline, unaided. */
+  /** `LocalLicenceRecord.expiresAt` has passed. Encryption detects this alone, offline, unaided. */
   | 'expired';
 
 export interface LockState {
@@ -75,7 +75,7 @@ export interface LockState {
    */
   locked: boolean;
   reason: LockReason;
-  /** From `SignedLicence.expiresAt`. ISO-8601 UTC on the wire, so kept as a string. */
+  /** From `LocalLicenceRecord.expiresAt`. ISO-8601 UTC on the wire, so kept as a string. */
   expiresAt: string | null;
   /**
    * When this verdict was last confirmed against the server.
@@ -148,7 +148,7 @@ export type OfflineLockSignal = LockSignal | UnlockSignal;
 // 1. [Abhinav] Which endpoint is authoritative for revocation? The withdrawn version used
 //    `GET /api/v1/licences/book/{id}/expired`, a bare boolean from a collection unrelated to
 //    the licence inside the EncryptedPackage. If revocation instead arrives as a re-issued
-//    SignedLicence via the download/licence endpoint, Sync should not be polling at all — it
+//    LocalLicenceRecord via the download/licence endpoint, Sync should not be polling at all — it
 //    should be refreshing the licence, and this whole signal collapses into that refresh.
 //
 // 2. [Abhinav] Does `reason: 'revoked'` destroy the BEK immediately, or mark it for destruction?

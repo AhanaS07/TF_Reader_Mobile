@@ -40,20 +40,26 @@ export interface EncryptionDescriptor {
 
 // A DEVICE-SIDE licence record. No endpoint in either published contract returns anything shaped
 // like this: wokay's `ContentGrant` has exactly `content` / `index` / `encryption`, and flambeau's
-// `ReadingSessionResponse` adds only session fields. `downloadManager.ts` therefore SYNTHESIZES
-// one per download, from `Loan.canPersist` + `Loan.dueAt`, so that `ContentStore.store()` has the
-// Subscription-vs-Elite signal it is built around.
+// `ReadingSessionResponse` adds only session fields. `downloadManager.ts`/`licenseCheck.ts`
+// therefore SYNTHESIZE one per download, from `Loan.canPersist` + `Loan.dueAt`, so that
+// `ContentStore.store()` has the Subscription-vs-Elite signal it is built around.
 //
-// Consequently `signature` is a placeholder (`value: ''`) and is verified nowhere — the earlier
-// claim here that it is "REQUIRED and verified before expiry is trusted" described a design that
-// was never built and that neither contract carries. `rights` has no contract source either.
-// EXPIRY IS THE ONLY FIELD DOING REAL WORK, and it does it correctly (see `expiresAt` below).
+// RULED ON 2026-09-03 (B4 in `CONTRACT_ALIGNMENT.md`, this directory): no signed licence exists in
+// this system. Neither published contract carries a licence, a signature, or a signing-key
+// distribution scheme, and nobody is building one — both contracts converged on GCM's own
+// authentication tag plus a short-lived signed URL as the integrity/authorisation mechanism
+// instead. Renamed from `SignedLicence` accordingly, and the `signature` field is DELETED rather
+// than kept as a placeholder that claimed a guarantee this system doesn't have — see
+// `licenceSignature.ts`'s removal in the same change, and `licenceSeal.ts` (Encryption) for the
+// DIFFERENT, real, on-device guarantee that replaces it: proof this record hasn't changed since
+// this device stored it, not proof flambeau issued it.
 //
-// Whether this type should exist at all — renamed to something honest and moved out of
-// shared/contracts/, since a device-side record is not an inter-team wire contract — is an open
-// cohort question: B4 in `CONTRACT_ALIGNMENT.md` (this directory). It is a Week-1 frozen file, so
-// that is a Gate conversation, not a quiet edit. Read that entry before adding a field here.
-export interface SignedLicence {
+// STAYS IN shared/contracts/ despite being device-side, unlike the ledger's original suggestion to
+// move it out entirely: `EncryptedPackage.licence` below is a genuinely shared field (Reader reads
+// it via `ContentStore`/`ContentProvider`), and shared/contracts/ cannot import FROM a feature
+// directory without inverting the dependency graph. `rights` still has no contract source either
+// — same caveat as before the rename, unrelated to it.
+export interface LocalLicenceRecord {
   licenceId: string;
   // INVARIANT: itemId names the SAME book as the EncryptedPackage.bookId it
   // ships with (backend calls it itemId, the reader calls it bookId — see
@@ -70,7 +76,6 @@ export interface SignedLicence {
   expiresAt: string; // ISO-8601 UTC (wire), NOT Timestamp
   canPersist: boolean; // false ⇒ Elite, memory-only, no keystore write
   rights: { print: boolean };
-  signature: { alg: 'RS256'; kid: string; value: string };
 }
 
 // What Abhinav's download pass produces and hands to the store. "Ciphertext
@@ -91,7 +96,7 @@ export interface EncryptedPackage {
   // change there — only this comment no longer asserting "always null for audio" as if it were
   // still true.
   encryption: EncryptionDescriptor | null;
-  licence: SignedLicence | null; // null ⇒ open access (no licence)
+  licence: LocalLicenceRecord | null; // null ⇒ open access (no licence)
 
   // BOTH length fields ship — option (b), decided by Abhinav, who owns the
   // producing side (Encryption + Download). cipherLength mirrors the wire/grant

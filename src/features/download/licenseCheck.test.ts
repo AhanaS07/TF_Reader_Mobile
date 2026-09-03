@@ -11,7 +11,6 @@ import { checkLicense, computeOfflineLicenceExpiry } from './licenseCheck';
 import { DownloadError } from './errors';
 import { API_BASE_URL } from './config';
 import { getPersistedLicenceStatus, invalidateLicence } from '../encryption/contentStore';
-import { verifyLicenceSignature } from '../encryption/licenceSignature';
 import { downloadStore } from '../sync/stores/downloadStore';
 
 // ── module mocks ──────────────────────────────────────────────────────────
@@ -22,12 +21,6 @@ jest.mock('../encryption/deviceKeypair', () => ({
   generateDeviceKeypair: jest.fn().mockResolvedValue({ publicKey: 'mock-public-key' }),
   publicKeyToRawBase64: jest.fn().mockReturnValue('device-public-key-base64'),
   publicKeyFingerprint: jest.fn().mockResolvedValue('sha256:mock-fingerprint'),
-}));
-
-// Mock licence signature — always returns true (the stub). Tests that want to exercise the
-// false branch mock the module-level function.
-jest.mock('../encryption/licenceSignature', () => ({
-  verifyLicenceSignature: jest.fn().mockReturnValue(true),
 }));
 
 // Mock contentStore.getPersistedLicenceStatus — only the offline fallback path calls this.
@@ -90,9 +83,8 @@ function mockFetchFor(session: ReadingSessionResponse) {
 describe('checkLicense', () => {
   const originalFetch = global.fetch;
   beforeEach(() => {
-    // Reset mocks that individual tests override (verifyLicenceSignature, etc.)
-    // to their defaults — module-level jest.mock() values persist across tests.
-    jest.mocked(verifyLicenceSignature).mockReturnValue(true);
+    // Reset mocks that individual tests override to their defaults — module-level jest.mock()
+    // values persist across tests.
     jest.mocked(downloadStore.isBookValid).mockResolvedValue(true);
     jest.mocked(invalidateLicence).mockResolvedValue(undefined);
   });
@@ -215,7 +207,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -243,7 +234,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -273,7 +263,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -300,7 +289,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -363,7 +351,6 @@ describe('checkLicense', () => {
         expiresAt: '2020-01-01T00:00:00.000Z', // expired
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: true,
       downloaded: true,
@@ -376,19 +363,6 @@ describe('checkLicense', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe(DownloadError.ENTITLEMENT_EXPIRED);
-  });
-
-  it('returns ok:false when licence signature verification fails', async () => {
-    jest.mocked(verifyLicenceSignature).mockReturnValue(false);
-
-    const session = makeSession();
-    global.fetch = mockFetchFor(session);
-
-    const result = await checkLicense('test-book', 'EPUB', 'DOWNLOAD');
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe(DownloadError.KEY_SUBSTITUTION);
   });
 
   // ── 4-day offline cap ──────────────────────────────────────────────────────
@@ -405,7 +379,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() - 1000).toISOString(), // 1 second ago
         canPersist: true,
         rights: { print: true },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false, // getPersistedLicenceStatus checks this with its own Date.now()
       downloaded: true,
@@ -435,7 +408,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days from now
         canPersist: true,
         rights: { print: true },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -459,7 +431,6 @@ describe('checkLicense', () => {
         expiresAt: '9999-12-31T23:59:59.000Z',
         canPersist: true,
         rights: { print: true },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
@@ -485,7 +456,6 @@ describe('checkLicense', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: true },
-        signature: { alg: 'RS256' as const, kid: 'test', value: '' },
       },
       expired: false,
       downloaded: true,
