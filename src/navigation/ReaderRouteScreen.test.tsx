@@ -23,9 +23,14 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
+import { downloadStore } from '@/features/sync/stores/downloadStore';
+import { syncEngine } from '@/features/sync/syncEngine';
 import type { Locator } from '@/shared/contracts';
 
 import { ReaderRouteScreen } from './ReaderRouteScreen';
+
+const mockCurrentForBook = downloadStore.currentForBook as jest.Mock;
+const mockPullBook = syncEngine.pullBook as jest.Mock;
 
 const mockCurrentLocator = jest.fn<Promise<Locator | null>, [string?, string?]>();
 const mockSavePosition = jest.fn();
@@ -62,6 +67,18 @@ jest.mock('@/features/sync/syncEngine', () => ({
       callOrder.push('run');
       return mockSyncRun();
     },
+    pullBook: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// Not downloaded, for every book in this file's fixtures - the simplest default, since none of
+// them are ever actually downloaded here. This is what routes every test through the SAME
+// pullBook() branch pullBook's own describe block below exercises deliberately; the other tests
+// in this file are not testing that branch, just tolerating it the way a real undownloaded book
+// would.
+jest.mock('@/features/sync/stores/downloadStore', () => ({
+  downloadStore: {
+    currentForBook: jest.fn().mockResolvedValue(null),
   },
 }));
 
@@ -136,8 +153,34 @@ describe('ReaderRouteScreen', () => {
     mockSavePosition.mockReset();
     mockSyncRun.mockReset();
     mockAlert.mockClear();
+    mockCurrentForBook.mockReset();
+    mockPullBook.mockReset();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
+    mockCurrentForBook.mockResolvedValue(null);
+    mockPullBook.mockResolvedValue(undefined);
+  });
+
+  describe('a book read online without ever being downloaded', () => {
+    it('tops up just this book via pullBook before reading the local resume position', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded
+
+      await renderReaderRoute('dev-sample-epub-undownloaded');
+
+      expect(mockCurrentForBook).toHaveBeenCalledWith('dev-sample-epub-undownloaded');
+      expect(mockPullBook).toHaveBeenCalledWith('dev-sample-epub-undownloaded');
+      // Still resolves through the same local read afterward - pullBook is a top-up, not a
+      // replacement for it.
+      expect(mockCurrentLocator).toHaveBeenCalledWith(undefined, 'dev-sample-epub-undownloaded');
+    });
+
+    it('does not call pullBook for a book this device already has downloaded', async () => {
+      mockCurrentForBook.mockResolvedValue({ id: 'dl-1', book_id: 'dev-sample-epub-downloaded' });
+
+      await renderReaderRoute('dev-sample-epub-downloaded');
+
+      expect(mockPullBook).not.toHaveBeenCalled();
+    });
   });
 
   it('resumes at the locator stored in progressStore, after awaiting a sync run first', async () => {

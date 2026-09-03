@@ -83,6 +83,19 @@ export const syncEngine = {
   isRunning(): boolean {
     return inFlight !== null;
   },
+
+  /**
+   * Fetches progress/bookmarks/highlights for ONE specific book directly, bypassing the
+   * downloaded-books gate the regular sweep uses (`downloadStore.downloadedBookIds()` - see
+   * `pull()`'s own doc comment). For a book being read online without ever being downloaded,
+   * that gate otherwise means this device never learns another device's progress/bookmarks/
+   * highlights for it, no matter how long both devices stay online - `pull()` only refreshes
+   * metadata for books already held, it does not know an undownloaded book is even open. This
+   * is that per-book fetch, for a caller (Reader's resume, or a bookmark/highlight panel) that
+   * knows it is about to read a book outside the regular sweep's scope. See `pullBook`'s own
+   * doc for the rest.
+   */
+  pullBook,
 };
 
 // Registers the actual runner behind syncTrigger.ts's requestSync() - see that file's header
@@ -691,5 +704,42 @@ async function pull(report: SyncReport): Promise<void> {
   // The checkpoint moves only once everything above has landed in SQLite.
   if (checkpoint) {
     await syncMetadataStore.set(SYNC_KEYS.LAST_PULL_TOKEN, checkpoint);
+  }
+}
+
+/**
+ * The per-book counterpart to `pull()`, for a book outside its downloaded-books sweep - see
+ * `syncEngine.pullBook`'s own doc for why this exists.
+ *
+ * Deliberately NOT filtered by `updatedAfter`/`LAST_PULL_TOKEN`: that checkpoint tracks the
+ * regular sweep, which has never covered this book, so a partial/incremental fetch here would
+ * silently miss whatever came before whatever moment this device first started reading it. A
+ * full fetch is the only correct one, and is cheap - three GETs, for one book.
+ *
+ * Deliberately NOT touching `downloads`: a caller reaching for this function already knows the
+ * book is not downloaded (that is why it needs this instead of the regular sweep), so there is
+ * no local `downloads` row to refresh, and fetching one from the server would risk it clashing
+ * with `applyDownloadRecord`'s isValid/content.lock side effects (offlineLock.ts, B6) for a book
+ * this device was never entitled to download in the first place.
+ *
+ * Best-effort per entity: a caller reading an undownloaded book online wants "whatever the
+ * server has, if reachable" - not a hard failure that blocks opening the book, or its bookmark
+ * panel, over a slow or absent connection. A failure on one entity (say, bookmarks timing out)
+ * must not stop the others (progress, highlights) from still being attempted.
+ */
+async function pullBook(bookId: string): Promise<void> {
+  for (const entityType of ['progress', 'bookmarks', 'highlights'] as const) {
+    try {
+      const response = await api.list<any>(ENTITY_PATHS[entityType], {
+        userId: USER_ID,
+        bookId,
+      });
+      for (const record of response.data ?? []) {
+        await TABLES[entityType].applyServerRecord(record);
+      }
+    } catch {
+      // Best-effort - see doc comment above. Whatever is already local (nothing, the first time
+      // this book is opened) is what the caller falls back to.
+    }
   }
 }

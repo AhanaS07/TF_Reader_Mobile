@@ -5,8 +5,9 @@
 // `ReaderTarget`, so no new bridge command is needed; delete is by id; add/remove return the fresh
 // authoritative set), so it doubles as the checklist the panel UI must satisfy once wired.
 
-import type { BookmarkRow } from '@/features/sync/localDb/types';
+import type { BookmarkRow, DownloadRow } from '@/features/sync/localDb/types';
 import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { syncEngine } from '@/features/sync/syncEngine';
 
 import {
@@ -22,10 +23,18 @@ import {
 
 // A write nudges a sync (pushOnEdit.ts's `pushNow`); mock the engine so it neither hits the real DB
 // nor makes a network call here, and so we can assert it fires on writes but never on a read.
-jest.mock('@/features/sync/syncEngine', () => ({ syncEngine: { run: jest.fn() } }));
+// pullBook.mockResolvedValue(undefined): loadBookmarks calls it whenever downloadStore.currentForBook
+// (the real store, backed by the same SQLite test mock as bookmarkStore - no row is ever seeded for
+// any book here, so it always resolves not-downloaded) says the book isn't downloaded, which is every
+// case in this file. It exists so the call doesn't throw; loadBookmarks's own pullBook wiring has its
+// dedicated tests below.
+jest.mock('@/features/sync/syncEngine', () => ({
+  syncEngine: { run: jest.fn(), pullBook: jest.fn().mockResolvedValue(undefined) },
+}));
 
 beforeEach(() => {
   (syncEngine.run as jest.Mock).mockClear();
+  (syncEngine.pullBook as jest.Mock).mockClear();
 });
 
 function row(overrides: Partial<BookmarkRow>): BookmarkRow {
@@ -149,6 +158,25 @@ describe('loadBookmarks', () => {
     expect(skippedIds).toEqual([]);
     // A read changes nothing, so it must not kick a sync — only writes do.
     expect(syncEngine.run).not.toHaveBeenCalled();
+  });
+
+  it('tops up an undownloaded book via pullBook before reading the local rows', async () => {
+    jest.spyOn(downloadStore, 'currentForBook').mockResolvedValue(null);
+    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([]);
+
+    await loadBookmarks('book-not-downloaded');
+
+    expect(downloadStore.currentForBook).toHaveBeenCalledWith('book-not-downloaded');
+    expect(syncEngine.pullBook).toHaveBeenCalledWith('book-not-downloaded');
+  });
+
+  it('does not call pullBook for a book this device already has downloaded', async () => {
+    jest.spyOn(downloadStore, 'currentForBook').mockResolvedValue({ id: 'dl-1' } as DownloadRow);
+    jest.spyOn(bookmarkStore, 'list').mockResolvedValue([]);
+
+    await loadBookmarks('book-downloaded');
+
+    expect(syncEngine.pullBook).not.toHaveBeenCalled();
   });
 });
 

@@ -25,6 +25,8 @@ import {
   type HighlightPaint,
   type SelectionRange,
 } from '@/features/sync/stores/highlightStore';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
+import { syncEngine } from '@/features/sync/syncEngine';
 import { pushNow } from '@/features/personalization/pushOnEdit';
 
 /**
@@ -123,8 +125,19 @@ async function reload(bookId: string): Promise<LoadedHighlights> {
 /**
  * CALL-SITE 1 — on open. The reader calls this once the shell is ready and paints the returned set
  * (see READER_HIGHLIGHTS_WIRING.md for exactly when). This is the `list()`-on-open half of the task.
+ *
+ * `pull()` (syncEngine.ts, Sync/Karthik) only ever refreshes highlights for books this device has
+ * a local `downloads` row for — a book read online without ever being downloaded is invisible to
+ * it, no matter how long another device has had highlights on it. `syncEngine.pullBook(bookId)` is
+ * the per-book top-up for exactly that case; skipped for a downloaded book, since the regular sweep
+ * already covers it and a second fetch here would just be redundant network traffic. Only on THIS
+ * call-site, not `reload()`'s other callers (add/remove) — the top-up matters once, at open, to
+ * catch up on anything written elsewhere before this device had a copy; it is not a live
+ * subscription, and re-fetching on every local edit would add a round trip nothing asked for.
  */
-export function loadReaderHighlights(bookId: string): Promise<LoadedHighlights> {
+export async function loadReaderHighlights(bookId: string): Promise<LoadedHighlights> {
+  const downloaded = await downloadStore.currentForBook(bookId);
+  if (!downloaded) await syncEngine.pullBook(bookId);
   return reload(bookId);
 }
 

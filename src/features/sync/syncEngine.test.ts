@@ -10,6 +10,7 @@ import { SYNC_KEYS } from './localDb/schema';
 import type { OutboxRow, ProgressRow } from './localDb/types';
 import { bookmarkStore, bookmarkTable } from './stores/bookmarkStore';
 import { downloadTable } from './stores/downloadStore';
+import { highlightTable } from './stores/highlightStore';
 import { personalizationId, personalizationStore, personalizationTable } from './stores/personalizationStore';
 import { progressTable } from './stores/progressStore';
 import { syncMetadataStore } from './stores/syncMetadataStore';
@@ -1056,6 +1057,118 @@ describe('pull', () => {
 
     expect(report.error).toBeDefined();
     expect(await syncMetadataStore.get(SYNC_KEYS.LAST_PULL_TOKEN)).toBeNull();
+  });
+});
+
+describe('pullBook (a book outside the downloaded-books sweep)', () => {
+  // Deliberately never downloaded on this device - see the note on `seedKnownBook()` above: the
+  // default `beforeEach` seeds a `downloads` row for BOOK, so a different id here is what actually
+  // proves pullBook works without one.
+  const UNDOWNLOADED_BOOK = 'book-never-downloaded';
+
+  it('fetches and applies progress, bookmarks, and highlights for the book, with no local downloads row', async () => {
+    mockApi.list.mockImplementation((path: string, params: any) => {
+      if (params?.bookId !== UNDOWNLOADED_BOOK) return ok([]) as any;
+      if (path === 'progress') {
+        return ok([
+          {
+            id: 'remote-progress',
+            userId: USER,
+            bookId: UNDOWNLOADED_BOOK,
+            offset: 12,
+            locator: { type: 'PDF', page: 12 },
+            updatedAt: '2026-08-12T00:00:00.000Z',
+            isDeleted: false,
+          },
+        ]) as any;
+      }
+      if (path === 'bookmarks') {
+        return ok([
+          {
+            id: 'remote-bookmark',
+            userId: USER,
+            bookId: UNDOWNLOADED_BOOK,
+            chapterId: 'ch-1',
+            locator: { type: 'PDF', page: 1 },
+            name: 'remote bookmark',
+            createdAt: SERVER_TIME,
+            updatedAt: SERVER_TIME,
+            isDeleted: false,
+          },
+        ]) as any;
+      }
+      if (path === 'highlights') {
+        return ok([
+          {
+            id: 'remote-highlight',
+            userId: USER,
+            bookId: UNDOWNLOADED_BOOK,
+            startLocator: { type: 'PDF', page: 1, offset: 0 },
+            endLocator: { type: 'PDF', page: 1, offset: 10 },
+            color: 'yellow',
+            createdAt: SERVER_TIME,
+            updatedAt: SERVER_TIME,
+            isDeleted: false,
+          },
+        ]) as any;
+      }
+      return ok([]) as any;
+    });
+
+    await syncEngine.pullBook(UNDOWNLOADED_BOOK);
+
+    expect((await progressTable.findById('remote-progress'))?.offset).toBe(12);
+    expect((await bookmarkTable.findById('remote-bookmark'))?.name).toBe('remote bookmark');
+    expect((await highlightTable.findById('remote-highlight'))?.color).toBe('yellow');
+  });
+
+  it('never fetches the downloads collection - a caller here already knows the book is not downloaded', async () => {
+    mockApi.list.mockResolvedValue(ok([]) as any);
+
+    await syncEngine.pullBook(UNDOWNLOADED_BOOK);
+
+    expect(mockApi.list).not.toHaveBeenCalledWith('downloads', expect.anything());
+  });
+
+  it('always fetches in full, unfiltered by the regular sweep\'s checkpoint', async () => {
+    let capturedParams: any = null;
+    mockApi.list.mockImplementation((path: string, params: any) => {
+      if (path === 'progress') capturedParams = params;
+      return ok([]) as any;
+    });
+    await syncMetadataStore.set(SYNC_KEYS.LAST_PULL_TOKEN, '2026-08-01T00:00:00.000Z');
+
+    await syncEngine.pullBook(UNDOWNLOADED_BOOK);
+
+    expect(capturedParams.updatedAfter).toBeUndefined();
+  });
+
+  it('a failure fetching one entity does not stop the others from being attempted', async () => {
+    mockApi.list.mockImplementation((path: string) => {
+      if (path === 'bookmarks') return Promise.reject(new ApiError('offline', 0));
+      if (path === 'progress') {
+        return ok([
+          {
+            id: 'remote-progress-2',
+            userId: USER,
+            bookId: UNDOWNLOADED_BOOK,
+            offset: 3,
+            updatedAt: '2026-08-12T00:00:00.000Z',
+            isDeleted: false,
+          },
+        ]) as any;
+      }
+      return ok([]) as any;
+    });
+
+    await expect(syncEngine.pullBook(UNDOWNLOADED_BOOK)).resolves.toBeUndefined();
+    expect((await progressTable.findById('remote-progress-2'))?.offset).toBe(3);
+  });
+
+  it('never throws, even when every fetch fails - a caller must not have opening the book blocked', async () => {
+    mockApi.list.mockRejectedValue(new ApiError('offline', 0));
+
+    await expect(syncEngine.pullBook(UNDOWNLOADED_BOOK)).resolves.toBeUndefined();
   });
 });
 

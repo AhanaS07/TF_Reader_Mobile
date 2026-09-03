@@ -70,6 +70,7 @@ import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridg
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import { locatorsEqual, targetFromLocator, toLocator } from '@/features/reader/readerProgressStore';
 import { syncEngine } from '@/features/sync/syncEngine';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId, Locator } from '@/shared/contracts';
 
@@ -119,6 +120,15 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         ? Promise.resolve(routeTarget)
         : syncEngine
             .run()
+            .then(async () => {
+              // The regular sweep inside syncEngine.run() only refreshes progress for books this
+              // device has a local `downloads` row for (see syncEngine.pullBook's own doc) - a
+              // book read online without ever being downloaded is invisible to it, no matter how
+              // long another device has had a position for it. Top up just this one book first,
+              // or an undownloaded book always resumes as if never opened, even mid-session.
+              const downloaded = await downloadStore.currentForBook(bookId);
+              if (!downloaded) await syncEngine.pullBook(bookId);
+            })
             .then(() => progressStore.currentLocator(undefined, bookId))
             .then((locator) => targetFromLocator(locator) ?? undefined);
     void target.then((resolvedTarget) => {

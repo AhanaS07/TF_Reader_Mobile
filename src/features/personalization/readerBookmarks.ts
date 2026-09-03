@@ -17,6 +17,8 @@
 
 import type { BookmarkRow, Locator } from '@/features/sync/localDb/types';
 import { bookmarkStore, parseLocator } from '@/features/sync/stores/bookmarkStore';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
+import { syncEngine } from '@/features/sync/syncEngine';
 import type { ReaderTarget } from '@/features/reader/readerBridge';
 import { pushNow } from '@/features/personalization/pushOnEdit';
 
@@ -103,8 +105,21 @@ async function reload(bookId: string): Promise<LoadedBookmarks> {
   return toReaderBookmarks(await bookmarkStore.list(undefined, bookId));
 }
 
-/** CALL-SITE 1 — on open: load THIS book's bookmarks for the panel. */
-export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
+/**
+ * CALL-SITE 1 — on open: load THIS book's bookmarks for the panel.
+ *
+ * `pull()` (syncEngine.ts, Sync/Karthik) only ever refreshes bookmarks for books this device has a
+ * local `downloads` row for — a book read online without ever being downloaded is invisible to it,
+ * no matter how long another device has had bookmarks on it. `syncEngine.pullBook(bookId)` is the
+ * per-book top-up for exactly that case; skipped for a downloaded book, since the regular sweep
+ * already covers it. Only on THIS call-site, not `reload()`'s other callers (add/remove/rename) —
+ * the top-up matters once, at open, to catch up on anything written elsewhere before this device
+ * had a copy; it is not a live subscription, and re-fetching on every local edit would add a round
+ * trip nothing asked for.
+ */
+export async function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
+  const downloaded = await downloadStore.currentForBook(bookId);
+  if (!downloaded) await syncEngine.pullBook(bookId);
   return reload(bookId);
 }
 

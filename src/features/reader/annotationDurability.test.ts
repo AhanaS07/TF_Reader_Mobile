@@ -24,7 +24,9 @@ import {
 import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
 import { highlightStore } from '@/features/sync/stores/highlightStore';
 
-jest.mock('@/features/sync/syncEngine', () => ({ syncEngine: { run: jest.fn() } }));
+jest.mock('@/features/sync/syncEngine', () => ({
+  syncEngine: { run: jest.fn(), pullBook: jest.fn().mockResolvedValue(undefined) },
+}));
 
 jest.mock('@/features/sync/stores/highlightStore', () => ({
   ...jest.requireActual<typeof import('@/features/sync/stores/highlightStore')>(
