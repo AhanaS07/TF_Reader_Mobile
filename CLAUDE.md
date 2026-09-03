@@ -254,46 +254,53 @@ for recording it here: it is shared (`contentStore.ts` is its other consumer). I
 exist, rather than returning `[]`, so a caller that stops guarding on `.exists` fails in the test
 run instead of silently passing.
 
-### Known open items — both are Abhinav's call
+### Known open items — Abhinav's call
 
-This list used to have four. **The stale keychain-cached BEK is fixed:** `store()` now clears the
-cached BEK when the incoming `wrappedBek` differs from the persisted one
+This list used to have four, then two. **The stale keychain-cached BEK is fixed:** `store()` now
+clears the cached BEK when the incoming `wrappedBek` differs from the persisted one
 (`invalidateStaleCachedKeyIfRotated`, `contentStore.ts:206`), and
 `contentStore.edgecases.test.ts` pins the fix rather than the defect. `devContentSeed.ts`'s
 `destroy()`-before-`store()` stays, but for the other things destroy() clears, not for this.
 
-The two below are memory/lifecycle defects found from Reader's side. They are **not** the whole
-list of open items in Download/Encryption — the contract-driven ones live in those directories'
+The one below is a memory defect found from Reader's side. It is **not** the whole list of open
+items in Download/Encryption — the contract-driven ones live in those directories'
 `API_CONTRACT_NOTES.md` (see the table above).
 
 **The resident-ciphertext-after-`close()` item is FIXED**, by Abhinav on 2026-08-18: `close()` now
 does `packageCache.delete(bookId)`, and `decryptBook()` additionally empties `pkg.content` for
-non-Elite packages once the plaintext exists (two of the "roughly six" copies item 2 counts). The
+non-Elite packages once the plaintext exists (two of the "roughly six" copies item 1 counts). The
 cold-read trade-off it names below was taken deliberately and is documented at both call sites. The
 cost lands in Reader — `prepareBook`'s `getFormat` is now only cheap WARM, because a cold
 `resolvePackage` reads the whole ciphertext with a synchronous `bytesSync()`; `readerAssets.ts`
 records that where the call is made.
 
-**1. `close()` is now TERMINAL for Elite, which the frozen contract says only `destroy()` is.**
-Introduced by the fix above: `close()` deletes the `packageCache` entry unconditionally, but Elite
-(`licence.canPersist === false`) never persists — `store()` returns before its `writeFile` calls, so
-that cache entry is the **only** copy. After `close()` an Elite book cannot be reopened at all:
-`openSession` → `resolvePackage` → cache miss → `loadPersisted` finds no meta → the whole read fails
-`DECRYPTION_FAILED` ("no stored package for this book"). Confirmed by probe, 2026-08-18.
+**The `close()`-is-TERMINAL-for-Elite item is FIXED**, by Abhinav on 2026-08-26, and it stopped
+being hypothetical before it was closed. That entry said the defect was invisible "because nothing
+ships Elite content" — that ceased to be true when `openBook()` began forcing `canPersist: false`
+on every STREAMED book, which makes every streamed book Elite. The symptom in the app was a
+backend audiobook (`dev-sample-audio-encrypted`) failing `DECRYPTION_FAILED` on re-entry, since
+`audioAssetResolver` calls `closeBook()` after every resolve.
 
-`content-provider.ts` draws exactly the distinction this erases: `openSession` is specified for "a
-stored (**or in-memory Elite**) book", `close()` is "REVERSIBLE", and `destroy()` is the "TERMINAL"
-one. So this is a frozen-contract divergence, not a preference. It is invisible today because
-nothing ships Elite content — `devContentSeed.ts` seeds `canPersist: true` — which is precisely why
-it needs writing down rather than discovering later. **No test covers Elite close-then-reopen**;
-`contentStore.test.ts`'s Elite block stops at `store()` and `decryptBook()`.
+`close()` now exempts Elite from the `packageCache` delete — the guard that entry proposed — so it
+is REVERSIBLE for every tier and `destroy()` is the only terminal one, as `content-provider.ts`
+specifies. No RAM is given up: `decryptBook()` already skips its `pkg.content` release for Elite
+for the same reason, so there was never a second copy to reclaim, and the plaintext is still zeroed.
+`contentStore.test.ts` now pins the whole lifecycle per tier, and the `EDGE:` block in
+`contentStore.edgecases.test.ts` that pinned the defect is gone, per its own instruction.
 
-The fix is to guard the delete on the package rather than drop it unconditionally (Elite has no disk
-copy to fall back to, so it must stay cached until `destroy()`). Reader has no workaround and this is
-Abhinav's call — same reasoning as the item it replaced: `contentProvider.ts` exposes only
-`closeBook`, and reaching past that seam is what the seam exists to prevent.
+**A second defect travelled with it, in Reader, and is fixed in the same change.** `contentStore`
+sessions are keyed by bookId with **no reference counting** — one session per book, not one per
+caller — so two concurrent `resolveAudioAssetUri()` calls tore each other down: the first to finish
+called `closeBook()`, which both dropped the package (the `DECRYPTION_FAILED` above) *and* zeroed
+the shared plaintext buffer the second was about to write, silently producing a scratch file of
+pure zeros. `AudioPlayerScreen`'s load effect is the caller that overlaps — its `cancelled` flag
+suppresses a stale `setUri` but does not abort the in-flight promise, so leaving the screen
+mid-load and re-entering leaves two acquires running against one session.
+`audioAssetResolver.ts` now dedupes in-flight acquires per bookId (`inFlight`), cleared on settle
+so it stays a dedupe and not a URI cache. **If you add another caller of a `contentStore` session,
+assume no refcounting and do not close a book someone else may be reading.**
 
-**2. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
+**1. Peak memory tracks the NUMBER of full-size copies, not the cost of making them.** The headline
 holds and is now proven twice over: **both** codec swaps have landed, time fell by ~30x, and the
 peak did not move. Measured on a real 20 MB EPUB (iPhone 17 Pro simulator, dev build):
 

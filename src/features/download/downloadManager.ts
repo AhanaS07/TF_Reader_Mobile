@@ -422,12 +422,26 @@ export async function downloadBook(
     // moment), not the primary path for it.
     let downloadId = existing?.id ?? null;
     if (!downloadId) {
-      const remote = await findExistingDownload({ userId: USER_ID, bookId, format });
-      if (remote) {
-        if (remote.isDeleted) {
-          await api.restore<any>('downloads', remote.id);
+      // Same rollback reasoning as the BOOK_LIMIT check above, for the same reason: this
+      // reconciliation call runs after contentStore.store() already wrote the ciphertext, so a
+      // failure here (api.list -> ApiError(0) on an unreachable host is the routine dev-simulator
+      // state, not an edge case) must not leave that ciphertext orphaned with no downloads row —
+      // found in review, the defect isAvailableOffline(bookId)-true-with-no-row above warns about.
+      try {
+        const remote = await findExistingDownload({ userId: USER_ID, bookId, format });
+        if (remote) {
+          if (remote.isDeleted) {
+            await api.restore<any>('downloads', remote.id);
+          }
+          downloadId = remote.id as string;
         }
-        downloadId = remote.id as string;
+      } catch (cause) {
+        try {
+          await contentStore.destroy(bookId);
+        } catch (destroyCause) {
+          console.warn(`downloadManager: rollback contentStore.destroy(${bookId}) failed`, destroyCause);
+        }
+        throw cause;
       }
     }
 

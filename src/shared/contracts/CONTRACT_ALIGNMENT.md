@@ -82,7 +82,7 @@ because the app has already picked a side on two of them.
 | `B1` | 🔴 No `Authorization` header, no token, no auth flow at all | 🟡 **narrowed 2026-08-23, widened 2026-08-30**: real-backend calls now send a bearer token — Download via `download/devAuthToken.ts`, Sync via `sync/devAuthToken.ts` (`syncApi.ts`'s `request()` was 401ing on every highlight/bookmark/progress/prefs write until this landed) — both dev-only shortcuts on the real backend, not a real sign-in. Steps 1–3 of the real flow (institution discovery, method selection, SAML/OIDC round trip) are still unbuilt; `C6` still blocks them | Abhinav + Karthik + CAP-6 | `download/`, `sync/` |
 | `B2` | 🔴 Base URL is an untracked mock on `:4000`, not `:8080` | 🟡 **switch flipped locally** (`EXPO_PUBLIC_USE_REAL_BACKEND=true` in `.env`) — the cross-capability unification (one shared constant) is still undone | Abhinav | `download/` |
 | `B3` | 🔴 `keyFingerprint` never compared to the device key | ✅ **closed by `84f2476`**, and `C7` below is now closed too — the check is real and the recipe is confirmed correct | Abhinav | `encryption/` |
-| `B4` | 🔴 `SignedLicence` exists in no contract; synthesized with an empty signature | ❌ **contract comment corrected so it no longer claims a guarantee we don't have**; the type itself still needs a Gate decision | Ahana + Abhinav | this file's §B4 below |
+| `B4` | 🔴 `SignedLicence` exists in no contract; synthesized with an empty signature | 🟡 **implemented 2026-09-03, pending Ahana's review** — renamed to `LocalLicenceRecord`, `signature` field deleted (not just left a placeholder), `licenceSignature.ts`'s RS256 stub removed. Touches two of her files (`devContentSeed.ts`, `wholeBookBudget.test.ts`) mechanically (drop the field, rename the type) — flagged for her to confirm rather than merged silently. Real tests/typecheck/lint all green. See this file's §B4 below | Ahana + Abhinav | this file's §B4 below |
 | `B5` | 🟠 Loans borrowed, never returned; no holds/library/availability | ❌ | CAP-4 boundary | `download/` |
 | `B6` | 🟠 Change feed unimplemented — the designed revocation channel | 🟡 **Mechanism replaced, Sync half implemented** (2026-08-26): the licence side now writes `isValid` directly onto `downloads` (Mongo) instead of via a feed, so `sync/loanChanges.ts` is deleted and `sync/offlineLock.ts` instead diffs `downloads.isValid` on every pull and emits `content.lock`/`content.unlock`. Encryption's subscriber (destroy the BEK on `reason: 'revoked'`) is wired and operational. Contract's 5 open questions resolved: Q1 ✅ (endpoint: server-written `isValid`), Q2 ✅ (destroy immediately), Q4 ✅ (memory-only removed — not a lock concern, known at download), Q5 ✅ (`reason: 'unknown'` means no confirmation, UI shows uncertainty). Q3 still open: synced-column constraint vs. design. | Abhinav/Karthik | `download/`, `sync/` |
 | `B7` | 🟠 Per-open check fails open; safe only once `B6` lands | 🟡 **hardened and widened** by `84f2476` (keychain failures now fail open too, correctly) — the accepted-risk record still does not exist | Abhinav | `download/` |
@@ -199,39 +199,46 @@ converting via `reader/readerProgressStore.ts`. See `CLAUDE.md`'s "Reading-posit
 
 ---
 
-## §B4 — the decision this directory owns
+## §B4 — RESOLVED 2026-09-03: no
 
-`SignedLicence` (`content-provider.ts`) describes a wire object **no documented endpoint returns**.
-wokay's `ContentGrant` is exactly `content` / `index` / `encryption`; flambeau's
-`ReadingSessionResponse` adds only session fields. Neither carries a licence, a signature, or print
-rights. `downloadManager.ts` synthesizes one per download so `contentStore.store()` has the
-Subscription-vs-Elite signal it is built around.
+`LocalLicenceRecord` (`content-provider.ts`, formerly `SignedLicence`) describes a wire object **no
+documented endpoint returns**. wokay's `ContentGrant` is exactly `content` / `index` / `encryption`;
+flambeau's `ReadingSessionResponse` adds only session fields. Neither carries a licence, a
+signature, or print rights. `downloadManager.ts`/`licenseCheck.ts` synthesize one per download so
+`contentStore.store()` has the Subscription-vs-Elite signal it is built around.
 
-What that costs:
+**The question was: does a signed licence exist in this system?** Answer: **no.** Both contracts
+have converged on GCM's authentication tag plus a short-lived signed URL as the integrity and
+authorisation mechanism. A second RS256 licence layer is in neither document and nobody is
+building the signer. Implemented accordingly, same day:
 
-- The RS256 trust path is decorative. `signature.value` is `''` and nothing verifies it, so
-  `ContentError.LICENCE_INVALID` can never fire for a signature.
-- `rights: { print: false }` is fabricated. Anything gating on it gates on a client-side constant.
-- The open-access sentinel `'9999-12-31T23:59:59.000Z'` means a bug that mis-tags a subscription
-  book as open access grants a **perpetual** offline licence. A nullable `expiresAt` would fail
-  closed instead.
-- `expiresAt` is the one field doing real work, and it is sourced correctly from `loan.dueAt`.
-  Keep that.
+- Renamed `SignedLicence` → `LocalLicenceRecord`.
+- Deleted the `signature` field rather than leaving it as a placeholder — no code read `.value`
+  for anything real, so nothing else needed to change shape.
+- Deleted `src/features/encryption/licenceSignature.ts` (the RS256 stub) and its two call sites in
+  `licenseCheck.ts` — dead code once there is no `signature` field to check.
+- **Kept in `shared/contracts/`**, not moved out as originally suggested: `EncryptedPackage.licence`
+  is a genuinely shared field (Reader reads it through `ContentStore`/`ContentProvider`), and
+  `shared/contracts/` cannot import from a feature directory without inverting the dependency
+  graph. Recorded as a deliberate deviation from the letter of the original recommendation, not an
+  oversight.
+- **Real, different protection shipped in the same change**: `src/features/encryption/licenceSeal.ts`
+  seals the persisted licence with the book's own BEK, so `decryptBook()` checks expiry against a
+  copy that can't be hand-edited via meta.json, without needing any signature. This does NOT answer
+  "does flambeau vouch for this licence" (still no) — only "has this device's own copy of it been
+  tampered with since it was stored" (now yes). See `FAIL_CLOSED_AUDIT.md` (`download/`) row 4b.
 
-**The question for the Gate: does a signed licence exist in this system?**
+**Cross-team edits, pending Ahana's review, not yet a Gate-reviewed sign-off**: the rename and
+field deletion touch two files she owns —
+`src/features/reader/devContentSeed.ts` (constructs a `LocalLicenceRecord`, dropped the `signature`
+line) and `src/features/reader/wholeBookBudget.test.ts` (same). Both edits are mechanical (remove a
+field, rename a type), `npm test`/`typecheck`/`lint` are all green including her files, but they
+haven't had her eyes on them yet — flagging here rather than treating silence as approval.
 
-- **Yes** → flambeau/wokay add it to `ContentGrant`/`ReadingSessionResponse`, publish signing-key
-  distribution, and we wire up RS256 verification.
-- **No** → rename to `LocalLicenceRecord`, move it out of `shared/contracts/` (a device-side record
-  is not an inter-team wire contract), and delete `signature` rather than filling it with a
-  placeholder.
-
-**Recommendation: no.** Both contracts have converged on GCM's authentication tag plus a
-short-lived signed URL as the integrity and authorisation mechanism. A second RS256 licence layer
-is in neither document and nobody is building the signer. Say so explicitly rather than leaving a
-frozen contract asserting a guarantee that does not exist.
-
-Until it is ruled on, the type stays and the comments tell the truth about it. Both halves matter.
+Still true and unaffected by any of the above, for the record: `rights: { print: false }` remains
+fabricated (no contract source for it, unrelated to this finding), and the open-access sentinel
+`'9999-12-31T23:59:59.000Z'` still means a mis-tagged subscription book gets a perpetual offline
+licence — a nullable `expiresAt` would fail closed instead. Neither was in scope for this change.
 
 ---
 

@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS downloads (
   local_path     TEXT,
   status         TEXT,
   -- NOT the entitlement gate. Encryption owns licence enforcement, offline included, from
-  -- SignedLicence.expiresAt inside the EncryptedPackage - see contentStore. This column only
+  -- LocalLicenceRecord.expiresAt inside the EncryptedPackage - see contentStore. This column only
   -- records that a download completed; a second, weaker source of entitlement truth sourced
   -- from a different backend collection is exactly what review rejected.
   is_valid       INTEGER DEFAULT 1,

@@ -22,6 +22,7 @@ import { CHUNK_SIZE_BYTES } from './chunkedAssetFetcher';
 import { DownloadError, DownloadFailure } from './errors';
 import { Paths } from 'expo-file-system';
 import { API_BASE_URL } from './config';
+import { api } from '@/features/sync/syncApi';
 import type { FlambeauError, Loan, ReadingSessionResponse } from '@/shared/contracts';
 
 // downloadBook() now checks the server for existing history (any device, possibly tombstoned)
@@ -218,7 +219,7 @@ describe('downloadBook — the ENCRYPTED (Subscription) path, for real', () => {
     const payload = await encrypt(plaintext, bek);
     const encryptedBytes = new Uint8Array(payload.content);
 
-    // downloadManager.ts now derives SignedLicence.keyFingerprint from the device's OWN key
+    // downloadManager.ts now derives LocalLicenceRecord.keyFingerprint from the device's OWN key
     // (publicKeyFingerprint), independently of whatever encryption.keyFingerprint the server
     // reports — contentStore.ts's licence/encryption fingerprint check only means anything if
     // this mock server "claim" genuinely matches the same device key downloadBook wraps the BEK
@@ -755,6 +756,36 @@ describe('downloadBook — book-limit race rollback', () => {
       bookId,
     });
     expect(destroySpy).toHaveBeenCalledWith(bookId);
+  });
+});
+
+// Regression test for the "unguarded findExistingDownload call" defect (Karthik's downloads-
+// history reconciliation, added 2026-08-31): api.list() throws ApiError(_, 0) on an unreachable
+// host — the routine dev-simulator state, not an edge case — and that call runs INSIDE
+// withWriteLock, AFTER contentStore.store() already wrote the ciphertext. Without the rollback
+// this proves, the failure would escape downloadBook with no downloads row ever written, leaving
+// isAvailableOffline(bookId) permanently true for a book the app believes it never downloaded.
+describe('downloadBook — remote-reconciliation network failure', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('rolls back contentStore.store() and rethrows when findExistingDownload (api.list) fails', async () => {
+    const bookId = 'reconcile-network-failure-book';
+    const content = new Uint8Array([1, 2, 3]);
+    const loan = openAccessLoanFor(bookId);
+    const session = sessionFor(bookId, content);
+    global.fetch = mockFetchFor(loan, session, content);
+
+    const listFailure = new Error('downloads: network request failed');
+    (api.list as jest.Mock).mockRejectedValueOnce(listFailure);
+
+    await expect(downloadBook(bookId)).rejects.toBe(listFailure);
+
+    expect(await contentStore.isAvailableOffline(bookId)).toBe(false);
   });
 });
 

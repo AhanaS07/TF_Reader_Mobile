@@ -30,7 +30,7 @@
 // left in place rather than deleted because a published contract may still require them and
 // deleting a type this app never calls is a no-op locally, not a proof nothing needs it.
 //
-// `licence: SignedLicence` DOES NOT EXIST ON THE REAL RESPONSE — content-provider.ts's frozen
+// `licence: LocalLicenceRecord` DOES NOT EXIST ON THE REAL RESPONSE — content-provider.ts's frozen
 // `EncryptedPackage`/`ContentStore.store()` require one (with `expiresAt`/`canPersist`/`rights`/
 // `signature`) to decide Subscription-vs-Elite persistence, but the real backend never sends
 // anything shaped like it. `checkLicense.ts` synthesizes one locally from `canPersist` (now on

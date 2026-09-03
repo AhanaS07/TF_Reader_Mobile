@@ -44,7 +44,6 @@ function encryptedPackage(bookId: string, plaintext: Uint8Array, payload: { cont
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
       canPersist: true,
       rights: { print: false },
-      signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     },
     cipherLength: payload.cipherLength,
     originalLength: payload.originalLength,
@@ -93,7 +92,6 @@ describe('contentProvider.getBook — openSession succeeds, decryptBook rejects'
         expiresAt: new Date(Date.now() - 1000).toISOString(), // already expired
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
       },
     });
     await storeBek(bookId, key);

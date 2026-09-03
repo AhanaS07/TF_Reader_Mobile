@@ -11,7 +11,7 @@
 // checkLicense() (licenseCheck.ts) is the only seam, so these tests mock that instead of the
 // lower-level network client. See licenseCheck.ts's header for why there's no borrow step.
 
-import type { ReadingSessionResponse, SignedLicence } from '@/shared/contracts';
+import type { ReadingSessionResponse, LocalLicenceRecord } from '@/shared/contracts';
 import { openBook } from './openBook';
 import { DownloadError, DownloadFailure } from './errors';
 import { contentStore } from '../encryption/contentStore';
@@ -48,7 +48,7 @@ function makeSession(overrides?: Partial<ReadingSessionResponse>): ReadingSessio
   };
 }
 
-function makeLicence(overrides?: Partial<SignedLicence>): SignedLicence {
+function makeLicence(overrides?: Partial<LocalLicenceRecord>): LocalLicenceRecord {
   return {
     licenceId: 'loan-test-book',
     itemId: 'test-book',
@@ -56,7 +56,6 @@ function makeLicence(overrides?: Partial<SignedLicence>): SignedLicence {
     expiresAt: '9999-12-31T23:59:59.000Z',
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'flambeau-unsigned', value: '' },
     ...overrides,
   };
 }
