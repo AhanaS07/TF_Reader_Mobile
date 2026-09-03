@@ -85,12 +85,31 @@ export function collapseWithMap(raw: string): CollapsedMap {
  * clamping recovers a correct answer rather than discarding one. Android engines over-report `end`
  * on the last word of an utterance, and rejecting there would drop the highlight on the final word
  * of every affected sentence: the most conspicuous place in the sentence to have a gap.
+ *
+ * >>> THE INTEGER GUARD IS NOT REDUNDANT WITH THE RANGE CHECKS BELOW. <<< `NaN` passes both of them
+ * — `NaN < 0` and `NaN >= clampedEnd` are each false — and would index the tables with it, so the
+ * function would return `{ start: undefined, end: undefined }` while its type says two `number`s. A
+ * fraction does the same, more quietly: `starts[2.5]` is a hole, not a rounded lookup. Either one
+ * degrades safely today (`subRangeForRawSpan` throws on the undefined, the caller's `try` catches,
+ * the word simply is not painted) but only by accident, and it degrades through a thrown exception
+ * rather than through the `null` this function already has a contract for.
+ *
+ * BOTH ends of the span are checked, `end` included, even though `end` is clamped: `Math.min(NaN,
+ * n)` is `NaN`, so the clamp launders nothing.
+ *
+ * This is `epubCfiRange.ts`'s `expandPointCfi` pattern (`if (!Number.isInteger(length) || length <=
+ * 0) return null;`) and it belongs here for the same reason it belongs there — these offsets arrive
+ * from a native TTS progress event and cross the JSON bridge (iOS `location`/`length`, Android
+ * `start`/`end`, normalised by `normalizeTtsProgressEvent`), so nothing upstream of this call has
+ * told the compiler they are integers.
  */
 export function rawSpanForCollapsed(
   map: CollapsedMap,
   start: number,
   end: number,
 ): { start: number; end: number } | null {
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+
   const clampedEnd = Math.min(end, map.text.length);
   if (start < 0 || start >= clampedEnd) return null;
   return { start: map.starts[start], end: map.ends[clampedEnd - 1] };

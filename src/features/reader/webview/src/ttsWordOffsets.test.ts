@@ -115,6 +115,32 @@ describe('rawSpanForCollapsed', () => {
   it('rejects everything against an empty collapsed string', () => {
     expect(rawSpanForCollapsed(collapseWithMap('   '), 0, 1)).toBeNull();
   });
+
+  // THE CASE THE RANGE CHECKS ABOVE CANNOT CATCH. `NaN` is false against both `< 0` and
+  // `>= clampedEnd`, so without the integer guard each of these indexes the tables with a hole and
+  // returns `{ start: undefined, end: undefined }` — two `undefined`s from a signature promising two
+  // numbers. These offsets cross the JSON bridge from a native TTS progress event, so the type is a
+  // claim about the wire rather than something the compiler checked.
+  it('rejects a NaN offset at either end', () => {
+    expect(rawSpanForCollapsed(map, Number.NaN, 4)).toBeNull();
+    expect(rawSpanForCollapsed(map, 0, Number.NaN)).toBeNull();
+    expect(rawSpanForCollapsed(map, Number.NaN, Number.NaN)).toBeNull();
+  });
+
+  it('rejects a fractional offset at either end', () => {
+    // Quieter than NaN and just as wrong: `starts[2.5]` is a hole, not a rounded lookup.
+    expect(rawSpanForCollapsed(map, 2.5, 9)).toBeNull();
+    expect(rawSpanForCollapsed(map, 4, 9.5)).toBeNull();
+  });
+
+  it('rejects an infinite offset at either end', () => {
+    // `end: Infinity` is the one that could look harmless — `Math.min` would clamp it to the string
+    // length and the span would resolve. It is still not an offset any engine reports, and letting
+    // it through would mean the guard is about NaN specifically rather than about integrality.
+    expect(rawSpanForCollapsed(map, Number.POSITIVE_INFINITY, 9)).toBeNull();
+    expect(rawSpanForCollapsed(map, 4, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(rawSpanForCollapsed(map, Number.NEGATIVE_INFINITY, 9)).toBeNull();
+  });
 });
 
 describe('indexOfOffset', () => {

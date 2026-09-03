@@ -1580,10 +1580,12 @@ export function ReaderScreen({
    * KEYED ON THE TRANSITION, NOT ON THE FLAG, which is what makes this a legitimate exception to
    * `a11yFocus.ts`'s warning against "is the panel open" effects. The early return leaves the CLOSE
    * half entirely to `closeToc`, whose whole argument is which of the two closes this is; and the
-   * open half fires only from the Contents button's own press, since that is the one place
-   * `setShowToc(true)` exists. So there is no render this can steal focus on that the user did not
-   * cause, and nothing here can race a panel opening over the TOC — that path goes through
-   * `closeToc(false)` and returns above.
+   * open half fires only from the Contents button's own press, since that is the one place that
+   * OPENS it — the `setShowToc((open) => !open)` toggle at ~2682. (Do not go looking for a
+   * `setShowToc(true)`: there is no such call, which is the point — one toggle is the whole
+   * surface.) So there is no render this can steal focus on that the user did not cause, and
+   * nothing here can race a panel opening over the TOC — that path goes through `closeToc(false)`
+   * and returns above.
    *
    * NO `setTimeout`, and not by omission. `VoicePicker` needs one because a `Modal` attaches its
    * content on a native layer asynchronously, so focusing the instant `visible` flips no-ops. This
