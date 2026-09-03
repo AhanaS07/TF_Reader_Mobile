@@ -4519,6 +4519,64 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     // No further attempt to correct back to page 5 — the reader's own navigation wins.
     expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeUserAction);
   });
+
+  // Regression pin, found live on-device 2026-09-03: `onRelocated` (ReaderRouteScreen.tsx's save
+  // path, which pushes to Sync unthrottled on its very first call) used to fire for EVERY
+  // `relocated`, including a wrong intermediate one still being corrected by the resend logic
+  // above. Opening a book already at page 9 durably overwrote the synced position with page 1
+  // within the first second, every time - the resend loop fixed what was on screen, but the wrong
+  // page had already been saved and pushed before it did.
+  it('does not report a relocate outward to onRelocated until the initial target actually lands', async () => {
+    const onRelocated = jest.fn();
+    await render(
+      <ReaderScreen
+        bookId="test-book-verify-no-premature-report"
+        initialTarget={{ kind: 'page', page: 5 }}
+        onRelocated={onRelocated}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The wrong intermediate landing - must not reach onRelocated, or a real resume position gets
+    // clobbered by whatever the shell opened to by default.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    expect(onRelocated).not.toHaveBeenCalled();
+
+    // The resend lands correctly - THIS one must reach onRelocated, with the real target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+    expect(onRelocated).toHaveBeenCalledTimes(1);
+    expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });
+  });
+
+  it('reports a relocate outward once verification gives up, not just once it lands correctly', async () => {
+    const onRelocated = jest.fn();
+    await render(
+      <ReaderScreen
+        bookId="test-book-verify-report-after-abandon"
+        initialTarget={{ kind: 'page', page: 5 }}
+        onRelocated={onRelocated}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // Comfortably more mismatches than any reasonable retry budget — same style and same reason
+    // as "gives up eventually" above, deliberately not pinned to the exact cap value. Starting well
+    // past the target (5), with a generous pageCount, so none of these ever accidentally match it
+    // or get discarded as an out-of-range position.
+    for (let page = 100; page <= 149; page++) {
+      await deliver({ type: 'relocated', position: { kind: 'page', page, pageCount: 200 } });
+    }
+
+    // Verification has certainly given up by now (pendingInitialVerifyRef is null again) - one
+    // more relocate is ordinary navigation from here on, and must reach onRelocated with its own
+    // position rather than being silently dropped forever.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 150, pageCount: 200 } });
+    expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 150, pageCount: 200 });
+  });
 });
 
 // Neither non-default appearance nor existing highlights had a test combined with `initialTarget`

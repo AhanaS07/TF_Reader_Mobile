@@ -1398,13 +1398,26 @@ export function ReaderScreen({
         // Verify the initial-target flush landed where it was sent, and resend — up to
         // MAX_INITIAL_TARGET_RESENDS times — if a resize or appearance-reanchor race (see
         // `pendingInitialVerifyRef`'s own doc) silently carried it somewhere else.
+        //
+        // `isUnverifiedInitialRelocate` ALSO gates whether this relocate is reported outward
+        // (`onRelocatedRef` below): a `relocated` fired inside this same race window can be the
+        // WebView's own natural default landing (e.g. page 1), not wherever `initialTarget` asked
+        // to resume — and unlike the resend loop here, `onRelocatedRef`'s caller
+        // (`ReaderRouteScreen.tsx`) saves AND PUSHES to Sync on the very first call, unthrottled.
+        // Reporting a wrong intermediate position outward durably overwrites a correct synced
+        // position with a stale/default one, on every open, before the resume target even lands -
+        // confirmed live, 2026-09-03: opening a book already at page 9 wrote page 1 to the server
+        // within the first second, every time. `setPosition`/`setBounds` above stay unconditional -
+        // they only drive this component's own display, which the resend loop already corrects.
         const pendingVerify = pendingInitialVerifyRef.current;
+        let isUnverifiedInitialRelocate = false;
         if (pendingVerify !== null) {
           const { target, attempts } = pendingVerify;
           const landedCorrectly =
             target.kind === 'page'
               ? message.position.kind === 'page' && message.position.page === target.page
               : message.position.kind === 'cfi' && message.position.cfi === target.href;
+          isUnverifiedInitialRelocate = !landedCorrectly;
           // Silent unless EXPO_PUBLIC_READER_TIMING=1 (readerTiming.ts) — real device evidence for
           // whatever keeps landing this wrong, rather than more guessing from a simulator.
           logEvent('initial-target relocated', {
@@ -1428,7 +1441,9 @@ export function ReaderScreen({
         // setSpokenRange, which only touches annotations — so this is the one call site needed,
         // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
         ttsProviderRef.current?.notifyRelocated();
-        onRelocatedRef.current?.(message.position);
+        if (!isUnverifiedInitialRelocate) {
+          onRelocatedRef.current?.(message.position);
+        }
 
         const ttsSpeaking = ttsStatusRef.current === 'speaking';
 

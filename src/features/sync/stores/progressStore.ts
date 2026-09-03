@@ -1,4 +1,4 @@
-import { getDatabase, newId, nowIso } from '../localDb/database';
+import { getDatabase, nowIso } from '../localDb/database';
 import { parseLocator, progressMapper } from '../localDb/mappers';
 import type { Locator, ProgressRow } from '../localDb/types';
 import { BOOK_ID, USER_ID } from '../syncConfig';
@@ -10,6 +10,20 @@ export const progressTable = createSyncableTable<ProgressRow>({
   toServer: progressMapper.toServer,
   toRow: progressMapper.toRow,
 });
+
+/**
+ * Deterministic id for the per-(user, book) progress singleton - same reasoning as
+ * `personalizationId`/`accessibilityId`: a device-minted UUID is wrong for a record the backend
+ * enforces as one-per-(userId, bookId) (a compound unique index, confirmed against the real
+ * backend - see `syncEngine.integration.test.ts`'s "push: progress" describe block). A random
+ * id meant a device whose local `progress` row was ever lost (reinstall, a local reset, or this
+ * app's own local-SQLite-wipe tooling) would mint a fresh id on its next save and permanently
+ * 409 against whatever id the OLDER row still occupies server-side - `GET` on the fresh id
+ * 404s (nothing was ever stored under it), and `POST` collides with the compound index. Deriving
+ * the id from the scope makes every device (and every reinstall) agree on the same slot, so a
+ * stale local state becomes an ordinary update-or-create instead of an unrecoverable conflict.
+ */
+export const progressId = (userId: string, bookId: string) => `progress-${userId}-${bookId}`;
 
 /**
  * Reading position. There is exactly one live progress row per user + book, so
@@ -57,7 +71,7 @@ export const progressStore = {
     return withWriteLock(async () => {
       const existing = await this.current(userId, bookId);
       const row: ProgressRow = {
-        id: existing?.id ?? newId(),
+        id: existing?.id ?? progressId(userId, bookId),
         user_id: userId,
         book_id: bookId,
         // AUDIO has no page and must not inherit a stale/leftover offset from a prior locator on
