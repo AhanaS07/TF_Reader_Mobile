@@ -28,6 +28,20 @@ const STORE_DIR = new Directory(Paths.document, 'tf-reader-content');
 function indexFilePath(bookId: string): File {
   return new File(STORE_DIR, `${encodeURIComponent(bookId)}.index.bin`);
 }
+function metaFilePath(bookId: string): File {
+  return new File(STORE_DIR, `${encodeURIComponent(bookId)}.meta.json`);
+}
+
+function readMeta(bookId: string): Record<string, any> {
+  return JSON.parse(metaFilePath(bookId).textSync());
+}
+
+function writeMeta(bookId: string, meta: Record<string, any>): void {
+  const file = metaFilePath(bookId);
+  if (file.exists) file.delete();
+  file.create();
+  file.write(JSON.stringify(meta));
+}
 
 function randomKey(): Uint8Array {
   return new Uint8Array(crypto.randomBytes(32));
@@ -685,6 +699,86 @@ describe('EDGE: Elite tier — persistence really does not survive a process res
 // now asserted positively in contentStore.test.ts, alongside the rest of the tier's lifecycle —
 // `close()` exempts Elite from the packageCache drop, so it is REVERSIBLE for every tier and
 // `destroy()` is the only terminal one, as content-provider.ts specifies.
+
+// Option C from the B4 write-up (thisWeek.md / FAIL_CLOSED_AUDIT.md): the persisted licence is
+// sealed with the book's own BEK so a hand-edit of meta.json's plaintext licence fields no longer
+// changes what decryptBook() enforces. Sealed LAZILY (first genuine key access, not at store()
+// time — see contentStore.ts's own comment on why store() must stay keystore-free), so these
+// tests exercise "first decrypt creates the seal" before proving tamper is caught by it.
+describe('EDGE: licence seal (Option C) — on-device tamper protection for the persisted licence', () => {
+  it('has no seal on disk until the first decrypt, then persists one', async () => {
+    const bookId = 'edge-seal-lazy-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-lazy'), key));
+
+    expect(readMeta(bookId).licenceSeal).toBeUndefined();
+
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId);
+
+    expect(readMeta(bookId).licenceSeal).toBeDefined();
+  });
+
+  it('a book re-opened cold (packageCache/session dropped) still verifies against the persisted seal', async () => {
+    const bookId = 'edge-seal-cold-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-cold-ok'), key));
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId); // seals it
+    await contentStore.close(bookId); // drops packageCache + session — forces loadPersisted() next
+
+    await contentStore.openSession(bookId);
+    const plaintext = await contentStore.decryptBook(bookId);
+
+    expect(Buffer.from(plaintext).toString('utf8').startsWith('seal-cold-ok')).toBe(true);
+  });
+
+  it('hand-editing expiresAt in meta.json to un-expire a book does not change what decryptBook() enforces', async () => {
+    const bookId = 'edge-seal-tamper-expiry-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(
+      await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-expiry'), key, {
+        expiresAt: new Date(Date.now() - 1000).toISOString(), // already expired
+      })
+    );
+
+    // First decrypt: correctly denied, AND seals the (truthfully expired) licence in the process.
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_EXPIRED });
+    await contentStore.close(bookId);
+
+    // Attacker with file access hand-edits the PLAINTEXT licence to look unexpired — nothing
+    // before this feature existed would have caught this.
+    const meta = readMeta(bookId);
+    meta.licence.expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    writeMeta(bookId, meta);
+
+    // Still denied: decryptBook() trusts the SEALED copy (still the original, truthfully expired
+    // licence) for the expiry check, not the hand-edited plaintext sitting next to it.
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_EXPIRED });
+  });
+
+  it('corrupting the seal itself (not the plaintext) fails closed with LICENCE_INVALID', async () => {
+    const bookId = 'edge-seal-tamper-seal-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-corrupt'), key));
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId); // seals it
+    await contentStore.close(bookId);
+
+    const meta = readMeta(bookId);
+    meta.licenceSeal.content = 'not-a-real-seal-at-all';
+    writeMeta(bookId, meta);
+
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_INVALID });
+  });
+});
 
 // Sanity re-import so later files in the same worker aren't left on a resetModules()'d
 // contentStore instance (jest.resetModules() above only affects require() cache, not this
