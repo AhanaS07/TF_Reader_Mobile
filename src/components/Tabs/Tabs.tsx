@@ -46,10 +46,40 @@ export interface TabsProps {
   // stale cursor shows as "nothing active" instead of silently lying.
   activeId: string;
   variant?: TabsVariant;
+  /**
+   * Spread the bar across the full width it is given, instead of letting it end
+   * wherever the labels do.
+   *
+   * OFF BY DEFAULT because the bar's usual job is a tab set of unknown length
+   * (see the file header) — a feed configured per institution, where the row
+   * scrolls and "full width" is not a thing it can be. Opt in when the tab set
+   * is FIXED and the bar is the screen's own filter: left-flush is fine for a
+   * strip that plainly continues off-screen, and wrong for a five-segment
+   * control, where the leftover space pools on the right and reads as a
+   * mis-centred component rather than as room to scroll.
+   *
+   * THE SLACK GOES BETWEEN THE TABS, NOT INTO THEM. Giving each tab an equal
+   * share of the width (`flex: 1`) is the other way to fill a row and it
+   * truncates: "Bookmarks" needs about 76pt and a fifth of a small phone's row
+   * is nearer 57, so the labels would ellipsise to fit a shape. Distributing the
+   * gap keeps every label whole and still reaches both margins.
+   *
+   * A NO-OP WHEN THE LABELS ALREADY OVERFLOW, which is the behaviour that makes
+   * this safe to pass without measuring: `flexGrow` cannot shrink a row that is
+   * already wider than its viewport, so the bar falls back to scrolling exactly
+   * as it does today.
+   */
+  fill?: boolean;
   onChange: (id: string) => void;
 }
 
-export default function Tabs({ tabs, activeId, variant = 'segmented', onChange }: TabsProps) {
+export default function Tabs({
+  tabs,
+  activeId,
+  variant = 'segmented',
+  fill = false,
+  onChange,
+}: TabsProps) {
   // Nothing to render, so no chrome — see the file header.
   if (tabs.length === 0) {
     return null;
@@ -65,7 +95,11 @@ export default function Tabs({ tabs, activeId, variant = 'segmented', onChange }
       // no known maximum length, so labels must never be squeezed to fit.
       testID="tabs"
       accessibilityRole="tablist"
-      contentContainerStyle={[styles.track, segmented && styles.trackSegmented]}
+      contentContainerStyle={[
+        styles.track,
+        segmented && styles.trackSegmented,
+        fill && styles.trackFill,
+      ]}
     >
       {tabs.map((tab) => {
         const active = tab.id === activeId;
@@ -114,6 +148,14 @@ const styles = StyleSheet.create({
   track: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  // `flexGrow` on a horizontal ScrollView's content container stretches it to
+  // the viewport when the content is narrower, and is ignored when it is wider —
+  // which is what makes `fill` degrade back to scrolling on its own. The slack
+  // is then spread BETWEEN the tabs, so no label is squeezed. See `fill`.
+  trackFill: {
+    flexGrow: 1,
+    justifyContent: 'space-between',
   },
   // The segmented variant reads as one control, so the track carries the pill
   // and the segments sit inside it.

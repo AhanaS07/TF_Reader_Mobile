@@ -1,19 +1,71 @@
 // The personal library — CAP-4 Module E (Library & Sync), flambeau.
 //
 // The screen the app opens on for a signed-in reader: what they are holding,
-// and what they are standing in line for. It renders `GET /api/v1/library`,
-// which this repo reaches through `LicenceSource.getLibrary()` rather than
-// through HTTP — see `src/licence/`.
+// what is on this device, where they left off, and what they are standing in
+// line for. Loans and holds come from `GET /api/v1/library`, which this repo
+// reaches through `LicenceSource.getLibrary()` rather than through HTTP (see
+// `src/licence/`). Downloads and bookmarks are DEVICE-LOCAL and come from
+// `downloadStore` and `bookmarkStore` — that endpoint carries neither.
 //
-// THREE SECTIONS, IN THIS ORDER, AND THE ORDER IS A DECISION RATHER THAN A
+// FIVE SECTIONS, IN THIS ORDER, AND THE ORDER IS A DECISION RATHER THAN A
 // LAYOUT PREFERENCE:
 //
 //   1 · Offered to you — loudest, and first. It is the only list that dies. A
 //       reader who misses the countdown loses a book they queued for and the
 //       queue moves on without them, so anything below the fold here is a lost
-//       book.
+//       book. An ELITE title whose grant came through arrives here.
 //   2 · On loan        — what the reader came to the app to do: open a book.
-//   3 · Waiting        — reassurance, not action. Nothing here expires.
+//   3 · Downloads      — the same books, on this phone. Works in a tunnel.
+//   4 · Bookmarks      — where the reader stopped. One row per bookmark.
+//   5 · Waiting        — reassurance, not action. Nothing here expires.
+//
+// EVERY HEADING RENDERS, EVEN WITH NOTHING UNDER IT. A new reader used to get a
+// single "Nothing to show here yet" on a blank page, which answers "is this
+// broken?" and nothing else. The five headings with an empty line each are the
+// shelf's own table of contents: they tell a reader who has never borrowed
+// anything that this is where a loan will appear, that downloads are a thing
+// this app does, and that their place in a queue will be shown to them. The
+// cost is a screen that is never empty-looking; the benefit is that the screen
+// teaches itself.
+//
+// ─── A TAB BAR OVER AN OVERVIEW, NOT FIVE SECTIONS DOWN ONE SCROLL ──────────
+//
+// All · Loans · Downloads · Bookmarks · Holds, pinned above the scroll, with
+// `All` the default. `All` shows every heading but caps each section at
+// `PREVIEW_ROWS`, and a capped section grows a "See all (12)" that SWITCHES TAB
+// rather than pushing a screen.
+//
+// BOOKMARKS IS WHAT FORCED THIS. It is one row per bookmark, not per book, so a
+// reader working through a single monograph has thirty rows in the middle of
+// the shelf and pushes Downloads and Waiting out of reach. Five sections down
+// one scroll was defensible at three server-sourced sections; it is not with an
+// unbounded one in the middle. Capping the overview bounds the page at fifteen
+// rows however much the reader holds.
+//
+// WHY TABS ARE SAFE HERE, GIVEN THE ORDER ABOVE IS ABOUT URGENCY. The reason an
+// offer had to be first was that it must be UNMISSABLE, and it still is on
+// every tab — `QueueNotificationHost` (D16) mounts the actionable Accept /
+// Decline banner at the app root, on every screen. So a reader on the Downloads
+// tab has the offer in front of them regardless. The Offered section is a
+// listing, not the alarm; the alarm is mounted elsewhere and always on.
+//
+// "See all" SWITCHES TAB INSTEAD OF NAVIGATING, which is the whole reason this
+// costs no route: the full list already exists one tab over. A pushed screen
+// would be a second place that renders a loan row, and CONVENTIONS §7 is about
+// exactly that.
+//
+// THE TAB SET IS NAMED HERE AND THAT DOES NOT BREAK `Tabs`. Its "TABS ARE DATA,
+// NOT CODE" rule (AGENTS.md L-5) is a rule about the COMPONENT: it must not
+// name a tab or assume a count, because screen 01's bar is configured per
+// institution. These five are partitions of one screen's own state, not
+// institutional data, so naming them at this call site is what that rule
+// intends. The bar holds no selection state either — `activeTab` lives here.
+//
+// THE SAME BOOK APPEARS IN TWO SECTIONS AND THAT IS NOT A BUG. A SUBSCRIPTION
+// title a student downloads is a loan AND a download: the loan is what expires,
+// the download is what opens offline. An OPEN_ACCESS title downloads with no
+// loan at all, so it appears only under Downloads — which is exactly why
+// Downloads cannot be a badge on the loan rows instead. See `sortedDownloads`.
 //
 // NO COMPONENT ON THIS SCREEN READS A CLOCK. Every countdown is a difference
 // against the `serverTime` that arrived with the holdings. `Date.now()` is
@@ -61,29 +113,45 @@
 // refresh from a successful empty one, so the quiet "not up to date" marker and
 // the rendered refusal are both unbuildable without the store reporting failure.
 // Loading and empty are built; those two are not.
-import { useCallback, useEffect, useState } from 'react';
+//
+// NO ROW ON THE DOWNLOADS OR BOOKMARKS SECTION IS TAPPABLE YET, for the same
+// reason the loan rows carry no buttons: opening a downloaded book means a
+// reading session, and bookmarks navigate INTO the reader — both live behind
+// CAP-7's `ContentProvider`/reader, which is not in this repo. The rows state
+// the fact and wait for that seam rather than rendering a button that cannot
+// fire. `src/features/download` is still an empty directory, so today both
+// sections render their empty line for every reader; the wiring above them is
+// what this screen owns and it is done.
+import { Children, type ReactNode, useCallback, useEffect, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import type { Bookmark } from '@/shared/contracts';
 import { ContentCard } from '@components/ContentCard';
-import { EmptyState } from '@components/EmptyState';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { SectionHeader } from '@components/SectionHeader';
 import { Skeleton } from '@components/Skeleton';
+import { type TabItem, Tabs } from '@components/Tabs';
 import { getCatalogueSource } from '@config/catalogue';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { type ServerClock, useServerClock } from '@hooks/useServerClock';
 import type { BookSummary, Hold, Loan } from '@model/types';
+import { useBookmarkStore } from '@store/bookmarkStore';
+import { type DownloadRecord, useDownloadStore } from '@store/downloadStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type } from '@theme/tokens';
 
 import {
   activeLoans,
+  bookmarkLocationLabel,
   collectItemIds,
+  downloadedLabel,
   dueLabel,
   offerExpiryLabel,
   offerMinutesRemaining,
   partitionHolds,
   queueLabel,
+  sortedBookmarks,
+  sortedDownloads,
 } from './LibraryScreen.holdings';
 
 // How often the offer countdowns re-render. A minute is the resolution
@@ -92,21 +160,54 @@ import {
 // to a minute late, and the last minute is the one that matters.
 const TICK_MS = 30_000;
 
-// Enough rows to fill a phone screen. The skeleton stands in for a shelf whose
-// length is not yet known, so this is a plausible shape rather than a count of
-// anything.
-const SKELETON_ROWS = 3;
+// Per SECTION, not per screen — and two rather than three because three
+// server-sourced sections load at once, so this is six rows plus their
+// headings, which is already more than a phone shows. The skeleton stands in
+// for a shelf whose length is not yet known, so this is a plausible shape
+// rather than a count of anything.
+const SKELETON_ROWS = 2;
 
 // A single shared empty map, so "no titles yet" is the same object on every
 // render. A fresh `new Map()` would be a new identity each time and re-run
 // anything downstream that compares it.
 const EMPTY_TITLES: Map<string, BookSummary> = new Map();
 
+/**
+ * The tab set, and the ids a section's "See all" switches to.
+ *
+ * `holds` CARRIES BOTH HOLD SECTIONS — Offered to you and Waiting — because a
+ * reader thinks of them as one thing they asked for, and the app splits them
+ * only because one of the two dies. One tab, still two headings inside it.
+ *
+ * NAMED HERE RATHER THAN IN `Tabs`, and the file header says why.
+ */
+const LIBRARY_TABS: TabItem[] = [
+  { id: 'all', label: 'All' },
+  { id: 'loans', label: 'Loans' },
+  { id: 'downloads', label: 'Downloads' },
+  { id: 'bookmarks', label: 'Bookmarks' },
+  { id: 'holds', label: 'Holds' },
+];
+
+type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'holds';
+
+// How many rows a section shows on the overview before it defers to its own
+// tab. Three is enough to prove the section is not empty and to show the row
+// that matters most — every list on this screen is sorted with the most urgent
+// or most recent first — while keeping the whole overview to about a screen and
+// a half whatever the reader holds.
+const PREVIEW_ROWS = 3;
+
 export default function LibraryScreen() {
   const loans = useLibraryStore((s) => s.loans);
   const holds = useLibraryStore((s) => s.holds);
   const loading = useLibraryStore((s) => s.loading);
   const refresh = useLibraryStore((s) => s.refresh);
+  // Device-local, so they are not part of `loading` and are not refetched by a
+  // pull: there is nothing to fetch. A book on this phone is on this phone
+  // whether or not the network answered.
+  const downloadRecords = useDownloadStore((s) => s.downloads);
+  const bookmarkRecords = useBookmarkStore((s) => s.bookmarks);
   const isOnline = useNetworkStatus();
 
   // Titles for the ids the holdings carry. Empty until a batch call lands; a
@@ -114,10 +215,24 @@ export default function LibraryScreen() {
   // rather than a missing state.
   const [titles, setTitles] = useState<Map<string, BookSummary>>(EMPTY_TITLES);
   const [hydrationFailed, setHydrationFailed] = useState(false);
+  // LOCAL, NOT ROUTE STATE. Which partition a reader is looking at is not worth
+  // a back-stack entry — a Back that stepped through four tabs before leaving
+  // the screen is the classic cost of routing a filter. It also means the tab
+  // resets to the overview when the reader comes back to the shelf, which is
+  // the right default: `All` is the only view that shows an offer.
+  const [activeTab, setActiveTab] = useState<LibraryTabId>('all');
 
   const { offered, waiting } = partitionHolds(holds);
   const live = activeLoans(loans);
-  const { ids, truncated } = collectItemIds(live, offered, waiting);
+  const downloads = sortedDownloads(downloadRecords);
+  const bookmarks = sortedBookmarks(bookmarkRecords);
+  const { ids, truncated } = collectItemIds({
+    offered,
+    loans: live,
+    downloads,
+    bookmarks,
+    waiting,
+  });
 
   // The shelf is the launch screen, so it fetches on mount rather than waiting
   // for a pull. `refresh` never rejects — see the store — so there is nothing
@@ -176,99 +291,236 @@ export default function LibraryScreen() {
   const publisherFor = (itemId: string): string | undefined =>
     titles.get(itemId)?.authors?.join(', ');
 
-  // First load, nothing to show yet. Skeleton rows rather than a spinner over a
-  // blank page, because this is the screen the app opens on and a spinner says
-  // "wait" where a skeleton says "your shelf is arriving".
-  if (loading && live.length === 0 && holds.length === 0) {
-    return (
-      <View style={styles.screen} testID="library-loading">
-        <OfflineBanner visible={!isOnline} />
-        {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-          <View key={i} style={styles.skeletonRow}>
-            <Skeleton variant="block" width={48} height={64} />
-            <View style={styles.skeletonText}>
-              <Skeleton variant="text" width="70%" height={16} />
-              <Skeleton variant="text" width="40%" height={12} />
-            </View>
-          </View>
-        ))}
-      </View>
-    );
-  }
+  // FIRST LOAD OF THE SERVER-SOURCED SECTIONS ONLY. Downloads and bookmarks are
+  // already in hand — they came off this device — so a whole-screen skeleton
+  // would hide rows that are ready in order to wait for rows that are not.
+  // Skeletons rather than a spinner, because this is the screen the app opens
+  // on and a spinner says "wait" where a skeleton says "your shelf is arriving".
+  const holdingsLoading = loading && live.length === 0 && holds.length === 0;
 
-  const nothingHeld = offered.length === 0 && live.length === 0 && waiting.length === 0;
+  // CAPPED ON THE OVERVIEW, WHOLE ON A SECTION'S OWN TAB. `Infinity` rather
+  // than a big number so `slice` is a no-op there instead of a second cap
+  // nobody remembers.
+  const isOverview = activeTab === 'all';
+  const limit = isOverview ? PREVIEW_ROWS : Infinity;
+
+  /**
+   * The "See all (12)" for a capped section, or nothing when it all fits.
+   *
+   * ONLY EVER ON THE OVERVIEW. On a section's own tab there is nowhere further
+   * to go, and a "See all" that led back to the list you are reading is the
+   * dishonest-affordance case `SectionHeader` refuses to render an action
+   * without a handler for.
+   */
+  const seeAll = (total: number, tab: LibraryTabId) =>
+    isOverview && total > PREVIEW_ROWS
+      ? { label: `See all (${total})`, onPress: () => setActiveTab(tab) }
+      : undefined;
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} />}
-      testID="library-screen"
-    >
+    <View style={styles.screen} testID="library-screen">
       <OfflineBanner visible={!isOnline} />
 
-      {hydrationFailed && (
-        <Text style={styles.notice}>
-          Titles couldn’t be loaded. Pull to try again — your books are still here.
-        </Text>
-      )}
+      {/* PINNED ABOVE THE SCROLL rather than inside it: a filter that scrolls
+          away leaves a reader deep in Bookmarks with no way back to the
+          overview but a flick to the top. */}
+      <View style={styles.tabBar}>
+        <Tabs
+          tabs={LIBRARY_TABS}
+          activeId={activeTab}
+          variant="segmented"
+          // The five partitions are fixed, so the bar is a control with a known
+          // width rather than a strip that continues off-screen. Without this
+          // the segmented pill stops wherever "Holds" ends and leaves all its
+          // slack on the right, which reads as a mis-centred component.
+          fill
+          onChange={(id) => setActiveTab(id as LibraryTabId)}
+        />
+      </View>
 
-      {truncated > 0 && (
-        <Text style={styles.notice}>
-          Showing your {ids.length} most recent items. {truncated} more are in your loan history.
-        </Text>
-      )}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} />}
+        testID="library-scroll"
+      >
+        {hydrationFailed && (
+          <Text style={styles.notice}>
+            Titles couldn’t be loaded. Pull to try again — your books are still here.
+          </Text>
+        )}
 
-      {nothingHeld ? (
-        // The most common state on a fresh demo database, and the one that gets
-        // forgotten until the demo runs from an empty database.
-        <EmptyState variant="no_content" />
+        {truncated > 0 && (
+          <Text style={styles.notice}>
+            Showing your {ids.length} most recent items. {truncated} more are in your loan history.
+          </Text>
+        )}
+
+        {/* Offers first: the only list that dies. An ELITE grant lands here. */}
+        {(isOverview || activeTab === 'holds') && (
+          <Section
+            title="Offered to you"
+            loading={holdingsLoading}
+            action={seeAll(offered.length, 'holds')}
+            // Nothing is wrong when this is empty — most readers are never
+            // mid-offer — so the copy explains what the section is FOR rather
+            // than apologising for being empty.
+            empty="A copy reserved for you will appear here, with a countdown."
+          >
+            {offered.slice(0, limit).map((hold) => (
+              <OfferRow
+                key={hold.holdId ?? hold.itemId}
+                hold={hold}
+                title={titleFor(hold.itemId)}
+                clock={clock}
+              />
+            ))}
+          </Section>
+        )}
+
+        {(isOverview || activeTab === 'loans') && (
+          <Section
+            title="On loan"
+            loading={holdingsLoading}
+            action={seeAll(live.length, 'loans')}
+            empty="Books you borrow will appear here until they’re due."
+          >
+            {live.slice(0, limit).map((loan) => (
+              <LoanRow
+                key={loan.loanId ?? loan.itemId}
+                loan={loan}
+                title={titleFor(loan.itemId)}
+                publisher={publisherFor(loan.itemId)}
+                clock={clock}
+              />
+            ))}
+          </Section>
+        )}
+
+        {/* Device-local: never `loading`, and unaffected by a failed refresh. */}
+        {(isOverview || activeTab === 'downloads') && (
+          <Section
+            title="Downloads"
+            action={seeAll(downloads.length, 'downloads')}
+            // Says which titles CAN be downloaded, because that is the question
+            // an empty Downloads section raises and the answer is not obvious:
+            // ELITE titles are read online only and never appear here however
+            // long the reader holds them.
+            empty="Open access and subscription books you download will be readable here offline."
+          >
+            {downloads.slice(0, limit).map((record) => (
+              <DownloadRow
+                key={record.itemId}
+                record={record}
+                title={titleFor(record.itemId)}
+                publisher={publisherFor(record.itemId)}
+              />
+            ))}
+          </Section>
+        )}
+
+        {(isOverview || activeTab === 'bookmarks') && (
+          <Section
+            title="Bookmarks"
+            action={seeAll(bookmarks.length, 'bookmarks')}
+            empty="Pages you bookmark while reading will appear here."
+          >
+            {bookmarks.slice(0, limit).map((bookmark) => (
+              <BookmarkRow
+                key={bookmark.id}
+                bookmark={bookmark}
+                title={titleFor(bookmark.bookId)}
+              />
+            ))}
+          </Section>
+        )}
+
+        {(isOverview || activeTab === 'holds') && (
+          <Section
+            title="Waiting"
+            loading={holdingsLoading}
+            action={seeAll(waiting.length, 'holds')}
+            empty="When every copy is out, join the queue and your place will show here."
+          >
+            {waiting.slice(0, limit).map((hold) => (
+              <WaitingRow
+                key={hold.holdId ?? hold.itemId}
+                hold={hold}
+                title={titleFor(hold.itemId)}
+              />
+            ))}
+          </Section>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+// ─── sections ────────────────────────────────────────────────────────────────
+
+/**
+ * One heading and whatever belongs under it — rows, skeletons, or a line of
+ * copy saying what would go there.
+ *
+ * THE HEADING IS UNCONDITIONAL, WHICH IS THE WHOLE POINT OF THE COMPONENT. It
+ * existing as a component is what makes "every section always renders" a fact
+ * about one file instead of five call sites that have to remember. React counts
+ * `children` as non-empty for an empty array, so the emptiness test is on the
+ * array's length at the call site — hence `React.Children.count`, which sees
+ * through the fragment `.map()` produces.
+ *
+ * `loading` IS OPTIONAL BECAUSE TWO SECTIONS CANNOT LOAD. Downloads and
+ * bookmarks are read off this device; there is no request behind them to be
+ * pending, and defaulting the prop to `false` says that rather than making
+ * every caller pass it.
+ */
+function Section({
+  title,
+  empty,
+  loading = false,
+  action,
+  children,
+}: {
+  title: string;
+  empty: string;
+  loading?: boolean;
+  /** "See all (12)", when the overview has more rows than it is showing. */
+  action?: { label: string; onPress: () => void };
+  children: ReactNode;
+}) {
+  const isEmpty = Children.count(children) === 0;
+  return (
+    <View style={styles.section}>
+      {/* `SectionHeader` draws an action only when it has BOTH a label and a
+          handler, so spreading an absent action is enough to withhold it. */}
+      <SectionHeader
+        title={title}
+        {...(action === undefined ? {} : { actionLabel: action.label, onAction: action.onPress })}
+      />
+      {loading ? (
+        <SectionSkeleton />
+      ) : isEmpty ? (
+        <Text style={styles.sectionEmpty}>{empty}</Text>
       ) : (
-        <>
-          {offered.length > 0 && (
-            <View style={styles.section}>
-              <SectionHeader title="Offered to you" />
-              {offered.map((hold) => (
-                <OfferRow
-                  key={hold.holdId ?? hold.itemId}
-                  hold={hold}
-                  title={titleFor(hold.itemId)}
-                  clock={clock}
-                />
-              ))}
-            </View>
-          )}
-
-          {live.length > 0 && (
-            <View style={styles.section}>
-              <SectionHeader title="On loan" />
-              {live.map((loan) => (
-                <LoanRow
-                  key={loan.loanId ?? loan.itemId}
-                  loan={loan}
-                  title={titleFor(loan.itemId)}
-                  publisher={publisherFor(loan.itemId)}
-                  clock={clock}
-                />
-              ))}
-            </View>
-          )}
-
-          {waiting.length > 0 && (
-            <View style={styles.section}>
-              <SectionHeader title="Waiting" />
-              {waiting.map((hold) => (
-                <WaitingRow
-                  key={hold.holdId ?? hold.itemId}
-                  hold={hold}
-                  title={titleFor(hold.itemId)}
-                />
-              ))}
-            </View>
-          )}
-        </>
+        children
       )}
-    </ScrollView>
+    </View>
+  );
+}
+
+function SectionSkeleton() {
+  return (
+    <View testID="library-loading">
+      {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+        <View key={i} style={styles.skeletonRow}>
+          <Skeleton variant="block" width={48} height={64} />
+          <View style={styles.skeletonText}>
+            <Skeleton variant="text" width="70%" height={16} />
+            <Skeleton variant="text" width="40%" height={12} />
+          </View>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -337,6 +589,58 @@ function LoanRow({
   );
 }
 
+// A book whose bytes are on this phone.
+//
+// NO "Read offline" BUTTON, AND NO DELETE. Opening it needs a decrypt through
+// CAP-7's `ContentProvider`, and deleting it needs `ContentStore.destroy` to
+// take the wrapped key with it — a row that removed our record and left the
+// ciphertext on disk would report free space that was never freed. Both are
+// behind a seam this repo does not implement yet, so the row states the fact.
+//
+// IT DOES NOT SAY WHETHER THE BOOK STILL OPENS. See `downloadedLabel`: this
+// screen knows a download happened, not that the licence behind it is still
+// alive, and `isAvailableOffline` is the only thing that can tell them apart.
+function DownloadRow({
+  record,
+  title,
+  publisher,
+}: {
+  record: DownloadRecord;
+  title: string;
+  publisher?: string;
+}) {
+  return (
+    <View style={styles.row}>
+      <ContentCard
+        title={title}
+        {...(publisher === undefined ? {} : { publisher })}
+        badge={<Text style={styles.downloaded}>{downloadedLabel(record)}</Text>}
+      />
+    </View>
+  );
+}
+
+// One saved place. The BOOK's title on the row, the POSITION in the badge, and
+// the reader's own name for the bookmark on the second line where a loan row
+// puts the authors — a name they typed is worth more to them than an author
+// they already know, and only one of the two fits.
+//
+// NOT TAPPABLE YET for the same reason a download is not: the destination is
+// inside the reader, which is CAP-7's. A bookmark that navigated nowhere would
+// be worse than one that plainly sits there.
+function BookmarkRow({ bookmark, title }: { bookmark: Bookmark; title: string }) {
+  const where = bookmarkLocationLabel(bookmark);
+  return (
+    <View style={styles.row}>
+      <ContentCard
+        title={title}
+        {...(bookmark.name === undefined ? {} : { publisher: bookmark.name })}
+        badge={where === undefined ? undefined : <Text style={styles.place}>{where}</Text>}
+      />
+    </View>
+  );
+}
+
 // Reassurance, not action: no buttons, and nothing here expires. Cancelling a
 // hold is a real action the reader may want, but it belongs beside a decision
 // about where it lives — it is not on this screen's spec.
@@ -354,6 +658,10 @@ function WaitingRow({ hold, title }: { hold: Hold; title: string }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: color.white },
+  // The bar owns its own inset because `Tabs` sets no outer margin, by its own
+  // rule — the screen places the control.
+  tabBar: { paddingHorizontal: space.md, paddingTop: space.md },
+  scroll: { flex: 1 },
   content: { padding: space.md },
   section: { marginBottom: space.lg },
   row: { marginBottom: space.sm },
@@ -379,6 +687,25 @@ const styles = StyleSheet.create({
   // something away from the reader if they do nothing.
   expiry: {
     color: color.error,
+    fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+  },
+  // A line of explanation, not an error: the same secondary grey as a due date
+  // rather than the `notice` card above, which is reserved for something having
+  // gone wrong. Indented to the row inset so the copy hangs under its heading.
+  sectionEmpty: {
+    paddingHorizontal: space.xs,
+    paddingTop: space.xs,
+    color: color.textSecondary,
+    fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+  },
+  downloaded: {
+    color: color.textSecondary,
     fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,

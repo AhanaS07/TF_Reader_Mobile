@@ -15,6 +15,7 @@ import { Aleo_300Light, Aleo_400Regular, Aleo_700Bold } from '@expo-google-fonts
 import { NotoSans_300Light, NotoSans_400Regular, NotoSans_700Bold } from '@expo-google-fonts/noto-sans';
 import RootNavigator from './src/navigation/RootNavigator';
 import { bootstrapAuth } from './src/auth/tokenRefresh';
+import { installDevLicenceToken } from './src/auth/devToken';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -41,6 +42,17 @@ export default function App() {
   // both success and failure, which is what RootNavigator actually gates on.
   useEffect(() => {
     bootstrapAuth();
+  }, []);
+
+  // DEV ONLY, and a no-op unless EXPO_PUBLIC_DEV_AUTH=1 — see src/auth/devToken.ts.
+  // Deliberately AFTER the bootstrapAuth effect above, not at module scope: both
+  // install a licence-token provider into the single slot in config/licence.ts and
+  // the last write owns it. bootstrapAuth's own setLicenceToken is synchronous, so
+  // ordering the effects this way lets the dev token win without bootstrapAuth
+  // losing anything — it still runs its boot check and still flips _authReady,
+  // and ensureFreshToken never reads that slot. Deleted when real sign-in lands.
+  useEffect(() => {
+    installDevLicenceToken();
   }, []);
 
   if (!fontsLoaded) {

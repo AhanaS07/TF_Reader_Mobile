@@ -5,17 +5,24 @@
 // their own file. The device-clock-five-minutes-fast case below is the one
 // behaviour Module E's definition of done names explicitly, and it is only
 // assertable because no function here reads `Date.now()`.
+import type { Bookmark } from '@/shared/contracts';
 import { MAX_BATCH_IDS } from '@model/batchItems';
 import type { Hold, Loan } from '@model/types';
+import type { DownloadRecord } from '@store/downloadStore';
 
 import {
   activeLoans,
+  bookmarkLocationLabel,
   collectItemIds,
+  downloadedLabel,
   dueLabel,
   offerMinutesRemaining,
   ordinal,
   partitionHolds,
   queueLabel,
+  type ShelfSections,
+  sortedBookmarks,
+  sortedDownloads,
 } from './LibraryScreen.holdings';
 
 const SERVER_NOW = '2026-08-26T10:00:00Z';
@@ -27,6 +34,29 @@ function aLoan(over: Partial<Loan> = {}): Loan {
 
 function aHold(over: Partial<Hold> = {}): Hold {
   return { holdId: 'hold_1', itemId: 'item_77', state: 'queued', serverTime: SERVER_NOW, ...over };
+}
+
+function aDownload(over: Partial<DownloadRecord> = {}): DownloadRecord {
+  return { itemId: 'item_42', downloadedAt: SERVER_NOW_MS, ...over };
+}
+
+function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
+  return {
+    id: 'bm_1',
+    userId: 'user_1',
+    bookId: 'item_42',
+    locator: { type: 'PDF', page: 12 },
+    createdAt: SERVER_NOW_MS,
+    updatedAt: SERVER_NOW_MS,
+    isDeleted: false,
+    synced: false,
+    ...over,
+  };
+}
+
+/** The five sections, all empty — spread over with just the one under test. */
+function noSections(over: Partial<ShelfSections> = {}): ShelfSections {
+  return { offered: [], loans: [], downloads: [], bookmarks: [], waiting: [], ...over };
 }
 
 describe('partitionHolds', () => {
@@ -74,24 +104,57 @@ describe('activeLoans', () => {
 });
 
 describe('collectItemIds', () => {
-  it('returns each id once across all three sections', () => {
+  it('returns each id once across all five sections', () => {
     const { ids } = collectItemIds(
-      [aLoan({ itemId: 'shared' })],
-      [aHold({ itemId: 'offered_1', state: 'offered' })],
-      [aHold({ itemId: 'shared' })],
+      noSections({
+        offered: [aHold({ itemId: 'offered_1', state: 'offered' })],
+        loans: [aLoan({ itemId: 'shared' })],
+        waiting: [aHold({ itemId: 'shared' })],
+      }),
     );
 
     expect(ids.sort()).toEqual(['offered_1', 'shared']);
   });
 
-  it('orders offers before loans before waiting, so truncation falls on the queue', () => {
+  it('orders offers, loans, downloads, bookmarks then waiting, so truncation falls on the queue', () => {
+    const { ids } = collectItemIds({
+      offered: [aHold({ itemId: 'offer', state: 'offered' })],
+      loans: [aLoan({ itemId: 'loan' })],
+      downloads: [aDownload({ itemId: 'download' })],
+      bookmarks: [aBookmark({ bookId: 'bookmark' })],
+      waiting: [aHold({ itemId: 'wait' })],
+    });
+
+    expect(ids).toEqual(['offer', 'loan', 'download', 'bookmark', 'wait']);
+  });
+
+  // The subscription case: one book that is a loan, a download AND bookmarked
+  // is one id to hydrate. Three would waste two of the 100 slots the batch
+  // call has, on a reader who is exactly the heavy user most likely to hit it.
+  it('counts a book that is on loan, downloaded and bookmarked as one id', () => {
     const { ids } = collectItemIds(
-      [aLoan({ itemId: 'loan' })],
-      [aHold({ itemId: 'offer', state: 'offered' })],
-      [aHold({ itemId: 'wait' })],
+      noSections({
+        loans: [aLoan({ itemId: 'item_42' })],
+        downloads: [aDownload({ itemId: 'item_42' })],
+        bookmarks: [aBookmark({ bookId: 'item_42' })],
+      }),
     );
 
-    expect(ids).toEqual(['offer', 'loan', 'wait']);
+    expect(ids).toEqual(['item_42']);
+  });
+
+  it('counts many bookmarks in one book as one id', () => {
+    const { ids } = collectItemIds(
+      noSections({
+        bookmarks: [
+          aBookmark({ id: 'bm_1', bookId: 'item_42' }),
+          aBookmark({ id: 'bm_2', bookId: 'item_42' }),
+          aBookmark({ id: 'bm_3', bookId: 'item_42' }),
+        ],
+      }),
+    );
+
+    expect(ids).toEqual(['item_42']);
   });
 
   it('caps at the batch limit and reports how many rows went unhydrated', () => {
@@ -99,14 +162,122 @@ describe('collectItemIds', () => {
       aLoan({ loanId: `loan_${i}`, itemId: `item_${i}` }),
     );
 
-    const { ids, truncated } = collectItemIds(many, [], []);
+    const { ids, truncated } = collectItemIds(noSections({ loans: many }));
 
     expect(ids).toHaveLength(MAX_BATCH_IDS);
     expect(truncated).toBe(7);
   });
 
   it('reports no truncation when the shelf fits', () => {
-    expect(collectItemIds([aLoan()], [], []).truncated).toBe(0);
+    expect(collectItemIds(noSections({ loans: [aLoan()] })).truncated).toBe(0);
+  });
+});
+
+describe('sortedDownloads', () => {
+  it('puts the newest download first', () => {
+    const sorted = sortedDownloads([
+      aDownload({ itemId: 'older', downloadedAt: SERVER_NOW_MS - 60_000 }),
+      aDownload({ itemId: 'newest', downloadedAt: SERVER_NOW_MS }),
+    ]);
+
+    expect(sorted.map((d) => d.itemId)).toEqual(['newest', 'older']);
+  });
+
+  // The store's array is state. Sorting it where it lies would mutate outside a
+  // `set` and the re-render would never happen.
+  it('does not mutate the array it was given', () => {
+    const records = [
+      aDownload({ itemId: 'older', downloadedAt: SERVER_NOW_MS - 60_000 }),
+      aDownload({ itemId: 'newest', downloadedAt: SERVER_NOW_MS }),
+    ];
+
+    sortedDownloads(records);
+
+    expect(records.map((d) => d.itemId)).toEqual(['older', 'newest']);
+  });
+
+  // ELITE never reaches this list — the server refuses the download — so there
+  // is nothing here that filters on a tier, and this states that on purpose:
+  // whatever the device downloaded is what the shelf shows.
+  it('renders every record it is given without reading a tier', () => {
+    expect(sortedDownloads([aDownload(), aDownload({ itemId: 'oa_1' })])).toHaveLength(2);
+  });
+});
+
+describe('sortedBookmarks', () => {
+  it('puts the most recently edited bookmark first', () => {
+    const sorted = sortedBookmarks([
+      aBookmark({ id: 'old', updatedAt: SERVER_NOW_MS - 60_000 }),
+      aBookmark({ id: 'new', updatedAt: SERVER_NOW_MS }),
+    ]);
+
+    expect(sorted.map((b) => b.id)).toEqual(['new', 'old']);
+  });
+
+  it('drops tombstones — a deleted bookmark is not a place the reader kept', () => {
+    const sorted = sortedBookmarks([
+      aBookmark({ id: 'kept' }),
+      aBookmark({ id: 'gone', isDeleted: true }),
+    ]);
+
+    expect(sorted.map((b) => b.id)).toEqual(['kept']);
+  });
+
+  // One row per bookmark, not per book: three places in one monograph are three
+  // things the reader saved, and the page number is the whole content of a row.
+  it('keeps every bookmark in a book rather than collapsing them to one row', () => {
+    const sorted = sortedBookmarks([
+      aBookmark({ id: 'bm_1', bookId: 'item_42' }),
+      aBookmark({ id: 'bm_2', bookId: 'item_42' }),
+    ]);
+
+    expect(sorted).toHaveLength(2);
+  });
+});
+
+describe('downloadedLabel', () => {
+  it('says only that the book was downloaded when no size was reported', () => {
+    expect(downloadedLabel(aDownload())).toBe('Downloaded');
+  });
+
+  it('appends the size in whole tenths of a megabyte', () => {
+    expect(downloadedLabel(aDownload({ sizeBytes: 4.25 * 1_048_576 }))).toBe('Downloaded · 4.3 MB');
+  });
+
+  // "Downloaded · 0.0 MB" reads as a download that failed, so a real but tiny
+  // file floors to a tenth rather than rounding to nothing.
+  it('floors a file under a tenth of a megabyte to 0.1 MB rather than 0', () => {
+    expect(downloadedLabel(aDownload({ sizeBytes: 2048 }))).toBe('Downloaded · 0.1 MB');
+  });
+});
+
+describe('bookmarkLocationLabel', () => {
+  it('gives the page number for a PDF', () => {
+    expect(bookmarkLocationLabel(aBookmark({ locator: { type: 'PDF', page: 42 } }))).toBe(
+      'Page 42',
+    );
+  });
+
+  it('ignores a PDF locator offset — it is precision no reader asked for', () => {
+    expect(
+      bookmarkLocationLabel(aBookmark({ locator: { type: 'PDF', page: 42, offset: 0.3 } })),
+    ).toBe('Page 42');
+  });
+
+  // A CFI addresses a position in a spine item and means nothing on a shelf.
+  // Resolving it needs the book open in the reader, which is CAP-7's side.
+  it('falls back to the chapter for an EPUB rather than showing a CFI', () => {
+    expect(
+      bookmarkLocationLabel(
+        aBookmark({ locator: { type: 'EPUB', cfi: 'epubcfi(/6/14!/4/2/1:0)' }, chapterId: 'Ch 3' }),
+      ),
+    ).toBe('Ch 3');
+  });
+
+  it('gives no label for an EPUB with no chapter, rather than a truncated CFI', () => {
+    expect(
+      bookmarkLocationLabel(aBookmark({ locator: { type: 'EPUB', cfi: 'epubcfi(/6/14!/4)' } })),
+    ).toBeUndefined();
   });
 });
 
