@@ -973,7 +973,7 @@ export function ReaderScreen({
    * `ttsSession` itself in an effect's dependency array re-runs that effect on every render —
    * and if the effect body calls `raiseError` (a `setState`), that is an infinite loop: render ->
    * effect -> setState -> render -> new `ttsSession` -> effect (dep changed) -> setState -> ...
-   * The lock effect below needs `ttsSession.stop()`, so it reads this ref instead of closing
+   * `tearDownAndLock` below needs `ttsSession.stop()`, so it reads this ref instead of closing
    * over `ttsSession` directly, on the same reasoning `ttsStatusRef` already established.
    */
   const ttsSessionRef = useRef(ttsSession);
@@ -1007,13 +1007,30 @@ export function ReaderScreen({
    * gone and focus belongs on the locked-state banner that replaces it, not on a toolbar button
    * for a panel that no longer has anything to show.
    *
+   * OWNS `lockedRef`/`locked` ITSELF, RATHER THAN READING THEM FROM `useContentLock` — a real
+   * integration bug this fixed: the hook's own ref/state are wired ONLY to the bus, so the
+   * ACCESS_REVOKED path (a POLL from `startAccessMonitor`, entirely separate from the bus) called
+   * this function and raised the right error banner, but never flipped anything the WebView-gate
+   * or the `handleReady` guards actually read — the WebView stayed mounted and rendering a
+   * revoked book. Setting `lockedRef.current` HERE, synchronously, before anything else, is what
+   * makes both sources authoritative through the one function that both of them call: a bus
+   * signal reaches this via `useContentLock`'s `onLock` (itself called synchronously inside the
+   * bus's own emit, so the ordering guarantee guards (a)/(b)/(c) below depend on is unchanged —
+   * it is still one synchronous call stack from "signal observed" to "ref is true"), and a poll
+   * reaches this directly from `startAccessMonitor`'s callback with no bus involved at all.
+   *
    * DECLARED BEFORE `useContentLock` BELOW, DELIBERATELY — the compiler's manual-memoization
    * check rejects a forward reference to a `const` even though the runtime closure would resolve
    * it fine (the callback only ever runs later, once a lock actually arrives). Ordering this
    * ahead of the call that needs it is the fix, not a workaround.
    */
+  const [locked, setLocked] = useState(false);
+  const lockedRef = useRef(false);
+
   const tearDownAndLock = useCallback(
     (code: ReaderErrorCode, message: string): void => {
+      lockedRef.current = true;
+      setLocked(true);
       accessMonitorRef.current?.stop();
       accessMonitorRef.current = null;
       ttsSessionRef.current.stop();
@@ -1034,10 +1051,10 @@ export function ReaderScreen({
    * Sync's `content.lock` bus signal, for THIS open book. See CLAUDE.md's "Offline-lock gating
    * hook" section and readerLock.ts/useContentLock.ts for the seam.
    *
-   * `lock` (state) drives what renders and may lag a render behind — fine, it is cosmetic.
-   * `lockedRef` is authoritative and synchronous — every guard below that decides whether to
-   * keep talking to the WebView reads THAT, not `lock`, because the mid-open race in
-   * `handleReady` is a microtask race with no guaranteed ordering against a React commit.
+   * ONLY THE CALLBACK IS USED — the hook's own returned `lock`/`lockedRef` are not read here (see
+   * the note above `tearDownAndLock`, which is this screen's single source of truth instead).
+   * `useContentLock.test.ts` still pins the hook's own ref-timing guarantee at the unit level;
+   * this callback is what carries it into this screen's teardown.
    *
    * THE CALLBACK, NOT A `useEffect([lock, ...])` WATCHING IT — `tearDownAndLock` calls
    * `raiseError`, a state setter, and this repo's `react-hooks/set-state-in-effect` rule refuses
@@ -1046,10 +1063,9 @@ export function ReaderScreen({
    * `startAccessMonitor`'s ACCESS_REVOKED callback already has. Safe to pass a fresh inline arrow
    * every render — `useContentLock` reads it from a ref at emit time (`OnContentLock`'s own doc).
    */
-  const { lock, lockedRef } = useContentLock(bookId, (newLock) => {
+  useContentLock(bookId, (newLock) => {
     tearDownAndLock(newLock.code, newLock.message);
   });
-  const locked = lock !== null;
 
   /**
    * The outline, for naming a chapter in an announcement.
@@ -2459,23 +2475,24 @@ export function ReaderScreen({
 
         {/*
           THE FAIL-CLOSED STATE — what REPLACES the book, not a banner ON TOP of it. The top-of-
-          screen `errorBanner` above (driven by the same `raiseError` call `tearDownAndLock`
-          makes) already announces this; this second occupant of `viewer` is what fills the space
-          the WebView just vacated, so a locked book reads as "this is why there's nothing here"
-          rather than as a blank page underneath a thin strip of red text.
+          screen `errorBanner` above (driven by the SAME `raiseError` call `tearDownAndLock`
+          makes — this reads `error`, not a separate value, so the two can never disagree) already
+          announces this; this second occupant of `viewer` is what fills the space the WebView
+          just vacated, so a locked book reads as "this is why there's nothing here" rather than
+          as a blank page underneath a thin strip of red text.
 
           `alert` + the live region, same pair the top banner uses, for the same reason: this is
           the one thing on this screen a screen-reader user must be told about without hunting for
           it, and it is the thing focus should land on once the WebView it replaces has unmounted.
         */}
-        {locked && lock !== null && (
+        {locked && error !== null && (
           <View
             style={styles.lockedState}
             accessibilityRole="alert"
             accessibilityLiveRegion="polite"
           >
-            <Text style={styles.errorCode}>{lock.code}</Text>
-            <Text style={styles.errorMessage}>{lock.message}</Text>
+            <Text style={styles.errorCode}>{error.code}</Text>
+            <Text style={styles.errorMessage}>{error.message}</Text>
           </View>
         )}
 

@@ -948,6 +948,16 @@ function lockSignal(bookId = 'test-book', reason: 'revoked' | 'expired' = 'revok
   return { type: OFFLINE_LOCK_EVENTS.LOCK, bookId, reason, observedAt: Date.now() };
 }
 
+/**
+ * A locked/revoked code is DELIBERATELY shown twice — the top `errorBanner` and the dedicated
+ * `lockedState` view that replaces the WebView both read the same `error` state (see
+ * ReaderScreen.tsx's own note on why that duplication is intentional, not a bug) — so
+ * `getByText` (which requires exactly one match) is the wrong query for it.
+ */
+function expectCodeShownTwice(code: string): void {
+  expect(screen.getAllByText(code)).toHaveLength(2);
+}
+
 describe('the offline-lock gating hook', () => {
   // THE HEADLINE REGRESSION TEST FOR B2. A version of useContentLock that set `lockedRef` from a
   // `useEffect` keyed on `lock` (one React commit late) would pass every OTHER test in this file —
@@ -969,7 +979,7 @@ describe('the offline-lock gating hook', () => {
     await act(async () => {
       eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
     });
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
 
     // NOW let the held promise resolve, with a fully valid decrypted payload — the exact shape of
     // the mid-open race the plan's B2 fix exists for (readerAssets.ts's `fromByteArray` may already
@@ -984,7 +994,7 @@ describe('the offline-lock gating hook', () => {
     );
     // The lock must still be the thing on screen — not overwritten by whatever the resumed
     // continuation did next.
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
     expect(screen.queryByTestId('reader-webview')).toBeNull();
   });
 
@@ -1005,7 +1015,7 @@ describe('the offline-lock gating hook', () => {
       eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
     });
 
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
     expect(screen.queryByTestId('reader-webview', { includeHiddenElements: true })).toBeNull();
     expect(screen.queryByText('Chapter 1')).toBeNull();
     expect(closeBook).toHaveBeenCalledWith('test-book');
@@ -1037,7 +1047,7 @@ describe('the offline-lock gating hook', () => {
     await act(async () => {
       eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
     });
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
 
     // The decrypt whose key `contentStore.ts`'s own lock subscriber just destroyed now rejects —
     // exactly what a real revocation produces mid-flight.
@@ -1046,7 +1056,7 @@ describe('the offline-lock gating hook', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
     expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
   });
 
@@ -1062,7 +1072,7 @@ describe('the offline-lock gating hook', () => {
       eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
     });
 
-    expect(screen.getByText('CONTENT_LOCKED')).toBeTruthy();
+    expectCodeShownTwice('CONTENT_LOCKED');
     expect(screen.queryByText('Opening book…')).toBeNull();
   });
 
@@ -1083,7 +1093,7 @@ describe('the offline-lock gating hook', () => {
       );
     });
 
-    expect(screen.getByText('ACCESS_REVOKED')).toBeTruthy();
+    expectCodeShownTwice('ACCESS_REVOKED');
     expect(screen.queryByTestId('reader-webview', { includeHiddenElements: true })).toBeNull();
     expect(closeBook).toHaveBeenCalledWith('test-book');
   });
