@@ -289,6 +289,26 @@ export function baselineCss(
     // reader the gesture worked. `::selection` only ever sets a background — the theme's `fg` stays,
     // because a tint composites over the text where an opaque swatch replaces it.
     `::selection { background: ${selectionBackground(link, bg)}; }`,
+    // THE ONLY FOCUS INDICATOR IN THE READER, and it is here rather than anywhere else because this
+    // is the only stylesheet that reaches the book's own links and form controls — they live in the
+    // chapter document, not in any DOM this app wrote. EPUB ONLY: `baselineCss` is called by
+    // `epub.entry.ts` alone. The PDF shell rasterises pages and has no focusable book content; its
+    // equivalent would be a custom property consumed by its template, the way `--tf-selection` is.
+    //
+    // >>> DERIVED FROM `link`, NOT A COLOUR OF ITS OWN. <<< Every palette already picks `link` to
+    // stand off its own background — including the high-contrast pairs, where it is #0000EE on white
+    // and #FFFF00 on black — so reusing it means the ring cannot become invisible under a theme this
+    // rule has never heard of. A dedicated field would have had to be classified in
+    // `epubLayoutSignature.ts`, for a value that moves no glyph.
+    //
+    // >>> AND IT MUST STAY LAYOUT-NEUTRAL. <<< `outline` does not participate in layout; a border or
+    // padding would, and would push text off the line grid the whole of this module exists to hold.
+    // `outline-offset` is the only way to give it breathing room. No transition either — both shells
+    // declare no animation at all, which readerTemplate.test.ts asserts.
+    `:focus-visible { outline: 2px solid ${link ?? 'currentColor'} !important; outline-offset: 2px !important; }`,
+    // Without this, WebKit paints its own ring when a link is merely TAPPED, which is most of what
+    // happens in a book. `:focus-visible` is what distinguishes "navigated here" from "touched here".
+    ':focus:not(:focus-visible) { outline: none !important; }',
     // One size for every text-bearing element. `div` and `span` are in the list because
     // Calibre-converted books put their scaling on wrappers.
     'p, div, span, li, dd, dt, td, th, blockquote, figcaption, caption, address {',

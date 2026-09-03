@@ -233,6 +233,60 @@ describe('AudioPlayerScreen', () => {
     expect(fakePlayer.pause).toHaveBeenCalled();
   });
 
+  it('does not call play() when onBeforePlay refuses', async () => {
+    const fakePlayer = getFakePlayer();
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onBeforePlay={() => Promise.resolve(false)}
+      />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+    expect(fakePlayer.play).not.toHaveBeenCalled();
+  });
+
+  it('calls play() once onBeforePlay resolves true', async () => {
+    const fakePlayer = getFakePlayer();
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onBeforePlay={() => Promise.resolve(true)}
+      />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
+  it('disables the button and shows a checking state while onBeforePlay is pending', async () => {
+    const fakePlayer = getFakePlayer();
+    let resolveGate: (allowed: boolean) => void = () => {};
+    const gate = new Promise<boolean>((resolve) => {
+      resolveGate = resolve;
+    });
+    const { findByLabelText, getByText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onBeforePlay={() => gate}
+      />,
+    );
+
+    const playButton = await findByLabelText('Play');
+    void fireEvent.press(playButton); // not awaited — the gate has not resolved yet
+    await waitFor(() => expect(getByText('Checking…')).toBeTruthy());
+    expect(fakePlayer.play).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveGate(true);
+      await gate;
+    });
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
   it('skip back calls seekTo clamped to 0, not negative', async () => {
     const fakePlayer = getFakePlayer();
     fakePlayer.currentTime = 5;

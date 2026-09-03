@@ -53,7 +53,7 @@ export interface LoadedBookmarks {
  * opens through `goTo`. Not a gap to close in this file; a navigable audio bookmark needs its own
  * seam into AudioPlayerScreen, which is a call for whoever owns that route.
  */
-function toTarget(locator: Locator): ReaderTarget | null {
+export function toTarget(locator: Locator): ReaderTarget | null {
   if (locator.type === 'EPUB') return { kind: 'href', href: locator.cfi };
   if (locator.type === 'PDF') return { kind: 'page', page: locator.page };
   return null;
@@ -106,6 +106,21 @@ async function reload(bookId: string): Promise<LoadedBookmarks> {
 /** CALL-SITE 1 — on open: load THIS book's bookmarks for the panel. */
 export function loadBookmarks(bookId: string): Promise<LoadedBookmarks> {
   return reload(bookId);
+}
+
+/**
+ * Subscribe to this table changing — a local edit through this facade's own add/remove/rename, OR
+ * (the gap this closes) a PULLED server change, such as a delete made on another device or
+ * directly against the backend. `bookmarkStore.subscribe` (`syncableTable.ts`) notifies on both;
+ * this just re-exports it so Reader does not have to reach past this facade into Sync's store
+ * directly — the same layering `loadBookmarks`/`addCurrentEpubBookmark`/etc. already keep.
+ *
+ * No payload, by design: the listener already knows which book it cares about and re-calls
+ * `loadBookmarks(bookId)` itself — see `ReaderScreen.tsx`'s subscribing effect. Returns an
+ * unsubscribe.
+ */
+export function subscribeToBookmarkChanges(listener: () => void): () => void {
+  return bookmarkStore.subscribe(listener);
 }
 
 /**

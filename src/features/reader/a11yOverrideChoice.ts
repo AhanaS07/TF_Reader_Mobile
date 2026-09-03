@@ -10,9 +10,9 @@
 // reach it. Menu rows disabled for an override that is no longer in effect is exactly the
 // "control with nothing to control" that file already refuses.
 //
-// SAME SHAPE AND SAME SCOPE AS sessionProgress.ts: module state, in memory, gone on relaunch. It is
-// deliberately NOT persisted. Reader does not own `accessibility.*`, and "ignore the accessibility
-// layout" is not a flag to write into someone's synced preferences on the strength of one alert.
+// MODULE STATE, IN MEMORY, GONE ON RELAUNCH — deliberately NOT persisted. Reader does not own
+// `accessibility.*`, and "ignore the accessibility layout" is not a flag to write into someone's
+// synced preferences on the strength of one alert.
 //
 // `ReaderScreen` RESETS this on mount, so the choice is scoped to one book-reading session rather
 // than to the app process — reopening a book asks again, which is the right default for a decision

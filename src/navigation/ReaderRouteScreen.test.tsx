@@ -1,14 +1,69 @@
 // Owner: Reader (Ahana).
 //
 // Covers ReaderRouteScreen's own contract — wiring route params into ReaderScreen's `bookId` and
-// the session-progress props — not ReaderScreen's or DevPreferencesMenu's own behaviour, which
-// have their own test files. Both are mocked to inert stubs so this only exercises the glue.
+// the progressStore-backed resume/write props — not ReaderScreen's or DevPreferencesMenu's own
+// behaviour, which have their own test files. Both are mocked to inert stubs so this only exercises
+// the glue, same pattern AudioPlayerRouteScreen.test.tsx uses.
+//
+// progressStore itself is mocked rather than exercised against real SQLite: this file tests
+// ReaderRouteScreen's wiring (does it call currentLocator/savePosition with the right arguments),
+// not progressStore's own correctness — that lives in src/features/sync/contractConformance.test.ts.
+// syncEngine.run() is mocked too, for the same reason — this file checks that it is awaited BEFORE
+// the local read, not that a real sync actually does anything.
+//
+// There is no in-session cache to test here any more — every resume read goes through
+// progressStore, including the caller-supplied-target case, which is why every test below awaits
+// the resolved state rather than asserting synchronously. See ReaderRouteScreen.tsx's header for
+// why an earlier, faster-looking version of this file's subject was wrong to keep one.
+//
+// `progressStore.subscribe` is faked with a real listener registry (not a bare jest.fn()) so a
+// test can actually fire a notification the way a completed sync pull would — the cross-device
+// conflict tests below drive it directly rather than going through a real syncEngine.
 
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
-import { setSessionPosition } from '@/features/reader/sessionProgress';
+import type { Locator } from '@/shared/contracts';
 
 import { ReaderRouteScreen } from './ReaderRouteScreen';
+
+const mockCurrentLocator = jest.fn<Promise<Locator | null>, [string?, string?]>();
+const mockSavePosition = jest.fn();
+const mockSyncRun = jest.fn<Promise<void>, []>();
+// Records call order across both mocks, so a test can prove `run()` happened BEFORE
+// `currentLocator()` rather than merely that both happened.
+const callOrder: string[] = [];
+
+let mockProgressListeners: (() => void)[] = [];
+/** Simulates a `progressStore` change notification — a local write OR a pulled record applying. */
+function notifyProgressChanged() {
+  for (const listener of [...mockProgressListeners]) listener();
+}
+
+jest.mock('@/features/sync/stores/progressStore', () => ({
+  progressStore: {
+    currentLocator: (...args: [string?, string?]) => {
+      callOrder.push('currentLocator');
+      return mockCurrentLocator(...args);
+    },
+    savePosition: (...args: unknown[]) => mockSavePosition(...args),
+    subscribe: (listener: () => void) => {
+      mockProgressListeners.push(listener);
+      return () => {
+        mockProgressListeners = mockProgressListeners.filter((l) => l !== listener);
+      };
+    },
+  },
+}));
+
+jest.mock('@/features/sync/syncEngine', () => ({
+  syncEngine: {
+    run: () => {
+      callOrder.push('run');
+      return mockSyncRun();
+    },
+  },
+}));
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception: jest.mock() factories may not
 // otherwise close over an out-of-scope variable, since the mock call is hoisted above this file's
@@ -43,47 +98,102 @@ jest.mock('../../DevPreferencesMenu', () => ({
 }));
 
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
-function renderReaderRoute(bookId: string) {
+function renderReaderRoute(bookId: string, initialTarget?: unknown) {
   return render(
     <ReaderRouteScreen
       navigation={{ setOptions: jest.fn() } as never}
-      route={{ key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB' } } as never}
+      route={
+        { key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB', initialTarget } } as never
+      }
     />,
   );
 }
 
+// Which button (by text) to auto-press the MOMENT `Alert.alert` is called, or null to leave the
+// dialog "showing" (unanswered). Auto-pressing synchronously, inside `Alert.alert`'s own mocked
+// call, is deliberate: it keeps the press inside the SAME microtask as the `currentLocator().then()`
+// that triggered it, which is itself flushed by `waitFor`'s own `act()` wrapping below — a button
+// press captured and re-invoked later, from outside any `act()` scope, is a real native dialog's
+// behaviour but not one React Test Renderer resolves the same way.
+let mockAlertAutoPress: string | null = null;
+const mockAlert = jest
+  .spyOn(Alert, 'alert')
+  .mockImplementation((_title, _message, buttons) => {
+    if (mockAlertAutoPress === null) return;
+    const button = (buttons as { text: string; onPress?: () => void }[] | undefined)?.find(
+      (candidate) => candidate.text === mockAlertAutoPress,
+    );
+    button?.onPress?.();
+  });
+
 describe('ReaderRouteScreen', () => {
   beforeEach(() => {
     mockReceivedProps.length = 0;
+    callOrder.length = 0;
+    mockProgressListeners = [];
+    mockAlertAutoPress = null;
+    mockCurrentLocator.mockReset();
+    mockSavePosition.mockReset();
+    mockSyncRun.mockReset();
+    mockAlert.mockClear();
+    mockCurrentLocator.mockResolvedValue(null);
+    mockSyncRun.mockResolvedValue(undefined);
   });
 
-  it('passes the route bookId through to ReaderScreen', async () => {
-    const { getByText } = await renderReaderRoute('dev-sample-epub');
-    expect(getByText('reading dev-sample-epub')).toBeTruthy();
-  });
+  it('resumes at the locator stored in progressStore, after awaiting a sync run first', async () => {
+    mockCurrentLocator.mockResolvedValue({ type: 'PDF', page: 12 });
 
-  it('resumes at the session position recorded for that book, and mirrors new positions back', async () => {
-    setSessionPosition('dev-sample-epub-resume', { kind: 'page', page: 5, pageCount: 20 });
+    const { getByText } = await renderReaderRoute('dev-sample-epub-durable');
 
-    await renderReaderRoute('dev-sample-epub-resume');
-
+    await waitFor(() => expect(getByText('reading dev-sample-epub-durable')).toBeTruthy());
+    expect(mockCurrentLocator).toHaveBeenCalledWith(undefined, 'dev-sample-epub-durable');
+    // ORDER MATTERS: a local read before the sync lands would resume from a position another
+    // device may have already advanced past while this device was merely backgrounded, not
+    // relaunched — see ReaderRouteScreen.tsx's header for the full account of that gap.
+    expect(callOrder).toEqual(['run', 'currentLocator']);
     expect(mockReceivedProps[0]).toEqual({
-      bookId: 'dev-sample-epub-resume',
-      initialTarget: { kind: 'page', page: 5 },
+      bookId: 'dev-sample-epub-durable',
+      initialTarget: { kind: 'page', page: 12 },
     });
   });
 
-  it('opens with no initial target for a book with no recorded session position', async () => {
-    await renderReaderRoute('dev-sample-epub-fresh');
+  it('prefers a route-supplied initial target and skips both the sync run and the progressStore read', async () => {
+    const { getByText } = await renderReaderRoute('dev-sample-epub-bookmark', {
+      kind: 'href',
+      href: 'epubcfi(/6/10)',
+    });
 
+    await waitFor(() => expect(getByText('reading dev-sample-epub-bookmark')).toBeTruthy());
+    expect(mockReceivedProps[0]).toEqual({
+      bookId: 'dev-sample-epub-bookmark',
+      initialTarget: { kind: 'href', href: 'epubcfi(/6/10)' },
+    });
+    expect(mockCurrentLocator).not.toHaveBeenCalled();
+    expect(mockSyncRun).not.toHaveBeenCalled();
+  });
+
+  it('opens with no initial target for a book with nothing stored', async () => {
+    const { getByText } = await renderReaderRoute('dev-sample-epub-fresh');
+
+    await waitFor(() => expect(getByText('reading dev-sample-epub-fresh')).toBeTruthy());
     expect(mockReceivedProps[0]).toEqual({
       bookId: 'dev-sample-epub-fresh',
       initialTarget: undefined,
     });
   });
 
-  it('mirrors a relocated position back into the session cache', async () => {
+  it('ignores a stored locator that belongs to an AUDIO book', async () => {
+    mockCurrentLocator.mockResolvedValue({ type: 'AUDIO', positionMs: 90_000 });
+
+    const { getByText } = await renderReaderRoute('dev-sample-epub-audio-locator');
+
+    await waitFor(() => expect(getByText('reading dev-sample-epub-audio-locator')).toBeTruthy());
+    expect(mockReceivedProps[0]?.initialTarget).toBeUndefined();
+  });
+
+  it('writes a relocated position into progressStore as a PDF-shaped locator', async () => {
     const { getByText } = await renderReaderRoute('dev-sample-epub-mirror');
+    await waitFor(() => expect(getByText('relocate')).toBeTruthy());
 
     // AWAITED, AND THAT IS LOAD-BEARING. `fireEvent` is awaitable in @testing-library/react-native
     // v14 and does its own `act()` wrapping (same note ReaderScreen.test.tsx carries). Dropped, the
@@ -95,11 +205,118 @@ describe('ReaderRouteScreen', () => {
     // this file is `src/navigation/`.
     await fireEvent.press(getByText('relocate'));
 
-    await renderReaderRoute('dev-sample-epub-mirror');
+    expect(mockSavePosition).toHaveBeenCalledWith(
+      { type: 'PDF', page: 7 },
+      'dev-sample-epub-mirror',
+    );
+  });
 
-    expect(mockReceivedProps[1]).toEqual({
-      bookId: 'dev-sample-epub-mirror',
-      initialTarget: { kind: 'page', page: 7 },
+  it('drops a relocated write inside the throttle window, but still flushes it on unmount', async () => {
+    const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-throttle');
+    await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+    await fireEvent.press(getByText('relocate'));
+    expect(mockSavePosition).toHaveBeenCalledTimes(1);
+    mockSavePosition.mockClear();
+
+    // A second relocate inside the throttle window is dropped...
+    await fireEvent.press(getByText('relocate'));
+    expect(mockSavePosition).not.toHaveBeenCalled();
+
+    // ...but unmounting (e.g. navigating back) flushes the latest position through regardless.
+    await act(async () => {
+      unmount();
+    });
+    expect(mockSavePosition).toHaveBeenCalledWith(
+      { type: 'PDF', page: 7 },
+      'dev-sample-epub-throttle',
+    );
+  });
+
+  describe('cross-device conflict while the screen is open', () => {
+    it('does not prompt when a progressStore notification reflects what is already displayed', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-echo');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+
+      // Same as displayed — an unchanged row, or an echo of this device's own write.
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 7 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockAlert).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('prompts and adopts the incoming position as a new initialTarget on "Resume from there"', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-jump');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+      mockSavePosition.mockClear();
+
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      mockAlertAutoPress = 'Resume from there';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // A remount with the adopted target — the mocked ReaderScreen renders again and pushes a
+      // fresh entry, distinct from the one recorded at initial mount.
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual({
+        bookId: 'dev-sample-epub-conflict-jump',
+        initialTarget: { kind: 'page', page: 20 },
+      });
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Reading progress updated',
+        expect.any(String),
+        expect.any(Array),
+      );
+      // Adopting is not itself a write — it's a read the user chose to trust.
+      expect(mockSavePosition).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('pushes the current on-screen position back out, unchanged, on "Continue here"', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-stay');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+      mockSavePosition.mockClear();
+      const lastReceivedBeforeAnswer = mockReceivedProps[mockReceivedProps.length - 1];
+
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      mockAlertAutoPress = 'Continue here';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Pushes THIS device's displayed position — not the incoming page 20 — with a fresh
+      // timestamp, so it wins the next comparison anywhere else this book syncs to.
+      expect(mockSavePosition).toHaveBeenCalledWith(
+        { type: 'PDF', page: 7 },
+        'dev-sample-epub-conflict-stay',
+      );
+      // No remount: the screen keeps showing what it already had.
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual(lastReceivedBeforeAnswer);
+      await act(async () => {
+        unmount();
+      });
     });
   });
 });

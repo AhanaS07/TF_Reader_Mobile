@@ -173,7 +173,10 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
     return mod;
   }
 
-  it('rewrites a localhost encryptedFileUrl to API_BASE_URL’s host/port, keeping path and query', async () => {
+  // The asset's own port (4000) happens to equal LAN_BASE_URL's port here, same as it always did
+  // when the mock backend served both from one port — so this fixture alone can't tell a host+port
+  // rewrite from a host-only one. The dedicated port-preservation test below can.
+  it('rewrites a localhost encryptedFileUrl to API_BASE_URL’s host, keeping path, query and port', async () => {
     const client = loadClientWithLanBaseUrl();
     global.fetch = jest.fn().mockResolvedValue(new Response(new Uint8Array([7, 8]), { status: 200 }));
 
@@ -201,6 +204,23 @@ describe('fetchEncryptedAsset — localhost rewriting against API_BASE_URL', () 
   // (always http). If API_BASE_URL itself is https (e.g. an https tunnel/proxy override via
   // EXPO_PUBLIC_MOCK_BACKEND_URL), the rewritten asset URL must follow API_BASE_URL's scheme too
   // — not silently stay on http.
+  // Regression test for the bug this rewrite shipped, 2026-09-02: copying API_BASE_URL's PORT
+  // turned a real, presigned MinIO/S3 asset url (a genuinely different service/port than the API)
+  // into a request at the API server itself, for a path it has no route for — 401
+  // UNAUTHENTICATED, not the asset. The asset's own port must survive the rewrite; only the host
+  // (and, separately, the protocol) follow API_BASE_URL.
+  it("keeps the asset's OWN port when it differs from API_BASE_URL's — the asset may live on a completely different service", async () => {
+    const client = loadClientWithLanBaseUrl(); // LAN_BASE_URL is http://192.168.1.20:4000
+    global.fetch = jest.fn().mockResolvedValue(new Response(new Uint8Array([7, 8]), { status: 200 }));
+
+    await client.fetchEncryptedAsset('book-001', 'http://localhost:9000/test-books/sample.epub.enc?sig=abc');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://192.168.1.20:9000/test-books/sample.epub.enc?sig=abc',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+  });
+
   it("rewrites the scheme to match an https API_BASE_URL's protocol, not just its host/port", async () => {
     let mod!: typeof import('./contentLicenceClient');
     jest.resetModules();

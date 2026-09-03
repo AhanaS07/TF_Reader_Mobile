@@ -31,6 +31,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
 import { closeBook, getIndex } from '@/features/encryption/contentProvider';
+import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -40,6 +41,8 @@ import {
   addCurrentPdfBookmark,
   loadBookmarks,
   removeBookmark,
+  renameBookmark,
+  subscribeToBookmarkChanges,
 } from '@/features/personalization/readerBookmarks';
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 import {
@@ -144,6 +147,10 @@ jest.mock('@/features/personalization/readerBookmarks', () => ({
   addCurrentEpubBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   addCurrentPdfBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
   removeBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  renameBookmark: jest.fn(() => Promise.resolve({ bookmarks: [], skippedIds: [] })),
+  // Inert by default: real behaviour (re-loading on a pulled change) is covered by its own
+  // describe block below, which overrides this per test.
+  subscribeToBookmarkChanges: jest.fn(() => () => {}),
 }));
 
 /**
@@ -241,6 +248,17 @@ jest.mock('@/features/personalization/fontFaceLoader', () => ({
   loadFontFaceSrc: jest.fn(() => Promise.resolve(null)),
 }));
 
+/**
+ * The dyslexia-font byte-loading seam. Mocked for the same reason `fontFaceLoader` is — the real
+ * one is expo-asset + expo-file-system — but with one difference that matters: unlike
+ * `loadFontFaceSrc`, the real `loadDyslexiaFontFaceSrc` CAN reject, and the screen's fallback for
+ * that is the whole point of one of the tests below. So this mock is left rejectable rather than
+ * being given a never-throws contract.
+ */
+jest.mock('@/features/accessibility/dyslexiaFontLoader', () => ({
+  loadDyslexiaFontFaceSrc: jest.fn(() => Promise.resolve('data:font/ttf;base64,RFlTTA==')),
+}));
+
 const LIGHT_ENV: AppearanceEnv = {
   osColorScheme: 'light',
   osFontScale: 1,
@@ -271,6 +289,7 @@ beforeEach(() => {
   jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
   jest.mocked(loadFontFaceSrc).mockResolvedValue(null);
+  jest.mocked(loadDyslexiaFontFaceSrc).mockResolvedValue('data:font/ttf;base64,RFlTTA==');
 
   // THE ASSET SEAM IS RESTORED FOR EVERY TEST, not left to whichever block last touched it. Any
   // PDF test anywhere in this file has to point these three somewhere else, and `mockResolvedValue`
@@ -1040,6 +1059,201 @@ describe('routing ContentFormat to a renderer', () => {
     // NOT the asset code: the shells are fine, there just isn't one for this book,
     // and telling the reader to run a build script would be a lie.
     expect(screen.queryByText('ASSET_LOAD_FAILED')).toBeNull();
+  });
+});
+
+describe('applyAppearance — the accessibility overrides', () => {
+  /** The last appearance the WebView was told about, decoded back out of the injected script. */
+  function lastAppearance(): Record<string, unknown> {
+    const calls = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+    const script = calls.reverse().find((call) => call.includes('applyAppearance('));
+    expect(script).toBeDefined();
+    const json = /applyAppearance\((\{.*?\})\);/s.exec(String(script))?.[1];
+    expect(json).toBeDefined();
+    // The script embeds the payload as an escaped JSON string literal inside JS source.
+    return JSON.parse(String(json).replace(/\\"/g, '"')) as Record<string, unknown>;
+  }
+
+  function withA11y(overrides: {
+    dyslexiaFont?: boolean;
+    highContrast?: boolean;
+  }): SharedPrefs {
+    const base = makePrefs();
+    return {
+      ...base,
+      accessibility: {
+        ...base.accessibility,
+        text: { ...base.accessibility.text, dyslexiaFont: overrides.dyslexiaFont ?? false },
+        display: { ...base.accessibility.display, highContrast: overrides.highContrast ?? false },
+      },
+    };
+  }
+
+  afterEach(() => {
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
+    jest.mocked(prepareBook).mockResolvedValue('EPUB' as ContentFormat);
+  });
+
+  it('lets the dyslexia face beat the chosen bundled font, on both fields at once', async () => {
+    // `baselineCss` emits @font-face only when the family AND the bytes are both present, and the
+    // shell drops a URI with no family to attach it to — so setting one without the other is inert.
+    jest.mocked(loadFontFaceSrc).mockResolvedValue('data:font/ttf;base64,QkJCQg==');
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue({
+      ...withA11y({ dyslexiaFont: true }),
+      font: { ...makePrefs().font, family: 'Poppins' },
+    });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.fontFamily).toBe('OpenDyslexic');
+    expect(appearance.customFontUri).toBe('data:font/ttf;base64,RFlTTA==');
+  });
+
+  it('still sends every other preference when the dyslexia font fails to load', async () => {
+    // THE REGRESSION THIS EXISTS FOR: the load is awaited inside `buildAppearanceWithFont`, which
+    // runs inside `applyAppearanceWith`'s single catch. Without its own try/catch a reject aborts
+    // the whole payload, and the book silently loses theme, text size, margins, flow and every
+    // announce gate — for a font. Losing the face is the correct failure; losing the rest is not.
+    jest.mocked(loadDyslexiaFontFaceSrc).mockRejectedValue(new Error('asset unavailable'));
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue({
+      ...withA11y({ dyslexiaFont: true }),
+      theme: 'dark',
+    });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    // The theme survived, which is the whole point.
+    expect(appearance.colorScheme).toBe('dark');
+    expect(appearance.bg).toBe('#121212');
+    // And the face fell back rather than half-applying.
+    expect(appearance.fontFamily).not.toBe('OpenDyslexic');
+    expect(appearance.customFontUri).toBeNull();
+  });
+
+  it('ignores a stored dyslexiaFont on a PDF, which has no text layer to restyle', async () => {
+    // The preference is one per USER, not per book, so a `true` set while reading an EPUB still
+    // arrives on a PDF's payload. The panel hides its own row for PDFs; this is the host-side half.
+    jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withA11y({ dyslexiaFont: true }));
+    // Cleared HERE rather than relying on a global: this file deliberately has no blanket
+    // clearAllMocks (see the note further down), so the earlier tests in this block have already
+    // called the loader and a bare `not.toHaveBeenCalled()` would be counting their calls.
+    jest.mocked(loadDyslexiaFontFaceSrc).mockClear();
+
+    await mountReader();
+    await reportReady();
+
+    expect(lastAppearance().fontFamily).not.toBe('OpenDyslexic');
+    // Not merely unused — never loaded. The gate is what stops a PDF paying ~330 KB of base64 on
+    // the bridge for a face pdf.js could not render if it arrived.
+    expect(loadDyslexiaFontFaceSrc).not.toHaveBeenCalled();
+  });
+
+  it('overrides the theme palette with the high-contrast pair for the resolved scheme', async () => {
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(withA11y({ highContrast: true }));
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.fg).toBe('#000000');
+    expect(appearance.bg).toBe('#FFFFFF');
+    expect(appearance.link).toBe('#0000EE');
+    // The FLAG still rides along — the shells and `appearanceChangeAnnouncement` both read it.
+    expect(appearance.highContrast).toBe(true);
+  });
+
+  it('keeps dark + high contrast a valid combination rather than collapsing to one palette', async () => {
+    // `highContrast` is deliberately independent of colour scheme — the deprecated
+    // `theme: 'highContrast'` could not express this pair, which is why the flag replaced it.
+    jest
+      .mocked(prefsStore.getPrefs)
+      .mockResolvedValue({ ...withA11y({ highContrast: true }), theme: 'dark' });
+
+    await mountReader();
+    await reportReady();
+
+    const appearance = lastAppearance();
+    expect(appearance.colorScheme).toBe('dark');
+    expect(appearance.fg).toBe('#FFFFFF');
+    expect(appearance.bg).toBe('#000000');
+    expect(appearance.link).toBe('#FFFF00');
+  });
+
+  it('leaves the palette alone when high contrast is off', async () => {
+    await mountReader();
+    await reportReady();
+
+    expect(lastAppearance().bg).toBe('#ffffff');
+    expect(lastAppearance().link).toBe('#1a4f8b');
+  });
+});
+
+describe('the accessibility settings panel', () => {
+  it('opens from the toolbar and closes back to the button that opened it', async () => {
+    await mountReader();
+
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    expect(screen.getByText('Accessibility')).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText('Close accessibility'));
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
+    expect(focusOn).toHaveBeenCalled();
+  });
+
+  it('names its own close, so a screen reader can tell which panel it is in', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    // Not a bare "Close" — three panels can be open one at a time and each names itself.
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+  });
+
+  it('is mutually exclusive with Search and Bookmarks, both ways round', async () => {
+    // `includeHiddenElements`, same reasoning as `openSearch`/`openContents` elsewhere in this
+    // file: with a panel open the toolbar is hidden from assistive tech but stays visible and
+    // tappable, and a press is a touch. That hidden state is asserted separately.
+    const toolbar = async (name: string): Promise<void> => {
+      await fireEvent.press(screen.getByRole('button', { name, includeHiddenElements: true }));
+    };
+
+    await mountReader();
+
+    await toolbar('Accessibility settings');
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+
+    await toolbar('Search this book');
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+
+    await toolbar('Accessibility settings');
+    expect(screen.queryByLabelText('Close search')).toBeNull();
+    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+
+    await toolbar('Bookmarks');
+    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.getByLabelText('Close bookmarks')).toBeTruthy();
+  });
+
+  it('shows the Dyslexia Font row for an EPUB', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    expect(screen.getByLabelText('Dyslexia font: Off')).toBeTruthy();
+  });
+
+  it('passes the format through, so a PDF loses the row it cannot honour', async () => {
+    jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+
+    expect(screen.queryByLabelText(/Dyslexia font/)).toBeNull();
+    // The other two apply to every format, which is why the ENTRY POINT is not format-gated.
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
   });
 });
 
@@ -2056,6 +2270,7 @@ describe('ReaderScreen bookmarks panel', () => {
       .mockReset()
       .mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(renameBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
     // Redundant with the file-level beforeEach, which now resets the whole asset seam and the
     // command log for every test — kept because `bookmarksForOpenBook` (ReaderScreen.tsx) filters
     // the panel's list by `format`, so this block breaks in a particularly confusing way (every
@@ -2148,7 +2363,7 @@ describe('ReaderScreen bookmarks panel', () => {
       screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
     ).toMatchObject({ disabled: true });
 
-    // epub.js's own null-until-resolved CFI (see sessionProgress.ts's identical guard).
+    // epub.js's own null-until-resolved CFI (see readerProgressStore.ts's `toLocator` guard).
     await relocateCfi(null);
     expect(
       screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
@@ -2275,11 +2490,10 @@ describe('ReaderScreen bookmarks panel', () => {
   });
 
   describe('renaming a bookmark', () => {
-    // THE WHOLE POINT: readerBookmarks.ts is create-and-delete-only by design (plain LWW needs it to
-    // stay a union across devices), so a "rename" cannot be a single update call. These tests pin
-    // that ReaderScreen gets the user-visible rename by composing the add/remove call-sites it
-    // already has, in that order — add-before-remove, so a failed add never leaves neither copy.
-    it('re-creates the bookmark at the same EPUB target under the new name, then removes the old id', async () => {
+    // A rename is ONE update-in-place write, not a composed create-then-delete. These tests pin the
+    // two things that distinguishes: neither add call-site is touched, and the row keeps its id —
+    // which is what lets the panel's ordering and the corner badge survive a rename untouched.
+    it('renames in place by id, without touching either add call-site', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
           bookmark({
@@ -2290,25 +2504,10 @@ describe('ReaderScreen bookmarks panel', () => {
         ],
         skippedIds: [],
       });
-      jest.mocked(addCurrentEpubBookmark).mockResolvedValue({
+      jest.mocked(renameBookmark).mockResolvedValue({
         bookmarks: [
           bookmark({
             id: 'old',
-            label: 'Untitled',
-            target: { kind: 'href', href: 'epubcfi(/6/10)' },
-          }),
-          bookmark({
-            id: 'new',
-            label: 'Renamed',
-            target: { kind: 'href', href: 'epubcfi(/6/10)' },
-          }),
-        ],
-        skippedIds: [],
-      });
-      jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [
-          bookmark({
-            id: 'new',
             label: 'Renamed',
             target: { kind: 'href', href: 'epubcfi(/6/10)' },
           }),
@@ -2323,19 +2522,41 @@ describe('ReaderScreen bookmarks panel', () => {
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-old'), 'Renamed');
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
 
-      // Add happens at the SAME target, under the new name, BEFORE the old id is removed.
-      expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
-        'test-book',
-        'epubcfi(/6/10)',
-        undefined,
-        'Renamed',
-      );
+      expect(renameBookmark).toHaveBeenCalledWith('test-book', 'old', 'Renamed');
+      expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
+      expect(removeBookmark).not.toHaveBeenCalled();
       await screen.findByText('Renamed');
-      expect(removeBookmark).toHaveBeenCalledWith('test-book', 'old');
       expect(screen.queryByText('Untitled')).toBeNull();
     });
 
-    it('re-creates a PDF bookmark through addCurrentPdfBookmark, by page', async () => {
+    it('keeps the id, so the renamed row is the same row', async () => {
+      // The behavioural win over the old create-then-delete stand-in, and the reason it matters
+      // here rather than only in readerBookmarks.test.ts: the panel keys its edit input on the id,
+      // so a rename that minted a new one would leave `reader-bookmark-edit-input-old` addressing
+      // a row that no longer exists.
+      jest.mocked(loadBookmarks).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'old', label: 'Untitled' })],
+        skippedIds: [],
+      });
+      jest.mocked(renameBookmark).mockResolvedValue({
+        bookmarks: [bookmark({ id: 'old', label: 'Renamed' })],
+        skippedIds: [],
+      });
+      await mountReader();
+      await deliver({ type: 'rendered' });
+      await openBookmarks();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Untitled' }));
+      await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-old'), 'Renamed');
+      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Untitled' }));
+
+      await screen.findByText('Renamed');
+      // Same id, so the row is editable again straight away under its new label.
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Renamed' }));
+      expect(screen.getByTestId('reader-bookmark-edit-input-old')).toBeTruthy();
+    });
+
+    it('takes the identical path for a PDF bookmark — there is no per-format rename', async () => {
       // A page-shaped bookmark only survives `bookmarksForOpenBook`'s format filter for a PDF book.
       jest.mocked(prepareBook).mockResolvedValue('PDF');
       jest.mocked(getReaderHtmlUri).mockResolvedValue('file:///reader-pdf.html');
@@ -2344,16 +2565,9 @@ describe('ReaderScreen bookmarks panel', () => {
         bookmarks: [bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } })],
         skippedIds: [],
       });
-      jest.mocked(addCurrentPdfBookmark).mockResolvedValue({
+      jest.mocked(renameBookmark).mockResolvedValue({
         bookmarks: [
-          bookmark({ id: 'old', label: 'Page 7', target: { kind: 'page', page: 7 } }),
-          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
-        ],
-        skippedIds: [],
-      });
-      jest.mocked(removeBookmark).mockResolvedValue({
-        bookmarks: [
-          bookmark({ id: 'new', label: 'Turning point', target: { kind: 'page', page: 7 } }),
+          bookmark({ id: 'old', label: 'Turning point', target: { kind: 'page', page: 7 } }),
         ],
         skippedIds: [],
       });
@@ -2368,12 +2582,12 @@ describe('ReaderScreen bookmarks panel', () => {
       );
       await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Page 7' }));
 
-      expect(addCurrentPdfBookmark).toHaveBeenCalledWith('test-book', 7, 'Turning point');
-      expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
+      expect(renameBookmark).toHaveBeenCalledWith('test-book', 'old', 'Turning point');
+      expect(addCurrentPdfBookmark).not.toHaveBeenCalled();
       await screen.findByText('Turning point');
     });
 
-    it('discards the edit on Cancel without calling either write', async () => {
+    it('discards the edit on Cancel without writing anything', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [bookmark({ id: 'a', label: 'Original' })],
         skippedIds: [],
@@ -2389,13 +2603,16 @@ describe('ReaderScreen bookmarks panel', () => {
       );
       await fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
 
-      expect(addCurrentEpubBookmark).not.toHaveBeenCalled();
-      expect(removeBookmark).not.toHaveBeenCalled();
+      expect(renameBookmark).not.toHaveBeenCalled();
       expect(screen.getByText('Original')).toBeTruthy();
       expect(screen.queryByTestId('reader-bookmark-edit-input-a')).toBeNull();
     });
 
-    it('clearing the field back to blank resets to the fallback label, not an empty string', async () => {
+    it('clearing the field back to blank resets to the fallback label, not a literal empty name', async () => {
+      // The panel reports a cleared field as `undefined`; ReaderScreen forwards it as `''`, which
+      // `labelFor` (readerBookmarks.ts) reads as absent and replaces with the chapter id or
+      // "Bookmark"/"Page N". Passing `undefined` straight through is not an option — the facade's
+      // `name` is a required string.
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [bookmark({ id: 'a', label: 'Custom name' })],
         skippedIds: [],
@@ -2406,25 +2623,18 @@ describe('ReaderScreen bookmarks panel', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Custom name' }));
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
-      await fireEvent.press(
-        screen.getByRole('button', { name: 'Save bookmark name: Custom name' }),
-      );
+      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
 
-      expect(addCurrentEpubBookmark).toHaveBeenCalledWith(
-        'test-book',
-        'epubcfi(/6/4[chap01]!/4/2/2)',
-        undefined,
-        undefined,
-      );
+      expect(renameBookmark).toHaveBeenCalledWith('test-book', 'a', '');
     });
   });
 
   describe("filtering by the open book's format", () => {
-    // THE PARTIAL MITIGATION, NOT THE FIX. `bookmarkStore.list()` returns every bookmark ever
-    // created, for every book — see `bookmarksForOpenBook`'s own note in ReaderScreen.tsx. These
-    // tests pin what Reader CAN do about that without touching Sync's/Personalization's files: an
-    // href-shaped bookmark can never be reached from a PDF, and a page-shaped one never from an EPUB,
-    // so those get filtered — a same-format cross-book leak (two different EPUBs) is NOT covered.
+    // A GUARD, NOT A MITIGATION, since bookmarks became per-book — see `bookmarksForOpenBook`'s own
+    // note in ReaderScreen.tsx. `loadBookmarks(bookId)` already returns only the open book's rows,
+    // so a wrong-kind bookmark cannot reach the panel in practice; these tests pin that the filter
+    // still catches one if the store's `bookId` default ever silently comes back. A same-format
+    // cross-book leak (two different EPUBs) is what it cannot catch, then as now.
     it('hides page-shaped (PDF) bookmarks while an EPUB is open', async () => {
       jest.mocked(loadBookmarks).mockResolvedValue({
         bookmarks: [
@@ -2644,6 +2854,46 @@ describe('ReaderScreen bookmark badge', () => {
     await fireEvent.press(screen.getByTestId('reader-bookmark-badge'));
 
     expect(screen.queryByText('Page Bookmarked')).toBeNull();
+  });
+
+  it('reloads and hides the badge when a pulled change removes the bookmark, with no reopen', async () => {
+    // The gap `bookmarkStore.subscribe`'s own doc names: a delete made on another device, or
+    // directly against the backend, must reach an already-open panel — not wait for this book to
+    // be reopened before the badge catches up.
+    let pulledChangeListener: (() => void) | undefined;
+    jest.mocked(subscribeToBookmarkChanges).mockImplementation((listener) => {
+      pulledChangeListener = listener;
+      return () => {
+        pulledChangeListener = undefined;
+      };
+    });
+
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({
+      bookmarks: [bookmark({ target: { kind: 'href', href: 'epubcfi(/6/10)' } })],
+      skippedIds: [],
+    });
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/10)' },
+      atStart: false,
+      atEnd: false,
+    });
+
+    expect(screen.getByTestId('reader-bookmark-badge')).toBeTruthy();
+
+    // Simulate a pull that soft-deleted this exact bookmark on another device: the NEXT load
+    // this triggers comes back without it.
+    jest.mocked(loadBookmarks).mockResolvedValueOnce({ bookmarks: [], skippedIds: [] });
+    await act(async () => {
+      pulledChangeListener?.();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('reader-bookmark-badge')).toBeNull();
+
+    jest.mocked(subscribeToBookmarkChanges).mockReset().mockReturnValue(() => {});
   });
 });
 
@@ -3387,17 +3637,19 @@ describe('ReaderScreen highlights', () => {
 });
 
 /**
- * CONTAINMENT for the defect pinned in annotationDurability.test.ts — read that file first; it
- * explains why these six call-sites can reject at all (they could not before dev_T4 `facc57d`).
+ * CONTAINMENT for a rejected annotation call. `annotationDurability.test.ts` pins the guarantee
+ * these call-sites lean on — the write reaches SQLite and the outbox before it returns, so the
+ * network being down cannot lose an edit. What is left is the local store itself failing, which is
+ * rarer and which Reader can do nothing to recover from.
  *
- * What is asserted here is only what Reader can actually do about it: a rejection must not become
+ * So what is asserted here is only what Reader can actually do about it: a rejection must not become
  * an unhandled promise (a LogBox warning in dev, nothing at all in release), the book must stay
- * usable, and a failed WRITE must be said out loud, because the edit is gone and nothing else on
- * screen will show the user that.
+ * usable, and a failed WRITE must be said out loud, because "saved" and "silently not saved" look
+ * identical on screen.
  *
- * THESE TESTS DO NOT GO AWAY WHEN THE ROUTER IS FIXED. A durable stack still fails when the device
- * is genuinely offline and the local write itself errors, so the handlers stay correct either way.
- * The `it.failing` cases next door are the ones that expire.
+ * Every rejection below is mocked at the FACADE, not at a network layer — that is the seam that can
+ * actually reject now, and it is why the copy under test says "on this device" rather than telling
+ * the user to check their connection.
  */
 describe('a rejected annotation call is contained, not swallowed', () => {
   let alert: jest.SpyInstance;
@@ -3419,6 +3671,7 @@ describe('a rejected annotation call is contained, not swallowed', () => {
       .mockReset()
       .mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(removeBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
+    jest.mocked(renameBookmark).mockReset().mockResolvedValue({ bookmarks: [], skippedIds: [] });
     jest.mocked(prepareBook).mockResolvedValue('EPUB');
     alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     // Asserted on, not merely silenced: "it warned" is half of what containment means here, and an
@@ -3616,6 +3869,38 @@ describe('a rejected annotation call is contained, not swallowed', () => {
 
     expect(alert).toHaveBeenCalledWith(
       'Bookmark not deleted',
+      expect.stringContaining('is still saved'),
+      expect.anything(),
+    );
+  });
+
+  it('a failed bookmark RENAME says the old name is still saved', async () => {
+    // The call-site this file could not cover while the rename was a composed add-then-remove: that
+    // stand-in had no `.catch()` at all, so a rejection was an unhandled promise rather than an
+    // Alert. It is one write now, contained like the other five.
+    jest.mocked(loadBookmarks).mockResolvedValue({
+      bookmarks: [
+        {
+          id: 'victim',
+          label: 'Old name',
+          target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/2)' },
+        },
+      ],
+      skippedIds: [],
+    });
+    jest.mocked(renameBookmark).mockRejectedValue(REJECTION);
+    await openBook();
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Old name' }));
+    await fireEvent.changeText(
+      screen.getByTestId('reader-bookmark-edit-input-victim'),
+      'New name',
+    );
+    await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Old name' }));
+
+    expect(alert).toHaveBeenCalledWith(
+      'Bookmark not renamed',
       expect.stringContaining('is still saved'),
       expect.anything(),
     );
@@ -4024,5 +4309,171 @@ describe('screen-reader announcements', () => {
 
       expect(said()).toEqual([]);
     });
+  });
+});
+
+// Both the PDF shell's `window.resize` handler and epub.js's own `Rendition.onResized` can
+// silently re-navigate over a `goTo` sent in the first moments after `rendered` — the volatile
+// window while the screen's own push-transition is still resizing the WebView's container, or an
+// `applyAppearance` reanchor lands in that same window. This pins the host-side safety net: verify
+// every `relocated` after an `initialTarget` flush against what was requested, and resend — up to
+// `MAX_INITIAL_TARGET_RESENDS` times — if it landed somewhere else. More than one resend matters
+// because those two races are INDEPENDENT and can both land wrong in the same open.
+describe('the initial-target flush verifies and resends on a mismatch', () => {
+  /** How many times `goTo` was sent for this exact target, across the whole test. */
+  function goToCallCount(target: { kind: 'page'; page: number }): number {
+    const script = buildCommandScript({ type: 'goTo', target });
+    return __injectJavaScript.mock.calls.filter(([sent]) => sent === script).length;
+  }
+
+  it('resends when the first relocated lands somewhere else', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-mismatch" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The resize-race case this guards against: the shell reports page 1 instead of the requested 5.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(2); // the original flush, plus one resend
+  });
+
+  it('does not resend when the first relocated already matches', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-match" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(1); // only the original flush
+  });
+
+  it('corrects TWO independent mismatches in the same open, not just one', async () => {
+    // The case a one-shot retry could not cover: a resize race lands wrong, the resend corrects it
+    // to... also wrong (a SEPARATE appearance-reanchor race), and a second resend finally lands right.
+    await render(
+      <ReaderScreen bookId="test-book-verify-two-mismatches" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(3); // flush + two resends
+  });
+
+  it('gives up eventually rather than retrying forever', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-retry-cap" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // Comfortably more mismatches than any reasonable retry budget — deliberately not asserting the
+    // exact cap value here, so this test doesn't need editing every time MAX_INITIAL_TARGET_RESENDS
+    // is retuned. What matters is that it STOPS, not the precise number of attempts it took.
+    for (let page = 1; page <= 20; page++) {
+      await deliver({ type: 'relocated', position: { kind: 'page', page, pageCount: 20 } });
+    }
+    const totalAfterBudgetSpent = goToCallCount({ kind: 'page', page: 5 });
+
+    // One more mismatch, once the budget is already spent, must not provoke yet another resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 999, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(totalAfterBudgetSpent);
+  });
+
+  it('stops correcting once the reader takes over navigation, rather than fighting a real page turn', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-user-takes-over" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    // The flush landed wrong once — still well within budget, so this alone would normally resend.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    const sendsBeforeUserAction = goToCallCount({ kind: 'page', page: 5 });
+
+    // The reader taps Next themselves — a deliberate navigation, not a race to correct.
+    await fireEvent.press(screen.getByRole('button', { name: 'Next page' }));
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+
+    // No further attempt to correct back to page 5 — the reader's own navigation wins.
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeUserAction);
+  });
+});
+
+// Neither non-default appearance nor existing highlights had a test combined with `initialTarget`
+// before this — each was proven correct in isolation (appearance ordering in "applyAppearance — the
+// prefs-application wiring", highlight painting in "ReaderScreen highlights"), but never together
+// with a bookmark-style open. This pins that the three don't interfere: a non-default layout is
+// still applied BEFORE the book opens, the initial target still lands, and highlights still paint.
+describe('opening to an initial target with a non-default appearance and existing highlights', () => {
+  const EPUB_HL = {
+    id: 'h1',
+    startCfi: 'epubcfi(/6/4[chap01]!/4/2/2/1:0)',
+    endCfi: 'epubcfi(/6/4[chap01]!/4/2/6/1:10)',
+    color: 'yellow',
+  };
+
+  it('applies the non-default layout before open, lands on the target, and paints the highlight', async () => {
+    jest
+      .mocked(prefsStore.getPrefs)
+      .mockResolvedValue(makePrefs({ layout: { flow: 'scrolled-doc', spread: 'double' } }));
+    jest
+      .mocked(loadReaderHighlights)
+      .mockResolvedValue({ highlights: { epub: [EPUB_HL], pdf: [] }, skippedIds: [] });
+
+    await render(
+      <ReaderScreen
+        bookId="test-book-appearance-and-highlights"
+        initialTarget={{ kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' }}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // applyAppearance must be sent, and land, BEFORE openEpub — the signed-off ordering
+    // (WEBVIEW_BRIDGE.md) that lets the book open directly into the right layout.
+    const scripts = __injectJavaScript.mock.calls.map(([script]: [string]) => script as string);
+    const appearanceIndex = scripts.findIndex((s) => s.includes('"flow":"scrolled-doc"'));
+    const openIndex = scripts.findIndex((s) => s.includes('openEpub('));
+    expect(appearanceIndex).toBeGreaterThanOrEqual(0);
+    expect(openIndex).toBeGreaterThan(appearanceIndex);
+
+    await deliver({ type: 'rendered' });
+    await deliver({
+      type: 'relocated',
+      position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' },
+    });
+
+    // The initial target landed on the first try — no resend needed — despite the non-default
+    // layout already in effect.
+    expect(
+      __injectJavaScript.mock.calls.filter(
+        ([sent]) =>
+          sent ===
+          buildCommandScript({
+            type: 'goTo',
+            target: { kind: 'href', href: 'epubcfi(/6/4[chap01]!/4/2/4/1:0)' },
+          }),
+      ).length,
+    ).toBe(1);
+
+    // Highlights still load and paint for this book, unaffected by the bookmark-style open.
+    expect(loadReaderHighlights).toHaveBeenCalledWith('test-book-appearance-and-highlights');
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({ type: 'paintHighlights', highlights: [EPUB_HL] }),
+    );
   });
 });
