@@ -537,6 +537,161 @@ describe('locator collision (bookmarks/highlights created independently on two d
   });
 });
 
+describe('progress restore collision (local row lost, re-created under the deterministic id)', () => {
+  it("restores the server's tombstoned record under its OWN id, brings it up to date, and discards this device's stale id", async () => {
+    const mine = await progressTable.saveLocal(
+      {
+        id: 'progress-user-001-book-001',
+        user_id: USER,
+        book_id: BOOK,
+        offset: 42,
+        locator: JSON.stringify({ type: 'PDF', page: 42, offset: 0 }),
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    // The server already has a progress document for this (userId, bookId) - tombstoned from an
+    // earlier delete - under a DIFFERENT id than this device's deterministic one, minted before
+    // progressStore.ts moved off random ids. Confirmed against the real backend, 2026-09-03.
+    const theirs = {
+      id: 'their-progress-id',
+      userId: USER,
+      bookId: BOOK,
+      offset: 10,
+      locator: { type: 'PDF', page: 10, offset: 0 },
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      isDeleted: true,
+    };
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    mockApi.list.mockImplementation((path: string) => {
+      if (path !== 'progress') return ok([]) as any;
+      const restored = mockApi.restore.mock.calls.length > 0;
+      return ok([{ ...theirs, isDeleted: !restored }]) as any;
+    });
+    mockApi.restore.mockResolvedValue(ok({ ...theirs, isDeleted: false }) as any);
+    // Echoes back whatever `id` is in the BODY, exactly like the real backend does - NOT the URL
+    // param. Pins the same id-override requirement as the download branch: sending the stale
+    // local id in the body would make writeRow adopt the restored record under the WRONG id.
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...theirs, ...body, isDeleted: false, updatedAt: '2026-08-31T10:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.restore).toHaveBeenCalledWith('progress', 'their-progress-id');
+    expect(mockApi.update).toHaveBeenCalledWith(
+      'progress',
+      'their-progress-id',
+      expect.objectContaining({ id: 'their-progress-id' }),
+    );
+    expect(await outboxAll()).toHaveLength(0); // not stuck retrying forever
+
+    expect(await progressTable.findById(mine.id)).toBeNull(); // our own stale row is gone
+    const adopted = await progressTable.findById('their-progress-id');
+    expect(adopted?.is_deleted).toBe(0); // restored, not still a tombstone
+    expect(adopted?.offset).toBe(42); // this device's own pending position was preserved, not lost
+  });
+
+  it('preserves the local row instead of deleting it when no matching server record can be found', async () => {
+    const mine = await progressTable.saveLocal(
+      {
+        id: 'progress-user-001-book-001',
+        user_id: USER,
+        book_id: BOOK,
+        offset: 7,
+        locator: JSON.stringify({ type: 'PDF', page: 7, offset: 0 }),
+        updated_at: '2026-08-31T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    mockApi.list.mockResolvedValue(ok([]) as any); // the lookup itself finds nothing
+
+    const report = await syncEngine.run();
+
+    expect(report.failed).toBe(1);
+    expect(mockApi.restore).not.toHaveBeenCalled();
+    const preserved = await progressTable.findById(mine.id);
+    expect(preserved?.offset).toBe(7); // the user's current reading position is not lost
+  });
+
+  // Regression pin, found on-device 2026-09-03: progress ids are deterministic
+  // (progressId(userId, bookId)), unlike downloads' random ones - so once this device's own
+  // first create has ever landed, a later CODE_TAKEN's "existing" record is THIS SAME id, not a
+  // different device's. The fix must not hardDeleteLocal(op.entity_id) in that case - it would
+  // delete the very row writeRow just (re)wrote, so the next savePosition() found nothing
+  // locally, re-created under the same id, 409'd again, and repeated forever: every page turn
+  // permanently failed with CODE_TAKEN.
+  it('does NOT delete the local row when the existing record already has THIS device\'s own id', async () => {
+    const mine = await progressTable.saveLocal(
+      {
+        id: 'progress-user-001-book-001',
+        user_id: USER,
+        book_id: BOOK,
+        offset: 12,
+        locator: JSON.stringify({ type: 'PDF', page: 12, offset: 0 }),
+        updated_at: '2026-09-03T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    // The record the server already has for this scope carries the SAME id as this device's own
+    // pending op - the normal case once a create has ever succeeded, not a cross-device collision.
+    const theirs = {
+      id: 'progress-user-001-book-001',
+      userId: USER,
+      bookId: BOOK,
+      offset: 12,
+      locator: { type: 'PDF', page: 12, offset: 0 },
+      updatedAt: '2026-09-02T00:00:00.000Z',
+      isDeleted: false,
+    };
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, {
+        code: 'CODE_TAKEN',
+        message: 'A record already exists for this scope.',
+      }),
+    );
+    mockApi.list.mockImplementation((path: string) =>
+      path === 'progress' ? (ok([theirs]) as any) : (ok([]) as any),
+    );
+    mockApi.restore.mockResolvedValue(ok(theirs) as any);
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({ ...theirs, ...body, updatedAt: '2026-09-03T10:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(await outboxAll()).toHaveLength(0);
+    // Still here, still the right content - not deleted out from under itself.
+    const row = await progressTable.findById(mine.id);
+    expect(row).not.toBeNull();
+    expect(row?.offset).toBe(12);
+  });
+});
+
 describe('download restore collision (downloaded, deleted, then re-downloaded with a fresh local id)', () => {
   it("restores the server's tombstoned record under its OWN id, brings it up to date, and discards this device's stale id", async () => {
     const mine = await downloadTable.saveLocal(

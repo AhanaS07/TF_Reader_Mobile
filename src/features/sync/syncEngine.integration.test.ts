@@ -23,7 +23,7 @@ import type { BookmarkRow, HighlightRow, PersonalizationRow, ProgressRow } from 
 import { bookmarkTable } from './stores/bookmarkStore';
 import { highlightTable } from './stores/highlightStore';
 import { personalizationId, personalizationTable } from './stores/personalizationStore';
-import { progressTable } from './stores/progressStore';
+import { progressId, progressTable } from './stores/progressStore';
 import { api } from './syncApi';
 import { syncEngine } from './syncEngine';
 import { BOOK_ID, USER_ID } from './syncConfig';
@@ -241,21 +241,18 @@ describe('push: highlights', () => {
 });
 
 describe('push: progress (singleton per user+book)', () => {
-  // Unlike bookmarks/highlights, the backend enforces one progress DOCUMENT per (userId,
-  // bookId) and a soft-deleted one still occupies that slot (see the note on bookmarkRow
-  // above) - so this test never mints a fresh id. It looks up whatever document already
-  // sits in that slot and updates it, or creates the slot's very first document if this is
-  // genuinely the first run. Either way it is never added to createdOnServer/cleanupServer:
-  // deleting it would only recreate the exact problem this works around.
+  // The id is deterministic (progressId(USER_ID, BOOK_ID)), not a fresh UUID - same fix as
+  // personalization's below, applied here after the real backend confirmed the bug this
+  // singleton needed it for: the backend enforces one progress DOCUMENT per (userId, bookId)
+  // (a compound unique index), and a soft-deleted one still occupies that slot. A random id
+  // meant a device whose local `progress` row was ever lost minted a fresh id next save and
+  // permanently 409'd against whatever id the OLDER row still occupies server-side - GET on
+  // the fresh id 404s (nothing was ever stored under it), and POST collides with the index.
+  // Deriving the id from the scope means a create against a slot a previous run already
+  // filled just 409s and syncEngine's own sendCreate falls back to PUT against that exact id -
+  // no find-or-reuse dance needed, same as personalization.
   it('pushes the current reading position into the real backend', async () => {
-    // NOT filtered by !isDeleted - a tombstoned document still occupies the (userId, bookId)
-    // slot, so treating it as "nothing there" and minting a fresh id 409s on create and then
-    // 404s on the fallback PUT (a new id was never created). Reusing its id and updating it -
-    // which un-deletes it, since the payload's isDeleted is false - is what the slot allows.
-    const existing = (await api.list<any>('progress', { userId: USER_ID, bookId: BOOK_ID }))
-      .data?.[0];
-    const id = existing?.id ?? newId();
-
+    const id = progressId(USER_ID, BOOK_ID);
     const row: ProgressRow = {
       id,
       user_id: USER_ID,
@@ -266,7 +263,7 @@ describe('push: progress (singleton per user+book)', () => {
       is_deleted: 0,
       synced: 0,
     };
-    await progressTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE');
+    await progressTable.saveLocal(row, 'CREATE');
 
     const report = await syncEngine.run();
 
@@ -280,7 +277,7 @@ describe('push: progress (singleton per user+book)', () => {
 describe('push: personalization (singleton per user)', () => {
   // The id is deterministic (personalizationId(USER_ID)), not a fresh UUID, so a create
   // against a slot a previous run already filled 409s and syncEngine's own sendCreate
-  // falls back to PUT against that exact id - no find-or-reuse dance needed, unlike progress.
+  // falls back to PUT against that exact id - same as progress's test above.
   //
   // personalizationMapper.toServer always sends bookId (PERSONALIZATION_REQUIRES_BOOK_ID),
   // purely to satisfy backend validation despite personalization being user-scoped. If the

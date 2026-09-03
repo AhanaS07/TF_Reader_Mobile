@@ -5,7 +5,7 @@ import {
   SUPPORTS_UPDATED_AFTER,
   USER_ID,
 } from './syncConfig';
-import { downloadMapper, ENTITY_PATHS } from './localDb/mappers';
+import { downloadMapper, progressMapper, ENTITY_PATHS } from './localDb/mappers';
 import { SYNC_KEYS } from './localDb/schema';
 import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
@@ -224,6 +224,58 @@ async function push(report: SyncReport): Promise<void> {
         continue;
       }
 
+      // The `progress` sibling of the block above - same shape, simpler lookup (no `format` to
+      // match, see `findExistingProgress`). A soft-deleted progress document still occupies the
+      // (userId, bookId) slot the same way a soft-deleted download does, so the same
+      // restore-then-update-then-adopt sequence applies.
+      if (error instanceof ProgressRestoreCollision) {
+        try {
+          const existing = await findExistingProgress(error.payload);
+          if (existing) {
+            await api.restore<any>('progress', existing.id);
+            // Same id-override reasoning as the download branch above: error.payload still
+            // carries this device's stale (rejected) id, and the response echoing it back would
+            // make writeRow below write the restored record under the WRONG id.
+            const updated = await api.update<any>('progress', existing.id, {
+              ...error.payload,
+              id: existing.id,
+            });
+            // writeRow, NOT applyServerRecord: this is this device's own just-confirmed
+            // restore, not a generic incoming pull - it must bypass applyServerRecord's
+            // sticky-delete guard for the same reason the download branch does.
+            await TABLES.progress.writeRow(progressMapper.toRow(updated.data));
+            // ONLY when the ids differ - unlike downloads' random ids, progress ids are
+            // deterministic (progressId(userId, bookId)), so `existing.id === op.entity_id` is
+            // the NORMAL case once a device's very first create has ever landed: the CODE_TAKEN
+            // just means "the document I already own already exists", not "someone else's
+            // document is squatting on my slot". hardDeleteLocal here unconditionally deleted the
+            // row writeRow just wrote (same id), so the next savePosition() found nothing locally,
+            // re-created under the same deterministic id, 409'd again, and repeated forever - every
+            // page turn permanently CODE_TAKEN. Only a genuinely different id (a pre-deterministic-
+            // id-era stale local row, the actual case this branch exists for) has a separate row to
+            // discard.
+            if (existing.id !== op.entity_id) {
+              await TABLES[op.entity_type].hardDeleteLocal(op.entity_id);
+            }
+            report.conflicts += 1;
+            await outboxStore.remove([op.id]);
+            continue;
+          }
+        } catch {
+          // Falls through to park-and-preserve, for the same reason as the download branch:
+          // any failure here (list, restore, or update all reach the network) must not risk the
+          // local row or abort every other queued operation.
+        }
+        // Could not find, or could not restore, whatever the server thinks already occupies this
+        // slot - do NOT discard the local row on a guess. It is this device's only copy of the
+        // current reading position; hardDeleteLocal here with nothing to replace it would lose
+        // the user's place in the book for nothing. Park the operation and leave the local row
+        // exactly as it is - it stays usable offline either way, revisited on the next retry.
+        report.failed += 1;
+        await outboxStore.markFailed(op, 'progress restore collision: could not resolve');
+        continue;
+      }
+
       const apiError = error instanceof ApiError ? error : null;
 
       // Reserved for a server that compares timestamps itself and keeps its own
@@ -372,7 +424,14 @@ class DownloadRestoreCollision {
   constructor(readonly payload: Record<string, unknown>) {}
 }
 
-function isDownloadScopeCollision(error: ApiError): boolean {
+/**
+ * Shared by every entity whose `(userId, bookId[, format])` scope is enforced by a backend
+ * unique index rather than by id - `downloads` and `progress` today. The check itself carries
+ * no entity knowledge; each caller pairs it with its own collision class and its own lookup
+ * (`findExistingDownload` matches on `format` too, `findExistingProgress` does not), because the
+ * two payload shapes differ even though the HTTP contract (409 `CODE_TAKEN`) is identical.
+ */
+function isScopeCollision(error: ApiError): boolean {
   return error.body?.code === 'CODE_TAKEN';
 }
 
@@ -397,6 +456,34 @@ export async function findExistingDownload(payload: Record<string, unknown>): Pr
 }
 
 /**
+ * The `progress` sibling of `DownloadRestoreCollision` - the backend enforces one progress
+ * DOCUMENT per `(userId, bookId)` (confirmed against the real backend, 2026-09-03: a device
+ * whose local `progress` row was ever lost re-created it under `progressId(userId, bookId)`,
+ * which the OLDER, still-live document under a random pre-fix id has never heard of - `GET` on
+ * the deterministic id 404s, `POST` 409s `CODE_TAKEN`). Deterministic ids (see `progressStore.ts`)
+ * stop this from happening to any FUTURE local reset, but do nothing for a document that already
+ * exists server-side under an id minted before that fix landed - the same gap `findExistingDownload`
+ * closes for downloads.
+ */
+class ProgressRestoreCollision {
+  constructor(readonly payload: Record<string, unknown>) {}
+}
+
+/**
+ * Finds this device's book under whatever id the server actually stored it, tombstoned or not -
+ * `api.list` already sends `includeDeleted=true`. No `format` match needed (unlike
+ * `findExistingDownload`): `(userId, bookId)` alone is the whole scope for progress, so any
+ * record returned for that pair is definitionally the one occupying the slot.
+ */
+export async function findExistingProgress(payload: Record<string, unknown>): Promise<any | null> {
+  const response = await api.list<any>('progress', {
+    userId: payload.userId as string,
+    bookId: payload.bookId as string,
+  });
+  return (response.data ?? [])[0] ?? null;
+}
+
+/**
  * POST, falling back to PUT.
  *
  * The 409 means a previous attempt already created the document and we never
@@ -404,11 +491,12 @@ export async function findExistingDownload(payload: Record<string, unknown>): Pr
  * right answer because the payload is a full snapshot, and it is what makes a
  * retried push idempotent rather than a duplicate.
  *
- * UNLESS the 409 is a locator collision (see `LocatorCollision`) or a downloads restore collision
- * (see `DownloadRestoreCollision`) - PUT-ing to our own id in either case would 404, because our
- * id never existed server-side; the document that does exist has someone else's id. Neither case
- * is retried here at all - both are thrown for `push()` to resolve, since resolving them means
- * discarding this device's local row, not sending anything further for it.
+ * UNLESS the 409 is a locator collision (see `LocatorCollision`) or a scope collision (see
+ * `DownloadRestoreCollision`/`ProgressRestoreCollision`) - PUT-ing to our own id in either case
+ * would 404, because our id never existed server-side; the document that does exist has someone
+ * else's id. None of these are retried here at all - all three are thrown for `push()` to
+ * resolve, since resolving them means discarding this device's local row, not sending anything
+ * further for it.
  */
 async function sendCreate(
   entityPath: string,
@@ -423,8 +511,11 @@ async function sendCreate(
       if (isLocatorDuplication(error)) {
         throw new LocatorCollision(entityType, payload);
       }
-      if (entityType === 'downloads' && isDownloadScopeCollision(error)) {
+      if (entityType === 'downloads' && isScopeCollision(error)) {
         throw new DownloadRestoreCollision(payload);
+      }
+      if (entityType === 'progress' && isScopeCollision(error)) {
+        throw new ProgressRestoreCollision(payload);
       }
       return (await api.update<any>(entityPath, id, payload)).data;
     }
