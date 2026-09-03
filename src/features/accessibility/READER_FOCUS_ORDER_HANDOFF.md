@@ -13,14 +13,41 @@ before applying anything here — this doc will drift as `ReaderScreen.tsx` chan
 
 ---
 
-## STATUS, 2026-08-26 — read this before the items below
+## STATUS, 2026-09-03 — read this before the items below
 
-Reader implemented **1, 3, 4, 7, 8, 9**. Items **2, 5, 6** are deferred, all three on the on-device
-VoiceOver/TalkBack spike (`WEBVIEW_A11Y_SPIKE.md`), which is still the blocking item.
+Reader implemented **1, 2, 3, 4, 7, 8, 9**, and closed **5** with no code. Only **6** is still open.
 
-The split is deliberate: focus RESTORATION (4, 7) needs no device evidence — you already know which
-control the user came from. Focus ENTRY (2, 5, 6) is exactly what the spike settles, and item 5 may
-need no code at all.
+The 2026-08-26 split was: focus RESTORATION (4, 7) needs no device evidence — you already know which
+control the user came from — while focus ENTRY (2, 5, 6) waits on the on-device VoiceOver/TalkBack
+spike (`WEBVIEW_A11Y_SPIKE.md`). **That deferral held for 6 only.** 2 and 5 were released from it on
+2026-09-03 for reasons the spike does not touch:
+
+- **2 (TOC entry) is native RN, not WebView content.** What the spike blocks is every question about
+  focus *inside* the book's document — §8's F4/F6, and §12.3's three-tap table, are all about the
+  WebView's virtual node tree. The Contents panel is a plain conditionally-rendered `View` of
+  `Pressable`s, a sibling of `ReaderWebView` on the native side of that boundary, and §12.3 records
+  native controls (including the Contents button itself) taking touch-exploration focus reliably
+  throughout that same session. So this item was never what the WebView blocker gated. **And §12.4
+  observed the defect directly** — "Opened the TOC panel (focus stayed on the toolbar back-arrow
+  rather than entering the panel — item 2 …, expected, still deferred)". Implemented; see the
+  item's own note below.
+- **5 (Search entry) needed no code either way.** That item's own recommendation was "don't add
+  plumbing without evidence `autoFocus` is insufficient", so the spike gated an ADDITION, not a
+  decision. Verified and closed below.
+- **6 (search-result focus) stays deferred.** Not for want of a destination — that call has since
+  been made (`SearchMatchBar`'s counter, not the WebView container) — but the item is the one place
+  focus is sent *because* the user has arrived at book content, so what the spike settles is whether
+  that arrival is observable at all.
+
+**§12 of the spike is not on this branch yet.** "§11 Configuration A results (2026-08-31, Hruthik)"
+— §12.1 through §12.8, the device pass §11 asked for — lives on `origin/feature/accessibility` and
+has not merged into `T4_Ahana` or `dev_T4`, where `WEBVIEW_A11Y_SPIKE.md` still ends at §11. The
+citations above resolve the moment that branch lands, which is the intended reading order; until
+then, `git show origin/feature/accessibility:src/features/accessibility/WEBVIEW_A11Y_SPIKE.md`.
+Flagged rather than dropped because CLAUDE.md asks for citations that resolve, and this is the case
+that rule does not quite cover: a path that resolves on the branch that owns the evidence and not
+yet on the one reading it. Item 2's justification does not depend on it either way — the
+native/WebView distinction above stands on its own.
 
 **Four corrections to the spec, found while implementing it:**
 
@@ -80,14 +107,37 @@ controls is open. Suggested diff shape (repeat per toggle, using each button's o
  >
 ```
 
-## 2. TOC panel focus entry
+## 2. TOC panel focus entry — **IMPLEMENTED, 2026-09-03 (Reader)**
 
-Inline panel, `ReaderScreen.tsx:1364–1496`. No ref, no focus-on-open anywhere. Suggested: ref the
-first row (or the empty-state `Text` at 1414–1415 when `toc.length === 0`), and in an effect keyed
-on `showToc`, call `AccessibilityInfo.setAccessibilityFocus(findNodeHandle(ref.current))` when it
-becomes `true`. This is a plain conditionally-rendered `View`, not a `Modal` — unlike
-`VoicePicker`'s fix, mount timing here may not need an artificial delay; verify on-device before
-assuming a `setTimeout` is required.
+Original spec: inline panel, `ReaderScreen.tsx:1364–1496` (now 2316–2470). No ref, no focus-on-open
+anywhere. Ref the first row (or the empty-state `Text` when `toc.length === 0`), and in an effect
+keyed on `showToc`, focus it when that becomes `true`.
+
+Implemented as `firstTocRowRef` (`ReaderScreen.tsx:704`), attached to the row at index 0 only
+(~2394), and an effect keyed on `showToc` sitting directly under `closeToc` (~1597) so the entry and
+restore halves read as the pair they are. Tests: the `focus entry` block in
+`ReaderScreen.test.tsx`'s `screen-reader focus order` describe. Three deviations from the spec, each
+deliberate:
+
+- **`focusOn` from `src/features/reader/a11yFocus.ts`, not a hand-rolled
+  `setAccessibilityFocus(findNodeHandle(...))`.** That helper is where this repo decided what a
+  missing node means, and `VoicePicker`/`TtsControls` are already folded onto it. Its header warns
+  against effects keyed on "is the panel open"; this one qualifies because it returns early on
+  `false`, and `showToc` only ever becomes `true` from the Contents button's own press — so it
+  cannot fire on a render the user did not cause.
+- **No `setTimeout`, as this item anticipated.** The panel is a conditionally-rendered `View` in the
+  same tree, so its host node is attached by the time effects run for the commit that mounted it.
+  The delay `VoicePicker` needs is a property of `Modal`'s asynchronous native attach, which this
+  has none of. Not added on spec; add one only with device evidence.
+- **One ref, not two.** The empty-state `Text` this item also names is unreachable: the Contents
+  button is `disabled` while `toc.length === 0`, and that press is the only `setShowToc(true)` in
+  the file, so the panel cannot be opened empty. Pinned from both ends — the existing "reports
+  disabled with no outline" test guards the premise, and a new focus-entry test asserts the press is
+  inert. A second ref would have been unreachable code, and `focusOn` no-ops silently anyway.
+
+Not covered here, and not this item: the effect deliberately does **not** re-fire when a fresh `toc`
+message lands while the panel is open. Keying it on `toc` as well would yank a reader who has
+already scrolled the list back to its first row; there is a test for that.
 
 ## 3. TOC panel focus traversal
 
@@ -116,14 +166,31 @@ Suggested: `closeToc(restoreFocus: boolean)`, called with `true` from (a) and `f
 Getting this wrong (restoring on every close) would fight the newly-opened panel's own entry-focus
 call from item 2's equivalent in Search/Bookmarks.
 
-## 5. Search panel focus entry
+## 5. Search panel focus entry — **CLOSED, 2026-09-03 (Reader). No code.**
 
-`SearchPanel.tsx:98–114`. The `TextInput` already has `autoFocus`, which is likely sufficient on
-its own — RN's `TextInput` autofocus generally carries screen-reader focus too, and the panel fully
-unmounts/remounts on each open (`{showSearch && <SearchPanel/>}`, `ReaderScreen.tsx:1506`) so
-`autoFocus` re-fires every time. **Recommend verifying on-device before adding an explicit
-`AccessibilityInfo.setAccessibilityFocus` call here** — don't add redundant plumbing without
-evidence `autoFocus` doesn't already carry AT focus on both VoiceOver and TalkBack.
+Original spec: `SearchPanel.tsx:98–114`. The `TextInput` already has `autoFocus`, which is likely
+sufficient on its own — RN's `TextInput` autofocus generally carries screen-reader focus too, and
+the panel fully unmounts/remounts on each open (`{showSearch && <SearchPanel/>}`,
+`ReaderScreen.tsx:1506`) so `autoFocus` re-fires every time. **Recommend verifying on-device before
+adding an explicit `AccessibilityInfo.setAccessibilityFocus` call here** — don't add redundant
+plumbing without evidence `autoFocus` doesn't already carry AT focus on both VoiceOver and TalkBack.
+
+Both premises re-checked and still hold; only the line numbers drifted. `autoFocus` is
+`SearchPanel.tsx:113`, on the `TextInput` that also carries the explicit `accessibilityLabel`
+("Search in this book"); the mount is still `{showSearch && <SearchPanel …/>}`, now
+`ReaderScreen.tsx:2431`, so the whole panel — field included — is remounted per open and `autoFocus`
+fires each time rather than only on the first.
+
+**Closed as "no code", which is the outcome this item asked for, not a shortcut past it.** The
+device check it recommends gates an ADDITION: it is the evidence that would justify layering an
+explicit `focusOn` call on top of `autoFocus`. With no such evidence, adding one is the belt-and-
+braces plumbing this item names and warns off — a second focus move a frame after the first, on a
+field that already has it, on both platforms. Nothing is deferred by closing it; if a device pass
+later shows `autoFocus` does not carry AT focus, reopen it *then*, with the finding attached.
+
+The adjacent behaviour is already pinned in `ReaderScreen.test.tsx`: "does NOT move focus when the
+TOC closes because Search is opening" exists precisely because Search brings its own entry focus,
+and would start failing if that stopped being true and something else were added here.
 
 ## 6. Search result focus
 

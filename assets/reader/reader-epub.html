@@ -239,6 +239,23 @@ ${text}`;
     return role !== null && SKIPPABLE_ROLES.has(role);
   }
 
+  // src/features/reader/webview/src/ttsWordOffsets.ts
+  function indexOfOffset(length, at, offset) {
+    let lo = 0;
+    let hi = length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = lo + hi >> 1;
+      if (at(mid) <= offset) {
+        found = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return found;
+  }
+
   // src/features/reader/webview/src/epubTtsResolver.ts
   async function loadSectionDocument(section) {
     await section.load();
@@ -284,18 +301,7 @@ ${text}`;
     return { runs, concatenated };
   }
   function locate(runs, globalOffset) {
-    let lo = 0;
-    let hi = runs.length - 1;
-    let found = -1;
-    while (lo <= hi) {
-      const mid = lo + hi >> 1;
-      if (runs[mid].concatStart <= globalOffset) {
-        found = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
+    const found = indexOfOffset(runs.length, (index) => runs[index].concatStart, globalOffset);
     if (found === -1) return null;
     const run = runs[found];
     const localOffset = globalOffset - run.concatStart;
