@@ -1,12 +1,13 @@
 // src/adapters/PartialApiAdapter.ts
 // A DataSource for the in-between state where only some real endpoints exist.
 //
-// Right now the real backend only implements institutions. Everything else
-// (catalogue, shelves, publications, public feed, batch items) still needs to
-// come from fixtures. Rather than teach every one of those methods its own
-// mock/api branch, this class holds one ApiAdapter and one MockAdapter and
-// routes each DataSource method to whichever backs it today — swap a method
-// over to `this.api` as its real endpoint ships.
+// Institutions, the home catalogue, a shelf, a publication and items:batch all
+// now route to the real backend — wokay's contract confirms those seven paths
+// as FROZEN, and ApiAdapter sends the appToken bearer the four catalogue-side
+// ones require. Only the public feed and public publication still come from
+// fixtures, since PartialApiAdapter predates this and nobody's flipped them
+// yet — swap a method over to `this.api` as its real endpoint gets verified.
+// Search (institution-scoped and public) has no ApiAdapter method at all yet.
 import type { BookId } from '@/shared/types/primitives';
 import type { BatchItemsResult, Catalogue, Publication, Shelf } from '@model/types';
 import type { Institution } from '@model/institution';
@@ -37,7 +38,7 @@ export class PartialApiAdapter implements DataSource {
   }
 
   getHomeCatalogue(institutionId: string): Promise<Catalogue> {
-    return this.mock.getHomeCatalogue(institutionId);
+    return this.api.getHomeCatalogue(institutionId);
   }
 
   getShelf(
@@ -46,11 +47,11 @@ export class PartialApiAdapter implements DataSource {
     page?: number,
     query?: ShelfQuery,
   ): Promise<Shelf> {
-    return this.mock.getShelf(institutionId, shelfId, page, query);
+    return this.api.getShelf(institutionId, shelfId, page, query);
   }
 
   getPublication(institutionId: string, bookId: BookId): Promise<Publication> {
-    return this.mock.getPublication(institutionId, bookId);
+    return this.api.getPublication(institutionId, bookId);
   }
 
   getPublicFeed(page?: number): Promise<Shelf> {
@@ -62,6 +63,6 @@ export class PartialApiAdapter implements DataSource {
   }
 
   getItemsBatch(ids: BookId[]): Promise<BatchItemsResult> {
-    return this.mock.getItemsBatch(ids);
+    return this.api.getItemsBatch(ids);
   }
 }

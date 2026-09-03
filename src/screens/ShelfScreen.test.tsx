@@ -15,6 +15,7 @@ import type { Shelf } from '@model/types';
 import type { CatalogueStackParamList } from '@navigation/types';
 
 import { useLibraryStore } from '@store/libraryStore';
+import { useSessionStore } from '@store/sessionStore';
 
 import ShelfScreen from './ShelfScreen';
 
@@ -174,6 +175,7 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockNavigate.mockClear();
   mockUseNetworkStatus.mockReturnValue(true);
+  useSessionStore.getState().clearSession();
 });
 
 describe('ShelfScreen loading', () => {
@@ -294,6 +296,36 @@ describe('ShelfScreen error', () => {
     await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
 
     fireEvent.press(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(attempt).toBe(2);
+  });
+
+  // getShelf now requires a signed-in reader (appToken). ShelfScreen mounts off
+  // route params alone, ahead of sign-in — a reader can be looking at it, signed
+  // out and failed, with the sign-in sheet stacked on top. Same bug and same
+  // test shape as CatalogueScreen.test.tsx's "re-fetches on its own" case.
+  it('re-fetches on its own once the reader signs in, without a manual retry', async () => {
+    let attempt = 0;
+    setCatalogueSource(
+      fakeSource(async () => {
+        attempt += 1;
+        if (!useSessionStore.getState().isAuthenticated) throw new Error('401');
+        return FAKE_SHELF;
+      }),
+    );
+
+    await render(<ShelfScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
+
+    useSessionStore.getState().setSession({
+      accessToken: 'tok_abc123',
+      expiresIn: 900,
+      userId: 'user_1',
+      institutionId: routeProps.route.params.institutionId,
+      roles: [],
+      collections: [],
+    });
 
     await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
     expect(attempt).toBe(2);

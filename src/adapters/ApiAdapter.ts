@@ -5,8 +5,12 @@
 // paths are derived from the self-hrefs inside the frozen fixtures, which is the
 // best evidence available — so this file is a real, tested implementation of
 // URL building, status mapping and parsing, but the paths themselves are the one
-// part that may churn when wokay ships. Auth headers and retry policy are still
-// left out rather than guessed at.
+// part that may churn when wokay ships. Retry policy is still left out rather
+// than guessed at. Auth is now confirmed per-endpoint by wokay's contract
+// (docs/contracts/wokay-api.yaml): getHomeCatalogue/getShelf/getPublication/
+// getItemsBatch send a bearer token (`appToken`, security: [{ appToken }]);
+// getInstitutions/getInstitution/getPublicFeed/getPublicPublication stay
+// unauthenticated (`security: []`) — see authenticatedHeaders() below.
 //
 // It shares normalize.ts with MockAdapter, so the two cannot disagree about the
 // shape they produce — only about where the bytes came from.
@@ -122,12 +126,11 @@ export class ApiAdapter implements DataSource {
   // Opt-in, not automatic: whether a given endpoint sends a bearer token is
   // that endpoint's own decision, the same way ApiAuthClient's four methods
   // each decide for themselves (getCurrentSession takes a token; the other
-  // three are `security: []` by contract and must never send one). api.tf's
-  // real contract is still unconfirmed (see the file header), so nothing here
-  // calls this yet — a future method that IS confirmed to require auth calls
-  // `await this.authenticatedHeaders(...)` for its own request and nothing
-  // else changes: every other method keeps calling fetchWithTimeout exactly
-  // as it does today, with no token attached.
+  // three are `security: []` by contract and must never send one). Called by
+  // the four methods wokay's contract confirms require `appToken`
+  // (getHomeCatalogue, getShelf, getPublication, getItemsBatch) and nothing
+  // else — every other method keeps calling fetchWithTimeout directly, with
+  // no token attached, per its own `security: []`.
   private async authenticatedHeaders(
     headers?: Record<string, string>,
   ): Promise<Record<string, string> | undefined> {
@@ -139,11 +142,12 @@ export class ApiAdapter implements DataSource {
     const url = `${this.institutionPath(institutionId)}/catalogue`;
     const cached = this.homeCatalogueCache.get(url);
 
-    const response = await this.fetchWithTimeout(
-      url,
-      institutionId,
+    // Confirmed FROZEN with security: [{ appToken }] in wokay's contract — the
+    // one exception to the file header's "auth still unconfirmed" caveat.
+    const headers = await this.authenticatedHeaders(
       cached === undefined ? undefined : { 'If-None-Match': cached.etag },
     );
+    const response = await this.fetchWithTimeout(url, institutionId, headers);
 
     // 304 is the server confirming the cached body is still current. Handled
     // before the ok-check below: only 200–299 counts as `ok`, so a 304 would
@@ -208,7 +212,9 @@ export class ApiAdapter implements DataSource {
       ...(page === undefined ? {} : { page: String(page) }),
     };
 
-    const body = await this.getJson(expandSearchLink(base, params), shelfId);
+    // Confirmed FROZEN with security: [{ appToken }] in wokay's contract.
+    const headers = await this.authenticatedHeaders();
+    const body = await this.getJson(expandSearchLink(base, params), shelfId, headers);
 
     const shelf = normalizeShelf(body);
     shelf.publications.forEach(assertPublication);
@@ -216,9 +222,12 @@ export class ApiAdapter implements DataSource {
   }
 
   async getPublication(institutionId: string, bookId: BookId): Promise<Publication> {
+    // Confirmed FROZEN with security: [{ appToken }] in wokay's contract.
+    const headers = await this.authenticatedHeaders();
     const body = await this.getJson(
       `${this.institutionPath(institutionId)}/publications/${encodeURIComponent(bookId)}`,
       bookId,
+      headers,
     );
 
     const publication = normalizePublication(body);
@@ -311,7 +320,9 @@ export class ApiAdapter implements DataSource {
     }
 
     const url = `${this.baseUrl}/api/v1/catalogue/items:batch`;
-    const body = await this.postJson(url, 'items:batch', { ids });
+    // Confirmed FROZEN with security: [{ appToken }] in wokay's contract.
+    const headers = await this.authenticatedHeaders({ 'Content-Type': 'application/json' });
+    const body = await this.postJson(url, 'items:batch', { ids }, headers);
     return normalizeBatchItemsResponse(body);
   }
 
@@ -329,15 +340,14 @@ export class ApiAdapter implements DataSource {
   // POST counterpart to getJson. Kept separate rather than widening getJson,
   // because the status mapping differs: a 400 here means TOO_MANY_IDS, a
   // meaningful code, not getJson's generic "server having a bad time" bucket.
-  private async postJson(url: string, target: string, requestBody: unknown): Promise<unknown> {
+  private async postJson(
+    url: string,
+    target: string,
+    requestBody: unknown,
+    headers?: Record<string, string>,
+  ): Promise<unknown> {
     try {
-      const response = await this.fetchWithTimeout(
-        url,
-        target,
-        { 'Content-Type': 'application/json' },
-        'POST',
-        JSON.stringify(requestBody),
-      );
+      const response = await this.fetchWithTimeout(url, target, headers, 'POST', JSON.stringify(requestBody));
 
       if (!response.ok) {
         if (response.status === 400) {
@@ -398,9 +408,13 @@ export class ApiAdapter implements DataSource {
   // CatalogueFailure, so no caller ever sees a raw HTTP status or a JSON
   // parse error. Every method except getHomeCatalogue goes through this —
   // none of the others has a reason to inspect status or headers first.
-  private async getJson(url: string, target: string): Promise<unknown> {
+  private async getJson(
+    url: string,
+    target: string,
+    headers?: Record<string, string>,
+  ): Promise<unknown> {
     try {
-      const response = await this.fetchWithTimeout(url, target);
+      const response = await this.fetchWithTimeout(url, target, headers);
 
       if (!response.ok) {
         // 404 is a normal empty-state; anything else non-ok is the server having

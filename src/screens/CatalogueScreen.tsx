@@ -31,7 +31,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
-import { useCurrentSession } from '@access/currentSession';
+import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
@@ -89,6 +89,15 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
   // replaced handToggledSession).
   const session = useCurrentSession();
 
+  // getHomeCatalogue now requires this (wokay's contract: appToken), but this
+  // screen mounts off institution selection alone, ahead of sign-in — a
+  // reader can be looking at it, signed out and failed, with the sign-in
+  // sheet stacked on top. Without isSignedIn in fetchCatalogue's deps, a
+  // sign-in completing while this screen stays mounted would never re-run
+  // the effect below, leaving the reader stuck on the earlier failure until
+  // they pressed Retry themselves.
+  const isSignedIn = useIsSignedIn();
+
   // Holdings joined per item so each badge reflects the reader's live state.
   // One fetch per mount — not one per card.
   const loans = useLibraryStore((s) => s.loans);
@@ -124,7 +133,12 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
         setFailed(true);
       })
       .finally(() => setLoading(false));
-  }, [institutionId]);
+    // isSignedIn is intentionally listed even though the body never reads it:
+    // getHomeCatalogue's own success depends on it (appToken), so a sign-in
+    // completing while this screen is mounted must give fetchCatalogue a new
+    // identity to re-run the effect below — see the isSignedIn comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [institutionId, isSignedIn]);
 
   useEffect(() => {
     fetchCatalogue();

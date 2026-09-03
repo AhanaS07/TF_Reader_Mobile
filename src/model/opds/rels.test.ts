@@ -47,6 +47,14 @@ describe('toContentFormat', () => {
     expect(toContentFormat('audio/mpeg')).toBe('AUDIO');
   });
 
+  // The contract's own indirectAcquisition.type is a free-form string (no
+  // enum) — "the media type of the book itself" — so an audiobook is never
+  // guaranteed to arrive as audio/mpeg. wokay's real backend sends audio/wav
+  // for at least one shelf, which used to 404 the whole shelf as MALFORMED_FEED.
+  it('maps audio/wav to AUDIO', () => {
+    expect(toContentFormat('audio/wav')).toBe('AUDIO');
+  });
+
   it('rejects an unknown mime type as a malformed feed', () => {
     expect(() => toContentFormat('application/x-mobipocket-ebook')).toThrow(
       expect.objectContaining({ code: CatalogueError.MALFORMED_FEED }),

@@ -20,13 +20,10 @@ function invalid(id: string, why: string): CatalogueFailure {
 export function assertPublication(publication: Publication): void {
   const { id, format, acquisition } = publication;
 
-  // primitives.ts, verbatim: "AUDIO is never encrypted and never has a search
-  // index." Encrypted audio would send the crypto layer after a key that was
-  // never issued.
+  // primitives.ts used to also claim "AUDIO is never encrypted" — reversed
+  // 3 Sep 2026, backend team confirmed audio WILL be encrypted. Only the
+  // search-index half of the old claim still holds.
   if (format === 'AUDIO') {
-    if (acquisition.encryption !== null) {
-      throw invalid(id, 'AUDIO is never encrypted, but an encryption block is present');
-    }
     if (acquisition.hasSearchIndex) {
       throw invalid(id, 'AUDIO never has a search index, but hasSearchIndex is true');
     }

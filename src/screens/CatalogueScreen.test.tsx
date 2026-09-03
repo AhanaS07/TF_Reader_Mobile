@@ -23,6 +23,7 @@ import { color } from '@theme/tokens';
 
 import { normalizeCatalogue } from '@/model/opds/normalize';
 import { useLibraryStore } from '@store/libraryStore';
+import { useSessionStore } from '@store/sessionStore';
 import CatalogueScreen from './CatalogueScreen';
 
 // Controls what the licence source returns for the holdings cache.
@@ -151,6 +152,7 @@ afterEach(() => {
   mockGetLibrary.mockClear();
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useSessionStore.getState().clearSession();
   // Module state, so it would otherwise carry into the next test.
   forgetFeedOffsets();
 });
@@ -389,6 +391,40 @@ describe('CatalogueScreen error', () => {
     await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
 
     fireEvent.press(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
+    expect(attempt).toBe(2);
+  });
+
+  // getHomeCatalogue now requires a signed-in reader (appToken). CatalogueScreen
+  // mounts off institution selection alone, ahead of sign-in — so the reader can
+  // land here, fail once while signed out, then sign in from the sheet stacked
+  // on top without this screen ever unmounting. The fetch effect used to depend
+  // only on institutionId, so that sign-in never re-triggered it — the reader
+  // was stuck on the stale failure until they pressed Retry themselves.
+  it('re-fetches on its own once the reader signs in, without a manual retry', async () => {
+    let attempt = 0;
+    setCatalogueSource(
+      fakeSource(async () => {
+        attempt += 1;
+        if (!useSessionStore.getState().isAuthenticated) throw new Error('401');
+        return FAKE_CATALOGUE;
+      }),
+    );
+
+    await render(<CatalogueScreen institution={OTHER_INSTITUTION} />);
+    await waitFor(() => expect(screen.getByText(/couldn.?t load/i)).toBeTruthy());
+
+    // Sign-in completing elsewhere (SignInScreen's beginSamlSignIn) while this
+    // screen stays mounted underneath the sign-in sheet — no press, no remount.
+    useSessionStore.getState().setSession({
+      accessToken: 'tok_abc123',
+      expiresIn: 900,
+      userId: 'user_1',
+      institutionId: OTHER_INSTITUTION.id,
+      roles: [],
+      collections: [],
+    });
 
     await waitFor(() => expect(screen.getByText('eBooks')).toBeTruthy());
     expect(attempt).toBe(2);

@@ -581,6 +581,38 @@ describe('ItemDetailScreen errors', () => {
     expect(attempt).toBe(2);
   });
 
+  // getPublication now requires a signed-in reader (appToken). ItemDetailScreen
+  // mounts off the selected institution alone, ahead of sign-in — a reader can
+  // be looking at it, signed out and failed, with the sign-in sheet stacked on
+  // top. Same bug and same test shape as CatalogueScreen/ShelfScreen.
+  it('re-fetches on its own once the reader signs in, without a manual retry', async () => {
+    useInstitutionStore.setState({ selectedInstitution: INSTITUTION });
+    let attempt = 0;
+    setCatalogueSource(
+      fakeSource(async () => {
+        attempt += 1;
+        if (!useSessionStore.getState().isAuthenticated) throw new Error('401');
+        return aBook();
+      }),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+    await waitFor(() => expect(screen.getByText(/couldn.?t load this title/i)).toBeTruthy());
+
+    useSessionStore.setState({
+      isAuthenticated: true,
+      accessToken: 'tok_abc123',
+      expiresAt: Date.now() + 3_600_000,
+      userId: 'test-user',
+      institutionId: INSTITUTION.id,
+      roles: [],
+      collections: [],
+    });
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(attempt).toBe(2);
+  });
+
   it('falls back to one honest message when the rejection is not a CatalogueFailure', async () => {
     setCatalogueSource(
       fakeSource(async () => {

@@ -55,7 +55,7 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 
-import { useCurrentSession } from '@access/currentSession';
+import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { EmptyState } from '@components/EmptyState';
@@ -91,6 +91,13 @@ export default function ShelfScreen({ route }: Props) {
   // Null unless the reader has actually signed in — see currentSession.ts's
   // note on why this replaced handToggledSession.
   const session = useCurrentSession();
+
+  // getShelf now requires this (wokay's contract: appToken), but this screen
+  // mounts off route params alone, ahead of sign-in — same reasoning as
+  // CatalogueScreen.tsx's isSignedIn: without it in fetchPage's deps, a
+  // sign-in completing while this screen stays mounted would never re-run
+  // the effect below.
+  const isSignedIn = useIsSignedIn();
 
   // F5 — offline is its own state, independent of loading/empty/error: a shelf
   // already on screen stays readable behind the banner, and a shelf that failed
@@ -144,14 +151,28 @@ export default function ShelfScreen({ route }: Props) {
           setShelf(page);
           setPublications(page.publications);
           setNextPage(page.nextPage);
+          // Clears a failure left over from an earlier attempt on this same
+          // shelf — e.g. the reader signing in after a signed-out 401 — so a
+          // stale error state does not survive a fetch that just succeeded.
+          setFailed(false);
+          setErrorCode(undefined);
         })
         .catch((err: unknown) => {
+          // Logged rather than swallowed: the screen only shows generic copy,
+          // and CatalogueFailure's `target` carries the exact field that
+          // failed validation (see normalize.ts's `malformed()`) — the one
+          // piece of information that tells a MALFORMED_FEED apart from a
+          // network failure when both look the same on screen.
+          console.error('ShelfScreen: fetch failed', err);
           setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
           setFailed(true);
         })
         .finally(() => setLoading(false));
     },
-    [institutionId, shelfId],
+    // isSignedIn is intentionally listed even though the body never reads it
+    // — see the isSignedIn comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [institutionId, shelfId, isSignedIn],
   );
 
   useEffect(() => {

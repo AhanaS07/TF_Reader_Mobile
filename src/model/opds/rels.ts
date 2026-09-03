@@ -44,6 +44,9 @@ const FORMAT_BY_MIME: Record<string, ContentFormat> = {
   'application/pdf': 'PDF',
   'application/epub+zip': 'EPUB',
   'audio/mpeg': 'AUDIO',
+  // The contract's own indirectAcquisition.type is a free-form string, not an
+  // enum — wokay's real backend sends this for at least one shelf.
+  'audio/wav': 'AUDIO',
 };
 
 export function toContentFormat(mime: string): ContentFormat {
