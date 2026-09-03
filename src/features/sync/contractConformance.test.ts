@@ -164,6 +164,37 @@ describe('EPUB progress anchoring', () => {
 
     expect(await progressStore.currentLocator()).toEqual({ type: 'PDF', page: 18 });
   });
+
+  it('writes offset 0 and keeps the real position in locator.positionMs for AUDIO', async () => {
+    // offset is a required NOT NULL column with no meaning for AUDIO - the real position is
+    // locator.positionMs (annotations.ts's own comment on the AUDIO variant). Pins the
+    // `locator.type === 'AUDIO' ? 0 : ...` branch in progressStore.ts's savePosition().
+    const audio: Locator = { type: 'AUDIO', positionMs: 872_000, trackId: 'ch-03' };
+    await progressStore.savePosition(audio);
+
+    const row = await progressStore.current();
+    expect(row?.offset).toBe(0);
+    expect(await progressStore.currentLocator()).toEqual(audio);
+  });
+
+  it('KNOWN GAP (unresolved, flagged for Karthik): mislabels a corrupt AUDIO/EPUB row as PDF', async () => {
+    // Pins TODAY'S ACTUAL behaviour, not desired behaviour - see
+    // reader/audio/CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md §4, "non-exhaustive sites". The
+    // `parseLocator(row.locator) ?? {type:'PDF', page:row.offset}` fallback in currentLocator()
+    // is correct for a genuinely pre-locator-column legacy row (see the test above), but a row
+    // with a *corrupt* locator - written after the column existed, and never actually PDF - gets
+    // the identical treatment and is misreported as a PDF page. If this ever gets fixed to
+    // return null (or something else) for a non-legacy corrupt row, update this test to match
+    // the new, intentional behaviour rather than deleting it.
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT INTO progress (id, user_id, book_id, "offset", locator, updated_at, is_deleted, synced)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 1)`,
+      ['corrupt-audio', USER, BOOK, 0, '{not valid json', '2026-01-01T00:00:00.000Z'],
+    );
+
+    expect(await progressStore.currentLocator()).toEqual({ type: 'PDF', page: 0 });
+  });
 });
 
 describe('typography units', () => {

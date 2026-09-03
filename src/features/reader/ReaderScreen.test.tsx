@@ -2363,7 +2363,7 @@ describe('ReaderScreen bookmarks panel', () => {
       screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,
     ).toMatchObject({ disabled: true });
 
-    // epub.js's own null-until-resolved CFI (see sessionProgress.ts's identical guard).
+    // epub.js's own null-until-resolved CFI (see readerProgressStore.ts's `toLocator` guard).
     await relocateCfi(null);
     expect(
       screen.getByRole('button', { name: 'Bookmark this page' }).props.accessibilityState,

@@ -1,9 +1,19 @@
 # Contracts-Gate proposal: a time-based addressing mode for reading position
 
-**Status: DRAFT, UNCOMMITTED.** This is the artifact AUDIO PHASE 4 / Task B asked for — something to
-take to Contracts-Gate, Karthik (Sync) and Vaishnavi (Personalization), not something already
-agreed. **Nothing in `src/shared/contracts/` has been touched to produce this**; every diff below is
-proposed, not applied. `git status` shows `src/shared/contracts/` clean.
+**Status: ACCEPTED AND LANDED, BOTH TASK A AND TASK B.** Option A (§3) was taken as written and
+merged in `bf3e4e8` (2026-08-25, Karthik, "per Ahana's proposal") — `src/shared/contracts/annotations.ts`'s
+`Locator` now carries the `AUDIO` variant exactly as proposed below, and `__typecheck__.ts` pins it.
+Karthik's Q3 (§5, "what should `offset` hold for an AUDIO row") was answered as `0`:
+`progressStore.ts`'s `savePosition` has the `locator.type === 'AUDIO' ? 0 : ...` branch. Q1 (LWW is
+fine, no furthest-position-wins needed) and Q4 (the real backend expects `offset: 0` with
+`positionMs` inside `locator`, exactly as sent) are answered too. **Task B — switching
+`AudioPlayerScreen`/`AudioPlayerRouteScreen` onto `progressStore`, retiring `audioSessionProgress.ts`
+— landed 2026-09-02; see §7.** The one thing still open: the non-exhaustive-site hazard flagged
+below in §4 for `progressStore.ts`'s `currentLocator()` fallback was never resolved — it still
+mislabels a corrupt/null AUDIO or EPUB `locator` row as `PDF` (pinned by a test in
+`contractConformance.test.ts`, not yet fixed — Karthik's call). This document is otherwise kept as
+the historical record of the proposal and its measured blast radius; treat the sections below as
+describing the state *before* landing, except where noted above and in §7.
 
 **Author:** Ahana (Reader), AUDIO PHASE 4.
 **Proposes changing:** `src/shared/contracts/annotations.ts` (frozen — see §2, this is NOT
@@ -272,9 +282,25 @@ it is here as a question rather than a third proposed diff.
 
 ## 7. What changes in Reader once this lands
 
-`audioSessionProgress.ts` stops being the durable store and becomes a cache in front of the synced
-record, or is deleted outright in favour of `progressStore`. Its header already points here. Nothing
-else in `audio/` changes: `AudioPlayerScreen` reports positions through `onPositionChange` /
-`onPositionCommit` props and does not know where they go, so this is a wiring change in
-`AudioPlayerRouteScreen.tsx` — the same property that let the player library be swapped underneath
-the resolver without touching a call site.
+**LANDED, 2026-09-02.** `audioSessionProgress.ts` was deleted outright rather than kept as a cache —
+`progressStore`'s SQLite row is now the only copy, matching the option this section named. Nothing
+else in `audio/` changed shape: `AudioPlayerScreen` still reports positions through
+`onPositionChange`/`onPositionCommit` props without knowing where they go; the migration was a
+wiring change confined to `AudioPlayerRouteScreen.tsx` (the write path, now throttled and routed to
+`progressStore.savePosition({type:'AUDIO', positionMs, trackId?}, bookId)`) and
+`audioPlayerInstance.ts`'s `commitCurrentPlayerPosition()` (the backgrounding/book-switch edge) —
+the same property that let the player library be swapped underneath the resolver without touching a
+call site.
+
+One thing did NOT carry over cleanly: the old file's read was **synchronous** (`textSync()`), so
+`AudioPlayerRouteScreen` could compute `initialPosition` during render. `progressStore.currentLocator()`
+queries SQLite and is genuinely async, so the route screen now gates on a brief loading state before
+mounting `AudioPlayerScreen` — see that file's own header for why. And `commitCurrentPlayerPosition()`
+was a synchronous write specifically because it runs at "the last reliable callback before the OS may
+terminate the process" (`useAudioPlayerSetup.ts`'s AppState listener) — that write is now a
+fire-and-forget promise, which is a real, accepted reduction in guarantee at exactly that edge. See
+the comment on `commitCurrentPlayerPosition()` itself.
+
+Karthik's two open questions (§5) were answered before this landed: plain LWW is fine for AUDIO
+conflicts (furthest-position-wins was not required), and the real backend expects `offset: 0` with
+the actual position carried in `locator`, exactly as `progressStore.ts` already sends it.

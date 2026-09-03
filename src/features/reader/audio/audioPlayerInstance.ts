@@ -28,15 +28,13 @@
 
 import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
 
+import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
-
-import { flushAudioSessionPosition, setAudioSessionPosition } from './audioSessionProgress';
 
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
 
 /**
- * AUDIO PHASE 4. Records the LIVE player's position for whichever book it is holding, and writes it
- * through immediately.
+ * AUDIO PHASE 4, TASK B. Records the LIVE player's position for whichever book it is holding.
  *
  * Reads the singleton rather than taking a position argument on purpose: the callers that need this
  * (backgrounding, switching books) run when no `AudioPlayerScreen` is necessarily mounted, so there
@@ -46,12 +44,24 @@ let current: { bookId: BookId; player: AudioPlayer } | null = null;
  * A no-op when nothing is playing or the source has not loaded, so callers need no guard of their
  * own; `currentTime` on an unloaded player is 0, and persisting that would overwrite a real stored
  * position with the top of the book.
+ *
+ * KNOWINGLY BEST-EFFORT AT THE BACKGROUNDING EDGE, where this used to be a guarantee. Before this
+ * migration, the write was a synchronous file write (`textSync()`/`write()`) specifically because
+ * useAudioPlayerSetup.ts's AppState listener calls this at "the last reliable callback before the
+ * OS may terminate the process" — a synchronous call is guaranteed to finish before that happens; a
+ * `progressStore.savePosition()` call is a promise (SQLite write + outbox enqueue) that is not
+ * awaited here and could in principle lose a race with process suspension. Accepted trade-off for
+ * landing cross-device sync: the write is fire-and-forget, not fire-and-guaranteed. If this proves
+ * to lose positions in practice, the fix is awaiting it from a place that can (React Native does not
+ * give this listener a way to hold the process open), not reverting the store choice.
  */
 export function commitCurrentPlayerPosition(): void {
   if (current && current.player.isLoaded) {
-    setAudioSessionPosition(current.bookId, current.player.currentTime);
+    void progressStore.savePosition(
+      { type: 'AUDIO', positionMs: Math.round(current.player.currentTime * 1000) },
+      current.bookId,
+    );
   }
-  flushAudioSessionPosition();
 }
 
 /**

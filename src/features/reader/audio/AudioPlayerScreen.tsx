@@ -68,6 +68,16 @@ export interface AudioPlayerScreenProps {
    * about URGENCY, not about a different value: a caller that persists nothing can ignore it, and
    * this component still does not know whether anything is persisted at all. */
   onPositionCommit?: (positionSeconds: number) => void;
+  /**
+   * A gate the Play button awaits before actually starting playback — resolve `true` to proceed,
+   * `false` to refuse. This component has no opinion on WHY a caller would refuse (a cross-device
+   * progress conflict, today) — only that pressing Play can be made to wait on an async check
+   * first, the same "ignorant of where it goes" boundary `onPositionCommit` already draws. Omit it
+   * and Play always proceeds immediately, unchanged from before this prop existed. The button
+   * disables itself while the returned promise is pending, so a caller with a slow check (a sync
+   * round trip) does not race a second tap into a second concurrent check.
+   */
+  onBeforePlay?: () => Promise<boolean>;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -131,6 +141,7 @@ export function AudioPlayerScreen({
   initialPosition,
   onPositionChange,
   onPositionCommit,
+  onBeforePlay,
 }: AudioPlayerScreenProps): React.JSX.Element {
   const [uri, setUri] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -270,6 +281,29 @@ export function AudioPlayerScreen({
     positionCommitRef.current?.(positionSeconds);
   }, []);
 
+  // Same ref-indirection reasoning as positionCommitRef above, applied to onBeforePlay.
+  const beforePlayRef = useRef(onBeforePlay);
+  useEffect(() => {
+    beforePlayRef.current = onBeforePlay;
+  }, [onBeforePlay]);
+
+  // Disables the Play button for the DURATION of the gate check, not just until it starts — a
+  // caller with a slow check (a sync round trip) would otherwise let a second tap start a second,
+  // overlapping check. `false` mid-check would be indistinguishable from "check hasn't run yet",
+  // which is why this is its own state rather than derived from `status.playing`.
+  const [playCheckPending, setPlayCheckPending] = useState(false);
+
+  const beginPlayback = useCallback(async () => {
+    if (playCheckPending) return;
+    setPlayCheckPending(true);
+    try {
+      const allowed = (await beforePlayRef.current?.()) ?? true;
+      if (allowed) player.play();
+    } finally {
+      setPlayCheckPending(false);
+    }
+  }, [playCheckPending, player]);
+
   // Commit on unmount — navigating back to BookList. Reads the PLAYER, not `status`: this runs
   // during teardown, where the last rendered status can be up to one tick (250ms) stale, and the
   // player is the singleton that outlives this component anyway.
@@ -337,7 +371,10 @@ export function AudioPlayerScreen({
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={status.playing ? 'Pause' : 'Play'}
+          accessibilityLabel={
+            status.playing ? 'Pause' : playCheckPending ? 'Checking progress' : 'Play'
+          }
+          disabled={playCheckPending}
           onPress={() => {
             if (status.playing) {
               player.pause();
@@ -345,12 +382,14 @@ export function AudioPlayerScreen({
               // and possibly no further foreground time before the OS reclaims the process.
               commitPosition(status.currentTime);
             } else {
-              player.play();
+              void beginPlayback();
             }
           }}
           style={[styles.transportButton, styles.playButton]}
         >
-          <Text style={styles.playButtonLabel}>{status.playing ? 'Pause' : 'Play'}</Text>
+          <Text style={styles.playButtonLabel}>
+            {status.playing ? 'Pause' : playCheckPending ? 'Checking…' : 'Play'}
+          </Text>
         </Pressable>
 
         <Pressable
