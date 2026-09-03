@@ -16,7 +16,8 @@ import { announce } from '@/features/reader/a11yAnnounce';
 import { focusOn } from '@/features/reader/a11yFocus';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
-import { FOCUS_RING_COLOR, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
+import { FOCUS_RING_COLOR, FOCUS_RING_COLOR_HIGH_CONTRAST, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
+import { useHighContrast } from './useHighContrast';
 import type { TtsSession } from './useTtsSession';
 import { PITCH_LADDER } from './ttsPitch';
 import { RATE_LADDER } from './ttsRate';
@@ -33,6 +34,8 @@ const FOCUS_RESTORE_DELAY_MS = 300;
 
 export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
   const { osFontScale } = useAppearanceEnv();
+  const highContrast = useHighContrast();
+  const ringColor = highContrast ? FOCUS_RING_COLOR_HIGH_CONTRAST : FOCUS_RING_COLOR;
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const voiceButtonRef = useRef<View>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,7 +104,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           accessibilityRole="button"
           accessibilityLabel={transportLabel}
           onPress={handleTransportPress}
-          style={[styles.button, focusedKey === 'transport' && styles.focusRing]}
+          style={[styles.button, focusedKey === 'transport' && { borderColor: ringColor }]}
           {...focusRingHandlers('transport')}
         >
           <Text style={[styles.buttonText, { fontSize: 14 * osFontScale }]}>{transportLabel}</Text>
@@ -116,7 +119,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
           style={[
             styles.button,
             session.status === 'idle' && styles.buttonDisabled,
-            focusedKey === 'stop' && styles.focusRing,
+            focusedKey === 'stop' && { borderColor: ringColor },
           ]}
           {...focusRingHandlers('stop')}
         >
@@ -131,7 +134,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
             session.reloadVoices();
             setVoicePickerOpen(true);
           }}
-          style={[styles.button, focusedKey === 'voice' && styles.focusRing]}
+          style={[styles.button, focusedKey === 'voice' && { borderColor: ringColor }]}
           {...focusRingHandlers('voice')}
         >
           <Text style={[styles.buttonText, { fontSize: 14 * osFontScale }]}>Voice</Text>
@@ -153,7 +156,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
               style={[
                 styles.chip,
                 selected && styles.chipSelected,
-                focusedKey === key && styles.focusRing,
+                focusedKey === key && { borderColor: ringColor },
               ]}
               {...focusRingHandlers(key)}
             >
@@ -186,7 +189,7 @@ export function TtsControls({ session }: TtsControlsProps): React.JSX.Element {
               style={[
                 styles.chip,
                 selected && styles.chipSelected,
-                focusedKey === key && styles.focusRing,
+                focusedKey === key && { borderColor: ringColor },
               ]}
               {...focusRingHandlers(key)}
             >
@@ -281,5 +284,4 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: '#111111' },
   chipText: { color: '#111111', fontWeight: '600' },
   chipTextSelected: { color: '#ffffff' },
-  focusRing: { borderColor: FOCUS_RING_COLOR },
 });

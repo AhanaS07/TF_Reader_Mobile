@@ -11,8 +11,9 @@ import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native
 import { focusOn } from '@/features/reader/a11yFocus';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
-import { FOCUS_RING_COLOR, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
+import { FOCUS_RING_COLOR, FOCUS_RING_COLOR_HIGH_CONTRAST, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
 import type { Voice } from './ttsEngine';
+import { useHighContrast } from './useHighContrast';
 
 export interface VoicePickerProps {
   visible: boolean;
@@ -35,6 +36,8 @@ export function VoicePicker({
   onClose,
 }: VoicePickerProps): React.JSX.Element {
   const { osFontScale } = useAppearanceEnv();
+  const highContrast = useHighContrast();
+  const ringColor = highContrast ? FOCUS_RING_COLOR_HIGH_CONTRAST : FOCUS_RING_COLOR;
   const firstRowRef = useRef<View>(null);
 
   // One key covers the backdrop, the "Platform default" header row, and every voice row.
@@ -69,7 +72,7 @@ export function VoicePicker({
           accessibilityRole="button"
           accessibilityLabel="Close voice picker"
           onPress={onClose}
-          style={[styles.backdrop, focusedRowId === 'backdrop' && styles.focusRing]}
+          style={[styles.backdrop, focusedRowId === 'backdrop' && { borderColor: ringColor }]}
           {...focusRingHandlers('backdrop')}
         />
         <View style={styles.sheet}>
@@ -90,7 +93,7 @@ export function VoicePicker({
                 accessibilityLabel="Platform default voice"
                 accessibilityState={{ selected: selectedVoiceId === null }}
                 onPress={() => onSelect(null)}
-                style={[styles.row, focusedRowId === 'default' && styles.focusRing]}
+                style={[styles.row, focusedRowId === 'default' && { borderColor: ringColor }]}
                 {...focusRingHandlers('default')}
               >
                 <Text style={[styles.rowText, { fontSize: 15 * osFontScale }]}>
@@ -107,7 +110,7 @@ export function VoicePicker({
                 accessibilityLabel={`${item.name}, ${item.language}`}
                 accessibilityState={{ selected: selectedVoiceId === item.id }}
                 onPress={() => onSelect(item.id)}
-                style={[styles.row, focusedRowId === item.id && styles.focusRing]}
+                style={[styles.row, focusedRowId === item.id && { borderColor: ringColor }]}
                 {...focusRingHandlers(item.id)}
               >
                 <View>
@@ -161,5 +164,4 @@ const styles = StyleSheet.create({
   rowText: { color: '#111111' },
   rowSubtext: { color: '#777777', marginTop: 2 },
   check: { color: '#111111', fontWeight: '700' },
-  focusRing: { borderColor: FOCUS_RING_COLOR },
 });

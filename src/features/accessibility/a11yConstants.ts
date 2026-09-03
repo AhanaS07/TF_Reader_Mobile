@@ -15,8 +15,11 @@
 /** Apple HIG's "comfortable" touch target floor, in points. */
 export const MIN_TOUCH_TARGET = 44;
 
-// Fixed, high-contrast colour rather than sourced from highContrastColors.ts's scheme-dependent
-// palette: neither TtsControls nor VoicePicker currently receives a resolved ColorScheme, and
-// threading one through is out of this pass's scope.
+// Two fixed colours, gated on `accessibility.display.highContrast` alone (via useHighContrast.ts)
+// rather than on a resolved ColorScheme. `resolveColorScheme()` never expresses contrast — it's
+// Personalization's theme, and highContrast is deliberately independent of it (readerAppearance.ts)
+// — so reading colour scheme from here would pull a Reader/Personalization concern into a
+// component that has no other reason to know either exists.
 export const FOCUS_RING_COLOR = '#0a84ff';
+export const FOCUS_RING_COLOR_HIGH_CONTRAST = '#ffd60a';
 export const FOCUS_RING_WIDTH = 2;
