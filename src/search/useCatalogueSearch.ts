@@ -19,8 +19,8 @@ import { initialSearchState, searchReducer, type SearchStatus } from './searchSt
 
 export interface UseCatalogueSearchOptions {
   // Entitlement scope for every request. A parameter, not module state — CAP-3
-  // switches institutions at runtime.
-  institutionId: string;
+  // switches institutions at runtime. Undefined means public/unauthenticated search.
+  institutionId: string | undefined;
   // Injected rather than read from `src/config/search.ts` in here, so a test or a
   // gallery entry can drive this with latency, an injected failure, or a stub,
   // without touching a process-wide singleton.

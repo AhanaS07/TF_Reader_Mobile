@@ -126,7 +126,7 @@ export default function SearchScreen() {
   // where the fixture-vs-api choice gets made — by config, never by this file.
   const pipeline = useMemo(() => getSearchPipeline(), []);
   const search = useCatalogueSearch({
-    institutionId: PLACEHOLDER_INSTITUTION_ID,
+    institutionId: session !== null ? session.institutionId ?? undefined : undefined,
     pipeline,
   });
 

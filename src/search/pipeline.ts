@@ -66,7 +66,8 @@ export interface SearchRequest {
   // institutions at runtime, and a pipeline that closed over one would have to be
   // rebuilt on every switch. It is also what makes the entitlement scope explicit
   // at every call site rather than implicit in a constructor.
-  institutionId: string;
+  // Undefined means public/unauthenticated search — GET /opds/v1/public/search.
+  institutionId: string | undefined;
   // Raw, as typed. Trimming and encoding happen in `searchLink.ts`.
   query: string;
   filters: SearchFilters;

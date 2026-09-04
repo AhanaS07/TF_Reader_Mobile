@@ -47,28 +47,29 @@ export class ApiSearchPipeline implements CatalogueSearchPipeline {
   }
 
   async search(request: SearchRequest): Promise<SearchFeed> {
-    const catalogue = await this.source.getHomeCatalogue(request.institutionId);
-    if (catalogue.searchHref === undefined) {
-      throw new CatalogueFailure(
-        CatalogueError.NOT_FOUND,
-        `search link for ${request.institutionId}`,
-      );
+    const isPublic = request.institutionId === undefined;
+    console.log('ApiSearchPipeline: search mode', isPublic ? 'public' : `institution:${request.institutionId}`);
+    const feed = isPublic
+      ? await this.source.getPublicFeed()
+      : await this.source.getHomeCatalogue(request.institutionId as string);
+
+    const target = request.institutionId ?? 'public';
+
+    if (feed.searchHref === undefined) {
+      throw new CatalogueFailure(CatalogueError.NOT_FOUND, `search link for ${target}`);
     }
 
-    const url = expandSearchLink(
-      catalogue.searchHref,
-      searchParams(request.query, request.filters),
-    );
+    const url = expandSearchLink(feed.searchHref, searchParams(request.query, request.filters));
     console.log('ApiSearchPipeline: search url', url);
-    return this.fetchFeed(url, request.institutionId);
+    return this.fetchFeed(url, target, isPublic);
   }
 
   async next(next: string): Promise<SearchFeed> {
-    return this.fetchFeed(next, next);
+    return this.fetchFeed(next, next, false);
   }
 
-  private async fetchFeed(url: string, target: string): Promise<SearchFeed> {
-    const token = await this.getToken();
+  private async fetchFeed(url: string, target: string, skipAuth = false): Promise<SearchFeed> {
+    const token = skipAuth ? undefined : await this.getToken();
     const headers = withAuthHeader(undefined, token);
 
     const controller = new AbortController();

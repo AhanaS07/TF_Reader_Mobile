@@ -268,6 +268,9 @@ export interface Shelf {
   //
   // Same name and shape as SearchFeed.browseInstead: one concept, one word.
   browseInstead?: NavLink[];
+  // Templated search endpoint ('...{?query}'), present on top-level feeds that
+  // advertise a search link (e.g. the public catalogue). Absent ⇒ not searchable.
+  searchHref?: string;
 }
 
 // The institution's home catalogue: what tabs exist, plus preview shelves.
