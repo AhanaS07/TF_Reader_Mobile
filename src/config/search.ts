@@ -59,7 +59,10 @@ export function createSearchPipeline(
   const kind = options.kind ?? resolveSearchPipelineKind(process.env[ENV_VAR]);
 
   if (kind === 'api') {
-    return new ApiSearchPipeline({ getToken: options.getToken ?? ensureFreshToken });
+    return new ApiSearchPipeline({
+      getToken: options.getToken ?? ensureFreshToken,
+      baseUrl: process.env.EXPO_PUBLIC_CATALOGUE_BASE_URL,
+    });
   }
 
   return new FixtureSearchPipeline(options.fixture);
