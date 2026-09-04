@@ -12,7 +12,7 @@
 // these arrays is therefore already the shape the control accepts, and `id` is
 // the value written to the store while `label` is the only thing on screen.
 import type { TabItem } from '@components/Tabs';
-import type { LayoutPrefs, Theme } from '@/shared/contracts';
+import type { LayoutPrefs, ReduceMotion, Theme } from '@/shared/contracts';
 
 // ─── Theme ───────────────────────────────────────────────────────────────────
 
@@ -21,12 +21,13 @@ import type { LayoutPrefs, Theme } from '@/shared/contracts';
 // apply. `satisfies` keeps that check while still handing `Tabs` a TabItem[].
 type ThemeOption = TabItem & { id: Theme };
 
-// FOUR OF THE UNION'S FIVE MEMBERS. `highContrast` is deliberately absent:
-// accessibility is Hruthik's surface, `AccessibilityPrefs.highContrast` is the
-// flag that pairs with it, and prefs.ts marks that whole interface "PROVISIONAL
-// — NEEDS HRUTHIK'S SIGN-OFF" because folding it in moved a boundary that was
-// his. Offering the theme variant here would be this screen claiming ownership
-// of a decision that has not been made.
+// FOUR OF THE UNION'S FIVE MEMBERS. `highContrast` is deliberately absent, and
+// as of Hruthik's FINAL contract (2026-09-02) that is settled rather than
+// cautious: contrast lives in exactly one place, `accessibility.display
+// .highContrast`, and the `Theme` union's 'highContrast' member is deprecated.
+// The two are independent — dark plus high contrast is a valid combination — so
+// offering it here would be a second, conflicting control for one setting.
+// DO NOT REINTRODUCE IT.
 //
 // A STORED 'highContrast' IS THEREFORE UNMATCHED, AND THAT IS HANDLED RATHER
 // THAN PREVENTED. Prefs are a per-user singleton synced LWW across devices, so
@@ -109,3 +110,45 @@ export const TEXT_SIZE_OPTIONS = [
   { id: '22', label: '22pt' },
   { id: '24', label: '24pt' },
 ] as const satisfies readonly TabItem[];
+
+// ─── Accessibility — font scale multiplier ──────────────────────────────────
+
+// THE RANGE IS DATA HERE, not literals in the screen. Hruthik's contract
+// (v1.1 §2.1) fixes the default at 1.0 but leaves the on-screen bounds to us
+// and says so explicitly — "the type itself is unbounded". A number we chose
+// and a number the contract chose belong in one reviewable place rather than
+// split between a screen file and a document.
+//
+// THE BOUNDS ARE THE UI'S GUARD, NOT THE STORE'S. Same division of labour as
+// Typography: `savePrefs` accepts any number, so the clamp happens before the
+// call. `step` keeps a dragged value on the grid; `min`/`max` are what a clamp
+// reads.
+//
+// NO `default` KEY, DELIBERATELY. `DEFAULT_PREFS.accessibility.text
+// .fontScaleMultiplier` is authoritative, and a second copy here would be one
+// more thing to keep in step by hand for no gain.
+export const FONT_SCALE_MULTIPLIER = {
+  min: 0.8,
+  max: 1.5,
+  step: 0.1,
+} as const;
+
+// ─── Accessibility — reduce motion ──────────────────────────────────────────
+
+// THREE-WAY, NEVER A CHECKBOX. Hruthik's contract states this twice (v1.1 §2.2
+// and again in §3): store the raw 'system' | 'on' | 'off' and do not collapse it
+// to a boolean on the way in. Resolving it to an effective boolean against live
+// OS state is the reader's job, not this screen's — a boolean written here would
+// throw away the difference between "the user chose off" and "the user chose
+// whatever the OS says", which is the whole point of the tri-state.
+//
+// `id` IS TYPED AGAINST `ReduceMotion`, not left as a bare string, so a typo or
+// a renamed union member is a compile error here — the same protection
+// `THEME_OPTIONS` and the two Layout arrays already have.
+type ReduceMotionOption = TabItem & { id: ReduceMotion };
+
+export const REDUCE_MOTION_OPTIONS = [
+  { id: 'system', label: 'System' },
+  { id: 'on', label: 'On' },
+  { id: 'off', label: 'Off' },
+] as const satisfies readonly ReduceMotionOption[];

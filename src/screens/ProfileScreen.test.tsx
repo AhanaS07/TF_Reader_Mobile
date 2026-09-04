@@ -348,6 +348,30 @@ describe('ProfileScreen reading preferences', () => {
   });
 });
 
+describe('ProfileScreen accessibility', () => {
+  // A separate row beside Reading Preferences, pushing a separate screen —
+  // see the header comment on AccessibilityScreen.tsx for why the two are not
+  // one screen with two sections.
+  it('offers Accessibility as an enabled row', async () => {
+    await render(<ProfileScreen />);
+    const row = screen.getByRole('button', { name: 'Accessibility' });
+    expect(row.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('pushes Accessibility when the row is tapped', async () => {
+    await render(<ProfileScreen />);
+    fireEvent.press(screen.getByRole('button', { name: 'Accessibility' }));
+    // No params: accessibility prefs are a per-user singleton, same reasoning
+    // as ReaderPreferences.
+    expect(mockNavigate).toHaveBeenCalledWith('Accessibility');
+  });
+
+  it('shows its subtitle', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Text, display and screen reader options')).toBeTruthy();
+  });
+});
+
 describe('ProfileScreen developer entry', () => {
   // `__DEV__` is a global under Jest rather than an inlined constant, so both
   // sides of the branch are reachable here. In a release bundle Metro replaces
