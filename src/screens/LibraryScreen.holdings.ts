@@ -10,10 +10,20 @@
 // `ReaderPreferencesScreen.*Section.tsx`: the screen keeps the rendering and
 // the store subscription, and the arithmetic it would otherwise bury lives
 // where a test can reach it without a renderer.
+import type { Bookmark } from '@/shared/contracts';
 import { MAX_BATCH_IDS } from '@model/batchItems';
 import type { Hold, Loan } from '@model/types';
+import type { DownloadRecord } from '@store/downloadStore';
 
-// ─── the three sections ──────────────────────────────────────────────────────
+// ─── the five sections ───────────────────────────────────────────────────────
+//
+// Offered to you · On loan · Downloads · Bookmarks · Waiting.
+//
+// Holds stay SPLIT across the first and last of those, unchanged: an offer dies
+// and a queue position does not, so they are not one list with two badges (see
+// `partitionHolds`). Downloads and Bookmarks are device-local and sit between
+// them — sourced from `downloadStore` and `bookmarkStore` rather than from
+// `GET /api/v1/library`, which carries neither.
 
 /**
  * The reader's holds split into the two sections that render them.
@@ -61,33 +71,104 @@ export function activeLoans(loans: Loan[]): Loan[] {
   return loans.filter((loan) => loan.state === 'active');
 }
 
-// ─── hydration ───────────────────────────────────────────────────────────────
+/**
+ * The downloads a shelf may show, newest first.
+ *
+ * NO TIER FILTER HERE, AND THAT IS THE RULE RATHER THAN AN OMISSION. Download
+ * is permitted for OPEN_ACCESS and SUBSCRIPTION and refused for ELITE — wokay
+ * answers `403 DOWNLOAD_NOT_PERMITTED` whatever the app offered — but that is a
+ * decision about whether a download may START, enforced by the server and by
+ * the download action. By the time a record reaches this store the bytes are
+ * already on the device, and a shelf that re-derived "should this have been
+ * allowed?" from `accessTier` would be the UI calculating access rights, which
+ * Design Spec §5.1 and CONVENTIONS §3 forbid outright. So this renders what the
+ * device downloaded; it does not audit it.
+ *
+ * A SUBSCRIPTION DOWNLOAD APPEARS TWICE ON PURPOSE — once under On loan, once
+ * here. They are two different facts about one book: the institution has leased
+ * a copy to this reader, and its bytes are on this phone. The loan is what
+ * expires; the download is what works in a tunnel. Collapsing them would mean
+ * dropping one of the two, and each is the answer to a question the other
+ * cannot answer. An OPEN_ACCESS download has no loan at all, so it appears only
+ * here — which is also why Downloads cannot be rendered as a badge on the loan
+ * rows instead.
+ */
+export function sortedDownloads(downloads: DownloadRecord[]): DownloadRecord[] {
+  // Copied before sorting: `downloads` is the store's own array, and sorting it
+  // in place would mutate state outside a `set` and skip the re-render.
+  return [...downloads].sort((a, b) => b.downloadedAt - a.downloadedAt);
+}
 
 /**
- * Every distinct item id across the three sections, capped at wokay's batch
+ * The bookmarks a shelf may show, most recently edited first.
+ *
+ * ONE ROW PER BOOKMARK, NOT PER BOOK. A bookmark is a place — the page a reader
+ * stopped on — so the row has to carry the position or it says nothing the
+ * title above it did not. Grouping to "Applied Thermodynamics · 3 bookmarks"
+ * was the other option and loses exactly the thing the reader saved.
+ *
+ * TOMBSTONES DROPPED. `bookmarkStore` soft-deletes to keep deletions sendable
+ * to the sync layer, so `isDeleted` rows are real records in state and must not
+ * reach the shelf.
+ *
+ * SORTED ON `updatedAt`, which the sync contract has the CLIENT stamp at edit
+ * time as its LWW key. It is a device wall-clock reading, so it is used to
+ * ORDER and never to count down — a phone five minutes fast reorders this
+ * section against another device's bookmarks and cannot mislabel any of them.
+ */
+export function sortedBookmarks(bookmarks: Bookmark[]): Bookmark[] {
+  return bookmarks
+    .filter((bookmark) => !bookmark.isDeleted)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+// ─── hydration ───────────────────────────────────────────────────────────────
+
+/** Every section that puts an id on screen, in hydration priority order. */
+export interface ShelfSections {
+  offered: Hold[];
+  loans: Loan[];
+  downloads: DownloadRecord[];
+  bookmarks: Bookmark[];
+  waiting: Hold[];
+}
+
+/**
+ * Every distinct item id across the five sections, capped at wokay's batch
  * limit, plus how many rows were left unhydrated.
  *
  * ONE CALL, NOT TWENTY. The response carries ids; titles and covers come from a
  * single `getItemsBatch`. Copying catalogue metadata into the shelf would
  * duplicate data this module does not own, and a stale title is a second source
- * of truth.
+ * of truth. Downloads and bookmarks join the SAME call rather than adding two
+ * more — they are ids in the same namespace, and a book that is on loan, on
+ * this device AND bookmarked is one id, not three. `Bookmark.bookId` is that
+ * same identity under the content layer's name for it; ten bookmarks in one
+ * book contribute one id, not ten.
  *
  * THE CAP IS HANDLED RATHER THAN ASSUMED AWAY. `items:batch` is frozen at 100
  * ids, so a reader with more rows than that cannot be hydrated in one call.
- * Ordered offered → loans → waiting so the truncation falls on the section that
- * can least afford to be wrong last: an offer is the only row that dies, and a
- * queue position is the only row nothing depends on. `truncated` is returned
+ * Ordered offered → loans → downloads → bookmarks → waiting so the truncation
+ * falls on the section that can least afford to be wrong last: an offer is the
+ * only row that dies, and a queue position is the only row nothing depends on.
+ * Downloads and bookmarks sit above waiting because an unhydrated row there is
+ * strictly worse — a queued hold at least renders its position, whereas a
+ * bookmark with no title is a bare id and nothing else. `truncated` is returned
  * rather than swallowed — silently dropping rows reads as "everything is here"
  * when it is not, and that bug only ever shows up in the demo account somebody
  * has been testing with for three weeks.
+ *
+ * AN OBJECT RATHER THAN FIVE POSITIONAL ARRAYS. Three was already at the limit
+ * of what a call site can be read for; five arrays of two interchangeable types
+ * is a swap waiting to happen, and swapping `offered` with `waiting` silently
+ * inverts the truncation priority this function exists to get right.
  */
-export function collectItemIds(
-  loans: Loan[],
-  offered: Hold[],
-  waiting: Hold[],
-): { ids: string[]; truncated: number } {
+export function collectItemIds(sections: ShelfSections): { ids: string[]; truncated: number } {
+  const { offered, loans, downloads, bookmarks, waiting } = sections;
   const seen = new Set<string>();
-  for (const row of [...offered, ...loans, ...waiting]) seen.add(row.itemId);
+  for (const row of [...offered, ...loans, ...downloads]) seen.add(row.itemId);
+  for (const bookmark of bookmarks) seen.add(bookmark.bookId);
+  for (const row of waiting) seen.add(row.itemId);
   const all = [...seen];
   return { ids: all.slice(0, MAX_BATCH_IDS), truncated: Math.max(0, all.length - MAX_BATCH_IDS) };
 }
@@ -168,6 +249,62 @@ export function dueLabel(
   if (remaining <= 0) return 'Due now';
   const days = Math.ceil(remaining / MS_PER_DAY);
   return days === 1 ? 'Due in 1 day' : `Due in ${days} days`;
+}
+
+// ─── downloads copy ──────────────────────────────────────────────────────────
+
+const BYTES_PER_MB = 1_048_576;
+
+/**
+ * The badge on a downloaded row.
+ *
+ * IT SAYS "Downloaded", NOT "Available offline", AND THE WORD IS THE POINT.
+ * `downloadStore` records that this device downloaded a book; the bytes, the
+ * wrapped key and the licence live in CAP-7's `ContentStore`, and only its
+ * `isAvailableOffline` can promise the book still opens with no network — a key
+ * destroyed at expiry turns the ciphertext into noise while our record of the
+ * download sits there unchanged. "Downloaded" is a claim about the past and
+ * cannot go stale. "Available offline" is a promise about now, and this screen
+ * is not the thing that can make it. Under-show, never over-show.
+ *
+ * SIZE IS APPENDED ONLY WHEN THE DOWNLOAD LAYER REPORTED ONE. Absent is the
+ * common path today, and "Downloaded · 0 MB" would read as a failed download.
+ * Rounded to one decimal, and anything under 0.1 MB floors to "0.1 MB" rather
+ * than "0 MB" for the same reason.
+ */
+export function downloadedLabel(record: DownloadRecord): string {
+  if (record.sizeBytes === undefined) return 'Downloaded';
+  const mb = record.sizeBytes / BYTES_PER_MB;
+  const shown = mb < 0.1 ? '0.1' : mb.toFixed(1);
+  return `Downloaded · ${shown} MB`;
+}
+
+// ─── bookmarks copy ──────────────────────────────────────────────────────────
+
+/**
+ * Where a bookmark points, in words a reader recognises.
+ *
+ * A PAGE NUMBER FOR PDFs, AND NOTHING FOR EPUBs. `Locator` is a discriminated
+ * union from the annotations contract: PDF carries a page, EPUB carries a CFI —
+ * an `epubfcfi(/6/14!/4/2/1:0)` string that addresses a position in a spine
+ * item and means nothing on a shelf. Resolving a CFI to a chapter or a
+ * percentage needs the book's own spine loaded in the reader, which is CAP-7's
+ * side of the seam and not something this screen can do or should fake.
+ *
+ * SO AN EPUB BOOKMARK FALLS BACK TO ITS `chapterId`, and to no badge at all
+ * when it has none. The row still renders — the reader keeps the bookmark and
+ * can still tap through to it — it just does not claim a position it cannot
+ * compute. Rendering a truncated CFI would be a label that looks like data and
+ * answers to nothing.
+ *
+ * `offset` IS DELIBERATELY IGNORED even though PDF locators may carry one. It
+ * is a scroll position inside the page, and "Page 42 (+0.3)" is precision no
+ * reader asked for.
+ */
+export function bookmarkLocationLabel(bookmark: Bookmark): string | undefined {
+  const { locator } = bookmark;
+  if (locator.type === 'PDF') return `Page ${locator.page}`;
+  return bookmark.chapterId;
 }
 
 // ─── queue copy ──────────────────────────────────────────────────────────────

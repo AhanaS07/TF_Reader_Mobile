@@ -86,9 +86,29 @@ export default function TabsGallery() {
         <Tabs tabs={[]} activeId="" onChange={() => {}} />
       </View>
 
+      <Text style={styles.label}>
+        fill — reaches both margins, slack spread between the tabs. Compare with the default
+        above, which ends where its labels end.
+      </Text>
+      <View style={styles.row}>
+        <Tabs tabs={FEED_TABS} activeId="ebooks" fill onChange={() => {}} />
+      </View>
+
+      <Text style={styles.label}>fill, underline variant</Text>
+      <View style={styles.row}>
+        <Tabs tabs={FEED_TABS} activeId="ebooks" variant="underline" fill onChange={() => {}} />
+      </View>
+
       <Text style={styles.label}>long labels — the bar scrolls, labels never squeeze</Text>
       <View style={styles.row}>
         <Tabs tabs={LONG_TABS} activeId="a" onChange={() => {}} />
+      </View>
+
+      <Text style={styles.label}>
+        fill with labels that already overflow — a no-op, so it scrolls as usual
+      </Text>
+      <View style={styles.row}>
+        <Tabs tabs={LONG_TABS} activeId="a" fill onChange={() => {}} />
       </View>
 
       <Text style={styles.label}>long labels, underline variant</Text>

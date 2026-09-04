@@ -41,6 +41,45 @@ function styleOf(testID: string) {
   return StyleSheet.flatten(screen.getByTestId(testID).props.style);
 }
 
+/** The row the tabs sit in, which is a ScrollView's content container. */
+function trackStyle() {
+  return StyleSheet.flatten(screen.getByTestId('tabs').props.contentContainerStyle);
+}
+
+describe('Tabs fill', () => {
+  it('ends where the labels end by default, so a long tab set reads as scrollable', async () => {
+    await render(<Tabs tabs={THREE_TABS} activeId="ebooks" onChange={() => {}} />);
+
+    expect(trackStyle().flexGrow).toBeUndefined();
+  });
+
+  // A fixed tab set is a control with a known width. Left-flush with all the
+  // slack on the right reads as a mis-centred component, not as room to scroll.
+  it('stretches to the width it is given when asked to fill', async () => {
+    await render(<Tabs tabs={THREE_TABS} activeId="ebooks" fill onChange={() => {}} />);
+
+    expect(trackStyle().flexGrow).toBe(1);
+  });
+
+  // The other way to fill a row is `flex: 1` per tab, which squeezes a long
+  // label into a fifth of the width and ellipsises it. The gap absorbs the
+  // slack instead, so every label stays whole.
+  it('spreads the slack between the tabs rather than into them', async () => {
+    await render(<Tabs tabs={THREE_TABS} activeId="ebooks" fill onChange={() => {}} />);
+
+    expect(trackStyle().justifyContent).toBe('space-between');
+    expect(styleOf('tabs-tab-ebooks').flex).toBeUndefined();
+  });
+
+  it('fills the underline variant too, not just the segmented pill', async () => {
+    await render(
+      <Tabs tabs={TWO_TABS} activeId="details" variant="underline" fill onChange={() => {}} />,
+    );
+
+    expect(trackStyle().flexGrow).toBe(1);
+  });
+});
+
 describe('Tabs content', () => {
   it('renders a tab for every entry it is handed', async () => {
     await render(<Tabs tabs={THREE_TABS} activeId="ebooks" onChange={() => {}} />);
