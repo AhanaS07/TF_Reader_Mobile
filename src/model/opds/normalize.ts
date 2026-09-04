@@ -296,6 +296,7 @@ export function normalizeShelf(doc: unknown): Shelf {
   const self = findLink(links, (rel) => rel === 'self');
   if (self === undefined) throw malformed('shelf has no self link');
   const next = findLink(links, (rel) => rel === 'next');
+  const search = findLink(links, (rel) => rel === 'search');
 
   const totalItems = optNumber(metadata.numberOfItems);
   const itemsPerPage = optNumber(metadata.itemsPerPage);
@@ -317,6 +318,9 @@ export function normalizeShelf(doc: unknown): Shelf {
     // Only ever sent on an empty result — "a way back to the catalogue".
     ...(shelf.navigation !== undefined
       ? { browseInstead: asArray(shelf.navigation, 'shelf navigation').map(toNavLink) }
+      : {}),
+    ...(search !== undefined
+      ? { searchHref: reqString(search.href, 'shelf search href') }
       : {}),
   };
 }

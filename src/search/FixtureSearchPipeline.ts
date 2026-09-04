@@ -125,18 +125,19 @@ export class FixtureSearchPipeline implements CatalogueSearchPipeline {
   }
 
   async search(request: SearchRequest): Promise<SearchFeed> {
-    await this.simulate(request.institutionId);
+    const target = request.institutionId ?? 'public';
+    await this.simulate(target);
 
-    // DISCOVERED, NOT HARDCODED. The link comes off the institution's own
-    // catalogue, so a catalogue with no `search` link is correctly not searchable
-    // rather than being searched at a URL we made up.
-    const catalogue = await this.source.getHomeCatalogue(request.institutionId);
-    if (catalogue.searchHref === undefined) {
-      throw new CatalogueFailure(CatalogueError.NOT_FOUND, `search link for ${request.institutionId}`);
+    const feed = request.institutionId === undefined
+      ? await this.source.getPublicFeed()
+      : await this.source.getHomeCatalogue(request.institutionId);
+
+    if (feed.searchHref === undefined) {
+      throw new CatalogueFailure(CatalogueError.NOT_FOUND, `search link for ${target}`);
     }
 
     return this.respondTo(
-      expandSearchLink(catalogue.searchHref, searchParams(request.query, request.filters)),
+      expandSearchLink(feed.searchHref, searchParams(request.query, request.filters)),
     );
   }
 
