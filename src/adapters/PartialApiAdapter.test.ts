@@ -188,19 +188,79 @@ describe('PartialApiAdapter getPublicFeed', () => {
   });
 });
 
-// The boundary of this change, asserted rather than assumed: flipping the feed
-// must not drag its sibling along. `/opds/v1/public/publications/{itemId}` is
-// DRAFT in wokay's contract, not FROZEN, so it stays on fixtures until that
-// endpoint is verified — see PartialApiAdapter.ts's header.
-//
-// TASK 2 FLIPS THIS EXPECTATION. When getPublicPublication moves to `this.api`,
-// this test is the one that should fail, and it should then be rewritten to
-// assert the request rather than deleted.
-describe('PartialApiAdapter getPublicPublication', () => {
-  it('still comes from fixtures, making no request', async () => {
-    const publication = await createAdapter().getPublicPublication(KNOWN_PUBLIC_PUBLICATION);
+// Public publication detail is routed through the real API.
+// The endpoint is intentionally unauthenticated.
 
-    expect(calls).toHaveLength(0);
+describe('PartialApiAdapter getPublicPublication', () => {
+  const PUBLIC_PUBLICATION_PATH = '/opds/v1/public/publications/item_oa1';
+
+  function servePublicPublication(url: string): FetchResponse {
+    const { pathname } = new URL(url);
+
+    if (pathname !== PUBLIC_PUBLICATION_PATH) return notFound();
+
+    return ok({
+      metadata: {
+        title: 'Served public publication',
+      },
+      links: [
+        {
+          rel: 'self',
+          href: `${BASE_URL}${PUBLIC_PUBLICATION_PATH}`,
+        },
+        {
+          rel: 'http://opds-spec.org/acquisition/open-access',
+          href: 'https://example.com/item_oa1',
+          properties: {
+            licenceModel: 'OPEN_ACCESS',
+            hasSearchIndex: false,
+            canPersist: true,
+            indirectAcquisition: [
+              { type: 'application/epub+zip' },
+            ],
+          },
+        },
+      ],
+    });
+  }
+
+  it('reaches the real API at the public publication path', async () => {
+    stubFetch(servePublicPublication);
+
+    const publication = await createAdapter().getPublicPublication(
+      KNOWN_PUBLIC_PUBLICATION,
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      `${BASE_URL}${PUBLIC_PUBLICATION_PATH}`,
+    );
     expect(publication.id).toBe(KNOWN_PUBLIC_PUBLICATION);
+  });
+
+  it('returns what the wire served, not the mock fixture', async () => {
+    stubFetch(servePublicPublication);
+
+    const publication = await createAdapter().getPublicPublication(
+      KNOWN_PUBLIC_PUBLICATION,
+    );
+
+    expect(publication.title).toBe('Served public publication');
+  });
+
+  it('sends no Authorization header even when a getToken is configured', async () => {
+    stubFetch(servePublicPublication);
+
+    await createAdapter().getPublicPublication(KNOWN_PUBLIC_PUBLICATION);
+
+    expect(calls[0].init?.headers).toBeUndefined();
+  });
+
+  it('never asks for a token', async () => {
+    stubFetch(servePublicPublication);
+
+    await createAdapter().getPublicPublication(KNOWN_PUBLIC_PUBLICATION);
+
+    expect(getToken).not.toHaveBeenCalled();
   });
 });

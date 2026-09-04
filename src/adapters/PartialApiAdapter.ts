@@ -59,7 +59,7 @@ export class PartialApiAdapter implements DataSource {
   }
 
   getPublicPublication(bookId: BookId): Promise<Publication> {
-    return this.mock.getPublicPublication(bookId);
+    return this.api.getPublicPublication(bookId);
   }
 
   getItemsBatch(ids: BookId[]): Promise<BatchItemsResult> {
