@@ -11,5 +11,7 @@ export interface InstitutionQueryParams {
 export async function searchInstitutions(
   params?: InstitutionQueryParams,
 ): Promise<Institution[]> {
-  return getCatalogueSource().getInstitutions(params);
+  const results = await getCatalogueSource().getInstitutions(params);
+  console.log('searchInstitutions: query', params?.q, 'results count', results.length);
+  return results;
 }

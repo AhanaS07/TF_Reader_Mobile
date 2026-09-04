@@ -14,7 +14,9 @@ import {
   FixtureSearchPipeline,
   type FixtureSearchPipelineOptions,
 } from '@search/FixtureSearchPipeline';
+import { ApiSearchPipeline } from '@search/ApiSearchPipeline';
 import type { CatalogueSearchPipeline } from '@search/pipeline';
+import { ensureFreshToken } from '@/auth/tokenRefresh';
 
 export type SearchPipelineKind = 'fixture' | 'api';
 
@@ -47,6 +49,8 @@ export interface CreateSearchPipelineOptions {
   kind?: SearchPipelineKind;
   // Latency / error injection, for the gallery and for demoing error states.
   fixture?: FixtureSearchPipelineOptions;
+  // Overridable for tests. Defaults to ensureFreshToken.
+  getToken?: () => Promise<string | undefined>;
 }
 
 export function createSearchPipeline(
@@ -55,14 +59,7 @@ export function createSearchPipeline(
   const kind = options.kind ?? resolveSearchPipelineKind(process.env[ENV_VAR]);
 
   if (kind === 'api') {
-    // NOT SILENTLY THE FIXTURE. Asking for the real endpoint and being handed
-    // canned data is the one outcome that could make a green integration test
-    // meaningless in Week 4, so it fails loudly instead.
-    throw new Error(
-      "createSearchPipeline: kind 'api' needs ApiSearchPipeline, which lands with " +
-        "wokay's catalogue search endpoint (R3c, Week 4). It implements " +
-        'CatalogueSearchPipeline and is returned from here — no caller changes.',
-    );
+    return new ApiSearchPipeline({ getToken: options.getToken ?? ensureFreshToken });
   }
 
   return new FixtureSearchPipeline(options.fixture);
