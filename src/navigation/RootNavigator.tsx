@@ -21,6 +21,7 @@ import SearchScreen from '../screens/SearchScreen';
 import LibraryScreen from '../screens/LibraryScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import ReaderPreferencesScreen from '../screens/ReaderPreferencesScreen';
+import AccessibilityScreen from '../screens/AccessibilityScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
 import InstitutionListScreen from '../screens/InstitutionListScreen';
@@ -217,6 +218,14 @@ function ProfileNavigator() {
         name="ReaderPreferences"
         component={ReaderPreferencesScreen}
         options={{ title: 'Reading Preferences' }}
+      />
+      {/* Pushed from the "Accessibility" row on screen 10, beside Reading
+          Preferences rather than inside it — see the header comment on
+          AccessibilityScreen.tsx for why the two are separate destinations. */}
+      <ProfileStack.Screen
+        name="Accessibility"
+        component={AccessibilityScreen}
+        options={{ title: 'Accessibility' }}
       />
       {/* The signed-out sign-in flow. All four are registered here rather than
           reused from Catalogue so the reader stays on the Profile tab they

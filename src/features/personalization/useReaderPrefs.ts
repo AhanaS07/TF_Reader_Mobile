@@ -17,13 +17,24 @@
 //
 // ─── WHAT THE HOOK GUARANTEES, SO NO SECTION HAS TO ──────────────────────────
 //
-// NESTED GROUPS ARE SPREAD BEFORE THEY ARE PATCHED. `SharedPrefs.font` is an
-// object, and `savePrefs({ font: { family } })` would drop `customFontUri` —
-// the store replaces a group wholesale rather than merging into it. That rule is
-// easy to get right once and easy to forget at the fourth call site, so the
-// spread happens in here and a section only ever names the field it changed.
-// The same protection is available to Keshav's Layout and Prayas's Typography
-// sections if they route their writes through this hook.
+// NESTED GROUPS ARE SPREAD BEFORE THEY ARE PATCHED, AT TWO LEVELS.
+// `SharedPrefs.font` is an object, and `savePrefs({ font: { family } })` would
+// drop `customFontUri` — the store replaces a group wholesale rather than
+// merging into it. That rule is easy to get right once and easy to forget at
+// the fourth call site, so the spread happens in here and a section only ever
+// names the field it changed. The same protection is available to Keshav's
+// Layout and Prayas's Typography sections if they route their writes through
+// this hook.
+//
+// THE SECOND LEVEL IS FOR ACCESSIBILITY. Hruthik's contract (v1.1 §1) states the
+// same rule and notes it "bites twice" for that group: `accessibility` is a
+// group, and `text` / `display` / `announce` are groups inside it, so a patch
+// naming one field can wipe a sibling at either depth. `write` now expands a
+// patch against the current values at both levels — see `expandPatch`.
+//
+// TWO LEVELS, NOT ARBITRARY DEPTH, and that is the contract's shape rather than
+// a limitation worth removing. A general deep merge would also quietly merge a
+// value that was meant to replace, which is the harder bug to see.
 //
 // WRITES ARE OPTIMISTIC AND REVERT ON FAILURE. A settings control that waits on
 // a promise before moving feels broken, and prefs are local-first by contract —
@@ -33,11 +44,17 @@
 // every tap feel like a network call for data that never leaves the device.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { DEFAULT_PREFS, type LayoutPrefs, type SharedPrefs, type Theme } from '@/shared/contracts';
+import {
+  DEFAULT_PREFS,
+  type LayoutPrefs,
+  type ReduceMotion,
+  type SharedPrefs,
+  type Theme,
+} from '@/shared/contracts';
 
 import * as prefsStore from './prefsStore';
 
-import { TEXT_SIZE_OPTIONS } from './prefsOptions';
+import { FONT_SCALE_MULTIPLIER, TEXT_SIZE_OPTIONS } from './prefsOptions';
 
 // ─── The values, without the plumbing ────────────────────────────────────────
 
@@ -54,6 +71,80 @@ import { TEXT_SIZE_OPTIONS } from './prefsOptions';
  * defaults are a valid `PrefsValues` with no cast.
  */
 export type PrefsValues = Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>;
+
+/**
+ * A patch naming only the fields that changed, at up to two levels.
+ *
+ * A caller may hand over a scalar (`{ theme }`), a partial group
+ * (`{ font: { family } }`), or a partial group inside a group
+ * (`{ accessibility: { display: { boldText: true } } }`). `write` expands
+ * whichever it gets against the current values before the store sees it, so no
+ * section has to remember either spread.
+ *
+ * DERIVED FROM `PrefsValues`, never hand-listed — the moment the accessibility
+ * contract lands with its `text` / `display` / `announce` sub-blocks, this type
+ * follows it with no edit here.
+ */
+export type PrefsPatchInput = {
+  [K in keyof PrefsValues]?: PrefsValues[K] extends object
+    ? {
+        [S in keyof PrefsValues[K]]?: PrefsValues[K][S] extends object
+          ? Partial<PrefsValues[K][S]>
+          : PrefsValues[K][S];
+      }
+    : PrefsValues[K];
+};
+
+// Arrays and `null` are values to replace, not groups to merge into. Nothing on
+// `SharedPrefs` is either today; the guard is here so that stops being a silent
+// assumption the first time one is added.
+function isMergeableGroup(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Expands a two-level patch into the WHOLE-GROUP values `savePrefs` expects.
+ *
+ * Returns only the top-level keys the patch named, each carrying a complete
+ * group — which is exactly what the store's replace-wholesale semantics need,
+ * and what a caller spreading by hand was producing already. Passing a fully
+ * spread group still works and still produces the same payload, so the existing
+ * callbacks below are unaffected.
+ *
+ * A KEY SET TO `undefined` IS SKIPPED RATHER THAN WRITTEN. "Absent" and
+ * "present but undefined" collapse to one representation, matching how
+ * `searchState.ts` removes optional keys instead of blanking them. To clear an
+ * optional field, write the whole group.
+ */
+function expandPatch(previous: PrefsValues, patch: PrefsPatchInput): Partial<PrefsValues> {
+  const expanded: Record<string, unknown> = {};
+
+  for (const [key, incoming] of Object.entries(patch)) {
+    if (incoming === undefined) continue;
+
+    const current = (previous as Record<string, unknown>)[key];
+
+    // A scalar such as `theme`, or a group with nothing to merge into.
+    if (!isMergeableGroup(incoming) || !isMergeableGroup(current)) {
+      expanded[key] = incoming;
+      continue;
+    }
+
+    const group: Record<string, unknown> = { ...current };
+    for (const [subKey, subIncoming] of Object.entries(incoming)) {
+      if (subIncoming === undefined) continue;
+
+      const subCurrent = group[subKey];
+      group[subKey] =
+        isMergeableGroup(subIncoming) && isMergeableGroup(subCurrent)
+          ? { ...subCurrent, ...subIncoming }
+          : subIncoming;
+    }
+    expanded[key] = group;
+  }
+
+  return expanded as Partial<PrefsValues>;
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -145,7 +236,37 @@ export interface UseReaderPrefs {
   onChangeLetterSpacing: (spacing: number) => void;
   /** Clamped to 0–48px before it is saved. */
   onChangeMargins: (margins: number) => void;
+  // ─── Accessibility (Hruthik's contract, FINAL 2026-09-02) ──────────────────
+  //
+  // ONE CALLBACK PER CONTROL, rather than a single `onChangeAccessibility`
+  // taking a path. The four sections above already work this way, a named
+  // callback is what CONVENTIONS §3 asks for, and it is what lets each one
+  // carry its own guard — only `fontScaleMultiplier` clamps, and only
+  // `reduceMotion` has a union to respect.
+  //
+  // TWELVE, NOT NINETEEN. The seven `accessibility.tts.*` fields are Ahana's,
+  // driven from the in-reader TtsControls panel. Nothing here reads or writes
+  // them.
+  onToggleDyslexiaFont: (enabled: boolean) => void;
+  onToggleRespectOsFontScale: (enabled: boolean) => void;
+  onToggleReadableSpacing: (enabled: boolean) => void;
+  /** Clamped to 0.8–1.5 before it is saved. Stored as a number. */
+  onChangeFontScaleMultiplier: (multiplier: number) => void;
+  onToggleBoldText: (enabled: boolean) => void;
+  onToggleHighContrast: (enabled: boolean) => void;
+  onToggleLargeTouchTargets: (enabled: boolean) => void;
+  onToggleLargeAudioControls: (enabled: boolean) => void;
+  /**
+   * Stores the raw tri-state. NEVER coerced to a boolean — 'system' is a
+   * distinct answer from 'off' and cannot be recovered once collapsed.
+   */
+  onSelectReduceMotion: (reduceMotion: ReduceMotion) => void;
+  onToggleAnnouncePageChanges: (enabled: boolean) => void;
+  onToggleAnnounceChapterChanges: (enabled: boolean) => void;
+  onToggleScreenReaderHints: (enabled: boolean) => void;
   onRestoreDefaults: () => void;
+  /** Resets only the accessibility group, leaving theme/font/layout/typography alone. */
+  onRestoreAccessibilityDefaults: () => void;
   /** Re-reads after a failed read. */
   onRetry: () => void;
 }
@@ -219,21 +340,27 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
   }, [activeSource, load]);
 
   // THE ONE WRITE PATH. Every callback below goes through here, so the optimistic
-  // update, the rollback and the `saving` flag are defined once.
+  // update, the rollback, the `saving` flag AND the nested-group spread are each
+  // defined once.
   //
-  // `patch` is built by the caller from the CURRENT values, which is where the
-  // nested-group spread happens — see each callback.
+  // `patch` names only what changed, at either level. `expandPatch` fills in the
+  // rest from the current values, so what reaches the store is always complete
+  // groups — the shape its replace-wholesale semantics require.
   const write = useCallback(
-    (patch: Partial<PrefsValues>) => {
+    (patch: PrefsPatchInput) => {
       const previous = prefs;
       if (previous === null) return;
 
-      setPrefs({ ...previous, ...patch });
+      // Expanded once, BEFORE the optimistic update, so the screen and the store
+      // are never shown two different versions of the same write.
+      const groups = expandPatch(previous, patch);
+
+      setPrefs({ ...previous, ...groups });
       setSaving(true);
       setSaveFailed(false);
 
       activeSource
-        .savePrefs(patch)
+        .savePrefs(groups)
         .then(() => {
           if (!mounted.current) return;
           setSaving(false);
@@ -328,6 +455,99 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     [prefs, write],
   );
 
+  // ─── Accessibility ─────────────────────────────────────────────────────────
+  //
+  // NO MANUAL SPREADING BELOW, AT EITHER LEVEL, and that is the whole reason
+  // `expandPatch` exists. Hruthik's contract warns the top-level-merge rule
+  // "bites twice" here: a patch of `{ accessibility: { display: { boldText } } }`
+  // would, written straight to the store, wipe the other four `display` fields
+  // AND the sibling `text` / `announce` / `tts` groups. Each callback names only
+  // the field it owns; `write` reconstructs both levels from current values.
+  //
+  // These do not guard on `prefs === null` the way the Typography callbacks do:
+  // those need `prefs` to read the sibling fields they spread, and these read
+  // nothing. `write` already returns early when there is nothing to patch.
+  const onToggleDyslexiaFont = useCallback(
+    (dyslexiaFont: boolean) => write({ accessibility: { text: { dyslexiaFont } } }),
+    [write],
+  );
+
+  const onToggleRespectOsFontScale = useCallback(
+    (respectOsFontScale: boolean) => write({ accessibility: { text: { respectOsFontScale } } }),
+    [write],
+  );
+
+  const onToggleReadableSpacing = useCallback(
+    (readableSpacing: boolean) => write({ accessibility: { text: { readableSpacing } } }),
+    [write],
+  );
+
+  // CLAMPED HERE, NOT BY THE SLIDER. The contract types the field as an
+  // unbounded number and says so; the slider's own min/max only constrain what a
+  // drag can produce, and nothing stops another caller — a test, a future
+  // preset button, a restored value from a device with different bounds — from
+  // handing over 4.0. Same rule the three Typography sliders already follow.
+  const onChangeFontScaleMultiplier = useCallback(
+    (fontScaleMultiplier: number) =>
+      write({
+        accessibility: {
+          text: {
+            fontScaleMultiplier: clamp(
+              fontScaleMultiplier,
+              FONT_SCALE_MULTIPLIER.min,
+              FONT_SCALE_MULTIPLIER.max,
+            ),
+          },
+        },
+      }),
+    [write],
+  );
+
+  const onToggleBoldText = useCallback(
+    (boldText: boolean) => write({ accessibility: { display: { boldText } } }),
+    [write],
+  );
+
+  const onToggleHighContrast = useCallback(
+    (highContrast: boolean) => write({ accessibility: { display: { highContrast } } }),
+    [write],
+  );
+
+  const onToggleLargeTouchTargets = useCallback(
+    (largeTouchTargets: boolean) => write({ accessibility: { display: { largeTouchTargets } } }),
+    [write],
+  );
+
+  const onToggleLargeAudioControls = useCallback(
+    (largeAudioControls: boolean) => write({ accessibility: { display: { largeAudioControls } } }),
+    [write],
+  );
+
+  // STORED VERBATIM. No clamp, no fallback, no boolean anywhere on this path —
+  // `ReduceMotion` is a closed union, so the type is the only guard needed and
+  // an invalid value cannot reach here without a cast.
+  const onSelectReduceMotion = useCallback(
+    (reduceMotion: ReduceMotion) => write({ accessibility: { display: { reduceMotion } } }),
+    [write],
+  );
+
+  const onToggleAnnouncePageChanges = useCallback(
+    (pageChanges: boolean) => write({ accessibility: { announce: { pageChanges } } }),
+    [write],
+  );
+
+  const onToggleAnnounceChapterChanges = useCallback(
+    (chapterChanges: boolean) => write({ accessibility: { announce: { chapterChanges } } }),
+    [write],
+  );
+
+  // The one accessibility field that is NOT inside a sub-block, so this is a
+  // one-level patch like `theme` — `expandPatch` handles both shapes.
+  const onToggleScreenReaderHints = useCallback(
+    (screenReaderHints: boolean) => write({ accessibility: { screenReaderHints } }),
+    [write],
+  );
+
   const onRestoreDefaults = useCallback(() => {
     const previous = prefs;
     if (previous === null) return;
@@ -353,6 +573,19 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
       });
   }, [activeSource, prefs]);
 
+  // SCOPED TO ACCESSIBILITY ONLY, unlike `onRestoreDefaults` above. That one
+  // calls `resetPrefs()` because it means "reset the whole screen", but a
+  // caller of this hook that only renders the accessibility group (the
+  // Accessibility screen) resetting theme/font/layout/typography alongside it
+  // would be surprising — those controls are not on screen to show the
+  // reader what just changed. `write` already gives every other callback this
+  // group-scoped shape, so reset takes it too rather than inventing a second
+  // path to the store.
+  const onRestoreAccessibilityDefaults = useCallback(
+    () => write({ accessibility: DEFAULT_PREFS.accessibility }),
+    [write],
+  );
+
   return {
     state,
     prefs,
@@ -366,7 +599,20 @@ export function useReaderPrefs({ source }: UseReaderPrefsOptions = {}): UseReade
     onChangeLineHeight,
     onChangeLetterSpacing,
     onChangeMargins,
+    onToggleDyslexiaFont,
+    onToggleRespectOsFontScale,
+    onToggleReadableSpacing,
+    onChangeFontScaleMultiplier,
+    onToggleBoldText,
+    onToggleHighContrast,
+    onToggleLargeTouchTargets,
+    onToggleLargeAudioControls,
+    onSelectReduceMotion,
+    onToggleAnnouncePageChanges,
+    onToggleAnnounceChapterChanges,
+    onToggleScreenReaderHints,
     onRestoreDefaults,
+    onRestoreAccessibilityDefaults,
     onRetry,
   };
 }

@@ -86,6 +86,11 @@ export type ProfileStackParamList = {
   // reason). There is no id to pass, so a caller cannot reach this screen with
   // the wrong one.
   ReaderPreferences: undefined;
+  // Accessibility settings (Hruthik's contract) — pushed from the
+  // "Accessibility" row on screen 10, beside Reading Preferences rather than
+  // inside it. Same NO PARAMS reasoning as ReaderPreferences above: this is
+  // also a per-user singleton with no id to pass.
+  Accessibility: undefined;
 
   // ─── Signed-out sign-in flow, pushed from the account block on screen 10 ────
   //

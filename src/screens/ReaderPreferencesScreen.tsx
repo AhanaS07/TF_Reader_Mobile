@@ -169,7 +169,7 @@ export default function ReaderPreferencesScreen({
         <View style={styles.restore}>
           <ListRow
             title="Restore defaults"
-            subtitle="Resets theme, font, layout and typography"
+            subtitle="Resets theme, font, layout, typography and accessibility"
             variant="destructive"
             onPress={onRestoreDefaults}
           />

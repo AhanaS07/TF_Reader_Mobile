@@ -473,3 +473,110 @@ describe('useReaderPrefs external changes', () => {
     expect(listenerCount()).toBe(0);
   });
 });
+
+// ─── Two-level merge, against the real contract ─────────────────────────────
+//
+// COULD NOT BE WRITTEN UNTIL NOW. `expandPatch` landed before Hruthik's
+// contract did, and at that point no group on `PrefsValues` contained another
+// object — so the second level had no shape to exercise and the behaviour was
+// verified only by hand. `accessibility` supplies it, and these are the tests
+// that close that gap.
+describe('useReaderPrefs two-level accessibility patches', () => {
+  const A11Y = DEFAULT_PREFS.accessibility;
+
+  it('preserves sibling fields inside the patched sub-block', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onToggleBoldText(true));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      accessibility: { ...A11Y, display: { ...A11Y.display, boldText: true } },
+    });
+  });
+
+  it('preserves sibling sub-blocks when one is patched', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onToggleReadableSpacing(true));
+
+    const patch = (source.savePrefs as jest.Mock).mock.calls[0][0];
+    expect(patch.accessibility.display).toEqual(A11Y.display);
+    expect(patch.accessibility.announce).toEqual(A11Y.announce);
+    expect(patch.accessibility.tts).toEqual(A11Y.tts);
+    expect(patch.accessibility.text).toEqual({ ...A11Y.text, readableSpacing: true });
+  });
+
+  it('leaves the other top-level groups untouched', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onToggleAnnouncePageChanges(false));
+
+    const patch = (source.savePrefs as jest.Mock).mock.calls[0][0];
+    // Only `accessibility` is named — theme, font, typography and layout are
+    // not in the patch at all, so the store cannot replace them.
+    expect(Object.keys(patch)).toEqual(['accessibility']);
+  });
+
+  it('stores reduceMotion as the raw tri-state string', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onSelectReduceMotion('off'));
+
+    const patch = (source.savePrefs as jest.Mock).mock.calls[0][0];
+    expect(patch.accessibility.display.reduceMotion).toBe('off');
+    expect(typeof patch.accessibility.display.reduceMotion).toBe('string');
+  });
+
+  it.each([
+    [4.0, 1.5],
+    [0.1, 0.8],
+    [1.2, 1.2],
+  ])('clamps a font scale of %p to %p', async (input, expected) => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onChangeFontScaleMultiplier(input));
+
+    const patch = (source.savePrefs as jest.Mock).mock.calls[0][0];
+    expect(patch.accessibility.text.fontScaleMultiplier).toBe(expected);
+  });
+
+  it('sets the one field with no sub-block through a one-level patch', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onToggleScreenReaderHints(true));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      accessibility: { ...A11Y, screenReaderHints: true },
+    });
+  });
+});
+
+describe('useReaderPrefs accessibility restore defaults', () => {
+  // SCOPED, NOT `resetPrefs()`. `onRestoreDefaults` resets the whole record in
+  // one store write; a caller that only renders accessibility (the
+  // Accessibility screen) resetting theme/font/layout/typography alongside it
+  // would silently change controls that are not on screen — see the doc on
+  // `onRestoreAccessibilityDefaults`.
+  it('writes only the accessibility group back to its contract defaults', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onRestoreAccessibilityDefaults());
+
+    expect(source.savePrefs).toHaveBeenCalledWith({ accessibility: DEFAULT_PREFS.accessibility });
+    expect(source.resetPrefs).not.toHaveBeenCalled();
+  });
+
+  it('leaves theme and font untouched', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => result.current.onRestoreAccessibilityDefaults());
+
+    const patch = (source.savePrefs as jest.Mock).mock.calls[0][0];
+    expect(Object.keys(patch)).toEqual(['accessibility']);
+    expect(result.current.prefs?.theme).toBe('sepia');
+    expect(result.current.prefs?.font).toEqual({
+      family: 'Lora',
+      customFontUri: 'file:///fonts/custom.ttf',
+    });
+  });
+});

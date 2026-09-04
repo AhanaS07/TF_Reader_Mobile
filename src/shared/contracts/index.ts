@@ -29,6 +29,7 @@ export * from './sync-record';
 // file lands; the `content.lock` / `content.unlock` signals live there.
 
 // Existing teammate contracts.
+export * from './accessibility'; // AccessibilityPrefs + ReduceMotion (Hruthik)
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"
 export * from './annotations';
 export * from './progress';

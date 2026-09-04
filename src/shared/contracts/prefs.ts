@@ -24,6 +24,7 @@
 // dev_T4 decision that prefs apply universally per user. The SyncRecordBase
 // extraction from T4_Ahana is kept, so the two changes are combined rather than
 // one overwriting the other.
+import type { AccessibilityPrefs } from './accessibility';
 import type { SyncRecordBase } from './sync-record';
 
 export type Theme = 'light' | 'dark' | 'sepia' | 'system' | 'highContrast'; // high-contrast is a theme variant
@@ -49,21 +50,18 @@ export interface ZoomPrefs {
   level: number; // 1.0 = 100%; PDF/image zoom
 }
 
-// Accessibility flags — booleans only, applied universally per user like the
-// rest of this record.
+// Accessibility now lives in its own file — see ./accessibility.ts.
 //
-// PROVISIONAL — NEEDS HRUTHIK'S SIGN-OFF. Accessibility (Hruthik) previously
-// owned these on a SEPARATE endpoint/record, and this file used to say so
-// explicitly. Folding them in here makes prefs the single per-user settings
-// record, but it moves a boundary that was another owner's, and it means these
-// flags now sync on the prefs record (LWW on updatedAt) rather than his own.
-// Confirm the shape and the ownership before treating this as frozen.
-export interface AccessibilityPrefs {
-  dyslexiaFont: boolean; // OpenDyslexic — previously noted as Hruthik's
-  highContrast: boolean; // pairs with Theme 'highContrast'
-  reduceMotion: boolean; // honour reduced-motion, suppress page-turn animation
-  screenReaderHints: boolean; // extra a11y labels for TalkBack / VoiceOver
-}
+// RESOLVED, NO LONGER PROVISIONAL. This file used to declare a flat
+// four-boolean `AccessibilityPrefs` under a "PROVISIONAL — NEEDS HRUTHIK'S
+// SIGN-OFF" note, because folding his surface in here moved a boundary that was
+// his. Hruthik published the real shape (FINAL, 2026-09-02) and it is nested
+// four groups deep, so the declaration moved out to the owner's own file and
+// this one only composes it.
+//
+// IMPORTED, NOT RE-EXPORTED. The barrel exports both files, so re-exporting
+// `AccessibilityPrefs` from here would give it two export paths and make the
+// barrel ambiguous. One declaration, one home.
 
 export interface SharedPrefs extends SyncRecordBase {
   // Identity/sync fields (id, userId, updatedAt, isDeleted, synced) come from
@@ -89,10 +87,33 @@ export const DEFAULT_PREFS: Omit<
   typography: { size: 16, lineHeight: 1.5, spacing: 0, margins: 16 },
   layout: { flow: 'paginated', spread: 'single' },
   zoom: { level: 1.0 },
+  // Every value below is the contract's own default (Hruthik, v1.1 §2). Three
+  // are deliberately NOT `false`: `respectOsFontScale` starts on because
+  // ignoring the OS setting by default is the hostile choice, and both
+  // `announce` flags start on for the same reason.
+  //
+  // `reduceMotion` DEFAULTS TO 'system', NOT 'off' — the whole point of the
+  // tri-state is that "follow the OS" is the honest starting position.
   accessibility: {
-    dyslexiaFont: false,
-    highContrast: false,
-    reduceMotion: false,
+    text: {
+      dyslexiaFont: false,
+      respectOsFontScale: true,
+      fontScaleMultiplier: 1.0,
+      readableSpacing: false,
+    },
+    display: {
+      boldText: false,
+      highContrast: false,
+      reduceMotion: 'system',
+      largeTouchTargets: false,
+      largeAudioControls: false,
+    },
+    // Ahana's group. Empty here because no field in it is ours to default.
+    tts: {},
+    announce: {
+      pageChanges: true,
+      chapterChanges: true,
+    },
     screenReaderHints: false,
   },
 };

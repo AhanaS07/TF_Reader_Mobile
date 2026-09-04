@@ -101,6 +101,13 @@ export default function ProfileScreen() {
     navigation.navigate('ReaderPreferences');
   }, [navigation]);
 
+  // Pushed onto this screen's own stack, same as Reading Preferences above —
+  // a separate destination rather than a section of that screen, see the
+  // header comment on AccessibilityScreen.tsx.
+  const handleAccessibility = useCallback(() => {
+    navigation.navigate('Accessibility');
+  }, [navigation]);
+
   // WHY THE PENDING INTENT IS CLEARED FIRST, on both of these. An intent is set by
   // the access gate to mean "resume this item once you are signed in", and
   // PersonalAccountScreen replays it with `popTo('ItemDetail')`. There is no
@@ -264,6 +271,15 @@ export default function ProfileScreen() {
           variant="chevron"
           onPress={handleReadingPreferences}
           icon={<Ionicons name="book-outline" size={SETTING_ICON_SIZE} color={color.primary} />}
+        />
+        <ListRow
+          title="Accessibility"
+          subtitle="Text, display and screen reader options"
+          variant="chevron"
+          onPress={handleAccessibility}
+          icon={
+            <Ionicons name="accessibility-outline" size={SETTING_ICON_SIZE} color={color.primary} />
+          }
         />
         <ListRow
           title="Download Settings"
