@@ -583,7 +583,7 @@ function LoanRow({
       <ContentCard
         title={title}
         {...(publisher === undefined ? {} : { publisher })}
-        badge={due === undefined ? undefined : <Text style={styles.due}>{due}</Text>}
+        badge={due === undefined ? undefined : <Text style={styles.badgeLabel}>{due}</Text>}
       />
     </View>
   );
@@ -614,7 +614,7 @@ function DownloadRow({
       <ContentCard
         title={title}
         {...(publisher === undefined ? {} : { publisher })}
-        badge={<Text style={styles.downloaded}>{downloadedLabel(record)}</Text>}
+        badge={<Text style={styles.badgeLabel}>{downloadedLabel(record)}</Text>}
       />
     </View>
   );
@@ -635,7 +635,7 @@ function BookmarkRow({ bookmark, title }: { bookmark: Bookmark; title: string })
       <ContentCard
         title={title}
         {...(bookmark.name === undefined ? {} : { publisher: bookmark.name })}
-        badge={where === undefined ? undefined : <Text style={styles.place}>{where}</Text>}
+        badge={where === undefined ? undefined : <Text style={styles.badgeLabel}>{where}</Text>}
       />
     </View>
   );
@@ -650,7 +650,7 @@ function WaitingRow({ hold, title }: { hold: Hold; title: string }) {
     <View style={styles.row}>
       <ContentCard
         title={title}
-        badge={place === undefined ? undefined : <Text style={styles.place}>{place}</Text>}
+        badge={place === undefined ? undefined : <Text style={styles.badgeLabel}>{place}</Text>}
       />
     </View>
   );
@@ -704,21 +704,11 @@ const styles = StyleSheet.create({
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
   },
-  downloaded: {
-    color: color.textSecondary,
-    fontWeight: type.smallLabel.weight,
-    fontFamily: type.smallLabel.fontFamily,
-    fontSize: type.smallLabel.size,
-    lineHeight: type.smallLabel.lineHeight,
-  },
-  due: {
-    color: color.textSecondary,
-    fontWeight: type.smallLabel.weight,
-    fontFamily: type.smallLabel.fontFamily,
-    fontSize: type.smallLabel.size,
-    lineHeight: type.smallLabel.lineHeight,
-  },
-  place: {
+  // ONE STYLE FOR EVERY ROW BADGE — a due date, a downloaded-on date, a queue
+  // position and a bookmark location are four different sentences in the same
+  // slot, and they looked identical because they ARE the same thing: the row's
+  // secondary line. Three byte-identical copies invited one of them drifting.
+  badgeLabel: {
     color: color.textSecondary,
     fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,

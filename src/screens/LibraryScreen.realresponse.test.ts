@@ -1,7 +1,18 @@
-// TEMPORARY — integration probe, not a committed test yet.
-// Feeds responses captured from a running flambeau instance (2 Sep 2026,
-// localhost:8080, dev token usr_dev123/inst_7f3) through the normalizers the
-// Library screen depends on, then through the screen's own helpers.
+// Contract regression test against CAPTURED REAL RESPONSES.
+//
+// The payloads below are verbatim `GET /api/v1/library` and
+// `GET /api/v1/loans/changes` bodies recorded from a running flambeau instance
+// on 2 Sep 2026. They are fixtures, not live calls — this suite makes no
+// network request and is deterministic.
+//
+// WHY IT IS KEPT RATHER THAN DELETED AFTER THE ONE-OFF CHECK. The hand-written
+// fixtures elsewhere encode what we BELIEVE the contract says; these encode
+// what flambeau actually sent. When those two disagree the difference is only
+// visible here, and it already caught one: both seeded loans are SUBSCRIPTION
+// and neither carries `dueAt`, so the shelf renders "No due date" on a live
+// loan (see the last case in the first block).
+//
+// Re-capture and replace these constants when the contract moves.
 import { normalizeChanges, normalizeLibrary } from '@/licence/normalizeLicence';
 
 import { activeLoans, dueLabel, partitionHolds } from './LibraryScreen.holdings';

@@ -72,7 +72,7 @@ export const useBookmarkStore = create<BookmarkState>()(
           if (index === -1) return { bookmarks: [...state.bookmarks, bookmark] };
           // Replaced IN PLACE rather than moved to the end: order in this array
           // is arrival order and means nothing to a reader. What the shelf sorts
-          // on is `updatedAt` (see `groupBookmarks`), so churning the array
+          // on is `updatedAt` (see `sortedBookmarks`), so churning the array
           // order here would only make the persisted blob differ between two
           // devices holding identical bookmarks.
           const next = [...state.bookmarks];
