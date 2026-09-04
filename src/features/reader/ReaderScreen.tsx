@@ -93,6 +93,7 @@ import {
   type EpubReaderTextProvider,
 } from '@/features/reader/tts/realReaderTextProvider';
 import { targetOf, useBookSearch } from '@/features/reader/useBookSearch';
+import { useContentLock } from '@/features/reader/useContentLock';
 import { searchMatchFor } from '@/features/search/readerSearchMatch';
 import { ContentFailure, DEFAULT_PREFS } from '@/shared/contracts';
 import type { BookId, ContentFormat, LayoutPrefs, SharedPrefs } from '@/shared/contracts';
@@ -660,6 +661,13 @@ export function ReaderScreen({
   // and the place you had reached in them.
   const search = useBookSearch(bookId);
 
+  // Pulled out as its own binding so `tearDownAndLock` below can depend on THIS identifier
+  // rather than on `search` itself — `search.clear` is stable (useBookSearch's own `useCallback`
+  // chain), but `search` the wrapping object is a fresh literal every render, and putting the
+  // whole object in a `useCallback` dependency array would recreate `tearDownAndLock` every
+  // render for no reason (the same class of instability `ttsSessionRef` exists to route around).
+  const clearSearch = search.clear;
+
   /**
    * Identifies the match a `searchMatchPainted` reply is about, so a stale reply cannot leave a
    * notice standing over a different one. The term is in it as well as the index because a new
@@ -959,6 +967,107 @@ export function ReaderScreen({
   });
 
   /**
+   * The WHOLE session object, mirrored the same way — not just `.status` above.
+   *
+   * `useTtsSession` returns a fresh object literal every render (no `useMemo`), so putting
+   * `ttsSession` itself in an effect's dependency array re-runs that effect on every render —
+   * and if the effect body calls `raiseError` (a `setState`), that is an infinite loop: render ->
+   * effect -> setState -> render -> new `ttsSession` -> effect (dep changed) -> setState -> ...
+   * `tearDownAndLock` below needs `ttsSession.stop()`, so it reads this ref instead of closing
+   * over `ttsSession` directly, on the same reasoning `ttsStatusRef` already established.
+   */
+  const ttsSessionRef = useRef(ttsSession);
+  useEffect(() => {
+    ttsSessionRef.current = ttsSession;
+  });
+
+  /**
+   * The one reaction to "this book's access just ended, while it was open" — called from
+   * `useContentLock`'s `onLock` callback below AND from `startAccessMonitor`'s ACCESS_REVOKED
+   * callback inside `handleReady`. Same defect from two sources (a PUSH from Sync's bus, a POLL
+   * from Download's monitor), one fix, so a future third source only has to call this too.
+   *
+   * REUSES THE EXISTING TEARDOWN rather than inventing a parallel one — every call here mirrors
+   * a line the unmount effect above already makes, and every one of them is idempotent
+   * (`stop()`: readingAccessMonitor.ts; `close()`: contentStore.ts early-returns on a missing
+   * session), so this running now and the unmount effect running later, on the same book, costs
+   * nothing extra.
+   *
+   * ALSO CLOSES THE OTHER BOOK-DERIVED SURFACES, not only the WebView: the TOC array and the
+   * search hits are book text sitting in RN state (`SearchResult.snippet` is literal book text),
+   * and an absolute-fill cover over the WebView alone would leave both live underneath it.
+   * Bookmarks and Accessibility panels are deliberately NOT reset here — Bookmarks shows only
+   * user-typed labels (falling back to a chapter id/page number, never book prose), and
+   * Accessibility is settings UI with no book content in it at all — so there is nothing
+   * sensitive in either to clear. Closing both anyway is simpler than special-casing which
+   * panel to leave open next to a screen that is about to show nothing but a lock message.
+   *
+   * `setShowToc(false)` directly, NOT `closeToc(false)` — `closeToc` also restores
+   * screen-reader focus to the Contents button, which is the wrong target here: the book is
+   * gone and focus belongs on the locked-state banner that replaces it, not on a toolbar button
+   * for a panel that no longer has anything to show.
+   *
+   * OWNS `lockedRef`/`locked` ITSELF, RATHER THAN READING THEM FROM `useContentLock` — a real
+   * integration bug this fixed: the hook's own ref/state are wired ONLY to the bus, so the
+   * ACCESS_REVOKED path (a POLL from `startAccessMonitor`, entirely separate from the bus) called
+   * this function and raised the right error banner, but never flipped anything the WebView-gate
+   * or the `handleReady` guards actually read — the WebView stayed mounted and rendering a
+   * revoked book. Setting `lockedRef.current` HERE, synchronously, before anything else, is what
+   * makes both sources authoritative through the one function that both of them call: a bus
+   * signal reaches this via `useContentLock`'s `onLock` (itself called synchronously inside the
+   * bus's own emit, so the ordering guarantee guards (a)/(b)/(c) below depend on is unchanged —
+   * it is still one synchronous call stack from "signal observed" to "ref is true"), and a poll
+   * reaches this directly from `startAccessMonitor`'s callback with no bus involved at all.
+   *
+   * DECLARED BEFORE `useContentLock` BELOW, DELIBERATELY — the compiler's manual-memoization
+   * check rejects a forward reference to a `const` even though the runtime closure would resolve
+   * it fine (the callback only ever runs later, once a lock actually arrives). Ordering this
+   * ahead of the call that needs it is the fix, not a workaround.
+   */
+  const [locked, setLocked] = useState(false);
+  const lockedRef = useRef(false);
+
+  const tearDownAndLock = useCallback(
+    (code: ReaderErrorCode, message: string): void => {
+      lockedRef.current = true;
+      setLocked(true);
+      accessMonitorRef.current?.stop();
+      accessMonitorRef.current = null;
+      ttsSessionRef.current.stop();
+      ttsProviderRef.current?.notifyClosed();
+      setSend(null);
+      setShowToc(false);
+      setShowSearch(false);
+      setShowBookmarks(false);
+      setShowAccessibility(false);
+      clearSearch();
+      void closeBook(bookId).catch(() => {});
+      raiseError(code, message);
+    },
+    [bookId, raiseError, clearSearch],
+  );
+
+  /**
+   * Sync's `content.lock` bus signal, for THIS open book. See CLAUDE.md's "Offline-lock gating
+   * hook" section and readerLock.ts/useContentLock.ts for the seam.
+   *
+   * ONLY THE CALLBACK IS USED — the hook's own returned `lock`/`lockedRef` are not read here (see
+   * the note above `tearDownAndLock`, which is this screen's single source of truth instead).
+   * `useContentLock.test.ts` still pins the hook's own ref-timing guarantee at the unit level;
+   * this callback is what carries it into this screen's teardown.
+   *
+   * THE CALLBACK, NOT A `useEffect([lock, ...])` WATCHING IT — `tearDownAndLock` calls
+   * `raiseError`, a state setter, and this repo's `react-hooks/set-state-in-effect` rule refuses
+   * a bare effect body that does that. Firing it from inside `useContentLock`'s own bus
+   * subscription instead means the reaction is a direct consequence of the signal, the same shape
+   * `startAccessMonitor`'s ACCESS_REVOKED callback already has. Safe to pass a fresh inline arrow
+   * every render — `useContentLock` reads it from a ref at emit time (`OnContentLock`'s own doc).
+   */
+  useContentLock(bookId, (newLock) => {
+    tearDownAndLock(newLock.code, newLock.message);
+  });
+
+  /**
    * The outline, for naming a chapter in an announcement.
    *
    * A REF FOR THE SAME REASON `ttsStatusRef` IS: `handleMessage` would otherwise have to depend on
@@ -1065,16 +1174,19 @@ export function ReaderScreen({
     void (async () => {
       try {
         const bookFormat = await prepareBook(bookId);
-        if (cancelled) return;
+        // Same reasoning as `handleReady`'s guards below: a lock landing mid-resolve must not
+        // let this book finish opening into a WebView that a moment later has to be torn back
+        // down. `lockedRef`, not `cancelled` — a lock does not unmount this effect.
+        if (cancelled || lockedRef.current) return;
 
         const uri = await getReaderHtmlUri(bookFormat);
-        if (cancelled) return;
+        if (cancelled || lockedRef.current) return;
 
         // ONE setState, after BOTH are known — see the note on `resolved` above for why
         // a half-updated pair is the bug worth designing out.
         setResolved({ bookId, format: bookFormat, htmlUri: uri });
       } catch (cause) {
-        if (cancelled) return;
+        if (cancelled || lockedRef.current) return;
 
         // A format with no renderer is not an asset failure — the asset is fine,
         // there just isn't one for this book. Reported under its own code so the
@@ -1101,7 +1213,10 @@ export function ReaderScreen({
     return () => {
       cancelled = true;
     };
-  }, [bookId, raiseError]);
+    // `lockedRef` is a stable object identity for the life of this component (its owner,
+    // useContentLock, never recreates it) — listed to satisfy exhaustive-deps, not because
+    // including it changes when this effect re-runs.
+  }, [bookId, raiseError, lockedRef]);
 
   // LIFECYCLE, not optional — contentProvider.ts states it outright: closeBook()
   // MUST run when the reader view for a book closes, or the whole decrypted book
@@ -1173,8 +1288,15 @@ export function ReaderScreen({
           // (not fired-and-forgotten) so the order is guaranteed rather than merely likely — see
           // WEBVIEW_BRIDGE.md's "prefs-application design, as signed off".
           await applyAppearanceWith(sender);
+          if (lockedRef.current) return; // (a) locked while appearance was being resolved/sent
 
           const base64 = await withOpenTimeout(getBookBase64(bookId, format));
+          // (b) THE ONE THAT MATTERS. `base64` above may already be a fully valid decrypted
+          // string by the time this line runs — zeroing the source buffer on lock does not
+          // retroactively touch a copy `fromByteArray` already produced (readerAssets.ts). This
+          // guard, not the buffer zeroing, is the only thing standing between a lock and a
+          // decrypted book still reaching the WebView on the mid-open race.
+          if (lockedRef.current) return;
           openSentAtRef.current = now();
           logEvent('open sent', { chars: base64.length, format });
 
@@ -1186,7 +1308,10 @@ export function ReaderScreen({
           // unmounts, and starting a second interval without stopping the first would leak it.
           accessMonitorRef.current?.stop();
           accessMonitorRef.current = startAccessMonitor(bookId, format, (failure) => {
-            raiseError(
+            // Routed through the SAME reaction a `content.lock` push gets — a poll (this) and a
+            // push (useContentLock) discovering the same kind of thing on different schedules is
+            // one defect, not two, and `tearDownAndLock` is what stops the book after either.
+            tearDownAndLock(
               'ACCESS_REVOKED',
               `Access to this book was revoked while reading: ${failure.code}. ` +
                 `(${String(failure.cause ?? failure.message)})`,
@@ -1229,6 +1354,13 @@ export function ReaderScreen({
             }
           }
         } catch (cause) {
+          // (c) Don't overwrite CONTENT_LOCKED with CONTENT_LOAD_FAILED. A decrypt whose key was
+          // destroyed mid-flight (by `contentStore.ts`'s own lock subscriber) rejects as
+          // DECRYPTION_FAILED, and reporting that instead of the lock tells the reader their book
+          // is corrupt when their access simply ended — `tearDownAndLock` already raised the
+          // right error the moment `lockedRef` flipped, and this catch must leave it standing.
+          if (lockedRef.current) return;
+
           if (cause instanceof OpenTimedOut) {
             raiseError(
               'CONTENT_LOAD_TIMEOUT',
@@ -1261,7 +1393,9 @@ export function ReaderScreen({
         }
       })();
     },
-    [bookId, format, raiseError, applyAppearanceWith],
+    // `lockedRef` is a stable object identity — see the note on the prepareBook effect's own
+    // dependency array for why listing it does not change when this callback is rebuilt.
+    [bookId, format, raiseError, applyAppearanceWith, tearDownAndLock, lockedRef],
   );
 
   /**
@@ -1991,7 +2125,13 @@ export function ReaderScreen({
     [search.activeIndex, search.hits, selectHit],
   );
 
-  const isBusy = htmlUri === null || (!isRendered && error === null);
+  // GATED ON `locked` FIRST. Without it, a lock landing before `htmlUri` was ever set (the
+  // mid-open case) leaves `htmlUri === null` true forever — `setResolved` never runs once
+  // `lockedRef` has flipped (see the `prepareBook` effect's own guard) — so the rest of this
+  // expression would stay stuck at `true` and "Opening book…" would show indefinitely over a
+  // book that in fact failed CLOSED. A lock always has an answer to render (the locked-state
+  // block below), so it is never "busy".
+  const isBusy = !locked && (htmlUri === null || (!isRendered && error === null));
 
   /**
    * `bookmarks`, narrowed to the target kinds the open format can actually navigate to.
@@ -2178,7 +2318,10 @@ export function ReaderScreen({
           nothing would ever send the open command. Remounting is also what tears down
           the old document holding decrypted content.
         */}
-        {htmlUri !== null && (
+        {/* ALSO GATED ON `!locked` — unmounting is what drops WebKit's OWN copy of the rendered
+            book, and a cover placed over a still-mounted WebView would leave that copy live
+            underneath it. */}
+        {htmlUri !== null && !locked && (
           <ReaderWebView
             key={htmlUri}
             sourceUri={htmlUri}
@@ -2327,6 +2470,29 @@ export function ReaderScreen({
           <View style={styles.busy} pointerEvents="none">
             <ActivityIndicator />
             <Text style={styles.busyText}>Opening book…</Text>
+          </View>
+        )}
+
+        {/*
+          THE FAIL-CLOSED STATE — what REPLACES the book, not a banner ON TOP of it. The top-of-
+          screen `errorBanner` above (driven by the SAME `raiseError` call `tearDownAndLock`
+          makes — this reads `error`, not a separate value, so the two can never disagree) already
+          announces this; this second occupant of `viewer` is what fills the space the WebView
+          just vacated, so a locked book reads as "this is why there's nothing here" rather than
+          as a blank page underneath a thin strip of red text.
+
+          `alert` + the live region, same pair the top banner uses, for the same reason: this is
+          the one thing on this screen a screen-reader user must be told about without hunting for
+          it, and it is the thing focus should land on once the WebView it replaces has unmounted.
+        */}
+        {locked && error !== null && (
+          <View
+            style={styles.lockedState}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+          >
+            <Text style={styles.errorCode}>{error.code}</Text>
+            <Text style={styles.errorMessage}>{error.message}</Text>
           </View>
         )}
 
@@ -2943,6 +3109,17 @@ const styles = StyleSheet.create({
   },
   errorCode: { fontSize: 12, fontWeight: '700', color: '#8a1c1c' },
   errorMessage: { marginTop: 4, fontSize: 13, color: '#8a1c1c' },
+
+  // Same explicit-inset FILL as `busy` — see that style's own note on why not
+  // StyleSheet.absoluteFillObject. Centred rather than top-anchored like the banner: this is the
+  // whole content of the viewer while it applies, not a strip alongside other content.
+  lockedState: {
+    ...FILL,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    backgroundColor: '#fdf2f2',
+  },
 
   tocPanel: {
     ...FILL,

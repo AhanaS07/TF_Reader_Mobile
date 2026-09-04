@@ -30,6 +30,9 @@
 
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
+import { OFFLINE_LOCK_EVENTS } from '@/shared/contracts';
+import { eventBus, resetEventBusForTests } from '@/shared/eventBus';
+
 import { AudioPlayerScreen } from './AudioPlayerScreen';
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception — see ReaderRouteScreen.test.tsx
@@ -106,6 +109,50 @@ describe('AudioPlayerScreen', () => {
     fakePlayer.isLoaded = true;
     fakePlayer.playbackRate = 1;
     mockResolveAudioAssetUri.mockResolvedValue('file:///tf-reader-audio-scratch/book.wav');
+    // The lock tests emit on the REAL bus (not mocked, same reasoning as useContentLock.test.ts).
+    // It is a module singleton, so every test starts from zero subscribers regardless of whether
+    // it touches locking at all.
+    resetEventBusForTests();
+  });
+
+  it('renders a distinct "access ended" state on a content.lock signal, not the generic load-error heading', async () => {
+    const { getByText, queryByText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+    await waitFor(() => expect(getByText('My Audiobook')).toBeTruthy());
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, {
+        type: OFFLINE_LOCK_EVENTS.LOCK,
+        bookId: 'dev-sample-audio',
+        reason: 'revoked',
+        observedAt: Date.now(),
+      });
+    });
+
+    expect(getByText('Access to this book ended')).toBeTruthy();
+    expect(getByText('CONTENT_LOCKED: Your access to this book has ended.')).toBeTruthy();
+    // NOT the generic load-error heading — this is the whole point of N3's fix.
+    expect(queryByText("Couldn't load this audiobook")).toBeNull();
+  });
+
+  it('ignores a lock for a different bookId', async () => {
+    const { getByText, queryByText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+    await waitFor(() => expect(getByText('My Audiobook')).toBeTruthy());
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, {
+        type: OFFLINE_LOCK_EVENTS.LOCK,
+        bookId: 'some-other-book',
+        reason: 'revoked',
+        observedAt: Date.now(),
+      });
+    });
+
+    expect(queryByText('Access to this book ended')).toBeNull();
+    expect(getByText('My Audiobook')).toBeTruthy();
   });
 
   it('shows a loading state while the resolver is still resolving', async () => {

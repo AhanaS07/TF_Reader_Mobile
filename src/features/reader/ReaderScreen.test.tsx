@@ -32,6 +32,8 @@ import { AccessibilityInfo, Alert, StyleSheet } from 'react-native';
 
 import { closeBook, getIndex } from '@/features/encryption/contentProvider';
 import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
+import { DownloadError, DownloadFailure } from '@/features/download/errors';
+import { startAccessMonitor } from '@/features/download/readingAccessMonitor';
 import { loadFontFaceSrc } from '@/features/personalization/fontFaceLoader';
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { toReaderAppearance } from '@/features/personalization/readerAppearance';
@@ -66,8 +68,9 @@ import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 import { useScreenReaderEnabled } from '@/features/reader/useScreenReaderEnabled';
 import { queryBookIndex } from '@/features/search/queryBookIndex';
 import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
-import { DEFAULT_PREFS } from '@/shared/contracts';
-import type { ContentFormat, SearchHit, SharedPrefs } from '@/shared/contracts';
+import { DEFAULT_PREFS, OFFLINE_LOCK_EVENTS } from '@/shared/contracts';
+import type { ContentFormat, LockSignal, SearchHit, SharedPrefs } from '@/shared/contracts';
+import { eventBus, resetEventBusForTests } from '@/shared/eventBus';
 
 /**
  * The byte/asset seam. `prepareBook` decides the format, which decides BOTH the shell
@@ -98,6 +101,23 @@ jest.mock('@/features/encryption/contentProvider', () => ({
   // ships no index". Bytes by default, so an ordinary empty search reads as "no matches" — the
   // no-index case sets it to null per test.
   getIndex: jest.fn(() => Promise.resolve(new Uint8Array([1]))),
+}));
+
+/**
+ * The periodic re-check seam. Real by default (nothing here ever mocked it, and it costs
+ * nothing — a 5-minute interval and a `verifyReadingAccess()` fetch that fails open under Jest),
+ * but the offline-lock tests below need to fire ACCESS_REVOKED on demand rather than waiting on a
+ * real network call, so it is mocked file-wide and given a default no-op handle. Mocking this was
+ * never going to change any EXISTING test's outcome: nothing here asserted on it, and a
+ * 5-minute interval that never fires within a test's lifetime is indistinguishable from a
+ * `jest.fn()` that returns an inert handle.
+ */
+jest.mock('@/features/download/readingAccessMonitor', () => ({
+  startAccessMonitor: jest.fn(() => ({
+    stop: jest.fn(),
+    pause: jest.fn(),
+    resume: jest.fn(),
+  })),
 }));
 
 /**
@@ -306,6 +326,19 @@ beforeEach(() => {
     .mocked(getReaderHtmlUri)
     .mockImplementation((format) => Promise.resolve(`file:///reader-${format.toLowerCase()}.html`));
   jest.mocked(getBookBase64).mockResolvedValue('UEsDBA==');
+
+  // Same reasoning as the asset seam above: restored for every test rather than left to whichever
+  // block last overrode it (the ACCESS_REVOKED block does, to capture `onRevoked`).
+  jest.mocked(startAccessMonitor).mockReturnValue({
+    stop: jest.fn(),
+    pause: jest.fn(),
+    resume: jest.fn(),
+  });
+
+  // The offline-lock tests emit on the REAL bus (not mocked — see useContentLock.test.ts's own
+  // reasoning for why). It is a module singleton that outlives any one test, so every test starts
+  // from zero subscribers regardless of whether it touches locking at all.
+  resetEventBusForTests();
 
   // AND THE COMMAND LOG, for the same reason. Assertions here locate a command by `indexOf` over
   // `__injectJavaScript.mock.calls`, which finds the FIRST match — so calls left by an earlier test
@@ -907,6 +940,162 @@ describe('the bounded wait on the byte path', () => {
 
     expect(screen.getByText('CONTENT_LOAD_FAILED')).toBeTruthy();
     expect(screen.queryByText('CONTENT_LOAD_TIMEOUT')).toBeNull();
+  });
+});
+
+/** A `content.lock` signal for `bookId` — `mountReader()`'s fixed "test-book" by default. */
+function lockSignal(bookId = 'test-book', reason: 'revoked' | 'expired' = 'revoked'): LockSignal {
+  return { type: OFFLINE_LOCK_EVENTS.LOCK, bookId, reason, observedAt: Date.now() };
+}
+
+/**
+ * A locked/revoked code is DELIBERATELY shown twice — the top `errorBanner` and the dedicated
+ * `lockedState` view that replaces the WebView both read the same `error` state (see
+ * ReaderScreen.tsx's own note on why that duplication is intentional, not a bug) — so
+ * `getByText` (which requires exactly one match) is the wrong query for it.
+ */
+function expectCodeShownTwice(code: string): void {
+  expect(screen.getAllByText(code)).toHaveLength(2);
+}
+
+describe('the offline-lock gating hook', () => {
+  // THE HEADLINE REGRESSION TEST FOR B2. A version of useContentLock that set `lockedRef` from a
+  // `useEffect` keyed on `lock` (one React commit late) would pass every OTHER test in this file —
+  // including "lock while reading" below — and still let a fully decrypted book reach the WebView
+  // here, because the race this pins is a microtask race with no guaranteed ordering against a
+  // React commit. Only holding `getBookBase64` open and resolving it AFTER the lock proves the ref
+  // was already `true` before the `sender({ type: 'openEpub', ... })` call had a chance to run.
+  it('never sends openEpub once a lock lands while getBookBase64 is still pending', async () => {
+    let resolveBase64: (value: string) => void = () => {};
+    jest.mocked(getBookBase64).mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveBase64 = resolve;
+      }),
+    );
+
+    await mountReader();
+    await reportReady(); // handleReady is now paused at `await withOpenTimeout(getBookBase64(...))`
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
+    });
+    expectCodeShownTwice('CONTENT_LOCKED');
+
+    // NOW let the held promise resolve, with a fully valid decrypted payload — the exact shape of
+    // the mid-open race the plan's B2 fix exists for (readerAssets.ts's `fromByteArray` may already
+    // have produced this string; zeroing the source buffer would not touch it).
+    await act(async () => {
+      resolveBase64('UEsDBA==');
+      await Promise.resolve();
+    });
+
+    expect(__injectJavaScript).not.toHaveBeenCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+    // The lock must still be the thing on screen — not overwritten by whatever the resumed
+    // continuation did next.
+    expectCodeShownTwice('CONTENT_LOCKED');
+    expect(screen.queryByTestId('reader-webview')).toBeNull();
+  });
+
+  it('locks a book that is already open and reading: tears down, closes panels, drops the WebView', async () => {
+    await mountReader();
+    await reportReady();
+    expect(__injectJavaScript).toHaveBeenCalledWith(
+      buildCommandScript({ type: 'openEpub', base64: 'UEsDBA==' }),
+    );
+
+    // A panel is open when the lock lands — N2's own claim is that this closes too, not only the
+    // WebView.
+    await deliver({ type: 'toc', items: flatToc(1) });
+    await openContents();
+    expect(screen.getByText('Chapter 1')).toBeTruthy();
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
+    });
+
+    expectCodeShownTwice('CONTENT_LOCKED');
+    expect(screen.queryByTestId('reader-webview', { includeHiddenElements: true })).toBeNull();
+    expect(screen.queryByText('Chapter 1')).toBeNull();
+    expect(closeBook).toHaveBeenCalledWith('test-book');
+  });
+
+  it('ignores a lock for a different bookId', async () => {
+    await mountReader();
+    await reportReady();
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal('some-other-book'));
+    });
+
+    expect(screen.queryByText('CONTENT_LOCKED')).toBeNull();
+    expect(screen.getByTestId('reader-webview')).toBeTruthy();
+  });
+
+  it('does not let a subsequent CONTENT_LOAD_FAILED overwrite an already-shown lock (guard c)', async () => {
+    let rejectBase64: (cause: unknown) => void = () => {};
+    jest.mocked(getBookBase64).mockReturnValue(
+      new Promise<string>((_resolve, reject) => {
+        rejectBase64 = reject;
+      }),
+    );
+
+    await mountReader();
+    await reportReady();
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
+    });
+    expectCodeShownTwice('CONTENT_LOCKED');
+
+    // The decrypt whose key `contentStore.ts`'s own lock subscriber just destroyed now rejects —
+    // exactly what a real revocation produces mid-flight.
+    await act(async () => {
+      rejectBase64(new Error('DECRYPTION_FAILED'));
+      await Promise.resolve();
+    });
+
+    expectCodeShownTwice('CONTENT_LOCKED');
+    expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
+  });
+
+  it('never shows "Opening book…" for a lock that lands before the shell ever resolved (N1)', async () => {
+    // Held open, deliberately — `prepareBook` never resolves, so `htmlUri` never leaves `null`
+    // and `isBusy`'s OLD formula would stay stuck at `true` forever once the lock arrives.
+    jest.mocked(prepareBook).mockReturnValue(new Promise<ContentFormat>(() => {}));
+
+    await render(<ReaderScreen bookId="test-book" />);
+    expect(screen.getByText('Opening book…')).toBeTruthy();
+
+    await act(async () => {
+      eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
+    });
+
+    expectCodeShownTwice('CONTENT_LOCKED');
+    expect(screen.queryByText('Opening book…')).toBeNull();
+  });
+
+  it('routes ACCESS_REVOKED through the SAME teardown a content.lock gets', async () => {
+    let capturedOnRevoked: ((failure: DownloadFailure) => void) | null = null;
+    jest.mocked(startAccessMonitor).mockImplementation((_bookId, _format, onRevoked) => {
+      capturedOnRevoked = onRevoked;
+      return { stop: jest.fn(), pause: jest.fn(), resume: jest.fn() };
+    });
+
+    await mountReader();
+    await reportReady(); // starts the monitor, capturing its onRevoked callback
+    expect(capturedOnRevoked).not.toBeNull();
+
+    await act(async () => {
+      capturedOnRevoked?.(
+        new DownloadFailure(DownloadError.ENTITLEMENT_EXPIRED, 'test-book', 'server said no'),
+      );
+    });
+
+    expectCodeShownTwice('ACCESS_REVOKED');
+    expect(screen.queryByTestId('reader-webview', { includeHiddenElements: true })).toBeNull();
+    expect(closeBook).toHaveBeenCalledWith('test-book');
   });
 });
 

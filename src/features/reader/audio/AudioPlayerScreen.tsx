@@ -38,6 +38,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { useContentLock } from '@/features/reader/useContentLock';
 import { formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
@@ -147,6 +148,20 @@ export function AudioPlayerScreen({
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
   const hasSetLockScreenRef = useRef(false);
+
+  /**
+   * Sync's `content.lock` bus signal for THIS book, rendered — the visible half of the
+   * offline-lock gating hook on the audio side. The TEARDOWN half already exists and runs
+   * regardless of whether this screen is even mounted: `audioScratchReclaimer.ts`'s own
+   * `handleLock` subscribes globally, releases the player if this book is the one playing, and
+   * deletes its scratch file. What was missing before this hook is only the visible state — the
+   * player just went dead with nothing on screen to say why. No `lockedRef` needed here, unlike
+   * ReaderScreen: there is no in-flight decrypt-then-send-to-a-WebView race on this screen for a
+   * lock to win — `resolveAudioAssetUri` either already returned a URI (and the reclaimer just
+   * released the player under it) or it is still awaiting `openBook()`'s own licence gate, which
+   * a revoked book fails on its own terms.
+   */
+  const { lock } = useContentLock(bookId);
 
   // No reset-state-on-bookId-change logic here, deliberately: this effect's own deps array is
   // `[bookId]`, but per this component's own contract (see the `bookId` prop doc above) a real
@@ -323,6 +338,20 @@ export function AudioPlayerScreen({
     },
     [player, status.currentTime, status.duration, commitPosition],
   );
+
+  // CHECKED BEFORE `loadError`, and with its OWN heading — not the generic one below. "Couldn't
+  // load this audiobook" is the right words for a corrupt file or a network failure; it is the
+  // wrong words for "your access to this book ended", the same distinction Contract ask 4 (to
+  // Abhinav) names for the cold-open case. `formatDiagnosticErrorMessage(lock)` still renders the
+  // CODE (`CONTENT_LOCKED: …`) — only the heading above it needs to say something different.
+  if (lock !== null) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.errorTitle}>Access to this book ended</Text>
+        <Text style={styles.errorDetail}>{formatDiagnosticErrorMessage(lock)}</Text>
+      </View>
+    );
+  }
 
   if (loadError) {
     return (

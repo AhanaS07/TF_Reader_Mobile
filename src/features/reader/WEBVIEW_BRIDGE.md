@@ -402,6 +402,29 @@ store is released (`width`/`height` set to 0) rather than left resident.
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
 
+### The `CONTENT_LOCKED` host error code
+
+Added to `HOST_ERROR_CODES` (`readerBridge.ts`) 2026-09-03, for the offline-lock gating hook — see
+CLAUDE.md's "Offline-lock gating hook" section for the full design. Like `ACCESS_REVOKED`, it is
+**host-only and never raised by the WebView**: `useContentLock.ts` subscribes to Sync's
+`content.lock` bus signal directly and reports it through the same `error` message shape every
+other host-side failure uses, so the WebView side needed no change at all — confirmed by
+`npm run reader:build-html && git diff --exit-code` producing no diff, which is expected: only
+`WEBVIEW_ERROR_CODES` members survive into the compiled shells (see the tree-shaking note in
+CLAUDE.md), and `HOST_ERROR_CODES` additions never do.
+
+Three codes now cover three different ways an already-open book stops being readable, and they are
+not interchangeable:
+
+| Code | What happened | Source |
+| --- | --- | --- |
+| `CONTENT_LOAD_FAILED` | The book never opened at all | the initial decrypt/licence path |
+| `ACCESS_REVOKED` | A POLL (`startAccessMonitor`, every 5 min) found an explicit denial | Download |
+| `CONTENT_LOCKED` | A PUSH (`content.lock` on the shared event bus) fired while this book was open | Sync, relayed by `useContentLock.ts` |
+
+`ACCESS_REVOKED` and `CONTENT_LOCKED` now go through the same reaction in `ReaderScreen.tsx`
+(`tearDownAndLock`) — same defect discovered by two different mechanisms, one fix.
+
 ## Three decisions about what crosses the boundary
 
 The first two survive the conversion unchanged, because each is about the *payload* rather than about how

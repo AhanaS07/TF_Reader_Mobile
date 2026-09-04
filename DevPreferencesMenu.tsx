@@ -54,6 +54,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from 'expo-screen-capture';
+
+import { READER_CAPTURE_KEY } from '@/features/reader/captureProtection';
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
 import { flowOverrideApplied } from '@/features/reader/readerA11yLayout';
@@ -62,6 +65,10 @@ import { prefsStore } from '@/features/personalization/prefsStore';
 import type { PrefsPatch } from '@/features/personalization/prefsStore';
 import { DEFAULT_PREFS } from '@/shared/contracts';
 import type { ContentFormat, LayoutPrefs, SharedPrefs, Theme } from '@/shared/contracts';
+
+// Keeps the dropdown's clamped max width off both screen edges — see `toggleOpen`'s `maxWidth`
+// computation and `styles.dropdown`'s own note.
+const DROPDOWN_EDGE_MARGIN = 12;
 
 const THEME_OPTIONS: readonly { label: string; theme: Theme }[] = [
   { label: 'Light', theme: 'light' },
@@ -440,16 +447,27 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
    * asserts on-screen pixel position.
    */
   const buttonRef = useRef<RNView>(null);
-  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
+  const [anchor, setAnchor] = useState<{ top: number; right: number; maxWidth: number } | null>(
+    null,
+  );
 
   const toggleOpen = useCallback(() => {
     setOpen((wasOpen) => {
       const next = !wasOpen;
       if (next) {
         buttonRef.current?.measureInWindow((x, y, width, height) => {
+          const windowWidth = Dimensions.get('window').width;
+          const right = Math.max(0, windowWidth - (x + width));
+          // The dropdown's right edge is pinned at `right` from the screen's right edge, so the
+          // space actually available before it would run off the LEFT edge is `windowWidth -
+          // right`, less a margin so it doesn't touch the edge exactly. Computed from the real
+          // measurement (not a fixed constant) so it stays correct across phone/tablet widths and
+          // portrait/landscape, and shrinks along with `right` if the button itself sits away from
+          // the screen's right edge.
           setAnchor({
             top: y + height,
-            right: Math.max(0, Dimensions.get('window').width - (x + width)),
+            right,
+            maxWidth: Math.max(0, windowWidth - right - DROPDOWN_EDGE_MARGIN),
           });
         });
       }
@@ -548,7 +566,15 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             onPress={() => setOpen(false)}
           />
           <View
-            style={[styles.dropdown, anchor && { position: 'absolute', top: anchor.top, right: anchor.right }]}
+            style={[
+              styles.dropdown,
+              anchor && {
+                position: 'absolute',
+                top: anchor.top,
+                right: anchor.right,
+                maxWidth: anchor.maxWidth,
+              },
+            ]}
           >
           <Text style={styles.sectionLabel}>Theme</Text>
           <View style={styles.row}>
@@ -749,6 +775,44 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
+
+          {/* TEMP — delete with the rest of this file once a real settings screen lands. Exists
+              ONLY to trigger the Week-4 Item 1 (screenshot restriction) device spike by hand: there
+              is no other way to call `preventScreenCaptureAsync` on a device yet, since wiring it
+              into ReaderScreen's real focus/blur lifecycle is Phase 1.4, deliberately deferred until
+              after this spike passes. `READER_CAPTURE_KEY` (captureProtection.ts) is the SAME single
+              key Phase 1.3's hook will use — the B3 finding is exactly that two different keys can
+              corrupt iOS's native layer state, so this spike has to exercise the real key, not a
+              throwaway string, or a pass here would not mean anything once 1.4 wires the real hook
+              in. */}
+          <Text style={styles.sectionLabel}>Screen Capture Spike</Text>
+          <View style={styles.row}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void preventScreenCaptureAsync(READER_CAPTURE_KEY);
+              }}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Prevent</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void allowScreenCaptureAsync(READER_CAPTURE_KEY);
+              }}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Allow</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => Alert.alert('Spike test', 'Dismiss me, then check capture state')}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Show Alert</Text>
+            </Pressable>
+          </View>
           </View>
         </Modal>
       )}
@@ -787,6 +851,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 48,
     right: 0,
+    // `alignSelf: 'flex-start'` is load-bearing, not decorative: this View sits directly inside
+    // Modal's own implicit `flex: 1` container (react-native's Modal.js), whose default
+    // `alignItems: 'stretch'` otherwise governs the cross-axis size of an absolutely-positioned
+    // child that pins only one horizontal edge (`right`, no `left`/`width` here). iOS's Yoga/host
+    // resolution happens to shrink-wrap that case; Android's stretches it edge-to-edge across the
+    // Dialog-backed window. Without this override the dropdown was full-screen-width on Android
+    // and content-width on iOS from the same style object.
+    alignSelf: 'flex-start',
+    // No `maxWidth` here — the real one is computed per-open from the actual button position and
+    // window width (`toggleOpen`'s `anchor.maxWidth`) and applied alongside `top`/`right` below, so
+    // it stays correct across phone/tablet widths and portrait/landscape instead of a guessed
+    // constant. This is only the pre-measurement/test-renderer fallback, same reasoning as the
+    // `top: 48, right: 0` above it.
     minWidth: 220,
     backgroundColor: '#ffffff',
     borderRadius: 12,

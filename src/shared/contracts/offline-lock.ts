@@ -5,12 +5,12 @@
 // and named the `content.lock` / `content.unlock` signals that live here.
 //
 // ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-// │ PROPOSAL — NOT FINALISED, NOT WIRED, NOT IMPLEMENTED.                                   │
-// │                                                                                         │
-// │ Types and signal shapes only. Nothing in the app imports this file and the barrel export │
-// │ in index.ts stays commented out until Encryption signs off. Deliberately no functions,   │
-// │ no store, no bus instance — a joint contract has to be agreed before it is built, and    │
-// │ the last attempt at this shipped an implementation instead of an agreement.              │
+// │ WIRED. The sign-off this box used to wait for happened; strike this box, don't re-litigate│
+// │ it. Sync emits from src/features/sync/offlineLock.ts (applyDownloadRecord ->              │
+// │ eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, ...)); Encryption subscribes and destroys the BEK  │
+// │ for reason: 'revoked' in contentStore.ts; Reader subscribes for the while-open case in     │
+// │ useContentLock.ts (see CLAUDE.md's "Offline-lock gating hook" section). The barrel export  │
+// │ in index.ts is live, not commented out — its own header note says so.                     │
 // └─────────────────────────────────────────────────────────────────────────────────────────┘
 //
 // WHY THIS FILE EXISTS AT ALL
