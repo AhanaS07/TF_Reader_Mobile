@@ -54,6 +54,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from 'expo-screen-capture';
+
+import { READER_CAPTURE_KEY } from '@/features/reader/captureProtection';
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
 import { flowOverrideApplied } from '@/features/reader/readerA11yLayout';
@@ -749,6 +752,44 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
               <ZoomSlider value={prefs.zoom.level} onCommit={commitZoom} />
             </>
           )}
+
+          {/* TEMP — delete with the rest of this file once a real settings screen lands. Exists
+              ONLY to trigger the Week-4 Item 1 (screenshot restriction) device spike by hand: there
+              is no other way to call `preventScreenCaptureAsync` on a device yet, since wiring it
+              into ReaderScreen's real focus/blur lifecycle is Phase 1.4, deliberately deferred until
+              after this spike passes. `READER_CAPTURE_KEY` (captureProtection.ts) is the SAME single
+              key Phase 1.3's hook will use — the B3 finding is exactly that two different keys can
+              corrupt iOS's native layer state, so this spike has to exercise the real key, not a
+              throwaway string, or a pass here would not mean anything once 1.4 wires the real hook
+              in. */}
+          <Text style={styles.sectionLabel}>Screen Capture Spike</Text>
+          <View style={styles.row}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void preventScreenCaptureAsync(READER_CAPTURE_KEY);
+              }}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Prevent</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void allowScreenCaptureAsync(READER_CAPTURE_KEY);
+              }}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Allow</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => Alert.alert('Spike test', 'Dismiss me, then check capture state')}
+              style={styles.toggle}
+            >
+              <Text style={styles.toggleLabel}>Show Alert</Text>
+            </Pressable>
+          </View>
           </View>
         </Modal>
       )}
