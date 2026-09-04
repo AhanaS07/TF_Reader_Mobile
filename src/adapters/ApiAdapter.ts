@@ -46,6 +46,38 @@ function fold(str: string): string {
   return str.normalize('NFD').replace(/\p{M}/gu, '');
 }
 
+// ONLY getPublicFeed calls this. Every other shelf/catalogue method in this
+// file (getHomeCatalogue, getShelf) still does `.forEach(assertPublication)`
+// and lets one bad publication fail the whole request — correct there,
+// because those feeds are scoped to one institution's own curated collection
+// and a contract violation in one is a real incident worth surfacing loudly.
+//
+// getPublicFeed is different by the contract's own design (FROZEN,
+// `security: []`): it is the one feed an anonymous reader — signed into
+// nothing, belonging to no institution — depends on to see anything at all.
+// Rejecting the entire response because ONE title in it violates the
+// open-access-is-plaintext rule (contract §OpdsAcquisitionProperties; see
+// `assertPublication` in validate.ts) means a single bad record blanks the
+// whole tab for every signed-out reader, which defeats what the endpoint
+// exists to do. The rule itself is not weakened — a violating publication is
+// still rejected, just individually rather than for the whole shelf.
+function dropInvalidPublications(publications: Publication[]): Publication[] {
+  return publications.filter((publication) => {
+    try {
+      assertPublication(publication);
+      return true;
+    } catch (err) {
+      if (!isCatalogueFailure(err)) throw err;
+      // The only trace of a dropped, contract-violating publication — there is
+      // no other logging layer in this file, and silently returning fewer
+      // titles than the feed actually listed should not be untraceable.
+      // eslint-disable-next-line no-console
+      console.warn(`[ApiAdapter] dropping invalid public-feed publication: ${err.message}`);
+      return false;
+    }
+  });
+}
+
 // NOT called automatically for every request — see authenticatedHeaders()
 // below for why. Sent when there is one and omitted entirely when there is
 // not, rather than sent empty: an `Authorization: Bearer undefined` reads as
@@ -252,8 +284,9 @@ export class ApiAdapter implements DataSource {
     const body = await this.getJson(url, 'public catalogue');
 
     const feed = normalizeShelf(body);
-    feed.publications.forEach(assertPublication);
-    return feed;
+    // Filtered, not `forEach(assertPublication)` — see dropInvalidPublications
+    // above for why this one feed does not fail whole-hog on one bad title.
+    return { ...feed, publications: dropInvalidPublications(feed.publications) };
   }
 
   async getPublicPublication(bookId: BookId): Promise<Publication> {

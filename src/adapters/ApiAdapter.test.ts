@@ -355,6 +355,104 @@ describe('ApiAdapter authorization header', () => {
   });
 });
 
+// Regression: a live dev backend served one open-access title (id
+// 'dev-sample-epub') whose acquisition link carried a full `encrypted` block —
+// a genuine contract violation (open access is plaintext by definition,
+// docs/contracts/wokay-api.yaml's own getPublicFeed example carries no
+// `encrypted` key at all). `assertPublication` correctly rejected it, but
+// `.forEach(assertPublication)` let that one bad title fail the ENTIRE public
+// catalogue for every signed-out reader — the one feed anonymous readers have
+// no other way to see anything through. These pin the fix: the violation is
+// still caught (nothing here weakens `assertPublication`), it is just no
+// longer allowed to take the rest of the shelf down with it.
+describe('ApiAdapter getPublicFeed resilience to one malformed publication', () => {
+  function feedWith(...publications: unknown[]): unknown {
+    return {
+      metadata: { title: 'Open access titles', numberOfItems: publications.length },
+      links: [{ rel: 'self', href: 'https://api.tf/opds/v1/public/catalogue?page=0' }],
+      publications,
+    };
+  }
+
+  function openAccessPublication(id: string, extraProperties: Record<string, unknown> = {}) {
+    return {
+      metadata: { title: `Title ${id}`, subject: [] },
+      links: [
+        { rel: 'self', href: `https://api.tf/opds/v1/public/publications/${id}` },
+        {
+          rel: 'http://opds-spec.org/acquisition/open-access',
+          href: `https://flambeau.tf/api/v1/content/${id}/access`,
+          properties: {
+            licenceModel: 'OPEN_ACCESS',
+            indirectAcquisition: [{ type: 'application/epub+zip' }],
+            hasSearchIndex: true,
+            canPersist: true,
+            ...extraProperties,
+          },
+        },
+      ],
+    };
+  }
+
+  // Reproduces the live dev-backend response exactly: open access, but with an
+  // `encrypted` block — the one combination `assertPublication` rejects.
+  const validTitle = openAccessPublication('item_oa_ok');
+  const invalidTitle = openAccessPublication('dev-sample-epub', {
+    encrypted: {
+      algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm',
+      originalLength: 42,
+    },
+  });
+
+  it('drops the malformed publication and still returns the valid ones', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle, invalidTitle)),
+    });
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications.map((p) => p.id)).toEqual(['item_oa_ok']);
+  });
+
+  it('does not throw, even though the feed contains a contract-violating publication', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle, invalidTitle)),
+    });
+
+    await expect(adapter.getPublicFeed()).resolves.toBeDefined();
+  });
+
+  it('still rejects the violation rather than silently accepting it', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(invalidTitle)),
+    });
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-sample-epub'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('open access carries an encryption block'));
+
+    warn.mockRestore();
+  });
+
+  it('returns every publication untouched when none are malformed', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle)),
+    });
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications.map((p) => p.id)).toEqual(['item_oa_ok']);
+  });
+});
+
 // withAuthHeader is the pure merge logic authenticatedHeaders() calls for
 // every appToken-gated method — unit-tested directly here as well as via the
 // 'ApiAdapter authorization header' describe block above.
