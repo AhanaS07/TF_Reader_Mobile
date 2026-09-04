@@ -18,6 +18,7 @@
 // not a claim of readiness.
 
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 const MOCK_BACKEND_PORT = 4000;
 // Both published contracts (wokay + flambeau) specify this exact value for everyone — see
@@ -35,6 +36,15 @@ function resolveBackendHost(): string {
   if (host && host !== 'localhost' && host !== '127.0.0.1') {
     return host;
   }
+  // hostUri gave nothing usable (empty, or itself localhost/127.0.0.1) — on an Android emulator
+  // this must resolve to 10.0.2.2 (the documented emulator -> host alias), not 'localhost' (the
+  // emulator's own loopback, where nothing listens). Same fix as syncConfig.ts's
+  // resolveBackendHost — ported here because this copy was still missing it: confirmed live,
+  // 2026-09-04, `nc 10.0.2.2 8080` connects from inside the emulator while `nc 127.0.0.1 8080` is
+  // refused, and without this every real-backend call here failed as a genuine network error,
+  // which checkLicense() then reported as OFFLINE_LICENSE_UNAVAILABLE for any book not already
+  // downloaded.
+  if (Platform.OS === 'android') return '10.0.2.2';
   return 'localhost';
 }
 
