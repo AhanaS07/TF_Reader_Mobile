@@ -5,12 +5,15 @@
 // out before they reach here (a voice Android reports but hasn't downloaded yet can't be
 // selected successfully).
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { focusOn } from '@/features/reader/a11yFocus';
+import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
+import { FOCUS_RING_COLOR, FOCUS_RING_COLOR_HIGH_CONTRAST, FOCUS_RING_WIDTH, MIN_TOUCH_TARGET } from '../a11yConstants';
 import type { Voice } from './ttsEngine';
+import { useHighContrast } from './useHighContrast';
 
 export interface VoicePickerProps {
   visible: boolean;
@@ -32,7 +35,17 @@ export function VoicePicker({
   onSelect,
   onClose,
 }: VoicePickerProps): React.JSX.Element {
+  const { osFontScale } = useAppearanceEnv();
+  const highContrast = useHighContrast();
+  const ringColor = highContrast ? FOCUS_RING_COLOR_HIGH_CONTRAST : FOCUS_RING_COLOR;
   const firstRowRef = useRef<View>(null);
+
+  // One key covers the backdrop, the "Platform default" header row, and every voice row.
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const focusRingHandlers = (id: string) => ({
+    onFocus: () => setFocusedRowId(id),
+    onBlur: () => setFocusedRowId((current) => (current === id ? null : current)),
+  });
 
   useEffect(() => {
     if (!visible) {
@@ -59,15 +72,16 @@ export function VoicePicker({
           accessibilityRole="button"
           accessibilityLabel="Close voice picker"
           onPress={onClose}
-          style={styles.backdrop}
+          style={[styles.backdrop, focusedRowId === 'backdrop' && { borderColor: ringColor }]}
+          {...focusRingHandlers('backdrop')}
         />
         <View style={styles.sheet}>
-          <Text style={styles.title}>Voice</Text>
+          <Text style={[styles.title, { fontSize: 18 * osFontScale }]}>Voice</Text>
           <FlatList
             data={voices}
             keyExtractor={(voice) => voice.id}
             ListEmptyComponent={
-              <Text style={styles.empty}>
+              <Text style={[styles.empty, { fontSize: 14 * osFontScale }]}>
                 No voices found. On Android this usually means the TTS engine isn&apos;t installed,
                 or the app can&apos;t see it yet.
               </Text>
@@ -79,10 +93,15 @@ export function VoicePicker({
                 accessibilityLabel="Platform default voice"
                 accessibilityState={{ selected: selectedVoiceId === null }}
                 onPress={() => onSelect(null)}
-                style={styles.row}
+                style={[styles.row, focusedRowId === 'default' && { borderColor: ringColor }]}
+                {...focusRingHandlers('default')}
               >
-                <Text style={styles.rowText}>Platform default</Text>
-                {selectedVoiceId === null && <Text style={styles.check}>✓</Text>}
+                <Text style={[styles.rowText, { fontSize: 15 * osFontScale }]}>
+                  Platform default
+                </Text>
+                {selectedVoiceId === null && (
+                  <Text style={[styles.check, { fontSize: 16 * osFontScale }]}>✓</Text>
+                )}
               </Pressable>
             }
             renderItem={({ item }) => (
@@ -91,13 +110,18 @@ export function VoicePicker({
                 accessibilityLabel={`${item.name}, ${item.language}`}
                 accessibilityState={{ selected: selectedVoiceId === item.id }}
                 onPress={() => onSelect(item.id)}
-                style={styles.row}
+                style={[styles.row, focusedRowId === item.id && { borderColor: ringColor }]}
+                {...focusRingHandlers(item.id)}
               >
                 <View>
-                  <Text style={styles.rowText}>{item.name}</Text>
-                  <Text style={styles.rowSubtext}>{item.language}</Text>
+                  <Text style={[styles.rowText, { fontSize: 15 * osFontScale }]}>{item.name}</Text>
+                  <Text style={[styles.rowSubtext, { fontSize: 12 * osFontScale }]}>
+                    {item.language}
+                  </Text>
                 </View>
-                {selectedVoiceId === item.id && <Text style={styles.check}>✓</Text>}
+                {selectedVoiceId === item.id && (
+                  <Text style={[styles.check, { fontSize: 16 * osFontScale }]}>✓</Text>
+                )}
               </Pressable>
             )}
           />
@@ -109,7 +133,12 @@ export function VoicePicker({
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.3)' },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderWidth: FOCUS_RING_WIDTH,
+    borderColor: 'transparent',
+  },
   sheet: {
     maxHeight: '70%',
     backgroundColor: '#ffffff',
@@ -117,17 +146,22 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 16,
     padding: 16,
   },
-  title: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 8 },
-  empty: { fontSize: 14, color: '#777777', paddingVertical: 16 },
+  title: { fontWeight: '600', color: '#111111', marginBottom: 8 },
+  empty: { color: '#777777', paddingVertical: 16 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    minHeight: MIN_TOUCH_TARGET,
     paddingVertical: 12,
+    borderWidth: FOCUS_RING_WIDTH,
+    borderColor: 'transparent',
+    // The list divider stays on the bottom edge, which RN resolves independently of the
+    // all-sides `borderWidth`/`borderColor` reserved above for the focus ring.
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
-  rowText: { fontSize: 15, color: '#111111' },
-  rowSubtext: { fontSize: 12, color: '#777777', marginTop: 2 },
-  check: { fontSize: 16, color: '#111111', fontWeight: '700' },
+  rowText: { color: '#111111' },
+  rowSubtext: { color: '#777777', marginTop: 2 },
+  check: { color: '#111111', fontWeight: '700' },
 });

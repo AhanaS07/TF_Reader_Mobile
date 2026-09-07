@@ -16,6 +16,7 @@ import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
 import type { ReaderTarget } from '@/features/reader/readerBridge';
 
 import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
+import { BookInfoRouteScreen } from './BookInfoRouteScreen';
 import { BookListScreen } from './BookListScreen';
 import { ReaderRouteScreen } from './ReaderRouteScreen';
 
@@ -37,6 +38,9 @@ export type RootStackParamList = {
   // Reader. BookListScreen decides AUDIO vs Reader at tap time — this route never receives an
   // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
   AudioPlayer: { bookId: BookId; title: string };
+  // Accessibility's own screen (Day 3) — no `format` param, it re-derives one via
+  // getPublicationAccessibility's own getFormat(bookId) call.
+  BookInfo: { bookId: BookId };
   // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
   MockLibrary: undefined;
 };
@@ -82,6 +86,14 @@ export function RootNavigator(): React.JSX.Element {
         {/* No gestureEnabled: false here — AudioPlayerScreen has no competing PanResponder-style
             swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
         <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
+        {/* headerShown: false + presentation: 'modal': this screen adds its own close control
+            (MIN_TOUCH_TARGET-sized), rather than relying on native-stack's default header back
+            button, which isn't chrome this screen owns. */}
+        <Stack.Screen
+          name="BookInfo"
+          component={BookInfoRouteScreen}
+          options={{ headerShown: false, presentation: 'modal' }}
+        />
         {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
         <Stack.Screen
           name="MockLibrary"

@@ -39,9 +39,13 @@ removed 2026-08-28 — see `WEBVIEW_A11Y_SPIKE.md` F4(a). The named stop is now 
 INSIDE the container, which gives the traversal its stop without making the container focusable.
 
 **Still the largest open unknown:** the on-device VoiceOver/TalkBack spike
-(`WEBVIEW_A11Y_SPIKE.md`, 21-area matrix) **has never been run**. Every risk in §6 that depends on
-"does the real `epub.js`-rendered DOM expose a correct accessibility tree" is unconfirmed, not
-resolved, until that spike runs. Read every other section of this document with that caveat.
+(`WEBVIEW_A11Y_SPIKE.md`, 21-area matrix) has an **Android pass complete (2026-08-24/25)** but
+**iOS still not run** (no device available for that pass), and the purpose-built sample A/B
+fixtures weren't used for the Android pass either (a real pre-existing book was substituted). Every
+risk in §6 that depends on "does the real `epub.js`-rendered DOM expose a correct accessibility
+tree" is unconfirmed on iOS, and only partially confirmed on Android, until the full spike runs on
+both platforms with the intended fixtures. Read every other section of this document with that
+caveat — don't infer iOS behavior from the Android results.
 
 ---
 
@@ -237,14 +241,14 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 
 | Risk | Severity | Status | Notes |
 |---|---|---|---|
-| On-device VoiceOver/TalkBack spike never run | High | **Android ran 2026-08-24/25; iOS still never run** | The Android pass found a total failure (F4), now attributed and fixed but unconfirmed on a device. Every VoiceOver cell in all 21 rows is still `—` |
+| On-device VoiceOver/TalkBack spike never run | High | **Android ran 2026-08-24/25; iOS still never run** | The Android pass found a total failure (F4), now attributed and fixed but unconfirmed on a device. Every VoiceOver cell in all 21 rows is still `—` — blocking further confidence on every DOM-accessibility claim below, on iOS in particular |
 | EPUB DOM not semantically accessible (headings/paragraphs survive `epub.js`?) | High | Open, unconfirmed | Only settled by the spike's DOM-inspection checklist |
 | `epub.js` iframe/content-document focus behavior | High | Open, unconfirmed | Device test required, both platforms |
 | Page-transition accessibility (over/under-announcement) | High | Open, unconfirmed | Test with `announce.pageChanges` on and off once the consumer exists |
 | ~~`announcePageChanges`~~ / `reduceMotion` unconsumed | Medium | **Half closed 2026-08-28** | `announcePageChanges` and the new `announceChapterChanges` are consumed natively by `ReaderScreen` (see §3 and READER_ANNOUNCEMENTS.md). `reduceMotion` is still read by nothing in either entry |
-| On-device confirmation of the F4 fixes | High | **Open** | Both causes were attributed and fixed at the code level on 2026-08-28 and NEITHER has been observed against TalkBack. Protocol: `WEBVIEW_A11Y_SPIKE.md` §11 |
+| On-device confirmation of the F4 fixes | **Critical/Blocking (re-confirmed 2026-08-31)** | **Partially run — still open** | Configuration A run against Sample A on-device (`WEBVIEW_A11Y_SPIKE.md` §12): cause (b)'s bounds fix confirmed working for on-screen content, but F4's core symptom — TalkBack cannot reach book content via touch exploration — is UNCHANGED, tested at 3 independent points all with correct bounds. Bounds were necessary but not sufficient. Configurations B/C/D (needed to isolate cause (a)) and Sample B / the real book are not run. |
 | Reader overrides `layout.flow` when a screen reader is running | Low | **Deliberate, 2026-08-28** | Paginated flow makes book content unreachable (F4/F6). The override is announced with an `Alert` and a session-only opt-out, and `DevPreferencesMenu` disables and annotates its Flow rows while it is in effect — a stored preference is never silently changed. See `src/features/reader/readerA11yLayout.ts` |
-| ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5)** | Restoration and background-hiding landed on both sides. What remains is focus ENTRY into TOC/Search and the post-search-hit destination, all gated on the device spike |
+| ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5)** | Restoration and background-hiding landed on both sides. What remains is focus ENTRY into TOC/Search and the post-search-hit destination, all gated on the device spike. Full control-by-control status: `READER_FOCUS_ORDER_HANDOFF.md` (same directory) |
 | `useTtsSession` bypasses `prefsStore` write path | Low–Medium | **Confirmed via code (§3)** | Writes via `readSharedPrefs`/`writeSharedPrefs` directly; no live-subscriber notification on TTS pref changes; inconsistent with the app's single-write-path pattern |
 | VoiceOver vs. TalkBack divergence | Medium | Open, unconfirmed | Same DOM can produce different navigation/grouping/announcements; every spike matrix row needs two independent verdicts |
 | Image / alt-text quality | Medium | Open, out of app's control | Third-party EPUB metadata quality varies; test with one good and one poor sample EPUB |
@@ -252,7 +256,7 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 | Highlight CSS ownership collision (`rendition.annotations`) | Medium | Open, unresolved since 2026-08-17 | Personalization (Vaishnavi) and Accessibility/TTS highlighting (Hruthik) both need it; no per-owner CSS class agreed |
 | Account-vs-device scope for `accessibility.*` prefs | Medium | Open, undecided | Implicitly account-scoped via sync today; likely wrong for `tts.rate`/`voiceId`/`highlightMode` and `reduceMotion` (which usually mirrors an OS-level setting) — decide before two devices are in play |
 | `tts.backgroundPlayback` | Low | Open, intentionally unexposed | Unverified on both platforms; not rendered in Settings until a device spike clears it |
-| `tts.highlightMode` | Low | Open, intentionally unexposed | Persisted for forward-compat only; no consumer reads it yet, so it is deliberately not rendered as a control |
+| `tts.highlightMode` | Low | **Engine-half attempt reverted 2026-09-07** | 2026-09-02 landed a `setSpokenWordRange` command on `ReaderTextProvider`/`readerBridge.ts` plus RN-side wiring in `useTtsSession.ts`, ahead of the WebView half (`webview/src/bridge.ts`'s `CommandArgs`, `epub.entry.ts`/`pdf.entry.ts`) which was never implemented — that broke `npm run typecheck` in CI. Reverted in full rather than landing the WebView half out-of-ownership: the bridge command, the `ReaderTextProvider` method, both fake providers' recording handles, and `useTtsSession.ts`'s `tts-progress` wiring are all gone again. `'word'` mode currently behaves identically to `'sentence'` mode (no word-level highlight). Concrete handoff spec for whoever lands both halves together: `API_CONTRACT_NOTES.md` §6 |
 | Native "Accessibility metadata screen" (Book Info → Accessibility) | Informational | **Documented in prior planning docs; does not exist in code** | Only the data pipeline exists (`getPublicationAccessibility.ts`, `publicationA11ySummary.ts`); no screen renders it. Not a regression — just a stale doc-vs-code gap to stop propagating |
 | `tts-integration-source/` staging folder | Informational | **Referenced in prior notes; does not exist on disk** | TTS is fully integrated and mounted at `src/features/accessibility/tts/**` / `ReaderScreen.tsx:1178` (verified) — treat any reference to a "staged, unintegrated" TTS module as stale |
 | `composePreferences()` / `EffectivePreferences` | Informational | **Named in a prior contract doc; no such symbol exists** | The actual equivalent is `toReaderAppearance(prefs, env)` in `readerAppearance.ts` — use that name going forward |
@@ -261,10 +265,14 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 
 ## 7. Consolidated next step
 
-One item is actually blocking further confidence in this area: **run the on-device VoiceOver /
-TalkBack spike** (`WEBVIEW_A11Y_SPIKE.md`) against both a well-formed and a poor-quality sample
-EPUB, complete the DOM-inspection checklist, the 21-area matrix, and the end-to-end journey test on
-both platforms, then re-rate the risk register in §6 against what was actually observed.
+One item is actually blocking further confidence in this area: **finish the on-device VoiceOver /
+TalkBack spike** (`WEBVIEW_A11Y_SPIKE.md`) — the Android pass is complete (2026-08-24/25) but ran
+against a substituted real book rather than the intended sample A/B fixtures, and iOS has not been
+run at all. Re-run Android with the sample A/B fixtures, run the full pass on iOS, complete the
+DOM-inspection checklist, the 21-area matrix, and the end-to-end journey test on both platforms,
+then re-rate the risk register in §6 against what was actually observed. Focus-entry work in §5
+(TOC/Search panel entry, post-search-hit destination — tracked in `READER_FOCUS_ORDER_HANDOFF.md`)
+is gated on this same spike.
 
 Nothing else here is blocked on that spike — the labelling/state gaps in §4, the focus-restoration
 gaps in §5, and the `prefsStore` bypass in §3/§6 are all independently actionable today.

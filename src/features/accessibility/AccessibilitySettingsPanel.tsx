@@ -40,7 +40,7 @@ const REDUCE_MOTION_OPTIONS: readonly { value: ReduceMotion; label: string }[] =
  * and `prefsStore.subscribe` answers "the user (or another control) just changed it". Dropping
  * either reintroduces the bug that hook's own comment documents.
  */
-function useAccessibilityPrefs(): AccessibilityPrefs {
+export function useAccessibilityPrefs(): AccessibilityPrefs {
   const [prefs, setPrefs] = useState<AccessibilityPrefs>(DEFAULT_ACCESSIBILITY_PREFS);
 
   useEffect(() => {
@@ -79,24 +79,36 @@ export function AccessibilitySettingsPanel({
   const showDyslexiaFont = format === undefined || format === 'EPUB';
 
   const toggleDyslexiaFont = (): void => {
-    void prefsStore.savePrefs({
-      accessibility: { ...prefs, text: { ...prefs.text, dyslexiaFont: !prefs.text.dyslexiaFont } },
-    });
+    void prefsStore
+      .savePrefs({
+        accessibility: { ...prefs, text: { ...prefs.text, dyslexiaFont: !prefs.text.dyslexiaFont } },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save dyslexiaFont', error);
+      });
   };
 
   const toggleHighContrast = (): void => {
-    void prefsStore.savePrefs({
-      accessibility: {
-        ...prefs,
-        display: { ...prefs.display, highContrast: !prefs.display.highContrast },
-      },
-    });
+    void prefsStore
+      .savePrefs({
+        accessibility: {
+          ...prefs,
+          display: { ...prefs.display, highContrast: !prefs.display.highContrast },
+        },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save highContrast', error);
+      });
   };
 
   const setReduceMotion = (value: ReduceMotion): void => {
-    void prefsStore.savePrefs({
-      accessibility: { ...prefs, display: { ...prefs.display, reduceMotion: value } },
-    });
+    void prefsStore
+      .savePrefs({
+        accessibility: { ...prefs, display: { ...prefs.display, reduceMotion: value } },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save reduceMotion', error);
+      });
   };
 
   return (
@@ -159,13 +171,15 @@ export function AccessibilitySettingsPanel({
 
 const styles = StyleSheet.create({
   // Same centred, width-capped shape as TtsControls.tsx's container — see that file's comment for
-  // why this isn't stretched full-width on a tablet.
+  // why this isn't stretched full-width on a tablet. NO top border, unlike TtsControls: that border
+  // reads as a docked-strip edge, which only makes sense when the panel replaces the bottom nav row.
+  // Reader mounts this as a floating overlay instead (docking it would resize the WebView and
+  // re-paginate epub.js mid-read, invalidating every resolved CFI), so a top border here would just
+  // be a stray line inside a floating card.
   container: {
     width: '100%',
     maxWidth: 560,
     alignSelf: 'center',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },

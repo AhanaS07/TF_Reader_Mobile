@@ -114,3 +114,78 @@ supposed to make that safe is unimplemented (`B6`/`B7`, Download's list). A long
 already-downloaded book will not be interrupted by a revocation today. That's the current accepted
 behaviour, not a guarantee to build on — if `B6` lands, a revocation mid-session becomes possible and
 a TTS session needs to handle the book's key being destroyed underneath it.
+
+---
+
+## 6. `accessibility.tts.highlightMode === 'word'` — engine-half attempt reverted; still deferred
+
+**2026-09-02** landed an engine-side attempt at this: native `tts-progress` subscribed
+(`ttsEngine.ts:TTS_EVENTS`), normalized per-platform in `ttsProgress.ts`, and dispatched from
+`useTtsSession.ts` via a new `setSpokenWordRange(cfi, start, end)` on `ReaderTextProvider`, which
+sent a new `setSpokenWordRange` bridge command wired into `readerBridge.ts` (`ReaderCommand`,
+`READER_COMMANDS`, `buildCommandScript`) — all landed on the RN side, ahead of the WebView half
+(`webview/src/bridge.ts`'s `CommandArgs`, `epub.entry.ts`, `pdf.entry.ts`), which was never
+implemented.
+
+**2026-09-07: reverted in full.** Landing only the RN-side half broke `npm run typecheck` in CI
+(`CommandArgsAreExhaustive`/`CommandArgsMatchPayloads` in `bridge.ts`, plus both `TFReaderApi`
+implementations missing the property) — expected, per the exhaustiveness design, but blocking.
+Rather than implement the WebView half out-of-ownership to unblock it, the whole RN-side addition
+was reverted: the `setSpokenWordRange` bridge command (`readerBridge.ts`), the `ReaderTextProvider`
+interface method, `realReaderTextProvider.ts`'s implementation, both `fakeReaderTextProvider.ts`
+copies' `spokenWordRanges` recording handles, and `useTtsSession.ts`'s `tts-progress`
+subscription/gating (`handleTtsProgress`, and the gated calls in `handleTtsStart`/`clearHighlight`).
+`ttsProgress.ts`'s `normalizeTtsProgressEvent` itself was left in place (pure, still unit-tested,
+independent of the bridge) since a future attempt will likely still need it.
+
+**Net effect:** `'word'` mode currently behaves identically to `'sentence'` mode — no word-level
+highlight is painted, no bridge command is sent. `TTS_PROVIDER.md`'s "Not done as part of step 5,
+on purpose" framing for word-level highlighting is accurate again.
+
+**For whoever lands this properly next, landing BOTH halves together in one change:**
+- `webview/src/bridge.ts`'s `CommandArgs` needs a `setSpokenWordRange` entry.
+- `epub.entry.ts` needs a `setSpokenWordRange` handler — `TFReaderApi<'openEpub'>` will not compile
+  without it. Painting should reuse `highlightSeam.ts`'s `add`/`remove` with the existing
+  `TTS_OWNER` and a new variant (e.g. `'spoken-word'`) so it doesn't collide with the sentence wash
+  `setSpokenRange` already paints — same pattern `setSpokenRange` uses with `currentSpokenCfi`.
+  Resolving `(sentenceCfi, start, end)` into a word-range CFI is NOT a pure reuse of
+  `epubCfiRange.ts`'s existing exports: `expandPointCfi(startCfi, length)` only extends a GIVEN
+  start point forward into a range — it has no way to produce a NEW point CFI offset from an
+  existing one, which is exactly what the leading `start` offset needs (the word's own beginning
+  within the sentence, not the sentence's own start). The offset arithmetic that would do this lives
+  inline and unexported inside `expandPointCfi`. This needs new code — either exporting a
+  point-advance step from `epubCfiRange.ts` (a natural, testable addition next to its siblings) or
+  writing the equivalent in `epub.entry.ts` itself. Confirmed by reading `expandPointCfi`'s source,
+  not inferred.
+- `pdf.entry.ts` needs the same no-op row `setSpokenRange` already has.
+- `WEBVIEW_BRIDGE.md`'s "Host → WebView" table needs the new row.
+- `npm run reader:build-html` needs a run once the above lands, both HTML artifacts committed.
+- On the RN side, this section's 2026-09-02 description above (the `ReaderTextProvider` method,
+  `realReaderTextProvider.ts`'s implementation, `useTtsSession.ts`'s gated `tts-progress` wiring,
+  the fakes' `spokenWordRanges` handles) is the shape to re-add — same design, just needs to land
+  together with the WebView half this time rather than ahead of it.
+
+---
+
+## 7. `C1`/§4 follow-up — accessibility prefs stay account-scoped for now; `accessibilityGateway.ts` deleted
+
+**2026-09-03.** Two closures from the same review pass:
+
+**Per-account vs per-device sync scope (§4 above), decided:** staying account-scoped for now,
+revisited when real multi-device auth lands. Nothing forces the decision today — `B1`'s dev token
+is one identity with no per-device concept behind it yet, so "per-device" has no seam to attach to
+without inventing one speculatively. The risk §4 named is real (TTS voice/rate/pitch and especially
+`reduceMotion` are device/OS properties, not account properties) but is not yet observable: nobody
+has two devices signed into the same dev token today. Writing it down here rather than leaving it
+implicit, per §4's own warning that retrofitting per-device scope onto an already-syncing pref
+later is a migration, not a field. Revisit this entry when real per-device identity exists —
+`reduceMotion` is the field most likely to need to defer to live OS state instead of the synced
+value at that point.
+
+**`src/features/accessibility/persistence/accessibilityGateway.ts` and its test are deleted.** That
+pair (`sqliteAccessibilityGateway`/`mongoAccessibilityGateway`) was unreferenced outside its own
+test — confirmed by a repo-wide grep before removing it — and its Mongo half called the backend
+directly (`api.create`/`api.update`), which was never a real seam: accessibility code has no
+endpoint of its own to call, and Karthik's sync engine is the only thing that talks to Mongo.
+Accessibility's job stays exactly `accessibilityStore.update()` writing to SQLite; nothing here
+should ever reach past that. Verified no other file imported either half before deleting.

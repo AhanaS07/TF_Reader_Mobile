@@ -21,11 +21,11 @@ export type { Voice, TtsError } from '@iternio/react-native-tts';
 /**
  * Native events this session subscribes to.
  *
- * `tts-progress` is deliberately excluded. Its payload diverges by platform (iOS:
- * `location`/`length` character offsets into the utterance; Android: `start`/`end`) and this
- * session only implements sentence-level highlighting via `ReaderTextProvider.setSpokenRange`,
- * not word-boundary highlighting — so nothing here would consume it. Add it back only alongside
- * real support for `accessibility.tts.highlightMode === 'word'`.
+ * `tts-progress` backs `accessibility.tts.highlightMode === 'word'` (see
+ * `normalizeTtsProgressEvent` in `./ttsProgress`, kept out of this file so it stays importable
+ * without this file's native module). Its payload still diverges by platform (iOS:
+ * `location`/`length` character offsets into the utterance; Android: `start`/`end`) — that is why
+ * it is normalized there rather than left for every consumer to branch on `Platform.OS` itself.
  *
  * `tts-pause`/`tts-resume` are real events both platforms emit, but are missing from the
  * library's own exported `TtsEvents` type — that's why these are plain string literals
@@ -49,6 +49,7 @@ export const TTS_EVENTS = [
   'tts-pause',
   'tts-resume',
   'tts-error',
+  'tts-progress',
 ] as const;
 
 export type TtsEventName = (typeof TTS_EVENTS)[number];

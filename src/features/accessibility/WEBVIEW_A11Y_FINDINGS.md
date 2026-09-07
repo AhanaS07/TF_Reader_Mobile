@@ -1,6 +1,8 @@
 # WebView Screen-Reader Findings — Consolidated
 
-**Owner: Hruthik. Status: desk research only. Last reviewed: 2026-08-17.**
+**Owner: Hruthik. Status: desk research, partially validated — the device spike
+(`WEBVIEW_A11Y_SPIKE.md`) has an Android pass complete (2026-08-24/25, against a substituted real
+book rather than the intended sample A/B fixtures); iOS has not been run. Last reviewed: 2026-08-28.**
 
 > **THE SPIKE HAS RUN — this document has not been updated for it, and §2 below is wrong.**
 > The Android/TalkBack pass happened 2026-08-24/25 and found a total failure (F4), which has since
@@ -48,7 +50,8 @@ trap" — see §3.6). The two layers must be designed, labelled, and tested sepa
 **Implementation risk:** Medium/High — two a11y layers must be maintained separately.
 **Biggest open unknown:** does the actual `epub.js`-rendered EPUB DOM expose a correct, stable
 accessibility tree and predictable focus behavior to VoiceOver and TalkBack? Documentation cannot
-settle this — it requires on-device testing, which is the Day-2 spike that has not yet been run.
+settle this — it requires on-device testing: the Day-2 spike, which has an Android pass complete
+but has not yet been run on iOS (see §2).
 
 ---
 
@@ -63,10 +66,12 @@ settle this — it requires on-device testing, which is the Day-2 spike that has
 
 
 The Day-2 spike (`WEBVIEW_A11Y_SPIKE.md`, in this same directory) is the instrument designed to
-answer the open question above. **Every result cell in it is still a placeholder.** It has not been
-executed on a device. This is currently the largest open unknown across the entire accessibility
-workstream — confirmed as still open as of Day 3 (`Day_3_Plan.md`, open item #8: "WebView a11y
-spike (21-area matrix) — Accessibility — **Not run**").
+answer the open question above. As of 2026-08-27: **Android has a completed pass (2026-08-24/25)**
+with real result cells filled in, though it ran against a substituted real book rather than the
+spike's own sample A/B fixtures — so the fixture-specific rows are still unvalidated even on
+Android. **iOS has not been executed on a device at all**; every iOS result cell is still a
+placeholder. This remains the largest open unknown across the entire accessibility workstream on
+iOS, and a partially-closed one on Android.
 
 What the spike is designed to test, once run:
 
@@ -266,6 +271,9 @@ What remains:
 > **2. Re-run Android against the Sample A/B fixtures and the F4 fixes.** The 2026-08-24/25 pass used
 > a real pre-existing book because `ensureSeeded()` short-circuited the fixture path. The protocol,
 > including how to get past that, is `WEBVIEW_A11Y_SPIKE.md` §11.
+>
+> Related tracking: `READER_FOCUS_ORDER_HANDOFF.md`'s deferred focus-entry items are gated on this
+> same spike.
 
 Nothing else in this workstream is blocked on new research — the Day-3 decisions in §5 already
 work around the unresolved risk conservatively (native surfaces, no WebView rendering of

@@ -1,8 +1,10 @@
 // Owner: Accessibility (Hruthik).
 //
-// Dedicated file for the one Android-specific branch: pause()/resume() are documented no-ops in
-// @iternio/react-native-tts on Android, and PAUSE_RESUME_SUPPORTED (useTtsSession.ts) is computed
-// once at module load from Platform.OS — so this needs Platform.OS === 'android' BEFORE
+// Dedicated file for the Android-specific pause/resume branch: pause()/resume() are documented
+// no-ops in @iternio/react-native-tts on Android, so useTtsSession.ts stops the engine itself and
+// remembers the interrupted sentence (in-memory only) so play() can re-speak it, rather than
+// relying on a native pause/resume round trip. PAUSE_RESUME_SUPPORTED (useTtsSession.ts) is
+// computed once at module load from Platform.OS — so this needs Platform.OS === 'android' BEFORE
 // useTtsSession.ts is first imported, not after. useTtsSession.test.ts's same-file Platform.OS
 // mutation (the pattern ttsRate.test.ts uses) can't reach an import-time constant; only
 // intercepting the 'react-native' module before that import resolves can, which is why this one
@@ -13,7 +15,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 
-import { createFakeReaderTextProvider } from '@/features/reader/tts/fakeReaderTextProvider';
+import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
 
 import { useTtsSession } from './useTtsSession';
 
@@ -79,7 +81,7 @@ jest.mock('@/features/sync/sharedPrefs', () => {
 });
 
 const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine') as {
-  default: { addListener: jest.Mock; pause: jest.Mock; stop: jest.Mock };
+  default: { addListener: jest.Mock; speak: jest.Mock; pause: jest.Mock; resume: jest.Mock; stop: jest.Mock };
   __fire: (event: string, payload?: unknown) => void;
 };
 
@@ -93,15 +95,43 @@ function fireAppStateChange(next: 'active' | 'background' | 'inactive'): Promise
 }
 
 describe('useTtsSession on Android', () => {
-  it('pause() never calls the native pause — PAUSE_RESUME_SUPPORTED is false, so TtsControls substitutes stop() instead', async () => {
+  it("pause() never calls the native pause — it stops the engine and flips to 'paused' directly, since no tts-pause event will ever arrive", async () => {
     const provider = createFakeReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
     await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+
     await act(() => result.current.pause());
 
     expect(mockTts.pause).not.toHaveBeenCalled();
+    expect(mockTts.stop).toHaveBeenCalled();
+    expect(result.current.status).toBe('paused');
+    // Unlike a real stop, pause keeps the interrupted sentence around for play() to resume.
+    expect(result.current.currentSentence).toEqual(provider.sentences[0]);
+  });
+
+  it('play() while paused re-speaks the paused sentence instead of re-resolving the reader position', async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    expect(result.current.status).toBe('paused');
+
+    mockTts.speak.mockClear();
+    await act(() => result.current.play());
+
+    expect(mockTts.resume).not.toHaveBeenCalled(); // no native resume on Android.
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[0].text);
+    // Status is still driven off tts-start, same as a fresh play() — pause/resume doesn't skip it.
+    expect(result.current.status).toBe('paused');
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
   });
 
   it('backgrounding while speaking resets to idle — the reset itself is not platform-gated', async () => {
