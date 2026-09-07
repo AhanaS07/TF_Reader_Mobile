@@ -54,9 +54,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
-import { allowScreenCaptureAsync, preventScreenCaptureAsync } from 'expo-screen-capture';
-
-import { READER_CAPTURE_KEY } from '@/features/reader/captureProtection';
+import {
+  READER_CAPTURE_KEY,
+  allowScreenCaptureAsync,
+  isScreenCaptureAvailable,
+  preventScreenCaptureAsync,
+} from '@/features/reader/captureProtection';
 import { FONT_CATALOG } from '@/features/personalization/fontCatalog';
 import { useOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
 import { flowOverrideApplied } from '@/features/reader/readerA11yLayout';
@@ -790,6 +793,13 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             <Pressable
               accessibilityRole="button"
               onPress={() => {
+                if (!isScreenCaptureAvailable()) {
+                  Alert.alert(
+                    'Native Module Unavailable',
+                    'ExpoScreenCapture is not linked in this binary. Run `npx expo run:ios` or `npx expo run:android` to rebuild with native modules.'
+                  );
+                  return;
+                }
                 void preventScreenCaptureAsync(READER_CAPTURE_KEY);
               }}
               style={styles.toggle}
@@ -799,6 +809,13 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
             <Pressable
               accessibilityRole="button"
               onPress={() => {
+                if (!isScreenCaptureAvailable()) {
+                  Alert.alert(
+                    'Native Module Unavailable',
+                    'ExpoScreenCapture is not linked in this binary. Run `npx expo run:ios` or `npx expo run:android` to rebuild with native modules.'
+                  );
+                  return;
+                }
                 void allowScreenCaptureAsync(READER_CAPTURE_KEY);
               }}
               style={styles.toggle}

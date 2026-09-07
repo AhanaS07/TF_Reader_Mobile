@@ -48,6 +48,9 @@ import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 const SKIP_SECONDS = 15;
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+/** End-of-track tolerance (seconds). If the player is within this threshold of duration when play
+ * is pressed, restart from the beginning instead of no-oping. */
+const TRACK_END_EPSILON_SECONDS = 0.5;
 
 export interface AudioPlayerScreenProps {
   /** CALLERS MUST KEY ON bookId — same contract ReaderScreen.tsx states outright. This component
@@ -313,11 +316,23 @@ export function AudioPlayerScreen({
     setPlayCheckPending(true);
     try {
       const allowed = (await beforePlayRef.current?.()) ?? true;
-      if (allowed) player.play();
+      if (allowed) {
+        // At end of track the position is already duration, so play() is a no-op.
+        // Reads from the PLAYER, not `status`: `status` can be up to one 250ms tick stale
+        // (the same reasoning the unmount-commit effect already documents).
+        if (
+          player.duration > 0 &&
+          player.currentTime >= player.duration - TRACK_END_EPSILON_SECONDS
+        ) {
+          await player.seekTo(0);
+          commitPosition(0);
+        }
+        player.play();
+      }
     } finally {
       setPlayCheckPending(false);
     }
-  }, [playCheckPending, player]);
+  }, [commitPosition, playCheckPending, player]);
 
   // Commit on unmount — navigating back to BookList. Reads the PLAYER, not `status`: this runs
   // during teardown, where the last rendered status can be up to one tick (250ms) stale, and the

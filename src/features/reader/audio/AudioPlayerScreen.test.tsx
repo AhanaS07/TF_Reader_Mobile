@@ -334,6 +334,53 @@ describe('AudioPlayerScreen', () => {
     expect(fakePlayer.play).toHaveBeenCalled();
   });
 
+  it('restarts from 0 and commits position 0 when pressing play at the end of a track', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.currentTime = 120;
+    fakePlayer.duration = 120;
+    fakePlayer.playing = false;
+    const onPositionCommit = jest.fn();
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    expect(fakePlayer.seekTo).toHaveBeenCalledWith(0);
+    expect(onPositionCommit).toHaveBeenCalledWith(0);
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
+  it('reads live player position, restarting from 0 even if rendered status is stale', async () => {
+    const fakePlayer = getFakePlayer();
+    fakePlayer.currentTime = 100;
+    fakePlayer.duration = 120;
+    fakePlayer.playing = false;
+    const onPositionCommit = jest.fn();
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionCommit={onPositionCommit}
+      />,
+    );
+
+    // Track finishes on the native player before the next 250ms status tick
+    fakePlayer.currentTime = 120;
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    expect(fakePlayer.seekTo).toHaveBeenCalledWith(0);
+    expect(onPositionCommit).toHaveBeenCalledWith(0);
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
   it('skip back calls seekTo clamped to 0, not negative', async () => {
     const fakePlayer = getFakePlayer();
     fakePlayer.currentTime = 5;

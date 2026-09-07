@@ -464,18 +464,26 @@ describe('a PDF Contents row', () => {
   // `href: '12'` and went back as the string '12', which the PDF shell parseInt'd. The host had to
   // carry a value in a vocabulary it could not name. It now carries a `{kind:'page', page}` target end
   // to end and never has to know what PDF addressing looks like.
-  it('navigates with the page target the shell sent, unmodified', async () => {
-    await mountReader();
-    await reportReady();
-    await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
-    await openContents();
+  // Bumped from jest's 5000ms default: under CI worker contention this full-mount test
+  // (ReaderScreen + several delivered bridge messages + a panel open + a press) has been
+  // observed to exceed 5s despite passing in well under that locally; the test itself does
+  // nothing slow. See PR discussion for the flake report before removing this.
+  it(
+    'navigates with the page target the shell sent, unmodified',
+    async () => {
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
+      await openContents();
 
-    await fireEvent.press(screen.getByText('Page 12'));
+      await fireEvent.press(screen.getByText('Page 12'));
 
-    expect(__injectJavaScript).toHaveBeenLastCalledWith(
-      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
-    );
-  });
+      expect(__injectJavaScript).toHaveBeenLastCalledWith(
+        buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
+      );
+    },
+    15000,
+  );
 
   // A PDF outline repeats page numbers BY DESIGN — several sections legitimately open on the same
   // page, and the sample fixture has exactly that. Rows must stay distinct anyway, which is why the
