@@ -19,6 +19,7 @@ import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { NavLink, Publication, SearchFeed } from '@model/types';
 import type { CatalogueSearchPipeline, SearchRequest } from '@/search';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
+import { useSessionStore } from '@store/sessionStore';
 
 import { useLibraryStore } from '@store/libraryStore';
 
@@ -127,12 +128,27 @@ async function submit(query: string) {
   await fireEvent(screen.getByTestId('search-input-field'), 'submitEditing');
 }
 
+// Signed in with an institution for every test — SearchScreen reads the real
+// institutionId off the session now, so a test that cares about it (the
+// request-shape and browse-instead assertions below) needs one present.
+beforeEach(() => {
+  useSessionStore.getState().setSession({
+    accessToken: 'test_token',
+    expiresIn: 3600,
+    userId: 'user_1',
+    institutionId: 'inst_7f3',
+    roles: ['read'],
+    collections: [],
+  });
+});
+
 afterEach(() => {
   setSearchPipeline(undefined);
   mockNavigate.mockClear();
   // The recent-searches store is a module singleton — every submit() in this
   // file writes to it, so it must not leak from one test into the next.
   useRecentSearchesStore.getState().clear();
+  useSessionStore.getState().clearSession();
 });
 
 // ─── Metadata-only copy ──────────────────────────────────────────────────────

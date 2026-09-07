@@ -50,7 +50,7 @@ export default function BottomSheet({
     // setTimeout makes setModalVisible async — the lint rule disallows
     // synchronous setState reachable from an effect body, but accepts
     // state updates inside async callbacks (same as .then / .start()).
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       setModalVisible(true);
       Animated.spring(translateY, {
         toValue: 0,
@@ -58,6 +58,7 @@ export default function BottomSheet({
         bounciness: 4,
       }).start();
     }, 0);
+    return () => clearTimeout(timer);
   }, [translateY]);
 
   // onDismiss is in deps so slideOut always calls the latest version.
@@ -78,10 +79,13 @@ export default function BottomSheet({
 
   useEffect(() => {
     if (visible) {
-      slideIn();
-    } else {
-      slideOut();
+      // slideIn's own return value is the cleanup that cancels its pending
+      // timer — returned here so React runs it on unmount or a fast toggle,
+      // instead of letting the timeout fire after the sheet is gone.
+      return slideIn();
     }
+    slideOut();
+    return undefined;
   }, [visible, slideIn, slideOut]);
 
   // useMemo (not useRef) so panHandlers can be spread in JSX without a

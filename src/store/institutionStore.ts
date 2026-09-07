@@ -97,11 +97,13 @@ export const useInstitutionStore = create<InstitutionState>()(
       version: 2,
       // Version 1 predates cachedInstitutions and may contain Institution objects
       // with the old crestUrl shape (before the wokay contract rewrite landed).
-      // Drop the cache so the next online session fetches fresh data in the new shape.
+      // selectedInstitution predates v2 the same way and is built from the same
+      // old shape, so it's dropped here too — reselecting is recoverable via the
+      // institution picker; silently rendering a stale-shaped selection is not.
       migrate: (persisted: unknown, fromVersion: number) => {
         const base = persisted as Partial<InstitutionState>;
         if (fromVersion < 2) {
-          return { ...base, cachedInstitutions: [] };
+          return { ...base, cachedInstitutions: [], selectedInstitution: null };
         }
         return base as InstitutionState;
       },

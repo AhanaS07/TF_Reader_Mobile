@@ -168,7 +168,8 @@ describe('institutionStore — migration', () => {
     );
     // Migration must clear the stale cache regardless of what was stored.
     expect(useInstitutionStore.getState().cachedInstitutions).toEqual([]);
-    // Non-cache fields should survive the migration.
-    expect(useInstitutionStore.getState().selectedInstitution).toEqual(IMPERIAL);
+    // selectedInstitution is built from the same old crestUrl shape, so it's
+    // dropped too rather than rendered stale — see the migrate comment.
+    expect(useInstitutionStore.getState().selectedInstitution).toBeNull();
   });
 });

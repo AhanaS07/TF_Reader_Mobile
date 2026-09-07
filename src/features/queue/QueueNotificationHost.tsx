@@ -87,7 +87,12 @@ export default function QueueNotificationHost() {
     getLicenceSource()
       .acceptOffer(holdId)
       .then(() => useOfferStore.getState().clear())
-      .catch(() => {})
+      .catch((error: unknown) => {
+        // The offer stays in offerStore on failure, so the banner reappears
+        // and the reader can just try again — logged so a failure isn't
+        // completely invisible while there's no dedicated error affordance.
+        console.log('QueueNotificationHost: acceptOffer failed', error);
+      })
       .finally(() => setPending(undefined));
   };
 
@@ -96,7 +101,9 @@ export default function QueueNotificationHost() {
     getLicenceSource()
       .cancelHold(holdId)
       .then(() => useOfferStore.getState().clear())
-      .catch(() => {})
+      .catch((error: unknown) => {
+        console.log('QueueNotificationHost: cancelHold failed', error);
+      })
       .finally(() => setPending(undefined));
   };
 

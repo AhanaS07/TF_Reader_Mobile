@@ -7,6 +7,7 @@
 import { getToken, useSessionStore } from '@store/sessionStore';
 import { getRefreshToken, saveRefreshToken } from '@store/secureStorage';
 import { setLicenceToken } from '@/config/licence';
+import { AuthError, AuthFailure } from './AuthFailure';
 import { getDefaultAuthClient } from './defaultAuthClient';
 import type { ApiAuthClient, TokenPair } from './ApiAuthClient';
 
@@ -63,6 +64,18 @@ async function refreshFromStoredToken(
     await applyRefreshedToken(tokenPair, authClient);
     return tokenPair.accessToken;
   } catch (error) {
+    // A network blip or timeout is not proof the refresh token is invalid —
+    // only a genuine REFUSED (or a response we can't even parse) means the
+    // token itself is bad. Clearing the session on a transient failure was
+    // forcing a full sign-in from a dropped connection with a perfectly good
+    // refresh token still sitting in secure storage.
+    const isTransient =
+      error instanceof AuthFailure &&
+      (error.code === AuthError.NETWORK_UNAVAILABLE || error.code === AuthError.TIMEOUT);
+    if (isTransient) {
+      console.log('ensureFreshToken: refresh failed transiently, leaving session intact', error);
+      return undefined;
+    }
     console.log('ensureFreshToken: refresh was refused, clearing session', error);
     useSessionStore.getState().clearSession();
     return undefined;
@@ -78,6 +91,13 @@ async function applyRefreshedToken(
   tokenPair: TokenPair,
   authClient: ApiAuthClient,
 ): Promise<void> {
+  // Saved first, before anything below that can still fail: refreshSession()
+  // already rotated the token server-side by the time this runs, so the old
+  // refresh token is already dead. If getCurrentSession times out below, the
+  // caller's catch must not wipe the session out from under a refresh token
+  // that was never written down.
+  await saveRefreshToken(tokenPair.refreshToken);
+
   const existing = useSessionStore.getState();
 
   if (existing.userId !== null) {
@@ -101,8 +121,6 @@ async function applyRefreshedToken(
       collections: currentSession.collections,
     });
   }
-
-  await saveRefreshToken(tokenPair.refreshToken);
 }
 
 export interface BootstrapAuthDeps {

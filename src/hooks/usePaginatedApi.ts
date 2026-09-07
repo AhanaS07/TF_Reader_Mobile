@@ -68,7 +68,10 @@ export function usePaginatedApi<T>({
 
       if (!isOnline) {
         setHasMore(false);
-        setPage(0);
+        // Only page 0 (a fresh/replace fetch) is ever served from cache — a
+        // loadMore that goes offline mid-session has no further page to
+        // serve, but must not rewind `page` back to 0 either.
+        if (replace) setPage(0);
         setLoading(false);
         setLoadingMore(false);
         if (!replace) return;

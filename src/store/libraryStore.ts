@@ -30,10 +30,12 @@ export const useLibraryStore = create<LibraryState>((set) => ({
     try {
       const library = await getLicenceSource().getLibrary();
       set({ loans: library.loans, holds: library.holds });
-    } catch {
+    } catch (error) {
       // A failed refresh leaves the last-known data in place. A stale but present loan
       // is better than blanking the UI — the reader still sees the correct tier badge
-      // and action bar from before the refresh failure.
+      // and action bar from before the refresh failure. Logged so a persistent failure
+      // (auth, backend outage) doesn't stay invisible just because the UI looks fine.
+      console.log('libraryStore.refresh: failed, keeping last-known loans/holds', error);
     } finally {
       set({ loading: false });
     }
