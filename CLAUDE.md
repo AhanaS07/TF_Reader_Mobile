@@ -676,6 +676,25 @@ design, and a 2-minute interval was a deliberate choice among the options presen
 built (see `READER_LIVE_SYNC_POLL_MS`'s own comment) — shortening it narrows the race window but
 cannot close it to zero without a server-push mechanism this app does not have.
 
+**Every `syncEngine.run()` call site that cares about ONE specific book goes through a
+`syncForThisBook()` helper now, in both route screens — a real gap, not a hypothetical one, found
+while auditing the poll additions above.** `syncEngine.run()`'s regular sweep only refreshes
+progress for books with a local `downloads` row (`syncEngine.ts`'s own `pullBook` doc) — a book read
+online without ever being downloaded is invisible to it, no matter how long either device stays
+online. `ReaderRouteScreen.tsx`'s original resume effect already knew this and top-up'd via
+`syncEngine.pullBook(bookId)`, but that top-up lived ONLY in the resume effect — the poll and
+foreground-edge effects added above called plain `syncEngine.run()` directly, so they silently never
+refreshed an undownloaded book's progress, indefinitely, even though the resume-time check worked
+fine. `AudioPlayerRouteScreen.tsx` had it WORSE: it never had this top-up anywhere, not even at
+resume, not even in the original play-gate (`handleBeforePlay`) — meaning cross-device conflict
+detection for a streamed-without-downloading audiobook never worked at all, from the feature's first
+commit. Both files now define `syncForThisBook()` once and route every relevant call site through it
+(the resume effect, the poll/foreground-edge effect, and — for audio — `handleBeforePlay` too).
+Pinned by an `'an audiobook read online without ever being downloaded'` describe block in
+`AudioPlayerRouteScreen.test.tsx` (mirroring `ReaderRouteScreen.test.tsx`'s existing one) and by a
+dedicated test in each file's live-pull describe block asserting `pullBook` fires again on the
+foreground edge, not just at resume.
+
 ## Verifying a change
 
 ```

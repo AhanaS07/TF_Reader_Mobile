@@ -126,6 +126,20 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   // instance). Not touched by anything else, so it never causes an unrelated remount.
   const [resumeGeneration, setResumeGeneration] = useState(0);
 
+  // Shared by every `syncEngine.run()` call site below that cares about THIS book specifically —
+  // the resume effect, and (see the live-pull effect further down) the foreground/poll triggers
+  // too. The regular sweep inside `syncEngine.run()` only refreshes progress for books this device
+  // has a local `downloads` row for (see `syncEngine.pullBook`'s own doc) — a book read online
+  // without ever being downloaded is invisible to it, no matter how long another device has had a
+  // position for it, and no matter how long BOTH devices stay online. Without this top-up, that
+  // was true only at resume; putting it here too closes the same gap for the live poll, which
+  // otherwise silently never refreshes such a book at all, indefinitely.
+  const syncForThisBook = useCallback(async (): Promise<void> => {
+    await syncEngine.run();
+    const downloaded = await downloadStore.currentForBook(bookId);
+    if (!downloaded) await syncEngine.pullBook(bookId);
+  }, [bookId]);
+
   useEffect(() => {
     let cancelled = false;
     // A caller-supplied target (e.g. a tapped bookmark elsewhere in the app) is a deliberate
@@ -136,17 +150,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     const target: Promise<ReaderTarget | undefined> =
       routeTarget !== undefined
         ? Promise.resolve(routeTarget)
-        : syncEngine
-            .run()
-            .then(async () => {
-              // The regular sweep inside syncEngine.run() only refreshes progress for books this
-              // device has a local `downloads` row for (see syncEngine.pullBook's own doc) - a
-              // book read online without ever being downloaded is invisible to it, no matter how
-              // long another device has had a position for it. Top up just this one book first,
-              // or an undownloaded book always resumes as if never opened, even mid-session.
-              const downloaded = await downloadStore.currentForBook(bookId);
-              if (!downloaded) await syncEngine.pullBook(bookId);
-            })
+        : syncForThisBook()
             .then(() => progressStore.currentLocator(undefined, bookId))
             .then((locator) => targetFromLocator(locator) ?? undefined);
     void target.then((resolvedTarget) => {
@@ -156,7 +160,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     return () => {
       cancelled = true;
     };
-  }, [bookId, routeTarget]);
+  }, [bookId, routeTarget, syncForThisBook]);
 
   const resolvedReady = resolved?.bookId === bookId;
 
@@ -237,7 +241,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     const startPoll = () => {
       if (pollId !== null) return;
       pollId = setInterval(() => {
-        void syncEngine.run();
+        void syncForThisBook();
       }, READER_LIVE_SYNC_POLL_MS);
     };
     const stopPoll = () => {
@@ -254,7 +258,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
       // edge-detection shape: re-syncing on every unrelated re-render here would be a no-op given
       // `syncEngine.run()`'s dedup, but tracking the edge keeps this effect's intent legible.
       if (isActive && !wasActive) {
-        void syncEngine.run();
+        void syncForThisBook();
         startPoll();
       } else if (!isActive) {
         stopPoll();
@@ -266,7 +270,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
       stopPoll();
       subscription.remove();
     };
-  }, [resolvedReady]);
+  }, [resolvedReady, syncForThisBook]);
 
   const resolveConflictContinueHere = useCallback(() => {
     conflictPendingRef.current = false;

@@ -35,6 +35,15 @@
 // rejects (`execute()` catches internally). Same fix, same reasoning, as
 // `ReaderRouteScreen.tsx`'s equivalent effect for EPUB/PDF.
 //
+// AND, SEPARATELY, `syncForThisBook` (below) TOPS UP AN UNDOWNLOADED AUDIOBOOK — A GAP THIS FILE
+// HAD FROM THE START, NOT JUST IN THE MECHANISMS ADDED LATER. `syncEngine.run()`'s regular sweep
+// only refreshes progress for books with a local `downloads` row (`syncEngine.ts`'s own
+// `pullBook` doc); a streamed-without-downloading audiobook was invisible to it, no matter how
+// long either device stayed online — every one of this file's `syncEngine.run()` call sites
+// (resume, the play-gate, and the live-pull effects further down) inherited that gap until this
+// fixed it in one place. `audioAssetResolver.ts` supports the streamed case same as EPUB/PDF's
+// download flow — this was reachable, not theoretical.
+//
 // THE PLAY-BUTTON GATE HANDLES "AM I ABOUT TO RESUME ONTO A STALE POSITION." IT DOES NOT, AND
 // CANNOT, HANDLE "ANOTHER DEVICE WROTE A NEWER POSITION WHILE THIS ONE IS ACTIVELY PLAYING" — THAT
 // IS A SEPARATE MECHANISM, BELOW. An early design for that second case considered subscribing to
@@ -82,6 +91,7 @@ import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-nati
 import { AudioPlayerScreen } from '@/features/reader/audio/AudioPlayerScreen';
 import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlayerScreen';
 import { syncEngine } from '@/features/sync/syncEngine';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { Locator } from '@/shared/contracts';
 
@@ -137,6 +147,15 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   // `AudioPlayerScreenHandle`'s own doc comment.
   const audioPlayerScreenRef = useRef<AudioPlayerScreenHandle>(null);
 
+  // Shared by every `syncEngine.run()` call site in this file that cares about THIS book
+  // specifically — see this file's header for why an undownloaded audiobook needs the same
+  // per-book top-up EPUB/PDF's equivalent already had.
+  const syncForThisBook = useCallback(async (): Promise<void> => {
+    await syncEngine.run();
+    const downloaded = await downloadStore.currentForBook(bookId);
+    if (!downloaded) await syncEngine.pullBook(bookId);
+  }, [bookId]);
+
   useEffect(() => {
     let cancelled = false;
     // Reset to "not yet written this run" for the NEW book — the throttle is per-book, and a stale
@@ -146,8 +165,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     conflictPendingRef.current = false;
     latestIncomingRef.current = null;
 
-    void syncEngine
-      .run()
+    void syncForThisBook()
       .then(() => progressStore.currentLocator(undefined, bookId))
       .then((locator) => {
         if (cancelled) return;
@@ -159,7 +177,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [bookId]);
+  }, [bookId, syncForThisBook]);
 
   const writeProgress = useCallback(
     (positionSeconds: number) => {
@@ -227,7 +245,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     const displayedSeconds = lastPausedPositionSecondsRef.current;
     if (displayedSeconds === null) return true; // nothing paused-and-known yet to compare against
 
-    await syncEngine.run();
+    await syncForThisBook();
     const incoming = await progressStore.currentLocator(undefined, bookId);
     if (incoming === null || incoming.type !== 'AUDIO') return true;
 
@@ -278,7 +296,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
         { cancelable: false },
       );
     });
-  }, [bookId, resolveConflictContinueHere, resolveConflictJumpThere]);
+  }, [bookId, syncForThisBook, resolveConflictContinueHere, resolveConflictJumpThere]);
 
   const positionReady = resolved?.bookId === bookId;
 
@@ -293,7 +311,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     const startPoll = () => {
       if (pollId !== null) return;
       pollId = setInterval(() => {
-        void syncEngine.run();
+        void syncForThisBook();
       }, AUDIO_LIVE_SYNC_POLL_MS);
     };
     const stopPoll = () => {
@@ -307,7 +325,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     const subscription = AppState.addEventListener('change', (state) => {
       const isActive = state === 'active';
       if (isActive && !wasActive) {
-        void syncEngine.run();
+        void syncForThisBook();
         startPoll();
       } else if (!isActive) {
         stopPoll();
@@ -319,7 +337,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
       stopPoll();
       subscription.remove();
     };
-  }, [positionReady]);
+  }, [positionReady, syncForThisBook]);
 
   // Live cross-device conflict detection WHILE PLAYING — see this file's header for the full
   // account of why this is safe where an early design for the same idea was not. Only starts once

@@ -514,6 +514,24 @@ describe('ReaderRouteScreen', () => {
       });
     });
 
+    it('tops up an undownloaded book on the foreground edge too, not only at resume', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded, for the whole test
+      const { unmount } = await renderReaderRoute('dev-sample-epub-live-pull-undownloaded');
+      await waitFor(() => expect(mockPullBook).toHaveBeenCalledTimes(1)); // the resume-time top-up
+
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+
+      // `syncEngine.run()`'s own regular sweep never refreshes progress for a book with no local
+      // `downloads` row (see syncEngine.ts's `pullBook` doc) — without this, the live poll would
+      // silently never learn of a cross-device write for this book, no matter how long it ran.
+      expect(mockPullBook).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        unmount();
+      });
+    });
+
     it('polls every READER_LIVE_SYNC_POLL_MS while foregrounded, and stops while backgrounded', async () => {
       const { unmount } = await renderReaderRoute('dev-sample-epub-live-pull-interval');
       await waitFor(() => expect(mockSyncRun).toHaveBeenCalledTimes(1));

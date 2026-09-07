@@ -56,12 +56,23 @@ jest.mock('@/features/sync/stores/progressStore', () => ({
   },
 }));
 
+const mockPullBook = jest.fn().mockResolvedValue(undefined);
+
 jest.mock('@/features/sync/syncEngine', () => ({
   syncEngine: {
     run: () => {
       callOrder.push('run');
       return mockSyncRun();
     },
+    pullBook: (...args: unknown[]) => mockPullBook(...args),
+  },
+}));
+
+const mockCurrentForBook = jest.fn().mockResolvedValue(null);
+
+jest.mock('@/features/sync/stores/downloadStore', () => ({
+  downloadStore: {
+    currentForBook: (...args: unknown[]) => mockCurrentForBook(...args),
   },
 }));
 
@@ -151,10 +162,14 @@ describe('AudioPlayerRouteScreen', () => {
     mockIsPlaying.mockReset();
     mockCurrentPositionSeconds.mockReset();
     mockPause.mockReset();
+    mockPullBook.mockReset();
+    mockCurrentForBook.mockReset();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
     mockIsPlaying.mockReturnValue(false);
     mockCurrentPositionSeconds.mockReturnValue(0);
+    mockPullBook.mockResolvedValue(undefined);
+    mockCurrentForBook.mockResolvedValue(null);
   });
 
   it('passes the route bookId and title through to AudioPlayerScreen once resolved, after awaiting a sync run first', async () => {
@@ -170,6 +185,26 @@ describe('AudioPlayerRouteScreen', () => {
     // device may have already advanced past while this device was merely backgrounded, not
     // relaunched — see AudioPlayerRouteScreen.tsx's header for the full account of that gap.
     expect(callOrder).toEqual(['run', 'currentLocator']);
+  });
+
+  describe('an audiobook read online without ever being downloaded', () => {
+    it('tops up via pullBook before reading the local resume position', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded
+
+      await renderAudioPlayerRoute('dev-sample-audio-undownloaded');
+
+      expect(mockCurrentForBook).toHaveBeenCalledWith('dev-sample-audio-undownloaded');
+      expect(mockPullBook).toHaveBeenCalledWith('dev-sample-audio-undownloaded');
+      expect(mockCurrentLocator).toHaveBeenCalledWith(undefined, 'dev-sample-audio-undownloaded');
+    });
+
+    it('does not call pullBook for an audiobook this device already has downloaded', async () => {
+      mockCurrentForBook.mockResolvedValue({ id: 'dl-1', book_id: 'dev-sample-audio-downloaded' });
+
+      await renderAudioPlayerRoute('dev-sample-audio-downloaded');
+
+      expect(mockPullBook).not.toHaveBeenCalled();
+    });
   });
 
   it('resumes at the AUDIO position stored in progressStore, converted from ms to seconds', async () => {
@@ -540,6 +575,25 @@ describe('AudioPlayerRouteScreen', () => {
       });
       expect(mockSyncRun).toHaveBeenCalledTimes(2);
 
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('tops up an undownloaded audiobook on the foreground edge too, not only at resume', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded, for the whole test
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-pull-undownloaded');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+      expect(mockPullBook).toHaveBeenCalledTimes(1); // the resume-time top-up
+
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+
+      // syncEngine.run()'s own regular sweep never refreshes progress for a book with no local
+      // `downloads` row — without this, neither the poll nor the play-gate would ever learn of a
+      // cross-device write for a streamed-without-downloading audiobook.
+      expect(mockPullBook).toHaveBeenCalledTimes(2);
       await act(async () => {
         unmount();
       });
