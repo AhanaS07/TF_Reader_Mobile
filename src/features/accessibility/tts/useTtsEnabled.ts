@@ -35,10 +35,13 @@ import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
  * cleanup — and that cleanup calls `Tts.stop()`. So switching TTS off is what STOPS SPEECH in an
  * open book. It is a kill switch, not just a visibility flag, and the chain runs through here.
  *
- * Only local writes through `prefsStore` notify. A prefs row arriving from Sync does not (see
- * `subscribe`'s own contract note), so TTS switched off on another device does not silence this
- * one until the book is reopened. Correct for now — going further means an event-bus hop nothing
- * else in the reader takes yet.
+ * Only local writes through `prefsStore` notify. A prefs row arriving from Sync does not, BY
+ * DESIGN (`prefsStore.subscribe`'s own doc, decided 2026-09-07) — so TTS switched off on another
+ * device does not silence this one until the book is reopened. That is deliberate, not a gap:
+ * unlike a bookmark or a progress update, silencing speech mid-sentence because of an edit made
+ * on a different device is its own surprise, worse than the one it would prevent. The field-level
+ * merge still resolves the setting correctly regardless of when anyone re-reads it, so nothing is
+ * lost — the reopen just happens to be when this hook re-reads it.
  *
  * Starts at the contract default (`false`) and stays there if the read fails, rather than
  * guessing `true`: a failed read is indistinguishable from first run, and the honest answer to
