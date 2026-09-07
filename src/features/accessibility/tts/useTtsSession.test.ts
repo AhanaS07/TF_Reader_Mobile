@@ -141,46 +141,6 @@ describe('useTtsSession', () => {
     expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
   });
 
-  it("ignores tts-progress when highlightMode is 'sentence' (the default)", async () => {
-    const provider = createFakeReaderTextProvider();
-    const { result } = await renderHook(() => useTtsSession(provider));
-
-    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
-    await act(() => result.current.play());
-    await act(() => fireTtsEvent('tts-start'));
-
-    // setSpokenWordRange is never called in 'sentence' mode, not even to clear — the WebView has
-    // no handler for it until 'word' mode's own rollout lands there, and calling it unconditionally
-    // would hit the bridge's NOT_READY path on every sentence start for every TTS user, not just
-    // 'word' mode's.
-    expect(provider.spokenWordRanges).toHaveLength(0);
-
-    await act(() => fireTtsEvent('tts-progress', { location: 0, length: 5 }));
-
-    // Still nothing: 'sentence' mode never consumes tts-progress.
-    expect(provider.spokenWordRanges).toHaveLength(0);
-  });
-
-  it("paints a word-level sub-highlight from tts-progress when highlightMode is 'word'", async () => {
-    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
-    const provider = createFakeReaderTextProvider();
-    const { result } = await renderHook(() => useTtsSession(provider));
-
-    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
-    await act(() => result.current.play());
-    await act(() => fireTtsEvent('tts-start'));
-
-    // iOS-shaped payload (location/length); the default test environment here is iOS — see the
-    // note on PAUSE_RESUME_SUPPORTED below.
-    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
-
-    expect(provider.spokenWordRanges.at(-1)).toEqual({
-      cfi: provider.sentences[0].cfi,
-      start: 4,
-      end: 7,
-    });
-  });
-
   it('stops at the end of a section when autoContinueChapter is off, and clears the highlight', async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
     // DEFAULT_FAKE_BOOK's spine item 0 has 3 sentences; sentence index 2 is lastInSection.

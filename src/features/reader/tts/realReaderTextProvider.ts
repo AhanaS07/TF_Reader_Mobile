@@ -124,17 +124,10 @@ export function createEpubReaderTextProvider(
     send({ type: 'setSpokenRange', cfi });
   }
 
-  function setSpokenWordRange(cfi: string | null, start: number, end: number): void {
-    // Same fire-and-forget/best-effort contract as setSpokenRange.
-    if (terminated) return;
-    send({ type: 'setSpokenWordRange', cfi, start, end });
-  }
-
   return {
     current: (from, signal) => request(from, 'current', signal),
     next: (after, signal) => request(after, 'next', signal),
     setSpokenRange,
-    setSpokenWordRange,
 
     onInterrupted(handler) {
       handlers.add(handler);

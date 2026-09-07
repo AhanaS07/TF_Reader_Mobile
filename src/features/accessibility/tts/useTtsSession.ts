@@ -57,7 +57,6 @@ import type { A11yTtsPrefs } from '@/shared/contracts';
 import Tts from './ttsEngine';
 import type { Voice } from './ttsEngine';
 import { mapRate } from './ttsRate';
-import { normalizeTtsProgressEvent } from './ttsProgress';
 import { ttsStatusAnnouncement } from './ttsAnnouncements';
 
 export type TtsSessionStatus = 'idle' | 'speaking' | 'paused' | 'error';
@@ -179,11 +178,6 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     function clearHighlight(): void {
       source.setSpokenRange(null);
-      // Gated the same as handleTtsProgress below: the WebView has no setSpokenWordRange handler
-      // outside 'word' mode's own rollout, so calling it unconditionally would hit the bridge's
-      // NOT_READY path on every stop/clear and surface as ReaderScreen's interrupting error banner
-      // for every TTS user, not just 'word' mode's.
-      if (livePrefs.highlightMode === 'word') source.setSpokenWordRange(null, 0, 0);
     }
 
     function stopInternal(opts?: { clearHighlight?: boolean; status?: TtsSessionStatus }): void {
@@ -259,10 +253,6 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       updateStatus('speaking');
       if (currentlySpeaking) {
         source.setSpokenRange(currentlySpeaking.cfi);
-        // Clears any word-level sub-highlight left over from the previous sentence, so there is
-        // nothing stale on screen in the gap before this sentence's first tts-progress event.
-        // Same highlightMode gate as clearHighlight — see its note.
-        if (livePrefs.highlightMode === 'word') source.setSpokenWordRange(null, 0, 0);
       }
     }
 
@@ -309,22 +299,6 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (!awaitingUtterance) return;
       setErrorMessage(event.message ?? 'The TTS engine reported an error.');
       stopInternal({ status: 'error' });
-    }
-
-    // Gated on highlightMode inside the handler rather than by conditionally subscribing, so a
-    // runtime pref change never needs to resubscribe — same trade-off as the awaitingUtterance
-    // guards above. Both platforms emit tts-progress, so this listener is always registered.
-    function handleTtsProgress(event: {
-      location?: number;
-      length?: number;
-      start?: number;
-      end?: number;
-    }): void {
-      if (!awaitingUtterance) return;
-      if (livePrefs.highlightMode !== 'word') return;
-      if (!currentlySpeaking) return;
-      const range = normalizeTtsProgressEvent(event);
-      source.setSpokenWordRange(currentlySpeaking.cfi, range.start, range.end);
     }
 
     // Neither native TTS module observes app backgrounding itself (confirmed by reading
@@ -476,7 +450,6 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
-      Tts.addListener('tts-progress', handleTtsProgress),
       // 'tts-error' is absent from @iternio/react-native-tts's iOS `supportedEvents`
       // (TextToSpeech.m declares only start/finish/pause/resume/progress/cancel, and never calls
       // sendEventWithName:@"tts-error" — AVSpeechSynthesizerDelegate has no error callback for the

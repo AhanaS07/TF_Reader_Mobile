@@ -81,10 +81,11 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   pages back to re-read something while TTS keeps talking, the next `setSpokenRange` call will find
   the spoken CFI off-screen and pull them forward again. No "recently user-navigated" signal exists
   today to suppress that; would need one if the desired behavior is "don't yank back mid-manual-browse."
-- **Word-level ranges.** `setSpokenWordRange` is not implemented in `epub.entry.ts` yet
-  (`ACCESSIBILITY_ARCHITECTURE_MAP.md`'s risk table, `tts.highlightMode` row). Recommend building
+- **Word-level ranges.** The `setSpokenWordRange` bridge command was reverted (it landed on the RN
+  side ahead of the WebView half, which broke `npm run typecheck` — see
+  `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s risk table, `tts.highlightMode` row). Recommend building
   auto-follow against sentence-level `setSpokenRange` now, and extending the same technique to
-  word-level once that lands, rather than blocking on it.
+  word-level once both halves land together, rather than blocking on it.
 
 ## Testing / verification checklist for whoever implements this
 
