@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "TF Reader",
+    "slug": "tf-reader-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "tfreader",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.taylorandfrancis.tfreader.dev"
+    },
+    "android": {
+      "package": "com.taylorandfrancis.tfreader.dev",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ],
+      "react-native-quick-crypto",
+      "expo-sqlite",
+      "./plugins/withAndroidTtsQueries",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f9f29b18-124e-4bdf-8d35-abb3a27abacf"
+      }
+    }
+  }
+}

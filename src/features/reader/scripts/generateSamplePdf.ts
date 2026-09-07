@@ -1,0 +1,402 @@
+// Owner: Reader (Ahana).
+//
+// Generates assets/reader/sample-plaintext.pdf — a tiny, multi-page PDF so the PDF
+// renderer can actually be exercised on a device.
+//
+// Run: npm run reader:build-sample-pdf
+//
+// WHY THIS EXISTS: there is no .pdf anywhere in this repo, and there must never be a
+// real one — T&F content is licensed and must not be committed. Without a generated
+// stand-in, the entire PDF branch (reader-pdf.html, pdf.js, the worker, openPdf) is
+// unreachable outside unit tests, so "does a PDF render" could only be answered by
+// pushing an untracked file into the simulator container by hand. Same reasoning as
+// generateSampleEpub.ts, and it is TEMPORARY for the same reason: it goes away with
+// devContentSeed.ts (see CLAUDE.md's scaffolding table).
+//
+// WHY IT IS HAND-WRITTEN AND NOT BUILT WITH A LIBRARY: a valid PDF that draws text on
+// three pages is a few hundred bytes of objects and an xref table. Adding a PDF
+// WRITER as a dependency to produce it would be more moving parts than the format it
+// is emitting, and every writer worth using stamps a CreationDate — see below.
+//
+// >>> BYTE-REPRODUCIBLE ON PURPOSE. DO NOT ADD A DATE. <<<
+// Nothing here varies between runs: no /CreationDate, no /ModDate, no /ID, no
+// timestamps of any kind. That is what lets CI regenerate this file and `git diff
+// --exit-code` it, exactly like reader.html — and it is precisely what
+// generateSampleEpub.ts CANNOT do, because JSZip stamps every entry with the
+// generation time. If you add anything time-varying here, the CI freshness check for
+// this file starts failing on every run and the honest fix is to remove it from CI,
+// not to loosen the check.
+//
+// >>> REGENERATING THIS DOES NOT UPDATE AN ALREADY-SEEDED SIMULATOR. <<<
+// `ensureSeeded()` short-circuits on `isAvailableOffline()` plus a seed-version marker,
+// so a device that has opened this book once keeps decrypting the OLD ciphertext and
+// your change appears to have done nothing. Verified the hard way: a layout fix here
+// rendered identically on device until the marker was cleared. To pick up new bytes:
+//
+//   DATA=$(xcrun simctl get_app_container booted com.taylorandfrancis.tfreader.dev data)
+//   rm -f "$DATA/Documents/dev-seed-dev-sample-pdf.version"
+//
+// then reload the app — `ensureSeeded` does destroy()-before-store(), so the stale
+// package is cleared for you. Bumping SEED_VERSION in devContentSeed.ts works too and
+// is the right move if the change ships to teammates, since it re-seeds every install.
+//
+// This script uses Node globals. Legitimate here for the same reason as its siblings:
+// it runs under Node, never on device.
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+const REPO_ROOT = path.join(__dirname, '..', '..', '..', '..');
+const OUTPUT = path.join(REPO_ROOT, 'assets', 'reader', 'sample-plaintext.pdf');
+
+/** US Letter, in PDF points (72 per inch). */
+const PAGE_WIDTH = 612;
+const PAGE_HEIGHT = 792;
+
+const PAGE_COUNT = 3;
+
+/**
+ * What each page says.
+ *
+ * Distinct per page, and deliberately so: identical pages make a paging bug
+ * invisible. "Page 2 of 3" on screen after one tap of Next is the whole manual test.
+ *
+ * PDF string literals are wrapped in parentheses, so `(`, `)` and `\` would need
+ * escaping. Nothing here uses them — keep it that way rather than adding an escaper
+ * for a fixture.
+ */
+function pageText(pageNumber: number): string[] {
+  return [
+    `TF Reader sample PDF - page ${pageNumber} of ${PAGE_COUNT}`,
+    '',
+    'This file is GENERATED. Do not hand-edit it, and do not replace it',
+    'with real content: it stands in for a licensed book so the pdf.js',
+    'path can be exercised offline.',
+    '',
+    `Use Next and Previous to page through all ${PAGE_COUNT} pages.`,
+  ];
+}
+
+/**
+ * A page's content stream: a text block, plus a coloured bar.
+ *
+ * The bar earns its place — it is drawn with graphics operators rather than a font, so
+ * a page that shows the bar but no text tells you the FONT resource is wrong rather
+ * than that rendering failed altogether. That distinction is otherwise a guess.
+ */
+/**
+ * Vertical layout, in PDF user space (origin bottom-left, so LARGER y is HIGHER).
+ *
+ * Derived from each other rather than hand-picked, because the first version picked
+ * both independently and the bar landed on top of the fourth line of text — visible
+ * only once it was rendered on a device. `TEXT_TOP_Y` is now defined as a gap below
+ * the bar, so the two cannot collide however many lines are added.
+ */
+const BAR_Y = PAGE_HEIGHT - 78;
+const BAR_HEIGHT = 18;
+const LINE_HEIGHT = 22;
+const TEXT_TOP_Y = BAR_Y - 34;
+
+function contentStream(pageNumber: number): string {
+  const lines = pageText(pageNumber);
+
+  const text = lines
+    .map((line, i) => (line === '' ? '' : `1 0 0 1 72 ${TEXT_TOP_Y - i * LINE_HEIGHT} Tm (${line}) Tj`))
+    .filter((op) => op !== '')
+    .join('\n');
+
+  return [
+    // A bar whose width tracks the page number, so "did the page change" is legible
+    // at a glance and even without text. Drawn with graphics operators rather than a
+    // font ON PURPOSE: a page showing the bar but no text says the FONT resource is
+    // wrong, rather than leaving "nothing rendered" as the only diagnosis.
+    `0.83 0.18 0.18 rg`,
+    `72 ${BAR_Y} ${120 * pageNumber} ${BAR_HEIGHT} re f`,
+    `0 g`,
+    `BT`,
+    `/F1 13 Tf`,
+    text,
+    `ET`,
+  ].join('\n');
+}
+
+/** `1 0 obj ... endobj`, as bytes, with the trailing newline PDF readers expect. */
+function indirectObject(id: number, body: string): string {
+  return `${id} 0 obj\n${body}\nendobj\n`;
+}
+
+function buildPdf(): Buffer {
+  // Object numbering, fixed up front so /Parent and /Contents references resolve:
+  //   1        Catalog
+  //   2        Pages
+  //   3        Font (Helvetica, one of the base-14 — see the note below)
+  //   4, 6, 8  Page objects
+  //   5, 7, 9  the matching content streams
+  const CATALOG = 1;
+  const PAGES = 2;
+  const FONT = 3;
+  const pageObjectId = (i: number): number => 4 + i * 2;
+  const contentObjectId = (i: number): number => 5 + i * 2;
+
+  const objects: string[] = [];
+
+  // Outline objects live after the last content stream, so this holds for any
+  // PAGE_COUNT: ids 1..3 are fixed, 4..(3+2n) are the page/content pairs.
+  const OUTLINE_ROOT = contentObjectId(PAGE_COUNT - 1) + 1;
+
+  objects[CATALOG] = indirectObject(
+    CATALOG,
+    // /PageMode /UseOutlines is a hint to desktop viewers to show the sidebar. It has
+    // no effect on our reader — the outline reaches the host as a `toc` message — but
+    // it makes the fixture behave the same way in Preview, which is where anyone will
+    // sanity-check it by eye.
+    `<< /Type /Catalog /Pages ${PAGES} 0 R /Outlines ${OUTLINE_ROOT} 0 R /PageMode /UseOutlines >>`,
+  );
+
+  const kids = Array.from({ length: PAGE_COUNT }, (_, i) => `${pageObjectId(i)} 0 R`).join(' ');
+  objects[PAGES] = indirectObject(
+    PAGES,
+    `<< /Type /Pages /Kids [${kids}] /Count ${PAGE_COUNT} >>`,
+  );
+
+  // HELVETICA, deliberately: it is one of the PDF base-14 fonts, so it carries no
+  // embedded font programme. That makes this fixture the exact case the reader's
+  // `useSystemFonts: true` handles — reader-pdf.template.html ships no
+  // standardFontDataUrl, because that would be a sub-resource fetch. So if this
+  // fixture renders text on a device, the substitution path works; embedding a font
+  // here would hide the one font risk worth testing.
+  objects[FONT] = indirectObject(
+    FONT,
+    `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`,
+  );
+
+  for (let i = 0; i < PAGE_COUNT; i++) {
+    const stream = contentStream(i + 1);
+    objects[pageObjectId(i)] = indirectObject(
+      pageObjectId(i),
+      `<< /Type /Page /Parent ${PAGES} 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
+        `/Resources << /Font << /F1 ${FONT} 0 R >> >> /Contents ${contentObjectId(i)} 0 R >>`,
+    );
+
+    // /Length must be the stream's BYTE length, not its character count. They differ
+    // the moment anything non-ASCII appears, and a wrong /Length is the classic
+    // "renders in one viewer, blank in another" corruption.
+    objects[contentObjectId(i)] = indirectObject(
+      contentObjectId(i),
+      `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`,
+    );
+  }
+
+  // OUTLINE. Four entries over three pages, one of them NESTED, because the whole
+  // point of this fixture is exercising the Contents panel: a flat outline would not
+  // prove the depth-first flatten or the host's indent-by-depth. Two entries share
+  // page 2 deliberately — duplicate destinations are normal in real books and must not
+  // be deduplicated away.
+  //
+  // The linked-list shape (/First /Last /Next /Prev /Parent) is what the PDF spec
+  // requires; pdf.js walks it and hands us a tree, which the template then flattens
+  // back. Getting /Next wrong silently truncates the outline, so the assertion below
+  // checks the COUNT that comes back out.
+  const dest = (pageIndex: number): string => `[${pageObjectId(pageIndex)} 0 R /Fit]`;
+  const [ONE, TWO, TWO_CHILD, THREE] = [1, 2, 3, 4].map((n) => OUTLINE_ROOT + n);
+
+  objects[OUTLINE_ROOT] = indirectObject(
+    OUTLINE_ROOT,
+    // /Count is the number of VISIBLE descendants; positive means open.
+    `<< /Type /Outlines /First ${ONE} 0 R /Last ${THREE} 0 R /Count 4 >>`,
+  );
+  objects[ONE] = indirectObject(
+    ONE,
+    `<< /Title (Page 1 - Opening) /Parent ${OUTLINE_ROOT} 0 R /Next ${TWO} 0 R /Dest ${dest(0)} >>`,
+  );
+  objects[TWO] = indirectObject(
+    TWO,
+    `<< /Title (Page 2 - Middle) /Parent ${OUTLINE_ROOT} 0 R /Prev ${ONE} 0 R /Next ${THREE} 0 R ` +
+      `/First ${TWO_CHILD} 0 R /Last ${TWO_CHILD} 0 R /Count 1 /Dest ${dest(1)} >>`,
+  );
+  objects[TWO_CHILD] = indirectObject(
+    TWO_CHILD,
+    `<< /Title (Page 2 - a nested entry) /Parent ${TWO} 0 R /Dest ${dest(1)} >>`,
+  );
+  objects[THREE] = indirectObject(
+    THREE,
+    `<< /Title (Page 3 - End) /Parent ${OUTLINE_ROOT} 0 R /Prev ${TWO} 0 R /Dest ${dest(2)} >>`,
+  );
+
+  // Assemble, recording each object's byte offset for the xref table. The header's
+  // second line is a comment with high-bit bytes, which is what marks the file as
+  // binary for transfer tools that would otherwise mangle line endings.
+  const chunks: Buffer[] = [];
+  let offset = 0;
+  const push = (text: string): void => {
+    const buffer = Buffer.from(text, 'latin1');
+    chunks.push(buffer);
+    offset += buffer.length;
+  };
+
+  push('%PDF-1.4\n');
+  push('%\xE2\xE3\xCF\xD3\n');
+
+  const offsets: number[] = [];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = offset;
+    push(objects[id]);
+  }
+
+  const xrefAt = offset;
+  const size = objects.length; // ids 1..n plus the mandatory free entry 0
+
+  // EVERY xref entry IS EXACTLY 20 BYTES. Ten-digit offset, space, five-digit
+  // generation, space, type letter, then a two-byte terminator — here a space and a
+  // newline. Readers seek by multiplying the index by 20, so a single missing pad
+  // byte silently shifts every later lookup.
+  let xref = `xref\n0 ${size}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id++) {
+    xref += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
+  }
+  push(xref);
+
+  // No /ID and no /Info: both are optional, and both are where writers put
+  // time-varying or random data. See the reproducibility note at the top.
+  push(`trailer\n<< /Size ${size} /Root ${CATALOG} 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Structural self-checks. This script is a test of its own output, in the same spirit
+ * as generateSampleEpub.ts round-tripping its zip — a malformed fixture otherwise
+ * shows up as a blank WebView on a device, which is a far worse place to debug it.
+ */
+function assertStructure(pdf: Buffer): void {
+  const text = pdf.toString('latin1');
+
+  if (!text.startsWith('%PDF-')) {
+    throw new Error('Output does not begin with the %PDF- header.');
+  }
+  if (!text.trimEnd().endsWith('%%EOF')) {
+    throw new Error('Output does not end with %%EOF.');
+  }
+
+  // The magic bytes the reader's own routing relies on being distinguishable from a
+  // ZIP's "PK\x03\x04" — an EPUB and a PDF must never be confusable by inspection.
+  if (pdf[0] !== 0x25 || pdf[1] !== 0x50 || pdf[2] !== 0x44 || pdf[3] !== 0x46) {
+    throw new Error('Output does not start with the %PDF magic bytes.');
+  }
+
+  const declaredCount = /\/Count (\d+)/.exec(text);
+  if (!declaredCount || Number(declaredCount[1]) !== PAGE_COUNT) {
+    throw new Error(`Expected /Count ${PAGE_COUNT} in the page tree.`);
+  }
+
+  // startxref must point AT the xref keyword. Off-by-one here is the single most
+  // common hand-written-PDF bug and most viewers hide it by rebuilding the table.
+  const startxref = /startxref\n(\d+)\n/.exec(text);
+  if (!startxref) throw new Error('No startxref in output.');
+  if (!text.startsWith('xref', Number(startxref[1]))) {
+    throw new Error(
+      `startxref points at byte ${startxref[1]}, which is not the xref table. ` +
+        `The offsets were computed wrong.`,
+    );
+  }
+
+  if (/\/CreationDate|\/ModDate|\/ID\s*\[/.test(text)) {
+    throw new Error(
+      'Output contains a date or file ID, so it is no longer byte-reproducible. ' +
+        'See the reproducibility note at the top of this script.',
+    );
+  }
+}
+
+/**
+ * Parse the result with the SAME pdf.js the reader inlines.
+ *
+ * Structural checks above prove the bytes are shaped like a PDF; this proves the
+ * renderer accepts them. It is the closest thing to the device path available in
+ * Node, and it uses the pinned devDependency rather than a second implementation, so
+ * a pdfjs-dist bump that stops accepting this fixture fails HERE rather than as a
+ * blank page on a simulator.
+ *
+ * EXPECTED NOISE: pdf.js prints two warnings under Node about being unable to polyfill
+ * `DOMMatrix` and `Path2D` because the optional `canvas` package is absent. They are
+ * harmless and must NOT be "fixed" by installing `canvas` — a native dependency added
+ * to build a 2KB fixture. Both are needed only to RASTERISE, and nothing here
+ * rasterises: this parses and extracts text. Rasterising happens on the device, where
+ * a real canvas exists.
+ */
+async function assertPdfJsCanReadIt(pdf: Buffer): Promise<void> {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports -- pdfjs-dist v3's
+     legacy build ships CommonJS whose types do not resolve under
+     moduleResolution:bundler, and this is a Node-only build script. */
+  const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
+  pdfjs.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js');
+
+  const doc = await pdfjs.getDocument({
+    // A COPY, because pdf.js transfers the buffer it is given to its worker and
+    // detaches it — passing `pdf` itself would leave the caller holding an empty
+    // Buffer and the write below would emit nothing.
+    data: new Uint8Array(pdf),
+    useSystemFonts: true,
+  }).promise;
+
+  if (doc.numPages !== PAGE_COUNT) {
+    throw new Error(`pdf.js read ${doc.numPages} pages, expected ${PAGE_COUNT}.`);
+  }
+
+  // Text extraction, not just page count: it proves the font resource and the content
+  // stream agree, which /Count cannot.
+  for (let n = 1; n <= PAGE_COUNT; n++) {
+    const content = await (await doc.getPage(n)).getTextContent();
+    const text = content.items.map((item: { str?: string }) => item.str ?? '').join('');
+    if (!text.includes(`page ${n} of ${PAGE_COUNT}`)) {
+      throw new Error(`Page ${n} did not render its own page number. Extracted: ${text}`);
+    }
+  }
+
+  // THE OUTLINE, resolved the same way the template resolves it. This is the half a
+  // structural check cannot reach: /Next or /Parent wired wrong still produces a valid
+  // PDF, and pdf.js simply returns a shorter tree — so the fixture would silently stop
+  // exercising the Contents panel it exists to exercise.
+  const outline = await doc.getOutline();
+  if (!outline || outline.length !== 3) {
+    throw new Error(`Expected 3 top-level outline entries, got ${outline ? outline.length : 0}.`);
+  }
+  const nested = outline.filter((item: { items?: unknown[] }) => (item.items ?? []).length > 0);
+  if (nested.length !== 1) {
+    throw new Error(`Expected exactly 1 nested outline entry, got ${nested.length}.`);
+  }
+
+  // And that every destination resolves to a real page — the +1 the template applies to
+  // getPageIndex is exactly the kind of off-by-one worth pinning in a fixture.
+  const flat = [...outline, ...(nested[0].items as { title: string; dest: unknown }[])];
+  for (const entry of flat) {
+    const target =
+      typeof entry.dest === 'string' ? await doc.getDestination(entry.dest) : entry.dest;
+    if (!Array.isArray(target) || target.length === 0) {
+      throw new Error(`Outline entry "${entry.title}" has no resolvable destination.`);
+    }
+    const page = (await doc.getPageIndex(target[0])) + 1;
+    if (page < 1 || page > PAGE_COUNT) {
+      throw new Error(`Outline entry "${entry.title}" resolves to page ${page}, out of range.`);
+    }
+  }
+
+  await doc.destroy();
+}
+
+async function main(): Promise<void> {
+  const pdf = buildPdf();
+
+  assertStructure(pdf);
+  await assertPdfJsCanReadIt(pdf);
+
+  fs.mkdirSync(path.dirname(OUTPUT), { recursive: true });
+  fs.writeFileSync(OUTPUT, pdf);
+
+  console.log(
+    `Wrote ${path.relative(REPO_ROOT, OUTPUT)} ` +
+      `(${pdf.length} bytes, ${PAGE_COUNT} pages, parsed by pdf.js)`,
+  );
+}
+
+void main();

@@ -14,11 +14,51 @@ coverage/
 google-services.json
 GoogleService-Info.plist
 
-# native build output
-android/app/build/
-android/.gradle/
-ios/Pods/
-ios/build/
+# Native projects — CNG (Continuous Native Generation).
+#
+# android/ and ios/ are GENERATED from app.json + config plugins by
+# `npx expo prebuild`. They are disposable build artefacts, not source, so the
+# whole directory is ignored rather than just its build output.
+#
+# Consequences, so nobody is surprised:
+#   • NEVER hand-edit anything under android/ or ios/ — the next prebuild
+#     silently discards it. Native changes go in app.json or a config plugin.
+#   • A dependency without an Expo config plugin needs a small local plugin
+#     written for it, not a native edit.
+#
+# Reversing this (going "bare" — committing native dirs) is a team decision,
+# not a per-person one: it trades automatic SDK upgrades for native merge
+# conflicts. Discuss before flipping it.
+/android
+/ios
 *.hprof
 
 .DS_Store
+
+# scratch git worktrees (superpowers:using-git-worktrees) — never committed
+.worktrees/
+
+# local-only planning/dev tooling — never pushed
+BuildPlan.md
+mock-backend/
+
+# devContentSeed.ts's EXPO_PUBLIC_READER_FIXTURE_PATH measurement scaffolding — a real,
+# large EPUB. Never commit real content (see devContentSeed.ts's own header): this is the
+# Mac-side source copy pushed into the simulator/emulator container for testing, not the
+# on-device plaintext itself (that copy must be deleted from the container after use).
+assets/20mb_EPUB.epub
+
+
+docs
+samples
+
+# eas.json — release-infra, owned outside any single feature capability. This file is created by
+# `npx expo install <native-module>` (it slipped in with `npx expo install expo-audio` during audio
+# work) and by `npx eas-cli init`; README.md ("Not yet set up") records that adopting it is a team
+# decision, not a per-person one, because it binds the repo to an Expo account/project. Ignored so
+# a local copy needed for `eas build` isn't silently committed with a feature change. If/when the
+# team decides to adopt EAS, delete this entry in the same change that adds the file back.
+eas.json
+
+.idea/
+

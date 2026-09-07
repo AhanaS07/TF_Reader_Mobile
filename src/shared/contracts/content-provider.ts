@@ -20,31 +20,62 @@
 import type { BookId, Bytes, Timestamp, ContentFormat } from '../types/primitives';
 
 // The `encryption` block from the grant (source-of-truth §10/§11). Names EXACT.
-// null for open access and ALL audio (plain file, no key). PROVISIONAL —
-// co-freeze with Abhinav on Day 3.
+// null for open access; audio may be encrypted or unencrypted.
 export interface EncryptionDescriptor {
   algorithm: 'AES-256-GCM';
   layout: 'nonce(12) || ciphertext || tag(16)';
   wrappedBek: string; // base64, RSA-OAEP-256 to the DEVICE public key
   wrapAlgorithm: 'RSA-OAEP-256';
-  keyId: string; // e.g. "master-v1"
+  /** OPTIONAL on wokay's published schema — "which master key wrapped it; exists so a second one
+   * can be added later" — and relaxed here to match, on the same "a null field is omitted rather
+   * than sent as null, test for presence" convention that `SignedUrl`/`IndexUrl` already follow
+   * (reading-session.ts). Required here was a type lie: a real grant that omits it would have
+   * carried `undefined` behind a `string`. Nothing in this repo READS it — `contentStore.ts`
+   * deliberately keys BEK-change detection off `wrappedBek`, not `keyId`/`keyFingerprint` — so
+   * relaxing it is inert today. Keep it that way: it names a SERVER key, not the device key, and
+   * is not an identity to branch on. */
+  keyId?: string; // e.g. "master-v1"
   keyFingerprint: string; // "sha256:..." of the device public key we sent
 }
 
-// licence.json, added by flambeau and stored beside the ciphertext (source-of-
-// truth Flow B step 8). Signature is REQUIRED and verified before expiry is
-// trusted. PROVISIONAL — Licence owned by flambeau; mirror only what we verify.
-export interface SignedLicence {
+// A DEVICE-SIDE licence record. No endpoint in either published contract returns anything shaped
+// like this: wokay's `ContentGrant` has exactly `content` / `index` / `encryption`, and flambeau's
+// `ReadingSessionResponse` adds only session fields. `downloadManager.ts`/`licenseCheck.ts`
+// therefore SYNTHESIZE one per download, from `Loan.canPersist` + `Loan.dueAt`, so that
+// `ContentStore.store()` has the Subscription-vs-Elite signal it is built around.
+//
+// RULED ON 2026-09-03 (B4 in `CONTRACT_ALIGNMENT.md`, this directory): no signed licence exists in
+// this system. Neither published contract carries a licence, a signature, or a signing-key
+// distribution scheme, and nobody is building one — both contracts converged on GCM's own
+// authentication tag plus a short-lived signed URL as the integrity/authorisation mechanism
+// instead. Renamed from `SignedLicence` accordingly, and the `signature` field is DELETED rather
+// than kept as a placeholder that claimed a guarantee this system doesn't have — see
+// `licenceSignature.ts`'s removal in the same change, and `licenceSeal.ts` (Encryption) for the
+// DIFFERENT, real, on-device guarantee that replaces it: proof this record hasn't changed since
+// this device stored it, not proof flambeau issued it.
+//
+// STAYS IN shared/contracts/ despite being device-side, unlike the ledger's original suggestion to
+// move it out entirely: `EncryptedPackage.licence` below is a genuinely shared field (Reader reads
+// it via `ContentStore`/`ContentProvider`), and shared/contracts/ cannot import FROM a feature
+// directory without inverting the dependency graph. `rights` still has no contract source either
+// — same caveat as before the rename, unrelated to it.
+export interface LocalLicenceRecord {
   licenceId: string;
   // INVARIANT: itemId names the SAME book as the EncryptedPackage.bookId it
   // ships with (backend calls it itemId, the reader calls it bookId — see
   // primitives.ts). The store MUST reject if licence.itemId !== pkg.bookId.
   itemId: string;
-  keyFingerprint: string; // must equal EncryptionDescriptor.keyFingerprint
+  /** MUST equal `EncryptionDescriptor.keyFingerprint`, and that equality is a SECURITY CONTROL,
+   * not bookkeeping: this side is derived locally from the device's own public key
+   * (`deviceKeypair.ts`'s `publicKeyFingerprint()`), the other side is the server's claim about
+   * which key it wrapped the BEK for, so comparing them is what proves nobody in the chain
+   * substituted a key. `contentStore.ts` enforces it in `assertLicenceMatchesPackage()`.
+   * Assigning this from `session.encryption.keyFingerprint` would make the comparison a value
+   * against itself and silently delete the guarantee — it used to, and that was the bug. */
+  keyFingerprint: string;
   expiresAt: string; // ISO-8601 UTC (wire), NOT Timestamp
   canPersist: boolean; // false ⇒ Elite, memory-only, no keystore write
   rights: { print: boolean };
-  signature: { alg: 'RS256'; kid: string; value: string };
 }
 
 // What Abhinav's download pass produces and hands to the store. "Ciphertext
@@ -53,11 +84,19 @@ export interface SignedLicence {
 export interface EncryptedPackage {
   // INVARIANT: same book as licence.itemId above (when licence is present).
   bookId: BookId;
-  format: ContentFormat; // audio is never encrypted, so in practice PDF | EPUB
+  format: ContentFormat;
   content: Bytes; // nonce(12)||ct||tag(16), as received. Never decrypted to disk.
   index?: Bytes; // bundled search index ciphertext (same BEK, its OWN nonce)
-  encryption: EncryptionDescriptor | null; // null ⇒ open access / audio (plaintext)
-  licence: SignedLicence | null; // null ⇒ open access (no licence)
+  // null ⇒ open access (plaintext). AUDIO's default is also null (whole-file encryption cannot
+  // seek — see tf_reader_backend_temp's shared.md), but that default is OVERRIDDEN by
+  // Abhinav/Encryption, 2026-08-25: audiobooks are meant to be encrypted the entire time they are
+  // stored, decrypted only transiently into RAM to play — the same whole-file decrypt EPUB/PDF
+  // already use, under the same MAX_DECRYPTED_BYTES cap. contentStore.ts's decrypt branch is
+  // already format-blind (it branches on `encryption`, not `format`), so this needed no code
+  // change there — only this comment no longer asserting "always null for audio" as if it were
+  // still true.
+  encryption: EncryptionDescriptor | null;
+  licence: LocalLicenceRecord | null; // null ⇒ open access (no licence)
 
   // BOTH length fields ship — option (b), decided by Abhinav, who owns the
   // producing side (Encryption + Download). cipherLength mirrors the wire/grant
@@ -136,4 +175,12 @@ export interface ContentProvider {
   // warm-up), add a separate `peekBook(bookId): Bytes` that throws ContentFailure
   // when not yet decrypted — don't make this one synchronous.
   getBook(bookId: BookId): Promise<Bytes>;
+
+  // MIME type of the stored package's content (e.g. "audio/wav", "application/pdf").
+  // Read from PersistedMeta.mimeType, which the download pass (or devContentSeed) sets at
+  // store() time. Audio callers use this to derive a file extension for the scratch URI
+  // (audioAssetResolver.ts), replacing the hardcoded 'wav' stopgap. EPUB/PDF callers
+  // already know their format from getFormat() and do not need this, but exposing it is
+  // additive and costs nothing at the ContentStore level — PersistedMeta already carries it.
+  getMimeType(bookId: BookId): Promise<string>;
 }
