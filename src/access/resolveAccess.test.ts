@@ -164,6 +164,29 @@ describe('resolveAccess', () => {
       expect(actions).not.toContain('read');
       expect(actions).not.toContain('download');
     });
+
+    // Settled 7 Sep: a subscribe link is still one path to a title, not proof no
+    // other path exists. A signed-out reader has not yet been asked whether their
+    // institution already grants this title, so Sign in comes first — the same
+    // rule every other licensed tier already follows. Subscribe only appears once
+    // signed in, once "does my institution cover this" has an answer.
+    it('offers sign in first when signed out, even on a subscribe link', () => {
+      const result = resolve({ item: subscribeItem, session: null });
+      expect(result.state).toBe('requires_signin');
+      expect(result.actions).toEqual(['signIn']);
+    });
+
+    // The contradiction guard above is about tier vs rel, not about sign-in —
+    // it must still hold with no session at all.
+    it('still beats a contradictory open-access claim with no session', () => {
+      const contradictory = anItem({
+        acquisition: anAcquisition({ actionId: 'subscribe', licenceModel: 'OPEN_ACCESS' }),
+      });
+      const { actions } = resolve({ item: contradictory, session: null });
+      expect(actions).not.toContain('read');
+      expect(actions).not.toContain('download');
+      expect(actions).not.toContain('signIn');
+    });
   });
 
   describe('open access', () => {
