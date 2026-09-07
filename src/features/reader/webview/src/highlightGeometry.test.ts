@@ -130,7 +130,7 @@ describe('whether a selection meets an existing highlight', () => {
 });
 
 describe('whether any rect is on screen', () => {
-  const VIEWPORT = { width: 100, height: 50 };
+  const VIEWPORT = { left: 0, top: 0, right: 100, bottom: 50 };
 
   it('is true for a rect fully inside the viewport', () => {
     expect(anyRectOnScreen([{ left: 10, top: 10, width: 20, height: 10 }], VIEWPORT)).toBe(true);
@@ -165,6 +165,20 @@ describe('whether any rect is on screen', () => {
         VIEWPORT,
       ),
     ).toBe(true);
+  });
+
+  it('works against a viewport NOT anchored at the origin', () => {
+    // epub.entry.ts's actual caller: both the rect and the viewport are `getBoundingClientRect()`s
+    // in the outer document, and the outer document's stage is not at (0,0) — a toolbar above it,
+    // say. A rect at (10, 10) is inside a viewport starting at (0, 0) but not one starting at
+    // (500, 500), even though the rect's own numbers didn't change.
+    const offsetViewport = { left: 500, top: 500, right: 600, bottom: 550 };
+    expect(anyRectOnScreen([{ left: 10, top: 10, width: 20, height: 10 }], offsetViewport)).toBe(
+      false,
+    );
+    expect(anyRectOnScreen([{ left: 510, top: 510, width: 20, height: 10 }], offsetViewport)).toBe(
+      true,
+    );
   });
 
   it('is false for an empty list', () => {

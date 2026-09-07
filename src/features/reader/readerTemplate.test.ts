@@ -848,6 +848,12 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
     // CFI would wrongly skip a follow it genuinely needs.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
+    // A display() tied to the previous book's discarded rendition may never settle its own
+    // promise, which would otherwise strand this flag true and silently disable auto-follow for
+    // the entire new book.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'followDisplayInFlight = false',
+    );
   });
 
   it('changing the spoken SENTENCE clears the word inside it', () => {
@@ -890,6 +896,21 @@ describe('re-measuring every painted layer after a re-layout', () => {
     const collisionGuard = blockAfter(body, 'if (!spokenWordCollides(cfi))');
     expect(body).toContain('followSpokenRange(cfi)');
     expect(collisionGuard).not.toContain('followSpokenRange');
+  });
+
+  it('a follow already in flight blocks a second, overlapping display() for a different target', () => {
+    // Word ticks can arrive faster than a display() transition settles — without this guard, a
+    // still-off-screen check against the STILL-OLD page would issue a second, competing
+    // navigation before the first lands. Asserted as ordering: the in-flight check comes first, is
+    // set before display() is called, and is cleared in a .finally() so it can't stick forever.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body.indexOf('if (followDisplayInFlight) return;')).toBeLessThan(
+      body.indexOf('followDisplayInFlight = true;'),
+    );
+    expect(body.indexOf('followDisplayInFlight = true;')).toBeLessThan(
+      body.indexOf('rendition\n    .display(cfi)'),
+    );
+    expect(body).toContain('.finally(() => {');
   });
 
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {

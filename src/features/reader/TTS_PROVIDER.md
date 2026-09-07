@@ -253,9 +253,17 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    The visibility test itself (`spokenRangeVisible`, same file) treats PARTIAL overlap as visible,
    not full containment — a sentence painted where it starts, that also runs onto the next page, is
    not "off-screen" the instant it paints. `anyRectOnScreen` (`highlightGeometry.ts`, pure,
-   unit-tested) is the rect/viewport arithmetic this rests on; `contents.window`, not the outer
-   `#viewer` `viewportSize()` measures, is the viewport it's measured against, since
-   `getClientRects()` on a `contents.range()` Range is in the chapter iframe's own coordinate space.
+   unit-tested) is the rect/viewport arithmetic this rests on. **Neither `contents.window`'s own
+   dimensions nor the outer `#viewer` `viewportSize()` measures is the right viewport for this** —
+   epub.js resizes each section's `<iframe>` to its own full content size on whichever axis
+   `IframeView.size()` leaves free (width in paginated flow, height in scrolled-doc), so the iframe's
+   own `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one
+   axis that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
+   `rendition.manager`, reached through a cast since `epubjs`'s types don't expose it), compared
+   against each rect after shifting it by the view's own `position()` (`element
+   .getBoundingClientRect()`, which correctly reflects scroll position) — the same geometry epub.js's
+   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally. Both flows share this
+   one check with no branch on which is active, same as `rendition.display()` itself.
 
    Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
    `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see

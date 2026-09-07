@@ -721,7 +721,7 @@ ${text}`;
   }
   function anyRectOnScreen(rects, viewport) {
     return rects.some(
-      (rect) => rect.width > 0 && rect.height > 0 && rect.left < viewport.width && rect.left + rect.width > 0 && rect.top < viewport.height && rect.top + rect.height > 0
+      (rect) => rect.width > 0 && rect.height > 0 && rect.left < viewport.right && rect.left + rect.width > viewport.left && rect.top < viewport.bottom && rect.top + rect.height > viewport.top
     );
   }
 
@@ -1146,6 +1146,7 @@ ${text}`;
   var currentSpokenCfi = null;
   var currentSpokenWordCfi = null;
   var lastAutoFollowedCfi = null;
+  var followDisplayInFlight = false;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
@@ -1549,21 +1550,37 @@ ${columnOverrideCss()}` : currentCss;
     }
     return null;
   }
+  function renditionManager() {
+    if (!rendition) return null;
+    return rendition.manager ?? null;
+  }
   function spokenRangeVisible(cfi) {
     const contents = contentsForCfi(cfi);
     if (!contents) return false;
     const range = rangeForCfi(contents, cfi);
     if (!range) return false;
-    return anyRectOnScreen(Array.from(range.getClientRects()), {
-      width: contents.window.innerWidth,
-      height: contents.window.innerHeight
-    });
+    const manager = renditionManager();
+    if (!manager) return false;
+    const view = manager.views.find({ index: contents.sectionIndex });
+    if (!view) return false;
+    const offset = view.position();
+    const rects = Array.from(range.getClientRects(), (rect) => ({
+      left: rect.left + offset.left,
+      top: rect.top + offset.top,
+      width: rect.width,
+      height: rect.height
+    }));
+    return anyRectOnScreen(rects, manager.bounds());
   }
   function followSpokenRange(cfi) {
     if (!rendition) return;
+    if (followDisplayInFlight) return;
     if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
     lastAutoFollowedCfi = cfi;
+    followDisplayInFlight = true;
     rendition.display(cfi).catch(() => {
+    }).finally(() => {
+      followDisplayInFlight = false;
     });
   }
   function applySearchMatch(match) {
@@ -1735,6 +1752,7 @@ ${columnOverrideCss()}` : currentCss;
           currentSpokenCfi = null;
           currentSpokenWordCfi = null;
           lastAutoFollowedCfi = null;
+          followDisplayInFlight = false;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;

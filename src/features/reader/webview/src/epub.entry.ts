@@ -137,6 +137,11 @@ let currentSpokenWordCfi: string | null = null;
  * `followSpokenRange`. Reset alongside the other TTS CFI state in `openEpub`. */
 let lastAutoFollowedCfi: string | null = null;
 
+/** True while a `followSpokenRange`-triggered `display()` has not yet settled. See
+ * `followSpokenRange`'s own note for why a second, overlapping call must wait rather than fire.
+ * Reset alongside the other TTS CFI state in `openEpub`. */
+let followDisplayInFlight = false;
+
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
 const TTS_SPOKEN_WORD_VARIANT = 'spoken-word';
@@ -1122,27 +1127,74 @@ function contentsForCfi(cfi: string): Contents | null {
   return null;
 }
 
-/** Is any rect of `cfi`'s range inside the chapter iframe's own viewport?
+/** A rect shape both `View.position()` and the manager's `bounds()` return — real `DOMRect`s from
+ * `getBoundingClientRect()`, so `left`/`top`/`right`/`bottom` are already there with no width/height
+ * arithmetic needed. */
+interface EpubRectLike {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** epub.js's internal per-view manager surface this file reaches into — NOT in `epubjs`'s published
+ * types (`Rendition.manager` has no public type at all; `rendition.js:68/165/229` sets it at
+ * runtime). Both the paginated (`DefaultViewManager`) and scrolled-doc (`ContinuousViewManager`,
+ * which extends it) managers share this shape, which is why nothing here branches on flow. */
+interface EpubRenditionManager {
+  views: { find(section: { index: number }): { position(): EpubRectLike } | undefined };
+  bounds(): EpubRectLike;
+}
+
+function renditionManager(): EpubRenditionManager | null {
+  if (!rendition) return null;
+  return (rendition as unknown as { manager?: EpubRenditionManager }).manager ?? null;
+}
+
+/** Is any rect of `cfi`'s range inside the CURRENTLY SCROLLED/PAGED window, not just somewhere
+ * inside its section's rendered content?
+ *
+ * >>> `contents.window.innerWidth`/`innerHeight` ARE NOT THE VIEWPORT. DO NOT GO BACK TO THEM. <<<
+ * They look right and are wrong on the axis that actually matters. epub.js resizes each section's
+ * `<iframe>` to its own full content size on whichever axis `IframeView.size()` leaves unlocked —
+ * WIDTH in paginated flow (`expand()`'s horizontal branch sizes it to `contents.textWidth()`,
+ * however many pages wide the whole chapter is), HEIGHT in scrolled-doc flow
+ * (`contents.textHeight()`, the whole chapter's height). The OUTER, fixed-size stage container is
+ * what actually clips and scrolls (`container.scrollLeft`/`scrollTop`, `DefaultViewManager.scrollTo`)
+ * — so `contents.window`'s own inner dimensions report "how big is this chapter," not "how much of
+ * it is on screen right now," on the one axis that would ever change with scroll position. A rect
+ * check against them is true for almost the entire chapter regardless of scroll, in BOTH flows.
+ *
+ * The correct comparison — same one epub.js's own `isVisible()`/`paginatedLocation()`/
+ * `scrolledLocation()` use internally (`managers/default/index.js`) — is the RANGE's rect, shifted
+ * into the OUTER document's coordinate space by the view's own `position()` (== `element
+ * .getBoundingClientRect()`, which DOES move with scroll, since the element sits inside the
+ * scrolling container), compared against the manager's `bounds()` (the fixed stage viewport, also a
+ * `getBoundingClientRect()`, in the same outer coordinate space already — no further translation
+ * needed between the two).
  *
  * False for a different section — `contentsForCfi` returns null for one that is not currently
- * rendered, and a chapter that is not on screen at all cannot be argued visible. False too for a
- * range that fails to resolve: if it cannot be measured, it cannot be claimed visible.
- *
- * `contents.window` IS THE INNER IFRAME'S OWN VIEWPORT, NOT THE OUTER ONE `viewportSize()` MEASURES.
- * `getClientRects()` on a `contents.range()` Range is in that inner document's coordinate space —
- * epub.js renders every section into its own same-origin `<iframe>` (`IframeView`), and `Contents`
- * is built directly from that iframe's own `document`/`window` — so the outer `#viewer` measurement
- * `applyBaselineCss` uses for column math is the wrong denominator here.
+ * rendered. False for a range or view that fails to resolve. All three "false" paths mean the same
+ * thing: cannot be shown to be visible, so treat it as not.
  */
 function spokenRangeVisible(cfi: string): boolean {
   const contents = contentsForCfi(cfi);
   if (!contents) return false;
   const range = rangeForCfi(contents, cfi);
   if (!range) return false;
-  return anyRectOnScreen(Array.from(range.getClientRects()), {
-    width: contents.window.innerWidth,
-    height: contents.window.innerHeight,
-  });
+  const manager = renditionManager();
+  if (!manager) return false;
+  const view = manager.views.find({ index: contents.sectionIndex });
+  if (!view) return false;
+
+  const offset = view.position();
+  const rects = Array.from(range.getClientRects(), (rect) => ({
+    left: rect.left + offset.left,
+    top: rect.top + offset.top,
+    width: rect.width,
+    height: rect.height,
+  }));
+  return anyRectOnScreen(rects, manager.bounds());
 }
 
 /** Bring `cfi` on screen if it is not already — a page turn in paginated flow, a scroll in
@@ -1155,14 +1207,31 @@ function spokenRangeVisible(cfi: string): boolean {
  * a page turn land on the first word of the next page rather than the first word of the next
  * sentence). Both share `lastAutoFollowedCfi` so a sentence-level call and the word-level calls that
  * follow it for the same still-off-screen target don't double up on `display()`.
+ *
+ * >>> ALSO SKIPS WHILE A PREVIOUS FOLLOW IS STILL IN FLIGHT, EVEN FOR A DIFFERENT CFI. <<< Word
+ * ticks arrive roughly every 200-400ms of speech; a `display()` that has to render a freshly-loaded
+ * section can take longer than that. Without this guard, a word crossing off-screen mid-transition
+ * would read `spokenRangeVisible` against the STILL-OLD page (the new one has not painted yet), see
+ * "not visible" again, and issue a SECOND, overlapping `display()` for a different target before the
+ * first has settled — competing navigations is exactly the "fight" this feature exists to avoid,
+ * just self-inflicted rather than against the reader's own gesture. Skipping here just means the
+ * NEXT tick re-evaluates once the current transition's promise settles, so a slow chapter load
+ * catches up incrementally rather than never, or twice.
  */
 function followSpokenRange(cfi: string): void {
   if (!rendition) return;
+  if (followDisplayInFlight) return;
   if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
   lastAutoFollowedCfi = cfi;
-  rendition.display(cfi).catch(() => {
-    // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
-  });
+  followDisplayInFlight = true;
+  rendition
+    .display(cfi)
+    .catch(() => {
+      // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
+    })
+    .finally(() => {
+      followDisplayInFlight = false;
+    });
 }
 
 /**
@@ -1561,6 +1630,10 @@ const api: TFReaderApi<'openEpub'> = {
         // cross-book-resolves-anyway hazard, and a stale match would wrongly skip a follow this
         // book's first spoken CFI genuinely needs.
         lastAutoFollowedCfi = null;
+        // A follow's display() tied to the previous book's (now-discarded) rendition may never
+        // settle its own promise, which would otherwise strand this true forever and silently
+        // disable auto-follow for the entire new book.
+        followDisplayInFlight = false;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for

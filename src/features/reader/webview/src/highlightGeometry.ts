@@ -98,14 +98,19 @@ export function rangesOverlap(a: Range, b: Range): boolean {
   );
 }
 
-/** A viewport measured in CSS px, in whatever coordinate space the caller's rects are already in. */
-export interface ViewportSize {
-  width: number;
-  height: number;
+/** A viewport as a real bounding box, in whatever coordinate space the caller's rects are already
+ * in — NOT anchored at (0,0). `epub.entry.ts`'s caller needs this: its rects and its viewport are
+ * both already in the OUTER document's coordinate space (a `getBoundingClientRect()` each), and
+ * that viewport does not start at the document's origin. */
+export interface ViewportBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
 /**
- * Does any of these rects intersect a viewport of this size, anchored at (0,0)?
+ * Does any of these rects intersect this viewport?
  *
  * PARTIAL OVERLAP COUNTS, NOT FULL CONTAINMENT — the caller this was built for
  * (`epub.entry.ts`'s TTS auto-follow, `spokenRangeVisible`) tests a target that can legitimately
@@ -116,15 +121,15 @@ export interface ViewportSize {
  */
 export function anyRectOnScreen(
   rects: readonly { left: number; top: number; width: number; height: number }[],
-  viewport: ViewportSize,
+  viewport: ViewportBounds,
 ): boolean {
   return rects.some(
     (rect) =>
       rect.width > 0 &&
       rect.height > 0 &&
-      rect.left < viewport.width &&
-      rect.left + rect.width > 0 &&
-      rect.top < viewport.height &&
-      rect.top + rect.height > 0,
+      rect.left < viewport.right &&
+      rect.left + rect.width > viewport.left &&
+      rect.top < viewport.bottom &&
+      rect.top + rect.height > viewport.top,
   );
 }

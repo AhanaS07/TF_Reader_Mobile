@@ -104,6 +104,23 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   (`spokenRangeVisible`/`followSpokenRange` in `epub.entry.ts`) is pinned by source-text ordering
   assertions in `readerTemplate.test.ts` instead, matching how `epub.entry.ts`'s other DOM-driving
   logic is tested — that file is declared not-unit-tested for exactly this reason.
+
+  **A first version of this check shipped, then was caught wrong before merging, worth recording
+  because the wrong version had no test that could have caught it.** It compared each rect against
+  `contents.window.innerWidth`/`innerHeight` — the chapter iframe's OWN dimensions. That is not the
+  viewport: epub.js resizes each section's iframe to its own full content size on whichever axis
+  `IframeView.size()` leaves unlocked (width in paginated flow, height in scrolled-doc — confirmed
+  reading `iframe.js`'s `expand()`, which sizes the free axis to `contents.textWidth()`/
+  `textHeight()`), and the OUTER, fixed-size stage container is what actually scrolls/clips. A
+  height check against the iframe's own `innerHeight` in scrolled-doc mode — the screen-reader-forced
+  flow — would read almost the entire chapter as "visible" regardless of actual scroll position,
+  silently defeating the feature in exactly the accessibility path it most needs to work in. The fix
+  compares each rect, shifted by the rendered view's own `position()`, against the manager's
+  `bounds()` — the same geometry epub.js's own `isVisible()` uses internally. See `TTS_PROVIDER.md`
+  open item 2 for the corrected design. Caught by re-deriving the fix from epub.js's actual source
+  rather than trusting the first plausible-looking property name; no test would have caught the
+  wrong version either, since a jsdom/mock `Contents` object would happily report whatever
+  `innerWidth`/`innerHeight` the test gave it.
 - On-device: paginated flow, scrolled-doc flow, and the screen-reader-forced scrolled-doc override —
   pending device verification (same status as word-level highlighting's own on-device pass,
   `TTS_PROVIDER.md`'s note on `selectionTheme.ts`'s opacity constants).
