@@ -334,6 +334,8 @@ describe('ReaderRouteScreen', () => {
         'Reading progress updated',
         expect.any(String),
         expect.any(Array),
+        // Compulsory to resolve — not dismissible by tapping outside or the Android back button.
+        { cancelable: false },
       );
       // Adopting is not itself a write — it's a read the user chose to trust.
       expect(mockSavePosition).not.toHaveBeenCalled();
@@ -361,6 +363,7 @@ describe('ReaderRouteScreen', () => {
         'Reading progress updated',
         expect.stringContaining('Text-to-speech has been paused'),
         expect.any(Array),
+        { cancelable: false },
       );
       await act(async () => {
         unmount();
@@ -386,6 +389,7 @@ describe('ReaderRouteScreen', () => {
         'Reading progress updated',
         expect.not.stringContaining('Text-to-speech'),
         expect.any(Array),
+        { cancelable: false },
       );
       await act(async () => {
         unmount();

@@ -619,6 +619,38 @@ expo-audio to route the remote command through JS first, or dropping lock-screen
 entirely — both are real product trade-offs, not a follow-up to make unilaterally, so this is
 recorded rather than fixed.
 
+**The conflict `Alert` is compulsory, EXPLICITLY, on both screens.** `Alert.alert`'s 4th argument is
+`{ cancelable: false }` on the `ReaderRouteScreen.tsx` and `AudioPlayerRouteScreen.tsx` calls alike.
+This was already the effective behaviour without it — Android's own `Alert.alert` defaults
+`cancelable` to `false` unless overridden (`react-native/Libraries/Alert/Alert.js`), and iOS's
+`.alert`-style `UIAlertController` has no tap-outside-to-dismiss gesture to begin with (that only
+exists for `.actionSheet` style) — but "the reader cannot read past this without resolving it" is a
+real product requirement, not an accident of an unset default, so it is written down rather than
+left for the next person to flip by passing `cancelable: true` for a nicer-seeming UX. Pinned by
+`ReaderRouteScreen.test.tsx`/`AudioPlayerRouteScreen.test.tsx`'s own `Alert.alert` assertions, which
+now check all four arguments.
+
+**The poll only closes the gap to ~2 minutes, not to zero — that ceiling is a stated trade-off, not
+an oversight, and it does not mean the reader can silently lose progress inside that window.** Two
+things are true at once here. First, every comparison this mechanism EVER makes is against the
+genuinely current on-screen position at the moment it runs (`toLocator(lastPositionRef.current)`,
+re-read fresh on every notification, not a value captured once at mount) — so nothing about the
+poll's 2-minute cadence makes any SINGLE comparison stale; it only bounds how soon a comparison
+happens at all. Second, and this is the part worth being explicit about: for up to that ~2 minutes
+(or until the next foreground edge, whichever comes first), THIS device can keep reading forward and
+writing its own throttled progress while a genuinely newer remote write from another device sits
+undetected. Because conflict resolution is last-write-wins by timestamp
+(`syncableTable.ts`'s `isAtOrAfter`), if this device's own next write lands with a LATER timestamp
+than that undetected remote write, the remote write is rejected as stale the moment the poll finally
+pulls it — `applyServerRecord` returns `false`, `notifyChanged()` never fires, and the Alert never
+appears at all for that particular remote write, because by the time it's checked this device has
+already legitimately moved past it. This is not data loss on THIS device (nothing here is ever
+overwritten without the user's own explicit "Continue here"/"Resume from there" choice) — it is the
+other device's write losing a race it was never told it was in. That race exists in any poll-based
+(not push-based) design, and a 2-minute interval was a deliberate choice among the options presented
+when this was built (see `READER_LIVE_SYNC_POLL_MS`'s own comment) — shortening it narrows the race
+window but cannot close it to zero without a server-push mechanism this app does not have.
+
 ## Verifying a change
 
 ```

@@ -341,6 +341,13 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
               },
             },
           ],
+          // EXPLICIT, not relying on the platform default: Android's own default is already
+          // `cancelable: false` when this option is omitted (RN's `Alert.js` hardcodes it unless
+          // overridden), and iOS's `.alert`-style `UIAlertController` has no tap-outside-to-dismiss
+          // gesture at all — but "resolving this is compulsory" is a real product requirement here,
+          // not an accident of an unset default, so it is written down rather than left implicit
+          // for the next person to accidentally flip by passing `cancelable: true`.
+          { cancelable: false },
         );
       });
     });

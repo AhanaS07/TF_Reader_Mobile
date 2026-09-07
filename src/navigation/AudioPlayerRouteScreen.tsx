@@ -227,6 +227,11 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
             },
           },
         ],
+        // EXPLICIT — see ReaderRouteScreen.tsx's identical option for why this is written down
+        // rather than left to Android's already-`false` default and iOS's lack of a tap-outside
+        // gesture: resolving this is compulsory before playback can proceed either way, since the
+        // `Promise<boolean>` this dialog resolves is what `onBeforePlay` is waiting on.
+        { cancelable: false },
       );
     });
   }, [bookId, writeProgress, resolveConflictJumpThere]);

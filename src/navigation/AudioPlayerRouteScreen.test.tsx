@@ -271,6 +271,8 @@ describe('AudioPlayerRouteScreen', () => {
         'Playback progress updated',
         expect.any(String),
         expect.any(Array),
+        // Compulsory to resolve — not dismissible by tapping outside or the Android back button.
+        { cancelable: false },
       );
       // Re-confirms THIS device's (paused) position — 90s, not the incoming 200s.
       expect(mockSavePosition).toHaveBeenCalledWith(
