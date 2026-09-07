@@ -144,10 +144,12 @@ export async function generateDeviceKeypair(): Promise<{ publicKey: string }> {
  * flambeau backend's `ReadingSessionRequest.devicePublicKey` requires (reading-session.ts's own
  * header: "NOT a PEM, NOT a JWK"). A PEM body IS already base64 of the DER bytes, wrapped with a
  * header/footer and line breaks per RFC 7468 — so this is a string strip, not a re-encode: no
- * base64-decode/re-encode round trip, no DER parser dependency. Deliberately NOT what
- * deviceKeyRegistration.ts's (now-unused) `asciiToBytes`+`bytesToBase64` pair did — that
+ * base64-decode/re-encode round trip, no DER parser dependency. Deliberately NOT what the now-
+ * deleted `deviceKeyRegistration.ts`'s `asciiToBytes`+`bytesToBase64` pair did — that
  * base64-encoded the PEM's own ASCII TEXT (headers, footers and newlines included) for the old
  * mock `POST /device/register-key` body, a completely different, non-interoperable wire value.
+ * That file is gone (flambeau's real backend has no such endpoint — API_CONTRACT_NOTES.md B8),
+ * kept here only as the contrast that explains why this function does a plain string strip.
  *
  * @param publicKeyPem - PEM (SPKI) public key, as returned by generateDeviceKeypair().
  */
