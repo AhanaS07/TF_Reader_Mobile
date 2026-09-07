@@ -1,16 +1,10 @@
 // Owner: Reader (Ahana), same status as the App.tsx picker this replaces — TEMP, dev-only, and NOT
 // the "Create book list page" this file's name might suggest to a real library screen. There is
-// still no backend book catalogue to list (that is Download/Encryption's real download pass,
-// devContentSeed.ts's own header), so this lists the same four seeded fixtures App.tsx used to,
-// plus the TTS demo, as real navigable routes instead of a state-swapped picker. See CLAUDE.md's
-// "Temporary scaffolding" section — this screen goes with devContentSeed.ts, not before it.
+// still no backend book catalogue to list, so this lists the four fixtures App.tsx used to,
+// plus the audiobook row and sync mock, as real navigable routes instead of a state-swapped picker.
 //
-// FOUR BOOK FIXTURES, ALWAYS LISTED — same reasoning as the old DevFixture table in App.tsx: the
-// two bundled stand-ins and the two large books pushed into the container via
-// EXPO_PUBLIC_READER_FIXTURE_EPUB/_PDF. Tapping an unpopulated large-book row still works — it
-// navigates to Reader, which raises devContentSeed's own "name the env var" error in its banner —
-// so a missing fixture reads as "nothing was pushed for this", not as a row that silently does
-// nothing.
+// FOUR BOOK FIXTURES, ALWAYS LISTED: the two bundled stand-ins and the two large books pushed
+// into the container via EXPO_PUBLIC_READER_FIXTURE_EPUB/_PDF.
 //
 // THE UNRECOGNISED-ACTIVE-BOOK FALLBACK ROW FROM App.tsx's `devFixtureOptions` DOES NOT CARRY OVER.
 // It existed because that picker always had exactly one "active" bookId that had to be represented
@@ -33,15 +27,14 @@ import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { openBook } from '@/features/download/openBook';
 import { clearAllDownloads } from '@/features/download/downloadManager';
 import { formatDiagnosticErrorMessage } from '@/shared/contracts/errors';
-import {
-  DEV_FIXTURE_EPUB_BOOK_ID,
-  DEV_FIXTURE_PDF_BOOK_ID,
-  DEV_SAMPLE_EPUB_BOOK_ID,
-  DEV_SAMPLE_PDF_BOOK_ID,
-} from '@/features/reader/devContentSeed';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
 import type { RootStackParamList } from './RootNavigator';
+
+const DEV_SAMPLE_EPUB_BOOK_ID = 'dev-sample-epub' as BookId;
+const DEV_SAMPLE_PDF_BOOK_ID = 'dev-sample-pdf' as BookId;
+const DEV_FIXTURE_EPUB_BOOK_ID = 'dev-fixture-epub' as BookId;
+const DEV_FIXTURE_PDF_BOOK_ID = 'dev-fixture-pdf' as BookId;
 
 interface DevFixture {
   label: string;

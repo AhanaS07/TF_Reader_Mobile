@@ -107,9 +107,8 @@ export class UnsupportedFormatError extends Error {
  * and which open command to send.
  *
  * The package must already be stored before this is called — either by
- * `openBook()` (ephemeral in-memory for Elite), `downloadBook()` (persisted),
- * or `devContentSeed.ts`'s `ensureSeeded()` for dev fixtures. Without a stored
- * package, `getFormat` → `openSession` rejects with DECRYPTION_FAILED.
+ * `openBook()` (ephemeral in-memory for Elite) or `downloadBook()` (persisted).
+ * Without a stored package, `getFormat` → `openSession` rejects with DECRYPTION_FAILED.
  *
  * `getFormat` DOES NOT DECRYPT — but it is only cheap WARM. `openSession` resolves the package,
  * and on a cold resolve (`packageCache` miss) `contentStore.loadPersisted` reads the whole
@@ -136,8 +135,8 @@ export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
  * restriction is contentProvider.ts's entire reason for existing.
  *
  * The package must already be stored before this is called — either by
- * `openBook()`, `downloadBook()`, or `devContentSeed.ts`'s `ensureSeeded()`.
- * Without a stored package, `getBook()` rejects with DECRYPTION_FAILED.
+ * `openBook()` or `downloadBook()`. Without a stored package, `getBook()`
+ * rejects with DECRYPTION_FAILED.
  *
  * TWO CONSTRAINTS:
  *  1. PLAINTEXT NEVER TOUCHES DISK. The route is RAM -> base64 -> bridge. The
