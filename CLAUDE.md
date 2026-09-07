@@ -608,16 +608,32 @@ boundary**: the `useTtsSession` hook instance itself is still only ever called f
 `ReaderScreen.tsx`, and `pauseTtsIfSpeaking()` merely re-exposes that instance's own already-existing
 `status`/`pause()` one level up, to another Reader file.
 
-**Audiobooks do NOT get an equivalent live check, and that gap has one confirmed edge the in-app
-gate doesn't cover.** The in-app Play button is fully gated — `player.play()` cannot execute before
-`onBeforePlay` resolves, and the button disables for the whole wait (`AudioPlayerScreen.tsx`'s own
-`playCheckPending` state). But `setActiveForLockScreen` wires the OS lock-screen/Control-Center/
-media-notification Play and Toggle commands to expo-audio's NATIVE player directly — resuming from
-there never runs `onBeforePlay` at all, so a conflict written by another device while this device sits
-paused can start playing again with no check and no prompt. Closing it would mean either patching
-expo-audio to route the remote command through JS first, or dropping lock-screen transport controls
-entirely — both are real product trade-offs, not a follow-up to make unilaterally, so this is
-recorded rather than fixed.
+**Audiobooks now get a live check too, but it is a SEPARATE mechanism from the play-gate above, and
+each owns a different moment.** `handleBeforePlay` owns "resuming from a paused, at-rest position"
+(unchanged). A second effect in `AudioPlayerRouteScreen.tsx` subscribes to `progressStore` and
+handles "a fresher record lands while this device is already playing" — gated on
+`AudioPlayerScreenHandle.isPlaying()` (a fresh read of the native player, not a snapshot), so it
+never runs during the paused case the play-gate already owns. On a genuine divergence (past the same
+`CONFLICT_THRESHOLD_MS` the play-gate uses) it calls `AudioPlayerScreenHandle.pause()` — stopping
+playback BEFORE the Alert shows, both so the compared position stops moving and so the reader is not
+left listening to audio that no longer matches where the app is about to say it is — then shows the
+identical, compulsory `Alert.alert`. **This is not the "earlier version… rejected" shape this file's
+own header used to warn against** — that rejection was specifically about comparing against a value
+that only updates at pause/seek/unmount (stale the instant playback resumes, which really would
+false-positive on every throttled write); the live effect instead compares against
+`currentPositionSeconds()`, a fresh read of the player's OWN live position, which is what makes the
+`CONFLICT_THRESHOLD_MS` tolerance correctly absorb this device's own echo instead of flagging it.
+Both mechanisms share one `conflictPendingRef` guard (only one dialog up at a time) and a
+`latestIncomingRef` (mirroring `ReaderRouteScreen.tsx`'s own fix, for the same reason: a second
+notification arriving while the live-conflict Alert is up still needs somewhere to land).
+
+**One confirmed edge neither the play-gate NOR the live check covers**: `setActiveForLockScreen`
+wires the OS lock-screen/Control-Center/media-notification Play and Toggle commands to expo-audio's
+NATIVE player directly. Resuming from there never runs `onBeforePlay`, and — because it also never
+goes through `progressStore` — the live-conflict effect has nothing to react to either. Closing it
+would mean either patching expo-audio to route the remote command through JS first, or dropping
+lock-screen transport controls entirely — both are real product trade-offs, not a follow-up to make
+unilaterally, so this is recorded rather than fixed.
 
 **The conflict `Alert` is compulsory, EXPLICITLY, on both screens.** `Alert.alert`'s 4th argument is
 `{ cancelable: false }` on the `ReaderRouteScreen.tsx` and `AudioPlayerRouteScreen.tsx` calls alike.
@@ -631,25 +647,34 @@ left for the next person to flip by passing `cancelable: true` for a nicer-seemi
 now check all four arguments.
 
 **The poll only closes the gap to ~2 minutes, not to zero — that ceiling is a stated trade-off, not
-an oversight, and it does not mean the reader can silently lose progress inside that window.** Two
-things are true at once here. First, every comparison this mechanism EVER makes is against the
-genuinely current on-screen position at the moment it runs (`toLocator(lastPositionRef.current)`,
-re-read fresh on every notification, not a value captured once at mount) — so nothing about the
-poll's 2-minute cadence makes any SINGLE comparison stale; it only bounds how soon a comparison
-happens at all. Second, and this is the part worth being explicit about: for up to that ~2 minutes
-(or until the next foreground edge, whichever comes first), THIS device can keep reading forward and
-writing its own throttled progress while a genuinely newer remote write from another device sits
-undetected. Because conflict resolution is last-write-wins by timestamp
-(`syncableTable.ts`'s `isAtOrAfter`), if this device's own next write lands with a LATER timestamp
-than that undetected remote write, the remote write is rejected as stale the moment the poll finally
-pulls it — `applyServerRecord` returns `false`, `notifyChanged()` never fires, and the Alert never
-appears at all for that particular remote write, because by the time it's checked this device has
-already legitimately moved past it. This is not data loss on THIS device (nothing here is ever
-overwritten without the user's own explicit "Continue here"/"Resume from there" choice) — it is the
-other device's write losing a race it was never told it was in. That race exists in any poll-based
-(not push-based) design, and a 2-minute interval was a deliberate choice among the options presented
-when this was built (see `READER_LIVE_SYNC_POLL_MS`'s own comment) — shortening it narrows the race
-window but cannot close it to zero without a server-push mechanism this app does not have.
+an oversight, and it does not mean either screen can silently lose progress inside that window.**
+Applies identically to `READER_LIVE_SYNC_POLL_MS` (EPUB/PDF) and `AUDIO_LIVE_SYNC_POLL_MS` (audio) —
+same interval, same reasoning, same trade-off; audio needed its own poll for a reason worth stating
+because it's easy to miss: the live-conflict effect above only REACTS to a `progressStore` change,
+it does not itself cause one, so without a poll pulling on its own, that effect would sit correctly
+built but permanently inert on stable wifi (no NetInfo edge ever fires, and nothing else calls
+`syncEngine.run()` while the screen just sits open, playing or not).
+
+Two things are true at once here. First, every comparison either mechanism EVER makes is against a
+genuinely CURRENT value at the moment it runs — Reader re-reads `toLocator(lastPositionRef.current)`
+fresh on every notification; audio's live-conflict effect reads `currentPositionSeconds()` straight
+off the native player, fresher still, since text only moves on a discrete event while audio moves
+continuously — so nothing about either poll's 2-minute cadence makes any SINGLE comparison stale; it
+only bounds how soon a comparison happens at all. Second, and this is the part worth being explicit
+about: for up to that ~2 minutes (or until the next foreground edge, whichever comes first), a
+device can keep advancing and writing its own throttled progress while a genuinely newer remote
+write from another device sits undetected. Because conflict resolution is last-write-wins by
+timestamp (`syncableTable.ts`'s `isAtOrAfter`), if this device's own next write lands with a LATER
+timestamp than that undetected remote write, the remote write is rejected as stale the moment the
+poll finally pulls it — `applyServerRecord` returns `false`, `notifyChanged()` never fires, and the
+Alert never appears at all for that particular remote write, because by the time it's checked this
+device has already legitimately moved past it. This is not data loss on THIS device (nothing here is
+ever overwritten without the user's own explicit "Continue here"/"Resume from there" choice, and for
+audio, playback is also explicitly paused before that choice is offered) — it is the other device's
+write losing a race it was never told it was in. That race exists in any poll-based (not push-based)
+design, and a 2-minute interval was a deliberate choice among the options presented when this was
+built (see `READER_LIVE_SYNC_POLL_MS`'s own comment) — shortening it narrows the race window but
+cannot close it to zero without a server-push mechanism this app does not have.
 
 ## Verifying a change
 
