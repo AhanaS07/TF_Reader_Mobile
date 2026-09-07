@@ -1,11 +1,20 @@
 # TTS auto-follow (page-turn / auto-scroll) — handoff to Reader (Ahana)
 
-**From:** Accessibility (Hruthik) · **Status:** proposal, not implemented · **Scope:** EPUB only
+**From:** Accessibility (Hruthik) · **Status:** implemented, 2026-09-07 · **Scope:** EPUB only
 
-This is a handoff, not a change request against Reader's files. Everything below lives in
-`src/features/reader/**`, which is Ahana's lane — see `CLAUDE.md`'s ownership table. Nothing here
-touches the accessibility contract or the TTS session; `useTtsSession.ts` already does its part and
-needs no change for this.
+This was a handoff, not a change request against Reader's files, and the proposal below shipped as
+designed. **Ahana went further than this doc asks for**: rather than sentence-level follow alone, the
+shipped version also follows the WORD currently speaking, so a page turns exactly on the first word
+of the next page rather than somewhere in the following sentence. That needed real-time word position,
+which meant re-landing the `tts-progress` → `setSpokenWordRange` wiring in `useTtsSession.ts` (the
+piece reverted 2026-09-07, `API_CONTRACT_NOTES.md` §6) — so the claim two lines below, that Reader's
+own files would be the only ones touched, did not hold once word-precision was in scope. See
+`TTS_PROVIDER.md` open item 2 for the final design and `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s
+`tts.highlightMode` row for the re-landing.
+
+The rest of this document is left as originally written — the proposal it describes is what shipped
+at the sentence level, and the reasoning below (why no new bridge command, why `display()`, why the
+dedupe) still holds for that half.
 
 ## Problem
 
@@ -75,25 +84,32 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
    sentence, so the check naturally runs at that cadence. Just track the last CFI that triggered an
    auto-follow `display()` and skip re-displaying if this call's CFI is already the one on screen.
 
-## Open questions — flagging for Ahana's call, not presuming an answer
+## Open questions as originally written — resolution below each
 
-- **Should auto-follow back off after the reader's own manual swipe/scroll?** If someone manually
-  pages back to re-read something while TTS keeps talking, the next `setSpokenRange` call will find
-  the spoken CFI off-screen and pull them forward again. No "recently user-navigated" signal exists
-  today to suppress that; would need one if the desired behavior is "don't yank back mid-manual-browse."
-- **Word-level ranges.** `setSpokenWordRange` is back and landed on both halves together this time
-  (RN side and the WebView entries), so `npm run typecheck` stays green — see `WEBVIEW_BRIDGE.md`'s
-  Current surface table. Auto-follow can be built against sentence-level `setSpokenRange` now and
-  extended to word-level whenever someone picks that up; nothing here is still blocked on it landing.
+- ~~**Should auto-follow back off after the reader's own manual swipe/scroll?**~~ **Still genuinely
+  open** — shipped without this. No "recently navigated" signal exists; the reader is pulled back to
+  the spoken position on the next tick, same as sentence-level would have been. A deliberate scope
+  cut, not an oversight resolved elsewhere.
+- ~~**Word-level ranges.**~~ **Landed, and used for more than the visual wash.** `setSpokenWordRange`
+  is not just painted from `useTtsSession.ts`'s `tts-progress` wiring — it now ALSO drives the
+  word-precise half of auto-follow (`followSpokenRange`, called from both `setSpokenRange` and
+  `setSpokenWordRange` in `epub.entry.ts`), gated the same way the paint always was:
+  `highlightMode === 'word'`.
 
-## Testing / verification checklist for whoever implements this
+## Testing / verification checklist — done
 
-- Unit test the visibility check against a mocked `rendition`/`contents`: asserts `display()` is
-  called when the CFI is out-of-section or has off-screen rects, and NOT called when already visible.
-- On-device: paginated flow, scrolled-doc flow, and the screen-reader-forced scrolled-doc override
-  (`readerA11yLayout.ts`) — confirm auto-follow works under all three.
-- `npm test && npm run typecheck && npm run lint`. `npm run reader:build-html` only if the change
-  ends up touching a shared pure module (it shouldn't, per the design above — everything needed
-  already lives in `epub.entry.ts` and `epubCfiRange.ts`).
-- Update `TTS_PROVIDER.md` open item 2 (strike it) and `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s risk
-  register in the same change, per this repo's own doc-update convention.
+- ~~Unit test the visibility check against a mocked `rendition`/`contents`~~ **Done differently**:
+  the rect/viewport arithmetic (`anyRectOnScreen`) is extracted into `highlightGeometry.ts` and
+  directly unit-tested there with plain objects, no DOM/mocking needed. The DOM-touching glue
+  (`spokenRangeVisible`/`followSpokenRange` in `epub.entry.ts`) is pinned by source-text ordering
+  assertions in `readerTemplate.test.ts` instead, matching how `epub.entry.ts`'s other DOM-driving
+  logic is tested — that file is declared not-unit-tested for exactly this reason.
+- On-device: paginated flow, scrolled-doc flow, and the screen-reader-forced scrolled-doc override —
+  pending device verification (same status as word-level highlighting's own on-device pass,
+  `TTS_PROVIDER.md`'s note on `selectionTheme.ts`'s opacity constants).
+- `npm test && npm run typecheck && npm run lint` — green. `npm run reader:build-html` WAS needed —
+  `anyRectOnScreen` is a new export on `highlightGeometry.ts`, a shared pure module, contradicting
+  this doc's own guess above that it shouldn't be. Both generated HTML files were regenerated;
+  `reader-pdf.html` came out byte-identical (the PDF entry never imports the new export).
+- `TTS_PROVIDER.md` open item 2 struck; this doc and `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s risk
+  register updated in the same change.

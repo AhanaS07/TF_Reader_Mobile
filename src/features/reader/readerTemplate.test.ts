@@ -845,15 +845,18 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // than failing (`EpubCFI.toRange` ignores the spine component), so leaving it set would paint a
     // stale wash over unrelated text at the next repaint.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('currentSpokenWordCfi = null');
+    // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
+    // CFI would wrongly skip a follow it genuinely needs.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
   });
 
   it('changing the spoken SENTENCE clears the word inside it', () => {
     // The word only means anything inside the sentence it was resolved against. The caller cannot be
     // relied on for this: `useTtsSession` sends word ranges only while `highlightMode === 'word'`,
     // so turning word mode off mid-utterance would otherwise strand the last wash with nothing left
-    // that would ever remove it. It must also come FIRST — the auto-follow proposal
-    // (accessibility/TTS_AUTOFOLLOW_HANDOFF.md) adds a `rendition.display()` to this same handler,
-    // and a re-render with a stale mark still attached can carry it into the new view.
+    // that would ever remove it. It must also come FIRST — auto-follow's `rendition.display()` lives
+    // in this same handler, and a re-render with a stale mark still attached can carry it into the
+    // new view.
     const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
     expect(body).toContain('clearSpokenWord()');
     expect(body.indexOf('clearSpokenWord()')).toBeLessThan(body.indexOf('currentSpokenCfi = cfi'));
@@ -869,6 +872,24 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body.indexOf('clearSpokenWord()')).toBeLessThan(body.indexOf('resolveSpokenWordCfi('));
     // And the paint side's half of the collision guard, which the resolver's own bail does not cover.
     expect(body).toContain('spokenWordCollides(');
+  });
+
+  it('a new sentence auto-follows AFTER it paints, not before', () => {
+    // `followSpokenRange` reads geometry that only exists once `highlightAdd` has filed the range,
+    // and it must be inside the `cfi !== null` branch — a clear has nothing to follow.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
+    expect(body).toContain('followSpokenRange(cfi)');
+    expect(body.indexOf('highlightAdd(')).toBeLessThan(body.indexOf('followSpokenRange(cfi)'));
+  });
+
+  it('a spoken word follows even when its paint is refused for colliding with another owner', () => {
+    // The resolved word's position is real regardless of whether painting it was refused — refusing
+    // only protects another owner's mark from being displaced, per `spokenWordCollides`'s own note.
+    // Asserted as: the call sits OUTSIDE the `spokenWordCollides` guard's block, not nested inside it.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenWordRange: (range) =>');
+    const collisionGuard = blockAfter(body, 'if (!spokenWordCollides(cfi))');
+    expect(body).toContain('followSpokenRange(cfi)');
+    expect(collisionGuard).not.toContain('followSpokenRange');
   });
 
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {

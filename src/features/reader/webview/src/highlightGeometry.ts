@@ -97,3 +97,34 @@ export function rangesOverlap(a: Range, b: Range): boolean {
     a.compareBoundaryPoints(Range.END_TO_START, b) < 0
   );
 }
+
+/** A viewport measured in CSS px, in whatever coordinate space the caller's rects are already in. */
+export interface ViewportSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Does any of these rects intersect a viewport of this size, anchored at (0,0)?
+ *
+ * PARTIAL OVERLAP COUNTS, NOT FULL CONTAINMENT — the caller this was built for
+ * (`epub.entry.ts`'s TTS auto-follow, `spokenRangeVisible`) tests a target that can legitimately
+ * straddle a page or column break. Requiring every rect fully inside would call a sentence
+ * "off-screen" the instant it starts painting if it also runs onto the next page, even though the
+ * reader can plainly see where it starts — and would turn the page out from under text most of
+ * which is still visible.
+ */
+export function anyRectOnScreen(
+  rects: readonly { left: number; top: number; width: number; height: number }[],
+  viewport: ViewportSize,
+): boolean {
+  return rects.some(
+    (rect) =>
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.left < viewport.width &&
+      rect.left + rect.width > 0 &&
+      rect.top < viewport.height &&
+      rect.top + rect.height > 0,
+  );
+}

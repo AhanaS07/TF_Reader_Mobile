@@ -57,6 +57,7 @@ import type { A11yTtsPrefs } from '@/shared/contracts';
 import Tts from './ttsEngine';
 import type { Voice } from './ttsEngine';
 import { mapRate } from './ttsRate';
+import { normalizeTtsProgressEvent } from './ttsProgress';
 import { ttsStatusAnnouncement } from './ttsAnnouncements';
 
 export type TtsSessionStatus = 'idle' | 'speaking' | 'paused' | 'error';
@@ -256,6 +257,30 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       }
     }
 
+    /**
+     * Forwards the native per-word boundary to Reader's word-level highlight/auto-follow seam.
+     * Gated on `highlightMode === 'word'` — the same gate this used before the whole feature was
+     * reverted 2026-09-07 (`API_CONTRACT_NOTES.md` §6) for landing ahead of the WebView half, which
+     * has since landed for real (`WEBVIEW_BRIDGE.md`'s "The spoken word"). `'sentence'` mode gets no
+     * word-level ticks at all — Reader's `setSpokenRange` handler still auto-follows on its own,
+     * coarser cadence for that mode; see `TTS_PROVIDER.md` open item 2.
+     *
+     * `currentlySpeaking` guards the same race `handleTtsStart` does: a progress event can arrive
+     * for an utterance this session no longer considers current.
+     */
+    function handleTtsProgress(event: {
+      location?: number;
+      length?: number;
+      start?: number;
+      end?: number;
+    }): void {
+      if (!awaitingUtterance) return;
+      if (livePrefs.highlightMode !== 'word') return;
+      if (!currentlySpeaking) return;
+      const range = normalizeTtsProgressEvent(event);
+      source.setSpokenWordRange({ cfi: currentlySpeaking.cfi, start: range.start, end: range.end });
+    }
+
     async function handleTtsFinish(): Promise<void> {
       if (!awaitingUtterance) return;
       awaitingUtterance = false;
@@ -450,6 +475,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
+      Tts.addListener('tts-progress', handleTtsProgress),
       // 'tts-error' is absent from @iternio/react-native-tts's iOS `supportedEvents`
       // (TextToSpeech.m declares only start/finish/pause/resume/progress/cancel, and never calls
       // sendEventWithName:@"tts-error" — AVSpeechSynthesizerDelegate has no error callback for the

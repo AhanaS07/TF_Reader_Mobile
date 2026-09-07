@@ -43,7 +43,7 @@ import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epub
 import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
 import { forceReflow } from './epubViewGeometry';
-import { highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
+import { anyRectOnScreen, highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import { highlightFill, matchStroke, spokenWordOpacity } from './selectionTheme';
@@ -130,6 +130,12 @@ let currentSpokenCfi: string | null = null;
  * Text nodes belonging to a document that may since have been re-rendered; `resolveSpokenWordCfi`'s
  * own header says the same thing about caching, at more length. */
 let currentSpokenWordCfi: string | null = null;
+
+/** The CFI last brought on screen by auto-follow's own `display()`, or null. Lets a repeat call for
+ * the SAME target skip re-checking geometry — once auto-follow has just displayed it, re-issuing
+ * `display()` for it again would fight the manager mid-settle rather than dedupe. See
+ * `followSpokenRange`. Reset alongside the other TTS CFI state in `openEpub`. */
+let lastAutoFollowedCfi: string | null = null;
 
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
@@ -1116,6 +1122,49 @@ function contentsForCfi(cfi: string): Contents | null {
   return null;
 }
 
+/** Is any rect of `cfi`'s range inside the chapter iframe's own viewport?
+ *
+ * False for a different section — `contentsForCfi` returns null for one that is not currently
+ * rendered, and a chapter that is not on screen at all cannot be argued visible. False too for a
+ * range that fails to resolve: if it cannot be measured, it cannot be claimed visible.
+ *
+ * `contents.window` IS THE INNER IFRAME'S OWN VIEWPORT, NOT THE OUTER ONE `viewportSize()` MEASURES.
+ * `getClientRects()` on a `contents.range()` Range is in that inner document's coordinate space —
+ * epub.js renders every section into its own same-origin `<iframe>` (`IframeView`), and `Contents`
+ * is built directly from that iframe's own `document`/`window` — so the outer `#viewer` measurement
+ * `applyBaselineCss` uses for column math is the wrong denominator here.
+ */
+function spokenRangeVisible(cfi: string): boolean {
+  const contents = contentsForCfi(cfi);
+  if (!contents) return false;
+  const range = rangeForCfi(contents, cfi);
+  if (!range) return false;
+  return anyRectOnScreen(Array.from(range.getClientRects()), {
+    width: contents.window.innerWidth,
+    height: contents.window.innerHeight,
+  });
+}
+
+/** Bring `cfi` on screen if it is not already — a page turn in paginated flow, a scroll in
+ * scrolled-doc (including the screen-reader-forced override, `readerA11yLayout.ts`), via the same
+ * `rendition.display()` `goTo` uses. epub.js's manager resolves which of those two it is; there is
+ * no separate branch here for flow.
+ *
+ * Called from BOTH `setSpokenRange` (coarse: a whole new sentence starting off-screen) and
+ * `setSpokenWordRange` (precise: THIS word specifically has crossed off-screen, which is what makes
+ * a page turn land on the first word of the next page rather than the first word of the next
+ * sentence). Both share `lastAutoFollowedCfi` so a sentence-level call and the word-level calls that
+ * follow it for the same still-off-screen target don't double up on `display()`.
+ */
+function followSpokenRange(cfi: string): void {
+  if (!rendition) return;
+  if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
+  lastAutoFollowedCfi = cfi;
+  rendition.display(cfi).catch(() => {
+    // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
+  });
+}
+
 /**
  * Paint the ONE active search match, or clear it.
  *
@@ -1508,6 +1557,10 @@ const api: TFReaderApi<'openEpub'> = {
         // resolve happily against this one's first chapter and be re-painted by the first repaint
         // that came along, over whatever text sits at the same tree position.
         currentSpokenWordCfi = null;
+        // A CFI auto-followed in the previous book addresses nothing here either — same
+        // cross-book-resolves-anyway hazard, and a stale match would wrongly skip a follow this
+        // book's first spoken CFI genuinely needs.
+        lastAutoFollowedCfi = null;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for
@@ -1800,11 +1853,9 @@ const api: TFReaderApi<'openEpub'> = {
    * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
    * strand the last word wash on screen with nothing left that would ever remove it.
    *
-   * It also happens to be the precondition the auto-follow proposal
-   * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
-   * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
-   * stale word mark is still attached can re-attach it into the new one. Clearing before anything
-   * else keeps that free — do not move it below the paint.
+   * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
+   * re-renders the view while a stale word mark is still attached would carry it into the new view.
+   * Clearing before anything else keeps that free — do not move it below the paint.
    */
   setSpokenRange: (cfi) => {
     try {
@@ -1812,8 +1863,14 @@ const api: TFReaderApi<'openEpub'> = {
       clearSpokenWord();
       if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
       currentSpokenCfi = cfi;
-      if (cfi !== null)
+      if (cfi !== null) {
         highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+        // Coarse auto-follow: a brand-new sentence starting entirely off-screen. The word-level
+        // handler below refines this for a sentence that straddles a page/column break.
+        followSpokenRange(cfi);
+      } else {
+        lastAutoFollowedCfi = null;
+      }
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }
@@ -1836,6 +1893,14 @@ const api: TFReaderApi<'openEpub'> = {
    * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
    * the host's commands), and with no rendition there is nothing painted for the state to disagree
    * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+   *
+   * ALSO THE PRECISE HALF OF AUTO-FOLLOW. `followSpokenRange(cfi)` runs on the resolved word CFI
+   * regardless of whether the paint above was skipped for colliding with another owner's highlight —
+   * the word's position is real even when its paint is suppressed. This is what turns a page turn
+   * exactly on the first word to fall off the current one, not before and not a whole sentence late:
+   * `useTtsSession` calls this once per `tts-progress` tick while `highlightMode === 'word'`, so a
+   * sentence that straddles a page break gets checked word-by-word as speech crosses it, where
+   * `setSpokenRange`'s own once-per-sentence call could only check the sentence as a whole.
    */
   setSpokenWordRange: (range) => {
     try {
@@ -1849,11 +1914,12 @@ const api: TFReaderApi<'openEpub'> = {
       if (cfi === null) return;
       // The paint side's half of the collision guard — the resolver's own bail only covers the
       // sentence it was handed. See `spokenWordCollides` for why this refuses rather than displaces.
-      if (spokenWordCollides(cfi)) return;
-
-      currentSpokenWordCfi = cfi;
-      // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
-      repaintSpokenWord({ live: false });
+      if (!spokenWordCollides(cfi)) {
+        currentSpokenWordCfi = cfi;
+        // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
+        repaintSpokenWord({ live: false });
+      }
+      followSpokenRange(cfi);
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }

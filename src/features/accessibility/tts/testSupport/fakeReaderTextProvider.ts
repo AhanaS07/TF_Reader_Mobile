@@ -90,6 +90,8 @@ export interface FakeReaderTextProvider extends ReaderTextProvider {
   readonly sentences: readonly TtsSentence[];
   /** Every `setSpokenRange` argument, in call order. `null` entries are clears. */
   readonly spokenRanges: readonly (string | null)[];
+  /** Every `setSpokenWordRange` argument, in call order. `null` entries are clears. */
+  readonly spokenWordRanges: readonly (SpokenWordRange | null)[];
   /** Move the reader's position silently. The resume-position setup. */
   setPosition(index: number): void;
   /** Move the position AND fire `navigated`, as a Contents tap or search hit would. */
@@ -213,6 +215,7 @@ export function createFakeReaderTextProvider(
   const indexByCfi = new Map<string, number>(sentences.map((s, i) => [s.cfi, i]));
 
   const spokenRanges: (string | null)[] = [];
+  const spokenWordRanges: (SpokenWordRange | null)[] = [];
   const handlers = new Set<(reason: TtsInterruption) => void>();
 
   let position = startIndex;
@@ -253,6 +256,7 @@ export function createFakeReaderTextProvider(
   return {
     sentences,
     spokenRanges,
+    spokenWordRanges,
 
     async current(from: string | null, signal?: AbortSignal): Promise<TtsFetchResult> {
       if (terminated) return UNAVAILABLE;
@@ -284,11 +288,11 @@ export function createFakeReaderTextProvider(
     },
 
     setSpokenWordRange(range: SpokenWordRange | null): void {
-      // No test on this fake inspects word-level ranges yet — Hruthik's useTtsSession tests
-      // exercise session logic (prefetch, generation counters, teardown), not word highlighting.
-      // No-op keeps the fake satisfying ReaderTextProvider without inventing an assertion surface
-      // nobody uses.
+      // Recorded the same way setSpokenRange is — useTtsSession's tts-progress wiring is the
+      // caller now (see useTtsSession.test.ts's tts-progress cases), so there is an assertion
+      // surface worth having.
       if (terminated) return;
+      spokenWordRanges.push(range);
     },
 
     onInterrupted(handler: (reason: TtsInterruption) => void): () => void {

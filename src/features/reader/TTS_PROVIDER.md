@@ -236,25 +236,41 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
    `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
    consumers should build against the reason, not the source. **Karthik + Abhinav.**
-2. **Does the reader scroll to follow the spoken range?** Undecided, and still open. Today
-   `setSpokenRange` paints and nothing else, so speech can run past the visible page. The fake does
-   not scroll either. Reader's call, but it changes what `current(null)` means after a long read, so
-   it should be settled before step 6.
+2. ~~**Does the reader scroll to follow the spoken range?**~~ **SOLVED, 2026-09-07 — word-precise,
+   not just the sentence-level version originally proposed.** `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md`
+   was Accessibility's sentence-level proposal (a visibility check plus `rendition.display(cfi)`
+   inside `setSpokenRange`'s own handler, no new bridge command). Landed as designed, PLUS a
+   word-level refinement on top: `followSpokenRange(cfi)`
+   (`webview/src/epub.entry.ts`, next to `contentsForCfi`) is called from BOTH `setSpokenRange`
+   (coarse — a whole new sentence starting off-screen) and `setSpokenWordRange` (precise — this
+   specific word has crossed off-screen), sharing one `lastAutoFollowedCfi` dedupe so neither
+   double-navigates for the same target. The word-level call is what actually delivers "turn on the
+   first word of the next page, not before the last word of this one": each `tts-progress` tick
+   checks that word's own geometry, so a sentence straddling a page break gets checked word-by-word
+   as speech crosses it, where the sentence-level call alone could only check the sentence as a whole
+   at its start.
 
-   Accessibility has since written a proposal —
-   `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md` (`origin/feature/accessibility`, `8cb54d8`): a
-   visibility check plus `rendition.display(cfi)` inside `setSpokenRange`'s own handler, needing no
-   new bridge command. **Word-level highlighting landing does not block it and does not change it** —
-   its own recommendation is to build against sentence-level `setSpokenRange` first and extend
-   afterwards, which still holds. Two things the word layer leaves for whoever picks it up:
+   The visibility test itself (`spokenRangeVisible`, same file) treats PARTIAL overlap as visible,
+   not full containment — a sentence painted where it starts, that also runs onto the next page, is
+   not "off-screen" the instant it paints. `anyRectOnScreen` (`highlightGeometry.ts`, pure,
+   unit-tested) is the rect/viewport arithmetic this rests on; `contents.window`, not the outer
+   `#viewer` `viewportSize()` measures, is the viewport it's measured against, since
+   `getClientRects()` on a `contents.range()` Range is in the chapter iframe's own coordinate space.
 
-   - The word wash is cleared at the TOP of `setSpokenRange`, before anything paints. That is a
-     precondition auto-follow would otherwise have to add for itself: a `display()` that re-renders
-     the view while a stale mark is still attached can carry it into the new one. Do not move it
-     below the paint.
-   - Extending follow to word level must keep the proposal's step-5 dedupe. Word ranges arrive per
-     `tts-progress` event rather than per sentence, and a `display()` at that cadence fights the
-     reader instead of following them.
+   Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
+   `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see
+   `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s `tts.highlightMode` row for why that RN-side wiring needed
+   re-landing). `'sentence'`-mode readers still get the coarse, once-per-sentence follow — no page
+   ever fails to turn — just not the exact-word boundary.
+
+   The word wash being cleared at the TOP of `setSpokenRange`, before anything paints, remains the
+   load-bearing precondition it always was: a `display()` that re-renders the view while a stale mark
+   is still attached would carry it into the new one.
+
+   **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
+   manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back
+   to wherever speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented
+   no-ops (`pdf.entry.ts`) — nothing to follow there yet.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

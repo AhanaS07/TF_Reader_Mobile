@@ -141,6 +141,52 @@ describe('useTtsSession', () => {
     expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
   });
 
+  it("ignores tts-progress when highlightMode is 'sentence' (the default)", async () => {
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    await act(() => fireTtsEvent('tts-progress', { location: 0, length: 5 }));
+
+    // 'sentence' mode never consumes tts-progress — Reader's own setSpokenRange handler
+    // auto-follows on its coarser, once-per-sentence cadence instead (TTS_PROVIDER.md item 2).
+    expect(provider.spokenWordRanges).toHaveLength(0);
+  });
+
+  it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word'", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    // iOS-shaped payload (location/length) — the default test environment here is iOS, per the
+    // PAUSE_RESUME_SUPPORTED note above.
+    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
+
+    expect(provider.spokenWordRanges.at(-1)).toEqual({
+      cfi: provider.sentences[0].cfi,
+      start: 4,
+      end: 7,
+    });
+  });
+
+  it('ignores tts-progress while idle — nothing has ever been spoken', async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createFakeReaderTextProvider();
+    await renderHook(() => useTtsSession(provider));
+
+    // No play() at all — awaitingUtterance is false, the same guard handleTtsStart itself uses.
+    await act(() => fireTtsEvent('tts-progress', { location: 0, length: 3 }));
+
+    expect(provider.spokenWordRanges).toHaveLength(0);
+  });
+
   it('stops at the end of a section when autoContinueChapter is off, and clears the highlight', async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
     // DEFAULT_FAKE_BOOK's spine item 0 has 3 sentences; sentence index 2 is lastInSection.

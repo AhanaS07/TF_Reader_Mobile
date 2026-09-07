@@ -15,7 +15,7 @@
 // EPUB shell stopped converting a touch to a caret and started measuring rects like the PDF shell
 // always has — see highlightGeometry.ts's header for why a caret was the wrong primitive.
 
-import { highlightAt, rangesOverlap } from './highlightGeometry';
+import { anyRectOnScreen, highlightAt, rangesOverlap } from './highlightGeometry';
 
 describe('hit-testing a tap against painted boxes', () => {
   const BOXES = [
@@ -126,5 +126,48 @@ describe('whether a selection meets an existing highlight', () => {
     foreign.setEnd(otherNode, 4);
 
     expect(() => rangesOverlap(range(node, 0, 4), foreign)).toThrow();
+  });
+});
+
+describe('whether any rect is on screen', () => {
+  const VIEWPORT = { width: 100, height: 50 };
+
+  it('is true for a rect fully inside the viewport', () => {
+    expect(anyRectOnScreen([{ left: 10, top: 10, width: 20, height: 10 }], VIEWPORT)).toBe(true);
+  });
+
+  it('is false for a rect entirely past the right edge', () => {
+    expect(anyRectOnScreen([{ left: 100, top: 0, width: 20, height: 10 }], VIEWPORT)).toBe(false);
+  });
+
+  it('is false for a rect entirely past the bottom edge', () => {
+    expect(anyRectOnScreen([{ left: 0, top: 50, width: 20, height: 10 }], VIEWPORT)).toBe(false);
+  });
+
+  it('is true for a rect straddling an edge — partial overlap counts', () => {
+    // The case this exists for: a sentence painted where it starts, on this page, that runs on
+    // past the edge into the next. It is visible where it starts, so it is not "off-screen."
+    expect(anyRectOnScreen([{ left: 90, top: 0, width: 20, height: 10 }], VIEWPORT)).toBe(true);
+  });
+
+  it('ignores a zero-width or zero-height rect', () => {
+    expect(anyRectOnScreen([{ left: 10, top: 10, width: 0, height: 10 }], VIEWPORT)).toBe(false);
+    expect(anyRectOnScreen([{ left: 10, top: 10, width: 10, height: 0 }], VIEWPORT)).toBe(false);
+  });
+
+  it('is true if ANY rect in the list is on screen, even if others are not', () => {
+    expect(
+      anyRectOnScreen(
+        [
+          { left: 200, top: 0, width: 10, height: 10 },
+          { left: 10, top: 10, width: 10, height: 10 },
+        ],
+        VIEWPORT,
+      ),
+    ).toBe(true);
+  });
+
+  it('is false for an empty list', () => {
+    expect(anyRectOnScreen([], VIEWPORT)).toBe(false);
   });
 });
