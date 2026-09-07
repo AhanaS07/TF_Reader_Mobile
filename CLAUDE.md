@@ -561,9 +561,63 @@ BEFORE it, not passively in the background. Porting one screen's mechanism onto 
 would reintroduce exactly the failure mode each shape was chosen to avoid.
 
 The corrupt/legacy-row fallback hazard in `progressStore.currentLocator()` — a null or unparseable
-`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is unrelated to this
-wiring and still open; see `src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and
-the pinning test in `src/features/sync/contractConformance.test.ts` (Karthik's call to fix or accept).
+`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is **fixed**, by
+`ce23884` (2026-09-07): only a genuinely `null` legacy-row locator still gets that fallback; a
+corrupt-but-non-null one returns `null`, which both `ReaderRouteScreen.tsx` and
+`AudioPlayerRouteScreen.tsx` already treat as "no saved position." See
+`src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and the rewritten pin in
+`src/features/sync/contractConformance.test.ts`.
+
+**An already-open EPUB/PDF screen also pulls on its own now, not only at resume.** The
+already-open-screen subscription above tells you when a pulled record changed something; it does not
+make anything pull. `useAutoSync.ts` is strictly edge-triggered (a NetInfo offline→online transition,
+mounted once at the app root) and the resume effect's own `syncEngine.run()` call fires exactly once,
+so a book left open and foregrounded the whole time while another device writes was invisible until
+*something else* happened to trigger a sync. `ReaderRouteScreen.tsx` closes that with two
+Reader-only mechanisms, both calling the same public `syncEngine.run()`: an `AppState` listener that
+pulls on the edge into `'active'` (covers backgrounding/foregrounding without a connectivity drop),
+and a `READER_LIVE_SYNC_POLL_MS` (2-minute) `setInterval` that runs only while the screen is
+resolved and the app is foregrounded, torn down on backgrounding and on unmount/book-switch.
+**`AudioPlayerRouteScreen.tsx` deliberately does NOT get either mechanism** — it already re-checks
+synchronously at the one moment that matters (`onBeforePlay`, immediately before an irreversible
+`play()`), and a background poll would false-positive against its own continuous position drift the
+same way a subscription would (see this section's own audio-divergence paragraph above).
+
+**A conflict Alert left unanswered on the same book no longer freezes on the first notification's
+data.** `conflictPendingRef` still suppresses stacking a SECOND `Alert.alert` while one is pending —
+`Alert.alert` has no imperative dismiss or update — but a `latestIncomingRef` behind it keeps
+advancing on every further `progressStore` notification for that book. "Resume from there" adopts
+whichever locator is latest at the moment it's finally pressed, not whichever arrived first. This is
+deliberately not a timeout/auto-dismiss: that would make an implicit choice for the user, which is
+exactly what this whole mechanism exists to avoid for EPUB/PDF (unlike audio's immediate-action
+gate, where nothing is running that a stale read could corrupt).
+
+**An active TTS session is paused the instant a conflict is found, before the Alert shows — because
+polling made "the Alert can appear while `autoContinueChapter` is mid-chapter" a real case, not a
+theoretical one.** `ReaderScreen` exposes exactly one thing outward for this:
+`ReaderScreenHandle.pauseTtsIfSpeaking()` (a `forwardRef`/`useImperativeHandle` pair, reading through
+the same `ttsSessionRef` `tearDownAndLock` already uses, so it costs nothing extra to keep current).
+`ReaderRouteScreen.tsx` calls it right before `Alert.alert`, for two reasons that both matter:
+`autoContinueChapter` (Reader accessibility rule 3) would otherwise keep moving `lastPositionRef`
+for as long as the dialog sits unanswered, making "the currently displayed position" a moving
+target; and TTS speaking over whatever a screen reader announces for the Alert itself is exactly the
+"neither ducks" collision that rule already names for announcements. Left paused either way the user
+answers — no auto-resume, same "never silently continue" reasoning as the rest of this mechanism.
+**This is a Reader-internal seam, not a new crossing of `TTS_PROVIDER.md`'s Reader/Accessibility
+boundary**: the `useTtsSession` hook instance itself is still only ever called from
+`ReaderScreen.tsx`, and `pauseTtsIfSpeaking()` merely re-exposes that instance's own already-existing
+`status`/`pause()` one level up, to another Reader file.
+
+**Audiobooks do NOT get an equivalent live check, and that gap has one confirmed edge the in-app
+gate doesn't cover.** The in-app Play button is fully gated — `player.play()` cannot execute before
+`onBeforePlay` resolves, and the button disables for the whole wait (`AudioPlayerScreen.tsx`'s own
+`playCheckPending` state). But `setActiveForLockScreen` wires the OS lock-screen/Control-Center/
+media-notification Play and Toggle commands to expo-audio's NATIVE player directly — resuming from
+there never runs `onBeforePlay` at all, so a conflict written by another device while this device sits
+paused can start playing again with no check and no prompt. Closing it would mean either patching
+expo-audio to route the remote command through JS first, or dropping lock-screen transport controls
+entirely — both are real product trade-offs, not a follow-up to make unilaterally, so this is
+recorded rather than fixed.
 
 ## Verifying a change
 

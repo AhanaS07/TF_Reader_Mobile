@@ -21,7 +21,7 @@
 // conflict tests below drive it directly rather than going through a real syncEngine.
 
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { syncEngine } from '@/features/sync/syncEngine';
@@ -86,29 +86,37 @@ jest.mock('@/features/sync/stores/downloadStore', () => ({
 // otherwise close over an out-of-scope variable, since the mock call is hoisted above this file's
 // other top-level statements.
 const mockReceivedProps: { bookId?: string; initialTarget?: unknown }[] = [];
+// Controls what the mocked `ReaderScreenHandle.pauseTtsIfSpeaking()` returns — the real
+// implementation's own contract (see `ReaderScreenHandle`'s doc comment): `false` when nothing was
+// speaking, `true` when it paused something.
+const mockPauseTtsIfSpeaking = jest.fn<boolean, []>();
 
-jest.mock('@/features/reader/ReaderScreen', () => ({
-  ReaderScreen: (props: {
-    bookId: string;
-    initialTarget?: unknown;
-    onRelocated?: (p: unknown) => void;
-  }) => {
-    mockReceivedProps.push({ bookId: props.bookId, initialTarget: props.initialTarget });
-    // require(), not a top-level import: babel-plugin-jest-hoist forbids a jest.mock() factory
-    // from closing over any out-of-scope import binding (only `mock`-prefixed variables and a
-    // handful of globals are allowed) — same reasoning as mockReceivedProps's naming above.
-    /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
-    const { View, Text: RNText } = require('react-native');
-    return (
-      <View>
-        <RNText>{`reading ${props.bookId}`}</RNText>
-        <RNText onPress={() => props.onRelocated?.({ kind: 'page', page: 7, pageCount: 20 })}>
-          relocate
-        </RNText>
-      </View>
-    );
-  },
-}));
+jest.mock('@/features/reader/ReaderScreen', () => {
+  // require(), not a top-level import: babel-plugin-jest-hoist forbids a jest.mock() factory from
+  // closing over any out-of-scope import binding (only `mock`-prefixed variables and a handful of
+  // globals are allowed) — same reasoning as mockReceivedProps's naming above.
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
+  const { forwardRef, useImperativeHandle } = require('react');
+  return {
+    ReaderScreen: forwardRef(function MockReaderScreen(
+      props: { bookId: string; initialTarget?: unknown; onRelocated?: (p: unknown) => void },
+      ref: unknown,
+    ) {
+      mockReceivedProps.push({ bookId: props.bookId, initialTarget: props.initialTarget });
+      useImperativeHandle(ref, () => ({ pauseTtsIfSpeaking: mockPauseTtsIfSpeaking }));
+      /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
+      const { View, Text: RNText } = require('react-native');
+      return (
+        <View>
+          <RNText>{`reading ${props.bookId}`}</RNText>
+          <RNText onPress={() => props.onRelocated?.({ kind: 'page', page: 7, pageCount: 20 })}>
+            relocate
+          </RNText>
+        </View>
+      );
+    }),
+  };
+});
 
 jest.mock('../../DevPreferencesMenu', () => ({
   DevPreferencesMenu: () => null,
@@ -155,10 +163,12 @@ describe('ReaderRouteScreen', () => {
     mockAlert.mockClear();
     mockCurrentForBook.mockReset();
     mockPullBook.mockReset();
+    mockPauseTtsIfSpeaking.mockReset();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
     mockCurrentForBook.mockResolvedValue(null);
     mockPullBook.mockResolvedValue(undefined);
+    mockPauseTtsIfSpeaking.mockReturnValue(false);
   });
 
   describe('a book read online without ever being downloaded', () => {
@@ -332,6 +342,56 @@ describe('ReaderRouteScreen', () => {
       });
     });
 
+    it('pauses TTS before showing the Alert, and names it in the message when it was speaking', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-tts');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+      await fireEvent.press(getByText('relocate'));
+
+      mockPauseTtsIfSpeaking.mockReturnValue(true);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPauseTtsIfSpeaking).toHaveBeenCalledTimes(1);
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Reading progress updated',
+        expect.stringContaining('Text-to-speech has been paused'),
+        expect.any(Array),
+      );
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('does not mention TTS in the message when nothing was speaking', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-no-tts');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+      await fireEvent.press(getByText('relocate'));
+
+      mockPauseTtsIfSpeaking.mockReturnValue(false);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPauseTtsIfSpeaking).toHaveBeenCalledTimes(1);
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Reading progress updated',
+        expect.not.stringContaining('Text-to-speech'),
+        expect.any(Array),
+      );
+      await act(async () => {
+        unmount();
+      });
+    });
+
     it('pushes the current on-screen position back out, unchanged, on "Continue here"', async () => {
       mockCurrentLocator.mockResolvedValueOnce(null);
       const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-stay');
@@ -357,6 +417,131 @@ describe('ReaderRouteScreen', () => {
       );
       // No remount: the screen keeps showing what it already had.
       expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual(lastReceivedBeforeAnswer);
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('adopts the LATEST incoming locator, not the first, when a dialog is left open through a second notification', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderReaderRoute('dev-sample-epub-conflict-stale');
+      await waitFor(() => expect(getByText('relocate')).toBeTruthy());
+
+      await fireEvent.press(getByText('relocate')); // displayed becomes { type: 'PDF', page: 7 }
+
+      // First notification shows the Alert, left unanswered (mockAlertAutoPress stays null).
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 20 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockAlert).toHaveBeenCalledTimes(1);
+
+      // A second device write arrives before the user answers. No second Alert (one is already
+      // up) — but the value the eventual answer acts on must move.
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'PDF', page: 35 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockAlert).toHaveBeenCalledTimes(1);
+
+      // The user finally answers the still-showing (first) dialog.
+      const buttons = mockAlert.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+      const resumeButton = buttons.find((candidate) => candidate.text === 'Resume from there');
+      await act(async () => {
+        resumeButton?.onPress?.();
+      });
+
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual({
+        bookId: 'dev-sample-epub-conflict-stale',
+        initialTarget: { kind: 'page', page: 35 },
+      });
+      await act(async () => {
+        unmount();
+      });
+    });
+  });
+
+  describe('live sync while the screen is open and foregrounded', () => {
+    let appStateSpy: jest.SpyInstance;
+
+    // Same shape as src/features/reader/audio/audioScratchReclaimer.test.ts's own helper — grabs
+    // the LAST registered listener by design: the background-flush effect above registers its own
+    // listener at mount (index 0) and is never the one these tests are driving.
+    function emitAppStateChange(state: 'active' | 'background'): void {
+      const calls = (AppState.addEventListener as jest.Mock).mock.calls;
+      const handler = calls[calls.length - 1][1] as (s: string) => void;
+      handler(state);
+    }
+
+    beforeEach(() => {
+      appStateSpy = jest
+        .spyOn(AppState, 'addEventListener')
+        .mockReturnValue({ remove: jest.fn() } as never);
+    });
+
+    afterEach(() => {
+      appStateSpy.mockRestore();
+      // Unconditional, not just at the end of the interval test below: a test that throws before
+      // its own cleanup must not leak fake timers into another file in the same Jest worker — see
+      // commit 4752229's own note on why ReaderScreen.test.tsx needed this same safety net.
+      jest.useRealTimers();
+    });
+
+    it('pulls again on the edge into active, not on every AppState change', async () => {
+      const { unmount } = await renderReaderRoute('dev-sample-epub-live-pull-foreground');
+      await waitFor(() => expect(mockSyncRun).toHaveBeenCalledTimes(1)); // the resume-time run
+
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(1); // backgrounding alone must not pull
+
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('polls every READER_LIVE_SYNC_POLL_MS while foregrounded, and stops while backgrounded', async () => {
+      const { unmount } = await renderReaderRoute('dev-sample-epub-live-pull-interval');
+      await waitFor(() => expect(mockSyncRun).toHaveBeenCalledTimes(1));
+
+      // The interval created at mount runs under REAL timers — `waitFor` above depends on real
+      // `setTimeout` to poll, so fake timers can't be active yet. Stop that interval, switch to
+      // fake timers, then drive the same active edge a real foreground would: `startPoll()`
+      // creates a FRESH `setInterval`, this time inside `jest.useFakeTimers()`'s clock, which is
+      // the one `advanceTimersByTime` below can actually see.
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      jest.useFakeTimers();
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(2); // the foreground-edge pull itself
+
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(3);
+
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(3); // no poll while backgrounded
+
+      jest.useRealTimers();
       await act(async () => {
         unmount();
       });

@@ -54,6 +54,16 @@
 // bookkeeping, not a decision) rather than merely ignored, because leaving this device's stale
 // value on record would make the NEXT comparison wrong too. Past the threshold, it escalates to
 // the same prompt `ReaderRouteScreen.tsx` uses for EPUB/PDF.
+//
+// THE IN-APP GATE ABOVE IS NOT THE ONLY WAY PLAYBACK CAN RESUME, AND THE OTHER ONE BYPASSES IT
+// ENTIRELY. `AudioPlayerScreen.tsx`'s `setActiveForLockScreen` wires the OS lock-screen/
+// Control-Center/media-notification Play and Toggle commands to expo-audio's NATIVE player
+// directly — resuming from there never calls `beginPlayback`, so `onBeforePlay` never runs. A
+// conflict written by another device while this device sits paused can start playing again from
+// the lock screen with no check and no prompt. Confirmed present, not fixed: closing it needs
+// either patching expo-audio to route the remote command through JS first, or dropping lock-screen
+// transport controls — both are product trade-offs on top of this file, not something to change
+// here unilaterally. See CLAUDE.md's "Reading-position resume" section.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 

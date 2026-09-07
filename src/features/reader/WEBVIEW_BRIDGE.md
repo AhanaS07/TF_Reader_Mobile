@@ -572,11 +572,12 @@ rather than a week.
 conversion happened first, then the field became an ordinary change — a discriminated `ReaderPosition`,
 a validator, and a page indicator in `ReaderScreen`.
 
-**It is surfaced, not persisted.** `progressStore.savePage()` / `savePosition()` exist on Sync's side
-and this is finally the value they need, but writing a progress record is Personalization's stage and
-carries its own decisions (when to write, how often, what wins on conflict). Reader's half is reporting
-the position; storing it is not, and doing both here would prejudge those. **Karthik / Vaishnavi: the
-value is available now.**
+**It is surfaced, not persisted — by this bridge.** `progressStore.savePage()` / `savePosition()`
+exist on Sync's side and this is the value they need; Reader's half here is reporting the position,
+not storing it. Persistence, write-throttling, and what wins on a cross-device conflict have since
+been decided and landed in `ReaderRouteScreen.tsx`/`AudioPlayerRouteScreen.tsx` (Reader's own
+navigation layer, not this bridge) — see CLAUDE.md's "Reading-position resume" section for the full
+account, not this paragraph.
 
 ## The prefs-application design, as signed off
 
