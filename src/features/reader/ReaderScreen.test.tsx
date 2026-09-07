@@ -305,6 +305,12 @@ function makePrefs(overrides: Partial<SharedPrefs> = {}): SharedPrefs {
 // the LAST or a RELATIVE injectJavaScript call, never an absolute count) unaffected either way. Set
 // explicitly anyway so the applyAppearance-specific tests below have a real baseline to diff from.
 beforeEach(() => {
+  // Real timers for every test. `describe('the bounded wait on the byte path')` at line 884
+  // installs fake timers in its own beforeEach; if its afterEach is skipped (test throws before
+  // cleanup, or a prior file in the same Jest worker leaked fake timers), `screen.findByTestId`
+  // hangs indefinitely because waitFor's internal setTimeout never fires. Restoring here is a
+  // no-op when timers are already real and a safety net when they are not.
+  jest.useRealTimers();
   jest.mocked(useAppearanceEnv).mockReturnValue(LIGHT_ENV);
   jest.mocked(useScreenReaderEnabled).mockReturnValue(false);
   jest.mocked(prefsStore.getPrefs).mockResolvedValue(makePrefs());
