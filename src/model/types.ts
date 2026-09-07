@@ -145,9 +145,11 @@ export interface Acquisition {
   licenceModel: AccessTier;
   // Total copies the institution holds. Present only for ELITE.
   copiesTotal?: number;
-  // null ⇒ plaintext: open access, or ANY audio. Not `undefined` — the frozen
-  // content-provider contract already defines null as exactly this state, so a
-  // missing `encrypted` block is a meaningful value rather than absent data.
+  // null ⇒ plaintext: open access only. Not `undefined` — a missing `encrypted`
+  // block is a meaningful value rather than absent data. AUDIO IS NOT
+  // guaranteed plaintext any more: the backend team reversed that assumption
+  // on 3 Sep 2026, so SUBSCRIPTION/ELITE audio can carry a real encryption
+  // block here too, same as PDF/EPUB.
   encryption: CatalogueEncryption | null;
   // Whether a bundled search index ships with the book. Always false for AUDIO.
   //

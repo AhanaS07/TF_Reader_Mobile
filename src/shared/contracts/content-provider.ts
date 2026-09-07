@@ -20,8 +20,10 @@
 import type { BookId, Bytes, Timestamp, ContentFormat } from '../types/primitives';
 
 // The `encryption` block from the grant (source-of-truth §10/§11). Names EXACT.
-// null for open access and ALL audio (plain file, no key). PROVISIONAL —
-// co-freeze with Abhinav on Day 3.
+// null for open access (plain file, no key). AUDIO IS NO LONGER ALWAYS
+// PLAINTEXT — the backend team reversed that assumption on 3 Sep 2026;
+// SUBSCRIPTION/ELITE audio now ships encrypted like every other format. Only
+// open access is still guaranteed null here.
 export interface EncryptionDescriptor {
   algorithm: 'AES-256-GCM';
   layout: 'nonce(12) || ciphertext || tag(16)';
@@ -53,10 +55,10 @@ export interface SignedLicence {
 export interface EncryptedPackage {
   // INVARIANT: same book as licence.itemId above (when licence is present).
   bookId: BookId;
-  format: ContentFormat; // audio is never encrypted, so in practice PDF | EPUB
+  format: ContentFormat; // PDF | EPUB | AUDIO — audio can now be encrypted too, see above
   content: Bytes; // nonce(12)||ct||tag(16), as received. Never decrypted to disk.
   index?: Bytes; // bundled search index ciphertext (same BEK, its OWN nonce)
-  encryption: EncryptionDescriptor | null; // null ⇒ open access / audio (plaintext)
+  encryption: EncryptionDescriptor | null; // null ⇒ open access (plaintext); any format may be encrypted otherwise
   licence: SignedLicence | null; // null ⇒ open access (no licence)
 
   // BOTH length fields ship — option (b), decided by Abhinav, who owns the

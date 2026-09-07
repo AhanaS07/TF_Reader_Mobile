@@ -57,10 +57,6 @@ type Nav = CompositeNavigationProp<
   BottomTabNavigationProp<RootTabParamList, 'Search'>
 >;
 
-// Same placeholder CatalogueScreen uses, and for the same reason: CAP-3
-// (institution selection) has not landed, so there is no real value to read yet.
-const PLACEHOLDER_INSTITUTION_ID = 'inst_7f3';
-
 const SKELETON_COUNT = 3;
 
 // ─── Copy ────────────────────────────────────────────────────────────────────
@@ -122,11 +118,18 @@ export default function SearchScreen() {
   // note on why this replaced handToggledSession.
   const session = useCurrentSession();
 
+  // The real institution, never a hardcoded fallback — null when the reader
+  // has no institution (not signed in, or an individual subscriber), in which
+  // case search runs as a public search instead of one scoped to a catalogue
+  // that doesn't apply to this reader. Every use below reads this instead of
+  // re-deriving it, so there's exactly one place this can go stale.
+  const institutionId = session !== null ? session.institutionId ?? null : null;
+
   // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
   // where the fixture-vs-api choice gets made — by config, never by this file.
   const pipeline = useMemo(() => getSearchPipeline(), []);
   const search = useCatalogueSearch({
-    institutionId: session !== null ? session.institutionId ?? undefined : undefined,
+    institutionId: institutionId ?? undefined,
     pipeline,
   });
 
@@ -322,15 +325,16 @@ export default function SearchScreen() {
               onClearSearch={search.onClear}
             />
 
-            {search.browseInstead.length > 0 && (
+            {/* A shelf only exists within one institution's catalogue, so this
+                is only offered when the reader actually has one — otherwise
+                Shelf would receive an institutionId that isn't theirs. */}
+            {search.browseInstead.length > 0 && institutionId !== null && (
               <View testID="search-browse-instead" style={styles.browse}>
                 <Text style={styles.browseHeading}>Browse instead</Text>
                 {search.browseInstead.map((entry, index) => (
                   // Shelf now exists (Catalogue stack), so this crosses tabs to
                   // it — same cross-tab pattern AccessGateScreen already uses to
-                  // reach SignIn. `PLACEHOLDER_INSTITUTION_ID` matches every
-                  // other call this screen makes: a shelf only exists within one
-                  // institution's catalogue, and Search has no real one yet.
+                  // reach SignIn.
                   <CategoryCard
                     key={entry.shelfId}
                     title={entry.title}
@@ -341,7 +345,7 @@ export default function SearchScreen() {
                         params: {
                           shelfId: entry.shelfId,
                           title: entry.title,
-                          institutionId: PLACEHOLDER_INSTITUTION_ID,
+                          institutionId,
                         },
                       })
                     }
@@ -368,7 +372,7 @@ export default function SearchScreen() {
           // makes an Elite result resolve consistently with the detail screen.
           const access = resolveAccess({
             item: publication,
-            institutionId: PLACEHOLDER_INSTITUTION_ID,
+            institutionId,
             session,
           });
 

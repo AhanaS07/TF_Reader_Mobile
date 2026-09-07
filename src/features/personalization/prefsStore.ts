@@ -54,7 +54,10 @@ interface PrefsStoreState {
   _setHasHydrated: (value: boolean) => void;
 }
 
-const usePrefsStore = create<PrefsStoreState>()(
+// Exported (matching institutionStore.ts's own convention) so a migration test
+// can drive rehydration directly — everything else keeps going through the
+// PrefsSource functions below, not this hook.
+export const usePrefsStore = create<PrefsStoreState>()(
   persist(
     (set) => ({
       values: { ...DEFAULT_PREFS },
@@ -94,6 +97,52 @@ const usePrefsStore = create<PrefsStoreState>()(
           return;
         }
         state?._setHasHydrated(true);
+      },
+      // NOT `version`/`migrate` — zustand only calls `migrate` when the stored
+      // blob has an explicit numeric `version` field that differs from this
+      // one (node_modules/zustand's persist middleware, checked directly: the
+      // check is `typeof deserializedStorageValue.version === 'number'`).
+      // This store never set `version` before, so real on-disk data from
+      // before the accessibility rewrite has NO version field at all —
+      // `migrate` would silently never run for the actual legacy data it
+      // needs to catch. `merge` runs on every rehydration unconditionally,
+      // versioned or not, which is what a shape check like this needs.
+      //
+      // What it catches: pre-Sep-2026 data may carry `values.accessibility`
+      // in the OLD FLAT shape — dyslexiaFont/highContrast/reduceMotion/
+      // screenReaderHints as direct booleans, predating the rewrite into
+      // text/display/announce/tts sub-groups (accessibility.ts).
+      // AccessibilityScreen reads `prefs.accessibility.text.dyslexiaFont`,
+      // which throws on the old shape since `text` never existed on it.
+      //
+      // Not hand-translated field by field: the old `reduceMotion` was a
+      // plain boolean and the new one is a three-way 'system' | 'on' | 'off',
+      // with no exact equivalent to map to. Falling back to
+      // DEFAULT_PREFS.accessibility wholesale is the same "drop and reset"
+      // choice institutionStore.ts makes for its own breaking shape change,
+      // scoped to just the accessibility group — every other prefs group
+      // (font, theme, layout, typography, zoom) survives untouched.
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<PrefsStoreState> | undefined;
+        const persistedValues = persisted?.values as
+          | (Partial<PrefsValues> & { accessibility?: { text?: unknown } })
+          | undefined;
+        const hasNewShape =
+          persistedValues?.accessibility !== undefined &&
+          typeof persistedValues.accessibility.text === 'object' &&
+          persistedValues.accessibility.text !== null;
+
+        return {
+          ...currentState,
+          ...persisted,
+          values: {
+            ...currentState.values,
+            ...persistedValues,
+            accessibility: hasNewShape
+              ? (persistedValues.accessibility as PrefsValues['accessibility'])
+              : DEFAULT_PREFS.accessibility,
+          },
+        };
       },
     },
   ),

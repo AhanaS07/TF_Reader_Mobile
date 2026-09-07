@@ -104,9 +104,10 @@ function toIsbn(identifier: unknown): string | undefined {
 }
 
 function toEncryption(properties: Json): CatalogueEncryption | null {
-  // Absent `encrypted` is a STATE, not missing data: open access and all audio
-  // ship plaintext, and the frozen content-provider contract already defines
-  // null as exactly that. Never `undefined`.
+  // Absent `encrypted` is a STATE, not missing data: open access ships
+  // plaintext, and null is that state, never `undefined`. Audio is NOT
+  // guaranteed plaintext any more (reversed 3 Sep 2026) — a publication with
+  // format AUDIO can legitimately carry a real `encrypted` block here.
   if (properties.encrypted === undefined) return null;
   const encrypted = asRecord(properties.encrypted, 'encrypted');
   const originalLength = optNumber(encrypted.originalLength);

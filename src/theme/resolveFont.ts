@@ -18,5 +18,9 @@ const aleoByWeight: Record<string, string> = {
 
 export function resolveFont(family: 'primary' | 'secondary', weightValue: string): string {
   const table = family === 'primary' ? openSansByWeight : aleoByWeight;
-  return table[weightValue];
+  const fontFamily = table[weightValue];
+  if (fontFamily === undefined) {
+    throw new Error(`resolveFont: no ${family} font registered for weight "${weightValue}"`);
+  }
+  return fontFamily;
 }
