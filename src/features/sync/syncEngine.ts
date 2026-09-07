@@ -35,6 +35,12 @@ const TABLES = {
  * `personalization` and `accessibility` are user scoped and carry no book_id,
  * so their collection GETs must not be filtered by one.
  */
+// Entity types whose ids are derived from their scope (userId / userId+bookId) rather than
+// randomly minted on-device. For these, a null server_updated_at does NOT mean "safe to push
+// without checking" — another device may have already written to the same deterministic slot.
+// serverHasDiverged must still GET the server record for these even when base is null.
+const DETERMINISTIC_SCOPED_ENTITIES = new Set<string>(['progress', 'personalization', 'accessibility']);
+
 const SCOPE: Record<EntityType, 'user' | 'userBook'> = {
   progress: 'userBook',
   bookmarks: 'userBook',
@@ -245,28 +251,36 @@ async function push(report: SyncReport): Promise<void> {
         try {
           const existing = await findExistingProgress(error.payload);
           if (existing) {
-            await api.restore<any>('progress', existing.id);
-            // Same id-override reasoning as the download branch above: error.payload still
-            // carries this device's stale (rejected) id, and the response echoing it back would
-            // make writeRow below write the restored record under the WRONG id.
-            const updated = await api.update<any>('progress', existing.id, {
-              ...error.payload,
-              id: existing.id,
-            });
-            // writeRow, NOT applyServerRecord: this is this device's own just-confirmed
-            // restore, not a generic incoming pull - it must bypass applyServerRecord's
-            // sticky-delete guard for the same reason the download branch does.
-            await TABLES.progress.writeRow(progressMapper.toRow(updated.data));
-            // ONLY when the ids differ - unlike downloads' random ids, progress ids are
-            // deterministic (progressId(userId, bookId)), so `existing.id === op.entity_id` is
-            // the NORMAL case once a device's very first create has ever landed: the CODE_TAKEN
-            // just means "the document I already own already exists", not "someone else's
-            // document is squatting on my slot". hardDeleteLocal here unconditionally deleted the
-            // row writeRow just wrote (same id), so the next savePosition() found nothing locally,
-            // re-created under the same deterministic id, 409'd again, and repeated forever - every
-            // page turn permanently CODE_TAKEN. Only a genuinely different id (a pre-deterministic-
-            // id-era stale local row, the actual case this branch exists for) has a separate row to
-            // discard.
+            if (existing.isDeleted) {
+              // Tombstoned slot — the entitlement was vacated and our CREATE is filling it.
+              // Restore and push our data: the slot was empty, so our device's position wins.
+              await api.restore<any>('progress', existing.id);
+              // Same id-override reasoning as the download branch: error.payload carries this
+              // device's stale/rejected id; echoing it back in the body would make writeRow
+              // adopt the restored record under the WRONG id.
+              const updated = await api.update<any>('progress', existing.id, {
+                ...error.payload,
+                id: existing.id,
+              });
+              // writeRow, NOT applyServerRecord — same sticky-delete guard bypass reasoning as
+              // the download branch: this is our own confirmed restore, not a generic pull.
+              await TABLES.progress.writeRow(progressMapper.toRow(updated.data));
+            } else {
+              // Live record from another device. We cannot reliably compare our device-clock
+              // updated_at against the server-stamped existing.updatedAt (see serverHasDiverged's
+              // own doc comment on why that comparison is wrong). Instead: adopt the server's
+              // record now — this gives any UPDATE ops already queued behind this CREATE a valid
+              // server_updated_at to compare against, so they push our newer position forward
+              // through serverHasDiverged correctly rather than overwriting the server blindly.
+              await TABLES.progress.writeRow(progressMapper.toRow(existing));
+            }
+            // ONLY when the ids differ - progress ids are deterministic (progressId(userId,
+            // bookId)), so `existing.id === op.entity_id` is the NORMAL case once a device's
+            // first create has ever landed. Unconditional hardDeleteLocal deleted the row
+            // writeRow just wrote (same id), causing the next savePosition() to re-create under
+            // the same deterministic id, 409 again, and repeat forever — every page turn
+            // permanently CODE_TAKEN. Only a genuinely different id (a pre-deterministic-id-era
+            // stale local row) has a separate row to discard.
             if (existing.id !== op.entity_id) {
               await TABLES[op.entity_type].hardDeleteLocal(op.entity_id);
             }
@@ -599,10 +613,12 @@ async function sendDelete(
  * last saw it. Unchanged means nothing happened there and our edit is safe;
  * different means a genuine concurrent write, and the server's copy wins.
  *
- * A null base version means the server has never acknowledged this record to
- * us. Since ids are minted on the device as UUIDs, any document already sitting
- * under that id is one of our own earlier pushes whose response was lost - so
- * that is not a conflict either, and overwriting it is exactly right.
+ * A null base version means the server has never acknowledged this record to us.
+ * For random-ID entities (bookmarks, highlights, downloads): any document already
+ * sitting under that id is one of our own earlier pushes whose response was lost -
+ * safe to overwrite. For deterministic-ID entities (progress, personalization,
+ * accessibility): another device may already hold this same derived slot, so we
+ * still GET and let applyServerRecord's LWW decide.
  */
 async function serverHasDiverged(
   op: OutboxRow,
@@ -610,24 +626,34 @@ async function serverHasDiverged(
 ): Promise<boolean> {
   const local = await TABLES[op.entity_type].findById(op.entity_id);
   const base = local?.server_updated_at ?? null;
-  if (!base) return false;
+
+  // Null base + random ID: safe to push without checking (see doc comment above).
+  // Null base + deterministic ID + non-UPDATE op: CREATE is handled by ProgressRestoreCollision
+  // (the 409 fires and resolves the slot); DELETE with a null base means we're deleting something
+  // the server never saw, so a GET would 404 and resolve false anyway. Only UPDATE ops need the
+  // extra check: that is the case where a CREATE response was lost after the server stored the
+  // record, leaving subsequent UPDATE ops with null base that would otherwise overwrite blindly.
+  if (!base && (!DETERMINISTIC_SCOPED_ENTITIES.has(op.entity_type) || op.operation !== 'UPDATE')) return false;
 
   let record: any;
   try {
     record = (await api.findById<any>(entityPath, op.entity_id)).data;
   } catch (error) {
-    // Gone from the server entirely, so there is nothing to lose by writing.
+    // Gone from the server entirely — nothing to lose by writing.
     // Any other failure propagates: a push must not proceed on an unread check.
     if (error instanceof ApiError && error.isNotFound) return false;
     throw error;
   }
 
-  if (!record?.updatedAt || record.updatedAt === base) return false;
+  // Server has nothing there (null-base + 404 already handled above; this covers a response
+  // with no updatedAt), or the record is unchanged since we last saw it — safe to push.
+  if (!record?.updatedAt) return false;
+  if (base && record.updatedAt === base) return false;
 
-  // Someone else wrote there since we last looked. Adopt their copy - but only report a
-  // resolved conflict (and let `push` drop our operation) if it actually took:
-  // `applyServerRecord`'s LWW guard can and does refuse to overwrite a local row that is itself
-  // newer, in which case our edit still needs to reach the server, not vanish from the queue.
+  // Someone else wrote there since we last looked (or we never acknowledged it and the server
+  // already has something for a deterministic slot). Adopt their copy — but only report a
+  // resolved conflict if it actually took: applyServerRecord's LWW guard can refuse to
+  // overwrite a local row that is itself newer, in which case our edit still needs to go out.
   return TABLES[op.entity_type].applyServerRecord(record);
 }
 

@@ -177,15 +177,12 @@ describe('EPUB progress anchoring', () => {
     expect(await progressStore.currentLocator()).toEqual(audio);
   });
 
-  it('KNOWN GAP (unresolved, flagged for Karthik): mislabels a corrupt AUDIO/EPUB row as PDF', async () => {
-    // Pins TODAY'S ACTUAL behaviour, not desired behaviour - see
-    // reader/audio/CONTRACTS_GATE_PROPOSAL_AUDIO_PROGRESS.md §4, "non-exhaustive sites". The
-    // `parseLocator(row.locator) ?? {type:'PDF', page:row.offset}` fallback in currentLocator()
-    // is correct for a genuinely pre-locator-column legacy row (see the test above), but a row
-    // with a *corrupt* locator - written after the column existed, and never actually PDF - gets
-    // the identical treatment and is misreported as a PDF page. If this ever gets fixed to
-    // return null (or something else) for a non-legacy corrupt row, update this test to match
-    // the new, intentional behaviour rather than deleting it.
+  it('returns null for a corrupt (non-null) locator — does not mislabel it as PDF', async () => {
+    // A non-null but unparseable locator means the row was written after the column existed but
+    // something corrupted the JSON. We don't know the format, so null is safer than fabricating
+    // a PDF page — callers treat null as "no saved position, start from beginning".
+    // Previously this returned { type:'PDF', page:0 } (the offset fallback). Fixed in
+    // progressStore.ts: the PDF fallback now only fires when locator IS null (legacy rows).
     const db = await getDatabase();
     await db.runAsync(
       `INSERT INTO progress (id, user_id, book_id, "offset", locator, updated_at, is_deleted, synced)
@@ -193,7 +190,7 @@ describe('EPUB progress anchoring', () => {
       ['corrupt-audio', USER, BOOK, 0, '{not valid json', '2026-01-01T00:00:00.000Z'],
     );
 
-    expect(await progressStore.currentLocator()).toEqual({ type: 'PDF', page: 0 });
+    expect(await progressStore.currentLocator()).toBeNull();
   });
 });
 

@@ -538,6 +538,76 @@ describe('locator collision (bookmarks/highlights created independently on two d
   });
 });
 
+describe('serverHasDiverged: null server_updated_at on a deterministic-id entity', () => {
+  // Regression pin for the edge case described in CLAUDE.md: a progress row with
+  // server_updated_at = null (CREATE response was lost, or local DB wiped after first read) used
+  // to push through without checking the server, overwriting another device's newer position.
+  // The fix: DETERMINISTIC_SCOPED_ENTITIES always GET the server record even with null base,
+  // then let applyServerRecord's LWW decide.
+
+  it('adopts the server record and drops the op when the server is newer', async () => {
+    // Local row: never acknowledged (server_updated_at null), offset 5, older device clock.
+    await progressTable.saveLocal(
+      progressRow('progress-user-001-book-001', 5, '2026-09-01T00:00:00.000Z'),
+      'UPDATE',
+    );
+    // server_updated_at is null (never set — simulate lost CREATE response).
+
+    // Server has another device's position — offset 50, server-stamped newer.
+    mockApi.findById.mockResolvedValue(
+      ok({
+        id: 'progress-user-001-book-001',
+        userId: USER,
+        bookId: BOOK,
+        offset: 50,
+        locator: { type: 'PDF', page: 50, offset: 0 },
+        updatedAt: '2026-09-03T00:00:00.000Z',
+        isDeleted: false,
+      }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.update).not.toHaveBeenCalled();
+    expect((await progressTable.findById('progress-user-001-book-001'))?.offset).toBe(50);
+    expect(await outboxAll()).toHaveLength(0);
+  });
+
+  it('pushes through when the local edit is newer than the server record', async () => {
+    // Local row: never acknowledged, but our device clock says we read further (offset 80).
+    await progressTable.saveLocal(
+      progressRow('progress-user-001-book-001', 80, '2026-09-05T00:00:00.000Z'),
+      'UPDATE',
+    );
+
+    // Server has an older position (offset 20, older server timestamp).
+    mockApi.findById.mockResolvedValue(
+      ok({
+        id: 'progress-user-001-book-001',
+        userId: USER,
+        bookId: BOOK,
+        offset: 20,
+        locator: { type: 'PDF', page: 20, offset: 0 },
+        updatedAt: '2026-09-01T00:00:00.000Z',
+        isDeleted: false,
+      }) as any,
+    );
+    mockApi.update.mockImplementation((_p, _id, body: any) =>
+      ok({ ...body, updatedAt: '2026-09-06T00:00:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    // Local wins — our edit goes out to the server.
+    expect(report.pushed).toBe(1);
+    expect(report.conflicts).toBe(0);
+    expect(mockApi.update).toHaveBeenCalledTimes(1);
+    expect((await progressTable.findById('progress-user-001-book-001'))?.offset).toBe(80);
+    expect(await outboxAll()).toHaveLength(0);
+  });
+});
+
 describe('progress restore collision (local row lost, re-created under the deterministic id)', () => {
   it("restores the server's tombstoned record under its OWN id, brings it up to date, and discards this device's stale id", async () => {
     const mine = await progressTable.saveLocal(
@@ -690,6 +760,56 @@ describe('progress restore collision (local row lost, re-created under the deter
     const row = await progressTable.findById(mine.id);
     expect(row).not.toBeNull();
     expect(row?.offset).toBe(12);
+  });
+
+  it('adopts a LIVE server record without pushing our CREATE payload — lets queued UPDATE ops carry our position', async () => {
+    // Scenario: device 1's local DB was wiped (fresh install). It re-creates under the same
+    // deterministic id. The server already has a LIVE record from another device (not tombstoned).
+    // We must NOT overwrite the server with our unacknowledged CREATE body — our updated_at is
+    // a device clock that cannot be reliably compared to the server-stamped existing.updatedAt.
+    // Instead: adopt the server record (setting a valid server_updated_at), then let any UPDATE
+    // ops in the outbox carry our newer position through serverHasDiverged correctly.
+    await progressTable.saveLocal(
+      {
+        id: 'progress-user-001-book-001',
+        user_id: USER,
+        book_id: BOOK,
+        offset: 3,
+        locator: JSON.stringify({ type: 'PDF', page: 3, offset: 0 }),
+        updated_at: '2026-09-04T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+      },
+      'CREATE',
+    );
+
+    const theirs = {
+      id: 'progress-user-001-book-001',
+      userId: USER,
+      bookId: BOOK,
+      offset: 75,
+      locator: { type: 'PDF', page: 75, offset: 0 },
+      updatedAt: '2026-09-03T12:00:00.000Z',
+      isDeleted: false,
+    };
+
+    mockApi.create.mockRejectedValue(
+      new ApiError('409 Conflict', 409, { code: 'CODE_TAKEN', message: 'scope taken' }),
+    );
+    mockApi.list.mockImplementation((path: string) =>
+      path === 'progress' ? (ok([theirs]) as any) : (ok([]) as any),
+    );
+
+    const report = await syncEngine.run();
+
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.restore).not.toHaveBeenCalled(); // live record — no restore needed
+    expect(mockApi.update).not.toHaveBeenCalled();  // do NOT overwrite server
+    expect(await outboxAll()).toHaveLength(0);
+    // Server's position adopted locally; server_updated_at is now set for future UPDATE ops.
+    const adopted = await progressTable.findById('progress-user-001-book-001');
+    expect(adopted?.offset).toBe(75);
+    expect(adopted?.server_updated_at).toBe('2026-09-03T12:00:00.000Z');
   });
 });
 

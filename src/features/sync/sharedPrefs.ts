@@ -298,5 +298,19 @@ export function resetSharedPrefs(userId: string = USER_ID): Promise<void> {
   return writeSharedPrefs(structuredClone(DEFAULT_PREFS), userId);
 }
 
+/**
+ * Bridges both underlying tables' change signals into one, so a consumer that only knows the
+ * merged SharedPrefs (Personalization's prefsStore) can react to "the record might have changed"
+ * without importing either table directly — the two-tables-behind-one-record split stays Sync's.
+ */
+export function subscribeToSharedPrefsChanges(listener: () => void): () => void {
+  const unsubP = personalizationStore.subscribe(listener);
+  const unsubA = accessibilityStore.subscribe(listener);
+  return () => {
+    unsubP();
+    unsubA();
+  };
+}
+
 /** Exposed for the adapter note in personalizationRow.ts: the column stores ISO-8601 UTC. */
 export const timestampCodec = { toMs, toIso };
