@@ -347,110 +347,93 @@ counted — are in `src/features/reader/READER_MEASUREMENTS.md`. Read that befor
 
 ## Temporary scaffolding
 
-`src/features/reader/devContentSeed.ts` stands in for Download's real download pass. Drop the
-`ensureSeeded()` call in `readerAssets.ts` and delete the file when the real pass lands — Abhinav's
-`src/features/download/downloadManager.ts` is that pass and has now landed, so this is closer than
-it reads.
+**`src/features/reader/devContentSeed.ts` is DELETED**, on 2026-09-07 (commit `aa7eeb1`), together
+with `devFixturePath.test.ts` and `devSearchIndex.test.ts`, and the `ensureSeeded()` call is gone
+from `readerAssets.ts`. Read the rest of this section as a record of what happened, not a to-do
+list — several items below did NOT go the way this section originally predicted.
 
-It has a **second** call site that is easy to miss: `src/navigation/BookListScreen.tsx` imports
-`DEV_SAMPLE_EPUB_BOOK_ID`/`DEV_SAMPLE_PDF_BOOK_ID`/`DEV_FIXTURE_EPUB_BOOK_ID`/`DEV_FIXTURE_PDF_BOOK_ID`
-from it to build the fixture rows that route to `<ReaderScreen bookId={...} />`. This moved from
-`App.tsx` when `src/navigation/RootNavigator.tsx` landed (2026-08-23) — **but landing a navigator did
-not unblock this deletion**, and it was never going to: the blocker was always "no real book
-catalogue to list", not "no navigator to push a screen with". `BookListScreen` still lists the same
-four dev fixtures the old picker did, now as real routes instead of a state-swapped tab bar. Deleting
-`devContentSeed.ts` still needs a real library screen backed by an actual catalogue/download-listing
-API before `BookListScreen`'s fixture rows (and the temp wiring around them) can go.
+The actual unblock was not "a real library screen lands" — `BookListScreen.tsx` is still a
+hardcoded list of known ids, not a query against a real catalogue/download-listing API, so that
+half of the original blocker still stands. What actually unblocked the file's deletion: the backend
+now seeds the same fixture ids directly — `dev-sample-epub`, `dev-sample-pdf`, `dev-fixture-epub`,
+`dev-fixture-pdf` all exist in `tf_reader_backend_temp`'s `seed/demo-dataset.json` — so every row in
+`BookListScreen` now acquires through `openBook()` like the audiobook row always did, and there was
+nothing left for local seeding to do. `BookListScreen.tsx` now declares those four bookId constants
+itself instead of importing them from the deleted file. **Do not read "the file is gone" as "the
+screen is done" — they turned out to be separable, and only the file went.**
 
-**`assets/reader/sample-plaintext.epub` is NO LONGER Reader's to delete alongside it.** This file
-used to say to remove both together. Since Vaishnavi's search extractor landed, that EPUB is a
-**shared fixture**: `src/features/search/extractor.ts:43` hard-codes its path, and deleting it breaks
-`search.test.ts`. So its removal now needs Search looped in, separately from and later than
-`devContentSeed.ts`.
+**`assets/reader/sample-plaintext.epub` is NOT Reader's to delete alone.**
+`src/features/search/extractor.ts` hard-codes its path and `search.test.ts` depends on it. Still
+needs Search looped in before it goes.
 
-**The dev search index goes with `devContentSeed.ts` too — five items, not one.** Nothing ships a
-search index for the seeded book, so `queryBookIndex` returns `[]` for every search and the search
-UI cannot be exercised on a device. `devContentSeed.ts` therefore encrypts a generated index into
-`EncryptedPackage.index` (same BEK, own nonce) so there is something real to find. Delete together:
+**`assets/reader/sample-plaintext.pdf` joined it as a permanent shared fixture — this section used
+to say the opposite.** It used to be scoped to `devContentSeed.ts`'s PDF branch, with "nothing else
+consumes this one, so it needs nobody looped in." That stopped being true once
+`src/features/search/extractor.ts` and `searchPdf.test.ts` started reading the generated file
+directly. Its generator (`generateSamplePdf.ts`) and the "Sample PDF is freshly generated" CI step
+stay for the same reason `generateSampleEpub.ts`'s do: both are now permanent generators for
+permanent fixtures. The one item from the old three-item table that really did go: `DEV_FORMAT` /
+`EXPO_PUBLIC_READER_FORMAT` and the PDF branch inside `devContentSeed.ts` — gone with the whole file.
 
-| # | Delete |
-| - | ------ |
-| 1 | `src/features/reader/scripts/buildSampleSearchIndex.ts` |
-| 2 | `assets/reader/sample-search-index.json` (EPUB) |
-| 3 | `assets/reader/sample-pdf-search-index.json` (PDF) |
-| 4 | the `reader:build-sample-index` script in `package.json` |
-| 5 | the `searchIndex` attachments in `devContentSeed.ts` |
-| 6 | `src/features/reader/devSearchIndex.test.ts` (guards 2 and 3 against 5) |
-| 7 | this table |
+**The dev search index split down the middle — half permanent, half deleted.**
+`src/features/reader/scripts/buildSampleSearchIndex.ts` used to generate one index per format so
+on-device search had something to find before a real index shipped (`devContentSeed.ts` attached
+both to the seeded books). Now:
 
-**There is one index PER FORMAT, and they are not interchangeable.** `queryBookIndex` throws when an
-index's `bookId` is not the book requested, so attaching the EPUB's index to a PDF book turns every
-search into an *error* rather than an empty list. That is why the PDF fixtures carried no index at all
-for a while, which made PDF search look unimplemented — it was not. Search's PDF extractor
-(`pdfSampleExtractor`, proven by `searchPdf.test.ts`) had been working the whole time; nothing fed it.
-`DevFixture.searchIndex` names the index rather than saying whether to attach one, so a new fixture
-cannot silently inherit the wrong book's.
+- `assets/reader/sample-search-index.json` (EPUB) survived by picking up a real consumer:
+  `src/features/reader/searchCfiAnchoring.test.ts` reads it directly to pin CFI-anchoring against
+  real postings. It, and the (now EPUB-only) script that generates it, are permanent — not
+  scaffolding to delete with `devContentSeed.ts`.
+- `assets/reader/sample-pdf-search-index.json` (PDF) had no such consumer — its only reader was
+  `devContentSeed.ts`'s index attachment — so it and the PDF target inside
+  `buildSampleSearchIndex.ts` were deleted on 2026-09-07 alongside the file above. Search's PDF
+  extractor is proven directly by `searchPdf.test.ts` and never needed this fixture.
+- `devSearchIndex.test.ts` (which guarded the two JSON files against the attachments) is deleted
+  along with `devContentSeed.ts`.
 
-`SearchPanel.tsx`, `useBookSearch.ts` and the search wiring in `ReaderScreen.tsx` are **not** on
-that list — the UI is permanent and does not know the fixture exists. Removing all five must leave
-it compiling and green, with on-device searches simply returning `[]` again. If deleting the
-fixture breaks the UI or a test, the boundary has leaked and that is the bug.
+`queryBookIndex` still throws when an index's `bookId` doesn't match the book requested — that is
+why the EPUB and PDF indexes were never interchangeable while both existed. That reasoning is now
+historical (nothing attaches either index to a book at runtime any more; the surviving EPUB one is
+read directly by a test, not through `queryBookIndex`), kept here so the next person doesn't wonder
+why a PDF target ever existed in a script that only builds one now.
 
-`devContentSeed.ts` also reads `EXPO_PUBLIC_READER_FIXTURE_EPUB` and `EXPO_PUBLIC_READER_FIXTURE_PDF`
-when set, to load the large books in `samples/fixtures/` instead of the bundled samples (measurement
-scaffolding — Metro cannot `require()` an untracked 20 MB asset, and real content must never be
-committed). **One path per format since 2026-08-20**, so both are populated in the same run and
-`BookListScreen` offers four rows; the older single `EXPO_PUBLIC_READER_FIXTURE_PATH`, scoped to
-`EXPO_PUBLIC_READER_FORMAT`, still works so recorded runs reproduce. It all goes with the rest of the
-file.
+`SearchPanel.tsx`, `useBookSearch.ts` and the search wiring in `ReaderScreen.tsx` never depended on
+any of this — the UI does not know these fixtures exist, and on-device searches for a book with no
+shipped index still correctly return `[]`.
 
-**Point these at `samples/fixtures/` (gitignored), not at a copy pushed into the app container.**
-Both work — the path is read directly and the simulator can see the repo — but a container copy is
-an unencrypted book sitting in the app's own Documents directory, which is exactly what a
-storage-leak sweep should flag and exactly what it will find. If you do push one in, delete it when
-finished.
+**`EXPO_PUBLIC_READER_FIXTURE_EPUB`/`_PDF`/`_PATH` and `EXPO_PUBLIC_READER_FORMAT` are DEAD CODE, not
+deleted code — this is a gap, not a decision someone made.** `devContentSeed.ts` was the only reader
+of these env vars, used to push a large book from `samples/fixtures/` (gitignored, never committed)
+straight into the container for measurement runs, one path per format. Deleting the file without
+replacing that reader means nothing in the app reads them any more, but
+`src/features/reader/READER_MEASUREMENTS.md`'s documented re-measurement procedure still tells you
+to set them. **That procedure cannot currently be re-run as written.** Fix by wiring a replacement
+reader for these env vars, or by rewriting the procedure — this file doesn't pick one, but leaving
+both stale is the wrong answer, and it's Ahana's call.
 
-**The sample PDF goes with `devContentSeed.ts` as well — three items.** There is no `.pdf` anywhere
-else in the repo, and there must never be a real one, so without a generated stand-in the entire
-pdf.js path is unreachable on a device. Unlike `sample-plaintext.epub`, nothing else consumes this
-one, so it has no shared-fixture entanglement and needs nobody looped in.
+**The four `DEV_FIXTURES` rows in `BookListScreen.tsx` are NOT going away with the rest of this
+scaffolding.** `DEV_FIXTURE_EPUB_BOOK_ID`/`DEV_FIXTURE_PDF_BOOK_ID` (the "Big EPUB"/"Big PDF" rows)
+used to be pushed in locally via the env vars above; they are now real backend catalogue ids, same
+status as `dev-sample-epub`/`dev-sample-pdf`, and stay in `BookListScreen` for as long as that
+screen itself does. Whatever is left in `samples/fixtures/` is inert until something is built to
+read it again — it is not tied to a specific deletion date any more.
 
-| # | Delete |
-| - | ------ |
-| 1 | `src/features/reader/scripts/generateSamplePdf.ts` |
-| 2 | `assets/reader/sample-plaintext.pdf` + the `reader:build-sample-pdf` script and its CI step |
-| 3 | `DEV_FORMAT` / `EXPO_PUBLIC_READER_FORMAT` and the PDF branch in `devContentSeed.ts` |
+**The "Big" vs. bundled distinction this section used to draw was never about local push vs.
+bundled asset — that part is unchanged; only how the large books are reached changed.** The
+original intent — the bundled `EPUB`/`PDF` rows retiring once every feature has been exercised on
+the real, large books — is still pending. Retiring the bundled pair, and retiring `BookListScreen`
+itself, both still wait on the same thing this section named from the start: a real
+catalogue/download-listing screen, which does not exist yet. Landing the real backend fixture ids
+did not do either — it only removed the need for local seeding underneath the rows that already
+existed.
 
-**The measurement fixture paths go with `devContentSeed.ts` as well — five more items**, added
-2026-08-18 when the fixture path was extended to PDF, and widened 2026-08-20 to one path per format
-so both large books are reachable at once. It is the same scaffolding as the rest of that file and
-dies with it.
+`READER_MEASUREMENTS.md` is not on any deletion list — it records numbers and a procedure that
+outlives any fixture. Right now, per the note above, that procedure is broken, not just documented;
+that is a gap to close, not evidence the file should go. Neither is `readerTiming.ts` — the probes
+are permanent and off by default.
 
-| # | Delete |
-| - | ------ |
-| 1 | `DEV_FIXTURE_EPUB_BOOK_ID` / `DEV_FIXTURE_PDF_BOOK_ID` and their `DEV_FIXTURES` entries |
-| 2 | `EXPO_PUBLIC_READER_FIXTURE_EPUB` / `_PDF` / `_PATH` and the `*_FIXTURE_PATH` consts they feed |
-| 3 | `src/features/reader/devFixturePath.test.ts` (it tests only the env-var crossings) |
-| 4 | the `DEV_FIXTURES` table in `src/navigation/BookListScreen.tsx`, with the rest of that screen |
-| 5 | whatever sits in `samples/fixtures/` — real content, gitignored, never committed |
-
-**The two `Big` rows are the ones features get rolled out against, and the bundled pair is what gets
-deleted first.** That is the stated intent as of 2026-08-20: `EPUB`/`PDF` (the generated ~3 KB
-stand-ins) exist so the renderers are reachable with nothing pushed, and they retire once every
-feature has been exercised on the real books. Deleting them is NOT the same removal as the table
-above — `sample-plaintext.epub` is Search's fixture too (see that note). Nor does either removal
-happen automatically when a real library screen replaces `BookListScreen`: that replacement is what
-retires the `Big` rows (once every feature has been exercised on them) and, separately, is what
-finally unblocks deleting `devContentSeed.ts` itself (see this section's opening note) — landing
-`RootNavigator` did not do either, only a real catalogue behind it will.
-
-`READER_MEASUREMENTS.md` is **not** on that list. It records numbers and a procedure that outlive the
-fixture; what it needs then is a note saying how the books were loaded, not deletion. Neither is
-`readerTiming.ts` — the probes are permanent and off by default.
-
-`reader-pdf.template.html`, `pdfjs-dist` and the `openPdf` command are **not** on that list — PDF
-support is permanent. What goes is only the fixture that lets it be tested before a library screen
-exists.
+`reader-pdf.template.html`, `pdfjs-dist` and the `openPdf` command remain permanent, as before —
+unaffected by any of this.
 
 `EXPO_PUBLIC_READER_FORMAT=PDF` is how you reach the pdf.js path on a device: it flips
 `DEV_SAMPLE_BOOK_ID` to a distinct id and seeds the PDF fixture with `format: 'PDF'`, and everything

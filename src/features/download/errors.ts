@@ -7,7 +7,10 @@
 // Encryption layer raises (e.g. from contentStore.store()) is left to bubble up UNWRAPPED by
 // downloadManager.ts — it is already well-typed by its owning module, no need to double-wrap.
 //
-// bookId is nullable: REGISTRATION_FAILED (device-key provisioning) is not book-specific.
+// bookId stays nullable on DownloadFailure's constructor for any future book-independent
+// failure; every current call site happens to pass a real bookId now that REGISTRATION_FAILED
+// (device-key provisioning, the one code that never had one) is gone — see the git history for
+// that removal and src/features/download/API_CONTRACT_NOTES.md's finding B8.
 //
 // ADDITIONS 2026-08-14, for the real flambeau contract (reading-session.ts) — every member
 // ABOVE this comment is untouched; nothing was renamed or removed. `LICENCE_FETCH_FAILED` and
@@ -34,7 +37,6 @@ export enum DownloadError {
   // it could never be opened after download. Rejected BEFORE store() rather than after: a stored
   // oversized book burns one of the 5 offline slots and throws on every later decryptBook().
   BOOK_TOO_LARGE = 'BOOK_TOO_LARGE',
-  REGISTRATION_FAILED = 'REGISTRATION_FAILED',
 
   // --- real flambeau contract, added 2026-08-14 ---
   /** POST /api/v1/loans failed at the network/parse level, or returned an error code with no

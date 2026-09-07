@@ -55,17 +55,20 @@ export * from './search';
 // so `import type { AccessTier, ContentLicenceResponse } from '@/shared/contracts'`
 // is the correct form.
 //
-// content-licence.ts and device-key.ts are marked DRAFT in their own headers:
-// both are written against a mock backend, not a confirmed wire contract. They
-// are exported anyway so consumers import them through the one surface rather
-// than deep-importing a path that will move — but treat their field names as
-// unfrozen until the real endpoints are published.
+// content-licence.ts is marked DRAFT in its own header: written against a mock backend, not a
+// confirmed wire contract. Exported anyway so consumers import it through the one surface rather
+// than deep-importing a path that will move — but treat its field names as unfrozen until the
+// real endpoint is published.
+//
+// device-key.ts (device-key registration) was here too, same DRAFT status — deleted 2026-09-07:
+// flambeau's real backend has no such endpoint and explicitly rejects the concept (a device is
+// observed on every reading session rather than enrolled), so there was no contract left to keep
+// unfrozen. See src/features/download/API_CONTRACT_NOTES.md, finding B8.
 export * from './tier';
-export * from './device-key';
 export * from './content-licence';
 
 // reading-session.ts (2026-08-14): the REAL flambeau contract (Loans + Reading sessions),
 // replacing content-licence.ts as the primary flow. FROZEN on flambeau's side (every endpoint
-// modeled here carries `x-stability: FROZEN`) — unlike content-licence.ts/device-key.ts above,
-// this one's field names are not a guess.
+// modeled here carries `x-stability: FROZEN`) — unlike content-licence.ts above, this one's
+// field names are not a guess.
 export * from './reading-session';
