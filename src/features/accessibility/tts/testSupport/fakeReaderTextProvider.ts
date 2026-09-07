@@ -15,6 +15,7 @@
 
 import type {
   ReaderTextProvider,
+  SpokenWordRange,
   TtsFetchResult,
   TtsInterruption,
   TtsSentence,
@@ -280,6 +281,14 @@ export function createFakeReaderTextProvider(
       // against a guarantee it will not get.
       if (terminated) return;
       spokenRanges.push(cfi);
+    },
+
+    setSpokenWordRange(range: SpokenWordRange | null): void {
+      // No test on this fake inspects word-level ranges yet — Hruthik's useTtsSession tests
+      // exercise session logic (prefetch, generation counters, teardown), not word highlighting.
+      // No-op keeps the fake satisfying ReaderTextProvider without inventing an assertion surface
+      // nobody uses.
+      if (terminated) return;
     },
 
     onInterrupted(handler: (reason: TtsInterruption) => void): () => void {
