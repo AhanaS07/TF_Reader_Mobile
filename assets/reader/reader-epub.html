@@ -1527,6 +1527,11 @@ ${columnOverrideCss()}` : currentCss;
       const finish = () => {
         repaintLiveAnnotations();
         invalidateHighlightBoxes();
+        const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+        if (spokenTarget !== null) {
+          lastAutoFollowedCfi = null;
+          followSpokenRange(spokenTarget);
+        }
       };
       if (reanchor && lastCfi !== null && !openInFlight) {
         active.display(lastCfi).then(finish).catch(() => {
@@ -1645,6 +1650,11 @@ ${columnOverrideCss()}` : currentCss;
       repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     }).catch((error) => {
       fail("NAVIGATION_FAILED", error);
     });

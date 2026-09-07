@@ -275,6 +275,18 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    load-bearing precondition it always was: a `display()` that re-renders the view while a stale mark
    is still attached would carry it into the new one.
 
+   **Auto-follow also re-checks itself after any font-size/typography/margin change and after a
+   paginated<->scrolled flow toggle**, not just at the next spoken sentence or word.
+   `scheduleGeometryRefresh`'s `finish()` and `rebuildForFlowIfNeeded`'s post-rebuild callback both
+   re-run `followSpokenRange` against whichever of `currentSpokenWordCfi`/`currentSpokenCfi` is set,
+   with `lastAutoFollowedCfi` explicitly cleared first. This matters because both of those paths
+   re-anchor the reader at `lastCfi` (wherever they were last relocated) rather than at the spoken
+   position specifically — the two usually coincide, since auto-follow's own `display()` calls are
+   what move `lastCfi` in the first place, but not when several sentences have played on the same
+   page since the last one. A font-size increase can push a mid-page sentence off the bottom of the
+   reflowed page even though the page's own reanchor "succeeds"; this catches that case rather than
+   leaving the reader on a page that no longer shows what is being spoken.
+
    **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
    manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back
    to wherever speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented

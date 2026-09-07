@@ -921,6 +921,38 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body).toContain('invalidateHighlightBoxes()');
   });
 
+  it('a font-size/layout change re-checks auto-follow for the CURRENT spoken position, not just the page anchor', () => {
+    // `lastCfi` (the thing this function re-anchors to) is wherever the reader was last
+    // relocated — stale for "where the voice currently is" whenever several sentences have been
+    // spoken on the same page since then. A reflow that pushes a mid-page sentence off the bottom
+    // must still be caught, so this checks the SPOKEN cfi, not just that the re-anchor succeeded.
+    const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(body).toContain('currentSpokenWordCfi ?? currentSpokenCfi');
+    expect(body).toContain('followSpokenRange(spokenTarget)');
+    // repaintLiveAnnotations first, so the follow's own geometry check reads freshly re-measured
+    // rects rather than the pre-reflow ones.
+    expect(body.indexOf('repaintLiveAnnotations()')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+    // The dedupe is reset immediately before this call, not left to whatever it was — a reflow can
+    // make a CFI stop being on-screen without the CFI value itself changing, which is exactly the
+    // case `lastAutoFollowedCfi === cfi` would otherwise skip.
+    expect(body.indexOf('lastAutoFollowedCfi = null;')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+  });
+
+  it('a paginated<->scrolled flow rebuild also re-checks auto-follow for the current spoken position', () => {
+    // A brand-new manager after `rendition.destroy()` is even less guaranteed than a same-manager
+    // reflow to land the re-anchored `lastCfi` on the same content the voice is currently on.
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body).toContain('currentSpokenWordCfi ?? currentSpokenCfi');
+    expect(body).toContain('followSpokenRange(spokenTarget)');
+    expect(body.indexOf('lastAutoFollowedCfi = null;')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+  });
+
   it('every EPUB signal that can move a glyph reaches the refresh', () => {
     // A stylesheet change does not reach epub.js's own re-measure (`View.reframe` is width-gated and
     // paginated flow hides the resize), so each of these has to ask explicitly. Listed as call-sites

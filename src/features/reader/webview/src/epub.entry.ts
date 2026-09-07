@@ -1040,10 +1040,19 @@ let geometryReanchor = false;
  *  3. `repaintLiveAnnotations` re-measures the user, search and TTS layers.
  *  4. the press hit-test cache is dropped, because it holds pre-reflow rects and a stale one deletes
  *     the wrong highlight.
+ *  5. if TTS is speaking, auto-follow re-checks the CURRENTLY spoken position — not merely re-checks
+ *     that `lastCfi` (step 2's anchor) still shows correctly, which is a different question. `lastCfi`
+ *     is wherever the reader was last relocated to, which is a stale proxy for "where the voice
+ *     currently is" whenever several sentences have been spoken on the same page since the last
+ *     `relocated` event — a font-size increase can still push a MID-page sentence off the bottom of
+ *     the reflowed page even though `lastCfi` (the page's anchor) redisplays "successfully". See the
+ *     note at this step below.
  *
  * THIS CANNOT LOOP, which is what makes it safe to hang off a contents resize: the marks live in the
  * OUTER document (the view element), not the chapter iframe, so re-adding them cannot move anything
- * the chapter's own `ResizeObserver` is watching.
+ * the chapter's own `ResizeObserver` is watching. Step 5 cannot loop either — `followSpokenRange`
+ * only calls `display()` when its own geometry check disagrees, and re-measuring after a display it
+ * just caused finds it agreeing.
  */
 function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
   if (options.reanchor === true) geometryReanchor = true;
@@ -1062,6 +1071,17 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
     const finish = (): void => {
       repaintLiveAnnotations();
       invalidateHighlightBoxes();
+
+      // Word-level position wins when it exists — it is the more precise of the two, and it is
+      // what `setSpokenWordRange`'s own auto-follow call already prefers. `lastAutoFollowedCfi` is
+      // deliberately NOT trusted here even if it equals this target: it records "this CFI was
+      // on-screen as of the last CHECK", and a reflow is exactly the event that can make that
+      // stale without the CFI itself changing.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     };
 
     // >>> RE-ANCHORING IS NOT COSMETIC EITHER. <<< A re-flow changes how much text fits on a page,
@@ -1380,6 +1400,12 @@ function liftSearchMatch(): void {
  * A flow change is the one appearance change epub.js cannot do in place — crossing the
  * paginated <-> scrolled boundary needs a different MANAGER (see `mapManager`), and there is no
  * public API to hot-swap one.
+ *
+ * If TTS is speaking, auto-follow re-checks the CURRENTLY spoken position once the new rendition
+ * is up — same reasoning as `scheduleGeometryRefresh`'s own re-check, for the same underlying
+ * cause: the re-anchor above targets `lastCfi`, a stale proxy for "where the voice is" whenever
+ * several sentences have played since the last relocate, and a brand-new manager is even less
+ * guaranteed than a reflow to put that page back on the same content.
  */
 function rebuildForFlowIfNeeded(): boolean {
   if (!rendition || openInFlight) return false;
@@ -1426,6 +1452,18 @@ function rebuildForFlowIfNeeded(): boolean {
       // boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`, here), last.
       // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
+
+      // Same reasoning as `scheduleGeometryRefresh`'s own step 5: `cfi` (this rebuild's re-anchor,
+      // captured from `lastCfi` before destroying the old rendition) is wherever the reader was last
+      // relocated, not necessarily where the voice currently is — a paginated<->scrolled toggle
+      // rebuilds the manager entirely, and the new one may not fit the same content on screen at
+      // that same anchor. Reset the dedupe for the same reason: a fresh rendition means this CFI's
+      // last-checked visibility, if any, was against a manager that no longer exists.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     })
     .catch((error: unknown) => {
       fail('NAVIGATION_FAILED', error);
