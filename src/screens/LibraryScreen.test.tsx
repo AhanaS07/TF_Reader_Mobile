@@ -98,7 +98,7 @@ function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
 }
 
 /** Every heading, in the order the screen renders them on the overview. */
-const SECTIONS = ['Offered to you', 'On loan', 'Downloads', 'Bookmarks', 'Waiting'];
+const SECTIONS = ['Offered to you', 'Borrowed Books', 'Downloads', 'Bookmarks', 'Waiting'];
 
 /**
  * The section headings on screen, in render order.
@@ -134,7 +134,7 @@ describe('LibraryScreen — the empty shelf', () => {
   it('names every section even with nothing in any of them', async () => {
     await render(<LibraryScreen />);
 
-    await waitFor(() => expect(screen.getByText('On loan')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
     expect(renderedSections()).toEqual(SECTIONS);
   });
 
@@ -164,7 +164,7 @@ describe('LibraryScreen — the empty shelf', () => {
 
     await render(<LibraryScreen />);
 
-    await waitFor(() => expect(screen.getByText('On loan')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
     expect(getItemsBatch).not.toHaveBeenCalled();
   });
 });
@@ -299,7 +299,7 @@ describe('LibraryScreen — the tab bar', () => {
     await waitFor(() => expect(renderedSections()).toEqual(['Bookmarks']));
 
     fireEvent.press(screen.getByTestId('tabs-tab-loans'));
-    await waitFor(() => expect(renderedSections()).toEqual(['On loan']));
+    await waitFor(() => expect(renderedSections()).toEqual(['Borrowed Books']));
 
     expect(mockGetLibrary).toHaveBeenCalledTimes(1);
   });
@@ -374,7 +374,7 @@ describe('LibraryScreen — hydration', () => {
 
     await render(<LibraryScreen />);
 
-    await waitFor(() => expect(screen.getByText('On loan')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
     expect(screen.getByText('item_42')).toBeTruthy();
   });
 
@@ -508,7 +508,7 @@ describe('LibraryScreen — downloads', () => {
   // A SUBSCRIPTION title a student downloads is both a loan and a download: the
   // loan is what expires, the download is what opens in a tunnel. Two facts, so
   // two rows — dropping either loses the answer the other cannot give.
-  it('shows a subscription download under both On loan and Downloads', async () => {
+  it('shows a subscription download under both Borrowed Books and Downloads', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
@@ -647,7 +647,7 @@ describe('LibraryScreen — offline', () => {
   it('shows no offline banner when connected', async () => {
     await render(<LibraryScreen />);
 
-    await waitFor(() => expect(screen.getByText('On loan')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
     expect(screen.queryByText("You're offline")).toBeNull();
   });
 });
@@ -660,7 +660,7 @@ describe('LibraryScreen — first load', () => {
 
     await render(<LibraryScreen />);
 
-    // One per server-sourced section: Offered, On loan, Waiting.
+    // One per server-sourced section: Offered, Borrowed Books, Waiting.
     await waitFor(() => expect(screen.getAllByTestId('library-loading')).toHaveLength(3));
     expect(renderedSections()).toEqual(SECTIONS);
     // The skeleton stands in for rows, so it replaces the empty copy.
@@ -687,5 +687,73 @@ describe('LibraryScreen — the shelf is the launch screen', () => {
     await render(<LibraryScreen />);
 
     await waitFor(() => expect(mockGetLibrary).toHaveBeenCalled());
+  });
+});
+
+// The small components lifted from the design mockup — a borrowed-books card, a
+// downloads summary line, a tier pill and a queue-progress bar. Every one is fed
+// by data the app actually has; the mockup's invented fields (reading %, offline
+// "Ready", wait estimate) are deliberately absent.
+describe('LibraryScreen — the mockup components', () => {
+  it('labels the loans tab "Borrowed Books" and the holds tab "Premium books"', async () => {
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByTestId('tabs-label-loans')).toBeTruthy());
+    expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed Books');
+    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium books');
+  });
+
+  it('summarises the Downloads section as a count and total size', async () => {
+    useDownloadStore
+      .getState()
+      .markDownloaded({ itemId: 'item_a', downloadedAt: 2, sizeBytes: 14.2 * 1_048_576 });
+    useDownloadStore
+      .getState()
+      .markDownloaded({ itemId: 'item_b', downloadedAt: 1, sizeBytes: 8.6 * 1_048_576 });
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('2 items · 22.8 MB')).toBeTruthy());
+  });
+
+  it('counts downloads that reported no size, omitting the megabytes', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a', downloadedAt: 1 });
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('1 item')).toBeTruthy());
+  });
+
+  it('shows the access tier on a borrowed book once its title hydrates', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('Subscription')).toBeTruthy());
+  });
+
+  it('draws a queue-progress bar when a hold carries a position and a length', async () => {
+    givenHoldings([], [aHold({ state: 'queued', position: 3, queueLength: 7 })]);
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('3rd of 7')).toBeTruthy());
+    expect(screen.getByTestId('queue-progress')).toBeTruthy();
+  });
+
+  it('draws no queue-progress bar for a position with no queue length', async () => {
+    givenHoldings([], [aHold({ state: 'queued', position: 3 })]);
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('3rd in the queue')).toBeTruthy());
+    expect(screen.queryByTestId('queue-progress')).toBeNull();
   });
 });

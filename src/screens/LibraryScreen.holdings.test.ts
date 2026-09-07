@@ -15,11 +15,13 @@ import {
   bookmarkLocationLabel,
   collectItemIds,
   downloadedLabel,
+  downloadsSummaryLabel,
   dueLabel,
   offerMinutesRemaining,
   ordinal,
   partitionHolds,
   queueLabel,
+  queueProgressFraction,
   type ShelfSections,
   sortedBookmarks,
   sortedDownloads,
@@ -248,6 +250,63 @@ describe('downloadedLabel', () => {
   // file floors to a tenth rather than rounding to nothing.
   it('floors a file under a tenth of a megabyte to 0.1 MB rather than 0', () => {
     expect(downloadedLabel(aDownload({ sizeBytes: 2048 }))).toBe('Downloaded · 0.1 MB');
+  });
+});
+
+describe('downloadsSummaryLabel', () => {
+  it('draws no caption at all for an empty list', () => {
+    expect(downloadsSummaryLabel([])).toBeUndefined();
+  });
+
+  it('counts one download as "1 item", singular', () => {
+    expect(downloadsSummaryLabel([aDownload()])).toBe('1 item');
+  });
+
+  it('sums the reported sizes into a single total', () => {
+    expect(
+      downloadsSummaryLabel([
+        aDownload({ itemId: 'a', sizeBytes: 14.2 * 1_048_576 }),
+        aDownload({ itemId: 'b', sizeBytes: 8.6 * 1_048_576 }),
+      ]),
+    ).toBe('2 items · 22.8 MB');
+  });
+
+  // Size is optional and absent on the common path, so a total is a floor over
+  // whatever reported one — never "· 0.0 MB", which reads as nothing downloaded.
+  it('omits the megabytes when no download reported a size', () => {
+    expect(downloadsSummaryLabel([aDownload({ itemId: 'a' }), aDownload({ itemId: 'b' })])).toBe(
+      '2 items',
+    );
+  });
+
+  it('sums only the sizes that were reported', () => {
+    expect(
+      downloadsSummaryLabel([
+        aDownload({ itemId: 'a', sizeBytes: 5 * 1_048_576 }),
+        aDownload({ itemId: 'b' }),
+      ]),
+    ).toBe('2 items · 5.0 MB');
+  });
+});
+
+describe('queueProgressFraction', () => {
+  it('has no fraction without a position', () => {
+    expect(queueProgressFraction(aHold({ position: undefined, queueLength: 7 }))).toBeUndefined();
+  });
+
+  // A place with no scale: the label still says "3rd in the queue", but there is
+  // no denominator to fill a bar against.
+  it('has no fraction without a queue length', () => {
+    expect(queueProgressFraction(aHold({ position: 3, queueLength: undefined }))).toBeUndefined();
+  });
+
+  it('fills fuller the nearer the front the reader is', () => {
+    expect(queueProgressFraction(aHold({ position: 1, queueLength: 7 }))).toBe(1);
+    expect(queueProgressFraction(aHold({ position: 7, queueLength: 7 }))).toBeCloseTo(1 / 7);
+  });
+
+  it('never reports a zero-length queue as progress', () => {
+    expect(queueProgressFraction(aHold({ position: 1, queueLength: 0 }))).toBeUndefined();
   });
 });
 

@@ -279,6 +279,27 @@ export function downloadedLabel(record: DownloadRecord): string {
   return `Downloaded · ${shown} MB`;
 }
 
+/**
+ * The line under the Downloads heading: "2 items · 22.8 MB".
+ *
+ * SIZE IS SUMMED ONLY OVER THE RECORDS THAT REPORTED ONE. `sizeBytes` is absent
+ * on the common path (see `DownloadRecord`), so a total is shown only when at
+ * least one download carried a size — otherwise the count stands alone rather
+ * than reading as "· 0.0 MB", which would look like nothing was downloaded. The
+ * total is therefore a floor ("at least this much"), never a claim about bytes
+ * the download layer never reported.
+ *
+ * Returns `undefined` for an empty list so the caller draws no caption at all
+ * rather than "0 items".
+ */
+export function downloadsSummaryLabel(downloads: DownloadRecord[]): string | undefined {
+  if (downloads.length === 0) return undefined;
+  const items = downloads.length === 1 ? '1 item' : `${downloads.length} items`;
+  const totalBytes = downloads.reduce((sum, record) => sum + (record.sizeBytes ?? 0), 0);
+  if (totalBytes === 0) return items;
+  return `${items} · ${(totalBytes / BYTES_PER_MB).toFixed(1)} MB`;
+}
+
 // ─── bookmarks copy ──────────────────────────────────────────────────────────
 
 /**
@@ -337,6 +358,28 @@ export function queueLabel(hold: Hold): string | undefined {
   if (hold.position === undefined) return undefined;
   const place = ordinal(hold.position);
   return hold.queueLength === undefined ? `${place} in the queue` : `${place} of ${hold.queueLength}`;
+}
+
+/**
+ * A 0–1 fill for the queue-progress bar on a waiting row, or `undefined` when
+ * there is not enough to draw one.
+ *
+ * A POSITIONAL INDICATOR, NOT A TIME ESTIMATE, and the distinction matters: the
+ * bar shows how near the FRONT the reader is (1st of N fills it, last of N
+ * barely does), which is a fact the response already carries. It is NOT the
+ * "estimated wait" Module E's spec asks for — that needs `estimatedWaitDays`,
+ * which the boundary drops (see the note at the foot of this file) — so this
+ * makes no claim about days and cannot mislead the way a faked ETA would.
+ *
+ * NEEDS BOTH `position` AND `queueLength`. A position with no length is a place
+ * with no scale, so `queueLabel` still renders "3rd in the queue" but the bar is
+ * omitted rather than drawn against a denominator that is not there.
+ */
+export function queueProgressFraction(hold: Hold): number | undefined {
+  if (hold.position === undefined || hold.queueLength === undefined) return undefined;
+  if (hold.queueLength <= 0) return undefined;
+  const fromFront = hold.queueLength - hold.position + 1;
+  return Math.max(0, Math.min(1, fromFront / hold.queueLength));
 }
 
 // NOT BUILT: the estimated wait, which Module E's screen spec asks for as "a

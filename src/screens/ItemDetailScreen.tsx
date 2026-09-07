@@ -60,6 +60,7 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@m
 import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { ERROR_CODES } from '@model/types';
 import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
+import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
@@ -753,7 +754,21 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       // the action bar updates to reflect the new loan or hold. All four now run
       // through `runLicenceCall`, which owns the pending state and the guard.
       const source = getLicenceSource();
-      if (action === 'read' || action === 'download') {
+      if (action === 'download') {
+        // Download and Read are the same licence call — a borrow — but a download
+        // ALSO records itself on this device so it appears in the Library's
+        // Downloads section. Recorded only after the borrow RESOLVES, so a refused
+        // download leaves no phantom row; the store keeps the record, not the bytes
+        // (CAP-7's ContentStore owns those). The caller stamps the time because
+        // downloadStore deliberately never reads a clock. (Added at Library owner's
+        // request; see downloadStore.ts.)
+        runLicenceCall(action, () =>
+          source.borrow(itemId).then((result) => {
+            useDownloadStore.getState().markDownloaded({ itemId, downloadedAt: Date.now() });
+            return result;
+          }),
+        );
+      } else if (action === 'read') {
         runLicenceCall(action, () => source.borrow(itemId));
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
         const loanId = loan.loanId;

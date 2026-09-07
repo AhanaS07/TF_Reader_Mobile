@@ -14,10 +14,14 @@
 //       reader who misses the countdown loses a book they queued for and the
 //       queue moves on without them, so anything below the fold here is a lost
 //       book. An ELITE title whose grant came through arrives here.
-//   2 · On loan        — what the reader came to the app to do: open a book.
+//   2 · Borrowed Books — what the reader came to the app to do: open a book.
+//       The reader's live loans, shown as the mockup's "Reading Now" card — the
+//       cover, format, access tier and due date, but NOT a reading-progress
+//       percent, which lives behind CAP-7's reader and cannot be faked here.
 //   3 · Downloads      — the same books, on this phone. Works in a tunnel.
 //   4 · Bookmarks      — where the reader stopped. One row per bookmark.
-//   5 · Waiting        — reassurance, not action. Nothing here expires.
+//   5 · Waiting        — reassurance, not action. Nothing here expires. Carries
+//       a positional queue-progress bar (see `queueProgressFraction`).
 //
 // EVERY HEADING RENDERS, EVEN WITH NOTHING UNDER IT. A new reader used to get a
 // single "Nothing to show here yet" on a blank page, which answers "is this
@@ -30,8 +34,8 @@
 //
 // ─── A TAB BAR OVER AN OVERVIEW, NOT FIVE SECTIONS DOWN ONE SCROLL ──────────
 //
-// All · Loans · Downloads · Bookmarks · Holds, pinned above the scroll, with
-// `All` the default. `All` shows every heading but caps each section at
+// All · Borrowed Books · Downloads · Bookmarks · Premium books, pinned above the
+// scroll, with `All` the default. `All` shows every heading but caps each at
 // `PREVIEW_ROWS`, and a capped section grows a "See all (12)" that SWITCHES TAB
 // rather than pushing a screen.
 //
@@ -126,6 +130,7 @@ import { Children, type ReactNode, useCallback, useEffect, useState } from 'reac
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { Bookmark } from '@/shared/contracts';
+import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '@components/ContentCard';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { SectionHeader } from '@components/SectionHeader';
@@ -145,11 +150,13 @@ import {
   bookmarkLocationLabel,
   collectItemIds,
   downloadedLabel,
+  downloadsSummaryLabel,
   dueLabel,
   offerExpiryLabel,
   offerMinutesRemaining,
   partitionHolds,
   queueLabel,
+  queueProgressFraction,
   sortedBookmarks,
   sortedDownloads,
 } from './LibraryScreen.holdings';
@@ -183,10 +190,14 @@ const EMPTY_TITLES: Map<string, BookSummary> = new Map();
  */
 const LIBRARY_TABS: TabItem[] = [
   { id: 'all', label: 'All' },
-  { id: 'loans', label: 'Loans' },
+  // Shown as "Borrowed Books"; the id stays `loans` because that is the
+  // partition it selects (the reader's active loans).
+  { id: 'loans', label: 'Borrowed Books' },
   { id: 'downloads', label: 'Downloads' },
   { id: 'bookmarks', label: 'Bookmarks' },
-  { id: 'holds', label: 'Holds' },
+  // Shown to the reader as "Premium books"; the id stays `holds` because that is
+  // the partition it selects (Offered + Waiting). See the file header.
+  { id: 'holds', label: 'Premium books' },
 ];
 
 type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'holds';
@@ -290,6 +301,11 @@ export default function LibraryScreen() {
   const titleFor = (itemId: string): string => titles.get(itemId)?.title ?? itemId;
   const publisherFor = (itemId: string): string | undefined =>
     titles.get(itemId)?.authors?.join(', ');
+  // The hydrated record for a row, when it has arrived — carries the cover, the
+  // file format and the access tier the rows below decorate with. Undefined
+  // until the batch call lands (or for an id it could not resolve), and every
+  // row treats that as "no decoration" rather than a missing state.
+  const summaryFor = (itemId: string): BookSummary | undefined => titles.get(itemId);
 
   // FIRST LOAD OF THE SERVER-SOURCED SECTIONS ONLY. Downloads and bookmarks are
   // already in hand — they came off this device — so a whole-screen skeleton
@@ -372,6 +388,7 @@ export default function LibraryScreen() {
                 key={hold.holdId ?? hold.itemId}
                 hold={hold}
                 title={titleFor(hold.itemId)}
+                summary={summaryFor(hold.itemId)}
                 clock={clock}
               />
             ))}
@@ -380,17 +397,22 @@ export default function LibraryScreen() {
 
         {(isOverview || activeTab === 'loans') && (
           <Section
-            title="On loan"
+            title="Borrowed Books"
             loading={holdingsLoading}
+            // The mockup's "ACTIVE LOAN" reassurance, but counted rather than
+            // asserted: it is the number of live loans, which is real, not a
+            // reading-progress claim the app cannot make (see the file header).
+            caption={live.length === 0 ? undefined : live.length === 1 ? '1 active loan' : `${live.length} active loans`}
             action={seeAll(live.length, 'loans')}
             empty="Books you borrow will appear here until they’re due."
           >
             {live.slice(0, limit).map((loan) => (
-              <LoanRow
+              <BorrowedBookRow
                 key={loan.loanId ?? loan.itemId}
                 loan={loan}
                 title={titleFor(loan.itemId)}
                 publisher={publisherFor(loan.itemId)}
+                summary={summaryFor(loan.itemId)}
                 clock={clock}
               />
             ))}
@@ -401,6 +423,9 @@ export default function LibraryScreen() {
         {(isOverview || activeTab === 'downloads') && (
           <Section
             title="Downloads"
+            // "2 items · 22.8 MB" from the mockup, over real records — see
+            // `downloadsSummaryLabel` for why the size is a floor, not a claim.
+            caption={downloadsSummaryLabel(downloads)}
             action={seeAll(downloads.length, 'downloads')}
             // Says which titles CAN be downloaded, because that is the question
             // an empty Downloads section raises and the answer is not obvious:
@@ -414,6 +439,7 @@ export default function LibraryScreen() {
                 record={record}
                 title={titleFor(record.itemId)}
                 publisher={publisherFor(record.itemId)}
+                summary={summaryFor(record.itemId)}
               />
             ))}
           </Section>
@@ -439,6 +465,8 @@ export default function LibraryScreen() {
           <Section
             title="Waiting"
             loading={holdingsLoading}
+            // "1 in queue" from the mockup's Hold & Reservation header.
+            caption={waiting.length === 0 ? undefined : waiting.length === 1 ? '1 in queue' : `${waiting.length} in queue`}
             action={seeAll(waiting.length, 'holds')}
             empty="When every copy is out, join the queue and your place will show here."
           >
@@ -447,6 +475,7 @@ export default function LibraryScreen() {
                 key={hold.holdId ?? hold.itemId}
                 hold={hold}
                 title={titleFor(hold.itemId)}
+                summary={summaryFor(hold.itemId)}
               />
             ))}
           </Section>
@@ -477,12 +506,20 @@ export default function LibraryScreen() {
 function Section({
   title,
   empty,
+  caption,
   loading = false,
   action,
   children,
 }: {
   title: string;
   empty: string;
+  /**
+   * A small count/summary line under the heading — "2 items · 22.8 MB",
+   * "1 in queue". Absent by default, and absent is common: sections with
+   * nothing to summarise pass nothing, so the line only appears when it says
+   * something true about what is below it.
+   */
+  caption?: string;
   loading?: boolean;
   /** "See all (12)", when the overview has more rows than it is showing. */
   action?: { label: string; onPress: () => void };
@@ -497,6 +534,11 @@ function Section({
         title={title}
         {...(action === undefined ? {} : { actionLabel: action.label, onAction: action.onPress })}
       />
+      {caption !== undefined && (
+        <Text style={styles.sectionCaption} testID="section-caption">
+          {caption}
+        </Text>
+      )}
       {loading ? (
         <SectionSkeleton />
       ) : isEmpty ? (
@@ -546,7 +588,17 @@ function SectionSkeleton() {
 // TWO THINGS THIS ROW STILL OWNS. It is first, and it carries the countdown —
 // an offer is the only row on the shelf that dies, and a reader scrolling past
 // it has lost a book.
-function OfferRow({ hold, title, clock }: { hold: Hold; title: string; clock: ServerClock }) {
+function OfferRow({
+  hold,
+  title,
+  summary,
+  clock,
+}: {
+  hold: Hold;
+  title: string;
+  summary?: BookSummary;
+  clock: ServerClock;
+}) {
   // NO COUNTDOWN UNTIL THE CLOCK HAS A SAMPLE, so the row under-shows for one
   // frame rather than counting against an offset that is not yet known.
   const minutes = clock.ready
@@ -557,33 +609,55 @@ function OfferRow({ hold, title, clock }: { hold: Hold; title: string; clock: Se
     <View style={styles.row}>
       <ContentCard
         title={title}
+        {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+        {...(summary?.format === undefined ? {} : { format: summary.format })}
         badge={expiry === undefined ? undefined : <Text style={styles.expiry}>{expiry}</Text>}
       />
     </View>
   );
 }
 
-function LoanRow({
+// The mockup's "Reading Now" card, rendered under the "Borrowed Books" heading,
+// minus the one thing this app cannot know: the reading PROGRESS (percent, page
+// x/y, "28 min left") lives behind CAP-7's reader, which is not in this repo, so
+// inventing "64%" would be exactly the over-show the rest of this screen
+// refuses. What the card CAN carry is real — the cover, the file format, the
+// access tier, and the due date — so it carries those and stops there.
+function BorrowedBookRow({
   loan,
   title,
   publisher,
+  summary,
   clock,
 }: {
   loan: Loan;
   title: string;
   publisher?: string;
+  summary?: BookSummary;
   clock: ServerClock;
 }) {
   // Held back until the clock has a sample, for the same reason as the offer
   // countdown. A due date is far less urgent than an offer, but a row that
   // said "Due in 19710 days" for one frame is worse than one that says nothing.
   const due = clock.ready ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
+  // The due date and the tier pill share one badge slot, stacked. Both are
+  // optional: no tier until the batch call lands, no due line until the clock
+  // has a sample, and an empty stack collapses to no badge at all.
+  const badge =
+    due === undefined && summary === undefined ? undefined : (
+      <View style={styles.badgeStack}>
+        {due !== undefined && <Text style={styles.badgeLabel}>{due}</Text>}
+        {summary !== undefined && <AccessTierBadge tier={summary.accessTier} />}
+      </View>
+    );
   return (
     <View style={styles.row}>
       <ContentCard
         title={title}
         {...(publisher === undefined ? {} : { publisher })}
-        badge={due === undefined ? undefined : <Text style={styles.badgeLabel}>{due}</Text>}
+        {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+        {...(summary?.format === undefined ? {} : { format: summary.format })}
+        {...(badge === undefined ? {} : { badge })}
       />
     </View>
   );
@@ -604,16 +678,23 @@ function DownloadRow({
   record,
   title,
   publisher,
+  summary,
 }: {
   record: DownloadRecord;
   title: string;
   publisher?: string;
+  summary?: BookSummary;
 }) {
   return (
     <View style={styles.row}>
       <ContentCard
         title={title}
         {...(publisher === undefined ? {} : { publisher })}
+        {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+        // The "PDF · 14.2 MB" split from the mockup: the format is the book's
+        // real type from the batch call, and the size stays on the "Downloaded"
+        // badge where `downloadedLabel` owns the honest wording.
+        {...(summary?.format === undefined ? {} : { format: summary.format })}
         badge={<Text style={styles.badgeLabel}>{downloadedLabel(record)}</Text>}
       />
     </View>
@@ -644,14 +725,32 @@ function BookmarkRow({ bookmark, title }: { bookmark: Bookmark; title: string })
 // Reassurance, not action: no buttons, and nothing here expires. Cancelling a
 // hold is a real action the reader may want, but it belongs beside a decision
 // about where it lives — it is not on this screen's spec.
-function WaitingRow({ hold, title }: { hold: Hold; title: string }) {
+function WaitingRow({ hold, title, summary }: { hold: Hold; title: string; summary?: BookSummary }) {
   const place = queueLabel(hold);
+  const fraction = queueProgressFraction(hold);
   return (
     <View style={styles.row}>
       <ContentCard
         title={title}
+        {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+        {...(summary?.format === undefined ? {} : { format: summary.format })}
         badge={place === undefined ? undefined : <Text style={styles.badgeLabel}>{place}</Text>}
       />
+      {/* The mockup's "Queue progress" bar. Drawn only when the response carried
+          both a position AND a length — see `queueProgressFraction` — and it is a
+          POSITIONAL fill, not the estimated wait the boundary drops. */}
+      {fraction !== undefined && <QueueProgress fraction={fraction} />}
+    </View>
+  );
+}
+
+// A thin bar that fills toward the front of the queue. No text of its own — the
+// "3rd of 7" badge above it says the number; this just makes the standing
+// glanceable. Purely presentational, so it reads nothing and decides nothing.
+function QueueProgress({ fraction }: { fraction: number }) {
+  return (
+    <View style={styles.progressTrack} testID="queue-progress">
+      <View style={[styles.progressFill, { width: `${Math.round(fraction * 100)}%` }]} />
     </View>
   );
 }
@@ -703,6 +802,40 @@ const styles = StyleSheet.create({
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
+  },
+  // The count/summary line under a heading — same secondary grey and inset as
+  // the empty copy, sitting just above the rows it describes.
+  sectionCaption: {
+    paddingHorizontal: space.xs,
+    paddingTop: space.xs,
+    paddingBottom: space.sm,
+    color: color.textSecondary,
+    fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+  },
+  // The due date and the tier pill on a Reading Now row, side by side and
+  // wrapping to a second line on a narrow phone rather than pushing either off.
+  badgeStack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: space.xs,
+  },
+  // The queue-progress bar under a waiting row. `border` for the empty track,
+  // `primary` for the fill — the same pairing the segmented tab bar uses.
+  progressTrack: {
+    height: space.xs,
+    marginTop: space.sm,
+    borderRadius: radius.pill,
+    backgroundColor: color.border,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: radius.pill,
+    backgroundColor: color.primary,
   },
   // ONE STYLE FOR EVERY ROW BADGE — a due date, a downloaded-on date, a queue
   // position and a bookmark location are four different sentences in the same
