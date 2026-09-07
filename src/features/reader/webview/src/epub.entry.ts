@@ -33,7 +33,12 @@ import {
   publish,
   type TFReaderApi,
 } from './bridge';
-import { resetTtsState, resolveCurrent, resolveNext } from './epubTtsResolver';
+import {
+  resetTtsState,
+  resolveCurrent,
+  resolveNext,
+  resolveSpokenWordCfi,
+} from './epubTtsResolver';
 import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epubCfiRange';
 import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
@@ -41,13 +46,8 @@ import { forceReflow } from './epubViewGeometry';
 import { highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
-import { highlightFill, matchStroke } from './selectionTheme';
-import {
-  LONG_PRESS_MS,
-  movedBeyondSlop,
-  swipeDirection,
-  type TouchPoint,
-} from './touchGesture';
+import { highlightFill, matchStroke, spokenWordOpacity } from './selectionTheme';
+import { LONG_PRESS_MS, movedBeyondSlop, swipeDirection, type TouchPoint } from './touchGesture';
 import {
   baselineCss,
   cappedIndent,
@@ -118,8 +118,22 @@ let lastCfi: string | null = null;
  * this is the caller-side state it expects. */
 let currentSpokenCfi: string | null = null;
 
+/** The CFI `setSpokenWordRange` last painted — the WORD inside `currentSpokenCfi`'s sentence — or
+ * null if nothing is. Same three jobs as its sentence sibling (remove before the next add, re-paint
+ * after a rendition rebuild, re-derive the shade when the page changes colour), plus one of its own:
+ * it is what `setSpokenRange` clears, because a word is only meaningful inside the sentence it was
+ * resolved against.
+ *
+ * ONLY THE CFI IS KEPT, NEVER THE RANGE OR THE NODES IT CAME FROM. A CFI survives a reflow (it is
+ * element indices plus an offset), so every repaint below re-adds this string and lets epub.js
+ * resolve a FRESH Range — which is also what re-measures it. Retaining the Range instead would keep
+ * Text nodes belonging to a document that may since have been re-rendered; `resolveSpokenWordCfi`'s
+ * own header says the same thing about caching, at more length. */
+let currentSpokenWordCfi: string | null = null;
+
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
+const TTS_SPOKEN_WORD_VARIANT = 'spoken-word';
 
 /** TTS's channel (HIGHLIGHT_LAYERS.md §3): a translucent overlay. SVG presentation attributes, not
  * CSS — marks-pane applies them via `setAttribute`. `0.2`, kept below `user`'s opacity so the two
@@ -134,6 +148,19 @@ const TTS_SPOKEN_COLOR = '#ffd500';
 function ttsSpokenStyles(): Record<string, string> {
   const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
   return { fill, 'fill-opacity': '0.2', 'mix-blend-mode': blend };
+}
+
+/** The word inside the spoken sentence: the SAME fill and the SAME blend, at a higher opacity.
+ *
+ * Not a second colour, and not an outline (that is `search`'s channel — a word-sized box inside a
+ * sentence wash reads as a search hit). Sharing one `highlightFill` call is what makes the pair
+ * legible on all three themes without a per-theme table: the two layers can never disagree about
+ * fill or blend, so more opacity is more prominent on every page. `spokenWordOpacity` picks the
+ * number from the blend and carries the whole argument, including which two numbers a device check
+ * is actually checking. */
+function ttsSpokenWordStyles(): Record<string, string> {
+  const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
+  return { fill, 'fill-opacity': spokenWordOpacity(blend), 'mix-blend-mode': blend };
 }
 
 const USER_OWNER = 'user';
@@ -815,9 +842,7 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): boolean {
     // them. Reported rather than dropped: `highlightIdForRange` now refuses to create a highlight
     // over one that exists, so reaching here means the host and this shell disagree about what is
     // painted, which is worth hearing about even though it should be unreachable.
-    const collidingId = [...paintedUserHighlights].find(
-      ([, painted]) => painted === cfiRange,
-    )?.[0];
+    const collidingId = [...paintedUserHighlights].find(([, painted]) => painted === cfiRange)?.[0];
     if (collidingId !== undefined) {
       fail(
         'NAVIGATION_FAILED',
@@ -828,11 +853,94 @@ function applyUserHighlights(highlights: EpubHighlightPaint[]): boolean {
 
     // No onTap: press-to-delete hit-tests directly now (`highlightIdAtPoint`), not marks-pane's own
     // touch wiring.
-    highlightAdd(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+    highlightAdd(
+      active,
+      USER_OWNER,
+      cfiRange,
+      USER_SAVED_VARIANT,
+      userHighlightStyles(highlight.color),
+    );
     paintedUserHighlights.set(highlight.id, cfiRange);
   }
 
   return added.length > 0;
+}
+
+/**
+ * Whether `cfiRange` is already some OTHER layer's live key.
+ *
+ * >>> THE INVARIANT THIS BUYS: NO TWO LIVE KEYS ARE EVER EQUAL. <<< epub.js hashes its annotation
+ * map on `encodeURI(cfiRange + type)` and every owner here passes the same `type`
+ * (`highlightSeam.ts`'s header), so the key is effectively the range string alone. Two layers holding
+ * one key is what makes a `remove` ambiguous — it takes whichever was filed last, which may be
+ * someone else's paint. Ordering cannot fix that; only refusing to create the second key can. So the
+ * word layer checks HERE, at add time, and every `remove` below is unambiguous by construction.
+ *
+ * WHY THE WORD LAYER IS THE ONE THAT GIVES WAY. Same asymmetry `applySearchMatch` already acts on
+ * (HIGHLIGHT_LAYERS.md §1): this layer is transient and moves every few hundred milliseconds, while
+ * `user` is the reader's saved work. Nothing is lost visually — whatever kept the range is already
+ * marking that exact spot.
+ *
+ * `resolveSpokenWordCfi` bails on the word-equals-SENTENCE case itself, but it compares against the
+ * cfi it was HANDED rather than against what is painted, so the sentence is checked again here.
+ */
+function spokenWordCollides(cfiRange: string): boolean {
+  if (cfiRange === currentSpokenCfi) return true;
+  if (cfiRange === currentSearchRange) return true;
+  for (const painted of paintedUserHighlights.values()) {
+    if (painted === cfiRange) return true;
+  }
+  return false;
+}
+
+/**
+ * Un-paint the word wash and forget it.
+ *
+ * >>> THE REMOVE IS DEFENSIVE, AND THAT IS THE HALF THAT PROTECTS THE READER'S OWN HIGHLIGHTS. <<<
+ * The range was collision-free when it was painted; the only way it stops being so is a `user` or
+ * `search` `add` landing on that exact range afterwards. When that happens the interloper's `add` has
+ * already displaced this layer's map entry WITHOUT detaching its mark, so a blind
+ * `remove(thisRange)` would delete THEIR annotation and orphan OUR rect — losing a saved highlight
+ * to un-paint a word.
+ *
+ * So a collision means: leave it. The cost is one orphaned word-sized wash under the new highlight
+ * until that chapter is re-rendered (a repaint cannot reach a mark whose map entry is gone). That is
+ * bounded and silent-but-harmless; deleting the reader's highlight is neither. The stricter fix — a
+ * pre-clear in `paintHighlights`, before the colliding add lands — was considered and declined: it
+ * puts word-layer logic in a batch path that runs on every change to the user's highlight set, to
+ * turn a harmless artefact into no artefact.
+ */
+function clearSpokenWord(): void {
+  if (currentSpokenWordCfi === null) return;
+  if (rendition && !spokenWordCollides(currentSpokenWordCfi)) {
+    highlightRemove(rendition, TTS_OWNER, currentSpokenWordCfi);
+  }
+  currentSpokenWordCfi = null;
+}
+
+/**
+ * Re-paint the word wash on top of whatever was just painted beneath it.
+ *
+ * Z-ORDER IS DOM ORDER in marks-pane, so the word has to be added AFTER its sentence or the sentence
+ * wash sits over its own refinement. Every caller below adds the sentence first and then calls this.
+ * `add` after `remove` is also the re-measure (a fresh `Range` per `addMark`), which is why this is
+ * the retint path as well as the repaint path — same reasoning as `liftSearchMatch`.
+ *
+ * `remove` first for the reason `repaintLiveAnnotations` documents at length: a bare re-add leaves
+ * the old-coloured mark attached underneath. `live: false` is the rebuilt-rendition case — a new
+ * `Rendition` is a new empty `Annotations` store, so there is nothing to detach and a remove would
+ * be aimed at an object that no longer exists.
+ */
+function repaintSpokenWord(options: { live?: boolean } = {}): void {
+  if (!rendition || currentSpokenWordCfi === null) return;
+  if (options.live !== false) highlightRemove(rendition, TTS_OWNER, currentSpokenWordCfi);
+  highlightAdd(
+    rendition,
+    TTS_OWNER,
+    currentSpokenWordCfi,
+    TTS_SPOKEN_WORD_VARIANT,
+    ttsSpokenWordStyles(),
+  );
 }
 
 /**
@@ -883,6 +991,11 @@ function repaintLiveAnnotations(): void {
     highlightRemove(active, TTS_OWNER, currentSpokenCfi);
     highlightAdd(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
   }
+  // AFTER the sentence, always — it is a wash on top of that wash, and re-adding the sentence
+  // without re-adding this would leave the word underneath it. Both halves of this function's job
+  // apply to it too: `spokenWordOpacity` is derived from the blend, which is derived from the page
+  // colour, and the re-add is what re-measures the rects a text-size change invalidated.
+  repaintSpokenWord();
 }
 
 /** The pending geometry-refresh frame, or 0. */
@@ -1165,6 +1278,11 @@ function rebuildForFlowIfNeeded(): boolean {
       if (currentSpokenCfi !== null && rendition) {
         highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
       }
+      // The word wash rides with its sentence, immediately after it so it stays on top. `live:
+      // false` because this rendition was just built: there is nothing attached to detach, and a
+      // remove here would be aimed at the destroyed rendition's `Annotations` — the same distinction
+      // `repaintLiveAnnotations` and `repaintUserHighlights` exist to keep apart.
+      repaintSpokenWord({ live: false });
       // Same problem, same fix, for the durable layer — and worse if missed: a spoken range
       // reappears on the next sentence, but a user highlight would simply be gone until the
       // book was reopened.
@@ -1177,6 +1295,18 @@ function rebuildForFlowIfNeeded(): boolean {
       // already attached. That is the duplicate-mark defect `repaintLiveAnnotations` documents,
       // arriving by a different route. Remove-then-add is idempotent either way, and epub.js's
       // `remove` tolerates a miss.
+      //
+      // >>> KNOWN §4 DEVIATION, RECORDED RATHER THAN FIXED HERE. <<< This leaves `search` above the
+      // two `tts` layers, where HIGHLIGHT_LAYERS.md §4 puts `tts` on top. It predates the word layer
+      // (the sentence has always been added before this line) and the word inherits it unchanged, so
+      // nothing regressed — but it is real, and `paintHighlights` has the same shape: it lifts only
+      // `search`, so a newly created user highlight is appended above BOTH spoken layers.
+      //
+      // The fix, when someone takes it: a `liftSpokenLayers()` sibling of `liftSearchMatch` that
+      // removes-then-re-adds the sentence AND the word as a PAIR — the pair is the unit, because
+      // lifting the sentence alone would put it over its own word — called from the same three batch
+      // boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`, here), last.
+      // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
     })
     .catch((error: unknown) => {
@@ -1311,7 +1441,8 @@ function createRendition(): Rendition {
       // they were told is on the page. See `awaitingSearchLanding`.
       if (awaitingSearchLanding) {
         awaitingSearchLanding = false;
-        if (currentSearchRange === null && pendingSearchMatch !== null) reportSearchPaint('refused');
+        if (currentSearchRange === null && pendingSearchMatch !== null)
+          reportSearchPaint('refused');
       }
 
       // epub.js's own location already carries both, so this costs no extra call: `href` is the
@@ -1372,6 +1503,11 @@ const api: TFReaderApi<'openEpub'> = {
         // state: a spoken range painted into the previous rendition has nothing to be re-painted onto.
         resetTtsState();
         currentSpokenCfi = null;
+        // And the word inside it. Not merely tidiness: `EpubCFI.toRange` ignores the spine
+        // component (see `cfiSpinePos`), so a word CFI left over from the previous book would
+        // resolve happily against this one's first chapter and be re-painted by the first repaint
+        // that came along, over whatever text sits at the same tree position.
+        currentSpokenWordCfi = null;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for
@@ -1584,19 +1720,15 @@ const api: TFReaderApi<'openEpub'> = {
         post({
           type: 'ttsSentence',
           requestId,
-          result: { status: 'error', message: error instanceof Error ? error.message : String(error) },
+          result: {
+            status: 'error',
+            message: error instanceof Error ? error.message : String(error),
+          },
         });
       }
     })();
   },
 
-  /**
-   * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
-   * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
-   * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
-   * cannot be painted must not be able to interrupt speech, so this never posts a message and never
-   * throws out of the try.
-   */
   /**
    * Paint the user's saved highlights — the whole set, idempotently. See `ReaderCommand`'s own note
    * for why the host always sends everything rather than a patch.
@@ -1655,12 +1787,73 @@ const api: TFReaderApi<'openEpub'> = {
     reportSearchPaint(applySearchMatch(match.epub));
   },
 
+  /**
+   * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
+   * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
+   * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
+   * cannot be painted must not be able to interrupt speech, so this never posts a message and never
+   * throws out of the try.
+   *
+   * >>> IT CLEARS THE WORD WASH FIRST, AND THAT IS NOT HOUSEKEEPING. <<< A word range is only
+   * meaningful inside the sentence it was resolved against, so a sentence that moves invalidates it.
+   * The caller cannot be relied on to do this: `useTtsSession` only sends word ranges while
+   * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
+   * strand the last word wash on screen with nothing left that would ever remove it.
+   *
+   * It also happens to be the precondition the auto-follow proposal
+   * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
+   * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
+   * stale word mark is still attached can re-attach it into the new one. Clearing before anything
+   * else keeps that free — do not move it below the paint.
+   */
   setSpokenRange: (cfi) => {
     try {
       if (!rendition) return;
+      clearSpokenWord();
       if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
       currentSpokenCfi = cfi;
-      if (cfi !== null) highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+      if (cfi !== null)
+        highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    } catch {
+      // Best-effort, per the interface's own contract — swallowed rather than reported.
+    }
+  },
+
+  /**
+   * Paint or clear the spoken-WORD highlight — the word inside the sentence `setSpokenRange` is
+   * showing. Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+   *
+   * >>> THE PREVIOUS WORD IS CLEARED BEFORE THE NEW ONE IS RESOLVED, NOT AFTER. <<< That ordering is
+   * the whole correctness argument, because `resolveSpokenWordCfi` bails to `null` for a list of
+   * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, the
+   * rendered text no longer matches what was spoken, the sentence is a single word already covered
+   * by the sentence wash. A bail means "I do not know where this word is", and a highlight left on
+   * the previous word while the voice has moved on is a LIE, whereas no word highlight is merely
+   * less information. The sentence wash is on screen throughout either way, so what a bail costs is
+   * the refinement, never the "you are here".
+   *
+   * `!rendition` returns before any of that, exactly as `setSpokenRange` does and for a reason worth
+   * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
+   * the host's commands), and with no rendition there is nothing painted for the state to disagree
+   * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+   */
+  setSpokenWordRange: (range) => {
+    try {
+      if (!rendition) return;
+
+      // Unconditional, and BEFORE the resolve: see the note above.
+      clearSpokenWord();
+      if (range === null) return;
+
+      const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
+      if (cfi === null) return;
+      // The paint side's half of the collision guard — the resolver's own bail only covers the
+      // sentence it was handed. See `spokenWordCollides` for why this refuses rather than displaces.
+      if (spokenWordCollides(cfi)) return;
+
+      currentSpokenWordCfi = cfi;
+      // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
+      repaintSpokenWord({ live: false });
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }

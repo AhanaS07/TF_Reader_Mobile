@@ -35,33 +35,63 @@
 // rejects (`execute()` catches internally). Same fix, same reasoning, as
 // `ReaderRouteScreen.tsx`'s equivalent effect for EPUB/PDF.
 //
-// CROSS-DEVICE CONFLICTS ARE CAUGHT AT THE PLAY BUTTON, NOT BY A BACKGROUND SUBSCRIPTION — AND
-// THAT IS THE POINT, NOT A SIMPLER FALLBACK. An earlier version of this file subscribed to
-// `progressStore.subscribe()` and compared on every notification, the same shape
-// `ReaderRouteScreen.tsx` uses for EPUB/PDF. That shape is wrong for audio specifically: text only
-// moves on a discrete `relocated` event, so comparing against "what is on screen" is stable between
-// events. Audio's position drifts continuously WHILE PLAYING, and this device's own throttled
-// writes (`AUDIO_PROGRESS_WRITE_THROTTLE_MS`) still land during that time — so a background
-// subscription watching for divergence would flag its own device's advancing playback as a
-// conflict roughly every throttle interval, and a genuinely idle SECOND device with the same book
-// open would see the SAME false alarms every time its own sync engine happened to pull. The
-// question that actually matters for audio is not "has this row changed since a moment ago" but
-// "am I about to resume playback from a position that might already be stale" — which is exactly
-// the moment `onBeforePlay` intercepts. The check only runs when the transport is at rest (the
-// player is paused — nothing plays until this resolves `true`), and splits on `CONFLICT_THRESHOLD_MS`:
-// within it, the difference is adopted SILENTLY (last-write-wins — `syncEngine.run()` already
-// resolved local-vs-remote for this row, so `incoming` is simply the correct value; adopting it is
-// bookkeeping, not a decision) rather than merely ignored, because leaving this device's stale
-// value on record would make the NEXT comparison wrong too. Past the threshold, it escalates to
-// the same prompt `ReaderRouteScreen.tsx` uses for EPUB/PDF.
+// AND, SEPARATELY, `syncForThisBook` (below) TOPS UP AN UNDOWNLOADED AUDIOBOOK — A GAP THIS FILE
+// HAD FROM THE START, NOT JUST IN THE MECHANISMS ADDED LATER. `syncEngine.run()`'s regular sweep
+// only refreshes progress for books with a local `downloads` row (`syncEngine.ts`'s own
+// `pullBook` doc); a streamed-without-downloading audiobook was invisible to it, no matter how
+// long either device stayed online — every one of this file's `syncEngine.run()` call sites
+// (resume, the play-gate, and the live-pull effects further down) inherited that gap until this
+// fixed it in one place. `audioAssetResolver.ts` supports the streamed case same as EPUB/PDF's
+// download flow — this was reachable, not theoretical.
+//
+// THE PLAY-BUTTON GATE HANDLES "AM I ABOUT TO RESUME ONTO A STALE POSITION." IT DOES NOT, AND
+// CANNOT, HANDLE "ANOTHER DEVICE WROTE A NEWER POSITION WHILE THIS ONE IS ACTIVELY PLAYING" — THAT
+// IS A SEPARATE MECHANISM, BELOW. An early design for that second case considered subscribing to
+// `progressStore.subscribe()` and comparing on every notification, the same shape
+// `ReaderRouteScreen.tsx` uses for EPUB/PDF, and rejected it — but for a specific, narrower reason
+// than "audio can't do this at all": the comparison it had in mind measured against a value that
+// only updates at pause/seek/unmount (what is now `lastPausedPositionSecondsRef`), and that value
+// is stale THE INSTANT playback resumes — so comparing against it while playing would flag this
+// device's own advancing playback as a conflict roughly every throttle interval, and a genuinely
+// idle SECOND device with the same book open would see the SAME false alarms every time its own
+// sync engine happened to pull. That specific failure mode does not apply to a comparison against
+// the PLAYER'S OWN live position (`AudioPlayerScreenHandle.currentPositionSeconds()`, a fresh read
+// of the native player, not a snapshot) — which is what the live-conflict effect below does
+// instead, gated on `isPlaying()` so it only ever runs while there is something to compare a live
+// position against, and reusing the exact same `CONFLICT_THRESHOLD_MS` tolerance the play-gate
+// already proved: a genuine echo of this device's own throttled write is always within a few
+// hundred milliseconds of the live position, comfortably inside the threshold, while a real
+// cross-device divergence is not.
+//
+// SO THERE ARE NOW TWO PATHS TO THE SAME PROMPT, EACH OWNING A DIFFERENT MOMENT. `handleBeforePlay`
+// owns "resuming from a paused, at-rest position" (unchanged from before). The live-conflict effect
+// owns "a fresher record landed while this device is already playing" — it PAUSES the player
+// (`AudioPlayerScreenHandle.pause()`) the instant it finds a genuine divergence, both so the
+// compared position stops moving and so the reader is not left listening to audio that no longer
+// matches where the app is about to say it is, then shows the identical `Alert.alert`. Both share
+// one `conflictPendingRef` guard so only one dialog can ever be up at a time — in practice this
+// never races in the first place, since a non-cancelable `Alert.alert` blocks the Play button
+// underneath it, but the guard costs nothing and matches `ReaderRouteScreen.tsx`'s own shape.
+//
+// THE IN-APP GATE ABOVE IS NOT THE ONLY WAY PLAYBACK CAN RESUME, AND THE OTHER ONE BYPASSES IT
+// ENTIRELY. `AudioPlayerScreen.tsx`'s `setActiveForLockScreen` wires the OS lock-screen/
+// Control-Center/media-notification Play and Toggle commands to expo-audio's NATIVE player
+// directly — resuming from there never calls `beginPlayback`, so `onBeforePlay` never runs. A
+// conflict written by another device while this device sits paused can start playing again from
+// the lock screen with no check and no prompt. Confirmed present, not fixed: closing it needs
+// either patching expo-audio to route the remote command through JS first, or dropping lock-screen
+// transport controls — both are product trade-offs on top of this file, not something to change
+// here unilaterally. See CLAUDE.md's "Reading-position resume" section.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
 
 import { AudioPlayerScreen } from '@/features/reader/audio/AudioPlayerScreen';
+import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlayerScreen';
 import { syncEngine } from '@/features/sync/syncEngine';
+import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { Locator } from '@/shared/contracts';
 
@@ -80,6 +110,14 @@ const AUDIO_PROGRESS_WRITE_THROTTLE_MS = 5_000;
 // well below anything a listener would notice as "picked up somewhere I didn't leave off."
 const CONFLICT_THRESHOLD_MS = 5_000;
 
+// Same gap `READER_LIVE_SYNC_POLL_MS` closes for EPUB/PDF, and the same reason it's needed here
+// too: the live-conflict effect below only REACTS to a `progressStore` change — it does not, by
+// itself, cause one. `useAutoSync.ts` only re-syncs on a NetInfo offline->online EDGE, so on stable
+// wifi (the common case) nothing would ever pull in another device's write while this screen sits
+// open, playing or not — the subscription would have nothing to react to. Same 2-minute interval as
+// Reader's, for the same accepted trade-off (see CLAUDE.md's "Reading-position resume" section).
+const AUDIO_LIVE_SYNC_POLL_MS = 120_000;
+
 export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   const { bookId, title } = route.params;
 
@@ -97,6 +135,26 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   // only reachable from a paused state), so this is always "the position about to be resumed from"
   // when it matters, never a live-playing value the comparison would need to unwind.
   const lastPausedPositionSecondsRef = useRef<number | null>(null);
+  // Shared between `handleBeforePlay` and the live-conflict effect below, so only one Alert can
+  // ever be up at a time — see this file's header for why that race is not actually reachable
+  // today (a non-cancelable Alert blocks the Play button underneath it) but is guarded anyway.
+  const conflictPendingRef = useRef(false);
+  // Mirrors ReaderRouteScreen.tsx's own fix: a notification that arrives while the live-conflict
+  // Alert is already up still needs somewhere to land, since `Alert.alert` cannot be refreshed
+  // once shown.
+  const latestIncomingRef = useRef<(Locator & { type: 'AUDIO' }) | null>(null);
+  // For the live-conflict effect's `isPlaying()`/`currentPositionSeconds()`/`pause()` — see
+  // `AudioPlayerScreenHandle`'s own doc comment.
+  const audioPlayerScreenRef = useRef<AudioPlayerScreenHandle>(null);
+
+  // Shared by every `syncEngine.run()` call site in this file that cares about THIS book
+  // specifically — see this file's header for why an undownloaded audiobook needs the same
+  // per-book top-up EPUB/PDF's equivalent already had.
+  const syncForThisBook = useCallback(async (): Promise<void> => {
+    await syncEngine.run();
+    const downloaded = await downloadStore.currentForBook(bookId);
+    if (!downloaded) await syncEngine.pullBook(bookId);
+  }, [bookId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,9 +162,10 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     // timestamp from a previous book must not swallow this book's first write.
     lastWriteAtRef.current = 0;
     lastPausedPositionSecondsRef.current = null;
+    conflictPendingRef.current = false;
+    latestIncomingRef.current = null;
 
-    void syncEngine
-      .run()
+    void syncForThisBook()
       .then(() => progressStore.currentLocator(undefined, bookId))
       .then((locator) => {
         if (cancelled) return;
@@ -118,7 +177,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [bookId]);
+  }, [bookId, syncForThisBook]);
 
   const writeProgress = useCallback(
     (positionSeconds: number) => {
@@ -152,8 +211,23 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     [writeProgress],
   );
 
+  // Shared by both conflict paths below (the play-gate's Alert and the live-conflict effect's) —
+  // re-confirms THIS device's position with a fresh, later timestamp, so it wins the next
+  // comparison anywhere else this book syncs to, same reasoning as ReaderRouteScreen.tsx's own
+  // "Continue here".
+  const resolveConflictContinueHere = useCallback(
+    (positionSeconds: number) => {
+      conflictPendingRef.current = false;
+      latestIncomingRef.current = null;
+      writeProgress(positionSeconds);
+    },
+    [writeProgress],
+  );
+
   const resolveConflictJumpThere = useCallback(
     (locator: Locator & { type: 'AUDIO' }) => {
+      conflictPendingRef.current = false;
+      latestIncomingRef.current = null;
       // Cleared, not left stale: this resolves to a REMOUNT below, and nothing has reported a
       // fresh paused position for the new instance yet.
       lastPausedPositionSecondsRef.current = null;
@@ -171,7 +245,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     const displayedSeconds = lastPausedPositionSecondsRef.current;
     if (displayedSeconds === null) return true; // nothing paused-and-known yet to compare against
 
-    await syncEngine.run();
+    await syncForThisBook();
     const incoming = await progressStore.currentLocator(undefined, bookId);
     if (incoming === null || incoming.type !== 'AUDIO') return true;
 
@@ -191,6 +265,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
       return true;
     }
 
+    conflictPendingRef.current = true;
     return new Promise<boolean>((resolve) => {
       Alert.alert(
         'Playback progress updated',
@@ -200,10 +275,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
             text: 'Continue here',
             style: 'cancel',
             onPress: () => {
-              // Re-confirms THIS device's position with a fresh, later timestamp, so it wins the
-              // next comparison anywhere else this book syncs to — same reasoning as
-              // ReaderRouteScreen.tsx's "Continue here".
-              writeProgress(displayedSeconds);
+              resolveConflictContinueHere(displayedSeconds);
               resolve(true);
             },
           },
@@ -217,11 +289,108 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
             },
           },
         ],
+        // EXPLICIT — see ReaderRouteScreen.tsx's identical option for why this is written down
+        // rather than left to Android's already-`false` default and iOS's lack of a tap-outside
+        // gesture: resolving this is compulsory before playback can proceed either way, since the
+        // `Promise<boolean>` this dialog resolves is what `onBeforePlay` is waiting on.
+        { cancelable: false },
       );
     });
-  }, [bookId, writeProgress, resolveConflictJumpThere]);
+  }, [bookId, syncForThisBook, resolveConflictContinueHere, resolveConflictJumpThere]);
 
   const positionReady = resolved?.bookId === bookId;
+
+  // The pull half of live conflict detection — see `AUDIO_LIVE_SYNC_POLL_MS`'s own comment for why
+  // the subscribe-based effect below needs this. Identical shape to ReaderRouteScreen.tsx's own
+  // foreground-edge + poll pair, just renamed to this file's constant.
+  useEffect(() => {
+    if (!positionReady) return;
+    let wasActive = AppState.currentState === 'active';
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const startPoll = () => {
+      if (pollId !== null) return;
+      pollId = setInterval(() => {
+        void syncForThisBook();
+      }, AUDIO_LIVE_SYNC_POLL_MS);
+    };
+    const stopPoll = () => {
+      if (pollId === null) return;
+      clearInterval(pollId);
+      pollId = null;
+    };
+
+    if (wasActive) startPoll();
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      const isActive = state === 'active';
+      if (isActive && !wasActive) {
+        void syncForThisBook();
+        startPoll();
+      } else if (!isActive) {
+        stopPoll();
+      }
+      wasActive = isActive;
+    });
+
+    return () => {
+      stopPoll();
+      subscription.remove();
+    };
+  }, [positionReady, syncForThisBook]);
+
+  // Live cross-device conflict detection WHILE PLAYING — see this file's header for the full
+  // account of why this is safe where an early design for the same idea was not. Only starts once
+  // the initial resume has resolved, so it never reacts to the very sync pull that fed it.
+  useEffect(() => {
+    if (!positionReady) return;
+    let cancelled = false;
+    const unsubscribe = progressStore.subscribe(() => {
+      if (cancelled) return;
+      const handle = audioPlayerScreenRef.current;
+      if (!handle?.isPlaying()) return; // paused case is handleBeforePlay's job, not this effect's
+      const displayedSeconds = handle.currentPositionSeconds();
+      void progressStore.currentLocator(undefined, bookId).then((incoming) => {
+        if (cancelled || incoming === null || incoming.type !== 'AUDIO') return;
+        const diffMs = Math.abs(incoming.positionMs - Math.round(displayedSeconds * 1000));
+        if (diffMs <= CONFLICT_THRESHOLD_MS) return; // this device's own echo, or clock noise
+        latestIncomingRef.current = incoming;
+        if (conflictPendingRef.current) return;
+        conflictPendingRef.current = true;
+        // Pauses BEFORE the Alert shows, both so the compared position stops moving and so the
+        // reader is not left listening to audio that no longer matches where the app is about to
+        // say it is. Re-reads the position AFTER pausing, not the pre-await `displayedSeconds`
+        // above, since the player kept playing for however long the `currentLocator()` read took.
+        handle.pause();
+        const pausedAtSeconds = handle.currentPositionSeconds();
+        Alert.alert(
+          'Playback progress updated',
+          'Playback has been paused — your progress in this audiobook was updated on another ' +
+            'device. Resume from there, or continue playing here?',
+          [
+            {
+              text: 'Continue here',
+              style: 'cancel',
+              onPress: () => {
+                if (!cancelled) resolveConflictContinueHere(pausedAtSeconds);
+              },
+            },
+            {
+              text: 'Resume from there',
+              onPress: () => {
+                if (!cancelled) resolveConflictJumpThere(latestIncomingRef.current ?? incoming);
+              },
+            },
+          ],
+          { cancelable: false },
+        );
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [positionReady, bookId, resolveConflictContinueHere, resolveConflictJumpThere]);
 
   if (!positionReady) {
     return (
@@ -234,6 +403,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
   return (
     <View style={styles.container}>
       <AudioPlayerScreen
+        ref={audioPlayerScreenRef}
         key={`${bookId}:${resumeGeneration}`}
         bookId={bookId}
         title={title}

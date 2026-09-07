@@ -104,6 +104,51 @@ export function highlightFill(color: string, bg?: string): { fill: string; blend
 }
 
 /**
+ * The `fill-opacity` for the spoken-WORD wash, given the blend `highlightFill` chose for the page.
+ *
+ * >>> THE WORD IS THE SAME COLOUR AS THE SENTENCE AT A HIGHER OPACITY, AND THAT IS THE DESIGN. <<<
+ * Both layers go through one `highlightFill(TTS_SPOKEN_COLOR, bg)` call, so they always get the same
+ * fill and the same blend — which means more opacity is more prominent on EVERY page, by
+ * construction, and the pair can never invert. A second HUE would have to be re-argued against three
+ * page colours, against `user`'s fill underneath it and against `search`'s stroke, and re-argued
+ * again the next time a palette moves. HIGHLIGHT_LAYERS.md §3 records this as two intensities of one
+ * channel rather than a fourth owner.
+ *
+ * >>> WHY THE NUMBER DEPENDS ON THE BLEND, NOT ON THE THEME. <<< The two blends fail in opposite
+ * directions, so one opacity cannot serve both:
+ *
+ *  - `multiply` CAN ONLY DARKEN. The glyph is already the darkest thing on a light or sepia page, so
+ *    it is near a fixed point; more alpha darkens the PAGE under the word and text contrast goes up.
+ *    Alpha is capped by nothing, so it is set high enough to be unmistakable.
+ *  - `screen` CAN ONLY LIGHTEN. On a dark page the glyph is the LIGHTEST thing, so more alpha drives
+ *    the background up toward the glyph and the text under the word goes muddy. Alpha is capped by
+ *    readability here, and the low value is not timidity — the sentence wash on a near-black page is
+ *    so dim that 0.3 is still a ~3.5x step in linear luminance.
+ *
+ * Keyed on `blend` rather than on luminance so there is ONE cutoff in this file: move
+ * `highlightFill`'s 0.35 and this follows automatically. It also covers Accessibility's
+ * `highContrast` pairs for free — those arrive as `fg`/`bg` on the appearance, so the answer is a
+ * function of the page that actually arrives, not of a theme name.
+ *
+ * >>> BOTH NUMBERS ARE COMPUTED, NEVER OBSERVED ON HARDWARE. <<< They come from compositing
+ * `THEME_PALETTES` (readerAppearance.ts) against the 0.2 sentence wash and checking WCAG contrast —
+ * light 0.5 ~= 14:1 glyph contrast, sepia 0.5 ~= 4.8:1, dark 0.3 ~= 4.6:1, and dark at 0.5 would be
+ * ~= 2.7:1, which is why it is not 0.5. The device pass belongs to Accessibility (Hruthik), and
+ * THESE TWO NUMBERS ARE WHAT IT IS FOR — not "does a highlight appear". The two failure signatures
+ * to look for:
+ *
+ *  - DARK: the word wash lifts the page toward the glyph and the text under it goes muddy -> lower
+ *    the `screen` value.
+ *  - LIGHT / SEPIA: the word does not separate from the sentence wash around it -> raise the
+ *    `multiply` value, which multiply makes safe.
+ *
+ * Either correction is a one-line change here, in a pure unit-tested module, with no shell edit.
+ */
+export function spokenWordOpacity(blend: 'multiply' | 'screen'): string {
+  return blend === 'screen' ? '0.3' : '0.5';
+}
+
+/**
  * The search-match OUTLINE colour for the current page — HIGHLIGHT_LAYERS.md §3's third channel.
  *
  * >>> AN OUTLINE, NOT A FILL, AND THAT IS THE WHOLE DESIGN OF THE CHANNEL. <<< `user` owns the

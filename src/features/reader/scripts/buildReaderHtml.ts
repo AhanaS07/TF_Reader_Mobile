@@ -90,12 +90,37 @@ const PDF_ENTRY = webview('src', 'pdf.entry.ts');
  *
  * epub.js, JSZip and pdf.js arrive on `window` from their own inlined <script> tags. If an entry ever
  * imports one of them as a VALUE instead of `import type`, esbuild would helpfully bundle a second
- * copy — 300 KB to 1.4 MB of it — into a file that already contains the library. The result still
- * works, so nothing else here would notice. Both entries are comfortably under 20 KB today; this
- * leaves headroom for the prefs-application work while a library leak overshoots by an order of
- * magnitude.
+ * copy into a file that already contains the library. The result still works, so nothing else here
+ * would notice.
+ *
+ * >>> IT IS A LEAK THRESHOLD, NOT A SIZE BUDGET, AND THE DIFFERENCE DECIDES THE NUMBER. <<<
+ * The only question it has to answer is "is a whole library in here?", so it is derived from what a
+ * leak actually COSTS, and it has to sit below the cheapest one. Measured 2026-09-05 by bundling a
+ * one-line entry that value-imports each package, with these exact esbuild options:
+ *
+ *   jszip           154 KB   <- the floor, and therefore what sets this constant
+ *   pdfjs-dist      837 KB
+ *   epubjs          889 KB
+ *
+ * **Tree-shaking does not soften any of them**: `import { EpubCFI } from 'epubjs'` costs 889 KB, the
+ * same as the default import, so a leak cannot arrive in a small increment. Note these are far above
+ * the sizes reported for the inlined <script> tags below — those are minified dist builds, and a
+ * bundled-from-source copy is several times larger. Deriving this constant from the inlined numbers
+ * would set it too low.
+ *
+ * So anything below 154 KB catches all three, whatever the entry itself weighs. 128 KB takes that
+ * with ~26 KB of margin and leaves the entries ~54 KB to grow into.
+ *
+ * >>> WHY IT WAS 80 KB, AND WHY THAT STOPPED BEING RIGHT. <<< This said "both entries are comfortably
+ * under 20 KB today", which was true when written and made 80 KB a 4x headroom. It is not true now —
+ * the EPUB entry is ~74 KB and the PDF entry ~45 KB — so the same constant had quietly become 1.08x,
+ * close enough that the next ordinary feature would have tripped it with a message telling its author
+ * to hunt a library leak that was not there. THAT is the failure mode this re-derivation avoids: not
+ * a missed leak, but a false positive answered by raising the number reflexively until it no longer
+ * means anything. If this needs raising again, re-run the measurement above and keep it under the
+ * cheapest leak — do not just add headroom.
  */
-const MAX_ENTRY_BUNDLE_BYTES = 80 * 1024;
+const MAX_ENTRY_BUNDLE_BYTES = 128 * 1024;
 
 /**
  * How an injected source is spliced in.
@@ -281,7 +306,10 @@ function bundleEntry(entry: string, label: string): string {
       `${label} compiled to ${Math.round(Buffer.byteLength(code) / 1024)}KB, over the ` +
         `${Math.round(MAX_ENTRY_BUNDLE_BYTES / 1024)}KB ceiling. The usual cause is a VALUE import ` +
         `of epubjs, jszip or pdfjs-dist: those arrive on window from their own inlined script tags, ` +
-        `so importing one bundles a second copy. Use \`import type\` for their types.`,
+        `so importing one bundles a second copy. Use \`import type\` for their types. ` +
+        `The cheapest such leak is +154KB, so an overshoot of a few KB is NOT one — if that is what ` +
+        `you are seeing, the entry has genuinely grown and this ceiling wants re-deriving (see its ` +
+        `own note), not raising by enough to get past today.`,
     );
   }
 

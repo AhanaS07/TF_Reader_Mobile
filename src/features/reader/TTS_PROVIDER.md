@@ -126,11 +126,40 @@ removes it and stops speech, because `ttsEnabled` collapses `ttsProvider` to nul
 toolbar was a second control for a decision the preference already owned; what remains of it is a
 non-interactive 🔊 cue painted on the page while `status === 'speaking'`.
 
-**Not done as part of step 5, on purpose — out of scope, not overlooked:** word-level highlighting
-(`TtsHighlightMode: 'word'` in the accessibility contract; the seam still only carries sentence-level
-CFIs), scroll-follow-the-spoken-range (open item 2, unchanged below), and a real `onInterrupted`
-source for `'revoked'` (open item 1, unchanged below — `terminate()` handles the reason identically to
-`'closed'` internally, but nothing calls it yet).
+**Not done as part of step 5, on purpose — out of scope, not overlooked:**
+~~word-level highlighting~~ (**landed 2026-09-05, see below**), scroll-follow-the-spoken-range (open
+item 2, unchanged below), and a real `onInterrupted` source for `'revoked'` (open item 1, unchanged
+below — `terminate()` handles the reason identically to `'closed'` internally, but nothing calls it
+yet).
+
+### Word-level highlighting — `setSpokenWordRange`, landed 2026-09-05
+
+```ts
+type SpokenWordRange = { cfi: string; start: number; end: number };
+setSpokenWordRange(range: SpokenWordRange | null): void;   // null clears
+```
+
+The seam carries sub-sentence ranges now. `setSpokenRange` says which SENTENCE; this says which WORD
+inside it. Accessibility calls it on every `tts-progress` event while
+`tts.highlightMode === 'word'`. `WEBVIEW_BRIDGE.md`'s "The spoken word" section is the bridge half
+and `HIGHLIGHT_LAYERS.md` §3 the visual half; what belongs to this seam:
+
+- **`start`/`end` index `TtsSentence.text`** — the string the caller handed the engine — so they are
+  exactly what the platform reports back (iOS `location`/`length`, Android `start`/`end`). A caller
+  passes on what it was given and nothing else. They are NOT DOM offsets, and the mapping between the
+  two is the Reader side's problem, not the caller's.
+- **One nullable object, not three arguments.** The bridge's `CommandArgsMatchPayloads` proof
+  requires one payload field per command; the reasoning is on the type itself.
+- **Failure is silent and clears the previous word.** Resolution genuinely fails in ordinary
+  situations — paged away mid-utterance, section not rendered, a one-word sentence the sentence wash
+  already covers — and on all of them the previous word is removed rather than left painted. A
+  highlight on the last word while the voice has moved on is a lie; showing nothing is not.
+- **`setSpokenRange` clears it**, so a caller changing sentence, stopping, or turning word mode off
+  mid-utterance needs no separate clear.
+- **Device verification is Accessibility's**, deferred deliberately: nothing on `T4_Ahana` calls this
+  yet, so it landed unverified on hardware. What that pass is actually checking is the two opacity
+  constants in `webview/src/selectionTheme.ts`'s `spokenWordOpacity` — computed from the palettes and
+  WCAG contrast, never observed — and its comment names the two failure signatures to look for.
 
 **Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
 Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount
@@ -207,10 +236,25 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
    `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
    consumers should build against the reason, not the source. **Karthik + Abhinav.**
-2. **Does the reader scroll to follow the spoken range?** Undecided. Today `setSpokenRange` paints
-   and nothing else, so speech can run past the visible page. The fake does not scroll either.
-   Reader's call, but it changes what `current(null)` means after a long read, so it should be
-   settled before step 6.
+2. **Does the reader scroll to follow the spoken range?** Undecided, and still open. Today
+   `setSpokenRange` paints and nothing else, so speech can run past the visible page. The fake does
+   not scroll either. Reader's call, but it changes what `current(null)` means after a long read, so
+   it should be settled before step 6.
+
+   Accessibility has since written a proposal —
+   `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md` (`origin/feature/accessibility`, `8cb54d8`): a
+   visibility check plus `rendition.display(cfi)` inside `setSpokenRange`'s own handler, needing no
+   new bridge command. **Word-level highlighting landing does not block it and does not change it** —
+   its own recommendation is to build against sentence-level `setSpokenRange` first and extend
+   afterwards, which still holds. Two things the word layer leaves for whoever picks it up:
+
+   - The word wash is cleared at the TOP of `setSpokenRange`, before anything paints. That is a
+     precondition auto-follow would otherwise have to add for itself: a `display()` that re-renders
+     the view while a stale mark is still attached can carry it into the new one. Do not move it
+     below the paint.
+   - Extending follow to word level must keep the proposal's step-5 dedupe. Word ranges arrive per
+     `tts-progress` event rather than per sentence, and a `display()` at that cadence fights the
+     reader instead of following them.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

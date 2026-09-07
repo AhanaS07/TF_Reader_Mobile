@@ -81,11 +81,10 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   pages back to re-read something while TTS keeps talking, the next `setSpokenRange` call will find
   the spoken CFI off-screen and pull them forward again. No "recently user-navigated" signal exists
   today to suppress that; would need one if the desired behavior is "don't yank back mid-manual-browse."
-- **Word-level ranges.** The `setSpokenWordRange` bridge command was reverted (it landed on the RN
-  side ahead of the WebView half, which broke `npm run typecheck` — see
-  `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s risk table, `tts.highlightMode` row). Recommend building
-  auto-follow against sentence-level `setSpokenRange` now, and extending the same technique to
-  word-level once both halves land together, rather than blocking on it.
+- **Word-level ranges.** `setSpokenWordRange` is back and landed on both halves together this time
+  (RN side and the WebView entries), so `npm run typecheck` stays green — see `WEBVIEW_BRIDGE.md`'s
+  Current surface table. Auto-follow can be built against sentence-level `setSpokenRange` now and
+  extended to word-level whenever someone picks that up; nothing here is still blocked on it landing.
 
 ## Testing / verification checklist for whoever implements this
 

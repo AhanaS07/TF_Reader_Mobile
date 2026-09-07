@@ -33,7 +33,14 @@
 // file's AUDIO_EXTENSION constant). expo-audio's native decoders handle mp3/AAC/wav identically from
 // this file's point of view.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -51,6 +58,26 @@ const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
 /** End-of-track tolerance (seconds). If the player is within this threshold of duration when play
  * is pressed, restart from the beginning instead of no-oping. */
 const TRACK_END_EPSILON_SECONDS = 0.5;
+
+/**
+ * The one thing a caller may need to reach into this screen for from the outside: checking whether
+ * playback is live and pausing it — currently only `AudioPlayerRouteScreen.tsx`'s live cross-device
+ * conflict check (see that file's header). Reads straight off the native `player` object rather than
+ * the `status` returned by `useAudioPlayerStatus`, deliberately: `status` only updates on this
+ * component's own render cycle (a ~250ms tick), so a caller reading through it could act on a value
+ * that is already stale by the time the caller's own async work (a sync round trip) finishes. `player`
+ * is a stable, always-current native handle — reading it fresh at call time is what makes the
+ * conflict check correct where a naive live subscription previously wasn't (see
+ * AudioPlayerRouteScreen.tsx's own account of that history).
+ */
+export interface AudioPlayerScreenHandle {
+  /** A fresh read of the player's own state, not a snapshot from the last render. */
+  isPlaying(): boolean;
+  /** A fresh read of the player's own position, in seconds. */
+  currentPositionSeconds(): number;
+  /** Pauses and commits the position it paused at (via `onPositionCommit`). No-op if already paused. */
+  pause(): void;
+}
 
 export interface AudioPlayerScreenProps {
   /** CALLERS MUST KEY ON bookId — same contract ReaderScreen.tsx states outright. This component
@@ -139,14 +166,10 @@ function Scrubber({
   );
 }
 
-export function AudioPlayerScreen({
-  bookId,
-  title,
-  initialPosition,
-  onPositionChange,
-  onPositionCommit,
-  onBeforePlay,
-}: AudioPlayerScreenProps): React.JSX.Element {
+function AudioPlayerScreenComponent(
+  { bookId, title, initialPosition, onPositionChange, onPositionCommit, onBeforePlay }: AudioPlayerScreenProps,
+  ref: React.ForwardedRef<AudioPlayerScreenHandle>,
+): React.JSX.Element {
   const [uri, setUri] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
@@ -298,6 +321,24 @@ export function AudioPlayerScreen({
   const commitPosition = useCallback((positionSeconds: number) => {
     positionCommitRef.current?.(positionSeconds);
   }, []);
+
+  // See `AudioPlayerScreenHandle`'s own doc comment for why this reads `player` directly rather
+  // than `status`. `[player, commitPosition]` is a stable dep list — `player` is the module-level
+  // singleton (`useState(() => ...)`, never reassigned) and `commitPosition` has its own empty dep
+  // array — so this handle is built once per mount, not rebuilt on every tick.
+  useImperativeHandle(
+    ref,
+    () => ({
+      isPlaying: () => player.playing,
+      currentPositionSeconds: () => player.currentTime,
+      pause: () => {
+        if (!player.playing) return;
+        player.pause();
+        commitPosition(player.currentTime);
+      },
+    }),
+    [player, commitPosition],
+  );
 
   // Same ref-indirection reasoning as positionCommitRef above, applied to onBeforePlay.
   const beforePlayRef = useRef(onBeforePlay);
@@ -466,6 +507,11 @@ export function AudioPlayerScreen({
     </View>
   );
 }
+
+// `forwardRef` only for `AudioPlayerScreenHandle` — see that type's own doc comment. Every existing
+// caller keeps working unchanged: a `ref` prop is simply optional on a forwardRef component.
+export const AudioPlayerScreen = forwardRef(AudioPlayerScreenComponent);
+AudioPlayerScreen.displayName = 'AudioPlayerScreen';
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff', padding: 20, gap: 24 },

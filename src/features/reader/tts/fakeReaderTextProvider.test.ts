@@ -300,6 +300,57 @@ describe('fakeReaderTextProvider — highlighting', () => {
     // here would let a failed highlight interrupt speech, which the interface forbids.
     expect(() => provider.setSpokenRange('epubcfi(/6/999!/4/2)')).not.toThrow();
   });
+
+  it('records each spoken WORD range in call order, including clears', () => {
+    const provider = createFakeReaderTextProvider();
+    const [first] = provider.sentences;
+    const one = { cfi: first.cfi, start: 0, end: 7 };
+    const two = { cfi: first.cfi, start: 8, end: 12 };
+
+    provider.setSpokenWordRange(one);
+    provider.setSpokenWordRange(two);
+    provider.setSpokenWordRange(null);
+
+    expect(provider.spokenWordRanges).toEqual([one, two, null]);
+  });
+
+  it('keeps the word log independent of the sentence log', () => {
+    // The real shell drops the painted word whenever the sentence moves, but it does that INSIDE
+    // the WebView and produces no call. Folding that into this recorder would invent a call the
+    // caller never made, and a test asserting the caller's own sequence would then be reading this
+    // fake's opinion instead of the caller's behaviour.
+    const provider = createFakeReaderTextProvider();
+    const [first, second] = provider.sentences;
+
+    provider.setSpokenRange(first.cfi);
+    provider.setSpokenWordRange({ cfi: first.cfi, start: 0, end: 7 });
+    provider.setSpokenRange(second.cfi);
+
+    expect(provider.spokenRanges).toEqual([first.cfi, second.cfi]);
+    expect(provider.spokenWordRanges).toEqual([{ cfi: first.cfi, start: 0, end: 7 }]);
+  });
+
+  it('ignores a spoken word range after teardown without throwing', () => {
+    const provider = createFakeReaderTextProvider();
+    provider.interrupt('closed');
+
+    expect(() =>
+      provider.setSpokenWordRange({ cfi: provider.sentences[0].cfi, start: 0, end: 4 }),
+    ).not.toThrow();
+    expect(provider.spokenWordRanges).toEqual([]);
+  });
+
+  it('accepts an unresolvable word range silently rather than validating it', () => {
+    const provider = createFakeReaderTextProvider();
+
+    // Same contract as the sentence sibling above: the real one paints nothing, clears the previous
+    // word, and reports nothing. Rejecting here would train a caller against a guarantee it will
+    // not get on a device.
+    expect(() =>
+      provider.setSpokenWordRange({ cfi: 'epubcfi(/6/999!/4/2)', start: 40, end: 2 }),
+    ).not.toThrow();
+    expect(provider.spokenWordRanges).toHaveLength(1);
+  });
 });
 
 describe('fakeReaderTextProvider — configuration', () => {

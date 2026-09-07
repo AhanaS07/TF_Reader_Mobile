@@ -31,6 +31,13 @@
 // used to live here is gone: the singleton store is the single JS-process source of truth,
 // so a direct subscription is simpler than a bus and needs no second emitter.
 // See READER_PREFS_APPLICATION.md §5.
+//
+// SCOPED TO LOCAL WRITES ON PURPOSE (decided 2026-09-07, Ahana). Bookmarks, reading progress
+// and highlights DO re-apply live from a sync pull while their screen is open — see
+// `progressStore`/`bookmarkStore`'s own `subscribe`, wired into `ReaderRouteScreen.tsx`/
+// `ReaderScreen.tsx`. Preferences and accessibility settings deliberately do not: see
+// `subscribe()`'s own doc below for why, and `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges`
+// for the bridge that exists but is intentionally not consumed here.
 
 import type { SharedPrefs } from '@/shared/contracts';
 import {
@@ -63,9 +70,19 @@ export interface PrefsStore {
    * settles, with the fresh record — this is how the Reader re-applies live without a
    * reopen and without an event bus (see the header note). Returns an unsubscribe.
    *
-   * Only local writes THROUGH this store notify. A prefs row pulled by Sync from the
-   * server does not pass through here, so if that path ever needs to drive a live
-   * re-apply it must notify too — call it out then rather than assuming this covers it.
+   * DELIBERATELY LOCAL-ONLY (decided 2026-09-07, Ahana). A prefs row pulled by Sync from
+   * another device does NOT notify here, and must not be made to. Unlike bookmarks/progress/
+   * highlights — facts *about* the book that can appear alongside an unchanged page — a prefs
+   * change is a rendering/behavioural change to the page the user is looking at RIGHT NOW:
+   * live-applying a remote theme/font/TTS edit while this device is mid-read means an
+   * unannounced reflow (and, per `epubLayoutSignature.ts`, every painted highlight
+   * re-measuring) or TTS going silent, driven by an edit the person reading here never made.
+   * `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges` exists (Karthik's) for exactly this kind
+   * of bridge and is intentionally NOT wired in here. The two-tables' field-level LWW merge
+   * (`mergeFieldLevel` in `syncableTable.ts`) still resolves a genuine cross-device conflict
+   * correctly regardless — it runs on every pull, whether or not anyone is listening for it —
+   * so nothing is lost: the reconciled record is simply picked up the ordinary way, by the next
+   * `getPrefs()` a remount performs, i.e. on the next close-and-reopen.
    */
   subscribe(listener: PrefsListener): () => void;
 }

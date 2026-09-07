@@ -26,7 +26,12 @@
 import type { ReaderCommand, ReaderMessage, TtsFetchMode } from '@/features/reader/readerBridge';
 import type { BookId } from '@/shared/contracts';
 
-import type { ReaderTextProvider, TtsFetchResult, TtsInterruption } from './readerTextProvider';
+import type {
+  ReaderTextProvider,
+  SpokenWordRange,
+  TtsFetchResult,
+  TtsInterruption,
+} from './readerTextProvider';
 
 type TtsSentenceMessage = Extract<ReaderMessage, { type: 'ttsSentence' }>;
 
@@ -124,10 +129,20 @@ export function createEpubReaderTextProvider(
     send({ type: 'setSpokenRange', cfi });
   }
 
+  function setSpokenWordRange(range: SpokenWordRange | null): void {
+    // Same contract, same guard, same reasons as `setSpokenRange` above. Nothing is validated here
+    // — not the CFI, not the offsets: whether they resolve is a question only the live document can
+    // answer, and the shell answers it silently (clearing the previous word either way). Checking
+    // here would be guessing, and a wrong guess would drop a paintable range.
+    if (terminated) return;
+    send({ type: 'setSpokenWordRange', range });
+  }
+
   return {
     current: (from, signal) => request(from, 'current', signal),
     next: (after, signal) => request(after, 'next', signal),
     setSpokenRange,
+    setSpokenWordRange,
 
     onInterrupted(handler) {
       handlers.add(handler);
@@ -149,6 +164,10 @@ export function createEpubReaderTextProvider(
 
     notifyRelocated() {
       if (terminated) return;
+      // ONE CALL CLEARS BOTH SPOKEN LAYERS. The word range is a sub-range of the sentence, so the
+      // shell drops it whenever the sentence changes or clears (`setSpokenRange`'s handler in
+      // epub.entry.ts). Sending a second `setSpokenWordRange(null)` here would be a no-op that
+      // implies the two can be cleared independently, which is exactly what must not be assumed.
       setSpokenRange(null);
       fire('navigated');
     },
