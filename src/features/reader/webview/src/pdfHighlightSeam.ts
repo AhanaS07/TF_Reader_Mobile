@@ -185,7 +185,7 @@ export function setPageText(
 export function paintPage(
   surface: PdfPageSurface,
   highlights: readonly PdfHighlightPaint[],
-  bg?: string,
+  _bg?: string,
 ): void {
   surface.highlightLayer.replaceChildren();
   surface.boxes = [];
@@ -198,7 +198,11 @@ export function paintPage(
   for (const highlight of highlights) {
     if (highlight.page !== surface.page) continue;
 
-    for (const slice of slicesForRange(surface.lengths, highlight.startOffset, highlight.endOffset)) {
+    for (const slice of slicesForRange(
+      surface.lengths,
+      highlight.startOffset,
+      highlight.endOffset,
+    )) {
       const div = surface.divs[slice.index];
       const text = div?.firstChild;
       if (!text || text.nodeType !== Node.TEXT_NODE) continue;
@@ -234,10 +238,12 @@ export function paintPage(
         el.style.top = `${box.top}px`;
         el.style.width = `${box.width}px`;
         el.style.height = `${box.height}px`;
-        // Same `highlightFill` call as the EPUB side. `bg` is `pdf.entry.ts`'s `currentBg`, passed
-        // in rather than read back from `document.body.style.background` (serialised form isn't
-        // guaranteed hex). Inline `mixBlendMode` overrides the template's `multiply` fallback.
-        const { fill, blend } = highlightFill(highlight.color, bg);
+        // In PDF, pages are rendered to canvas by pdf.js and the appearance theme is not
+        // applied directly to the page (unlike EPUB, where chapter styles are injected).
+        // PDF highlights must therefore retain their un-themed color and multiply blend mode
+        // across all themes — switching to screen blend mode on a dark theme background makes
+        // highlights completely invisible against the white PDF canvas.
+        const { fill, blend } = highlightFill(highlight.color);
         el.style.background = fill;
         el.style.opacity = '0.25';
         el.style.mixBlendMode = blend;
@@ -283,7 +289,11 @@ export function paintSearchPage(
   const start = resolveMatchOffset(surface.texts, hint ?? 0, match.matchText);
 
   if (start !== null) {
-    for (const slice of slicesForRange(surface.lengths, start, start + match.matchText.trim().length)) {
+    for (const slice of slicesForRange(
+      surface.lengths,
+      start,
+      start + match.matchText.trim().length,
+    )) {
       const div = surface.divs[slice.index];
       const text = div?.firstChild;
       if (!text || text.nodeType !== Node.TEXT_NODE) continue;

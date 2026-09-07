@@ -63,6 +63,19 @@ interface DevFixture {
  */
 const BACKEND_AUDIO_BOOK_ID = 'dev-sample-audio-encrypted' as BookId;
 
+/**
+ * A SECOND real-backend-catalogue id, same reasoning as `BACKEND_AUDIO_BOOK_ID` above: nothing on
+ * the device seeds it, tapping/downloading acquires it live. Added 2026-09-04 specifically to
+ * verify a genuinely well-formed OPEN_ACCESS grant end-to-end — `licenceModel: 'OPEN_ACCESS'` with
+ * NO `encryption` block at all on the reading-session response, unlike `dev-sample-epub` (that
+ * fixture's own `licenceModel` says OPEN_ACCESS but its grant still carries a real `encryption`
+ * block — a documented backend quirk `downloadManager.ts`'s `isEncrypted || license.mode !==
+ * 'open-access'` check exists to survive; see that file's comment). This row is the control case:
+ * no `encryption` field, so `isEncrypted` is false and the book should store/decrypt as genuine
+ * plaintext with zero special-casing.
+ */
+const BACKEND_EPUB_OPEN_BOOK_ID = 'dev-sample-epub-open' as BookId;
+
 const DEV_FIXTURES: readonly DevFixture[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
@@ -72,6 +85,8 @@ const DEV_FIXTURES: readonly DevFixture[] = [
   // AudioPlayer route (see onPress below); the row's Download button persists it for offline
   // playback through the same `useDownloadProgress` hook every other row uses.
   { label: 'Audiobook (Encrypted)', bookId: BACKEND_AUDIO_BOOK_ID, format: 'AUDIO' },
+  // See BACKEND_EPUB_OPEN_BOOK_ID's own comment — the genuinely-unencrypted OPEN_ACCESS control.
+  { label: 'EPUB (Open Access)', bookId: BACKEND_EPUB_OPEN_BOOK_ID, format: 'EPUB' },
 ];
 
 type Props = NativeStackScreenProps<RootStackParamList, 'BookList'>;

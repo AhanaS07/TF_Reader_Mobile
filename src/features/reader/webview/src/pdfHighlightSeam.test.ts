@@ -191,7 +191,7 @@ describe('the layers a page needs', () => {
 });
 
 describe('painting a stored highlight', () => {
-  it('places one box per line, in the page\'s own coordinates', () => {
+  it("places one box per line, in the page's own coordinates", () => {
     // The page origin is subtracted: the boxes are absolutely positioned INSIDE the page container,
     // so leaving them in viewport coordinates would offset every highlight by the page's position.
     const surface = makeSurface(1, LINES);
@@ -223,7 +223,20 @@ describe('painting a stored highlight', () => {
     expect(box.className).toBe('tf-hl-user--saved');
   });
 
-  it('paints only THIS page\'s highlights — the spread routing', () => {
+  it('retains multiply blend mode and stored color even when dark theme bg is passed', () => {
+    // In PDF, the page is rendered to canvas by pdf.js and theme is not applied directly
+    // to the page (the canvas stays white). Highlights must keep multiply blend mode
+    // and stored color across all themes rather than switching to screen in dark mode.
+    const surface = makeSurface(1, LINES);
+    paintPage(surface, [{ ...highlight(0, 5), color: 'yellow' }], '#121212');
+
+    const box = surface.highlightLayer.firstElementChild as HTMLElement;
+    expect(box.style.background).toBe('yellow');
+    expect(box.style.mixBlendMode).toBe('multiply');
+    expect(box.style.opacity).toBe('0.25');
+  });
+
+  it("paints only THIS page's highlights — the spread routing", () => {
     // Both pages of a spread are live at once, and each surface must ignore the other's. `page` is
     // in the payload for exactly this.
     const surface = makeSurface(1, LINES);
@@ -286,11 +299,13 @@ describe('ZOOM: the boxes follow the page, they do not stay where they were pain
     const reflowed = makeSurfaceInto(surface, LINES);
     paintPage(reflowed, [highlight(6, 24)]);
 
-    expect(boxesOf(reflowed)).toEqual(before.map((b) => ({
-      left: b.left * 2,
-      top: b.top * 2,
-      width: b.width * 2,
-    })));
+    expect(boxesOf(reflowed)).toEqual(
+      before.map((b) => ({
+        left: b.left * 2,
+        top: b.top * 2,
+        width: b.width * 2,
+      })),
+    );
   });
 
   it('keeps a hit test correct after the zoom, not just the paint', () => {
@@ -303,7 +318,9 @@ describe('ZOOM: the boxes follow the page, they do not stay where they were pain
     paintPage(reflowed, [highlight(0, 5)]);
 
     // Line 0 now spans 0..100 across and 0..40 down, in page coordinates -> +origin for the viewport.
-    expect(highlightAtClientPoint(reflowed, PAGE_ORIGIN.left + 90, PAGE_ORIGIN.top + 30)).toBe('h1');
+    expect(highlightAtClientPoint(reflowed, PAGE_ORIGIN.left + 90, PAGE_ORIGIN.top + 30)).toBe(
+      'h1',
+    );
     // Where the box USED to end at scale 1.
     expect(highlightAtClientPoint(reflowed, PAGE_ORIGIN.left + 90, PAGE_ORIGIN.top + 5)).toBe('h1');
   });
@@ -336,16 +353,18 @@ describe('pressing a painted highlight', () => {
     const surface = makeSurface(1, LINES);
     paintPage(surface, [highlight(6, 24)]);
 
-    expect(highlightAtClientPoint(surface, PAGE_ORIGIN.left + 40, PAGE_ORIGIN.top + LINE_PX + 10)).toBe(
-      'h1',
-    );
+    expect(
+      highlightAtClientPoint(surface, PAGE_ORIGIN.left + 40, PAGE_ORIGIN.top + LINE_PX + 10),
+    ).toBe('h1');
   });
 
   it('answers null off the highlight, so an ordinary press does nothing', () => {
     const surface = makeSurface(1, LINES);
     paintPage(surface, [highlight(0, 5)]);
 
-    expect(highlightAtClientPoint(surface, PAGE_ORIGIN.left + 200, PAGE_ORIGIN.top + 10)).toBeNull();
+    expect(
+      highlightAtClientPoint(surface, PAGE_ORIGIN.left + 200, PAGE_ORIGIN.top + 10),
+    ).toBeNull();
   });
 });
 
@@ -467,7 +486,9 @@ describe('painting the search match', () => {
     expect(surface.searchLayer.children).toHaveLength(1);
     // DOM order is the z-order, and search has to be the later sibling.
     const layers = [...surface.root.children].map((el) => el.className);
-    expect(layers.indexOf('pdf-search-layer')).toBeGreaterThan(layers.indexOf('pdf-highlight-layer'));
+    expect(layers.indexOf('pdf-search-layer')).toBeGreaterThan(
+      layers.indexOf('pdf-highlight-layer'),
+    );
   });
 
   it('routes to the right page of a spread, and clears the other one', () => {
@@ -493,9 +514,7 @@ describe('painting the search match', () => {
 
     scale = 2;
     paintSearchPage(surface, match(1, 12, 'brave'), STROKE);
-    expect(searchBoxesOf(surface)).toEqual([
-      { left: 0, top: LINE_PX * 2, width: 5 * CHAR_PX * 2 },
-    ]);
+    expect(searchBoxesOf(surface)).toEqual([{ left: 0, top: LINE_PX * 2, width: 5 * CHAR_PX * 2 }]);
   });
 
   it('replaces the previous match rather than accumulating them — one match at a time', () => {
