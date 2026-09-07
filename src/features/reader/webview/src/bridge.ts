@@ -37,6 +37,7 @@ import type {
   PdfHighlightPaint,
 } from '@/features/personalization/readerHighlights';
 import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
+import type { SpokenWordRange } from '@/features/reader/tts/readerTextProvider';
 
 type ReaderCommandName = ReaderCommand['type'];
 
@@ -174,6 +175,11 @@ export interface CommandArgs {
   applyAppearance: [appearance: ReaderAppearance];
   requestTtsSentence: [request: TtsSentenceRequest];
   setSpokenRange: [cfi: string | null];
+  // ONE argument, because the command has one field. The object is what keeps it that way — see
+  // `ReaderCommand`'s own note: three fields would make `ExpectedArgs` a 1-tuple of a union that
+  // no hand-written entry can match, and the failure would surface in the proof below rather than
+  // at the shape that caused it.
+  setSpokenWordRange: [range: SpokenWordRange | null];
   // The UNION, not the shell's own half of it, because this map has one entry per COMMAND and both
   // shells share this command. Each entry narrows it on arrival (`epubHighlights`/`pdfHighlights` in
   // highlightPaint.ts) — the same thing `goTo` does with `ReaderTarget`, and for the same reason:

@@ -148,6 +148,7 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `setSpokenWordRange` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
 | `requestCurrentSelection` | — | **yes** (`selection`) | both |
 | `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
@@ -225,6 +226,40 @@ explains why the mark is round the page rather than the word.
 
 **Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
 the host retract a notice it has already dropped.
+
+### The spoken word — `setSpokenWordRange`
+
+The refinement of `setSpokenRange`: that one says which SENTENCE is being read, this one says which
+WORD inside it. Sent on every `tts-progress` event while `tts.highlightMode === 'word'`; `null`
+clears. Accessibility (Hruthik) is the only caller, through `ReaderTextProvider`.
+
+**One nullable payload OBJECT, not three fields, and the constraint is `bridge.ts`'s own proof.**
+Every command here carries exactly one non-`type` field, because `ExpectedArgs` /
+`CommandArgsMatchPayloads` derive a method's argument tuple from its payload's fields: a three-field
+command collapses to a 1-tuple of a union there and cannot match a 3-tuple. It also keeps this in the
+uniform `JSON.stringify(command.x)` chain in `buildCommandScript` rather than needing a bespoke
+branch, and makes "clear" mean `null` instead of `(null, 0, 0)`.
+
+**`start`/`end` index the SPOKEN STRING, not the DOM.** They are the offsets the platform engine
+reports against `TtsSentence.text`, which is whitespace-collapsed, trimmed, and may span several text
+nodes. Turning them back into a paintable range is arithmetic the WebView does against the live
+document (`webview/src/ttsWordOffsets.ts`, pure and unit-tested; `epubTtsResolver.ts`'s
+`resolveSpokenWordCfi` for the DOM half). **String arithmetic on the sentence CFI cannot do it** —
+offset N in the collapsed text is not offset N in any node — and would fail silently, as a plausible
+box over the wrong word.
+
+**No reply, deliberately.** Whether the word could be painted is not reported, because failing is
+ORDINARY rather than exceptional: the reader pages away mid-utterance, the section is not rendered,
+the sentence is one word already covered by the sentence wash. A reply would be a channel for
+something no caller can act on. What the shell guarantees instead is that **a range it cannot resolve
+clears the previous word rather than leaving it painted** — a stale word wash while the voice has
+moved on is a lie, where no word wash is merely less information. The sentence highlight stays up
+throughout, so what a failure costs is the refinement, never the "you are here".
+
+**`setSpokenRange` clears it.** The word is a sub-range of one sentence, so the sentence moving
+invalidates it; the caller does not have to clear it first, and a caller that does anyway is
+harmless. This is what covers the reader turning word mode off mid-utterance, which produces no
+further word commands at all.
 
 ### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
 
