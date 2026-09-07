@@ -108,6 +108,10 @@ export const progressStore = {
   async currentLocator(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<Locator | null> {
     const row = await this.current(userId, bookId);
     if (!row) return null;
-    return parseLocator(row.locator) ?? { type: 'PDF', page: row.offset };
+    // null locator means a legacy row written before the column existed — those are always PDF,
+    // so the offset fallback is correct. A non-null but corrupt locator is a different case:
+    // we don't know the format, so returning null lets callers start from the beginning rather
+    // than sending a reader to page 0 of the wrong format.
+    return parseLocator(row.locator) ?? (row.locator == null ? { type: 'PDF', page: row.offset } : null);
   },
 };
