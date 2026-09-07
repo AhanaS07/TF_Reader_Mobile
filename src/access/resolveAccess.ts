@@ -122,25 +122,23 @@ export function resolveAccess({
 
   const tier = acquisition.licenceModel;
 
-  // ── 2 · a subscribe link ───────────────────────────────────────────────────
+  // ── 2 · a subscribe link contradicting an OPEN_ACCESS tier claim ───────────
   //
-  // The reader cannot obtain this title, and wokay has handed over a route to
-  // access instead of a file. Render the metadata and the route — never a Read
-  // button, because there is no file behind the link at all: a `subscribe` link
-  // carries no `indirectAcquisition`, which is exactly why it has no format.
-  //
-  // CHECKED BEFORE THE TIER, and this is the one ordering decision here that is
-  // not obvious. wokay say to read `licenceModel` rather than `rel`, and normally
-  // that is right. But `subscribe` is the case where the two can disagree in the
-  // dangerous direction: a link claiming `OPEN_ACCESS` while carrying a subscribe
-  // rel would resolve to Read and Download under a tier-first order, and Read
-  // would open nothing. Guessing towards the more generous button is the failure
-  // this whole file is arranged to avoid, so the rel wins here and only here.
+  // A NARROW GUARD, CHECKED BEFORE THE TIER — this is a data-integrity check,
+  // not a sign-in question. wokay say to read `licenceModel` rather than `rel`,
+  // and normally that is right. But `subscribe` is the one case where the two
+  // can disagree in the dangerous direction: a link claiming `OPEN_ACCESS`
+  // while carrying a subscribe rel would resolve to Read and Download under a
+  // tier-first order below, and Read would open nothing — there is no file
+  // behind a subscribe link at all, which is exactly why it has no format.
+  // Guessing towards the more generous button is the failure this whole file
+  // is arranged to avoid, so the rel wins here regardless of whether anyone is
+  // signed in.
   //
   // ALSO CURRENTLY UNREACHABLE: `normalize.ts` rejects these publications while
   // deriving `format`. Giving them a home is a change to `normalize.ts` and to
   // `Publication.format`, in Prayas's file rather than this one.
-  if (acquisition.actionId === 'subscribe') {
+  if (acquisition.actionId === 'subscribe' && tier === 'OPEN_ACCESS') {
     return result(institutionId, item.id, tier, 'requires_subscription', ['subscribe']);
   }
 
@@ -155,14 +153,29 @@ export function resolveAccess({
 
   // ── 4 · signed out on a licensed tier ─────────────────────────────────────
   //
-  // One button, and it is not the one they came for. Everything past this point
-  // needs an identity to resolve against: a licence is held by somebody, and a
-  // queue has somebody in it.
+  // One button, and it is not the one they came for. BEFORE THE SUBSCRIBE
+  // CHECK BELOW, settled 7 Sep: a subscribe link is one path to a title, not
+  // proof no other path exists, and a signed-out reader has not yet been asked
+  // whether their own institution already grants it. Sign in first, the same
+  // as every other licensed tier — Subscribe is what a signed-in reader sees
+  // once "does my institution cover this" already has an answer. Everything
+  // past this point needs an identity to resolve against: a licence is held by
+  // somebody, and a queue has somebody in it.
   if (session === null) {
     return result(institutionId, item.id, tier, 'requires_signin', ['signIn']);
   }
 
-  // ── 5 · elite ─────────────────────────────────────────────────────────────
+  // ── 5 · a subscribe link ────────────────────────────────────────────────────
+  //
+  // The reader cannot obtain this title through their institution, and wokay
+  // has handed over a route to access instead of a file. Render the metadata
+  // and the route — never a Read button, same reasoning as the OPEN_ACCESS
+  // guard above.
+  if (acquisition.actionId === 'subscribe') {
+    return result(institutionId, item.id, tier, 'requires_subscription', ['subscribe']);
+  }
+
+  // ── 6 · elite ─────────────────────────────────────────────────────────────
   //
   // The four-step sequence, 16 Aug. Loan-plus-hold is the whole of the decision
   // and no seat count is consulted: whether the queue was empty or busy shows up
@@ -234,7 +247,7 @@ export function resolveAccess({
     return result(institutionId, item.id, tier, 'requires_grant', ['grantAccess']);
   }
 
-  // ── 6 · subscription ──────────────────────────────────────────────────────
+  // ── 7 · subscription ──────────────────────────────────────────────────────
   //
   // The same pair whether or not a licence is already held, which is the point of
   // the 12 Aug flow change: the first tap borrows, every tap after it opens a

@@ -507,11 +507,15 @@ describe('a subscribe publication, which has no file at all', () => {
 
   // The consequence that matters: Download is appended off `canPersist`, so an
   // absent one must read as "no download" rather than throwing on the way in.
+  //
+  // A real session, not `null` — resolveAccess now asks Sign in first when
+  // signed out (settled 7 Sep, see resolveAccess.test.ts), so a session is
+  // what actually reaches the subscribe branch this test is about.
   it('resolves to a subscribe action with no Download', () => {
     const access = resolveAccess({
       item: normalizePublication(subscribeOnly),
-      institutionId: null,
-      session: null,
+      institutionId: 'inst_7f3',
+      session: { userId: 'user_9c2', roles: [], collections: [], exp: 0 },
     });
 
     expect(access.actions).toEqual(['subscribe']);
