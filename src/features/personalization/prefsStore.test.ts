@@ -66,6 +66,26 @@ describe('prefsStore — migration', () => {
     expect(usePrefsStore.getState().values.theme).toEqual(DEFAULT_PREFS.theme);
   });
 
+  it('resets accessibility to DEFAULT_PREFS when the stored value is null, without discarding other fields', async () => {
+    const corruptStored = {
+      state: {
+        values: {
+          ...DEFAULT_PREFS,
+          accessibility: null,
+        },
+        updatedAt: 54321,
+      },
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(corruptStored));
+
+    usePrefsStore.persist.rehydrate();
+
+    await waitFor(() => expect(usePrefsStore.getState()._hasHydrated).toBe(true));
+    expect(usePrefsStore.getState().values.accessibility).toEqual(DEFAULT_PREFS.accessibility);
+    expect(usePrefsStore.getState().values.font).toEqual(DEFAULT_PREFS.font);
+    expect(usePrefsStore.getState().values.theme).toEqual(DEFAULT_PREFS.theme);
+  });
+
   it('leaves an already-correct nested accessibility shape untouched', async () => {
     const currentStored = {
       state: {

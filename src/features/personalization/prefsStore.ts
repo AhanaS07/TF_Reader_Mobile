@@ -128,7 +128,7 @@ export const usePrefsStore = create<PrefsStoreState>()(
           | (Partial<PrefsValues> & { accessibility?: { text?: unknown } })
           | undefined;
         const hasNewShape =
-          persistedValues?.accessibility !== undefined &&
+          persistedValues?.accessibility != null &&
           typeof persistedValues.accessibility.text === 'object' &&
           persistedValues.accessibility.text !== null;
 

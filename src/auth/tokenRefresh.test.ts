@@ -16,6 +16,7 @@
 import { useSessionStore, type SessionData } from '@store/sessionStore';
 import { getRefreshToken, saveRefreshToken } from '@store/secureStorage';
 import { ensureFreshToken, bootstrapAuth } from './tokenRefresh';
+import { AuthError, AuthFailure } from './AuthFailure';
 import type { ApiAuthClient } from './ApiAuthClient';
 
 jest.mock('@store/secureStorage', () => ({
@@ -130,6 +131,51 @@ describe('ensureFreshToken — refresh fails', () => {
     mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
     const authClient = fakeAuthClient({
       refreshSession: jest.fn().mockRejectedValue(new Error('refused')),
+    });
+
+    const token = await ensureFreshToken({ authClient });
+
+    expect(token).toBeUndefined();
+    expect(useSessionStore.getState().isAuthenticated).toBe(false);
+  });
+});
+
+describe('ensureFreshToken — transient refresh failure', () => {
+  it('leaves the session intact on a network failure, so the caller can retry', async () => {
+    useSessionStore.getState().setSession(SIGNED_IN_SESSION);
+    useSessionStore.setState({ expiresAt: Date.now() - 1000 }); // force expired
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.NETWORK_UNAVAILABLE)),
+    });
+
+    const token = await ensureFreshToken({ authClient });
+
+    expect(token).toBeUndefined();
+    expect(useSessionStore.getState().isAuthenticated).toBe(true);
+    expect(useSessionStore.getState().userId).toBe('user_1');
+  });
+
+  it('leaves the session intact on a timeout', async () => {
+    useSessionStore.getState().setSession(SIGNED_IN_SESSION);
+    useSessionStore.setState({ expiresAt: Date.now() - 1000 }); // force expired
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.TIMEOUT)),
+    });
+
+    const token = await ensureFreshToken({ authClient });
+
+    expect(token).toBeUndefined();
+    expect(useSessionStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('still clears the session when the refusal is a real AuthFailure REFUSED', async () => {
+    useSessionStore.getState().setSession(SIGNED_IN_SESSION);
+    useSessionStore.setState({ expiresAt: Date.now() - 1000 }); // force expired
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.REFUSED)),
     });
 
     const token = await ensureFreshToken({ authClient });
