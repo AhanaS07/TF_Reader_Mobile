@@ -824,6 +824,53 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body).toContain('TTS_OWNER'); // tts
   });
 
+  it('the spoken WORD wash rides along with every path that repaints its sentence', () => {
+    // The word is a sub-range of the spoken sentence and a SECOND annotation, so every path that
+    // re-paints, re-tints or re-measures the sentence has to do the same for it — or it vanishes on
+    // a theme toggle, detaches from its word on a text-size change, and survives a flow rebuild
+    // stranded under the sentence it no longer sits on top of. This is the "layer most likely to be
+    // dropped is the one added last" case this whole describe block exists for, and it is now
+    // literally true of it.
+    //
+    // Asserted on the two shared helpers rather than on `highlightAdd(... TTS_SPOKEN_WORD_VARIANT`
+    // at each site: routing through them is the invariant, since `repaintSpokenWord` is what carries
+    // the live/rebuilt distinction and `clearSpokenWord` is what carries the collision guard.
+    expect(blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations()')).toContain(
+      'repaintSpokenWord(',
+    );
+    expect(blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()')).toContain(
+      'repaintSpokenWord(',
+    );
+    // A new book: a word CFI from the previous one resolves against THIS one's first chapter rather
+    // than failing (`EpubCFI.toRange` ignores the spine component), so leaving it set would paint a
+    // stale wash over unrelated text at the next repaint.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('currentSpokenWordCfi = null');
+  });
+
+  it('changing the spoken SENTENCE clears the word inside it', () => {
+    // The word only means anything inside the sentence it was resolved against. The caller cannot be
+    // relied on for this: `useTtsSession` sends word ranges only while `highlightMode === 'word'`,
+    // so turning word mode off mid-utterance would otherwise strand the last wash with nothing left
+    // that would ever remove it. It must also come FIRST — the auto-follow proposal
+    // (accessibility/TTS_AUTOFOLLOW_HANDOFF.md) adds a `rendition.display()` to this same handler,
+    // and a re-render with a stale mark still attached can carry it into the new view.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
+    expect(body).toContain('clearSpokenWord()');
+    expect(body.indexOf('clearSpokenWord()')).toBeLessThan(body.indexOf('currentSpokenCfi = cfi'));
+  });
+
+  it('an unresolvable word range clears the previous word rather than leaving it painted', () => {
+    // The difference between a MISSING highlight and a LYING one. `resolveSpokenWordCfi` bails for
+    // ordinary reasons — the reader paged away mid-utterance, the section is not rendered, the
+    // sentence is one word — and on every one of those the previous word must already be gone.
+    // Asserted as ordering: the clear precedes the resolve, so no bail path can skip it.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenWordRange: (range) =>');
+    expect(body).toContain('clearSpokenWord()');
+    expect(body.indexOf('clearSpokenWord()')).toBeLessThan(body.indexOf('resolveSpokenWordCfi('));
+    // And the paint side's half of the collision guard, which the resolver's own bail does not cover.
+    expect(body).toContain('spokenWordCollides(');
+  });
+
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {
     // The cache holds pre-reflow rects, and a stale one makes a long press delete the wrong
     // highlight — a silent loss of the reader's own work, so it is not merely a tidy-up.

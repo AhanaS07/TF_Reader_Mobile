@@ -240,6 +240,44 @@ ${text}`;
   }
 
   // src/features/reader/webview/src/ttsWordOffsets.ts
+  var WHITESPACE_RUN = /\s+/g;
+  function collapseWithMap(raw) {
+    const chars = [];
+    const starts = [];
+    const ends = [];
+    const keep = (char, from2, to2) => {
+      chars.push(char);
+      starts.push(from2);
+      ends.push(to2);
+    };
+    const keepLiteralRange = (from2, to2) => {
+      for (let i = from2; i < to2; i++) keep(raw[i], i, i + 1);
+    };
+    let cursor = 0;
+    WHITESPACE_RUN.lastIndex = 0;
+    let match;
+    while ((match = WHITESPACE_RUN.exec(raw)) !== null) {
+      keepLiteralRange(cursor, match.index);
+      keep(" ", match.index, match.index + match[0].length);
+      cursor = match.index + match[0].length;
+    }
+    keepLiteralRange(cursor, raw.length);
+    let from = 0;
+    let to = chars.length;
+    if (from < to && chars[from] === " ") from++;
+    if (to > from && chars[to - 1] === " ") to--;
+    return {
+      text: chars.slice(from, to).join(""),
+      starts: starts.slice(from, to),
+      ends: ends.slice(from, to)
+    };
+  }
+  function rawSpanForCollapsed(map, start, end) {
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+    const clampedEnd = Math.min(end, map.text.length);
+    if (start < 0 || start >= clampedEnd) return null;
+    return { start: map.starts[start], end: map.ends[clampedEnd - 1] };
+  }
   function indexOfOffset(length, at, offset) {
     let lo = 0;
     let hi = length - 1;
@@ -432,6 +470,71 @@ ${text}`;
     if (nextInSection) return ok({ spineIndex: anchor.spineIndex, sentence: nextInSection });
     const found = await firstSentenceFrom(book2, rendition2, anchor.spineIndex + 1, 0);
     return found ? ok(found) : { status: "endOfBook" };
+  }
+  function collectTextPieces(range) {
+    const ancestor = range.commonAncestorContainer;
+    const root = ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode : ancestor;
+    const pieces = [];
+    let raw = "";
+    if (!root) return { raw, pieces };
+    const doc = root.ownerDocument ?? document;
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    while (current) {
+      const node = current;
+      if (range.intersectsNode(node)) {
+        const from = node === range.startContainer ? range.startOffset : 0;
+        const to = node === range.endContainer ? range.endOffset : node.data.length;
+        if (to > from) {
+          pieces.push({ node, nodeStart: from, rawStart: raw.length, length: to - from });
+          raw += node.data.slice(from, to);
+        }
+      }
+      current = walker.nextNode();
+    }
+    return { raw, pieces };
+  }
+  function subRangeForRawSpan(doc, pieces, rawStart, rawEnd) {
+    const at = (index) => pieces[index].rawStart;
+    const startIndex = indexOfOffset(pieces.length, at, rawStart);
+    if (startIndex === -1) return null;
+    let endIndex = indexOfOffset(pieces.length, at, rawEnd);
+    if (endIndex === -1) return null;
+    if (endIndex > startIndex && pieces[endIndex].rawStart === rawEnd) endIndex--;
+    const startPiece = pieces[startIndex];
+    const endPiece = pieces[endIndex];
+    const startOffset = startPiece.nodeStart + (rawStart - startPiece.rawStart);
+    const endOffset = endPiece.nodeStart + (rawEnd - endPiece.rawStart);
+    if (startOffset > startPiece.node.data.length) return null;
+    if (endOffset > endPiece.node.data.length) return null;
+    const range = doc.createRange();
+    range.setStart(startPiece.node, startOffset);
+    range.setEnd(endPiece.node, endOffset);
+    return range;
+  }
+  function resolveSpokenWordCfi(rendition2, sentenceCfi, start, end) {
+    try {
+      const anchor = cfiIndex.get(sentenceCfi);
+      if (!anchor) return null;
+      const sentence = sectionCache.get(anchor.spineIndex)?.sentences[anchor.sentenceIndex];
+      if (!sentence) return null;
+      const contents = findRenderedContents(rendition2, anchor.spineIndex);
+      if (!contents) return null;
+      const range = renditionGetRange(rendition2, sentenceCfi);
+      if (!range) return null;
+      const { raw, pieces } = collectTextPieces(range);
+      if (pieces.length === 0) return null;
+      const map = collapseWithMap(raw);
+      if (map.text !== sentence.text) return null;
+      const rawSpan = rawSpanForCollapsed(map, start, end);
+      if (!rawSpan) return null;
+      const subRange = subRangeForRawSpan(contents.document, pieces, rawSpan.start, rawSpan.end);
+      if (!subRange || subRange.collapsed) return null;
+      const cfi = contents.cfiFromRange(subRange);
+      return cfi === sentenceCfi ? null : cfi;
+    } catch {
+      return null;
+    }
   }
 
   // src/features/reader/webview/src/epubCfiRange.ts
@@ -710,6 +813,9 @@ ${text}`;
       }
     }
     return { fill: color, blend: "multiply" };
+  }
+  function spokenWordOpacity(blend) {
+    return blend === "screen" ? "0.3" : "0.5";
   }
   function matchStroke(bg) {
     const page = bg ? parseHex(bg) : null;
@@ -1033,12 +1139,18 @@ ${text}`;
   var openInFlight = false;
   var lastCfi = null;
   var currentSpokenCfi = null;
+  var currentSpokenWordCfi = null;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
+  var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
   var TTS_SPOKEN_COLOR = "#ffd500";
   function ttsSpokenStyles() {
     const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
     return { fill, "fill-opacity": "0.2", "mix-blend-mode": blend };
+  }
+  function ttsSpokenWordStyles() {
+    const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
+    return { fill, "fill-opacity": spokenWordOpacity(blend), "mix-blend-mode": blend };
   }
   var USER_OWNER = "user";
   var USER_SAVED_VARIANT = "saved";
@@ -1333,9 +1445,7 @@ ${columnOverrideCss()}` : currentCss;
         currentSearchRange = null;
         reportSearchPaint("refused");
       }
-      const collidingId = [...paintedUserHighlights].find(
-        ([, painted]) => painted === cfiRange
-      )?.[0];
+      const collidingId = [...paintedUserHighlights].find(([, painted]) => painted === cfiRange)?.[0];
       if (collidingId !== void 0) {
         fail(
           "NAVIGATION_FAILED",
@@ -1343,10 +1453,42 @@ ${columnOverrideCss()}` : currentCss;
         );
         continue;
       }
-      add(active, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+      add(
+        active,
+        USER_OWNER,
+        cfiRange,
+        USER_SAVED_VARIANT,
+        userHighlightStyles(highlight.color)
+      );
       paintedUserHighlights.set(highlight.id, cfiRange);
     }
     return added.length > 0;
+  }
+  function spokenWordCollides(cfiRange) {
+    if (cfiRange === currentSpokenCfi) return true;
+    if (cfiRange === currentSearchRange) return true;
+    for (const painted of paintedUserHighlights.values()) {
+      if (painted === cfiRange) return true;
+    }
+    return false;
+  }
+  function clearSpokenWord() {
+    if (currentSpokenWordCfi === null) return;
+    if (rendition && !spokenWordCollides(currentSpokenWordCfi)) {
+      remove(rendition, TTS_OWNER, currentSpokenWordCfi);
+    }
+    currentSpokenWordCfi = null;
+  }
+  function repaintSpokenWord(options = {}) {
+    if (!rendition || currentSpokenWordCfi === null) return;
+    if (options.live !== false) remove(rendition, TTS_OWNER, currentSpokenWordCfi);
+    add(
+      rendition,
+      TTS_OWNER,
+      currentSpokenWordCfi,
+      TTS_SPOKEN_WORD_VARIANT,
+      ttsSpokenWordStyles()
+    );
   }
   function repaintLiveAnnotations() {
     if (!rendition) return;
@@ -1361,6 +1503,7 @@ ${columnOverrideCss()}` : currentCss;
       remove(active, TTS_OWNER, currentSpokenCfi);
       add(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
     }
+    repaintSpokenWord();
   }
   var geometryRaf = 0;
   var geometryReanchor = false;
@@ -1459,6 +1602,7 @@ ${columnOverrideCss()}` : currentCss;
       if (currentSpokenCfi !== null && rendition) {
         add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
       }
+      repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
     }).catch((error) => {
@@ -1519,7 +1663,8 @@ ${columnOverrideCss()}` : currentCss;
         retrySearchMatch();
         if (awaitingSearchLanding) {
           awaitingSearchLanding = false;
-          if (currentSearchRange === null && pendingSearchMatch !== null) reportSearchPaint("refused");
+          if (currentSearchRange === null && pendingSearchMatch !== null)
+            reportSearchPaint("refused");
         }
         const href = location?.start?.href;
         const index = location?.start?.index;
@@ -1565,6 +1710,7 @@ ${columnOverrideCss()}` : currentCss;
         try {
           resetTtsState();
           currentSpokenCfi = null;
+          currentSpokenWordCfi = null;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;
@@ -1696,18 +1842,14 @@ ${columnOverrideCss()}` : currentCss;
           post({
             type: "ttsSentence",
             requestId,
-            result: { status: "error", message: error instanceof Error ? error.message : String(error) }
+            result: {
+              status: "error",
+              message: error instanceof Error ? error.message : String(error)
+            }
           });
         }
       })();
     },
-    /**
-     * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
-     * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
-     * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
-     * cannot be painted must not be able to interrupt speech, so this never posts a message and never
-     * throws out of the try.
-     */
     /**
      * Paint the user's saved highlights — the whole set, idempotently. See `ReaderCommand`'s own note
      * for why the host always sends everything rather than a patch.
@@ -1755,12 +1897,64 @@ ${columnOverrideCss()}` : currentCss;
       awaitingSearchLanding = match.epub !== null;
       reportSearchPaint(applySearchMatch(match.epub));
     },
+    /**
+     * Paint or clear the spoken-sentence highlight, through the owner-namespaced seam so this can never
+     * collide with another feature's `rendition.annotations` use (see highlightSeam.ts). Fire-and-forget
+     * and best-effort, matching `ReaderTextProvider.setSpokenRange`'s own contract: a highlight that
+     * cannot be painted must not be able to interrupt speech, so this never posts a message and never
+     * throws out of the try.
+     *
+     * >>> IT CLEARS THE WORD WASH FIRST, AND THAT IS NOT HOUSEKEEPING. <<< A word range is only
+     * meaningful inside the sentence it was resolved against, so a sentence that moves invalidates it.
+     * The caller cannot be relied on to do this: `useTtsSession` only sends word ranges while
+     * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
+     * strand the last word wash on screen with nothing left that would ever remove it.
+     *
+     * It also happens to be the precondition the auto-follow proposal
+     * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
+     * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
+     * stale word mark is still attached can re-attach it into the new one. Clearing before anything
+     * else keeps that free — do not move it below the paint.
+     */
     setSpokenRange: (cfi) => {
       try {
         if (!rendition) return;
+        clearSpokenWord();
         if (currentSpokenCfi !== null) remove(rendition, TTS_OWNER, currentSpokenCfi);
         currentSpokenCfi = cfi;
-        if (cfi !== null) add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+        if (cfi !== null)
+          add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+      } catch {
+      }
+    },
+    /**
+     * Paint or clear the spoken-WORD highlight — the word inside the sentence `setSpokenRange` is
+     * showing. Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+     *
+     * >>> THE PREVIOUS WORD IS CLEARED BEFORE THE NEW ONE IS RESOLVED, NOT AFTER. <<< That ordering is
+     * the whole correctness argument, because `resolveSpokenWordCfi` bails to `null` for a list of
+     * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, the
+     * rendered text no longer matches what was spoken, the sentence is a single word already covered
+     * by the sentence wash. A bail means "I do not know where this word is", and a highlight left on
+     * the previous word while the voice has moved on is a LIE, whereas no word highlight is merely
+     * less information. The sentence wash is on screen throughout either way, so what a bail costs is
+     * the refinement, never the "you are here".
+     *
+     * `!rendition` returns before any of that, exactly as `setSpokenRange` does and for a reason worth
+     * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
+     * the host's commands), and with no rendition there is nothing painted for the state to disagree
+     * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+     */
+    setSpokenWordRange: (range) => {
+      try {
+        if (!rendition) return;
+        clearSpokenWord();
+        if (range === null) return;
+        const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
+        if (cfi === null) return;
+        if (spokenWordCollides(cfi)) return;
+        currentSpokenWordCfi = cfi;
+        repaintSpokenWord({ live: false });
       } catch {
       }
     },

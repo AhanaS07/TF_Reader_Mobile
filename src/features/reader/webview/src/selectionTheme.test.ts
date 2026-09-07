@@ -6,7 +6,12 @@
 
 import { THEME_PALETTES } from '@/features/personalization/readerAppearance';
 
-import { highlightFill, matchStroke, selectionBackground } from './selectionTheme';
+import {
+  highlightFill,
+  matchStroke,
+  selectionBackground,
+  spokenWordOpacity,
+} from './selectionTheme';
 
 describe('the selection fill', () => {
   it('uses the theme accent, translucent so the words show through', () => {
@@ -23,7 +28,9 @@ describe('the selection fill', () => {
     // The three themes are what actually reach this. A palette that fell through to the fallback
     // would still be legible, but it would silently stop being the theme's own accent.
     for (const palette of Object.values(THEME_PALETTES)) {
-      expect(selectionBackground(palette.link, palette.bg)).toMatch(/^rgba\(\d+, \d+, \d+, 0\.32\)$/);
+      expect(selectionBackground(palette.link, palette.bg)).toMatch(
+        /^rgba\(\d+, \d+, \d+, 0\.32\)$/,
+      );
     }
   });
 
@@ -137,5 +144,46 @@ describe('the search-match stroke', () => {
     // A warm dark page (a hypothetical future theme) must take the dark branch. Checking the order
     // of the two conditions, which is the kind of thing that reads fine and behaves backwards.
     expect(matchStroke('#3a2010')).toBe(matchStroke(THEME_PALETTES.dark.bg));
+  });
+});
+
+// --- the spoken-word wash -----------------------------------------------------------------------
+
+describe('the spoken-word opacity', () => {
+  it('sits above the sentence wash on every shipped theme', () => {
+    // 0.2 is the sentence's own `fill-opacity` (`ttsSpokenStyles` in epub.entry.ts). The word is the
+    // SAME fill and the SAME blend at a higher alpha, so "is the word more prominent" reduces to
+    // this comparison on every page — which is the entire reason the pair cannot invert.
+    for (const bg of Object.values(THEME_PALETTES).map((palette) => palette.bg)) {
+      const { blend } = highlightFill('#ffd500', bg);
+      expect(Number(spokenWordOpacity(blend))).toBeGreaterThan(0.2);
+    }
+  });
+
+  it('backs off on a page that is lightened rather than darkened', () => {
+    // The asymmetry is the design (see the function's own note): `multiply` can only darken, so the
+    // glyph is near a fixed point and alpha is uncapped; `screen` can only lighten, so alpha drives
+    // the background UP toward the glyph and is capped by whether the text stays readable.
+    expect(Number(spokenWordOpacity('screen'))).toBeLessThan(Number(spokenWordOpacity('multiply')));
+  });
+
+  it('gives the dark theme the screen value and the other two the multiply value', () => {
+    // Keyed on the BLEND, not on a theme name — so this asserts the crossing, not the constants.
+    // Move `highlightFill`'s 0.35 luminance cutoff and this follows it, which is the point.
+    const opacityFor = (bg: string): string =>
+      spokenWordOpacity(highlightFill('#ffd500', bg).blend);
+
+    expect(opacityFor(THEME_PALETTES.dark.bg)).toBe(spokenWordOpacity('screen'));
+    expect(opacityFor(THEME_PALETTES.light.bg)).toBe(spokenWordOpacity('multiply'));
+    expect(opacityFor(THEME_PALETTES.sepia.bg)).toBe(spokenWordOpacity('multiply'));
+  });
+
+  it('stays translucent on both branches', () => {
+    // HIGHLIGHT_LAYERS.md §3's interim rule for this owner is "keep TTS translucent so it layers
+    // rather than masks". An opacity of 1 would mask the glyphs it is meant to be marking.
+    for (const blend of ['multiply', 'screen'] as const) {
+      expect(Number(spokenWordOpacity(blend))).toBeGreaterThan(0);
+      expect(Number(spokenWordOpacity(blend))).toBeLessThan(1);
+    }
   });
 });

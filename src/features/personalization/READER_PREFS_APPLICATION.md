@@ -174,9 +174,15 @@ needs nothing extra. This is built — see §7. The `PrefsChangedEvent`/event-bu
 prefs store is a singleton in one JS process, so a direct subscription is simpler than a bus and
 needs no second emitter.
 
-> Scope note: only writes THROUGH `prefsStore` notify. A prefs row pulled from the server by Sync
-> does not pass through here; if that ever needs to drive a live re-apply, it must notify too. Called
-> out in `prefsStore.ts`.
+> Scope note, decided 2026-09-07: only writes THROUGH `prefsStore` notify, and a prefs row pulled
+> from the server by Sync deliberately does not pass through here — unlike bookmarks/progress/
+> highlights, which DO re-apply live from a pull while their screen is open. A prefs change is a
+> rendering/behavioural change to the page the user is looking at right now; live-applying one
+> driven by another device's edit is a surprise a re-render can't announce, not a convenience.
+> Sync's field-level merge (`mergeFieldLevel`) still resolves the record correctly regardless of
+> when it's next read — nothing is lost, it's just picked up on the next open, not live. Called out
+> in `prefsStore.ts`; `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges` is the bridge this
+> deliberately does not consume.
 
 **C. On an OS change — the user flipped system dark mode, Dynamic Type, or Reduce Motion.** When
 `theme: 'system'`, `reduceMotion: 'system'`, or `respectOsFontScale` is on, the resolved values

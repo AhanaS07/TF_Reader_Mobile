@@ -23,4 +23,5 @@
 module.exports = {
   preventScreenCaptureAsync: () => Promise.resolve(),
   allowScreenCaptureAsync: () => Promise.resolve(),
+  isAvailableAsync: () => Promise.resolve(true),
 };

@@ -16,13 +16,12 @@
 // later, outside any `act()` scope) — see ReaderRouteScreen.test.tsx's header for why that specific
 // shape is load-bearing, not a style choice.
 //
-// NO progressStore.subscribe HERE, UNLIKE ReaderRouteScreen.test.tsx. AudioPlayerRouteScreen.tsx
-// deliberately does not use one — see that file's header for why a background subscription is the
-// wrong shape for AUDIO specifically. This file exercises the play-gate (`onBeforePlay`) instead,
-// via the mocked AudioPlayerScreen's "play" button.
+// `progressStore.subscribe` IS covered here now, unlike before this file's live-conflict-while-
+// playing effect existed — faked with a real listener registry, same shape ReaderRouteScreen's own
+// test file uses, so a test can fire a notification the way a completed sync pull would.
 
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import type { Locator } from '@/shared/contracts';
 
@@ -35,6 +34,12 @@ const mockSyncRun = jest.fn<Promise<void>, []>();
 // `currentLocator()` rather than merely that both happened.
 const callOrder: string[] = [];
 
+let mockProgressListeners: (() => void)[] = [];
+/** Simulates a `progressStore` change notification — a local write OR a pulled record applying. */
+function notifyProgressChanged() {
+  for (const listener of [...mockProgressListeners]) listener();
+}
+
 jest.mock('@/features/sync/stores/progressStore', () => ({
   progressStore: {
     currentLocator: (...args: [string?, string?]) => {
@@ -42,8 +47,16 @@ jest.mock('@/features/sync/stores/progressStore', () => ({
       return mockCurrentLocator(...args);
     },
     savePosition: (...args: unknown[]) => mockSavePosition(...args),
+    subscribe: (listener: () => void) => {
+      mockProgressListeners.push(listener);
+      return () => {
+        mockProgressListeners = mockProgressListeners.filter((l) => l !== listener);
+      };
+    },
   },
 }));
+
+const mockPullBook = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@/features/sync/syncEngine', () => ({
   syncEngine: {
@@ -51,39 +64,68 @@ jest.mock('@/features/sync/syncEngine', () => ({
       callOrder.push('run');
       return mockSyncRun();
     },
+    pullBook: (...args: unknown[]) => mockPullBook(...args),
+  },
+}));
+
+const mockCurrentForBook = jest.fn().mockResolvedValue(null);
+
+jest.mock('@/features/sync/stores/downloadStore', () => ({
+  downloadStore: {
+    currentForBook: (...args: unknown[]) => mockCurrentForBook(...args),
   },
 }));
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception — see ReaderRouteScreen.test.tsx's
 // own comment on why this can't just be a plain top-level array.
 const mockReceivedProps: { bookId?: string; title?: string; initialPosition?: number }[] = [];
+// Controls what the mocked `AudioPlayerScreenHandle` reports — `false`/`0` by default (paused,
+// nothing to compare live against), overridden per test to exercise the live-conflict effect.
+const mockIsPlaying = jest.fn<boolean, []>();
+const mockCurrentPositionSeconds = jest.fn<number, []>();
+const mockPause = jest.fn();
 
-jest.mock('@/features/reader/audio/AudioPlayerScreen', () => ({
-  AudioPlayerScreen: (props: {
-    bookId: string;
-    title: string;
-    initialPosition?: number;
-    onPositionChange?: (p: number) => void;
-    onPositionCommit?: (p: number) => void;
-    onBeforePlay?: () => Promise<boolean>;
-  }) => {
-    mockReceivedProps.push({
-      bookId: props.bookId,
-      title: props.title,
-      initialPosition: props.initialPosition,
-    });
-    /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
-    const { View, Text: RNText } = require('react-native');
-    return (
-      <View>
-        <RNText>{`playing ${props.bookId}`}</RNText>
-        <RNText onPress={() => props.onPositionChange?.(42)}>advance</RNText>
-        <RNText onPress={() => props.onPositionCommit?.(99)}>commit</RNText>
-        <RNText onPress={() => void props.onBeforePlay?.()}>play</RNText>
-      </View>
-    );
-  },
-}));
+jest.mock('@/features/reader/audio/AudioPlayerScreen', () => {
+  // require(), not a top-level import: babel-plugin-jest-hoist forbids a jest.mock() factory from
+  // closing over any out-of-scope import binding (only `mock`-prefixed variables and a handful of
+  // globals are allowed) — same reasoning as mockReceivedProps's naming above.
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
+  const { forwardRef, useImperativeHandle } = require('react');
+  return {
+    AudioPlayerScreen: forwardRef(function MockAudioPlayerScreen(
+      props: {
+        bookId: string;
+        title: string;
+        initialPosition?: number;
+        onPositionChange?: (p: number) => void;
+        onPositionCommit?: (p: number) => void;
+        onBeforePlay?: () => Promise<boolean>;
+      },
+      ref: unknown,
+    ) {
+      mockReceivedProps.push({
+        bookId: props.bookId,
+        title: props.title,
+        initialPosition: props.initialPosition,
+      });
+      useImperativeHandle(ref, () => ({
+        isPlaying: mockIsPlaying,
+        currentPositionSeconds: mockCurrentPositionSeconds,
+        pause: mockPause,
+      }));
+      /* eslint-disable-next-line @typescript-eslint/no-require-imports -- see comment above */
+      const { View, Text: RNText } = require('react-native');
+      return (
+        <View>
+          <RNText>{`playing ${props.bookId}`}</RNText>
+          <RNText onPress={() => props.onPositionChange?.(42)}>advance</RNText>
+          <RNText onPress={() => props.onPositionCommit?.(99)}>commit</RNText>
+          <RNText onPress={() => void props.onBeforePlay?.()}>play</RNText>
+        </View>
+      );
+    }),
+  };
+});
 
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
 function renderAudioPlayerRoute(bookId: string, title = 'Audiobook') {
@@ -111,13 +153,23 @@ describe('AudioPlayerRouteScreen', () => {
   beforeEach(() => {
     mockReceivedProps.length = 0;
     callOrder.length = 0;
+    mockProgressListeners = [];
     mockAlertAutoPress = null;
     mockCurrentLocator.mockReset();
     mockSavePosition.mockReset();
     mockSyncRun.mockReset();
     mockAlert.mockClear();
+    mockIsPlaying.mockReset();
+    mockCurrentPositionSeconds.mockReset();
+    mockPause.mockReset();
+    mockPullBook.mockReset();
+    mockCurrentForBook.mockReset();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
+    mockIsPlaying.mockReturnValue(false);
+    mockCurrentPositionSeconds.mockReturnValue(0);
+    mockPullBook.mockResolvedValue(undefined);
+    mockCurrentForBook.mockResolvedValue(null);
   });
 
   it('passes the route bookId and title through to AudioPlayerScreen once resolved, after awaiting a sync run first', async () => {
@@ -133,6 +185,26 @@ describe('AudioPlayerRouteScreen', () => {
     // device may have already advanced past while this device was merely backgrounded, not
     // relaunched — see AudioPlayerRouteScreen.tsx's header for the full account of that gap.
     expect(callOrder).toEqual(['run', 'currentLocator']);
+  });
+
+  describe('an audiobook read online without ever being downloaded', () => {
+    it('tops up via pullBook before reading the local resume position', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded
+
+      await renderAudioPlayerRoute('dev-sample-audio-undownloaded');
+
+      expect(mockCurrentForBook).toHaveBeenCalledWith('dev-sample-audio-undownloaded');
+      expect(mockPullBook).toHaveBeenCalledWith('dev-sample-audio-undownloaded');
+      expect(mockCurrentLocator).toHaveBeenCalledWith(undefined, 'dev-sample-audio-undownloaded');
+    });
+
+    it('does not call pullBook for an audiobook this device already has downloaded', async () => {
+      mockCurrentForBook.mockResolvedValue({ id: 'dl-1', book_id: 'dev-sample-audio-downloaded' });
+
+      await renderAudioPlayerRoute('dev-sample-audio-downloaded');
+
+      expect(mockPullBook).not.toHaveBeenCalled();
+    });
   });
 
   it('resumes at the AUDIO position stored in progressStore, converted from ms to seconds', async () => {
@@ -271,6 +343,8 @@ describe('AudioPlayerRouteScreen', () => {
         'Playback progress updated',
         expect.any(String),
         expect.any(Array),
+        // Compulsory to resolve — not dismissible by tapping outside or the Android back button.
+        { cancelable: false },
       );
       // Re-confirms THIS device's (paused) position — 90s, not the incoming 200s.
       expect(mockSavePosition).toHaveBeenCalledWith(
@@ -306,6 +380,256 @@ describe('AudioPlayerRouteScreen', () => {
       });
       // Adopting is not itself a write — it's a read the user chose to trust.
       expect(mockSavePosition).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+  });
+
+  describe('live cross-device conflict while playing', () => {
+    it('does nothing while paused — that case belongs to the play-gate, not this effect', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-live-paused');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+
+      mockIsPlaying.mockReturnValue(false);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 200_000 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPause).not.toHaveBeenCalled();
+      expect(mockAlert).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('ignores a within-threshold difference while playing — an echo of its own throttled write', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-live-echo');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+
+      mockIsPlaying.mockReturnValue(true);
+      mockCurrentPositionSeconds.mockReturnValue(100);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 102_000 }); // 2s diff
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPause).not.toHaveBeenCalled();
+      expect(mockAlert).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('pauses and prompts on a genuine divergence while playing, using the POST-pause position for "Continue here"', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-live-conflict');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+
+      mockIsPlaying.mockReturnValue(true);
+      // First read (pre-await, for the threshold check) vs. second read (post-pause, for "Continue
+      // here") deliberately differ — the player kept moving during the `currentLocator()` await.
+      mockCurrentPositionSeconds.mockReturnValueOnce(100).mockReturnValueOnce(100.5);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 500_000 }); // far off
+      mockAlertAutoPress = 'Continue here';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPause).toHaveBeenCalledTimes(1);
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Playback progress updated',
+        expect.stringContaining('Playback has been paused'),
+        expect.any(Array),
+        { cancelable: false },
+      );
+      expect(mockSavePosition).toHaveBeenCalledWith(
+        { type: 'AUDIO', positionMs: 100_500 }, // the POST-pause read, not the pre-await one
+        'dev-sample-audio-live-conflict',
+      );
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('adopts the incoming position and remounts on "Resume from there", while playing', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-live-jump');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+
+      mockIsPlaying.mockReturnValue(true);
+      mockCurrentPositionSeconds.mockReturnValue(100);
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 500_000 });
+      mockAlertAutoPress = 'Resume from there';
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockPause).toHaveBeenCalledTimes(1);
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual({
+        bookId: 'dev-sample-audio-live-jump',
+        title: 'Audiobook',
+        initialPosition: 500,
+      });
+      expect(mockSavePosition).not.toHaveBeenCalled();
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('adopts the LATEST incoming position when a second notification lands before the dialog is answered', async () => {
+      mockCurrentLocator.mockResolvedValueOnce(null);
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-live-stale');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+
+      // Deliberately left `true` for BOTH notifications below: the mock does not simulate `pause()`
+      // actually flipping playback state (that is real player behaviour, not this test's concern),
+      // and the point of this test is specifically that `latestIncomingRef` keeps advancing even
+      // while `conflictPendingRef` is already set — the `isPlaying()` gate is orthogonal to that.
+      mockIsPlaying.mockReturnValue(true);
+      mockCurrentPositionSeconds.mockReturnValue(100);
+
+      // First notification triggers the Alert, left unanswered (mockAlertAutoPress stays null).
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 500_000 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockAlert).toHaveBeenCalledTimes(1);
+      expect(mockPause).toHaveBeenCalledTimes(1);
+
+      // A second, even newer write arrives before the dialog is answered. No second Alert (one is
+      // already up) — but the value the eventual answer acts on must move.
+      mockCurrentLocator.mockResolvedValueOnce({ type: 'AUDIO', positionMs: 700_000 });
+      await act(async () => {
+        notifyProgressChanged();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockAlert).toHaveBeenCalledTimes(1); // still just the one dialog
+
+      // The user finally answers the still-showing (first) dialog.
+      const buttons = mockAlert.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+      const resumeButton = buttons.find((candidate) => candidate.text === 'Resume from there');
+      await act(async () => {
+        resumeButton?.onPress?.();
+      });
+
+      expect(mockReceivedProps[mockReceivedProps.length - 1]).toEqual({
+        bookId: 'dev-sample-audio-live-stale',
+        title: 'Audiobook',
+        initialPosition: 700,
+      });
+      await act(async () => {
+        unmount();
+      });
+    });
+  });
+
+  describe('the pull half of live conflict detection', () => {
+    let appStateSpy: jest.SpyInstance;
+
+    // Same shape as ReaderRouteScreen.test.tsx's own helper — grabs the LAST registered listener,
+    // which is this effect's, since it is the only `AppState.addEventListener` call in this file.
+    function emitAppStateChange(state: 'active' | 'background'): void {
+      const calls = (AppState.addEventListener as jest.Mock).mock.calls;
+      const handler = calls[calls.length - 1][1] as (s: string) => void;
+      handler(state);
+    }
+
+    beforeEach(() => {
+      appStateSpy = jest
+        .spyOn(AppState, 'addEventListener')
+        .mockReturnValue({ remove: jest.fn() } as never);
+    });
+
+    afterEach(() => {
+      appStateSpy.mockRestore();
+      jest.useRealTimers();
+    });
+
+    it('pulls again on the edge into active, not on every AppState change', async () => {
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-pull-fg');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+      expect(mockSyncRun).toHaveBeenCalledTimes(1); // the resume-time run
+
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('tops up an undownloaded audiobook on the foreground edge too, not only at resume', async () => {
+      mockCurrentForBook.mockResolvedValue(null); // not downloaded, for the whole test
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-pull-undownloaded');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+      expect(mockPullBook).toHaveBeenCalledTimes(1); // the resume-time top-up
+
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+
+      // syncEngine.run()'s own regular sweep never refreshes progress for a book with no local
+      // `downloads` row — without this, neither the poll nor the play-gate would ever learn of a
+      // cross-device write for a streamed-without-downloading audiobook.
+      expect(mockPullBook).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        unmount();
+      });
+    });
+
+    it('polls every AUDIO_LIVE_SYNC_POLL_MS while foregrounded, and stops while backgrounded', async () => {
+      const { getByText, unmount } = await renderAudioPlayerRoute('dev-sample-audio-pull-interval');
+      await waitFor(() => expect(getByText('play')).toBeTruthy());
+      expect(mockSyncRun).toHaveBeenCalledTimes(1);
+
+      // See ReaderRouteScreen.test.tsx's identical test for why the interval must be re-armed
+      // under fake timers rather than advanced directly — the one created at mount runs under
+      // REAL timers, which `waitFor` above depends on.
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      jest.useFakeTimers();
+      await act(async () => {
+        emitAppStateChange('active');
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(3);
+
+      await act(async () => {
+        emitAppStateChange('background');
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+      });
+      expect(mockSyncRun).toHaveBeenCalledTimes(3); // no poll while backgrounded
+
+      jest.useRealTimers();
       await act(async () => {
         unmount();
       });

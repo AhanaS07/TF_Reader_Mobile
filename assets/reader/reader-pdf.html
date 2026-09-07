@@ -1508,6 +1508,14 @@ ${text}`;
      * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
     setSpokenRange: () => {
     },
+    /** Documented no-op for the same reason as `setSpokenRange` directly above, one step further out:
+     * this shell never receives a sentence to refine, because Reader never constructs a
+     * `ReaderTextProvider` for a PDF book. Segmentation is what TTS needs and segmentation is EPUB-only
+     * — `epubTtsResolver.ts` walks a rendered chapter's text nodes, and pdf.js has no equivalent this
+     * could resolve an offset against. Defined because `TFReaderApi<'openPdf'>` requires every SHARED
+     * command in both shells. */
+    setSpokenWordRange: () => {
+    },
     /**
      * Paint or clear the one active search match. Unlike `setSpokenRange` above this is REAL here,
      * not a no-op: search has PDF locators (`{page, offset}`), and `pdfHighlightSeam.ts` has had the

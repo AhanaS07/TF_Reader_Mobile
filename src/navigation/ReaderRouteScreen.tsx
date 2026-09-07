@@ -36,6 +36,12 @@
 // is a new coupling Karthik should know about — noted in CLAUDE.md's "Reading-position resume"
 // section rather than left to be discovered from a git blame.
 //
+// THAT GAP ALSO EXISTS *WHILE THIS SCREEN STAYS OPEN*, NOT JUST AT RESUME — same root cause
+// (`useAutoSync`'s edge-only trigger), different moment: staying foregrounded the whole time while
+// another device writes fires no NetInfo edge either. `READER_LIVE_SYNC_POLL_MS`'s effect below
+// covers that with a foreground-edge pull plus a low-frequency poll, both Reader-only — see that
+// constant's own comment for why Audio doesn't need the same thing.
+//
 // AN ALREADY-OPEN SCREEN IS ALSO COVERED NOW, BUT BY ASKING RATHER THAN BY JUMPING SILENTLY. Once
 // resolved, this screen subscribes to `progressStore`'s change notifications (fired on every local
 // write AND on every pulled server record that actually applied — `syncableTable.ts`'s own doc).
@@ -70,6 +76,7 @@ import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-nati
 import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
+import type { ReaderScreenHandle } from '@/features/reader/ReaderScreen';
 import { locatorsEqual, targetFromLocator, toLocator } from '@/features/reader/readerProgressStore';
 import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
@@ -87,6 +94,15 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Reader'>;
 // another device pulls it. 3s keeps it well under 1/s while still landing well inside a reader's
 // dwell time on any position that matters.
 const READER_PROGRESS_WRITE_THROTTLE_MS = 3_000;
+
+// Closes a live-pull gap `useAutoSync.ts` leaves open: that hook only re-syncs on a NetInfo
+// offline->online EDGE, mounted once at the app root, so staying foregrounded the whole time while
+// another device writes (the common case for two devices on the same wifi) fires nothing at all.
+// Reader-only, on purpose — AudioPlayerRouteScreen.tsx already re-checks synchronously at the one
+// moment that matters (immediately before Play, its own `onBeforePlay` gate) and would
+// false-positive against its own continuous position drift if it also polled in the background;
+// see that file's header comment for why a subscription/poll shape was rejected there specifically.
+const READER_LIVE_SYNC_POLL_MS = 120_000;
 
 export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Element {
   const { bookId, format, initialTarget: routeTarget } = route.params;
@@ -110,6 +126,20 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   // instance). Not touched by anything else, so it never causes an unrelated remount.
   const [resumeGeneration, setResumeGeneration] = useState(0);
 
+  // Shared by every `syncEngine.run()` call site below that cares about THIS book specifically —
+  // the resume effect, and (see the live-pull effect further down) the foreground/poll triggers
+  // too. The regular sweep inside `syncEngine.run()` only refreshes progress for books this device
+  // has a local `downloads` row for (see `syncEngine.pullBook`'s own doc) — a book read online
+  // without ever being downloaded is invisible to it, no matter how long another device has had a
+  // position for it, and no matter how long BOTH devices stay online. Without this top-up, that
+  // was true only at resume; putting it here too closes the same gap for the live poll, which
+  // otherwise silently never refreshes such a book at all, indefinitely.
+  const syncForThisBook = useCallback(async (): Promise<void> => {
+    await syncEngine.run();
+    const downloaded = await downloadStore.currentForBook(bookId);
+    if (!downloaded) await syncEngine.pullBook(bookId);
+  }, [bookId]);
+
   useEffect(() => {
     let cancelled = false;
     // A caller-supplied target (e.g. a tapped bookmark elsewhere in the app) is a deliberate
@@ -120,17 +150,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     const target: Promise<ReaderTarget | undefined> =
       routeTarget !== undefined
         ? Promise.resolve(routeTarget)
-        : syncEngine
-            .run()
-            .then(async () => {
-              // The regular sweep inside syncEngine.run() only refreshes progress for books this
-              // device has a local `downloads` row for (see syncEngine.pullBook's own doc) - a
-              // book read online without ever being downloaded is invisible to it, no matter how
-              // long another device has had a position for it. Top up just this one book first,
-              // or an undownloaded book always resumes as if never opened, even mid-session.
-              const downloaded = await downloadStore.currentForBook(bookId);
-              if (!downloaded) await syncEngine.pullBook(bookId);
-            })
+        : syncForThisBook()
             .then(() => progressStore.currentLocator(undefined, bookId))
             .then((locator) => targetFromLocator(locator) ?? undefined);
     void target.then((resolvedTarget) => {
@@ -140,7 +160,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     return () => {
       cancelled = true;
     };
-  }, [bookId, routeTarget]);
+  }, [bookId, routeTarget, syncForThisBook]);
 
   const resolvedReady = resolved?.bookId === bookId;
 
@@ -149,8 +169,16 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   const lastPositionRef = useRef<ReaderPosition | null>(null);
   const lastWriteAtRef = useRef(0);
   // Guards against stacking a second cross-device conflict Alert — declared here, not beside the
-  // effect that uses it below, so the per-book reset effect can clear it too.
+  // effect that uses it below, so the per-book reset effect can clear it too. `latestIncomingRef`
+  // sits beside it for the same reason: a notification that arrives while an Alert is already up
+  // still needs somewhere to land, since `Alert.alert` has no imperative dismiss OR update — without
+  // this, a user who leaves the dialog open through a second (or third) notification would have
+  // "Resume from there" adopt the FIRST notification's locator, not the latest one.
   const conflictPendingRef = useRef(false);
+  const latestIncomingRef = useRef<Locator | null>(null);
+  // For pausing an active TTS session the instant a conflict is found — see the Alert-triggering
+  // effect below and `ReaderScreenHandle`'s own doc comment for why this exists.
+  const readerScreenRef = useRef<ReaderScreenHandle>(null);
 
   const flushProgress = useCallback(() => {
     const position = lastPositionRef.current;
@@ -184,6 +212,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     // subscription effect's own `cancelled` guard, and this at least stops it from permanently
     // blocking a genuine conflict prompt for the NEW book.
     conflictPendingRef.current = false;
+    latestIncomingRef.current = null;
     return () => {
       flushProgress();
     };
@@ -200,8 +229,52 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     return () => subscription.remove();
   }, [flushProgress]);
 
+  // Live pull while this screen stays open — see `READER_LIVE_SYNC_POLL_MS`'s own comment for why
+  // this exists and why it's Reader-only. Gated on `resolvedReady` so it can't race the initial
+  // resolve effect above, and it restarts cleanly on every book switch (this screen persists across
+  // `bookId` changes; `resolvedReady` goes false for the instant in between).
+  useEffect(() => {
+    if (!resolvedReady) return;
+    let wasActive = AppState.currentState === 'active';
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const startPoll = () => {
+      if (pollId !== null) return;
+      pollId = setInterval(() => {
+        void syncForThisBook();
+      }, READER_LIVE_SYNC_POLL_MS);
+    };
+    const stopPoll = () => {
+      if (pollId === null) return;
+      clearInterval(pollId);
+      pollId = null;
+    };
+
+    if (wasActive) startPoll();
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      const isActive = state === 'active';
+      // The edge into active — not merely "is active" — mirrors `useAutoSync.ts`'s own
+      // edge-detection shape: re-syncing on every unrelated re-render here would be a no-op given
+      // `syncEngine.run()`'s dedup, but tracking the edge keeps this effect's intent legible.
+      if (isActive && !wasActive) {
+        void syncForThisBook();
+        startPoll();
+      } else if (!isActive) {
+        stopPoll();
+      }
+      wasActive = isActive;
+    });
+
+    return () => {
+      stopPoll();
+      subscription.remove();
+    };
+  }, [resolvedReady, syncForThisBook]);
+
   const resolveConflictContinueHere = useCallback(() => {
     conflictPendingRef.current = false;
+    latestIncomingRef.current = null;
     // Re-flushes the CURRENTLY DISPLAYED position (not the one that just arrived) with a fresh,
     // later timestamp, so it wins the next LWW comparison anywhere else this book syncs to —
     // same monotonic stamping every other write already relies on (syncableTable.ts's own note).
@@ -211,6 +284,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   const resolveConflictJumpThere = useCallback(
     (locator: Locator) => {
       conflictPendingRef.current = false;
+      latestIncomingRef.current = null;
       // Cleared, not left stale: the remount below will report a fresh `relocated` for the
       // adopted position shortly, but until then there is nothing on screen to compare a NEW
       // notification against, and a stale pre-jump position would produce a false positive.
@@ -228,7 +302,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     if (!resolvedReady) return;
     let cancelled = false;
     const unsubscribe = progressStore.subscribe(() => {
-      if (conflictPendingRef.current || cancelled) return;
+      if (cancelled) return;
       const displayed = lastPositionRef.current !== null ? toLocator(lastPositionRef.current) : null;
       if (displayed === null) return; // nothing on screen yet to compare against
       void progressStore.currentLocator(undefined, bookId).then((incoming) => {
@@ -236,10 +310,26 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         if (locatorsEqual(incoming, displayed)) return; // unchanged, or an echo of our own write
         const incomingTarget = targetFromLocator(incoming);
         if (incomingTarget === null) return; // e.g. a corrupt/AUDIO-shaped row — nothing to offer
+        // Keeps advancing even while an Alert is already up — `Alert.alert` can't be refreshed
+        // once shown, so this is the only place a late answer can pick up a NEWER conflict than
+        // the one that first triggered it.
+        latestIncomingRef.current = incoming;
+        if (conflictPendingRef.current) return;
         conflictPendingRef.current = true;
+        // Freezes `lastPositionRef` before the user sees the dialog: an active TTS session
+        // (`useTtsSession`'s `autoContinueChapter`) keeps turning pages while it reads, which
+        // would otherwise make "the currently displayed position" a moving target for as long as
+        // the Alert sits unanswered, and would have the voice talking over whatever a screen
+        // reader announces for the dialog itself (CLAUDE.md's Reader-accessibility rule 3: TTS and
+        // a screen reader share one output device and neither ducks). Left paused on either
+        // answer, on purpose — same "never silently continue" reasoning as everything else in this
+        // effect; the user presses Play again if they want to keep listening.
+        const pausedTts = readerScreenRef.current?.pauseTtsIfSpeaking() ?? false;
         Alert.alert(
           'Reading progress updated',
-          'Your progress in this book was updated on another device. Resume from there, or continue reading here?',
+          pausedTts
+            ? 'Your progress in this book was updated on another device. Text-to-speech has been paused. Resume from there, or continue reading here?'
+            : 'Your progress in this book was updated on another device. Resume from there, or continue reading here?',
           [
             {
               text: 'Continue here',
@@ -251,10 +341,17 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
             {
               text: 'Resume from there',
               onPress: () => {
-                if (!cancelled) resolveConflictJumpThere(incoming);
+                if (!cancelled) resolveConflictJumpThere(latestIncomingRef.current ?? incoming);
               },
             },
           ],
+          // EXPLICIT, not relying on the platform default: Android's own default is already
+          // `cancelable: false` when this option is omitted (RN's `Alert.js` hardcodes it unless
+          // overridden), and iOS's `.alert`-style `UIAlertController` has no tap-outside-to-dismiss
+          // gesture at all — but "resolving this is compulsory" is a real product requirement here,
+          // not an accident of an unset default, so it is written down rather than left implicit
+          // for the next person to accidentally flip by passing `cancelable: true`.
+          { cancelable: false },
         );
       });
     });
@@ -275,6 +372,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   return (
     <View style={styles.container}>
       <ReaderScreen
+        ref={readerScreenRef}
         key={`${bookId}:${resumeGeneration}`}
         bookId={bookId}
         initialTarget={resolved.target}
