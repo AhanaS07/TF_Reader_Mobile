@@ -164,6 +164,19 @@ word wash unconditionally at its own top (`clearSpokenWord()`), a consolidation 
 TTS auto-follow (`TTS_PROVIDER.md` open item 2) — the reason the RN-side wiring was worth re-landing
 now rather than leaving deferred.
 
+**2026-09-07 addendum — Ahana's side already has an unreachable head start on the CFI-resolution
+piece above; check it before rewriting it.** `webview/src/epubTtsResolver.ts`'s
+`resolveSpokenWordCfi(rendition, sentenceCfi, start, end)`, backed by `ttsWordOffsets.ts`, resolves
+exactly the `(sentenceCfi, start, end) → word-range CFI` problem the bullet above used to describe
+as needing new code. It is fully unit-tested (`epubTtsResolver.test.ts`, `ttsWordOffsets.test.ts`)
+but **not imported by `epub.entry.ts`** — reachable only from its own tests today, apparently built
+independently of this section's RN-side attempt and never wired to it. Not touching
+`epubTtsResolver.ts`, `ttsWordOffsets.ts`, or anything else under `src/features/reader/` from this
+side — that's Ahana's call (delete it, leave it, or use it once both halves land together), per
+this repo's ownership line. Flagging it here rather than leaving it to be rediscovered, because an
+orphan like this is exactly how the RN/WebView halves end up half-built again independently — the
+same shape of bug that broke `npm run typecheck` on 2026-09-07.
+
 ---
 
 ## 7. `C1`/§4 follow-up — accessibility prefs stay account-scoped for now; `accessibilityGateway.ts` deleted
