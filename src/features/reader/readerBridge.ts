@@ -77,9 +77,7 @@ import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
  * IT TRAVELS IN BOTH DIRECTIONS: out on `toc`, back in on `goTo`. That is the point — the host no
  * longer has to flatten a typed target into an ambiguous string to send it anywhere.
  */
-export type ReaderTarget =
-  | { kind: 'href'; href: string }
-  | { kind: 'page'; page: number };
+export type ReaderTarget = { kind: 'href'; href: string } | { kind: 'page'; page: number };
 
 /**
  * >>> WHY `kind` AND NOT `format`. <<<
@@ -246,8 +244,7 @@ export type ReaderErrorCode = WebViewErrorCode | HostErrorCode;
  * that arrives separately has to be correlated with a position that may already have moved.
  */
 export type ReaderPosition =
-  | { kind: 'cfi'; cfi: string | null }
-  | { kind: 'page'; page: number; pageCount: number };
+  { kind: 'cfi'; cfi: string | null } | { kind: 'page'; page: number; pageCount: number };
 
 /**
  * Which section of the book the reader is in, when the format has sections at all.
@@ -710,7 +707,6 @@ function asSelection(value: unknown): ReaderSelection | null {
 
   return null;
 }
-
 
 /**
  * A `TtsSentence` from an untrusted payload, or null if it is not one.

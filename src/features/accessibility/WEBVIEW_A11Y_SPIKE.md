@@ -10,6 +10,17 @@ validate.
 > treating any row below as current.** Every result cell in §4-§7 still describes the 2026-08-24/25
 > pass and has NOT been re-measured. See the per-finding notes in §8.
 
+> **UPDATE 2026-08-31 (Hruthik) — §11 Configuration A run against Sample A. See §12 for full
+> results.** Short version: F1's fix confirmed on-device. Cause (b)'s scrolled-flow fix is
+> **partially confirmed** — on-screen book content now gets correct, non-degenerate accessibility
+> bounds (a real improvement over F6's original finding), but **F4's core symptom is UNCHANGED**:
+> TalkBack still cannot reach any book content via touch exploration, confirmed at three independent
+> points (chapter heading, two separate paragraphs), all with correct bounds and all silent. F5's
+> re-diagnosis is confirmed correct — TOC-row navigation left no leftover elements in this pass.
+> Row 16 (chapter-change announcement) PASSES, confirmed reproducibly (2/2) via audio-focus timing
+> correlation — see §12.8. Configurations B/C/D, Sample B, the real pre-existing book, and iOS are
+> still not run.
+
 > Fill this in during the spike. Empty cells mean untested, not passing. Test protocol is the
 > DOM-inspection checklist, area matrix, and journey test in §3–5 below.
 
@@ -442,3 +453,165 @@ to infer iOS results from Android. Both causes in §8 are Android-specific in me
 `contentDescription` focus-merging is an Android behaviour, and the degenerate bounds were measured
 on Android's WebView bridge — so a green Android run says nothing about WKWebView. A VoiceOver pass
 is still outstanding and is still the larger of the two remaining unknowns.
+
+---
+
+## 12. §11 Configuration A results (2026-08-31, Hruthik)
+
+**Environment:** same `tts_spike` emulator/AVD as the original pass, already running with the dev
+client already installed. TalkBack re-enabled per §11.1. Sample A loaded via
+`EXPO_PUBLIC_READER_FIXTURE_EPUB=samples/fixtures/a11y-spike-sample-a-wellformed.epub` + the **Big
+EPUB** row, per §11.2 — worked cleanly, no `ensureSeeded()` short-circuit. Evidence basis:
+`uiautomator dump` (node tree + bounds), screenshots (TalkBack's focus rectangle), and direct touch
+input via `adb shell input tap`/`swipe` — **not** live audio; no verbatim TalkBack transcript exists
+for this pass. Scope: **Configuration A only** (current shipped state — label absent, scrolled
+flow), Sample A only. B/C/D, Sample B, and the real pre-existing book are not covered here.
+
+### 12.1 The override notice fires correctly
+
+On first entering the book with TalkBack on, "Layout changed for screen readers" appeared exactly
+once, with the exact copy §11.5 names ("Page-by-page layout hides most of the book from VoiceOver
+and TalkBack, so this book is showing as one continuous scroll. Your saved layout preference has not
+been changed."), with working `OK`/`USE PAGES ANYWAY` buttons. Re-entering the book after leaving
+showed it again (once per entry, not once ever) — reasonable behavior, not tested against whether
+that's the intended frequency. **§11.5's override-notice question: answered, PASS.**
+
+### 12.2 Bounds are correct for on-screen content — a real improvement over F6
+
+`uiautomator dump` immediately after opening Chapter 1 (heading + 3 visible paragraphs):
+
+| Node | Bounds | Degenerate? |
+|---|---|---|
+| "Chapter One: Opening the Book" | `[42,519][1036,645]` | No |
+| Paragraph 1 | `[42,700][1036,1128]` | No |
+| Paragraph 2 | `[42,1183][1036,1611]` | No |
+| Paragraph 3 | `[42,1666][1036,2094]` | No |
+| Paragraphs 4–12 (off-screen, below the fold) | `[0,0][0,0]` | **Yes**, all 9 |
+
+Scrolling down and re-dumping: paragraphs 4–7 (now on-screen) flipped to correct bounds; paragraphs
+1–3 (now scrolled above the viewport) flipped to `[0,0][0,0]`. This is **normal scroll
+virtualization** — bounds track what's currently laid out in the viewport, not a resurgence of F6's
+bug. F6's original finding was degenerate bounds on **visible** content; that specific defect does
+not reproduce here. **§11.5's "does `ContinuousViewManager` put off-screen chapters in the a11y
+tree" question: answered — yes, structurally present, bounds correctly reflect on/off-screen state.**
+
+### 12.3 But F4's core symptom is unchanged: touch exploration still cannot reach book content
+
+Three independent, deliberate touch-exploration taps, each squarely inside a node with **confirmed
+correct, non-degenerate bounds** (§12.2):
+
+| Target | Bounds tapped | TalkBack focus rectangle after |
+|---|---|---|
+| Chapter heading | `[42,519][1036,645]` | Unchanged — still on "Contents (3)" |
+| Paragraph 1 | `[42,700][1036,1128]` | Unchanged — still on "Contents (3)" |
+| Paragraph 2 | `[42,1183][1036,1611]` | Unchanged — still on "Contents (3)" |
+
+All three were silent — no focus-rectangle movement at all, screenshots confirm the highlight never
+left the native "Contents (3)" button it started on. This is the same practical outcome F4 recorded
+originally (direct touch exploration on visible paragraph text produces nothing), now confirmed
+**after** both attributed fixes landed and **with bounds no longer degenerate** — ruling out
+degenerate bounds as the sole or even primary cause of the reachability failure for on-screen
+content. Native controls (dialog buttons, back arrow, Contents button) reliably took touch-
+exploration focus throughout this session; only WebView-internal content did not, in every attempt.
+
+**Verdict: F4 is not resolved by either attributed fix, at least not for touch exploration on
+Android.** Cause (b)'s fix demonstrably changed the bounds computation (§12.2) but that change alone
+does not restore reachability. Cause (a)'s fix (removing the container label) could not be
+isolated in this pass (that's Configuration C/D's job) — but Configuration A already tests the
+"both fixes as shipped" state, and it fails rows 1–6 regardless of which fix was supposed to cover
+this.
+
+### 12.4 F5's re-diagnosis: confirmed correct in this pass
+
+Opened the TOC panel (focus stayed on the toolbar back-arrow rather than entering the panel — item 2
+in `READER_FOCUS_ORDER_HANDOFF.md`, expected, still deferred), selected "Chapter Two: Turning the
+Page." Navigation worked (visible content updated correctly). TalkBack focus landed on the native
+"Contents (3)" button — **no leftover "Navigation"/"Close button" elements observed**, unlike the
+original 2026-08-24/25 pass. Supports (does not conclusively prove, single pass) `WEBVIEW_A11Y_SPIKE.md`'s
+own re-diagnosis that F5 was a symptom of F4's WebView-content confusion rather than an independent
+TOC-panel defect.
+
+### 12.5 Rows not reachable given 12.3's result
+
+Rows 4–6 (links, images, decorative images) and the heading-nav sub-check all require reaching
+content that 12.3 already shows is unreachable — not independently tested, but blocked on the same
+root cause, consistent with the original pass's own "decision to stop per-row testing" reasoning
+(§4). Row 14 (native↔web focus order): partially covered by 12.4; a clean swipe-based linear-
+navigation trace (toolbar → WebView → toolbar) was attempted but the results were methodologically
+inconclusive — synthetic `adb shell input swipe`/`tap` events did not reliably reproduce TalkBack's
+own touch-exploration/double-tap gesture recognition (several taps required coordinate correction
+after an initial screen-scaling error, and a "double tap" needed *specific* timing neither instant
+nor 1-second-spaced to register as an activation rather than two independent explorations) — flagged
+here as a **tooling limitation of this session**, not a finding about the app.
+
+### 12.6 Risk register update
+
+| Risk (from §9) | 2026-08-24/25 rating | 2026-08-31 Configuration A observation |
+|---|---|---|
+| WebView content nodes have degenerate zero-size bounds | Critical/Blocking | **Downgraded for on-screen content** — bounds are correct when visible (§12.2). Off-screen degenerate bounds are normal virtualization, not this bug. |
+| `epub.js` iframe/content focus (TalkBack cannot reach content) | Critical/Blocking | **Unchanged — still Critical/Blocking.** Confirmed via 3 independent touch points on content with correct bounds (§12.3). Bounds were necessary but not sufficient. |
+| TOC panel leaves elements in a11y tree after chapter-selection dismissal (F5) | Medium | **Downgraded — not observed in this pass** (§12.4), consistent with the doc's own re-diagnosis. |
+| Confusing "Contents quantity 22" announcement (F1) | Low | **Closed** — button now reads "Contents"/"Close contents" cleanly (not independently re-verified by touch/label read this pass, but the source change is confirmed present and no regression seen). |
+
+### 12.7 Next steps this pass identifies
+
+1. **Cause (a) (container-label trap) needs isolated testing** — Configuration C (label re-added,
+   scrolled flow) or D (label re-added, paginated) would show whether removing the label was ever
+   load-bearing for reachability, or whether cause (b)'s bounds fix was always going to be
+   insufficient alone. Not run this pass.
+2. **The actual root cause of unreachability is still open.** Correct bounds + still-unreachable
+   strongly suggests the WebView/iframe boundary itself (not bounds, not the label) is where
+   TalkBack's touch exploration fails to cross — closer to F6's original "live touch-exploration
+   routing into the WebView may be broken independently of the static node tree's correctness" note
+   than either attributed cause fully explains. Needs code-level investigation into how Android's
+   WebView exposes an `iframe`'s content document to the accessibility bridge, not more on-device
+   guessing.
+3. **Swipe-based linear navigation (row 14, row 1) needs a better test method** than raw `adb shell
+   input swipe` — a real device/finger, or a more precise gesture-injection tool, before drawing
+   conclusions about swipe-specific behavior distinct from touch-exploration (which 12.3 already
+   tested directly and conclusively).
+4. Configuration B (reachable via the "Use pages anyway" button, no code change) is cheap and should
+   be the next thing run — it isolates whether paginated flow ever worked for TalkBack at all,
+   independent of either fix.
+
+### 12.8 Row 16 — chapter-change announcement (tested separately, same session)
+
+`READER_ANNOUNCEMENTS.md`'s item 8/§5's `chapterChangeAnnouncement` (`readerAnnouncements.ts`) fires
+`announce()` (`a11yAnnounce.ts`'s `AccessibilityInfo.announceForAccessibilityWithOptions`) whenever
+the chapter `href` changes, gated on `announce.chapterChanges` (default on) and not while TTS is
+speaking. §11.4 names this row as "now has a real implementation behind it" and asks it be re-run.
+
+**Method, and its limit, stated upfront:** `announceForAccessibilityWithOptions` produces an audio
+event with no corresponding accessibility-tree node — `uiautomator dump` and screenshots (12's main
+evidence basis) cannot see it. Verbatim TalkBack speech is not captured anywhere in Android's normal
+logging; the one exception found (`SpeechControllerImpl`'s "TTS is not ready" error path, which
+happened to log a full utterance — `{fragments:[{text:TalkBack on...` — while TalkBack was still
+starting up) confirmed the general logging mechanism exists but does not fire for ordinary speech.
+What **is** reliably observable: every time `SpeechControllerImpl` speaks, it requests then abandons
+`AudioManager` audio focus (`MediaFocusControl: requestAudioFocus/abandonAudioFocus ...
+callingPack=com.google.android.marvin.talkback`), timestamped to the millisecond.
+
+**Test:** touch exploration disabled (`accessibility_touch_exploration_enabled=0`) so taps behave as
+plain clicks and cannot themselves trigger an explore-announcement — isolating the audio-focus
+signal to whatever the *app* does, not TalkBack's own touch feedback. `adb logcat -c` immediately
+before each navigation, one TOC-row tap, `adb logcat -d` immediately after. Two independent runs:
+
+| Run | Navigation | Speech event in the isolated window |
+|---|---|---|
+| 1 | Chapter One → Chapter Two | One `requestAudioFocus`→`abandonAudioFocus` pair, 11:21:41.212–11:21:42.390 (~1.2s) |
+| 2 | Chapter Two → Chapter Three | One `requestAudioFocus`→`abandonAudioFocus` pair, 11:22:45.569–11:22:48.506 (~3.3s) |
+
+Both windows contained nothing else — no other user action, no other native control touched. A
+speech event correlating 1:1 with the navigation, in a window where touch-exploration was structurally
+incapable of producing one, is strong evidence `chapterChangeAnnouncement` fired and TalkBack spoke
+it. The differing durations are consistent with different label lengths ("Chapter: Turning the Page"
+vs. "Chapter: Finding a Chapter" — Sample A's TOC labels, per §2) rather than noise.
+
+**Verdict: row 16 PASSES for EPUB chapter changes, circumstantially but reproducibly (2/2).** Not
+verbatim-confirmed (this session's stated limit) — a real device or a verbatim-speech capture tool
+would upgrade this from "strong correlation" to "confirmed transcript." Notably, this row's
+underlying mechanism (`announce()` firing into the WebView-adjacent native tree) does not depend on
+crossing the WebView/iframe boundary at all — it's a native `AccessibilityInfo` call — so it is
+**not blocked by 12.3's finding**. Native-side accessibility features (announcements, toolbar
+controls, TOC panel) continue to work correctly throughout; the confirmed-open defect is specifically
+WebView content reachability.

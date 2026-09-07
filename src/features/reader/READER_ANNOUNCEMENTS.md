@@ -93,22 +93,27 @@ written. `announce()` is imported from `@/features/reader/a11yAnnounce`; it is s
 
 ### Item 8 — TTS state announcements (`useTtsSession.ts`)
 
-Call sites are `updateStatus`'s transitions. **Two platform asymmetries mean some of the obvious
-announcements cannot fire, and shipping them anyway would be shipping a lie.** Both are already
-load-bearing comments in that file:
+Call sites are `updateStatus`'s transitions. **One platform asymmetry means one obvious
+announcement cannot fire, and shipping it anyway would be shipping a lie.** It is already a
+load-bearing comment in that file:
 
-- **Android never reaches `'paused'`.** `PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios'`
-  (`useTtsSession.ts:77`); status is driven off the engine's `tts-pause`/`tts-resume` **events**, and
-  Android's pause is a documented no-op, so the transport button calls `stop()` instead
-  (`TtsControls.tsx:65-77`). An Android "Paused" announcement would describe a state the session is
-  never in.
 - **iOS never reaches `'error'` from the engine.** `'tts-error'` is absent from
   `@iternio/react-native-tts`'s iOS `supportedEvents` — `AVSpeechSynthesizerDelegate` has no error
   callback to wire it from — so an iOS engine failure leaves the session in `'speaking'`
   (`useTtsSession.ts:355-364`).
 
-So: announce `speaking` / `idle` on both platforms, `paused` / `resumed` on iOS only, and **document
-the two gaps rather than papering over them**. Suppressing these while TTS is speaking would be
+**Android reaches `'paused'` too, not just iOS.** `PAUSE_RESUME_SUPPORTED = Platform.OS === 'ios'`
+(`useTtsSession.ts:81`) still gates which native call runs — Android's `Tts.pause()`/`resume()` are
+documented no-ops — but `pauseRef.current` no longer treats that as "do nothing." On Android it
+stops the engine, remembers the interrupted sentence in a closure variable, and drives
+`updateStatus('paused')` directly rather than waiting for a `tts-pause` event that will never
+arrive. `play()` then re-speaks that sentence from its start instead of re-resolving the reader's
+live position. So the button is genuinely "Pause"/"Resume" on both platforms now
+(`TtsControls.tsx`); only the resume *granularity* differs (exact word on iOS, sentence start on
+Android), not whether pause/resume happen at all.
+
+So: announce `speaking` / `paused` / `resumed` / `idle` on both platforms, and **document the
+remaining gap rather than papering over it**. Suppressing these while TTS is speaking would be
 wrong — these announcements are *about* the speech, and the engine is not speaking at the moment it
 stops or errors.
 

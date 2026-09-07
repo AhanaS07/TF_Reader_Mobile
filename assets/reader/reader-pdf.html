@@ -668,7 +668,7 @@ ${text}`;
     surface.lengths = itemsStr.map((item) => item.length);
     surface.texts = [...itemsStr];
   }
-  function paintPage(surface, highlights, bg) {
+  function paintPage(surface, highlights, _bg) {
     surface.highlightLayer.replaceChildren();
     surface.boxes = [];
     if (surface.divs.length === 0) return;
@@ -676,7 +676,11 @@ ${text}`;
     const fragment = document.createDocumentFragment();
     for (const highlight of highlights) {
       if (highlight.page !== surface.page) continue;
-      for (const slice of slicesForRange(surface.lengths, highlight.startOffset, highlight.endOffset)) {
+      for (const slice of slicesForRange(
+        surface.lengths,
+        highlight.startOffset,
+        highlight.endOffset
+      )) {
         const div = surface.divs[slice.index];
         const text = div?.firstChild;
         if (!text || text.nodeType !== Node.TEXT_NODE) continue;
@@ -705,7 +709,7 @@ ${text}`;
           el.style.top = `${box.top}px`;
           el.style.width = `${box.width}px`;
           el.style.height = `${box.height}px`;
-          const { fill, blend } = highlightFill(highlight.color, bg);
+          const { fill, blend } = highlightFill(highlight.color);
           el.style.background = fill;
           el.style.opacity = "0.25";
           el.style.mixBlendMode = blend;
@@ -724,7 +728,11 @@ ${text}`;
     const hint = indexOffsetToPageOffset(surface.lengths, match.startOffset);
     const start = resolveMatchOffset(surface.texts, hint ?? 0, match.matchText);
     if (start !== null) {
-      for (const slice of slicesForRange(surface.lengths, start, start + match.matchText.trim().length)) {
+      for (const slice of slicesForRange(
+        surface.lengths,
+        start,
+        start + match.matchText.trim().length
+      )) {
         const div = surface.divs[slice.index];
         const text = div?.firstChild;
         if (!text || text.nodeType !== Node.TEXT_NODE) continue;
