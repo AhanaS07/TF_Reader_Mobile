@@ -4,7 +4,7 @@
 // runtime without a polyfill. Confirmed on-device 2026-08-11: keyStorage.ts's earlier
 // `Buffer`-based version threw "Property 'Buffer' doesn't exist" at runtime in the actual app
 // (not just theorized). This is the fix, shared by aesGcm.ts, keyStorage.ts, deviceKeypair.ts,
-// deviceKeyRegistration.ts, and (via readerAssets.ts) the Reader's WebView bridge.
+// and (via readerAssets.ts) the Reader's WebView bridge.
 //
 // PERFORMANCE, not just correctness (2026-08-13): this is a genuine hot path, not an edge case.
 // aesGcm.ts's encrypt/decrypt round-trip a FULL book (up to contentStore.ts's 25MB budget)

@@ -14,6 +14,10 @@ path. **Update in the same change** that closes an item, and strike it in
 - Ledger and cross-capability view: `src/shared/contracts/CONTRACT_ALIGNMENT.md`
 - Full evidence, every quote and mapping table: `src/shared/contracts/API_CONTRACT_REVIEW_CONTEXT.md`
 - Finding IDs (`B1`, `C6`) are stable — quote them rather than restating the problem.
+- Fail-closed guarantees (checksum, expiry, keystore, tamper) are a *different* list, not a
+  contract divergence — see `FAIL_CLOSED_AUDIT.md` in this directory.
+- "Seat heartbeat" — flambeau has no such endpoint; `readingAccessMonitor.ts` **is** it. Scope
+  decision recorded 2026-09-03 in that file's own header and in `thisWeek.md` Phase 2.
 
 ---
 
@@ -283,26 +287,25 @@ signed, returned, and thrown away unused.
 
 ---
 
-### 5. `B8` 🟠 — delete the device-registration path; flambeau rejects the concept
+### 5. `B8` ✅ CLOSED 2026-09-07 — delete the device-registration path; flambeau rejects the concept
 
-`shared/contracts/device-key.ts` defines `DeviceKeyRegistrationRequest`/`Response` for
-`POST /device/register-key`, and `deviceKeyRegistration.ts` implements the call against the
-port-4000 mock. flambeau closes the door on it explicitly:
+`shared/contracts/device-key.ts` defined `DeviceKeyRegistrationRequest`/`Response` for
+`POST /device/register-key`, and `deviceKeyRegistration.ts` implemented the call against the
+port-4000 mock. flambeau closed the door on it explicitly:
 
 > **No device registration.** The device key arrives on every reading session, so a device is
 > **observed rather than enrolled**.
 
-The endpoint does not exist and is not planned. Worse, its wire value is wrong on its own terms:
-`deviceKeyRegistration.ts` base64-encodes the PEM's **ASCII text** — armour, newlines and all —
-which is a different, non-interoperable value from the `publicKeyToRawBase64()` used on the real
-path. That divergence is already noted in `deviceKeypair.ts`'s comments, so it is known dead code
-shipping real crypto.
+The endpoint did not exist and was not planned. Its wire value was also wrong on its own terms:
+`deviceKeyRegistration.ts` base64-encoded the PEM's **ASCII text** — armour, newlines and all —
+a different, non-interoperable value from the `publicKeyToRawBase64()` used on the real path.
 
-**Delete together:** `deviceKeyRegistration.ts`, `deviceKeyRegistration.test.ts`,
+**Deleted together:** `deviceKeyRegistration.ts`, `deviceKeyRegistration.test.ts`,
 `shared/contracts/device-key.ts`, the `DownloadError.REGISTRATION_FAILED` member, and the
-`device-key` export from the contracts barrel. Check nothing outside `download/` imports them
-first. **Deleting a frozen-contract file needs the freeze conversation** — loop in Ahana;
-`__typecheck__.ts` is the canary.
+`device-key` export from the contracts barrel. Confirmed nothing outside this file's own module
+imported any of them. `device-key.ts` was DRAFT and never in `__typecheck__.ts`'s canary, so this
+did not break the freeze — but it touches the shared barrel (`shared/contracts/index.ts`), which
+is Ahana's, so it still needs her sign-off even though the canary stayed green.
 
 ---
 
