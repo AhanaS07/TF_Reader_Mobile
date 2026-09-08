@@ -153,6 +153,7 @@ wrong one.
 | `requestCurrentSelection` | — | **yes** (`selection`) | both |
 | `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
 | `paintSearchMatch` | `match` (`ReaderSearchMatch`) | **yes** (`searchMatchPainted`), only for a paint | both (real) |
+| `setTtsSpeaking` | `speaking` (`boolean`) | no | EPUB entry (real — gates manual swipe/scroll gestures via `touch-action`), PDF entry (documented no-op) |
 
 ### The search match — `paintSearchMatch` / `searchMatchPainted`
 

@@ -293,6 +293,57 @@ describe('useTtsSession', () => {
     expect(mockTts.speak).not.toHaveBeenCalled(); // resumed, not re-fetched.
   });
 
+  it('play() after the reader navigates away WHILE PAUSED re-resolves fresh, not the native resume', async () => {
+    // The bug this guards against: Tts.resume() on iOS is a genuine native resume of the SUSPENDED
+    // utterance — calling it blindly continues content from wherever the reader WAS, ignoring that
+    // they scrolled/swiped somewhere else while paused. Reported on-device: pause, scroll to a new
+    // area, press play — TTS picked back up the OLD content instead of the new page.
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    await act(() => fireTtsEvent('tts-pause'));
+    expect(result.current.status).toBe('paused');
+
+    // The reader scrolls/swipes to a different part of the book while still paused.
+    await act(() => provider.navigate(2));
+
+    mockTts.speak.mockClear();
+    mockTts.resume.mockClear();
+    mockTts.stop.mockClear();
+    await act(() => result.current.play());
+
+    // The suspended native utterance is stopped, not resumed — it is holding the wrong content.
+    expect(mockTts.resume).not.toHaveBeenCalled();
+    expect(mockTts.stop).toHaveBeenCalled();
+    // And a fresh sentence is fetched from wherever the reader actually is now, same as a first
+    // play() from idle would — not the sentence that was paused.
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[2].text);
+  });
+
+  it('play() after pausing with NO navigation still resumes normally — the fix is scoped to the navigated case', async () => {
+    // A regression check on the sibling test above: pausing and pressing play with nothing else
+    // happening in between must be completely unaffected by pausedPositionInvalidated.
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    await act(() => fireTtsEvent('tts-pause'));
+
+    mockTts.speak.mockClear();
+    mockTts.resume.mockClear();
+    await act(() => result.current.play());
+
+    expect(mockTts.resume).toHaveBeenCalled();
+    expect(mockTts.speak).not.toHaveBeenCalled();
+  });
+
   it('backgrounding while speaking stops speech, clears the highlight, and resets to idle', async () => {
     const provider = createFakeReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));

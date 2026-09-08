@@ -3403,6 +3403,46 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
       expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(false);
     });
+
+    it('tells the WebView to lock manual scroll the moment speech starts, and unlock it when it stops', async () => {
+      // The reader must not be able to fight auto-follow with a raw swipe/drag while TTS speaks —
+      // see setTtsSpeaking's own doc comment in readerBridge.ts for scope (gestures only).
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      __injectJavaScript.mockClear();
+
+      await startSpeaking();
+
+      const scriptsWhileSpeaking = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsWhileSpeaking.some((script) => script.includes('setTtsSpeaking(true)')),
+      ).toBe(true);
+      __injectJavaScript.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Pause' }));
+      // pause() is event-driven, same as startSpeaking()'s tts-start above — status only actually
+      // moves to 'paused' once the native (or Android stop-and-remember) tts-pause event arrives.
+      const ttsEngine = (
+        jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+          default: { addListener: jest.Mock };
+        }
+      ).default;
+      const pauseHandler = ttsEngine.addListener.mock.calls
+        .filter((call: unknown[]) => call[0] === 'tts-pause')
+        .at(-1)?.[1] as (() => void) | undefined;
+      if (pauseHandler) {
+        await act(async () => {
+          pauseHandler();
+        });
+      }
+
+      const scriptsAfterPause = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsAfterPause.some((script) => script.includes('setTtsSpeaking(false)')),
+      ).toBe(true);
+    });
   });
 
   describe('nothing announces over the read-aloud', () => {

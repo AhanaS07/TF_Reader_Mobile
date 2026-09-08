@@ -2083,6 +2083,20 @@ function ReaderScreenComponent(
   }, [isRendered, send, format, search.hits, search.activeIndex, search.submittedTerm]);
 
   /**
+   * Gate manual swipe/drag in the WebView the instant TTS starts or stops speaking — see
+   * `setTtsSpeaking`'s own doc comment in readerBridge.ts for scope (gestures only, not
+   * `goTo`/TOC/search).
+   *
+   * DEPENDS ON `ttsSession.status`, A PRIMITIVE, NOT `ttsSession` ITSELF — `useTtsSession` returns a
+   * fresh object every render (no `useMemo`, see `ttsStatusRef`'s own note above), so depending on
+   * the object would resend this command on every render instead of only on an actual transition.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null || format === null) return;
+    send({ type: 'setTtsSpeaking', speaking: ttsSession.status === 'speaking' });
+  }, [isRendered, send, format, ttsSession.status]);
+
+  /**
    * Jump to a typed page, or refuse without navigating.
    *
    * >>> VALIDATED HERE RATHER THAN IN THE SHELL, AND THAT IS THE WHOLE POINT OF CARRYING pageCount. <<<

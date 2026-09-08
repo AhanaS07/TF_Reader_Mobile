@@ -459,6 +459,7 @@ export const READER_COMMANDS = {
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
   paintSearchMatch: 'paintSearchMatch',
+  setTtsSpeaking: 'setTtsSpeaking',
 } as const;
 
 /**
@@ -619,7 +620,19 @@ export type ReaderCommand =
    * Replies `searchMatchPainted` for a paint (not for a clear). That is a NOTICE, not an ack: the
    * command is fire-and-forget like `paintHighlights`, and nothing waits on it.
    */
-  | { type: 'paintSearchMatch'; match: ReaderSearchMatch };
+  | { type: 'paintSearchMatch'; match: ReaderSearchMatch }
+  /**
+   * Gate manual scroll/page-turn GESTURES while TTS is actively speaking — `true` the instant status
+   * becomes `'speaking'`, `false` the instant it leaves that status (paused, idle, or error). Only
+   * the two gesture-driven paths (paginated swipe, scrolled-doc drag) are affected; `goTo`/TOC/search
+   * taps are untouched on purpose. See `TTS_PROVIDER.md`'s open item: manual navigation while
+   * speaking is a separate, pre-existing behavior (auto-follow pulls the view back) that this does
+   * not change — it only stops the reader from fighting auto-follow with a raw drag/swipe.
+   *
+   * Fire-and-forget, no reply, on the same contract as `setSpokenRange` — a lock that fails to apply
+   * must not be able to interrupt reading.
+   */
+  | { type: 'setTtsSpeaking'; speaking: boolean };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -973,7 +986,10 @@ export function buildCommandScript(command: ReaderCommand): string {
                       // book's text, so this is the payload rule 1 above is actually about — both are
                       // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
                       JSON.stringify(command.match)
-                    : '';
+                    : command.type === 'setTtsSpeaking'
+                      ? // A plain boolean, same as any other primitive payload in this chain.
+                        JSON.stringify(command.speaking)
+                      : '';
 
   return `(function(){
     try {

@@ -1465,6 +1465,7 @@ ${columnOverrideCss()}` : currentCss;
         if (!origin || !touch || longPressFired) return;
         if (!view.getSelection()?.isCollapsed) return;
         if (!isPaginated(currentFlow())) return;
+        if (ttsSpeaking) return;
         const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
         if (direction === null || !rendition) return;
         const turn = direction === "next" ? rendition.next() : rendition.prev();
@@ -1614,6 +1615,12 @@ ${columnOverrideCss()}` : currentCss;
   function renditionManager() {
     if (!rendition) return null;
     return rendition.manager ?? null;
+  }
+  var ttsSpeaking = false;
+  function applyTtsScrollLock() {
+    const manager = renditionManager();
+    if (!manager) return;
+    manager.container.style.touchAction = ttsSpeaking ? "none" : "";
   }
   function spokenRangeGeometry(cfi) {
     const contents = contentsForCfi(cfi);
@@ -1825,6 +1832,7 @@ ${columnOverrideCss()}` : currentCss;
         });
       }
     );
+    applyTtsScrollLock();
     return rendition;
   }
   var api = {
@@ -2149,6 +2157,11 @@ ${columnOverrideCss()}` : currentCss;
         followSpokenRange(cfi);
       } catch {
       }
+    },
+    /** Gate manual swipe/drag while TTS speaks — see `ReaderCommand`'s own doc for scope. */
+    setTtsSpeaking: (speaking) => {
+      ttsSpeaking = speaking;
+      applyTtsScrollLock();
     },
     /**
      * The reader tapped "Highlight". Forces `triggerSelectedEvent` (epub.js's own CFI computation,

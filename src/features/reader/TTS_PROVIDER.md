@@ -355,10 +355,20 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    `relocated` cause-agnostically, which is correct and intentional (persisted "resume position" is
    supposed to be wherever the view/voice currently is).
 
-   **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
-   manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back
-   to wherever speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented
-   no-ops (`pdf.entry.ts`) — nothing to follow there yet.
+   **Narrowed, not solved, by `setTtsSpeaking` (landed 2026-09-08):** the reader can no longer
+   trigger a manual swipe (paginated) or drag-scroll (scrolled-doc) at all while `ttsSession.status`
+   is `'speaking'` — `ReaderScreen.tsx` sends `{type: 'setTtsSpeaking', speaking}` on every status
+   transition, and `epub.entry.ts` sets `touch-action: none` on the manager's container while true,
+   plus an explicit `if (ttsSpeaking) return;` guard in `watchTouches`'s swipe handler
+   (`WEBVIEW_BRIDGE.md` has the full surface entry). This closes the gesture path entirely, so it no
+   longer fights auto-follow.
+
+   **Genuinely still open, not solved by this:** a manual navigation reached WITHOUT a gesture — a
+   TOC tap, a search-result tap, a bookmark tap — is deliberately NOT blocked while speaking (out of
+   scope for `setTtsSpeaking`, by design: those are intentional host-driven jumps). Auto-follow still
+   has no "recently navigated" signal for that path, so the next tick pulls the view back to wherever
+   speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented no-ops
+   (`pdf.entry.ts`) — nothing to follow there yet.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

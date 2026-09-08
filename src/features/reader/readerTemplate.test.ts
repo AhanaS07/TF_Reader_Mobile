@@ -1216,6 +1216,70 @@ describe('re-measuring every painted layer after a re-layout', () => {
   });
 });
 
+describe('manual scroll/page-turn is gated while TTS speaks', () => {
+  // `touch-action` only gates the browser's native gesture recognizer, not JS-driven navigation —
+  // so the lock must be applied to the manager's container (a CSS property), never to a global or
+  // to document.body, and must never appear inside followSpokenRange/repositionForReadingZone
+  // (auto-follow's own programmatic moves must stay unaffected).
+
+  it('applyTtsScrollLock sets touch-action on the manager container, not a global', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function applyTtsScrollLock(): void');
+    expect(body).toContain('manager.container.style.touchAction');
+    expect(body).not.toContain('document.body');
+  });
+
+  it('createRendition re-applies the lock so a rebuilt container inherits the current state', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function createRendition(): Rendition');
+    expect(body).toContain('applyTtsScrollLock();');
+    // After building the rendition, not before — the container the lock targets does not exist yet
+    // until renderTo() runs.
+    expect(body.indexOf('applyTtsScrollLock();')).toBeGreaterThan(
+      body.indexOf("rendition = book.renderTo('viewer'"),
+    );
+  });
+
+  it('the setTtsSpeaking handler flips the flag and re-applies the lock', () => {
+    const body = blockAfter(EPUB_ENTRY, 'setTtsSpeaking: (speaking) =>');
+    expect(body).toContain('ttsSpeaking = speaking;');
+    expect(body).toContain('applyTtsScrollLock();');
+  });
+
+  it('the touchend swipe guard checks ttsSpeaking after the paginated guard and before swipeDirection', () => {
+    const body = blockAfter(EPUB_ENTRY, "'touchend',");
+    const paginatedGuardIndex = body.indexOf('if (!isPaginated(currentFlow())) return;');
+    const ttsGuardIndex = body.indexOf('if (ttsSpeaking) return;');
+    const swipeDirectionIndex = body.indexOf('swipeDirection(');
+    expect(paginatedGuardIndex).toBeGreaterThan(-1);
+    expect(ttsGuardIndex).toBeGreaterThan(paginatedGuardIndex);
+    expect(swipeDirectionIndex).toBeGreaterThan(ttsGuardIndex);
+  });
+
+  it('long-press-to-select returns before the ttsSpeaking guard is ever reached', () => {
+    // longPressFired/selection-collapsed both return earlier in touchend than the new guard, so a
+    // long-press never sees it — pinning the ORDER is what proves selection stays unaffected.
+    const body = blockAfter(EPUB_ENTRY, "'touchend',");
+    const longPressGuardIndex = body.indexOf('if (!origin || !touch || longPressFired) return;');
+    const selectionGuardIndex = body.indexOf("if (!view.getSelection()?.isCollapsed) return;");
+    const ttsGuardIndex = body.indexOf('if (ttsSpeaking) return;');
+    expect(longPressGuardIndex).toBeGreaterThan(-1);
+    expect(selectionGuardIndex).toBeGreaterThan(longPressGuardIndex);
+    expect(ttsGuardIndex).toBeGreaterThan(selectionGuardIndex);
+  });
+
+  it('the PDF shell defines a documented no-op, not real behavior', () => {
+    expect(PDF_ENTRY).toContain('setTtsSpeaking: () => {}');
+  });
+
+  it('applyTtsScrollLock is not reachable from auto-follow’s own programmatic moves', () => {
+    expect(blockAfter(EPUB_ENTRY, 'function followSpokenRange(')).not.toContain(
+      'applyTtsScrollLock',
+    );
+    expect(blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(')).not.toContain(
+      'applyTtsScrollLock',
+    );
+  });
+});
+
 describe('the search outline is lifted exactly once per batch', () => {
   // >>> WHY A COUNT AND NOT JUST "IT HAPPENS". <<< `liftSearchMatch` is remove-then-add, so calling
   // it twice ends in the same state as calling it once — which is exactly why the duplicate survived

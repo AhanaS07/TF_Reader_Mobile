@@ -910,6 +910,9 @@ function watchTouches(contents: Contents): void {
       if (!view.getSelection()?.isCollapsed) return;
       // Discrete pages only. In scrolled flow the reader scrolls, and there is no page to turn.
       if (!isPaginated(currentFlow())) return;
+      // TTS is actively speaking — see setTtsSpeaking's own doc for why this blocks the gesture
+      // rather than the command (goTo/TOC/search stay reachable; only the swipe is gated).
+      if (ttsSpeaking) return;
 
       const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
       if (direction === null || !rendition) return;
@@ -1347,6 +1350,20 @@ interface EpubRenditionManager {
 function renditionManager(): EpubRenditionManager | null {
   if (!rendition) return null;
   return (rendition as unknown as { manager?: EpubRenditionManager }).manager ?? null;
+}
+
+/** Mirrors the host's `ttsSession.status === 'speaking'`, set by the `setTtsSpeaking` command. */
+let ttsSpeaking = false;
+
+/** Gate the browser's native swipe/drag gesture recognizer while TTS speaks — CSS only, so it never
+ * touches epub.js's own or auto-follow's programmatic `display()`/`scrollBy()` calls (neither is a
+ * gesture, and `touch-action` does not gate JS-driven scrolling). Re-applied whenever a fresh
+ * manager/container is built (`createRendition()`), so a flow rebuild mid-speech never opens a brief
+ * unlocked window. */
+function applyTtsScrollLock(): void {
+  const manager = renditionManager();
+  if (!manager) return;
+  manager.container.style.touchAction = ttsSpeaking ? 'none' : '';
 }
 
 /** The measurements every spoken-position decision needs: `cfi`'s range, in the OUTER document's
@@ -1917,6 +1934,10 @@ function createRendition(): Rendition {
     },
   );
 
+  // A freshly built manager/container starts unlocked (CSS default) regardless of `ttsSpeaking`'s
+  // current value — re-apply so a flow rebuild mid-speech doesn't hand the reader an unlocked window.
+  applyTtsScrollLock();
+
   return rendition;
 }
 
@@ -2366,6 +2387,12 @@ const api: TFReaderApi<'openEpub'> = {
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }
+  },
+
+  /** Gate manual swipe/drag while TTS speaks — see `ReaderCommand`'s own doc for scope. */
+  setTtsSpeaking: (speaking) => {
+    ttsSpeaking = speaking;
+    applyTtsScrollLock();
   },
 
   /**
