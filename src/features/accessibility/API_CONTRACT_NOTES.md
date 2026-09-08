@@ -141,10 +141,10 @@ independent of the bridge) since a future attempt will likely still need it.
 **Net effect of the revert, while it lasted:** `'word'` mode behaved identically to `'sentence'`
 mode — no word-level highlight painted, no bridge command sent.
 
-**Landed for real, 2026-09-05 through 2026-09-07, both halves together this time.** The WebView-facing
+**Landed for real, 2026-09-07, both halves together this time.** The WebView-facing
 half (`webview/src/bridge.ts`'s `CommandArgs`, `epub.entry.ts`'s `setSpokenWordRange` handler,
 `pdf.entry.ts`'s no-op, `ReaderTextProvider`/`realReaderTextProvider.ts`, both HTML artifacts
-rebuilt) landed 2026-09-05/07 (`13cb99f`/`6d9530e`) — with one shape change from the reverted
+rebuilt) landed 2026-09-07 (`559c47ba`/`ce7a6769`/`2a59f298`) — with one shape change from the reverted
 2026-09-02 attempt: `setSpokenWordRange` now takes one object argument
 (`{ cfi, start, end } | null`), not three positional ones, per `bridge.ts`'s
 `CommandArgsMatchPayloads` proof. The offset-arithmetic gap this section originally flagged
@@ -164,18 +164,13 @@ word wash unconditionally at its own top (`clearSpokenWord()`), a consolidation 
 TTS auto-follow (`TTS_PROVIDER.md` open item 2) — the reason the RN-side wiring was worth re-landing
 now rather than leaving deferred.
 
-**2026-09-07 addendum — Ahana's side already has an unreachable head start on the CFI-resolution
-piece above; check it before rewriting it.** `webview/src/epubTtsResolver.ts`'s
-`resolveSpokenWordCfi(rendition, sentenceCfi, start, end)`, backed by `ttsWordOffsets.ts`, resolves
-exactly the `(sentenceCfi, start, end) → word-range CFI` problem the bullet above used to describe
-as needing new code. It is fully unit-tested (`epubTtsResolver.test.ts`, `ttsWordOffsets.test.ts`)
-but **not imported by `epub.entry.ts`** — reachable only from its own tests today, apparently built
-independently of this section's RN-side attempt and never wired to it. Not touching
-`epubTtsResolver.ts`, `ttsWordOffsets.ts`, or anything else under `src/features/reader/` from this
-side — that's Ahana's call (delete it, leave it, or use it once both halves land together), per
-this repo's ownership line. Flagging it here rather than leaving it to be rediscovered, because an
-orphan like this is exactly how the RN/WebView halves end up half-built again independently — the
-same shape of bug that broke `npm run typecheck` on 2026-09-07.
+**2026-09-07 addendum, resolved:** this section originally flagged `webview/src/epubTtsResolver.ts`'s
+`resolveSpokenWordCfi(rendition, sentenceCfi, start, end)` (backed by `ttsWordOffsets.ts`) as an
+unreached head start on the CFI-resolution problem above — built by Ahana, unit-tested
+(`epubTtsResolver.test.ts`, `ttsWordOffsets.test.ts`), but not yet imported by `epub.entry.ts`.
+That's what the "Landed for real" paragraph above did: `epub.entry.ts`'s `setSpokenWordRange`
+handler now imports and calls `resolveSpokenWordCfi` directly — the orphan is wired in, not
+rewritten.
 
 ---
 
