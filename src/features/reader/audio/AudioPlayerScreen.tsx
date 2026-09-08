@@ -301,10 +301,15 @@ function AudioPlayerScreenComponent(
   // is opened (audioPlayerInstance.ts releases the old one then) or the app process ends.
 
   useEffect(() => {
-    if (status.isLoaded) {
-      onPositionChange?.(status.currentTime);
-    }
-  }, [status.isLoaded, status.currentTime, onPositionChange]);
+    if (!status.isLoaded) return;
+    // Skip the initial zero-position tick when a new player hasn't yet seeked to the saved
+    // position. Both this effect and the seekTo effect above fire when `status.isLoaded` first
+    // becomes true — but seekTo is async, so `currentTime` is still 0 at this point. Without
+    // this guard, handlePositionChange writes positionMs=0 unthrottled (lastWriteAtRef=0) and
+    // pushes it before the correct position lands, triggering false conflict alerts on Device 1.
+    if (isNew && status.currentTime === 0 && initialPosition && initialPosition > 0) return;
+    onPositionChange?.(status.currentTime);
+  }, [status.isLoaded, status.currentTime, onPositionChange, initialPosition, isNew]);
 
   // AUDIO PHASE 4. Held in a ref so the unmount effect below can stay `[player]`-scoped: reading
   // the prop directly would put `onPositionCommit` in that effect's deps, and a caller passing an
