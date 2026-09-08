@@ -4753,6 +4753,37 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });
   });
 
+  // Regression pin: both pdf.entry.ts (renderCurrent(1) inside openPdf) and epub.entry.ts
+  // (display() inside openEpub) post `relocated` BEFORE they post `rendered`. The effect that
+  // sets pendingInitialVerifyRef waits for isRendered, so when the pre-rendered `relocated`
+  // arrives, pendingInitialVerifyRef is null and the existing post-rendered guard cannot fire.
+  // Without the fix, that pre-rendered `relocated` (page 1 / beginning CFI) reached
+  // onRelocated unthrottled — durably overwriting a correct synced resume position with the
+  // book's default landing on every open.
+  it('does not report a relocate outward for a pre-rendered relocated (before rendered fires)', async () => {
+    const onRelocated = jest.fn();
+    await render(
+      <ReaderScreen
+        bookId="test-book-pre-rendered-relocated"
+        initialTarget={{ kind: 'page', page: 5 }}
+        onRelocated={onRelocated}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // Pre-rendered relocated: arrives before `rendered`, the real-WebView order for both shells.
+    // This is the book's natural default landing (page 1), not the resume target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    expect(onRelocated).not.toHaveBeenCalled();
+
+    // Now rendered fires, the goTo effect runs, and the target lands.
+    await deliver({ type: 'rendered' });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+    expect(onRelocated).toHaveBeenCalledTimes(1);
+    expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });
+  });
+
   it('reports a relocate outward once verification gives up, not just once it lands correctly', async () => {
     const onRelocated = jest.fn();
     await render(
