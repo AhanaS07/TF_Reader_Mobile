@@ -118,18 +118,21 @@
 // the rendered refusal are both unbuildable without the store reporting failure.
 // Loading and empty are built; those two are not.
 //
-// NO ROW ON THE DOWNLOADS OR BOOKMARKS SECTION IS TAPPABLE YET, for the same
-// reason the loan rows carry no buttons: opening a downloaded book means a
-// reading session, and bookmarks navigate INTO the reader — both live behind
-// CAP-7's `ContentProvider`/reader, which is not in this repo. The rows state
-// the fact and wait for that seam rather than rendering a button that cannot
-// fire. `src/features/download` is still an empty directory, so today both
-// sections render their empty line for every reader; the wiring above them is
-// what this screen owns and it is done.
+// DOWNLOAD AND BOOKMARK ROWS TAP THROUGH A PROVIDER SEAM. Opening a book means a
+// licence gate then a reading session, both of which live in Team 4's
+// reader/download stack that merges in later. Rather than block on that, the
+// rows call `LibraryProvider.openBook` → `openReader` (see `@/features/library`).
+// Today the default stand-in provider's `openBook` refuses, so a tap lands on an
+// honest "reading isn't in this build yet" line instead of opening nothing; at
+// merge, mounting the real provider makes the exact same tap open the reader,
+// with no change to this screen. Loan/offer/waiting rows stay non-tappable —
+// they are not a reading destination.
 import { Children, type ReactNode, useCallback, useEffect, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { Bookmark } from '@/shared/contracts';
+import { useLibraryProvider } from '@/features/library/context';
+import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '@components/ContentCard';
 import { OfflineBanner } from '@components/OfflineBanner';
@@ -220,6 +223,10 @@ export default function LibraryScreen() {
   const downloadRecords = useDownloadStore((s) => s.downloads);
   const bookmarkRecords = useBookmarkStore((s) => s.bookmarks);
   const isOnline = useNetworkStatus();
+  // The seam to the reader/download stack (Team 4's, merged later). Defaults to a
+  // stand-in whose `openBook` politely refuses — so a tapped row shows an honest
+  // "not yet" rather than opening nothing. See `@/features/library`.
+  const provider = useLibraryProvider();
 
   // Titles for the ids the holdings carry. Empty until a batch call lands; a
   // row with no entry renders against its id, which is the documented fallback
@@ -232,6 +239,9 @@ export default function LibraryScreen() {
   // resets to the overview when the reader comes back to the shelf, which is
   // the right default: `All` is the only view that shows an offer.
   const [activeTab, setActiveTab] = useState<LibraryTabId>('all');
+  // A transient line shown when a tap can't open a book yet — the reader isn't in
+  // this build. Cleared on a successful open once the real provider is mounted.
+  const [openNotice, setOpenNotice] = useState<string | undefined>(undefined);
 
   const { offered, waiting } = partitionHolds(holds);
   const live = activeLoans(loans);
@@ -289,6 +299,28 @@ export default function LibraryScreen() {
   const onRefresh = useCallback(() => {
     void refresh();
   }, [refresh]);
+
+  // Open a book through the provider: the licence gate (`openBook`) THEN the
+  // reader (`openReader`) — never one without the other, and the screen decides
+  // no access itself. Today the stand-in's `openBook` rejects, so this lands on
+  // the honest notice; at merge the same path opens the reader for real.
+  const openItem = useCallback(
+    async (itemId: string, format: ContentFormat | undefined, target?: ReaderTargetLike) => {
+      if (format === undefined) {
+        // A title still hydrating has no known format to open against.
+        setOpenNotice('This one isn’t ready to open yet — still loading its details.');
+        return;
+      }
+      try {
+        await provider.openBook(itemId, format);
+        provider.openReader({ itemId, format, ...(target === undefined ? {} : { initialTarget: target }) });
+        setOpenNotice(undefined);
+      } catch {
+        setOpenNotice('Reading opens here once the reader ships in the merged app.');
+      }
+    },
+    [provider],
+  );
 
   // Any row will do — `serverTime` is stamped once for the whole response, so
   // every loan and hold in one response carries the same value.
@@ -366,6 +398,8 @@ export default function LibraryScreen() {
           </Text>
         )}
 
+        {openNotice !== undefined && <Text style={styles.notice}>{openNotice}</Text>}
+
         {truncated > 0 && (
           <Text style={styles.notice}>
             Showing your {ids.length} most recent items. {truncated} more are in your loan history.
@@ -440,6 +474,7 @@ export default function LibraryScreen() {
                 title={titleFor(record.itemId)}
                 publisher={publisherFor(record.itemId)}
                 summary={summaryFor(record.itemId)}
+                onOpen={() => void openItem(record.itemId, summaryFor(record.itemId)?.format)}
               />
             ))}
           </Section>
@@ -456,6 +491,9 @@ export default function LibraryScreen() {
                 key={bookmark.id}
                 bookmark={bookmark}
                 title={titleFor(bookmark.bookId)}
+                onOpen={() =>
+                  void openItem(bookmark.bookId, bookmark.locator.type, bookmarkTarget(bookmark.locator))
+                }
               />
             ))}
           </Section>
@@ -679,16 +717,20 @@ function DownloadRow({
   title,
   publisher,
   summary,
+  onOpen,
 }: {
   record: DownloadRecord;
   title: string;
   publisher?: string;
   summary?: BookSummary;
+  /** Tap → open through the provider seam (see `openItem`). */
+  onOpen: () => void;
 }) {
   return (
     <View style={styles.row}>
       <ContentCard
         title={title}
+        onPress={onOpen}
         {...(publisher === undefined ? {} : { publisher })}
         {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
         // The "PDF · 14.2 MB" split from the mockup: the format is the book's
@@ -709,17 +751,36 @@ function DownloadRow({
 // NOT TAPPABLE YET for the same reason a download is not: the destination is
 // inside the reader, which is CAP-7's. A bookmark that navigated nowhere would
 // be worse than one that plainly sits there.
-function BookmarkRow({ bookmark, title }: { bookmark: Bookmark; title: string }) {
+function BookmarkRow({
+  bookmark,
+  title,
+  onOpen,
+}: {
+  bookmark: Bookmark;
+  title: string;
+  /** Tap → open at this bookmark's position through the provider seam. */
+  onOpen: () => void;
+}) {
   const where = bookmarkLocationLabel(bookmark);
   return (
     <View style={styles.row}>
       <ContentCard
         title={title}
+        onPress={onOpen}
         {...(bookmark.name === undefined ? {} : { publisher: bookmark.name })}
         badge={where === undefined ? undefined : <Text style={styles.badgeLabel}>{where}</Text>}
       />
     </View>
   );
+}
+
+// A bookmark's stored `Locator` → the reader target that reaches it, mirroring
+// Team 4's `toTarget` (readerBookmarks.ts). EPUB anchors by CFI, PDF by page —
+// the two schemes `ReaderTargetLike` carries. Local `Locator` has no AUDIO case.
+function bookmarkTarget(locator: Bookmark['locator']): ReaderTargetLike {
+  return locator.type === 'EPUB'
+    ? { kind: 'href', href: locator.cfi }
+    : { kind: 'page', page: locator.page };
 }
 
 // Reassurance, not action: no buttons, and nothing here expires. Cancelling a

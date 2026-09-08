@@ -11,6 +11,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import type { Bookmark } from '@/shared/contracts';
+import { LibraryProviderContext } from '@/features/library/context';
+import type { LibraryProvider } from '@/features/library/ports';
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import type { BookSummary, Hold, Loan } from '@model/types';
@@ -755,5 +757,98 @@ describe('LibraryScreen — the mockup components', () => {
 
     await waitFor(() => expect(screen.getByText('3rd in the queue')).toBeTruthy());
     expect(screen.queryByTestId('queue-progress')).toBeNull();
+  });
+});
+
+// The provider seam (src/features/library): download/bookmark rows tap through
+// `LibraryProvider.openBook` → `openReader`. A fake provider is injected via
+// context; with none injected the default stand-in refuses and the screen says so.
+describe('LibraryScreen — opening a book through the provider', () => {
+  function makeProvider(over: Partial<LibraryProvider> = {}): LibraryProvider {
+    return {
+      listDownloads: async () => [],
+      listBookmarks: async () => [],
+      openBook: jest.fn().mockResolvedValue(undefined),
+      openReader: jest.fn(),
+      ...over,
+    };
+  }
+
+  function renderWith(provider: LibraryProvider) {
+    return render(
+      <LibraryProviderContext.Provider value={provider}>
+        <LibraryScreen />
+      </LibraryProviderContext.Provider>,
+    );
+  }
+
+  it('opens a downloaded book — gate then reader — when its row is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    const provider = makeProvider();
+
+    await renderWith(provider);
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(provider.openBook).toHaveBeenCalledWith('item_42', 'PDF'));
+    expect(provider.openReader).toHaveBeenCalledWith({ itemId: 'item_42', format: 'PDF' });
+  });
+
+  it('opens a bookmark at its saved position', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useBookmarkStore
+      .getState()
+      .addBookmark(aBookmark({ bookId: 'item_42', locator: { type: 'PDF', page: 42 } }));
+    const provider = makeProvider();
+
+    await renderWith(provider);
+
+    await waitFor(() => expect(screen.getByText('Page 42')).toBeTruthy());
+    fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(provider.openBook).toHaveBeenCalledWith('item_42', 'PDF'));
+    expect(provider.openReader).toHaveBeenCalledWith({
+      itemId: 'item_42',
+      format: 'PDF',
+      initialTarget: { kind: 'page', page: 42 },
+    });
+  });
+
+  // With no provider mounted, the default stand-in refuses — the screen must say
+  // so honestly rather than appear to open nothing.
+  it('shows an honest notice when the reader is not in this build', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await render(<LibraryScreen />);
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Reading opens here once the reader ships in the merged app.'),
+      ).toBeTruthy(),
+    );
   });
 });
