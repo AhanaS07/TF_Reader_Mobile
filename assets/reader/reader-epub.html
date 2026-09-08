@@ -724,6 +724,16 @@ ${text}`;
       (rect) => rect.width > 0 && rect.height > 0 && rect.left < viewport.right && rect.left + rect.width > viewport.left && rect.top < viewport.bottom && rect.top + rect.height > viewport.top
     );
   }
+  function readingZoneScrollDelta(rects, viewport, options) {
+    if (rects.length === 0) return null;
+    const viewportHeight = viewport.bottom - viewport.top;
+    if (viewportHeight <= 0) return null;
+    const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+    const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
+    if (positionFraction < options.triggerFraction) return null;
+    const targetBottom = viewport.top + options.targetFraction * viewportHeight;
+    return deepestBottom - targetBottom;
+  }
 
   // src/features/reader/webview/src/highlightPaint.ts
   function isEpub(entry) {
@@ -820,7 +830,7 @@ ${text}`;
     return { fill: color, blend: "multiply" };
   }
   function spokenWordOpacity(blend) {
-    return blend === "screen" ? "0.3" : "0.5";
+    return blend === "screen" ? "0.25" : "0.5";
   }
   function matchStroke(bg) {
     const page = bg ? parseHex(bg) : null;
@@ -1146,11 +1156,11 @@ ${text}`;
   var currentSpokenCfi = null;
   var currentSpokenWordCfi = null;
   var lastAutoFollowedCfi = null;
-  var followDisplayInFlight = false;
+  var followCooldownUntil = 0;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
-  var TTS_SPOKEN_COLOR = "#ffd500";
+  var TTS_SPOKEN_COLOR = "#90ee90";
   function ttsSpokenStyles() {
     const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
     return { fill, "fill-opacity": "0.2", "mix-blend-mode": blend };
@@ -1559,15 +1569,15 @@ ${columnOverrideCss()}` : currentCss;
     if (!rendition) return null;
     return rendition.manager ?? null;
   }
-  function spokenRangeVisible(cfi) {
+  function spokenRangeGeometry(cfi) {
     const contents = contentsForCfi(cfi);
-    if (!contents) return false;
+    if (!contents) return null;
     const range = rangeForCfi(contents, cfi);
-    if (!range) return false;
+    if (!range) return null;
     const manager = renditionManager();
-    if (!manager) return false;
+    if (!manager) return null;
     const view = manager.views.find({ index: contents.sectionIndex });
-    if (!view) return false;
+    if (!view) return null;
     const offset = view.position();
     const rects = Array.from(range.getClientRects(), (rect) => ({
       left: rect.left + offset.left,
@@ -1575,17 +1585,40 @@ ${columnOverrideCss()}` : currentCss;
       width: rect.width,
       height: rect.height
     }));
-    return anyRectOnScreen(rects, manager.bounds());
+    return { rects, viewport: manager.bounds() };
   }
+  function spokenRangeVisible(cfi) {
+    const geometry = spokenRangeGeometry(cfi);
+    return geometry !== null && anyRectOnScreen(geometry.rects, geometry.viewport);
+  }
+  var READING_ZONE_TRIGGER_FRACTION = 0.75;
+  var READING_ZONE_TARGET_FRACTION = 0.35;
+  function repositionForReadingZone(cfi) {
+    const geometry = spokenRangeGeometry(cfi);
+    if (!geometry) return false;
+    const manager = renditionManager();
+    if (!manager) return false;
+    const delta = readingZoneScrollDelta(geometry.rects, geometry.viewport, {
+      triggerFraction: READING_ZONE_TRIGGER_FRACTION,
+      targetFraction: READING_ZONE_TARGET_FRACTION
+    });
+    if (delta === null) return true;
+    followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+    manager.container.scrollBy({
+      top: delta,
+      behavior: currentAppearance?.reduceMotion ? "instant" : "smooth"
+    });
+    return true;
+  }
+  var FOLLOW_COOLDOWN_MS = 500;
   function followSpokenRange(cfi) {
     if (!rendition) return;
-    if (followDisplayInFlight) return;
+    if (Date.now() < followCooldownUntil) return;
+    if (currentFlow() === "scrolled-doc" && repositionForReadingZone(cfi)) return;
     if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
     lastAutoFollowedCfi = cfi;
-    followDisplayInFlight = true;
+    followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
     rendition.display(cfi).catch(() => {
-    }).finally(() => {
-      followDisplayInFlight = false;
     });
   }
   function applySearchMatch(match) {
@@ -1762,7 +1795,7 @@ ${columnOverrideCss()}` : currentCss;
           currentSpokenCfi = null;
           currentSpokenWordCfi = null;
           lastAutoFollowedCfi = null;
-          followDisplayInFlight = false;
+          followCooldownUntil = 0;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;

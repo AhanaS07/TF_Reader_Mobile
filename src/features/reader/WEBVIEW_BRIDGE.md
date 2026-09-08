@@ -702,11 +702,16 @@ Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than 
 - **#4 — `typography.size` is absolute points**, composed as
   `size × resolveFontScale(a11y.text, osFontScale)`, viewport factor applied last. `spacing` ratified
   as px in the same breath.
-- **#2 — `reduceMotion` is honoured by Reader.** Free today, and worth saying precisely why: there is
-  **no animation anywhere in the reader**. So suppression is currently vacuous and the real obligation
-  falls on whoever adds the first page-turn animation. `readerTemplate.test.ts` pins that across both
-  templates **and both entries** now — before the conversion an animation could only have come from
-  CSS; a `.ts` entry can add one imperatively.
+- ~~**#2 — `reduceMotion` is honoured by Reader.**~~ **The obligation landed, 2026-09-08.** TTS
+  auto-follow's teleprompter-style reposition (`repositionForReadingZone`, `epub.entry.ts`,
+  scrolled-doc flow only) is the first animation either shell has ever added — a JS
+  `Element.scrollBy({ behavior })` call, not CSS, so `readerTemplate.test.ts`'s existing
+  `transition`/`animation`/`@keyframes` regex genuinely does not and should not match it. That test's
+  own describe block ("reduceMotion has nothing to suppress, and must not quietly acquire one") now
+  carries a dedicated case asserting the GATE instead: `currentAppearance?.reduceMotion` is read
+  fresh, inline, at the one call site that decides `'instant'` vs `'smooth'` — no cached flag, so a
+  live preference toggle takes effect on the very next reposition. `pdf.entry.ts` still consumes
+  nothing here — it has no scrolled-doc/continuous-scroll concept for this to apply to.
 
 ### The accessibility overrides are resolved HOST-SIDE, and no field was added for them
 
@@ -750,22 +755,21 @@ of base64 on the bridge for every preference change.
 all**, and the book silently loses theme, text size, margins, flow, spread and both announce gates
 for the sake of a font. `ReaderScreen.test.tsx` pins the fallback.
 
-### `reduceMotion` stays unconsumed by both shells, deliberately
+### `reduceMotion` — consumed by `epub.entry.ts` only, and `pdf.entry.ts` stays exactly as it was
 
-Asked for as a `currentReduceMotion` module variable in `pdf.entry.ts`, mirroring `epub.entry.ts`'s
-`currentAppearance`, and **declined** — recorded here rather than left looking overlooked.
+This section used to say `reduceMotion` stayed unconsumed by both shells deliberately, on the
+reasoning that a variable holding a value nothing reads is reported by `no-unused-vars` at
+`--max-warnings=0`. That reasoning is now moot for `epub.entry.ts` — decision #2 above records what
+consumed it — but it still holds, unchanged, for `pdf.entry.ts`: PDF has no scrolled-doc/
+continuous-scroll concept, TTS never mounts for a PDF book at all
+(`readerTextProvider.ts`/`TTS_PROVIDER.md`), and `pdf.entry.ts` still keeps no whole-appearance
+object, only `currentBg`/`currentZoom`/`spreadPref`/`wantsScroll` — every one of them read. Adding a
+`currentReduceMotion` there with nothing to gate would still be exactly the dead variable this
+section originally declined.
 
-There is still no animation anywhere in the reader (see decision #2 above), both scroll paths are
-documented as instant, and `readerTemplate.test.ts` asserts the absence across both templates and
-both entries. A variable holding a value nothing reads is reported by `no-unused-vars`, and
-`npm run lint` runs at `--max-warnings=0`, so it could only exist behind a suppression whose sole
-purpose was keeping dead code alive. It would also break `pdf.entry.ts`'s own pattern: that file
-keeps no whole-appearance object, only `currentBg`/`currentZoom`/`spreadPref`/`wantsScroll`, and
-every one of them is read.
-
-`reduceMotion` is already on the payload and already classified in `epubLayoutSignature.ts`, so the
-first page-turn animation is one line away from honouring it. That obligation is decision #2's, and
-it has not moved.
+`reduceMotion` was already on the payload and already classified in `epubLayoutSignature.ts`
+(`PaintOnlyKey`) before this landed — that classification is unchanged, since the teleprompter
+reposition is a scroll, not a re-layout, and does not move a glyph.
 
 ## Before you change the bridge
 

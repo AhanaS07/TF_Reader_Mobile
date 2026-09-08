@@ -43,7 +43,13 @@ import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epub
 import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
 import { forceReflow } from './epubViewGeometry';
-import { anyRectOnScreen, highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
+import {
+  anyRectOnScreen,
+  highlightAt,
+  rangesOverlap,
+  readingZoneScrollDelta,
+  type HighlightBox,
+} from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import { highlightFill, matchStroke, spokenWordOpacity } from './selectionTheme';
@@ -137,24 +143,34 @@ let currentSpokenWordCfi: string | null = null;
  * `followSpokenRange`. Reset alongside the other TTS CFI state in `openEpub`. */
 let lastAutoFollowedCfi: string | null = null;
 
-/** True while a `followSpokenRange`-triggered `display()` has not yet settled. See
- * `followSpokenRange`'s own note for why a second, overlapping call must wait rather than fire.
- * Reset alongside the other TTS CFI state in `openEpub`. */
-let followDisplayInFlight = false;
+/** Auto-follow will not issue another `display()` before this timestamp (`Date.now()`-based). See
+ * `followSpokenRange`'s own note for why this is a fixed timer rather than a flag cleared when
+ * `display()`'s promise settles. Reset alongside the other TTS CFI state in `openEpub`. */
+let followCooldownUntil = 0;
 
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
 const TTS_SPOKEN_WORD_VARIANT = 'spoken-word';
 
 /** TTS's channel (HIGHLIGHT_LAYERS.md §3): a translucent overlay. SVG presentation attributes, not
- * CSS — marks-pane applies them via `setAttribute`. `0.2`, kept below `user`'s opacity so the two
+ * CSS — marks-pane applies them via `setAttribute`. `0.2`, kept below `user`'s `0.25` so the two
  * stay visually ordered.
  *
  * A FUNCTION, NOT A CONSTANT, for the same reason `userHighlightStyles` is: `multiply` against a
  * near-black page multiplies towards black, so a fixed blend made the spoken word invisible on the
  * dark theme — the layer that most needs to be seen, since it is what tells the reader where the
- * voice is. Re-derived on every paint and re-applied by `repaintLiveAnnotations` on a theme change. */
-const TTS_SPOKEN_COLOR = '#ffd500';
+ * voice is. Re-derived on every paint and re-applied by `repaintLiveAnnotations` on a theme change.
+ *
+ * `#90ee90` ("lightgreen") — chosen over another green candidate specifically because `r === b`
+ * (144 == 144). `highlightFill`'s `warm()` predicate (`selectionTheme.ts`) is `r > b && g > b`, a
+ * test built for yellow/orange, and a green that happened to satisfy it would get routed through
+ * the sepia-darkening branch that predicate exists to trigger — a transform tuned for warming a
+ * yellow, not for a green, muddying it on exactly the page it should stay clean on. `r === b` keeps
+ * `warm()` false regardless of the page, on all three default palettes: verified against
+ * `THEME_PALETTES` — light (`#ffffff`) and sepia (`#f4ecd8`) both resolve to a plain, undistorted
+ * fill; dark (`#121212`, luminance 0.071) still takes the `screen` branch `highlightFill` already
+ * has for any colour on a near-black page. */
+const TTS_SPOKEN_COLOR = '#90ee90';
 
 function ttsSpokenStyles(): Record<string, string> {
   const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
@@ -1160,10 +1176,17 @@ interface EpubRectLike {
 /** epub.js's internal per-view manager surface this file reaches into — NOT in `epubjs`'s published
  * types (`Rendition.manager` has no public type at all; `rendition.js:68/165/229` sets it at
  * runtime). Both the paginated (`DefaultViewManager`) and scrolled-doc (`ContinuousViewManager`,
- * which extends it) managers share this shape, which is why nothing here branches on flow. */
+ * which extends it) managers share this shape, which is why nothing here branches on flow.
+ *
+ * `container` is the actual scrolling DOM element (`this.container = this.stage.getContainer()` in
+ * `render()`, confirmed the same node `bounds()` measures) — set once per manager and not nulled by
+ * `destroy()`, but `renditionManager()` re-derives the manager fresh from `rendition` on every call
+ * rather than caching it, so a flow rebuild's fresh rendition/manager/container is always what gets
+ * used, never a stale one. */
 interface EpubRenditionManager {
   views: { find(section: { index: number }): { position(): EpubRectLike } | undefined };
   bounds(): EpubRectLike;
+  container: HTMLElement;
 }
 
 function renditionManager(): EpubRenditionManager | null {
@@ -1171,8 +1194,12 @@ function renditionManager(): EpubRenditionManager | null {
   return (rendition as unknown as { manager?: EpubRenditionManager }).manager ?? null;
 }
 
-/** Is any rect of `cfi`'s range inside the CURRENTLY SCROLLED/PAGED window, not just somewhere
- * inside its section's rendered content?
+/** The measurements every spoken-position decision needs: `cfi`'s range, in the OUTER document's
+ * coordinate space (shifted by the rendered view's own `position()`), plus the current viewport —
+ * both already `getBoundingClientRect()`s in that same coordinate space, so no further translation
+ * is needed between them. Null for a different section (`contentsForCfi` returns null for one that
+ * is not currently rendered), or for a range/manager/view that fails to resolve — three ways of
+ * saying the same thing: nothing here to measure against.
  *
  * >>> `contents.window.innerWidth`/`innerHeight` ARE NOT THE VIEWPORT. DO NOT GO BACK TO THEM. <<<
  * They look right and are wrong on the axis that actually matters. epub.js resizes each section's
@@ -1182,30 +1209,24 @@ function renditionManager(): EpubRenditionManager | null {
  * (`contents.textHeight()`, the whole chapter's height). The OUTER, fixed-size stage container is
  * what actually clips and scrolls (`container.scrollLeft`/`scrollTop`, `DefaultViewManager.scrollTo`)
  * — so `contents.window`'s own inner dimensions report "how big is this chapter," not "how much of
- * it is on screen right now," on the one axis that would ever change with scroll position. A rect
- * check against them is true for almost the entire chapter regardless of scroll, in BOTH flows.
- *
- * The correct comparison — same one epub.js's own `isVisible()`/`paginatedLocation()`/
- * `scrolledLocation()` use internally (`managers/default/index.js`) — is the RANGE's rect, shifted
- * into the OUTER document's coordinate space by the view's own `position()` (== `element
- * .getBoundingClientRect()`, which DOES move with scroll, since the element sits inside the
- * scrolling container), compared against the manager's `bounds()` (the fixed stage viewport, also a
- * `getBoundingClientRect()`, in the same outer coordinate space already — no further translation
- * needed between the two).
- *
- * False for a different section — `contentsForCfi` returns null for one that is not currently
- * rendered. False for a range or view that fails to resolve. All three "false" paths mean the same
- * thing: cannot be shown to be visible, so treat it as not.
+ * it is on screen right now," on the one axis that would ever change with scroll position. The
+ * correct comparison — same one epub.js's own `isVisible()`/`paginatedLocation()`/
+ * `scrolledLocation()` use internally (`managers/default/index.js`) — is what this function builds:
+ * the view's `position()` (== `element.getBoundingClientRect()`, which DOES move with scroll, since
+ * the element sits inside the scrolling container) against the manager's `bounds()` (the fixed stage
+ * viewport).
  */
-function spokenRangeVisible(cfi: string): boolean {
+function spokenRangeGeometry(
+  cfi: string,
+): { rects: { left: number; top: number; width: number; height: number }[]; viewport: EpubRectLike } | null {
   const contents = contentsForCfi(cfi);
-  if (!contents) return false;
+  if (!contents) return null;
   const range = rangeForCfi(contents, cfi);
-  if (!range) return false;
+  if (!range) return null;
   const manager = renditionManager();
-  if (!manager) return false;
+  if (!manager) return null;
   const view = manager.views.find({ index: contents.sectionIndex });
-  if (!view) return false;
+  if (!view) return null;
 
   const offset = view.position();
   const rects = Array.from(range.getClientRects(), (rect) => ({
@@ -1214,44 +1235,121 @@ function spokenRangeVisible(cfi: string): boolean {
     width: rect.width,
     height: rect.height,
   }));
-  return anyRectOnScreen(rects, manager.bounds());
+  return { rects, viewport: manager.bounds() };
 }
 
-/** Bring `cfi` on screen if it is not already — a page turn in paginated flow, a scroll in
- * scrolled-doc (including the screen-reader-forced override, `readerA11yLayout.ts`), via the same
- * `rendition.display()` `goTo` uses. epub.js's manager resolves which of those two it is; there is
- * no separate branch here for flow.
+/** Is any rect of `cfi`'s range inside the currently scrolled/paged window? Paginated flow's only
+ * visibility question — see `spokenRangeGeometry` for why this is not `contents.window`'s own
+ * dimensions. Scrolled-doc flow uses `repositionForReadingZone` instead, which asks a more useful
+ * question ("how close to the edge") rather than this boolean one. */
+function spokenRangeVisible(cfi: string): boolean {
+  const geometry = spokenRangeGeometry(cfi);
+  return geometry !== null && anyRectOnScreen(geometry.rects, geometry.viewport);
+}
+
+/** Fraction of viewport height past which a spoken target triggers a scrolled-doc reposition, and
+ * the fraction it lands at afterward. See `readingZoneScrollDelta`'s own doc for the reasoning;
+ * these are the two numbers to retune first after an on-device pass. */
+const READING_ZONE_TRIGGER_FRACTION = 0.75;
+const READING_ZONE_TARGET_FRACTION = 0.35;
+
+/**
+ * Scrolled-doc flow's half of auto-follow: smoothly nudge the view to keep the spoken position in a
+ * comfortable reading zone, rather than waiting for it to go fully off-screen and jumping.
+ *
+ * Returns `true` if scrolled-doc's own mechanism fully handled this call — including the common
+ * case where the target is already comfortably in the zone and nothing happens — and `false` ONLY
+ * when the CFI's section is not currently rendered at all, meaning there is no geometry to measure
+ * and the caller must fall back to a discrete `display()` jump instead, same as paginated already
+ * does for a cross-section move. That fallback is deliberately NOT reimplemented here: a different,
+ * not-yet-mounted section needs epub.js's own `display()` to load and render it, which a scroll
+ * delta cannot do.
+ *
+ * `behavior` is computed fresh on every call from `currentAppearance?.reduceMotion` — no cached
+ * flag, so a live preference toggle takes effect on the very next reposition.
+ */
+function repositionForReadingZone(cfi: string): boolean {
+  const geometry = spokenRangeGeometry(cfi);
+  if (!geometry) return false;
+  const manager = renditionManager();
+  if (!manager) return false;
+
+  const delta = readingZoneScrollDelta(geometry.rects, geometry.viewport, {
+    triggerFraction: READING_ZONE_TRIGGER_FRACTION,
+    targetFraction: READING_ZONE_TARGET_FRACTION,
+  });
+  if (delta === null) return true;
+
+  followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+  manager.container.scrollBy({
+    top: delta,
+    behavior: currentAppearance?.reduceMotion ? 'instant' : 'smooth',
+  });
+  return true;
+}
+
+/** Bring `cfi` on screen if it is not already.
+ *
+ * >>> ONE HARD BRANCH ON FLOW, AND IT IS DELIBERATE — EVERYTHING ELSE ABOUT THIS FILE'S TTS CODE
+ * SHARES ONE PATH ACROSS FLOWS ON PURPOSE, THIS DOES NOT. <<< Paginated keeps the ORIGINAL mechanism,
+ * byte-for-byte: a boolean `spokenRangeVisible` check, a discrete `rendition.display(cfi)` page turn
+ * on a miss. Scrolled-doc gets a teleprompter-style continuous reposition instead
+ * (`repositionForReadingZone`) — smoothly nudging the view to keep the spoken position in a
+ * comfortable reading zone as it drifts toward the bottom, rather than waiting for it to go fully
+ * off-screen and jumping. "Off-screen, jump" and "continuous, smooth" are genuinely different
+ * products, not two ways of writing the same behaviour, so unlike `mapManager()`'s flow-agnostic
+ * `display()` call, this one needed an explicit fork rather than trusting epub.js to resolve it.
+ * `repositionForReadingZone` returns `false` only when scrolled-doc has nothing rendered to measure
+ * (a different, not-yet-mounted section) — that case still falls through to the same discrete
+ * `display()` jump paginated uses, since only epub.js's own `display()` can load and render a new
+ * section at all.
  *
  * Called from BOTH `setSpokenRange` (coarse: a whole new sentence starting off-screen) and
  * `setSpokenWordRange` (precise: THIS word specifically has crossed off-screen, which is what makes
- * a page turn land on the first word of the next page rather than the first word of the next
- * sentence). Both share `lastAutoFollowedCfi` so a sentence-level call and the word-level calls that
- * follow it for the same still-off-screen target don't double up on `display()`.
+ * a page turn/reposition land on the first word of the next page rather than the first word of the
+ * next sentence).
  *
- * >>> ALSO SKIPS WHILE A PREVIOUS FOLLOW IS STILL IN FLIGHT, EVEN FOR A DIFFERENT CFI. <<< Word
+ * >>> ALSO SKIPS INSIDE A FIXED COOLDOWN SINCE THE LAST ACTION, EVEN FOR A DIFFERENT CFI. <<< Word
  * ticks arrive roughly every 200-400ms of speech; a `display()` that has to render a freshly-loaded
- * section can take longer than that. Without this guard, a word crossing off-screen mid-transition
- * would read `spokenRangeVisible` against the STILL-OLD page (the new one has not painted yet), see
- * "not visible" again, and issue a SECOND, overlapping `display()` for a different target before the
- * first has settled — competing navigations is exactly the "fight" this feature exists to avoid,
- * just self-inflicted rather than against the reader's own gesture. Skipping here just means the
- * NEXT tick re-evaluates once the current transition's promise settles, so a slow chapter load
- * catches up incrementally rather than never, or twice.
+ * section, or a smooth `scrollBy` transition still animating, can both take longer than that.
+ * Without SOME guard, a word crossing off-screen mid-transition would read the geometry against the
+ * STILL-OLD position and issue a SECOND, overlapping action for a different target before the first
+ * has settled — competing navigations is exactly the "fight" this feature exists to avoid, just
+ * self-inflicted rather than against the reader's own gesture.
+ *
+ * >>> THE COOLDOWN IS A FIXED TIMER, NOT A FLAG CLEARED WHEN `display()`'S PROMISE SETTLES — AND
+ * THAT WAS A REAL, SHIPPED BUG, NOT A STYLE CHOICE. <<< In scrolled-doc flow, `rendition.display()`
+ * resolves through epub.js's `ContinuousViewManager`, which chains its own virtualization pass onto
+ * EVERY display — `display()` -> `.then(() => this.fill())`, and `fill()` recurses through `check()`
+ * via a queue gated on `requestAnimationFrame` until nothing more needs mounting/unmounting
+ * (`managers/continuous/index.js`). `DefaultViewManager` (paginated) has no such tail; its `display()`
+ * resolves as soon as the page is shown. A promise-settled guard is only as reliable as that tail's
+ * OWN promise ever settling — and on a real device an rAF tick can stall (backgrounded, throttled,
+ * GPU-starved) or an adjacent section's fetch can hang, so the tail promise can simply never resolve.
+ * A guard cleared in that promise's `.finally()` then STAYS SET FOREVER, and every later call
+ * silently no-ops via the guard check above it — auto-follow goes permanently inert for the rest of
+ * the session, in scrolled-doc flow specifically, with nothing to indicate why. This is the exact
+ * shape of the on-device report that found it: "it just stops" — paginated has no such tail, so
+ * paginated kept working. A fixed timer cannot get stuck this way, whatever epub.js's internals do.
+ * `repositionForReadingZone`'s `scrollBy` needs no promise-settlement wait at all — it is
+ * fire-and-forget, so this same cooldown is purely pacing there, not a correctness guard.
  */
+const FOLLOW_COOLDOWN_MS = 500;
+
 function followSpokenRange(cfi: string): void {
   if (!rendition) return;
-  if (followDisplayInFlight) return;
+  if (Date.now() < followCooldownUntil) return;
+
+  if (currentFlow() === 'scrolled-doc' && repositionForReadingZone(cfi)) return;
+
+  // Paginated flow (the original mechanism, untouched), OR scrolled-doc with a section not yet
+  // rendered — a discrete display() is the only way to get there in either case.
   if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
   lastAutoFollowedCfi = cfi;
-  followDisplayInFlight = true;
-  rendition
-    .display(cfi)
-    .catch(() => {
-      // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
-    })
-    .finally(() => {
-      followDisplayInFlight = false;
-    });
+  followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+  rendition.display(cfi).catch(() => {
+    // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
+  });
 }
 
 /**
@@ -1668,10 +1766,9 @@ const api: TFReaderApi<'openEpub'> = {
         // cross-book-resolves-anyway hazard, and a stale match would wrongly skip a follow this
         // book's first spoken CFI genuinely needs.
         lastAutoFollowedCfi = null;
-        // A follow's display() tied to the previous book's (now-discarded) rendition may never
-        // settle its own promise, which would otherwise strand this true forever and silently
-        // disable auto-follow for the entire new book.
-        followDisplayInFlight = false;
+        // Not load-bearing (the timestamp self-expires), but keeps a book switch from inheriting a
+        // cooldown that has nothing to do with it.
+        followCooldownUntil = 0;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for

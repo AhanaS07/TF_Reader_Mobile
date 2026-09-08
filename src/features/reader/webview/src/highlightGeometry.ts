@@ -133,3 +133,45 @@ export function anyRectOnScreen(
       rect.top + rect.height > viewport.top,
   );
 }
+
+/** Where a teleprompter-style reposition should trigger, and where it should land, as fractions of
+ * viewport height. */
+export interface ReadingZoneOptions {
+  /** Fraction of viewport height past which a target triggers a reposition — BEFORE it reaches the
+   * bottom edge, not after, so text never arrives already cut off mid-line. */
+  triggerFraction: number;
+  /** Fraction of viewport height a reposition puts the target's deepest point at afterward — an
+   * upper-middle position, so a reposition reveals a full screen of upcoming text, not the bare
+   * minimum needed to be visible. */
+  targetFraction: number;
+}
+
+/**
+ * How far to scroll (positive = down) to bring a target back into the reading zone, or null if it
+ * is already comfortably inside it.
+ *
+ * USES THE DEEPEST RECT (max `top + height`), NOT THE FIRST — the point that would be cut off first
+ * as the reader scrolls forward, so a multi-line sentence is judged by its lowest line, not where it
+ * starts.
+ *
+ * NEVER TRIGGERS FOR A TARGET ABOVE THE ZONE. A target near or above the top of the viewport has a
+ * small or negative `positionFraction`, which is always `< triggerFraction` — this only ever catches
+ * up with content drifting toward the bottom, matching forward reading. It does not fight a reader
+ * who paged back or scrolled up manually; there is no code path here that would scroll UP.
+ */
+export function readingZoneScrollDelta(
+  rects: readonly { left: number; top: number; width: number; height: number }[],
+  viewport: ViewportBounds,
+  options: ReadingZoneOptions,
+): number | null {
+  if (rects.length === 0) return null;
+  const viewportHeight = viewport.bottom - viewport.top;
+  if (viewportHeight <= 0) return null;
+
+  const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+  const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
+  if (positionFraction < options.triggerFraction) return null;
+
+  const targetBottom = viewport.top + options.targetFraction * viewportHeight;
+  return deepestBottom - targetBottom;
+}

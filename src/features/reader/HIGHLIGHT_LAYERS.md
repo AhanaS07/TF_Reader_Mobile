@@ -123,13 +123,14 @@ regression, not a simplification. So each owner claims a different visual channe
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
 `fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
 ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
-nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode':
-<theme-adjusted> }` — the same intended translucent yellow, expressed in the vocabulary that reaches
-the element (opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep
-the two channels in the ordering this section's table intends). It goes through the same
-`highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
-the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
-for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+nothing at all; it is now `{ fill: '#90ee90', 'fill-opacity': '0.2', 'mix-blend-mode':
+<theme-adjusted> }` — a translucent light green (`#ffd500` yellow before a 2026-09-08 colour change;
+opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep the two
+channels in the ordering this section's table intends), expressed in the vocabulary that reaches the
+element. It goes through the same `highlightFill` as `user` for the same reason: a fixed `multiply`
+made the spoken word invisible on the dark theme, which is the theme where knowing where the voice is
+matters most. The interim rule for Hruthik is unchanged: **keep TTS translucent** so it layers rather
+than masks.
 
 **THE `tts` CHANNEL HAS TWO INTENSITIES, AND THEY ARE NOT A FOURTH OWNER.** Word-level highlighting
 (`tts.highlightMode === 'word'`) paints the spoken WORD inside the spoken SENTENCE — same owner, same
@@ -161,8 +162,10 @@ wrong on two of the three shipped themes: it nearly disappears against dark's ne
 barely shifts a warm fill like the default yellow against sepia's similarly warm, pale page.
 `webview/src/selectionTheme.ts`'s `highlightFill(color, bg)` (pure, unit-tested) picks fill and
 blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
-sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
-from `tts`" is still the intent; how to render it now depends on the page behind it.
+sepia (a transform aimed at a warm hue like the default yellow — `warm()`'s `r > b && g > b` test —
+which is why `tts`'s light green was chosen with `r === b`, to sidestep it entirely rather than
+re-argue it for a cool hue), and the stored colour with `multiply` unchanged on a neutral light page.
+"Solid, distinct from `tts`" is still the intent; how to render it now depends on the page behind it.
 
 **THE SHADE IS A FUNCTION OF THE PAGE, SO IT IS RE-DERIVED WHEN THE PAGE CHANGES COLOUR.** Both
 shells re-tint the `user` and `tts` layers from `applyAppearance` whenever `bg` moves, rather than

@@ -250,20 +250,38 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    as speech crosses it, where the sentence-level call alone could only check the sentence as a whole
    at its start.
 
-   The visibility test itself (`spokenRangeVisible`, same file) treats PARTIAL overlap as visible,
-   not full containment — a sentence painted where it starts, that also runs onto the next page, is
-   not "off-screen" the instant it paints. `anyRectOnScreen` (`highlightGeometry.ts`, pure,
-   unit-tested) is the rect/viewport arithmetic this rests on. **Neither `contents.window`'s own
-   dimensions nor the outer `#viewer` `viewportSize()` measures is the right viewport for this** —
-   epub.js resizes each section's `<iframe>` to its own full content size on whichever axis
-   `IframeView.size()` leaves free (width in paginated flow, height in scrolled-doc), so the iframe's
-   own `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one
-   axis that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
+   The geometry both flows build on (`spokenRangeGeometry`, same file) treats PARTIAL overlap as
+   relevant, not full containment — a sentence painted where it starts, that also runs onto the next
+   page, is not "off-screen" the instant it paints. **Neither `contents.window`'s own dimensions nor
+   the outer `#viewer` `viewportSize()` measures is the right viewport for this** — epub.js resizes
+   each section's `<iframe>` to its own full content size on whichever axis `IframeView.size()`
+   leaves free (width in paginated flow, height in scrolled-doc), so the iframe's own
+   `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one axis
+   that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
    `rendition.manager`, reached through a cast since `epubjs`'s types don't expose it), compared
    against each rect after shifting it by the view's own `position()` (`element
    .getBoundingClientRect()`, which correctly reflects scroll position) — the same geometry epub.js's
-   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally. Both flows share this
-   one check with no branch on which is active, same as `rendition.display()` itself.
+   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally.
+
+   **2026-09-08 — the two flows stopped sharing one DECISION on that geometry, on purpose, though
+   they still share the MEASUREMENT.** Paginated kept the original mechanism exactly as it shipped: a
+   boolean `spokenRangeVisible` (`anyRectOnScreen`), a discrete `rendition.display(cfi)` page turn on
+   a miss. Scrolled-doc now gets a teleprompter-style continuous reposition instead
+   (`repositionForReadingZone`) — as the spoken position drifts toward the bottom quarter of the
+   viewport (`READING_ZONE_TRIGGER_FRACTION = 0.75`), it smoothly scrolls (`manager.container
+   .scrollBy`) to land it back at the upper-middle (`READING_ZONE_TARGET_FRACTION = 0.35`), rather
+   than waiting for it to go fully off-screen and jumping. `readingZoneScrollDelta`
+   (`highlightGeometry.ts`, pure, unit-tested) is the arithmetic; it never fires for a target ABOVE
+   the zone, so it only ever catches up with forward reading, never fights a reader who scrolled back
+   manually. Reserved for a section that IS currently rendered — a different, not-yet-mounted section
+   still falls through to the same discrete `display()` jump paginated uses, since only epub.js's own
+   `display()` can load and render a new section at all. The scroll is `behavior: 'smooth'` unless
+   `currentAppearance?.reduceMotion` is true (read fresh on every call, no cached flag) — the first
+   animation either shell has added; see `WEBVIEW_BRIDGE.md`'s decision #2.
+
+   "Off-screen, jump" and "continuous, smooth" are different products, not two spellings of the same
+   behaviour — this is the one place in the whole feature with an explicit flow branch, and it is
+   deliberate precisely because `rendition.display()` itself stays flow-agnostic everywhere else.
 
    Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
    `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see
@@ -286,6 +304,21 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    page since the last one. A font-size increase can push a mid-page sentence off the bottom of the
    reflowed page even though the page's own reanchor "succeeds"; this catches that case rather than
    leaving the reader on a page that no longer shows what is being spoken.
+
+   **Second on-device defect, found and fixed the same week: auto-follow worked in paginated flow
+   and went permanently inert in scrolled-doc flow, silently.** The dedupe guard against overlapping
+   `display()` calls was originally a flag cleared in `rendition.display()`'s own `.finally()`. In
+   scrolled-doc flow, `display()` resolves through epub.js's `ContinuousViewManager`, which chains an
+   UNBOUNDED virtualization pass onto every display — `.then(() => this.fill())`, recursing through
+   `check()` via a queue gated on `requestAnimationFrame` (`managers/continuous/index.js`) —
+   `DefaultViewManager` (paginated) has no such tail. On a real device that tail's `requestAnimationFrame`
+   can stall (backgrounded, throttled, GPU-starved) and never resolve, which left the promise-settled
+   flag stuck `true` FOREVER — every later auto-follow call silently no-opped on the guard check ahead
+   of it, for the rest of the reading session, in scrolled-doc flow only. Paginated kept working
+   because it has no such tail to hang on. Fixed by replacing the promise-gated flag with a fixed
+   500ms cooldown timestamp (`followCooldownUntil`, `FOLLOW_COOLDOWN_MS`) — it serves the same
+   purpose (absorb the gap between rapid word ticks and a slower transition) without depending on
+   epub.js's internal promise ever settling.
 
    **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
    manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back

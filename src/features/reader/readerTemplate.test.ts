@@ -767,6 +767,15 @@ describe('reduceMotion has nothing to suppress, and must not quietly acquire one
   ])('%s declares no animation', (_name, source) => {
     expect(ANIMATED_DECLARATION.filter((re) => re.test(source()))).toEqual([]);
   });
+
+  // THE FIRST DELIBERATE, GATED ANIMATION, per this describe block's own instruction above: do not
+  // delete the absence checks (CSS transition/animation/@keyframes are still genuinely absent — this
+  // one is a JS `Element.scrollBy({ behavior })` call, which the regexes above do not and should not
+  // match), and assert the GATE instead of another absence.
+  it('the one animation the reader has — the teleprompter scroll — is reachable only when reduceMotion is false', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(body).toContain("currentAppearance?.reduceMotion ? 'instant' : 'smooth'");
+  });
 });
 
 // --- every re-layout path re-measures EVERY painted layer ---------------------------------------
@@ -848,12 +857,9 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
     // CFI would wrongly skip a follow it genuinely needs.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
-    // A display() tied to the previous book's discarded rendition may never settle its own
-    // promise, which would otherwise strand this flag true and silently disable auto-follow for
-    // the entire new book.
-    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
-      'followDisplayInFlight = false',
-    );
+    // Not load-bearing on its own (the cooldown is a timestamp and self-expires), but keeps a
+    // book switch from inheriting a cooldown that has nothing to do with it.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('followCooldownUntil = 0');
   });
 
   it('changing the spoken SENTENCE clears the word inside it', () => {
@@ -898,19 +904,60 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(collisionGuard).not.toContain('followSpokenRange');
   });
 
-  it('a follow already in flight blocks a second, overlapping display() for a different target', () => {
-    // Word ticks can arrive faster than a display() transition settles — without this guard, a
+  it('a fixed cooldown, not a promise-settled flag, blocks a second overlapping display()', () => {
+    // Word ticks can arrive faster than a display() transition settles — without SOME guard, a
     // still-off-screen check against the STILL-OLD page would issue a second, competing
-    // navigation before the first lands. Asserted as ordering: the in-flight check comes first, is
-    // set before display() is called, and is cleared in a .finally() so it can't stick forever.
+    // navigation before the first lands.
+    //
+    // >>> MUST NOT BE GATED ON display()'S OWN PROMISE SETTLING. <<< This was a real, shipped bug:
+    // in scrolled-doc flow, rendition.display() resolves through epub.js's ContinuousViewManager,
+    // which chains its own requestAnimationFrame-gated virtualization pass onto every display() —
+    // a pass that can stall on a real device and never settle. A flag cleared in that promise's
+    // .finally() then stays set FOREVER, silently disabling auto-follow for the rest of the
+    // session — exactly the on-device report ("it just stops") that found this. A timestamp
+    // comparison cannot get stuck this way regardless of what epub.js's internals do.
     const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
-    expect(body.indexOf('if (followDisplayInFlight) return;')).toBeLessThan(
-      body.indexOf('followDisplayInFlight = true;'),
+    expect(body).toContain('Date.now() < followCooldownUntil');
+    expect(body).not.toContain('.finally(');
+    expect(body.indexOf('Date.now() < followCooldownUntil')).toBeLessThan(
+      body.indexOf('followCooldownUntil = Date.now()'),
     );
-    expect(body.indexOf('followDisplayInFlight = true;')).toBeLessThan(
-      body.indexOf('rendition\n    .display(cfi)'),
+    expect(body.indexOf('followCooldownUntil = Date.now()')).toBeLessThan(
+      body.indexOf('rendition.display(cfi)'),
     );
-    expect(body).toContain('.finally(() => {');
+  });
+
+  it('scrolled-doc gets a teleprompter reposition; paginated keeps the original jump untouched', () => {
+    // The flow branch must be the FIRST thing followSpokenRange checks after the cooldown — before
+    // touching lastAutoFollowedCfi/spokenRangeVisible/display() at all, so paginated's original path
+    // is reached only when scrolled-doc's own mechanism did not (or could not) handle the call.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body).toContain("currentFlow() === 'scrolled-doc' && repositionForReadingZone(cfi)");
+    expect(body.indexOf('Date.now() < followCooldownUntil')).toBeLessThan(
+      body.indexOf("currentFlow() === 'scrolled-doc'"),
+    );
+    expect(body.indexOf("currentFlow() === 'scrolled-doc'")).toBeLessThan(
+      body.indexOf('spokenRangeVisible(cfi)'),
+    );
+  });
+
+  it('repositionForReadingZone never calls display() — it only scrolls the current section', () => {
+    // Scrolled-doc's reposition must not duplicate the discrete cross-section jump; that stays
+    // followSpokenRange's job on a `false` return. Asserted as absence within this function's own
+    // block, not just "the file contains scrollBy somewhere".
+    const body = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(body).not.toContain('rendition.display');
+    expect(body).toContain('manager.container.scrollBy(');
+  });
+
+  // reduceMotion's own gate is pinned in the "reduceMotion has nothing to suppress" describe block
+  // below, not duplicated here — this repo's existing convention for exactly that invariant.
+
+  it('manager.container.scrollBy is called from nowhere but the scrolled-doc reposition', () => {
+    // The one guarantee paginated's unaffectedness rests on: no global CSS scroll-behavior toggle,
+    // no second call site that could smooth-scroll a paginated column turn.
+    const occurrences = EPUB_ENTRY.split('.scrollBy(').length - 1;
+    expect(occurrences).toBe(1);
   });
 
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {
