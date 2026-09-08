@@ -576,17 +576,25 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   const { itemId } = route.params;
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
-  // NULL IS A REAL STATE HERE, not a missing value: this screen is reachable
-  // from the public catalogue, where the reader has chosen no institution. It
-  // picks the public endpoint in that case, and resolveAccess already takes
-  // `institutionId: string | null`, so the null travels all the way through
-  // rather than being papered over with a default id.
-  const institutionId = selectedInstitution?.id ?? null;
 
   // Null unless the reader has actually signed in — selecting an institution
   // alone is no longer enough (see currentSession.ts's note on why this
   // replaced handToggledSession).
   const session = useCurrentSession();
+
+  // The signed-in session's own institution is authoritative once there is
+  // one — it's what wokay will actually recognise this reader's token
+  // against. `selectedInstitution` (the picker, browsable before sign-in) is
+  // only a fallback for the ahead-of-sign-in case, so a reader who picked one
+  // institution and then signed in as a member of another doesn't keep
+  // fetching under the stale picked one and getting NOT_FOUND back.
+  //
+  // NULL IS A REAL STATE HERE, not a missing value: this screen is reachable
+  // from the public catalogue, where the reader has chosen no institution. It
+  // picks the public endpoint in that case, and resolveAccess already takes
+  // `institutionId: string | null`, so the null travels all the way through
+  // rather than being papered over with a default id.
+  const institutionId = session?.institutionId ?? selectedInstitution?.id ?? null;
 
   // getPublication now requires this (wokay's contract: appToken), but this
   // screen mounts off the selected institution alone, ahead of sign-in — same

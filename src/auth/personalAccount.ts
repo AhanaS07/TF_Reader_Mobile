@@ -1,13 +1,36 @@
-// Personal-account (OIDC) sign-in and sign-up — the seam the screens call.
+// Personal-account (email/password) sign-in and sign-up — the seam the screens call.
 //
-// STUB: no request is made yet. PersonalAccountScreen imports these two functions
-// and no HTTP client at all, so wiring the real endpoints is an edit to THIS FILE
-// ALONE — replace the bodies, keep the signatures and the result shape.
+// Both are REAL, end to end, against flambeau's own Mongo-backed credential
+// store (confirmed against tf_reader_backend_temp's AuthController/
+// ReaderAuthService — the vendored flambeau-api.yaml has no signup/login
+// section at all, a doc-drift gap of its own).
 //
-// flambeau has not published a username/password route yet (their
-// `/auth/oidc/start` is a browser redirect). Whichever route lands has to answer
-// the same two questions this shape already asks: did it work, and if not, why.
+// NOT OIDC. An earlier version of signInWithPassword called
+// startOidcSignIn/exchangeOidcTxn (see ApiAuthClient.ts) — those check a
+// completely separate identity source, an external OIDC provider, which never
+// sees an account signUpWithPassword created. That mismatch produced "email
+// and password do not match" for every signup-then-signin attempt. Fixed by
+// switching to the login endpoint, the actual counterpart to signup. See
+// AUTH_CONTEXT.md's "signup vs OIDC sign-in" update for the full story — OIDC
+// sign-in is still implemented and available on ApiAuthClient for a genuine
+// external-provider flow, just not what this screen uses.
+//
+//   signUpWithPassword: POST /api/v1/auth/signup { email, password } — signs
+//     the reader in immediately, so a TokenPair comes back directly. Duplicate
+//     email refuses with errorCode EMAIL_TAKEN.
+//   signInWithPassword: POST /api/v1/auth/login { email, password } — checks
+//     the same store signup wrote to. Unknown email and wrong password both
+//     refuse identically with errorCode UNAUTHENTICATED (401).
+//
+// Both then: GET /api/v1/auth/me with the access token, to learn who signed
+// in, then write the refresh token to secureStorage (Keychain/Keystore).
+// Unlike institutionSignIn.ts, neither writes to sessionStore itself —
+// PersonalAccountScreen already owns that call on ok:true.
 import type { SessionData } from '@store/sessionStore';
+import { saveRefreshToken } from '@store/secureStorage';
+import { ApiAuthClient } from './ApiAuthClient';
+import { getDefaultAuthClient } from './defaultAuthClient';
+import { AuthError, AuthFailure } from './AuthFailure';
 
 export interface PersonalCredentials {
   email: string;
@@ -28,42 +51,103 @@ export type PersonalAuthResult =
   | { ok: true; session: SessionData }
   | { ok: false; code: PersonalAuthErrorCode };
 
-// NO institutionId, and that is the contract rather than an omission: a personal
-// subscriber belongs to no institution, and sessionStore reads an absent
-// institutionId as exactly that. Any string here would scope the catalogue to an
-// institution the reader has no entitlement to.
-//
-// `userId` carries the email because AuthMeResponse has no name or email field to
-// read — see the note at the top of ProfileScreen. It is the identifier the reader
-// recognises, standing in until flambeau publishes a display name.
-function stubSession(email: string): SessionData {
-  return {
-    accessToken: `stub-personal:${email}`,
-    expiresIn: 3600,
-    userId: email,
-    roles: [],
-    collections: [],
-  };
+export interface PersonalSignInDeps {
+  authClient?: ApiAuthClient;
 }
 
-/**
- * STUB — succeeds for any credentials that passed the client-side rules. The
- * failure branches in `PersonalAuthErrorCode` are unreachable until a real
- * request replaces this body; the screen handles them already.
- */
-export function signInWithPassword(
+export async function signInWithPassword(
   credentials: PersonalCredentials,
+  deps: PersonalSignInDeps = {},
 ): Promise<PersonalAuthResult> {
-  return Promise.resolve({ ok: true, session: stubSession(credentials.email) });
+  const authClient = deps.authClient ?? getDefaultAuthClient();
+
+  try {
+    const tokenPair = await authClient.login({
+      email: credentials.email,
+      password: credentials.password,
+    });
+    console.log('signInWithPassword: token pair received', tokenPair);
+
+    const currentSession = await authClient.getCurrentSession(tokenPair.accessToken);
+    console.log('signInWithPassword: current session received', currentSession);
+
+    // NO institutionId, and that is the contract rather than an omission: a personal
+    // subscriber belongs to no institution, and sessionStore reads an absent
+    // institutionId as exactly that.
+    const session: SessionData = {
+      accessToken: tokenPair.accessToken,
+      expiresIn: tokenPair.expiresIn,
+      userId: currentSession.userId,
+      institutionId: currentSession.institutionId,
+      roles: currentSession.roles,
+      collections: currentSession.collections,
+    };
+    await saveRefreshToken(tokenPair.refreshToken);
+    console.log('signInWithPassword: refresh token stored, session is', session);
+
+    return { ok: true, session };
+  } catch (error) {
+    return { ok: false, code: mapLoginFailure(error) };
+  }
 }
 
-/**
- * STUB — as `signInWithPassword`. Kept as a separate function rather than a flag
- * because the real routes will be two different endpoints with two different
- * failure sets, and a boolean would have to be unpicked again at that point.
- */
-export function signUpWithPassword(
+function mapLoginFailure(error: unknown): PersonalAuthErrorCode {
+  if (!(error instanceof AuthFailure)) return 'UNKNOWN';
+  if (error.code === AuthError.NETWORK_UNAVAILABLE || error.code === AuthError.TIMEOUT) {
+    return 'NETWORK';
+  }
+  if (error.code === AuthError.REFUSED && error.errorCode === 'UNAUTHENTICATED') {
+    return 'INVALID_CREDENTIALS';
+  }
+  // Covers MALFORMED_RESPONSE and any REFUSED with no/unknown errorCode.
+  return 'UNKNOWN';
+}
+
+export async function signUpWithPassword(
   credentials: PersonalCredentials,
+  deps: PersonalSignInDeps = {},
 ): Promise<PersonalAuthResult> {
-  return Promise.resolve({ ok: true, session: stubSession(credentials.email) });
+  const authClient = deps.authClient ?? getDefaultAuthClient();
+
+  console.log('signUpWithPassword: starting signup', { email: credentials.email });
+
+  try {
+    const tokenPair = await authClient.signUpWithPassword({
+      email: credentials.email,
+      password: credentials.password,
+    });
+    console.log('signUpWithPassword: token pair received', tokenPair);
+
+    const currentSession = await authClient.getCurrentSession(tokenPair.accessToken);
+    console.log('signUpWithPassword: current session received', currentSession);
+
+    // Same contract as signInWithPassword: no institutionId for a personal subscriber.
+    const session: SessionData = {
+      accessToken: tokenPair.accessToken,
+      expiresIn: tokenPair.expiresIn,
+      userId: currentSession.userId,
+      institutionId: currentSession.institutionId,
+      roles: currentSession.roles,
+      collections: currentSession.collections,
+    };
+    await saveRefreshToken(tokenPair.refreshToken);
+    console.log('signUpWithPassword: refresh token stored, session is', session);
+
+    return { ok: true, session };
+  } catch (error) {
+    const code = mapSignupFailure(error);
+    console.log('signUpWithPassword: failed, mapped to', code, error);
+    return { ok: false, code };
+  }
+}
+
+function mapSignupFailure(error: unknown): PersonalAuthErrorCode {
+  if (!(error instanceof AuthFailure)) return 'UNKNOWN';
+  if (error.code === AuthError.NETWORK_UNAVAILABLE || error.code === AuthError.TIMEOUT) {
+    return 'NETWORK';
+  }
+  if (error.code === AuthError.REFUSED && error.errorCode === 'EMAIL_TAKEN') {
+    return 'EMAIL_ALREADY_REGISTERED';
+  }
+  return 'UNKNOWN';
 }

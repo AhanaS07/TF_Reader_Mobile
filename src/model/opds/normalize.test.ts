@@ -37,11 +37,13 @@ describe('normalizeCatalogue', () => {
         title: 'All titles',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/all',
         shelfId: 'all',
+        target: 'shelf',
       },
       {
         title: 'New this month',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_1',
         shelfId: 'shelf_1',
+        target: 'shelf',
       },
       // A title an administrator typed. Long, and about a subject rather than a
       // content type — nothing may shorten, relabel or reorder it.
@@ -49,11 +51,13 @@ describe('normalizeCatalogue', () => {
         title: 'Nineteenth-century literary criticism',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_2',
         shelfId: 'shelf_2',
+        target: 'shelf',
       },
       {
         title: 'Audio picks',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_3',
         shelfId: 'shelf_3',
+        target: 'shelf',
       },
     ]);
   });
@@ -301,8 +305,26 @@ describe('normalizeShelf', () => {
         title: 'Browse the full catalogue',
         href: 'https://api.tf/opds/v1/institutions/inst_zzz/catalogue',
         shelfId: 'catalogue',
+        target: 'catalogue',
       },
     ]);
+  });
+
+  // The catalogue root ('.../catalogue') is not a group wokay's getShelf
+  // recognises — getGroupFeed only knows the curated shelf ids and 'all'. A
+  // caller that opens this link the same way it opens a real shelf link (same
+  // getShelf(institutionId, shelfId) call ShelfScreen makes for every other
+  // NavLink) gets NOT_FOUND back for a link the server itself offered. `target`
+  // is what lets a caller tell the two shapes apart without guessing from
+  // `shelfId`'s string value, which types.ts's own NavLink doc says is opaque.
+  it('marks the catalogue-root link as a catalogue target, not a shelf', () => {
+    const shelf = normalizeShelf(emptyAllShelf);
+
+    expect(shelf.browseInstead?.[0].target).toBe('catalogue');
+  });
+
+  it('marks a real group link as a shelf target', () => {
+    expect(normalizeCatalogue(homeCatalogue).navigation[0].target).toBe('shelf');
   });
 
   it('offers no way back on a shelf that actually has results', () => {

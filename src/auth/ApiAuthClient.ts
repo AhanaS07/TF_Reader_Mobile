@@ -13,6 +13,14 @@
 // because the licence token arrives long after construction), getCurrentSession
 // takes the access token as a direct parameter — the caller always has it in
 // hand at the moment it calls, fresh off the token exchange.
+//
+// TWO SEPARATE IDENTITY SOURCES for individual (non-institutional) readers, do
+// not cross them: signUpWithPassword/login check flambeau's own Mongo
+// credential store; startOidcSignIn/exchangeOidcTxn check an external OIDC
+// provider instead and will never find an account signup/login created (or
+// vice versa). personalAccount.ts's signInWithPassword uses login, matching
+// signUpWithPassword's store — see AUTH_CONTEXT.md's "signup vs OIDC sign-in"
+// update for the bug this distinction fixed.
 import { AuthError, AuthFailure } from './AuthFailure';
 
 // Only the parts of Response this client touches. Structural rather than the
@@ -59,6 +67,12 @@ export interface TokenPair {
   expiresIn: number;
 }
 
+export interface OidcStart {
+  oidcTxnId: string;
+  expiresAt: string;
+  serverTime: string;
+}
+
 export interface CurrentSession {
   userId: string;
   type: 'INSTITUTION' | 'INDIVIDUAL';
@@ -101,6 +115,48 @@ export class ApiAuthClient {
 
   async exchangeSignInCode(code: string): Promise<TokenPair> {
     const body = await this.send('POST', '/api/v1/auth/token', { code });
+    return parseTokenPair(body);
+  }
+
+  // No browser leg at all — unlike SAML, the caller supplies the credentials
+  // directly and the backend exchanges them with the OIDC provider server-side.
+  async startOidcSignIn(params: { username: string; password: string }): Promise<OidcStart> {
+    const body = await this.send('POST', '/api/v1/auth/oidc/start', {
+      username: params.username,
+      password: params.password,
+    });
+    return parseOidcStart(body);
+  }
+
+  // oidcTxnId is single-use — redeeming it twice returns TOKEN_INVALID the
+  // second time.
+  async exchangeOidcTxn(oidcTxnId: string): Promise<TokenPair> {
+    const body = await this.send('POST', '/api/v1/auth/oidc/token', { oidcTxnId });
+    return parseTokenPair(body);
+  }
+
+  // No OIDC provider involved — this is flambeau's own Mongo-backed credential
+  // store. Signs the reader in immediately, so a TokenPair comes back directly
+  // rather than through a two-step start/exchange like OIDC. Duplicate email
+  // refuses with errorCode EMAIL_TAKEN.
+  async signUpWithPassword(params: { email: string; password: string }): Promise<TokenPair> {
+    const body = await this.send('POST', '/api/v1/auth/signup', {
+      email: params.email,
+      password: params.password,
+    });
+    return parseTokenPair(body);
+  }
+
+  // The counterpart to signUpWithPassword — checks the SAME Mongo credential
+  // store signup writes to. NOT the OIDC endpoints: those authenticate against
+  // an external OIDC provider and never see an account signup created. Unknown
+  // email and wrong password both refuse identically with errorCode
+  // UNAUTHENTICATED (401), so this never leaks which one was wrong.
+  async login(params: { email: string; password: string }): Promise<TokenPair> {
+    const body = await this.send('POST', '/api/v1/auth/login', {
+      email: params.email,
+      password: params.password,
+    });
     return parseTokenPair(body);
   }
 
@@ -221,6 +277,15 @@ function parseSamlStart(doc: unknown): SamlStart {
       institutionId: reqString(institutionRaw.institutionId, 'institution.institutionId'),
       name: reqString(institutionRaw.name, 'institution.name'),
     },
+    expiresAt: reqString(raw.expiresAt, 'expiresAt'),
+    serverTime: reqString(raw.serverTime, 'serverTime'),
+  };
+}
+
+function parseOidcStart(doc: unknown): OidcStart {
+  const raw = asRecord(doc, 'OidcStartResponse');
+  return {
+    oidcTxnId: reqString(raw.oidcTxnId, 'oidcTxnId'),
     expiresAt: reqString(raw.expiresAt, 'expiresAt'),
     serverTime: reqString(raw.serverTime, 'serverTime'),
   };

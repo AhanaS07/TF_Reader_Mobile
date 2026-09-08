@@ -322,6 +322,12 @@ export default function ShelfScreen({ route }: Props) {
               screen's preview shelves, which are omitted rather than sent empty.
               This is the shelf a reader has navigated INTO, where a filtered
               fetch legitimately returns zero rows. */}
+          {/* TODO: Shelf.browseInstead (NavLink[], target: 'shelf' | 'catalogue') is
+              populated on the model but never read here — this empty state has no
+              "browse instead" affordance, unlike SearchScreen's zero-result state,
+              which already does target-based routing (see SearchScreen.tsx's
+              browseInstead block). Wire it up here the same way if this screen is
+              meant to offer it too. */}
           {publications.length === 0 ? (
             <EmptyState
               variant={hasActiveFilter ? 'no_filter_results' : 'no_content'}

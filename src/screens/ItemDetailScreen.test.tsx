@@ -257,6 +257,34 @@ describe('ItemDetailScreen endpoint choice', () => {
 
     await waitFor(() => expect(calls).toEqual([`institution:${INSTITUTION.id}`]));
   });
+
+  // The picker's selection (browsable before sign-in) and the signed-in
+  // session's own institution are two different stores and can disagree —
+  // e.g. a reader browsed one institution's catalogue, then signed in as a
+  // member of another. Fetching under the PICKED institution here would ask
+  // wokay for a publication scoped to an institution the reader's token
+  // doesn't belong to, which is exactly the shape of a NOT_FOUND report this
+  // fixes: the signed-in institution is the one the backend will actually
+  // recognise this reader against.
+  it('asks the signed-in institution endpoint, not a differing picked one', async () => {
+    const calls: string[] = [];
+    const pickedInstitution: Institution = { ...INSTITUTION, id: 'inst_picked' };
+    useInstitutionStore.setState({ selectedInstitution: pickedInstitution });
+    useSessionStore.setState({
+      isAuthenticated: true,
+      accessToken: 'test-access-token',
+      expiresAt: Date.now() + 3_600_000,
+      userId: 'test-user:inst_a21',
+      institutionId: INSTITUTION.id,
+      roles: [],
+      collections: [],
+    });
+    setCatalogueSource(recordingSource(calls));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(calls).toEqual([`institution:${INSTITUTION.id}`]));
+  });
 });
 
 describe('ItemDetailScreen loading', () => {

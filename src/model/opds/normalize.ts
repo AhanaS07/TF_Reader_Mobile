@@ -23,7 +23,7 @@ import type {
 } from '@model/types';
 import { ACCESS_TIERS } from '@model/types';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
-import { idFromHref, toActionId, toAlgorithm, toContentFormat } from '@model/opds/rels';
+import { idFromHref, isShelfHref, toActionId, toAlgorithm, toContentFormat } from '@model/opds/rels';
 
 type Json = Record<string, unknown>;
 
@@ -335,6 +335,7 @@ function toNavLink(doc: unknown): NavLink {
     // Precomputed so a nav tap goes straight to getShelf() without any screen
     // needing to parse a URL.
     shelfId: idFromHref(href),
+    target: isShelfHref(href) ? 'shelf' : 'catalogue',
   };
 }
 

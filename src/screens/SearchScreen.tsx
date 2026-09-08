@@ -332,22 +332,26 @@ export default function SearchScreen() {
               <View testID="search-browse-instead" style={styles.browse}>
                 <Text style={styles.browseHeading}>Browse instead</Text>
                 {search.browseInstead.map((entry, index) => (
-                  // Shelf now exists (Catalogue stack), so this crosses tabs to
-                  // it — same cross-tab pattern AccessGateScreen already uses to
-                  // reach SignIn.
+                  // Shelf now exists (Catalogue stack), so a shelf target crosses
+                  // tabs to it — same cross-tab pattern AccessGateScreen already
+                  // uses to reach SignIn. A catalogue target has no group to open
+                  // by id (see NavLink.target in types.ts) — getShelf would only
+                  // 404 on it — so it goes to the catalogue home instead.
                   <CategoryCard
                     key={entry.shelfId}
                     title={entry.title}
                     accent={BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]}
                     onPress={() =>
-                      navigation.navigate('Catalogue', {
-                        screen: 'Shelf',
-                        params: {
-                          shelfId: entry.shelfId,
-                          title: entry.title,
-                          institutionId,
-                        },
-                      })
+                      entry.target === 'shelf'
+                        ? navigation.navigate('Catalogue', {
+                            screen: 'Shelf',
+                            params: {
+                              shelfId: entry.shelfId,
+                              title: entry.title,
+                              institutionId,
+                            },
+                          })
+                        : navigation.navigate('Catalogue', { screen: 'CatalogueHome' })
                     }
                   />
                 ))}

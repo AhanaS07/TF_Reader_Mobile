@@ -66,8 +66,8 @@ jest.mock('@hooks/useNetworkStatus', () => ({
 const FAKE_CATALOGUE: Catalogue = {
   title: 'Test Institution',
   navigation: [
-    { title: 'eBooks', href: 'https://x/groups/ebooks', shelfId: 'ebooks' },
-    { title: 'Audiobooks', href: 'https://x/groups/audiobooks', shelfId: 'audiobooks' },
+    { title: 'eBooks', href: 'https://x/groups/ebooks', shelfId: 'ebooks', target: 'shelf' },
+    { title: 'Audiobooks', href: 'https://x/groups/audiobooks', shelfId: 'audiobooks', target: 'shelf' },
   ],
   shelves: [
     {
@@ -475,6 +475,7 @@ describe('CatalogueScreen renders whatever navigation arrives', () => {
         // derived a label from an id would fail here rather than look correct.
         href: `https://x/groups/s${titles.length - index}`,
         shelfId: `s${titles.length - index}`,
+        target: 'shelf' as const,
       })),
     };
   }
@@ -641,10 +642,10 @@ describe('CatalogueScreen renders whatever shelves arrive', () => {
     const catalogueWithGap: Catalogue = {
       ...FAKE_CATALOGUE,
       navigation: [
-        { title: 'Shelf One', href: 'https://x/groups/shelf-one', shelfId: 'shelf1' },
-        { title: 'Shelf Two', href: 'https://x/groups/shelf-two', shelfId: 'shelf2' },
-        { title: 'Shelf Three', href: 'https://x/groups/shelf-three', shelfId: 'shelf3' },
-        { title: 'Shelf Four', href: 'https://x/groups/shelf-four', shelfId: 'shelf4' },
+        { title: 'Shelf One', href: 'https://x/groups/shelf-one', shelfId: 'shelf1', target: 'shelf' },
+        { title: 'Shelf Two', href: 'https://x/groups/shelf-two', shelfId: 'shelf2', target: 'shelf' },
+        { title: 'Shelf Three', href: 'https://x/groups/shelf-three', shelfId: 'shelf3', target: 'shelf' },
+        { title: 'Shelf Four', href: 'https://x/groups/shelf-four', shelfId: 'shelf4', target: 'shelf' },
       ],
       // Deliberately shelf1 and shelf3 only — shelf2 and shelf4 exist as nav
       // cards above but have no section, so nothing could match them by

@@ -242,6 +242,14 @@ export interface NavLink {
   // An OPAQUE KEY: it is whatever the server put in the URL, and nothing may
   // read meaning into it.
   shelfId: string;
+  // Whether `shelfId` actually names a shelf. Every entry in a catalogue's own
+  // `navigation` is a real group link ('shelf'), but the zero-result "browse
+  // instead" affordance (Shelf.browseInstead, SearchFeed.browseInstead) can
+  // instead point at the catalogue root ('catalogue') — a link getShelf has no
+  // group id for and will always 404 on. A caller opens 'shelf' via
+  // getShelf(institutionId, shelfId); 'catalogue' has nothing to open by id and
+  // goes to the catalogue home instead.
+  target: 'shelf' | 'catalogue';
 }
 
 // A group of publications — one shelf/carousel on the home screen, or a full

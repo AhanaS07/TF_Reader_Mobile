@@ -87,8 +87,8 @@ const SUBSCRIPTION_ITEM = publication(
 );
 
 const BROWSE: NavLink[] = [
-  { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks' },
-  { title: 'Open access', href: 'https://api.tf/groups/open-access', shelfId: 'open-access' },
+  { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks', target: 'shelf' },
+  { title: 'Open access', href: 'https://api.tf/groups/open-access', shelfId: 'open-access', target: 'shelf' },
 ];
 
 function feed(overrides: Partial<SearchFeed> = {}): SearchFeed {
@@ -650,6 +650,46 @@ describe('a response with no publications key, carrying browseInstead', () => {
 
     await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
     expect(screen.queryByTestId('search-browse-instead')).toBeNull();
+  });
+});
+
+// A real shelf link (rel="subsection", ".../groups/{id}") and the catalogue
+// root itself (".../catalogue", offered when there is no group to point at —
+// see OpdsSearchQuery's own zero-result branch) both arrive as browseInstead
+// entries. Opening the second one the same way as the first — a
+// getShelf(institutionId, shelfId) call — asks wokay for a group named
+// "catalogue", which does not exist and always answers NOT_FOUND. `target`
+// is what tells the two apart before either one is opened.
+describe('tapping a browse-instead card routes by its target', () => {
+  it('opens Shelf for a real shelf target', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: BROWSE }))));
+    await render(<SearchScreen />);
+    await submit('quantum basket weaving');
+    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(2));
+
+    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+
+    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', {
+      screen: 'Shelf',
+      params: { shelfId: 'ebooks', title: 'eBooks', institutionId: 'inst_7f3' },
+    });
+  });
+
+  it('opens the catalogue home for a catalogue-root target, not Shelf', async () => {
+    const catalogueRoot: NavLink = {
+      title: 'Browse the full catalogue',
+      href: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
+      shelfId: 'catalogue',
+      target: 'catalogue',
+    };
+    setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: [catalogueRoot] }))));
+    await render(<SearchScreen />);
+    await submit('quantum basket weaving');
+    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(1));
+
+    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+
+    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'CatalogueHome' });
   });
 });
 

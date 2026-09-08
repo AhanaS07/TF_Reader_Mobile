@@ -35,7 +35,7 @@ const FIRST = publication('item_env', 'Environmental Policy and Air Pollution in
 const SECOND = publication('item_ab6', 'Ethnographies of Waiting');
 
 const BROWSE: NavLink[] = [
-  { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks' },
+  { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks', target: 'shelf' },
 ];
 
 function feed(overrides: Partial<SearchFeed> = {}): SearchFeed {

@@ -53,7 +53,7 @@ describe('The category row is fed by navigation', () => {
 
     for (const entry of catalogue.navigation) {
       expect(entry).not.toHaveProperty('coverUrl');
-      expect(Object.keys(entry).sort()).toEqual(['href', 'shelfId', 'title']);
+      expect(Object.keys(entry).sort()).toEqual(['href', 'shelfId', 'target', 'title']);
     }
   });
 });

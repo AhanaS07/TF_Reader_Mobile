@@ -159,7 +159,25 @@ describe('PersonalAccountScreen — validation', () => {
   });
 });
 
+const SUCCESSFUL_SESSION: personalAccount.PersonalAuthResult = {
+  ok: true,
+  session: {
+    accessToken: 'access_1',
+    expiresIn: 3600,
+    userId: 'reader@tf.com',
+    roles: ['read'],
+    collections: ['col_1'],
+  },
+};
+
 describe('PersonalAccountScreen — a successful call', () => {
+  // signInWithPassword is real now (it calls /auth/login), so these tests
+  // stub it directly rather than exercising the network.
+  beforeEach(() => {
+    jest.spyOn(personalAccount, 'signInWithPassword').mockResolvedValue(SUCCESSFUL_SESSION);
+    jest.spyOn(personalAccount, 'signUpWithPassword').mockResolvedValue(SUCCESSFUL_SESSION);
+  });
+
   it('writes the session', async () => {
     await render(<PersonalAccountScreen {...makeProps('signIn')} />);
     await fillValidCredentials();

@@ -473,6 +473,7 @@ describe('ShelfScreen with a zero-result shelf', () => {
         title: 'Browse the full catalogue',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/catalogue',
         shelfId: 'catalogue',
+        target: 'catalogue',
       },
     ],
   };

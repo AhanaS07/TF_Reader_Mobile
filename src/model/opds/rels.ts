@@ -85,3 +85,14 @@ export function idFromHref(href: string): string {
   if (!segment) throw malformed('href has no id segment', href);
   return segment;
 }
+
+// A navigation entry's href is either a real shelf/group ('.../groups/{id}')
+// or the catalogue root itself ('.../catalogue', '.../public/catalogue') — the
+// zero-result "browse instead" affordance can point at either. `idFromHref`
+// above still yields a string for both ('all', 'catalogue', ...), but only the
+// first is a group getShelf recognises; the second always 404s there. This is
+// what lets a caller route the two differently without reading meaning into
+// the id itself, which NavLink's own doc says stays opaque.
+export function isShelfHref(href: string): boolean {
+  return /\/groups\//.test(href.split(/[?#]/)[0]);
+}

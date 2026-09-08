@@ -85,6 +85,7 @@ describe('a zero-result response with no publications key', () => {
         title: 'Browse the full catalogue',
         href: 'https://api.tf/opds/v1/institutions/inst_7f3/groups/all',
         shelfId: 'all',
+        target: 'shelf',
       },
     ]);
   });
@@ -99,7 +100,7 @@ describe('absence is tolerated, contradiction is not', () => {
     });
 
     expect(feed.browseInstead).toEqual([
-      { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks' },
+      { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks', target: 'shelf' },
     ]);
   });
 
