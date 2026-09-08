@@ -845,15 +845,24 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // than failing (`EpubCFI.toRange` ignores the spine component), so leaving it set would paint a
     // stale wash over unrelated text at the next repaint.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('currentSpokenWordCfi = null');
+    // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
+    // CFI would wrongly skip a follow it genuinely needs.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
+    // A display() tied to the previous book's discarded rendition may never settle its own
+    // promise, which would otherwise strand this flag true and silently disable auto-follow for
+    // the entire new book.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'followDisplayInFlight = false',
+    );
   });
 
   it('changing the spoken SENTENCE clears the word inside it', () => {
     // The word only means anything inside the sentence it was resolved against. The caller cannot be
     // relied on for this: `useTtsSession` sends word ranges only while `highlightMode === 'word'`,
     // so turning word mode off mid-utterance would otherwise strand the last wash with nothing left
-    // that would ever remove it. It must also come FIRST — the auto-follow proposal
-    // (accessibility/TTS_AUTOFOLLOW_HANDOFF.md) adds a `rendition.display()` to this same handler,
-    // and a re-render with a stale mark still attached can carry it into the new view.
+    // that would ever remove it. It must also come FIRST — auto-follow's `rendition.display()` lives
+    // in this same handler, and a re-render with a stale mark still attached can carry it into the
+    // new view.
     const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
     expect(body).toContain('clearSpokenWord()');
     expect(body.indexOf('clearSpokenWord()')).toBeLessThan(body.indexOf('currentSpokenCfi = cfi'));
@@ -871,12 +880,77 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body).toContain('spokenWordCollides(');
   });
 
+  it('a new sentence auto-follows AFTER it paints, not before', () => {
+    // `followSpokenRange` reads geometry that only exists once `highlightAdd` has filed the range,
+    // and it must be inside the `cfi !== null` branch — a clear has nothing to follow.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
+    expect(body).toContain('followSpokenRange(cfi)');
+    expect(body.indexOf('highlightAdd(')).toBeLessThan(body.indexOf('followSpokenRange(cfi)'));
+  });
+
+  it('a spoken word follows even when its paint is refused for colliding with another owner', () => {
+    // The resolved word's position is real regardless of whether painting it was refused — refusing
+    // only protects another owner's mark from being displaced, per `spokenWordCollides`'s own note.
+    // Asserted as: the call sits OUTSIDE the `spokenWordCollides` guard's block, not nested inside it.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenWordRange: (range) =>');
+    const collisionGuard = blockAfter(body, 'if (!spokenWordCollides(cfi))');
+    expect(body).toContain('followSpokenRange(cfi)');
+    expect(collisionGuard).not.toContain('followSpokenRange');
+  });
+
+  it('a follow already in flight blocks a second, overlapping display() for a different target', () => {
+    // Word ticks can arrive faster than a display() transition settles — without this guard, a
+    // still-off-screen check against the STILL-OLD page would issue a second, competing
+    // navigation before the first lands. Asserted as ordering: the in-flight check comes first, is
+    // set before display() is called, and is cleared in a .finally() so it can't stick forever.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body.indexOf('if (followDisplayInFlight) return;')).toBeLessThan(
+      body.indexOf('followDisplayInFlight = true;'),
+    );
+    expect(body.indexOf('followDisplayInFlight = true;')).toBeLessThan(
+      body.indexOf('rendition\n    .display(cfi)'),
+    );
+    expect(body).toContain('.finally(() => {');
+  });
+
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {
     // The cache holds pre-reflow rects, and a stale one makes a long press delete the wrong
     // highlight — a silent loss of the reader's own work, so it is not merely a tidy-up.
     const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
     expect(body).toContain('repaintLiveAnnotations()');
     expect(body).toContain('invalidateHighlightBoxes()');
+  });
+
+  it('a font-size/layout change re-checks auto-follow for the CURRENT spoken position, not just the page anchor', () => {
+    // `lastCfi` (the thing this function re-anchors to) is wherever the reader was last
+    // relocated — stale for "where the voice currently is" whenever several sentences have been
+    // spoken on the same page since then. A reflow that pushes a mid-page sentence off the bottom
+    // must still be caught, so this checks the SPOKEN cfi, not just that the re-anchor succeeded.
+    const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(body).toContain('currentSpokenWordCfi ?? currentSpokenCfi');
+    expect(body).toContain('followSpokenRange(spokenTarget)');
+    // repaintLiveAnnotations first, so the follow's own geometry check reads freshly re-measured
+    // rects rather than the pre-reflow ones.
+    expect(body.indexOf('repaintLiveAnnotations()')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+    // The dedupe is reset immediately before this call, not left to whatever it was — a reflow can
+    // make a CFI stop being on-screen without the CFI value itself changing, which is exactly the
+    // case `lastAutoFollowedCfi === cfi` would otherwise skip.
+    expect(body.indexOf('lastAutoFollowedCfi = null;')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+  });
+
+  it('a paginated<->scrolled flow rebuild also re-checks auto-follow for the current spoken position', () => {
+    // A brand-new manager after `rendition.destroy()` is even less guaranteed than a same-manager
+    // reflow to land the re-anchored `lastCfi` on the same content the voice is currently on.
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body).toContain('currentSpokenWordCfi ?? currentSpokenCfi');
+    expect(body).toContain('followSpokenRange(spokenTarget)');
+    expect(body.indexOf('lastAutoFollowedCfi = null;')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
   });
 
   it('every EPUB signal that can move a glyph reaches the refresh', () => {
