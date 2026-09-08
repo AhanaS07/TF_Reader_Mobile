@@ -5,7 +5,7 @@
 // not a fake in-memory stand-in — matching the real File/Directory API surface confirmed by
 // reading the installed package's own generated type defs
 // (src/internal/NativeFileSystem.types.ts): constructor(...uris), .exists, .create(options),
-// .write(content), .bytesSync(), .textSync(), .delete(), .parentDirectory. What this proves:
+// .write(content), .bytesSync(), .textSync(), .delete(), .parentDirectory, .list(). What this proves:
 // contentStore.ts's own file-handling logic (path joining, create-before-write, delete-before-
 // overwrite) is correct against real disk semantics. What it does NOT prove: the real native
 // module's behavior on-device — unverified in this environment, same caveat as every other
@@ -38,6 +38,16 @@ class Directory {
   delete() {
     fs.rmSync(this._path(), { recursive: true, force: true });
   }
+  // Mirrors the real Directory.list() (build/Directory.d.ts): returns File and Directory instances
+  // for this directory's contents, and THROWS if the directory does not exist — callers guard on
+  // .exists, and a mock that quietly returned [] instead would hide that they had stopped.
+  list() {
+    const dir = this._path();
+    return fs.readdirSync(dir, { withFileTypes: true }).map((entry) => {
+      const child = path.join(dir, entry.name);
+      return entry.isDirectory() ? new Directory(child) : new File(child);
+    });
+  }
 }
 
 class File {
@@ -63,11 +73,15 @@ class File {
   create() {
     fs.writeFileSync(this._path(), Buffer.alloc(0), { flag: 'wx' });
   }
-  write(content) {
+  write(content, options) {
+    // `options.append` matches the real FileWriteOptions shape (File.types.d.ts) — added for
+    // chunkedAssetFetcher.ts, which appends each downloaded chunk rather than rewriting the
+    // whole partial file every time.
+    const flag = options && options.append ? 'a' : 'w';
     if (typeof content === 'string') {
-      fs.writeFileSync(this._path(), content, 'utf8');
+      fs.writeFileSync(this._path(), content, { encoding: 'utf8', flag });
     } else {
-      fs.writeFileSync(this._path(), Buffer.from(content));
+      fs.writeFileSync(this._path(), Buffer.from(content), { flag });
     }
   }
   textSync() {

@@ -3,13 +3,38 @@ import { getDatabase, nowIso, toInt } from '../localDb/database';
 import { accessibilityMapper } from '../localDb/mappers';
 import type { AccessibilityRow } from '../localDb/types';
 import { USER_ID } from '../syncConfig';
+import { parseFieldTimestamps, stampChangedFields, stringifyFieldTimestamps } from './fieldTimestamps';
 import { createSyncableTable, withWriteLock } from './syncableTable';
+
+/** Every column `update()` can independently change - see the identical note on personalizationStore.ts. */
+export const ACCESSIBILITY_MERGE_FIELDS = [
+  'dyslexia_font',
+  'respect_os_font_scale',
+  'bold_text',
+  'reduce_motion',
+  'tts_enabled',
+  'tts_voice_id',
+  'tts_rate',
+  'tts_pitch',
+  'tts_highlight_mode',
+  'tts_auto_continue_chapter',
+  'tts_background_playback',
+  'font_scale_multiplier',
+  'readable_spacing',
+  'high_contrast',
+  'large_touch_targets',
+  'large_audio_controls',
+  'announce_page_changes',
+  'announce_chapter_changes',
+  'screen_reader_hints',
+] as const;
 
 export const accessibilityTable = createSyncableTable<AccessibilityRow>({
   table: 'accessibility',
   entityType: 'accessibility',
   toServer: accessibilityMapper.toServer,
   toRow: accessibilityMapper.toRow,
+  mergeFields: ACCESSIBILITY_MERGE_FIELDS,
 });
 
 /**
@@ -24,9 +49,9 @@ export const accessibilityId = (userId: string) => `a11y-${userId}`;
  * no longer drift from the frozen contract the way `screenReaderHints` did - it was the one
  * field of the contract's nineteen with no column here, so it could neither persist nor sync.
  */
-const defaults = (): AccessibilityRow => ({
-  id: accessibilityId(USER_ID),
-  user_id: USER_ID,
+const defaults = (userId: string): AccessibilityRow => ({
+  id: accessibilityId(userId),
+  user_id: userId,
   dyslexia_font: toInt(DEFAULT_ACCESSIBILITY_PREFS.text.dyslexiaFont),
   respect_os_font_scale: toInt(DEFAULT_ACCESSIBILITY_PREFS.text.respectOsFontScale),
   font_scale_multiplier: DEFAULT_ACCESSIBILITY_PREFS.text.fontScaleMultiplier,
@@ -49,20 +74,28 @@ const defaults = (): AccessibilityRow => ({
   updated_at: nowIso(),
   is_deleted: 0,
   synced: 0,
+  field_updated_at: '{}',
 });
 
-/** Accessibility is user scoped only - there is no book_id on this table. */
+/**
+ * Accessibility is user scoped only - there is no book_id on this table.
+ *
+ * `userId` defaults to the prototype's single hardcoded `USER_ID` - every current caller gets
+ * identical behaviour to before. A caller that actually knows the signed-in user (or a
+ * verification harness that needs its own user without touching the app's data) should pass it
+ * explicitly instead - same pattern as bookmarkStore/progressStore/downloadStore already use.
+ */
 export const accessibilityStore = {
   ...accessibilityTable,
 
-  async current(): Promise<AccessibilityRow | null> {
+  async current(userId: string = USER_ID): Promise<AccessibilityRow | null> {
     const db = await getDatabase();
     return db.getFirstAsync<AccessibilityRow>(
       `SELECT * FROM accessibility
         WHERE user_id = ? AND is_deleted = 0
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [USER_ID],
+      [userId],
     );
   },
 
@@ -70,18 +103,25 @@ export const accessibilityStore = {
    * Runs under `withWriteLock`: without it, two overlapping calls would each see "no row yet"
    * and each create their own, silently duplicating the one-row-per-user invariant.
    */
-  async update(patch: Partial<AccessibilityRow>): Promise<AccessibilityRow> {
+  async update(
+    patch: Partial<AccessibilityRow>,
+    userId: string = USER_ID,
+  ): Promise<AccessibilityRow> {
     return withWriteLock(async () => {
-      const existing = await this.current();
-      const base = existing ?? defaults();
+      const existing = await this.current(userId);
+      const base = existing ?? defaults(userId);
+      const now = nowIso();
       const row: AccessibilityRow = {
         ...base,
         ...patch,
         id: base.id,
-        user_id: USER_ID,
-        updated_at: nowIso(),
+        user_id: userId,
+        updated_at: now,
         is_deleted: 0,
         synced: 0,
+        field_updated_at: stringifyFieldTimestamps(
+          stampChangedFields(parseFieldTimestamps(base.field_updated_at), patch, ACCESSIBILITY_MERGE_FIELDS, now),
+        ),
       };
       return accessibilityTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', {
         locked: true,

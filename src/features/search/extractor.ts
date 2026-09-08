@@ -28,8 +28,18 @@ import JSZip from 'jszip';
 import { EpubCFI } from 'epubjs';
 import { JSDOM } from 'jsdom';
 import type { DOMWindow } from 'jsdom';
+import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { IndexEntry, Locator } from '@/shared/contracts';
 import { makeSnippet, tokenize } from './text';
+
+// pdf.js runtime from the Node/LEGACY build, not the root package. The root build assumes
+// a browser (DOM globals, a worker), while the legacy build runs headless — the same
+// choice the reader's PDF template makes. It is require()d rather than imported because
+// pdfjs-dist ships no `exports` map and no .d.ts colocated with the legacy .js, so a
+// static import would not typecheck; the cast to the root module's type restores the
+// types. (require in a .ts prototype file, same class as devContentSeed's — see CLAUDE.md.)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfjs = require('pdfjs-dist/legacy/build/pdf.js') as typeof import('pdfjs-dist');
 
 export interface ExtractedBook {
   format: 'EPUB' | 'PDF';
@@ -41,7 +51,52 @@ export interface Extractor {
 }
 
 const SAMPLE_EPUB = path.resolve(__dirname, '../../../assets/reader/sample-plaintext.epub');
-const OEBPS = 'OEBPS/';
+const SAMPLE_PDF = path.resolve(__dirname, '../../../assets/reader/sample-plaintext.pdf');
+
+// Standard-font data dir, resolved from the installed package rather than hardcoded.
+// Text extraction needs no fonts, but pdf.js logs a warning per document without this;
+// setting it keeps the prototype/test output clean and makes real (non-plaintext) PDFs
+// extract without noise. Trailing separator is required by pdf.js's URL join.
+const PDFJS_STANDARD_FONTS =
+  path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts') + path.sep;
+
+// --- locate the OPF (do NOT assume OEBPS/) --------------------------------
+//
+// A real EPUB may keep its package document anywhere (OEBPS/, OPS/, root, …);
+// the true location is declared in META-INF/container.xml. The prototype used to
+// hardcode `OEBPS/content.opf`, which happens to be where the sample puts it but
+// breaks on most real books. Resolve it properly so any EPUB works.
+
+async function resolveOpfPath(zip: JSZip): Promise<string> {
+  const containerXml = await zip.file('META-INF/container.xml')?.async('string');
+  if (!containerXml) throw new Error('EPUB missing META-INF/container.xml');
+  const doc = new JSDOM(containerXml, { contentType: 'application/xml' }).window.document;
+  const fullPath = doc.querySelector('rootfile')?.getAttribute('full-path');
+  if (!fullPath) throw new Error('container.xml has no <rootfile full-path>');
+  return fullPath;
+}
+
+/** The directory the OPF lives in, e.g. "OEBPS/content.opf" -> "OEBPS/" (""=root). */
+function opfDirOf(opfPath: string): string {
+  const i = opfPath.lastIndexOf('/');
+  return i === -1 ? '' : opfPath.slice(0, i + 1);
+}
+
+/**
+ * Resolve a spine href (relative to the OPF dir) to a zip entry key, collapsing
+ * `.`/`..` segments and dropping any fragment/percent-encoding. Zip keys have no
+ * leading slash, so empty segments are dropped too.
+ */
+function resolveZipPath(opfDir: string, href: string): string {
+  const decoded = decodeURIComponent(href.split('#')[0]);
+  const out: string[] = [];
+  for (const part of (opfDir + decoded).split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') out.pop();
+    else out.push(part);
+  }
+  return out.join('/');
+}
 
 // --- epub.js DOM env -------------------------------------------------------
 
@@ -179,24 +234,135 @@ function chapterEntriesChecked(xhtml: string, chapterId: string, base: string): 
 }
 
 /**
- * Prototype extractor: unzips the sample EPUB and emits one `IndexEntry` per token
- * across all chapters, in reading (spine, then document) order, each carrying a
- * real EPUB CFI locator.
+ * Prototype extractor for ANY local EPUB at `epubPath`: unzips it, locates the OPF
+ * via container.xml, and emits one `IndexEntry` per token across all chapters, in
+ * reading (spine, then document) order, each carrying a real EPUB CFI locator.
+ *
+ * Still NODE-ONLY (fs/jszip/jsdom). Production swaps in a server-fetch extractor
+ * behind this same `Extractor` seam; the caller (`createPrototypeBuildIndex`) does
+ * not change.
  */
-export const epubSampleExtractor: Extractor = {
-  async extract(_bookId: string): Promise<ExtractedBook> {
-    const zip = await JSZip.loadAsync(fs.readFileSync(SAMPLE_EPUB));
-    const opfXml = await zip.file(`${OEBPS}content.opf`)?.async('string');
-    if (!opfXml) throw new Error('sample EPUB is missing OEBPS/content.opf');
+export function createEpubExtractor(epubPath: string): Extractor {
+  return {
+    async extract(_bookId: string): Promise<ExtractedBook> {
+      const zip = await JSZip.loadAsync(fs.readFileSync(epubPath));
+      const opfPath = await resolveOpfPath(zip);
+      const opfXml = await zip.file(opfPath)?.async('string');
+      if (!opfXml) throw new Error(`EPUB is missing its OPF at ${opfPath}`);
+      const opfDir = opfDirOf(opfPath);
 
-    const entries: IndexEntry[] = [];
-    for (const { chapterId, href, base } of readSpine(opfXml)) {
-      const xhtml = await zip.file(`${OEBPS}${href}`)?.async('string');
-      if (!xhtml) continue;
-      entries.push(...chapterEntriesChecked(xhtml, chapterId, base));
-    }
+      const entries: IndexEntry[] = [];
+      for (const { chapterId, href, base } of readSpine(opfXml)) {
+        const xhtml = await zip.file(resolveZipPath(opfDir, href))?.async('string');
+        if (!xhtml) continue;
+        entries.push(...chapterEntriesChecked(xhtml, chapterId, base));
+      }
 
-    if (entries.length === 0) throw new Error('sample EPUB yielded no entries');
-    return { format: 'EPUB', entries };
-  },
-};
+      if (entries.length === 0) throw new Error(`EPUB ${epubPath} yielded no entries`);
+      // Token sequence in book reading order (spine order, then document order within a
+      // chapter — the order entries were pushed). Phrase adjacency keys off this, not char
+      // offsets, so it survives whitespace/indentation in the source XHTML. See Posting.seq.
+      entries.forEach((entry, i) => {
+        entry.seq = i;
+      });
+      return { format: 'EPUB', entries };
+    },
+  };
+}
+
+/** The sample-EPUB extractor the Day-4 tests build against. */
+export const epubSampleExtractor: Extractor = createEpubExtractor(SAMPLE_EPUB);
+
+// --- PDF: page text → IndexEntry[] with PDF locators ----------------------
+//
+// The PDF counterpart of createEpubExtractor. The whole build/query pipeline below the
+// Extractor seam is already format-agnostic — buildIndex only groups, and queryIndex's
+// postingPosition/readingOrder already have a PDF branch (page + char offset) — so this
+// file was the one missing piece for PDF search. The Reader's PDF `goTo(page)` already
+// exists too (reader-pdf.template.html), waiting on a hit to send it.
+
+/** A PDF text run carries `str`; a marked-content marker does not — filter to real text. */
+function isTextItem(item: TextItem | { type: string }): item is TextItem {
+  return typeof (item as TextItem).str === 'string';
+}
+
+/**
+ * Join one page's text runs into a single string with STABLE char offsets, because those
+ * offsets ARE the PDF `Locator.offset` and the anchor the snippet is cut from.
+ *
+ * pdf.js returns text as runs in reading order, each with `hasEOL` for a line end. A
+ * separator after EVERY run is deliberate: without it two runs fuse into one token,
+ * breaking both the snippet and phrase adjacency. Newline on a line end, single space
+ * otherwise — a single space keeps adjacent-run words within queryIndex's MAX_SEP_GAP so
+ * a phrase split across two runs still matches.
+ */
+function pageItemsToText(items: readonly TextItem[]): string {
+  let text = '';
+  for (const item of items) {
+    text += item.str;
+    text += item.hasEOL ? '\n' : ' ';
+  }
+  return text;
+}
+
+/**
+ * Prototype PDF extractor for ANY local PDF at `pdfPath`: reads it with pdf.js (Node),
+ * and emits one `IndexEntry` per token, page by page in reading order, each carrying a
+ * `{ type:'PDF', page, offset }` locator. `offset` is the char offset within that page's
+ * extracted text — exactly what queryIndex's PDF branch compares on and cuts snippets
+ * from. A PDF has no chapters, so `chapterId` is the page (`p<N>`), which is also what
+ * locatorKey() in useBookSearch already assumes for a PDF hit's list key.
+ *
+ * NODE-ONLY (fs + pdf.js legacy build), same seam as the EPUB extractor. Production swaps
+ * in a server-fetch extractor behind this same `Extractor`; the caller does not change.
+ */
+export function createPdfExtractor(pdfPath: string): Extractor {
+  return {
+    async extract(_bookId: string): Promise<ExtractedBook> {
+      const data = new Uint8Array(fs.readFileSync(pdfPath));
+      const doc = await pdfjs.getDocument({
+        data,
+        useSystemFonts: false,
+        standardFontDataUrl: PDFJS_STANDARD_FONTS,
+        // No book scripts run here — this only reads text. Off by default already; set
+        // explicitly so a future pdf.js default flip cannot enable eval on book bytes.
+        isEvalSupported: false,
+      }).promise;
+
+      try {
+        const entries: IndexEntry[] = [];
+        // Pages are 1-based in PDF and in the Locator; iterate in reading order so
+        // grouping preserves it with no later sort (same contract as the EPUB side).
+        for (let page = 1; page <= doc.numPages; page++) {
+          const content = await (await doc.getPage(page)).getTextContent();
+          const pageText = pageItemsToText(content.items.filter(isTextItem));
+          const chapterId = `p${page}`;
+          for (const { word, offset } of tokenize(pageText)) {
+            const locator: Locator = { type: 'PDF', page, offset };
+            entries.push({
+              word,
+              chapterId,
+              locator,
+              snippet: makeSnippet(pageText, offset, offset + word.length),
+            });
+          }
+        }
+
+        if (entries.length === 0) throw new Error(`PDF ${pdfPath} yielded no entries`);
+        // Token sequence in reading order (page by page, then order within a page). Phrase
+        // adjacency keys off this rather than the char offset. See Posting.seq.
+        entries.forEach((entry, i) => {
+          entry.seq = i;
+        });
+        return { format: 'PDF', entries };
+      } finally {
+        // Release the worker/document regardless of outcome — a thrown "no entries"
+        // must not leak the loading task.
+        await doc.destroy();
+      }
+    },
+  };
+}
+
+/** The sample-PDF extractor the PDF tests build against. */
+export const pdfSampleExtractor: Extractor = createPdfExtractor(SAMPLE_PDF);

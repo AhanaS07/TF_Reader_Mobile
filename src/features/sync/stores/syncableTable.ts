@@ -1,6 +1,8 @@
 import { getDatabase, nowIso } from '../localDb/database';
 import type { EntityType, OutboxOperation } from '../localDb/types';
 import { outboxStore } from './outboxStore';
+import { parseFieldTimestamps, stringifyFieldTimestamps } from './fieldTimestamps';
+import { requestSync } from '../syncTrigger';
 
 interface SyncableTableOptions<TRow> {
   table: string;
@@ -9,6 +11,13 @@ interface SyncableTableOptions<TRow> {
   toServer: (row: TRow) => Record<string, unknown>;
   /** Maps a server record to a local row. */
   toRow: (record: any) => TRow;
+  /**
+   * Column names eligible for field-level merge, for a multi-field singleton row where two
+   * devices commonly edit different fields between syncs (personalization, accessibility).
+   * Omitted entirely for every other table, which keeps the original whole-row
+   * Last-Write-Wins behaviour byte-for-byte - this option is additive, not a replacement.
+   */
+  mergeFields?: readonly string[];
 }
 
 interface RowShape {
@@ -18,6 +27,10 @@ interface RowShape {
   synced: number;
   /** Base version for conflict detection - see {@link LocalSyncFields}. */
   server_updated_at?: string | null;
+}
+
+interface FieldMergeRowShape extends RowShape {
+  field_updated_at: string;
 }
 
 /**
@@ -106,7 +119,36 @@ export function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
 export function createSyncableTable<TRow extends RowShape>(
   options: SyncableTableOptions<TRow>,
 ) {
-  const { table, entityType, toServer, toRow } = options;
+  const { table, entityType, toServer, toRow, mergeFields } = options;
+
+  /**
+   * Live-change notification, ONE PER TABLE (closed over here, not shared across `bookmarks` vs
+   * `highlights` vs ...). Mirrors `prefsStore.subscribe`'s shape and its own documented gap:
+   * that store's header comment says outright "a prefs row pulled by Sync from the server does
+   * not pass through here... if that path ever needs to drive a live re-apply it must notify too
+   * — call it out then rather than assuming this covers it." This is that call-out, for bookmarks:
+   * a delete (or any other edit) that arrives via `pull()`'s `applyServerRecord` now notifies too,
+   * not just a local `saveLocal` edit — so a panel already open on this book can reload instead of
+   * showing a bookmark that was deleted on another device (or directly against the backend) until
+   * the book happens to be reopened. No payload on purpose: every current subscriber (Reader's
+   * bookmarks-panel effect) already re-fetches its own book-scoped list on any signal, and a
+   * generic "something in this table changed" is enough to trigger that — see `bookmarkStore.ts`'s
+   * re-export and `ReaderScreen.tsx`'s subscribing effect for the one call site that needs it today.
+   */
+  const changeListeners = new Set<() => void>();
+
+  function notifyChanged(): void {
+    // A throwing subscriber must not fail the write that already succeeded — same reasoning as
+    // prefsStore.ts's own `notify`. Snapshot first so a listener that unsubscribes mid-notify
+    // does not skip a sibling.
+    for (const listener of [...changeListeners]) {
+      try {
+        listener();
+      } catch {
+        // Swallowed deliberately — one bad subscriber must not take out the others or the caller.
+      }
+    }
+  }
 
   const columnsOf = (row: TRow) => Object.keys(row) as (keyof TRow & string)[];
 
@@ -127,6 +169,34 @@ export function createSyncableTable<TRow extends RowShape>(
 
   return {
     entityType,
+
+    /** Set only for a field-merge table - see {@link SyncableTableOptions.mergeFields}. */
+    mergeFields,
+
+    /**
+     * Subscribe to this table's changes — a local edit (`saveLocal`) or a pulled server change
+     * that actually applied (`applyServerRecord` returning `true`). See `changeListeners`'s own
+     * doc above for why this exists and what it deliberately does not do (no payload; a listener
+     * that needs to know WHICH row changed re-reads its own scoped list). Returns an unsubscribe.
+     */
+    subscribe(listener: () => void): () => void {
+      changeListeners.add(listener);
+      return () => {
+        changeListeners.delete(listener);
+      };
+    },
+
+    /**
+     * Rebuilds the wire payload from a row currently on disk - see `push()`'s field-merge path.
+     *
+     * Takes `any`, not `TRow`, on purpose: every other method called across the heterogeneous
+     * `TABLES` map (`applyServerRecord`, `adoptPushResult`, ...) already takes `any` for the
+     * same reason - a parameter typed by the per-table generic breaks TypeScript's ability to
+     * treat `TABLES[op.entity_type]` as one clean union when calling across all six tables.
+     */
+    toServerPayload(row: any): Record<string, unknown> {
+      return toServer(row);
+    },
 
     /** Raw upsert with no outbox side effect. Used by the pull path. */
     async writeRow(row: TRow): Promise<void> {
@@ -177,6 +247,10 @@ export function createSyncableTable<TRow extends RowShape>(
             toServer(stamped),
           );
         });
+        // Outside the transaction: this only schedules a future sync attempt, it is not part of
+        // the write itself, and must run even if the caller never awaits push draining it.
+        requestSync();
+        notifyChanged();
         return stamped;
       };
 
@@ -193,6 +267,18 @@ export function createSyncableTable<TRow extends RowShape>(
       if (!existing) return;
       const tombstone = { ...existing, is_deleted: 1, updated_at: nowIso(), synced: 0 };
       await this.saveLocal(tombstone as TRow, 'DELETE');
+    },
+
+    /**
+     * Raw hard delete, no tombstone, no outbox entry. For a row that never actually reached the
+     * server under this id - a locally-generated duplicate whose CREATE lost to a server-side
+     * uniqueness constraint (see `syncEngine.ts`'s locator-collision handling). A tombstone would
+     * be wrong here: nothing else has ever seen this id, so there is nothing to propagate a
+     * delete to - the row simply should never have existed as a separate document.
+     */
+    async hardDeleteLocal(id: string): Promise<void> {
+      const db = await getDatabase();
+      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
     },
 
     async findById(id: string): Promise<TRow | null> {
@@ -233,10 +319,12 @@ export function createSyncableTable<TRow extends RowShape>(
     },
 
     /**
-     * PULL: apply a record the server sent us, using Last-Write-Wins.
+     * PULL: apply a record the server sent us.
      *
-     * A local row that is newer wins and is left alone - it still has an outbox
-     * entry waiting, so the server will catch up on the next push.
+     * Whole-row Last-Write-Wins by default: a local row that is newer wins and is left alone -
+     * it still has an outbox entry waiting, so the server will catch up on the next push.
+     *
+     * With `mergeFields` set, this instead merges field by field - see `mergeFieldLevel` below.
      */
     async applyServerRecord(record: any): Promise<boolean> {
       const db = await getDatabase();
@@ -246,12 +334,48 @@ export function createSyncableTable<TRow extends RowShape>(
         [incoming.id],
       );
 
-      if (existing && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
+      if (mergeFields) {
+        const merged = mergeFieldLevel(
+          existing as FieldMergeRowShape | null,
+          incoming as unknown as FieldMergeRowShape,
+          mergeFields,
+        );
+        if (!merged.changed) return false;
+
+        // Outbox refresh for a preserved pending edit (merged.row.synced === 0) is deliberately
+        // NOT done here - see syncEngine.ts's pull(). This function is also called by
+        // serverHasDiverged() DURING an active push for this exact row, which already owns
+        // rebuilding the payload and clearing the outbox once send() succeeds; enqueuing here
+        // too would insert a second outbox row that push()'s own `outboxStore.remove([op.id])`
+        // (keyed on the ORIGINAL op's id) would never find and clean up.
+        const { sql, values } = upsertSql(merged.row as unknown as TRow);
+        await db.runAsync(sql, values);
+        notifyChanged();
+        return true;
+      }
+
+      // Deletes are STICKY, regardless of timestamp - once either side has deleted this record,
+      // it stays deleted. Without this, a same-id update-in-place (e.g. bookmarkStore.rename())
+      // could resurrect a row another device deleted, just by carrying a later stamp than the
+      // delete - the exact race the original create-and-delete-only design (union via distinct
+      // ids) never had to consider. See READER_BOOKMARKS_WIRING.md's "Real rename op" open item.
+      //
+      // A tombstone already held locally rejects ANY incoming record outright (nothing to
+      // change - includes another delete arriving late, which is a no-op here). A live local row
+      // meeting an incoming delete applies it unconditionally, skipping the timestamp compare
+      // below entirely: this is "deletes win", not "the newer write wins and happens to be a
+      // delete" - a delete that is chronologically OLDER than a rename still must not be
+      // out-voted, or the two directions of this guard would contradict each other.
+      if (existing?.is_deleted === 1) {
+        return false;
+      }
+      if (existing && incoming.is_deleted !== 1 && isAtOrAfter(existing.updated_at, incoming.updated_at)) {
         return false;
       }
 
       const { sql, values } = upsertSql(mergeLocalColumns(existing, incoming));
       await db.runAsync(sql, values);
+      notifyChanged();
       return true;
     },
 
@@ -286,6 +410,96 @@ export function createSyncableTable<TRow extends RowShape>(
       return true;
     },
   };
+}
+
+/**
+ * PULL / push-conflict merge for a field-merge table: each field keeps whichever side touched
+ * it most recently, instead of the newer ROW replacing the other wholesale.
+ *
+ * This is what fixes the whole-row-LWW failure mode for a multi-field singleton: device A
+ * changes theme, device B (still on an older base) changes font size and syncs later - under
+ * whole-row LWW, B's newer row would silently revert A's theme change even though the two
+ * edits never touched the same field. Comparing per field means each edit survives.
+ *
+ * Four cases per field, not one comparison, because the two sides can each independently have
+ * or lack an explicit stamp for it:
+ *
+ *   - BOTH stamped: compare the two field timestamps directly.
+ *   - Local stamped, remote not: remote's client never touched this field, so its value is
+ *     just whatever it was carrying already - it must not overwrite a knowingly-fresher local
+ *     edit just because the remote ROW happens to be newer for some unrelated reason.
+ *   - Remote stamped, local not: local never touched this field, so there is nothing local to
+ *     protect - but comparing against the row's own `updated_at` would be wrong, because that
+ *     bumps on every edit to ANY field, making an untouched field look "just changed" the
+ *     moment something else on the row is. Comparing against `server_updated_at` (the last
+ *     point this device is known to have agreed with the server) is stable across unrelated
+ *     local edits and answers the right question: "has the server told us something new about
+ *     this field since we last synced?"
+ *   - NEITHER stamped: the pre-migration case, or a field nothing has ever individually
+ *     touched on either side. Falls back to whole-row `updated_at` - exactly the original
+ *     whole-row LWW guard - which is why an upgraded row behaves identically to before until
+ *     something starts recording per-field times again.
+ */
+function mergeFieldLevel<TRow extends FieldMergeRowShape>(
+  existing: TRow | null,
+  incoming: TRow,
+  fields: readonly string[],
+): { row: TRow; changed: boolean } {
+  if (!existing) return { row: { ...incoming, synced: 1 }, changed: true };
+
+  const existingTimes = parseFieldTimestamps(existing.field_updated_at);
+  const incomingTimes = parseFieldTimestamps(incoming.field_updated_at);
+
+  const merged: any = { ...existing };
+  const mergedTimes: Record<string, string> = { ...existingTimes };
+  let changed = false;
+  // Whether the merged row keeps a field the incoming record does NOT carry the same value for
+  // - i.e. the server's own document, whatever pushed `incoming`, is missing something this
+  // device now knows. Tracked separately from `changed` (which only means "adopted something
+  // FROM incoming") because it is the opposite direction: it means incoming is stale relative to
+  // the merge, not that local was.
+  let divergesFromIncoming = false;
+
+  for (const field of fields) {
+    const localTime = existingTimes[field];
+    const remoteTime = incomingTimes[field];
+
+    let remoteWins: boolean;
+    if (localTime !== undefined && remoteTime !== undefined) {
+      remoteWins = isAfter(remoteTime, localTime);
+    } else if (localTime !== undefined) {
+      remoteWins = false;
+    } else if (remoteTime !== undefined) {
+      remoteWins = isAfter(remoteTime, existing.server_updated_at ?? existing.updated_at);
+    } else {
+      remoteWins = isAfter(incoming.updated_at, existing.updated_at);
+    }
+
+    if (remoteWins) {
+      merged[field] = (incoming as any)[field];
+      mergedTimes[field] = remoteTime ?? incoming.updated_at;
+      changed = true;
+    } else if (merged[field] !== (incoming as any)[field]) {
+      divergesFromIncoming = true;
+    }
+  }
+
+  if (!changed) return { row: existing, changed: false };
+
+  merged.field_updated_at = stringifyFieldTimestamps(mergedTimes);
+  merged.updated_at = isAfter(incoming.updated_at, existing.updated_at)
+    ? incoming.updated_at
+    : existing.updated_at;
+  // `existing.synced === 0` (a pending local edit) always survives the merge, as before. NEW:
+  // also force 0 when the merge kept a field `incoming` did not carry - otherwise that field
+  // lives only on this device and the server's own copy of it goes stale until some unrelated
+  // edit happens to carry a fresh value along with it. `pull()` already enqueues an outbox
+  // refresh whenever the merged row comes back `synced: 0`; this is the only change needed to
+  // make that existing mechanism cover the "no pending edit, pure remote-wins-mostly merge" case
+  // too, instead of just "there was already a pending edit".
+  merged.synced = existing.synced === 0 || divergesFromIncoming ? 0 : 1;
+  merged.server_updated_at = incoming.updated_at;
+  return { row: merged as TRow, changed: true };
 }
 
 /**

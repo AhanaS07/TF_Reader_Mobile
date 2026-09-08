@@ -42,7 +42,10 @@ const stringifyJson = (value: unknown): string => JSON.stringify(value ?? null);
  * old rows keep rendering and get rewritten in the new casing the next time they are saved.
  *
  * Returns null for a locator that is corrupt or of an unknown type, so callers can decide
- * whether to skip it rather than having it silently vanish.
+ * whether to skip it rather than having it silently vanish. This is also why AUDIO is
+ * validated here (`positionMs` must actually be a number) rather than trusted with a bare
+ * cast - a locator read back off disk or off the wire is untyped JSON no matter what the
+ * `Locator` union says at compile time.
  */
 export function parseLocator(json: string | null): Locator | null {
   if (json == null) return null;
@@ -62,6 +65,11 @@ export function parseLocator(json: string | null): Locator | null {
   }
   if (type === 'EPUB' && typeof raw.cfi === 'string') {
     return { type: 'EPUB', cfi: raw.cfi };
+  }
+  if (type === 'AUDIO' && typeof raw.positionMs === 'number') {
+    return typeof raw.trackId === 'string'
+      ? { type: 'AUDIO', positionMs: raw.positionMs, trackId: raw.trackId }
+      : { type: 'AUDIO', positionMs: raw.positionMs };
   }
   return null;
 }
@@ -203,6 +211,10 @@ export const personalizationMapper = {
     zoom: row.zoom,
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
+    // Field-level merge's own bookkeeping - see syncableTable.ts. Sent so another device
+    // pulling this record can compare its own per-field times against these, not just the
+    // whole-row updatedAt above.
+    fieldUpdatedAt: parseJson(row.field_updated_at) ?? {},
   }),
   toRow: (record: any): PersonalizationRow => ({
     id: record.id,
@@ -224,6 +236,10 @@ export const personalizationMapper = {
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,
     server_updated_at: record.updatedAt,
+    // Absent on a server that has never seen this field (an old record, or a backend that
+    // drops unrecognised keys) reads as "no field ever recorded here", which is exactly the
+    // fallback-to-row-updatedAt behaviour the merge already has for that case.
+    field_updated_at: stringifyJson(record.fieldUpdatedAt ?? {}),
   }),
 };
 
@@ -254,6 +270,7 @@ export const accessibilityMapper = {
     screenReaderHints: toBool(row.screen_reader_hints),
     updatedAt: row.updated_at,
     isDeleted: toBool(row.is_deleted),
+    fieldUpdatedAt: parseJson(row.field_updated_at) ?? {},
   }),
   toRow: (record: any): AccessibilityRow => ({
     id: record.id,
@@ -281,6 +298,7 @@ export const accessibilityMapper = {
     is_deleted: toInt(!!record.isDeleted),
     synced: 1,
     server_updated_at: record.updatedAt,
+    field_updated_at: stringifyJson(record.fieldUpdatedAt ?? {}),
   }),
 };
 

@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
 /**
  * Fixed prototype identity. Every local record and every synced record uses
@@ -8,11 +9,17 @@ import Constants from 'expo-constants';
 export const USER_ID = process.env.EXPO_PUBLIC_USER_ID ?? 'user-001';
 export const BOOK_ID = process.env.EXPO_PUBLIC_BOOK_ID ?? 'book-001';
 
-const BACKEND_PORT = 9000;
+// Was 9000 (a separate Mongo CRUD service) until the real backend consolidated onto one server -
+// tf_reader_backend_temp on 8080 now serves BOTH api/v1/{entity} CRUD and Download's
+// device-key/content-licence/signed-url/seat routes. Download's config.ts still has its own
+// REAL_BACKEND_PORT = 8080 for the same server; that duplication is real (see this file's own
+// resolveBackendHost, which already does correct LAN-host resolution that Download's hardcoded
+// `localhost` fallback does not), and is worth a shared constant later, not fixed in this change.
+const BACKEND_PORT = 8080;
 
 /**
  * The book file and the pdf.js runtime are static resources, not CRUD, and the
- * Mongo backend does not serve them - `/api/books/{id}/file` is a 404 on 9000.
+ * Mongo backend does not serve them - `/api/books/{id}/file` is a 404 on 8080.
  * Until it does, they come from the old Spring app on 8090. Once the Mongo
  * service picks them up, set this to BACKEND_PORT and the SQLite backend can go.
  */
@@ -33,10 +40,19 @@ function resolveBackendHost(): string {
   if (host && host !== 'localhost' && host !== '127.0.0.1') {
     return host;
   }
+  // hostUri gave nothing usable (empty, or itself localhost/127.0.0.1) - on a physical device or
+  // the iOS simulator that correctly means the dev machine itself. An ANDROID EMULATOR is its own
+  // VM though: "localhost" there is the emulator, not the host machine, and no hostUri lookup can
+  // ever produce the host's real address from inside it - 10.0.2.2 is the documented emulator ->
+  // host alias, not a value that comes from resolving anything. Confirmed 2026-08-26: without this,
+  // sync silently posts into a black hole on the emulator (outbox never drains) while the same code
+  // works fine on a physical device or iOS sim, because on those the hostUri branch above already
+  // returns a real, reachable address.
+  if (Platform.OS === 'android') return '10.0.2.2';
   return 'localhost';
 }
 
-/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:8090 */
+/** Override by setting EXPO_PUBLIC_API_URL, e.g. http://192.168.1.20:8080 */
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL ?? `http://${resolveBackendHost()}:${BACKEND_PORT}`;
 
@@ -82,18 +98,14 @@ export const PERSONALIZATION_REQUIRES_BOOK_ID = true;
 /** A validation failure is retried this many times before the op is parked as DEAD. */
 export const MAX_PUSH_RETRIES = 6;
 
-export const BOOK_FILE_URL = `${ASSET_BASE_URL}/api/books/${BOOK_ID}/file`;
-export const PDFJS_LIB_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.min.js`;
-export const PDFJS_WORKER_URL = `${ASSET_BASE_URL}/api/assets/pdfjs/pdf.worker.min.js`;
-
-/** pdf.js needs these to draw the PDF base-14 fonts (Helvetica, Helvetica-Bold). */
-export const PDFJS_STANDARD_FONTS = [
-  'LiberationSans-Regular.ttf',
-  'LiberationSans-Bold.ttf',
-] as const;
-
-export const pdfjsFontUrl = (filename: string) =>
-  `${ASSET_BASE_URL}/api/assets/pdfjs/standard_fonts/${filename}`;
-
 /** How long a single network call may take before we treat the device as offline. */
 export const REQUEST_TIMEOUT_MS = 8000;
+
+/**
+ * How long a local write waits, with no further write arriving, before it triggers a sync run -
+ * see syncTrigger.ts. Long enough that a burst of writes to the same record (e.g. a page turn on
+ * every relocate while flipping through a book) collapses into one run instead of one per write;
+ * short enough that a single bookmark/highlight/prefs edit still reaches the server promptly
+ * without waiting for the next connectivity edge (useAutoSync.ts) or app restart.
+ */
+export const PUSH_ON_ENQUEUE_DEBOUNCE_MS = 1500;

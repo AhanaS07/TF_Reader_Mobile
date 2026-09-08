@@ -16,7 +16,7 @@ import { getBek, storeBek } from './keyStorage';
 import { generateDeviceKeypair, wrapBek } from './deviceKeypair';
 import { contentStore, MAX_DECRYPTED_BYTES } from './contentStore';
 import { ContentError } from '@/shared/contracts';
-import type { EncryptedPackage, SignedLicence } from '@/shared/contracts';
+import type { EncryptedPackage, LocalLicenceRecord } from '@/shared/contracts';
 
 // Matches deviceKeypair.ts's internal constant — duplicated here only for the scoped keychain
 // cleanup in the stale-cached-BEK block below (deviceKeypair.ts exposes no reset of its own).
@@ -27,6 +27,20 @@ const DEVICE_PRIVATE_KEY_SERVICE = 'tf-reader-device-private-key';
 const STORE_DIR = new Directory(Paths.document, 'tf-reader-content');
 function indexFilePath(bookId: string): File {
   return new File(STORE_DIR, `${encodeURIComponent(bookId)}.index.bin`);
+}
+function metaFilePath(bookId: string): File {
+  return new File(STORE_DIR, `${encodeURIComponent(bookId)}.meta.json`);
+}
+
+function readMeta(bookId: string): Record<string, any> {
+  return JSON.parse(metaFilePath(bookId).textSync());
+}
+
+function writeMeta(bookId: string, meta: Record<string, any>): void {
+  const file = metaFilePath(bookId);
+  if (file.exists) file.delete();
+  file.create();
+  file.write(JSON.stringify(meta));
 }
 
 function randomKey(): Uint8Array {
@@ -39,7 +53,7 @@ function plaintextOf(sizeBytes: number, seed: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): SignedLicence {
+function licenceFor(bookId: string, overrides: Partial<LocalLicenceRecord> = {}): LocalLicenceRecord {
   return {
     licenceId: `lic-${bookId}`,
     itemId: bookId,
@@ -47,7 +61,6 @@ function licenceFor(bookId: string, overrides: Partial<SignedLicence> = {}): Sig
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     canPersist: true,
     rights: { print: false },
-    signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
     ...overrides,
   };
 }
@@ -56,7 +69,7 @@ async function buildEncryptedPackage(
   bookId: string,
   plaintext: Uint8Array,
   key: Uint8Array,
-  licenceOverrides: Partial<SignedLicence> = {},
+  licenceOverrides: Partial<LocalLicenceRecord> = {},
   opts: { withLicence?: boolean; index?: Uint8Array } = {}
 ): Promise<EncryptedPackage> {
   const payload = await encrypt(plaintext, key);
@@ -548,9 +561,29 @@ describe('EDGE: type-legal but contract-inconsistent field combinations', () => 
 
     // Without a licence, isLicenceExpired() trivially returns false forever (it short-circuits
     // on `!pkg.licence`), so a package like this would decrypt with NO expiry check, ever. That
-    // contradicts the contract's SignedLicence doc ("null ⇒ open access (no licence)") for a
+    // contradicts the contract's LocalLicenceRecord doc ("null ⇒ open access (no licence)") for a
     // package that is NOT open access (encryption is non-null here). store() must reject this
     // combination rather than silently accept crypto material with no rights/expiry attached.
+    await expect(contentStore.store(pkg)).rejects.toMatchObject({
+      code: ContentError.LICENCE_INVALID,
+    });
+  });
+
+  // Previously untested branch (contentStore.ts:150). `downloadManager.ts` derives
+  // `licence.keyFingerprint` from THIS device's own key (`publicKeyFingerprint()`), independently
+  // of whatever `encryption.keyFingerprint` the server claims — so on a real download this check
+  // compares two independently-sourced values, not a value against itself. This test pins the
+  // rejection side of that comparison directly: two DIFFERENT fingerprints must fail store(),
+  // regardless of how each value was derived upstream.
+  it('licence.keyFingerprint disagreeing with encryption.keyFingerprint: store() rejects', async () => {
+    const bookId = 'edge-key-fingerprint-mismatch';
+    const key = randomKey();
+    const plaintext = plaintextOf(64, 'key fingerprint mismatch');
+    const pkg = await buildEncryptedPackage(bookId, plaintext, key, {
+      keyFingerprint: 'sha256:a-completely-different-fingerprint',
+    });
+    await storeBek(bookId, key);
+
     await expect(contentStore.store(pkg)).rejects.toMatchObject({
       code: ContentError.LICENCE_INVALID,
     });
@@ -657,6 +690,92 @@ describe('EDGE: Elite tier — persistence really does not survive a process res
     await expect(restartedContentStore.contentStore.openSession(bookId)).rejects.toMatchObject({
       code: ContentError.DECRYPTION_FAILED,
     });
+  });
+});
+
+// FIXED, so the block that used to pin this defect is gone (per its own instruction: "Delete this
+// block when it is fixed and assert the reopen SUCCEEDS instead"). Elite `close()`-then-reopen is
+// now asserted positively in contentStore.test.ts, alongside the rest of the tier's lifecycle —
+// `close()` exempts Elite from the packageCache drop, so it is REVERSIBLE for every tier and
+// `destroy()` is the only terminal one, as content-provider.ts specifies.
+
+// Option C from the B4 write-up (thisWeek.md / FAIL_CLOSED_AUDIT.md): the persisted licence is
+// sealed with the book's own BEK so a hand-edit of meta.json's plaintext licence fields no longer
+// changes what decryptBook() enforces. Sealed LAZILY (first genuine key access, not at store()
+// time — see contentStore.ts's own comment on why store() must stay keystore-free), so these
+// tests exercise "first decrypt creates the seal" before proving tamper is caught by it.
+describe('EDGE: licence seal (Option C) — on-device tamper protection for the persisted licence', () => {
+  it('has no seal on disk until the first decrypt, then persists one', async () => {
+    const bookId = 'edge-seal-lazy-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-lazy'), key));
+
+    expect(readMeta(bookId).licenceSeal).toBeUndefined();
+
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId);
+
+    expect(readMeta(bookId).licenceSeal).toBeDefined();
+  });
+
+  it('a book re-opened cold (packageCache/session dropped) still verifies against the persisted seal', async () => {
+    const bookId = 'edge-seal-cold-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-cold-ok'), key));
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId); // seals it
+    await contentStore.close(bookId); // drops packageCache + session — forces loadPersisted() next
+
+    await contentStore.openSession(bookId);
+    const plaintext = await contentStore.decryptBook(bookId);
+
+    expect(Buffer.from(plaintext).toString('utf8').startsWith('seal-cold-ok')).toBe(true);
+  });
+
+  it('hand-editing expiresAt in meta.json to un-expire a book does not change what decryptBook() enforces', async () => {
+    const bookId = 'edge-seal-tamper-expiry-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(
+      await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-expiry'), key, {
+        expiresAt: new Date(Date.now() - 1000).toISOString(), // already expired
+      })
+    );
+
+    // First decrypt: correctly denied, AND seals the (truthfully expired) licence in the process.
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_EXPIRED });
+    await contentStore.close(bookId);
+
+    // Attacker with file access hand-edits the PLAINTEXT licence to look unexpired — nothing
+    // before this feature existed would have caught this.
+    const meta = readMeta(bookId);
+    meta.licence.expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    writeMeta(bookId, meta);
+
+    // Still denied: decryptBook() trusts the SEALED copy (still the original, truthfully expired
+    // licence) for the expiry check, not the hand-edited plaintext sitting next to it.
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_EXPIRED });
+  });
+
+  it('corrupting the seal itself (not the plaintext) fails closed with LICENCE_INVALID', async () => {
+    const bookId = 'edge-seal-tamper-seal-1';
+    const key = randomKey();
+    await storeBek(bookId, key);
+    await contentStore.store(await buildEncryptedPackage(bookId, plaintextOf(64, 'seal-corrupt'), key));
+    await contentStore.openSession(bookId);
+    await contentStore.decryptBook(bookId); // seals it
+    await contentStore.close(bookId);
+
+    const meta = readMeta(bookId);
+    meta.licenceSeal.content = 'not-a-real-seal-at-all';
+    writeMeta(bookId, meta);
+
+    await contentStore.openSession(bookId);
+    await expect(contentStore.decryptBook(bookId)).rejects.toMatchObject({ code: ContentError.LICENCE_INVALID });
   });
 });
 

@@ -9,12 +9,17 @@
 //   • ContentError          (enum, errors.ts)
 //   • ContentFailure        (class, errors.ts)
 //   • DEFAULT_PREFS         (const, prefs.ts)
+//   • OFFLINE_LOCK_EVENTS   (const, offline-lock.ts)
+//   • EVENT_CHANNELS        (const, event-bus.ts)
 // …and everything in accessibility.ts except its types:
-//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX,
+//   • DEFAULT_ACCESSIBILITY_PREFS, TTS_RATE_MIN / _MAX, TTS_PITCH_MIN / _MAX,
 //     REDUCE_MOTION_VALUES, TTS_HIGHLIGHT_MODE_VALUES   (consts)
-//   • createDefaultAccessibilityPrefs, isValidTtsRate,
+//   • createDefaultAccessibilityPrefs, isValidTtsRate, isValidTtsPitch,
 //     isValidReduceMotion, isValidTtsHighlightMode,
 //     resolveReduceMotion, migrateReduceMotion, resolveFontScale   (fns)
+// …and the prefs row adapter + migration (prefs-row.ts):
+//   • HIGH_CONTRAST_BASE_THEME   (const)
+//   • toPersonalizationRow, fromPersonalizationRow, migrateSharedPrefs   (fns)
 // Import those as VALUES:      import { ContentError, ContentFailure } from '@/shared/contracts';
 // A `import type { ContentError }` compiles but gives you NOTHING at runtime —
 // you can't `throw new ContentFailure(...)` or switch on the enum. Everything
@@ -30,12 +35,17 @@ export * from '../types/primitives';
 export * from './errors';
 export * from './content-provider';
 export * from './sync-record';
-// export * from './offline-lock'; // DEFERRED — offline-lock.ts is finalised
-// jointly with Sync (Karthik) + Encryption (Abhinav). Restore this line when the
-// file lands; the `content.lock` / `content.unlock` signals live there.
+
+// Offline lock + its carrier. Previously deferred pending the joint Sync (Karthik) +
+// Encryption (Abhinav) sign-off; that is now agreed, so both are live. The
+// `content.lock` / `content.unlock` signals live in offline-lock.ts and travel over the bus
+// declared in event-bus.ts — the instance is src/shared/eventBus.ts.
+export * from './offline-lock';
+export * from './event-bus';
 
 // Existing teammate contracts.
 export * from './prefs'; // layout diagram names this "shared-prefs.ts"
+export * from './prefs-row'; // nested<->flat row adapter + highContrast migration (runtime)
 export * from './accessibility'; // composed into SharedPrefs.accessibility
 export * from './annotations';
 export * from './progress';
@@ -45,13 +55,16 @@ export * from './search';
 // so `import type { AccessTier, ContentLicenceResponse } from '@/shared/contracts'`
 // is the correct form.
 //
-// content-licence.ts and device-key.ts are marked DRAFT in their own headers:
-// both are written against a mock backend, not a confirmed wire contract. They
-// are exported anyway so consumers import them through the one surface rather
-// than deep-importing a path that will move — but treat their field names as
-// unfrozen until the real endpoints are published.
+// content-licence.ts is marked DRAFT in its own header: written against a mock backend, not a
+// confirmed wire contract. Exported anyway so consumers import it through the one surface rather
+// than deep-importing a path that will move — but treat its field names as unfrozen until the
+// real endpoint is published.
+//
+// device-key.ts (device-key registration) was here too, same DRAFT status — deleted 2026-09-07:
+// flambeau's real backend has no such endpoint and explicitly rejects the concept (a device is
+// observed on every reading session rather than enrolled), so there was no contract left to keep
+// unfrozen. See src/features/download/API_CONTRACT_NOTES.md, finding B8.
 export * from './tier';
-export * from './device-key';
 export * from './content-licence';
 
 // reading-session.ts (2026-08-14): the REAL flambeau contract (Loans + Reading sessions),

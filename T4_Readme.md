@@ -85,6 +85,13 @@ work). Both need config-plugin entries in `app.json` plus a fresh `npx expo preb
 ships no Expo config plugin, the answer is a small local plugin — **not** a hand edit under
 `android/` or `ios/`, which CNG discards on the next prebuild.
 
+**`expo-linear-gradient` (added 2026-08-14, Reader) is also native**, and this is the part that
+costs someone an afternoon if it is not said out loud: pulling this branch and running `npm install`
+is **not enough**. The dev client you already have on your simulator was compiled without
+`ExpoLinearGradient`, so the reader throws "Cannot find native module" at import until you rebuild
+with `npx expo run:ios`. It needs no `app.json` plugin entry — autolinking picks it up — so the
+rebuild is the entire cost. It renders the Contents list's edge fades (`ReaderScreen.tsx`).
+
 ### OPEN RISK: `react-native-aes-gcm-crypto` and the New Architecture
 
 **`expo-doctor` is configured to skip this package.** The exclusion lives in `package.json`
@@ -130,9 +137,10 @@ fallback if the untested Android/large-payload/physical-device cases turn up a r
 - **Plaintext never touches disk.** Decrypted content is `Bytes` (`Uint8Array`), never a path or
   a stream. The type is the enforcement — keep it that way. `epub.js` wants an `ArrayBuffer` for
   `book.open(...)`; get it from `bytes.buffer`.
-- **`ContentFormat` is `'PDF' | 'EPUB' | 'AUDIO'`, taken verbatim from wokay.** `AUDIO` is never
-  encrypted and never has a search index — `BookSearchIndex['format']` excludes it, and the
-  canary pins that.
+- **`ContentFormat` is `'PDF' | 'EPUB' | 'AUDIO'`, taken verbatim from wokay.** Audio is encrypted
+  (as of 2026-08-25), the same AES-256-GCM as EPUB/PDF. Audio never has a search index —
+  `BookSearchIndex['format']` excludes it, and the canary pins that. "Audio is never encrypted"
+  was true through earlier build phases and is REVOKED.
 - **`Timestamp` is epoch milliseconds (client wall-time).** Wire/JSON timestamps from the grant
   and licence are ISO-8601 UTC _strings_ and stay `string`. Don't conflate them.
 
@@ -141,7 +149,55 @@ fallback if the untested Android/large-payload/physical-device cases turn up a r
 Beyond the repo-wide notes in the root README:
 
 - Encrypted fixtures live in `samples/`. Never commit real content — encrypted or not.
-- `AUDIO` paths need no decryption and no index; assert that rather than assuming it.
+- Audio is encrypted (as of 2026-08-25) — same decryption as EPUB/PDF. Audio never has a search
+  index; assert that rather than assuming it.
+
+### Real-book device runs — `samples/fixtures/`
+
+Anything that has to be checked against a real book (rendering, TOC, memory, timings) uses the large
+books kept at **`samples/fixtures/`**, loaded through one env var per format, which
+`devContentSeed.ts` reads instead of the bundled samples:
+
+```
+EXPO_PUBLIC_READER_FIXTURE_EPUB="$PWD/samples/fixtures/20mb_EPUB.epub" \
+EXPO_PUBLIC_READER_FIXTURE_PDF="$PWD/samples/fixtures/15mb_PDF.pdf" \
+npx expo start --dev-client --clear
+```
+
+That gives the picker in `App.tsx` **four tabs**: `EPUB` and `PDF` (the bundled ~3 KB stand-ins) and
+`Big EPUB` and `Big PDF` (these two). All four are reachable without a restart, which is the point —
+a feature can be rolled out against a real book and checked against the stand-in side by side. The
+two large tabs are shown even when nothing has been pushed for them; tapping one then raises an
+error naming the variable to set, because a tab that appears only once an env var is set cannot be
+told apart from a feature that was never built.
+
+`--clear` is not optional: `EXPO_PUBLIC_*` values are inlined at transform time, so a warm Metro
+cache keeps serving the previous one. Each fixture also has its own bookId (`dev-fixture-epub`,
+`dev-fixture-pdf`) distinct from the bundled ones, which is what stops any two books sharing a
+stored package — `ensureSeeded()` short-circuits on `isAvailableOffline()`, so a shared id would
+serve whichever was stored first.
+
+**`EXPO_PUBLIC_READER_FORMAT=PDF` now only picks which book opens on launch**, not which ones exist;
+it selects the PDF side of whichever pair is available. Pointing a fixture var at the wrong-format
+file still seeds it under the wrong format — `devFixturePath.test.ts` is what stops that regressing.
+`EXPO_PUBLIC_READER_FIXTURE_PATH` (one shared path, scoped to `EXPO_PUBLIC_READER_FORMAT`) still
+works for older recorded runs. The full measurement procedure, the run matrix and the numbers live in
+`src/features/reader/READER_MEASUREMENTS.md`.
+
+Two things to know, in order of how much trouble they cause:
+
+- **`samples/` is gitignored in full** (`.gitignore:47`), which is the only reason a real book may
+  sit there at all. Confirm with `git check-ignore -v <path>` rather than assuming — the rule is a
+  bare `samples`, so moving the directory silently un-ignores it.
+- **It is PLAINTEXT on disk, by construction.** That is exactly what a storage-leak sweep should
+  flag, so it does not belong in the app container: on a simulator the path is read straight from
+  the repo and only ciphertext reaches the container. If you ever `simctl push` a copy in, delete it
+  before sweeping.
+
+The bundled sample is still the right fixture for most work. It is worth knowing what it cannot
+show: it ships no CSS (so it cannot tell you whether a book's own stylesheet wins over the reader's
+baseline), and its TOC is 3 flat entries (so it exercises neither nesting nor a list long enough to
+scroll).
 
 ## Deferred
 

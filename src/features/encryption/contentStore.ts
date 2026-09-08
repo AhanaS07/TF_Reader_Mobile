@@ -21,24 +21,69 @@
 // the genuinely-unavailable cases: no device keypair generated yet, or a wrappedBek that doesn't
 // decrypt under this device's key (wrong device, corrupted value).
 //
-// STILL NOT implemented here: licence SIGNATURE verification (RS256) — expiry is checked for
-// real below, signature is not (no RS256-verify library wired in yet). Don't mistake "expiry
-// checked" for "licence verified."
+// STILL NOT implemented here: licence SIGNATURE verification (RS256) — that's B4
+// (CONTRACT_ALIGNMENT.md), still open, and no RS256-verify library is wired in. What IS
+// implemented: decryptBook() checks expiry against a copy of the licence sealed with the book's
+// own BEK at store() time (licenceSeal.ts), not against the plaintext licence fields in meta.json
+// directly — those are hand-editable with a text editor and nothing before this checked them.
+// Don't mistake either check for the other: the seal proves the licence hasn't changed since THIS
+// DEVICE stored it; it does not prove flambeau issued it, which is what a real signature would.
 //
-// RAM budget: MAX_DECRYPTED_BYTES is a hard, enforced cap (checked before AND after decrypt), per
-// this task's "<25MB" directive. BuildPlan.md Phase 9.3 already flags 25MB as possibly
-// unrealistic for real whole-book payloads long-term (see docs/build-status.md) — kept as the
-// stated target here, not silently widened.
+// RAM budget: a hard, enforced cap, checked at store() time, on the cold-read path, and before
+// AND after decrypt. It is PER-FORMAT — MAX_DECRYPTED_BYTES (25 MB, this task's "<25MB"
+// directive) for EPUB/PDF, MAX_AUDIO_DECRYPTED_BYTES (20 MB, the OPDS team's prototype storage
+// limit) for AUDIO. Go through maxDecryptedBytesFor(); see its own comment for why audio is
+// bounded by the catalogue rather than by RAM. BuildPlan.md Phase 9.3 already flags 25MB as
+// possibly unrealistic for real whole-book payloads long-term (see docs/build-status.md) — kept
+// as the stated target here, not silently widened.
 
 import { Directory, File, Paths } from 'expo-file-system';
-import type { BookId, ContentStore, EncryptedPackage, SessionHandle } from '@/shared/contracts';
-import { ContentError, ContentFailure } from '@/shared/contracts';
+import type {
+  BookId,
+  ContentFormat,
+  ContentStore,
+  EncryptedPackage,
+  SessionHandle,
+  LocalLicenceRecord,
+} from '@/shared/contracts';
+import {
+  ContentError,
+  ContentFailure,
+  EVENT_CHANNELS,
+  OFFLINE_LOCK_EVENTS,
+} from '@/shared/contracts';
+import { eventBus } from '@/shared/eventBus';
 import { decrypt, decryptBook as decryptRaw } from './aesGcm';
 import { NONCE_BYTES, GCM_TAG_BYTES } from './cipherLayout';
 import { deleteBek, getBek, storeBek } from './keyStorage';
 import { unwrapBek } from './deviceKeypair';
+import { sealLicence, openSealedLicence, type SealedLicence } from './licenceSeal';
 
 export const MAX_DECRYPTED_BYTES = 25 * 1024 * 1024; // 25 MB whole-book RAM budget (frozen for this task)
+
+// AUDIO is capped LOWER than everything else, and the reason is the catalogue, not this device:
+// the OPDS team stores prototype audio at 20 MB or under, so a larger audiobook cannot arrive
+// from the only source that serves one. Enforcing it here makes that agreement checkable at the
+// boundary instead of assumed — a 40 MB audiobook is a catalogue bug, and this is where it says
+// so rather than sailing through to a 25 MB check that was only ever about RAM.
+//
+// It is NOT a claim that 20 MB is the right size for audio in general — it is ~21 minutes at
+// 128 kbps against 8–15 hours for a real audiobook. Full-length audio is out of reach at ANY cap
+// this constant could hold, because the cap bounds a whole-book-into-a-Uint8Array operation and a
+// 10-hour audiobook is ~500 MB; so RAISING THIS NUMBER IS NOT HOW FULL-LENGTH AUDIO GETS SUPPORTED,
+// and a change that reads "just bump the audio cap" is a misreading of the problem. Shipping real
+// audiobooks needs a path-based accessor and a decision that was deliberately deferred — see
+// reader/audio/AUDIO_PLAYER_DECISION.md Part 2, and B11 in CONTRACT_ALIGNMENT.md.
+export const MAX_AUDIO_DECRYPTED_BYTES = 20 * 1024 * 1024; // 20 MB, agreed with the OPDS/catalogue team
+
+/**
+ * The whole-book byte budget for `format`. Every book-sized check in this file goes through here
+ * so the two caps cannot drift apart — the search-index checks deliberately do not, since
+ * `BookSearchIndex.format` (search.ts) excludes AUDIO outright and no audio index can exist.
+ */
+export function maxDecryptedBytesFor(format: ContentFormat): number {
+  return format === 'AUDIO' ? MAX_AUDIO_DECRYPTED_BYTES : MAX_DECRYPTED_BYTES;
+}
 
 const STORE_DIR = new Directory(Paths.document, 'tf-reader-content');
 
@@ -63,6 +108,26 @@ interface PersistedMeta {
   originalLength: number;
   mimeType: string;
   hasIndex: boolean;
+  /** Timestamp (ISO string) when `invalidateLicence()` stripped the licence + BEK. Present ONLY
+   *  for the post-revocation shape: ciphertext on disk, but no rights attached. Absent for both
+   *  genuine open-access (never had a licence) and regular persisted books (licence present). */
+  revokedAt?: string;
+  /** On-device tamper seal over `licence` (see licenceSeal.ts) — absent for open access (no
+   *  licence to seal) and for anything persisted before this field existed. decryptBook() treats
+   *  a licence with no seal as ContentError.LICENCE_INVALID for anything that should have one. */
+  licenceSeal?: SealedLicence;
+  /** ISO timestamp of the last time this device PROVED to flambeau it still has access to this
+   *  book — set at store() time (a download IS a validation) and bumped by
+   *  recordLicenceValidation() on every later genuine online success (licenseCheck.ts's online
+   *  path, readingAccessMonitor.ts's periodic re-check). This is the anchor the 4-day offline cap
+   *  (licenseCheck.ts's computeOfflineLicenceExpiry) counts from — "4 days since we last actually
+   *  heard from the server," not "4 days from whenever someone happens to check," which is what a
+   *  naive `Date.now() + 4 days` recomputed on every check would silently reduce to (it would
+   *  never expire, since the check and the anchor would always be the same instant). Absent only
+   *  for a meta.json written before this field existed; treated as already-due for revalidation
+   *  rather than granted a fresh window — see computeOfflineLicenceExpiry's own comment. Optional
+   *  in the type for that reason — every store() from this change onward always sets it. */
+  lastValidatedAt?: string;
 }
 
 function writeFile(file: File, content: string | Uint8Array): void {
@@ -76,15 +141,44 @@ function writeFile(file: File, content: string | Uint8Array): void {
   file.write(content);
 }
 
-// "false ⇒ Elite, memory-only, no keystore write" (SignedLicence.canPersist). No licence at all
+/**
+ * Safe JSON.parse for meta.json — returns null instead of crashing on corruption.
+ * iOS can interrupt file writes during app suspension, leaving truncated meta.json files.
+ * Without this, a corrupted meta.json creates a crash loop: every subsequent open throws
+ * an uncaught SyntaxError from JSON.parse, and no recovery path clears the bad file.
+ */
+function parseMetaSafe(bookId: BookId): PersistedMeta | null {
+  const meta = metaFile(bookId);
+  if (!meta.exists) return null;
+  try {
+    return JSON.parse(meta.textSync()) as PersistedMeta;
+  } catch (err) {
+    console.error(
+      `[contentStore] corrupted meta.json for ${bookId} — deleting to break crash loop:`,
+      err,
+    );
+    try {
+      meta.delete();
+    } catch {
+      // Best-effort cleanup
+    }
+    return null;
+  }
+}
+
+
+// "false ⇒ Elite, memory-only, no keystore write" (LocalLicenceRecord.canPersist). No licence at all
 // is open access, which DOES persist — there is no key material to protect by keeping it memory-only.
 function isElite(pkg: EncryptedPackage): boolean {
   return pkg.licence !== null && pkg.licence.canPersist === false;
 }
 
-function isLicenceExpired(pkg: EncryptedPackage): boolean {
-  if (!pkg.licence) return false;
-  const expiresAtMs = new Date(pkg.licence.expiresAt).getTime();
+// Pure value check, extracted so decryptBook() can evaluate expiry against the SEAL-VERIFIED
+// licence (licenceSeal.ts) instead of the possibly-hand-edited copy sitting in pkg.licence — see
+// decryptBook()'s "trustedLicence" below.
+function isLicenceValueExpired(licence: LocalLicenceRecord | null): boolean {
+  if (!licence) return false;
+  const expiresAtMs = new Date(licence.expiresAt).getTime();
   // `new Date(x).getTime()` is NaN for an unparseable/missing expiresAt, and `Date.now() >= NaN`
   // is always false — treat that as EXPIRED (fail closed), not "never expires". store()'s own
   // assertLicenceMatchesPackage rejects a malformed expiresAt at ingestion time, but that gate
@@ -96,10 +190,14 @@ function isLicenceExpired(pkg: EncryptedPackage): boolean {
   return Date.now() >= expiresAtMs;
 }
 
+function isLicenceExpired(pkg: EncryptedPackage): boolean {
+  return isLicenceValueExpired(pkg.licence);
+}
+
 function assertLengthInvariant(pkg: EncryptedPackage): void {
   const hasCipher = pkg.encryption !== null;
-  // Open access / audio: `content` IS the plaintext (never AES-GCM'd), so there is no
-  // nonce/tag overhead to account for.
+  // Open access: `content` IS the plaintext (never AES-GCM'd), so there is no nonce/tag
+  // overhead to account for. Audio is encrypted (2026-08-25) so it follows the encrypted path.
   const expected = hasCipher ? NONCE_BYTES + pkg.originalLength + GCM_TAG_BYTES : pkg.originalLength;
 
   if (pkg.content.length !== pkg.cipherLength || pkg.cipherLength !== expected) {
@@ -114,18 +212,39 @@ function assertLengthInvariant(pkg: EncryptedPackage): void {
   }
 }
 
+// Mirrors the read-side check at loadPersisted()/decryptBook() (MAX_DECRYPTED_BYTES), on the
+// write side instead. Without this, store() would accept a book the read path can never open:
+// isAvailableOffline() reports true, the caller believes the download succeeded, and the failure
+// only surfaces the first time something calls getBook() on it — a silent-until-tapped failure.
+// AUDIO_MEMORY_REPORT.md measured this exact gap (a 150 MB package accepted by store(), then
+// DECRYPTION_FAILED on every read) before this check existed. Same error code as the read-side
+// checks — this is not actually a decryption failure, but neither is theirs, and the frozen
+// ContentError enum has no dedicated "too large" code to add without a Gate conversation.
+function assertWithinRamBudget(pkg: EncryptedPackage): void {
+  const budget = maxDecryptedBytesFor(pkg.format);
+  if (pkg.originalLength > budget) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      pkg.bookId,
+      new Error(
+        `book is ${pkg.originalLength} bytes, exceeds the ${budget}-byte budget for ${pkg.format} — refusing to store it`
+      )
+    );
+  }
+}
+
 function assertLicenceMatchesPackage(pkg: EncryptedPackage): void {
   // An encrypted package with NO licence at all would never have an expiry (or anything else)
   // enforced: isLicenceExpired() short-circuits to "not expired" when pkg.licence is null, so
   // this combination — type-legal, since `licence` and `encryption` are independently nullable —
-  // would let crypto material live forever with no rights attached. SignedLicence's own doc says
+  // would let crypto material live forever with no rights attached. LocalLicenceRecord's own doc says
   // "null ⇒ open access (no licence)"; a package that IS encrypted is not open access, so it must
   // ship a licence. Reject loudly rather than silently accept it.
   if (pkg.encryption && !pkg.licence) {
     throw new ContentFailure(
       ContentError.LICENCE_INVALID,
       pkg.bookId,
-      new Error('encrypted package has no licence — an encrypted book must ship a SignedLicence')
+      new Error('encrypted package has no licence — an encrypted book must ship a LocalLicenceRecord')
     );
   }
   if (!pkg.licence) return;
@@ -185,6 +304,23 @@ interface OpenSession {
 const packageCache = new Map<BookId, EncryptedPackage>();
 const sessions = new Map<BookId, OpenSession>();
 
+// Kept OUT of EncryptedPackage/PersistedMeta's in-memory shape deliberately — SealedLicence is
+// not part of the frozen `EncryptedPackage` contract (content-provider.ts), and adding a field to
+// a Week-1 frozen type is its own Gate conversation (see that file's LocalLicenceRecord comment). This
+// side table carries the same lifecycle as packageCache (populated by store()/loadPersisted(),
+// consulted by decryptBook()) without touching the frozen shape.
+const licenceSealCache = new Map<BookId, SealedLicence | undefined>();
+
+/** Rewrite ONLY the `licenceSeal` field of an already-persisted meta.json — used when
+ *  decryptBook() creates a seal lazily (see its own comment) and needs to persist it for future
+ *  cold reads. No-op if the book has no meta.json (Elite, or store() never ran) — nothing to
+ *  attach a seal to. */
+function persistLicenceSeal(bookId: BookId, seal: SealedLicence): void {
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return;
+  writeFile(metaFile(bookId), JSON.stringify({ ...parsed, licenceSeal: seal }));
+}
+
 // A re-download of an already-persisted book under a DIFFERENT wrapped key (key rotation or
 // re-licensing — confirmed as a real backend behavior, not hypothetical: flambeau's contract
 // mints a new `encryption.keyId`/`wrappedBek` per rotation period) must not let resolveRawKey()
@@ -204,10 +340,9 @@ const sessions = new Map<BookId, OpenSession>();
 // RSA unwrap on the next read (still decrypts correctly, just skips the cache once), which is a
 // safe trade-off for guaranteeing a genuine rotation is never missed.
 async function invalidateStaleCachedKeyIfRotated(pkg: EncryptedPackage): Promise<void> {
-  const meta = metaFile(pkg.bookId);
-  if (!meta.exists) return; // first store for this book — nothing cached yet to invalidate
+  const previous = parseMetaSafe(pkg.bookId);
+  if (!previous) return; // first store or corrupted meta — nothing cached yet to invalidate
 
-  const previous = JSON.parse(meta.textSync()) as PersistedMeta;
   const previousWrappedBek = previous.encryption?.wrappedBek ?? null;
   const nextWrappedBek = pkg.encryption?.wrappedBek ?? null;
   if (previousWrappedBek !== nextWrappedBek) {
@@ -217,11 +352,13 @@ async function invalidateStaleCachedKeyIfRotated(pkg: EncryptedPackage): Promise
 
 /**
  * Persist an EncryptedPackage exactly as received (Subscription) or cache it in memory only
- * (Elite). Asserts the content-length and licence/bookId invariants the frozen contract requires
- * — a violation is a loud ContentFailure(INTEGRITY_FAILED | LICENCE_INVALID), never silent.
+ * (Elite). Asserts the content-length, RAM-budget and licence/bookId invariants the frozen
+ * contract requires — a violation is a loud ContentFailure(INTEGRITY_FAILED | DECRYPTION_FAILED |
+ * LICENCE_INVALID), never silent.
  */
 async function store(pkg: EncryptedPackage): Promise<void> {
   assertLengthInvariant(pkg);
+  assertWithinRamBudget(pkg);
   assertLicenceMatchesPackage(pkg);
 
   // Elite never touches the keychain (see resolveRawKey) — nothing there to invalidate, and
@@ -247,6 +384,12 @@ async function store(pkg: EncryptedPackage): Promise<void> {
     // path instead of trusting the meta flag).
     idxFile.delete();
   }
+  // NOT sealed here — store() deliberately never touches the keystore (contentProvider.test.ts
+  // pins getFormat() working with no BEK available at all, and several contentStore tests store()
+  // a package with a wrappedBek that can never unwrap, expecting the failure only at decrypt
+  // time). licenceSealCache carries whatever seal a previous store() for this bookId already had;
+  // decryptBook() lazily creates one on this book's first genuine key access if none exists yet —
+  // see that function and licenceSeal.ts's header for the trust-on-first-use window this accepts.
   const meta: PersistedMeta = {
     bookId: pkg.bookId,
     format: pkg.format,
@@ -256,15 +399,18 @@ async function store(pkg: EncryptedPackage): Promise<void> {
     originalLength: pkg.originalLength,
     mimeType: pkg.mimeType,
     hasIndex: !!pkg.index,
+    licenceSeal: undefined, // a re-download/re-licence invalidates any previous seal (see below)
+    lastValidatedAt: new Date().toISOString(), // a download IS a validation — resets the 4-day cap
   };
   writeFile(metaFile(pkg.bookId), JSON.stringify(meta));
+  // A fresh store() means a fresh licence (possibly a fresh BEK too) — do not let a STALE seal
+  // from a previous download outlive it. Re-sealed lazily on next decrypt, same as a first store().
+  licenceSealCache.set(pkg.bookId, undefined);
 }
 
 function loadPersisted(bookId: BookId): EncryptedPackage | null {
-  const meta = metaFile(bookId);
-  if (!meta.exists) return null;
-
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return null;
 
   // Check the RAM budget against the SMALL metadata read before touching the (potentially huge)
   // content file at all. Without this, a cold read (openSession() with nothing cached yet — the
@@ -272,18 +418,24 @@ function loadPersisted(bookId: BookId): EncryptedPackage | null {
   // full bytes into a JS Uint8Array before decryptBook()'s own budget check ever runs, defeating
   // the "checked before decrypt" claim in this file's own header. Found via an adversarial
   // cross-file review, 2026-08-12 — not a hypothetical.
-  if (parsed.originalLength > MAX_DECRYPTED_BYTES) {
+  const budget = maxDecryptedBytesFor(parsed.format);
+  if (parsed.originalLength > budget) {
     throw new ContentFailure(
       ContentError.DECRYPTION_FAILED,
       bookId,
       new Error(
-        `book is ${parsed.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget — refusing to read it into memory`
+        `book is ${parsed.originalLength} bytes, exceeds the ${budget}-byte budget for ${parsed.format} — refusing to read it into memory`
       )
     );
   }
 
   const content = contentFile(bookId).bytesSync();
   const index = parsed.hasIndex ? indexFile(bookId).bytesSync() : undefined;
+
+  // Repopulate the seal side-cache on every cold read (app restart, or packageCache evicted by
+  // close()) — decryptBook() below reads from here, not from `parsed` directly (see
+  // licenceSealCache's own comment for why the seal isn't just a field on the returned package).
+  licenceSealCache.set(bookId, parsed.licenceSeal);
 
   return {
     bookId: parsed.bookId,
@@ -400,34 +552,71 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
     // rule 2). Found via an adversarial cross-file review, 2026-08-12 — not a hypothetical.
     assertLengthInvariant(pkg);
 
-    if (isLicenceExpired(pkg)) {
-      throw new ContentFailure(ContentError.LICENCE_EXPIRED, bookId);
-    }
-    // NOTE: licence.signature (RS256) is NOT verified here — see file header. Expiry above is
-    // real; signature is not, yet.
-
-    if (pkg.originalLength > MAX_DECRYPTED_BYTES) {
+    const budget = maxDecryptedBytesFor(pkg.format);
+    if (pkg.originalLength > budget) {
       throw new ContentFailure(
         ContentError.DECRYPTION_FAILED,
         bookId,
-        new Error(`book is ${pkg.originalLength} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`)
+        new Error(`book is ${pkg.originalLength} bytes, exceeds the ${budget}-byte budget for ${pkg.format}`)
       );
     }
 
+    // Resolved once, up front, for two reasons this order needs: (1) the seal check below needs
+    // it before expiry can be trusted, (2) the actual decrypt at the bottom reuses the SAME key
+    // rather than paying resolveRawKey's keychain round-trip twice.
+    const rawKey = pkg.encryption ? await resolveRawKey(pkg, session) : null;
+
+    // Elite never reaches here with a seal (isElite guard — store() never wrote one for that
+    // tier) — nothing to verify. For anything else with a licence, trust a SEALED copy for the
+    // expiry check below, not pkg.licence itself: pkg.licence is whatever is sitting in meta.json
+    // right now, hand-editable with a text editor; the seal can only be reproduced by a device
+    // that can unwrap this book's real BEK (licenceSeal.ts).
+    let trustedLicence = pkg.licence;
+    if (pkg.encryption && pkg.licence && !isElite(pkg) && rawKey) {
+      const seal = licenceSealCache.get(bookId);
+      if (seal) {
+        const sealed = await openSealedLicence(seal, rawKey);
+        if (!sealed) {
+          throw new ContentFailure(
+            ContentError.LICENCE_INVALID,
+            bookId,
+            new Error('licence seal did not verify — persisted licence may have been tampered with')
+          );
+        }
+        trustedLicence = sealed;
+      } else {
+        // First genuine access to this book's key material since it was (re-)stored — no seal
+        // exists yet to check against, so this trusts pkg.licence AS OF THIS MOMENT and seals it
+        // for every future read. Narrower than sealing at store() time (a tamper landing in the
+        // gap between download and this book's first open would go uncaught), accepted because
+        // store() itself must stay keystore-free (see this file's other tests/comments) — see
+        // licenceSeal.ts's header for the full trade-off.
+        const newSeal = await sealLicence(pkg.licence, rawKey);
+        licenceSealCache.set(bookId, newSeal);
+        persistLicenceSeal(bookId, newSeal);
+      }
+    }
+
+    if (isLicenceValueExpired(trustedLicence)) {
+      throw new ContentFailure(ContentError.LICENCE_EXPIRED, bookId);
+    }
+    // NOTE: licence.signature (RS256) is still NOT verified — that's B4, a different, still-open
+    // question (CONTRACT_ALIGNMENT.md). The check above is a DIFFERENT guarantee: it does not
+    // establish the licence came from flambeau, only that IT HASN'T CHANGED since this device
+    // first sealed it. See licenceSeal.ts's header for the distinction and its ceiling.
+
     let plaintext: Uint8Array;
     if (!pkg.encryption) {
-      // open access / audio: already plaintext. COPY it rather than aliasing pkg.content
-      // directly: close() zeroes session.plaintext IN PLACE, and pkg.content is the same object
-      // held by packageCache (and handed back by loadPersisted on a fresh read) — aliasing it
-      // would mean close()-ing this session corrupts the package for every future session of
-      // this same book.
+      // Open access (plaintext): COPY it rather than aliasing pkg.content directly: close()
+      // zeroes session.plaintext IN PLACE, and pkg.content is the same object held by
+      // packageCache (and handed back by loadPersisted on a fresh read) — aliasing it would mean
+      // close()-ing this session corrupts the package for every future session of this same book.
       plaintext = new Uint8Array(pkg.content);
     } else {
-      const rawKey = await resolveRawKey(pkg, session);
       try {
         plaintext = await decrypt(
           { content: pkg.content, cipherLength: pkg.cipherLength, originalLength: pkg.originalLength },
-          rawKey
+          rawKey! // non-null: pkg.encryption is truthy in this branch, so rawKey was resolved above
         );
       } catch (cause) {
         // GCM tag failed to verify (tamper/corruption) or key/nonce mismatch — fail LOUDLY, never
@@ -436,12 +625,30 @@ async function decryptBook(bookId: BookId): Promise<Uint8Array> {
       }
     }
 
-    if (plaintext.length > MAX_DECRYPTED_BYTES) {
+    if (plaintext.length > budget) {
       throw new ContentFailure(
         ContentError.DECRYPTION_FAILED,
         bookId,
-        new Error(`decrypted book is ${plaintext.length} bytes, exceeds the ${MAX_DECRYPTED_BYTES}-byte RAM budget`)
+        new Error(`decrypted book is ${plaintext.length} bytes, exceeds the ${budget}-byte budget for ${pkg.format}`)
       );
+    }
+
+    // Drop the redundant in-memory ciphertext (added 2026-08-18 — one of CLAUDE.md's "roughly six"
+    // full-size copies). `pkg` is the SAME object packageCache holds, so this mutates the cache
+    // entry in place. Safe ONLY for non-Elite: Subscription/OA ciphertext is safely on DISK
+    // (written by store(), above) and `loadPersisted()` reloads it on any future cold read after
+    // close() clears this cache entry — so nothing is lost. Every other reader of `pkg.content`
+    // in this file (assertLengthInvariant, the open-access copy and the decrypt() call just above)
+    // has already run by this point; a live session never re-enters this function once
+    // session.plaintext is set (see the early return at the top of decryptBook), so nothing reads
+    // this emptied field again for the rest of this session's life.
+    //
+    // ELITE IS EXCLUDED, not an oversight: isElite() packages never reach disk (store() returns
+    // before its writeFile calls), so the in-memory copy here is the ONLY copy — emptying it would
+    // make the book permanently undecryptable until a fresh store(), for no RAM saved (Elite's
+    // ciphertext was never going to be held twice in the first place).
+    if (!isElite(pkg)) {
+      pkg.content = new Uint8Array(0);
     }
 
     session.plaintext = plaintext;
@@ -561,9 +768,37 @@ async function decryptSearchIndex(bookId: BookId): Promise<Uint8Array | null> {
  * End THIS book's session: zero its decrypted buffer (and search index, and, for Elite, its
  * in-memory-only key). REVERSIBLE — ciphertext + wrappedBek stay on device (Subscription),
  * reopenable offline. Idempotent: closing a book with no open session is a no-op.
+ *
+ * ALSO drops `bookId` from `packageCache` (added 2026-08-18 — previously only `destroy()` did
+ * this, so a closed-but-not-destroyed book's whole ciphertext, 20MB+ for a real book, stayed
+ * resident in RAM indefinitely). The trade-off this makes deliberately: the NEXT `openSession()`
+ * for this book is a cold read — `loadPersisted()`'s synchronous `bytesSync()` off the JS thread
+ * — instead of an in-memory hit. That is the correct side to take it on: a reader who closed a
+ * book is not mid-read, so paying a one-time re-read cost on the next open is a fair price for
+ * not holding every finished book's ciphertext in RAM for the rest of the app's life. Ciphertext
+ * on DISK is untouched — this only affects the RAM cache, same as the ciphertext-persistence
+ * guarantee `close()` already documented.
+ *
+ * ELITE IS EXEMPT FROM THAT DROP, and the exemption is what keeps this function REVERSIBLE.
+ * Elite never reaches disk (`store()` returns before its `writeFile` calls), so its `packageCache`
+ * entry is the ONLY copy: dropping it made `close()` TERMINAL, which `content-provider.ts`
+ * reserves for `destroy()`. The next `openSession()` would miss the cache, `loadPersisted()` would
+ * find no meta.json, and the read failed `DECRYPTION_FAILED` ("no stored package for this book")
+ * forever after. That was CLAUDE.md's "known open item #1", invisible while nothing shipped Elite
+ * content and live the moment `openBook()` started forcing `canPersist: false` on every streamed
+ * book — the symptom was an audiobook that opened once and then refused to reopen.
+ *
+ * No RAM is given up by the exemption: Elite ciphertext was never held twice (`decryptBook()`
+ * skips its `pkg.content` release for exactly the same reason), so there is no second copy to
+ * reclaim here. The decrypted plaintext, which is the large transient, is still zeroed below.
+ * `destroy()` is what finally evicts an Elite package.
  */
 async function close(bookId: BookId): Promise<void> {
   const session = sessions.get(bookId);
+  const pkg = packageCache.get(bookId);
+  if (!pkg || !isElite(pkg)) {
+    packageCache.delete(bookId);
+  }
   if (!session) return;
 
   session.plaintext?.fill(0);
@@ -574,7 +809,8 @@ async function close(bookId: BookId): Promise<void> {
 
 /**
  * Destroy key material and persisted ciphertext at expiry / return. TERMINAL — cannot be undone
- * without a fresh borrow (a new store() call).
+ * without a fresh borrow (a new store() call). Emits CONTENT_DESTROYED after deletion succeeds,
+ * so subscribers (e.g. the licence-expiry handler) can clean up derived state.
  */
 async function destroy(bookId: BookId): Promise<void> {
   await close(bookId);
@@ -584,17 +820,156 @@ async function destroy(bookId: BookId): Promise<void> {
   }
   await deleteBek(bookId);
   packageCache.delete(bookId);
+  licenceSealCache.delete(bookId);
+
+  eventBus.emit(EVENT_CHANNELS.CONTENT_DESTROYED, { bookId, at: Date.now() });
+}
+
+/**
+ * Strip the licence and BEK for a previously-downloaded book, leaving the ciphertext on disk.
+ * REVERSIBLE — a fresh `store()` with a new `LocalLicenceRecord` re-attaches rights and the BEK can
+ * be re-unwrapped on the next open. Used by the offline fallback's revocation path: the server
+ * has signalled `is_valid = false`, so the local copy's rights are void, but the ciphertext
+ * stays so a later online open can re-attach a valid licence without re-downloading.
+ *
+ * This is NOT `destroy()` — destroy wipes everything (content + metadata + key), which is the
+ * terminal "book deleted" action. `invalidateLicence()` only strips the rights layer, leaving
+ * the encrypted payload for potential reuse.
+ */
+async function invalidateLicence(bookId: BookId): Promise<void> {
+  await close(bookId);
+
+  await deleteBek(bookId);
+
+  // Update meta.json to record the post-revocation shape: ciphertext still on disk, licence
+  // stripped. This lets getPersistedLicenceStatus() and isAvailableOffline() distinguish a
+  // revoked book (encrypted + no licence + revokedAt set) from genuine open-access (unencrypted
+  // + no licence + no revokedAt).
+  //
+  // No-op for genuinely open-access books (no encryption, no licence): there is nothing to
+  // revoke. Setting revokedAt on an open-access book would make getPersistedLicenceStatus()
+  // incorrectly report it as revoked, breaking the offline fallback's open-access branch.
+  const meta = metaFile(bookId);
+  if (meta.exists) {
+    const parsed = parseMetaSafe(bookId);
+    if (!parsed || (!parsed.licence && !parsed.encryption)) return; // open-access or corrupted — nothing to revoke
+    const updated: PersistedMeta = {
+      ...parsed,
+      licence: null,
+      revokedAt: new Date().toISOString(),
+      licenceSeal: undefined,
+    };
+    writeFile(meta, JSON.stringify(updated));
+  }
+
+  packageCache.delete(bookId);
+  licenceSealCache.delete(bookId);
+}
+
+/**
+ * Return the persisted licence and its expiry/revocation status for a previously-downloaded book.
+ * Used by the unified license gate's offline fallback: when the network is unreachable, the
+ * caller needs to know whether there is a valid local licence to read against, without fetching
+ * or decrypting anything.
+ *
+ * Three distinct shapes:
+ * - `downloaded: false` — never downloaded (no meta.json)
+ * - `licence: null, downloaded: true, revoked: false` — genuine open-access (no encryption, no
+ *   licence needed; the content IS plaintext)
+ * - `licence: null, downloaded: true, revoked: true` — post-revocation: ciphertext on disk but
+ *   the licence + BEK were stripped by `invalidateLicence()`. Not readable.
+ * - `licence: present, expired: bool` — subscription/elite book with a real licence
+ *
+ * `lastValidatedAt` is `null` only for a meta.json written before that field existed —
+ * `licenseCheck.ts`'s `computeOfflineLicenceExpiry` treats that as already due for revalidation,
+ * not as a free pass. `expired` here is the licence's OWN stated expiry (`licence.expiresAt`,
+ * always a far-future placeholder today) — a DIFFERENT, narrower check than the 4-day rolling cap,
+ * which the caller computes separately from `lastValidatedAt`.
+ */
+export async function getPersistedLicenceStatus(bookId: BookId): Promise<{
+  licence: LocalLicenceRecord | null;
+  expired: boolean;
+  downloaded: boolean;
+  revoked: boolean;
+  lastValidatedAt: string | null;
+}> {
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return { licence: null, expired: false, downloaded: false, revoked: false, lastValidatedAt: null };
+
+  // Post-revocation: licence was stripped by invalidateLicence(), ciphertext still on disk.
+  // Distinct from genuine open-access: this book WAS encrypted and had a licence, but the
+  // rights were revoked server-side.
+  if (parsed.revokedAt) {
+    return { licence: null, expired: false, downloaded: true, revoked: true, lastValidatedAt: null };
+  }
+
+  if (!parsed.licence) {
+    return { licence: null, expired: false, downloaded: true, revoked: false, lastValidatedAt: null };
+  }
+
+  const expiresAtMs = new Date(parsed.licence.expiresAt).getTime();
+  const expired = Number.isNaN(expiresAtMs) || Date.now() >= expiresAtMs;
+  return {
+    licence: parsed.licence,
+    expired,
+    downloaded: true,
+    revoked: false,
+    lastValidatedAt: parsed.lastValidatedAt ?? null,
+  };
+}
+
+/**
+ * Bump `lastValidatedAt` to now for a previously-downloaded book — called on every GENUINE online
+ * confirmation that this device still has access (licenseCheck.ts's online success path,
+ * readingAccessMonitor.ts's periodic re-check succeeding for real, not fail-open). This is the
+ * "online licence rollover": a device that checks in on day 3 of a 4-day offline window gets a
+ * fresh 4 days from day 3, not a countdown that keeps running from the original download.
+ *
+ * No-op if the book was never downloaded (nothing persisted to update) or is Elite (no meta.json
+ * at all) — safe to call unconditionally from a caller that doesn't know which tier it's holding.
+ */
+export async function recordLicenceValidation(bookId: BookId): Promise<void> {
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return;
+  writeFile(metaFile(bookId), JSON.stringify({ ...parsed, lastValidatedAt: new Date().toISOString() }));
+}
+
+/**
+ * Return the persisted MIME type for a stored book. Read from PersistedMeta.mimeType, set at
+ * store() time by the download pass (or devContentSeed). Used by audio callers to derive a file
+ * extension for the scratch URI instead of hardcoding one. Throws ContentFailure if the book has
+ * never been stored (no meta.json exists).
+ */
+export async function getMimeType(bookId: BookId): Promise<string> {
+  const cached = packageCache.get(bookId);
+  if (cached) {
+    return cached.mimeType;
+  }
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) {
+    throw new ContentFailure(
+      ContentError.DECRYPTION_FAILED,
+      bookId,
+      new Error('no stored package for this book — call store() first')
+    );
+  }
+  return parsed.mimeType;
 }
 
 /**
  * True iff ciphertext + a currently-valid wrapped key are ON DISK. Always false for Elite —
- * Elite never persists, so its metadata file never exists.
+ * Elite never persists, so its metadata file never exists. Also false for the post-revocation
+ * shape (licence stripped by invalidateLicence(), ciphertext still on disk) — the book has
+ * content but no rights to open it, so it is NOT "available offline" in any useful sense.
  */
 async function isAvailableOffline(bookId: BookId): Promise<boolean> {
-  const meta = metaFile(bookId);
-  if (!meta.exists) return false;
+  const parsed = parseMetaSafe(bookId);
+  if (!parsed) return false;
 
-  const parsed = JSON.parse(meta.textSync()) as PersistedMeta;
+  // Post-revocation: licence stripped, ciphertext still on disk. Not available — the BEK is
+  // gone and there is no rights material to decrypt with.
+  if (parsed.revokedAt) return false;
+
   // Same fail-closed reasoning as isLicenceExpired() above (and the same reason this can't just
   // trust store() to have already validated the date): NaN must count as expired, not as
   // "never expires".
@@ -607,6 +982,15 @@ async function isAvailableOffline(bookId: BookId): Promise<boolean> {
   return contentFile(bookId).exists;
 }
 
+eventBus.on(EVENT_CHANNELS.CONTENT_LOCK, (signal) => {
+  if (signal.type !== OFFLINE_LOCK_EVENTS.LOCK) return;
+  if (signal.reason !== 'revoked') return;
+
+  void invalidateLicence(signal.bookId).catch((error) => {
+    console.error(`[contentStore] failed to invalidate revoked book ${signal.bookId}`, error);
+  });
+});
+
 export const contentStore: ContentStore = {
   store,
   openSession,
@@ -618,3 +1002,7 @@ export const contentStore: ContentStore = {
 
 // Not part of the frozen ContentStore interface — see decryptSearchIndex's own doc comment.
 export { decryptSearchIndex };
+
+// Exported separately from the frozen `ContentStore` interface — see invalidateLicence's own
+// doc comment. Used by licenseCheck.ts's offline revocation path.
+export { invalidateLicence };

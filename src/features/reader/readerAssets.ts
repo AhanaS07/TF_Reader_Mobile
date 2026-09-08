@@ -20,13 +20,32 @@ import { Asset } from 'expo-asset';
 
 import { fromByteArray } from 'react-native-quick-base64';
 
-import { getBook } from '@/features/encryption/contentProvider';
+import { getBook, getFormat } from '@/features/encryption/contentProvider';
 import { verifyReadingAccess } from '@/features/download/readingSessionClient';
-import { ensureSeeded } from '@/features/reader/devContentSeed';
 import { logSpan, now } from '@/features/reader/readerTiming';
-import type { BookId } from '@/shared/contracts';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 
-const READER_HTML_MODULE = require('../../../assets/reader/reader.html') as number;
+/**
+ * One generated shell per content format, keyed by `ContentFormat`.
+ *
+ * Both are `require()`d unconditionally at module load, which is deliberate: these
+ * are Metro asset HANDLES (small integers), not the files themselves, so naming both
+ * costs nothing at runtime and a conditional `require()` cannot be statically
+ * analysed by Metro and would not be bundled at all.
+ *
+ * AUDIO is absent on purpose rather than mapped to a placeholder. It is a real
+ * member of the frozen enum, so it can reach this reader — and `Partial` is what
+ * makes `formatFor()` below have to handle that instead of silently loading an
+ * EPUB shell for an audiobook. (This used to add "and never encrypted" as if that
+ * were part of the reason. It was never load-bearing here, and it is no longer
+ * true either: audio is AES-256-GCM encrypted like every other format as of
+ * 2026-08-25. Audio reaches this file because the enum has three members and this
+ * map has two, which is the whole argument.)
+ */
+const READER_HTML_MODULES: Partial<Record<ContentFormat, number>> = {
+  EPUB: require('../../../assets/reader/reader-epub.html') as number,
+  PDF: require('../../../assets/reader/reader-pdf.html') as number,
+};
 
 /**
  * Resolve a bundled asset to a local file:// URI.
@@ -49,12 +68,62 @@ async function localUriFor(assetModule: number, label: string): Promise<string> 
 }
 
 /**
- * file:// URI of the generated reader.html. It is self-contained — zero
+ * file:// URI of the generated shell for this format. Each is self-contained — zero
  * sub-resource requests — which is what lets ReaderWebView lock navigation down
  * as hard as it does.
+ *
+ * Throws for a format with no shell (AUDIO). Callers map that to
+ * UNSUPPORTED_FORMAT; see ReaderScreen. Throwing rather than falling back to EPUB
+ * is the point — an audiobook silently handed to epub.js fails much later and much
+ * less legibly.
  */
-export async function getReaderHtmlUri(): Promise<string> {
-  return localUriFor(READER_HTML_MODULE, 'reader.html');
+export async function getReaderHtmlUri(format: ContentFormat): Promise<string> {
+  const assetModule = READER_HTML_MODULES[format];
+  if (assetModule === undefined) {
+    throw new UnsupportedFormatError(format);
+  }
+  return localUriFor(assetModule, `reader-${format.toLowerCase()}.html`);
+}
+
+/**
+ * Thrown when a book's format has no renderer in this app.
+ *
+ * Its own class rather than a bare Error so ReaderScreen can map it to
+ * UNSUPPORTED_FORMAT without string-matching a message — the same reason
+ * ContentFailure and DownloadFailure carry codes.
+ */
+export class UnsupportedFormatError extends Error {
+  readonly format: ContentFormat;
+
+  constructor(format: ContentFormat) {
+    super(`This reader has no renderer for ${format} content.`);
+    this.name = 'UnsupportedFormatError';
+    this.format = format;
+  }
+}
+
+/**
+ * Report which format this book is — the value that decides which shell to load
+ * and which open command to send.
+ *
+ * The package must already be stored before this is called — either by
+ * `openBook()` (ephemeral in-memory for Elite) or `downloadBook()` (persisted).
+ * Without a stored package, `getFormat` → `openSession` rejects with DECRYPTION_FAILED.
+ *
+ * `getFormat` DOES NOT DECRYPT — but it is only cheap WARM. `openSession` resolves the package,
+ * and on a cold resolve (`packageCache` miss) `contentStore.loadPersisted` reads the whole
+ * ciphertext off disk with a synchronous `bytesSync()`, not just the metadata. So on any launch
+ * after the first — and, since `close()` began clearing `packageCache` on 2026-08-18, on every
+ * reopen within one run — this pays a full-size synchronous read on the JS thread before the
+ * WebView is mounted. That is Encryption's trade-off to own (CLAUDE.md records it against
+ * `close()`), but the cost lands HERE, so do not read this call as free and do not move it onto a
+ * path where a frame is waiting on it.
+ */
+export async function prepareBook(bookId: BookId): Promise<ContentFormat> {
+  const formatStartedAt = now();
+  const format = await getFormat(bookId);
+  logSpan('format', formatStartedAt, { format });
+  return format;
 }
 
 /**
@@ -65,9 +134,9 @@ export async function getReaderHtmlUri(): Promise<string> {
  * reach past it into ContentStore/aesGcm/keyStorage/deviceKeypair — that
  * restriction is contentProvider.ts's entire reason for existing.
  *
- * `ensureSeeded` is TEMPORARY, and goes away with devContentSeed.ts. It stands in
- * for the download pass: without something having called ContentStore.store()
- * first, openSession() throws DECRYPTION_FAILED and getBook() can only reject.
+ * The package must already be stored before this is called — either by
+ * `openBook()` or `downloadBook()`. Without a stored package, `getBook()`
+ * rejects with DECRYPTION_FAILED.
  *
  * TWO CONSTRAINTS:
  *  1. PLAINTEXT NEVER TOUCHES DISK. The route is RAM -> base64 -> bridge. The
@@ -108,20 +177,23 @@ export async function getReaderHtmlUri(): Promise<string> {
  * revocation, which is deliberately fatal to opening the book — same as any other error below,
  * caught by ReaderScreen's existing catch-and-raiseError.
  *
- * Hardcoded to `'EPUB'`: this Reader implementation is EPUB-only today (the WebView template is
- * epub.js-specific, and devContentSeed.ts's own header says the same) — not a new limitation this
- * introduces, just the first place that format needs to be named explicitly rather than implied.
+ * `format` is a PARAMETER rather than a hardcoded `'EPUB'`, supplied by `prepareBook` from
+ * `getFormat(bookId)`. The value is only as true as whatever called `ContentStore.store()`, which
+ * today is either `openBook()`, `downloadBook()`, or the dev seed. The real source is wokay's book
+ * metadata (`contentType` on the catalogue/OPDS record) and there is still no catalogue client to
+ * read it from — `C3`, unowned. So a real book downloaded through `downloadBook()` gets whatever
+ * format that call was passed, which itself defaults to `'EPUB'`.
+ *
+ * When a catalogue client lands, note that `ReadingSessionRequest.format` selects an ASSET format,
+ * which wokay distinguishes from the book's own `contentType` — one book can carry a PDF asset
+ * beside an EPUB one, so these two must not be conflated into one lookup.
  */
-export async function getBookBase64(bookId: BookId): Promise<string> {
+export async function getBookBase64(bookId: BookId, format: ContentFormat): Promise<string> {
   const startedAt = now();
 
   const verifyStartedAt = now();
-  await verifyReadingAccess(bookId, 'EPUB');
+  await verifyReadingAccess(bookId, format);
   logSpan('verifyAccess', verifyStartedAt);
-
-  const seedStartedAt = now();
-  await ensureSeeded(bookId);
-  logSpan('seed', seedStartedAt);
 
   // Split from the encode below so the two costs can be attributed separately: getBook is
   // Encryption's decrypt (which itself base64s twice around a string-only native API — see

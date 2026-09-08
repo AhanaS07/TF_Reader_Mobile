@@ -1,103 +1,129 @@
+// prefsStore.test.ts — the settings-facing prefs wrapper over Sync's persisted store.
 
-// prefsStore.test.ts — scratch/behaviour check for the Day-2 personalization stub.
 // Run: npm test    (or: npx jest src/features/personalization)
 //
-// Proves three things the standup cares about:
-//   1. getPrefs seeds DEFAULT_PREFS on first access (and isn't "dirty" yet).
-//   2. savePrefs marks the record synced:false ("marked for sync") + bumps updatedAt.
-//   3. One SharedPrefs object carries BOTH personalization AND accessibility
-//      (the single object Ahana applies to the reader).
+// This replaces the old InMemoryPrefsStore tests: the wrapper no longer holds state,
+// it delegates to the real SQLite-backed layer behind features/sync/sharedPrefs.ts.
+//
+// Deliberately imports ONLY the wrapper — never sync/stores/* or sync/localDb/*.
+// Those are Sync's snake_case internals (the boundary Karthik drew: sharedPrefs.ts is
+// the seam, everything under it is not). So the baseline reset and every assertion go
+// through the public wrapper. Proves the three things week-2 day-1 cares about:
+//   1. getPrefs returns DEFAULT_PREFS values when nothing has been customized.
+//   2. savePrefs persists and ROUND-TRIPS: write -> reload -> same values.
+//   3. resetPrefs restores defaults as a write (not a tombstone).
+//
+// The old stub's cross-user aliasing tests are gone by design: every read here
+// reconstructs fresh nested objects from SQLite rows, so there is nothing to alias.
+// First-run "no row at all -> defaults" is Sync's mergeSharedPrefs fallback, covered
+// on its side (contractConformance) — not re-proven here through its internals.
 
-import { InMemoryPrefsStore } from '@/features/personalization/prefsStore';
+import { prefsStore } from '@/features/personalization/prefsStore';
 
-describe('InMemoryPrefsStore (Day-2 stub)', () => {
-  it('seeds DEFAULT_PREFS on first access, not marked dirty', () => {
-    const store = new InMemoryPrefsStore();
-    const prefs = store.getPrefs('u1');
+// Known baseline via the public seam only — resetPrefs writes defaults to storage.
+beforeEach(async () => {
+  await prefsStore.resetPrefs();
+});
 
-    expect(prefs.theme).toBe('system'); // default
-    expect(prefs.userId).toBe('u1');
-    expect(prefs.synced).toBe(true); // seeded defaults aren't a user edit
-    expect(prefs.isDeleted).toBe(false); // no delete op — pinned false
-  });
+describe('prefsStore (settings-facing wrapper over the persisted store)', () => {
+  it('returns DEFAULT_PREFS values when nothing has been customized', async () => {
+    const prefs = await prefsStore.getPrefs();
 
-  it('savePrefs merges, marks synced:false, bumps updatedAt', () => {
-    // Fixed clock so the timestamp assertion is deterministic.
-    let t = 1000;
-    const store = new InMemoryPrefsStore(() => 'id-1', () => (t += 1));
-
-    const before = store.getPrefs('u1');
-    const after = store.savePrefs('u1', { theme: 'dark' });
-
-    expect(after.theme).toBe('dark'); // change applied
-    expect(after.synced).toBe(false); // marked for sync → Karthik's outbox
-    expect(after.updatedAt).toBeGreaterThan(before.updatedAt); // LWW stamp bumped
-    // untouched fields survive the merge:
-    expect(after.typography.size).toBe(16);
-  });
-
-  it('returns ONE object with personalization + accessibility (Ahana s single object)', () => {
-    const store = new InMemoryPrefsStore();
-    const prefs = store.getPrefs('u1');
-
-    // personalization
+    expect(prefs.theme).toBe('system');
     expect(prefs.font.family).toBe('system');
+    expect(prefs.typography.size).toBe(16);
     expect(prefs.layout.flow).toBe('paginated');
     expect(prefs.zoom.level).toBe(1.0);
-    // accessibility — same object, no second call.
-    // Nested under text / display since the a11y contract moved off flat fields,
-    // and reduceMotion is now the tri-state 'system' | 'on' | 'off', not a
-    // boolean — 'system' means "follow the OS" (resolve via resolveReduceMotion).
+    // One object carries accessibility too (Ahana applies a single object).
     expect(prefs.accessibility.text.dyslexiaFont).toBe(false);
     expect(prefs.accessibility.display.reduceMotion).toBe('system');
+    expect(prefs.isDeleted).toBe(false);
   });
 
-  it('resetPrefs restores defaults as a write (not a tombstone)', () => {
-    const store = new InMemoryPrefsStore();
-    store.savePrefs('u1', { theme: 'dark' });
+  it('savePrefs persists a change and round-trips through a fresh read', async () => {
+    const saved = await prefsStore.savePrefs({ theme: 'dark' });
+    expect(saved.theme).toBe('dark');
 
-    const reset = store.resetPrefs('u1');
-    expect(reset.theme).toBe('system'); // back to default
-    expect(reset.synced).toBe(false); // still a real write
-    expect(reset.isDeleted).toBe(false); // reset is NOT a delete
+    // Re-read from storage: the change survived and untouched fields are intact.
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.theme).toBe('dark');
+    expect(reloaded.typography.size).toBe(16);
   });
 
-  // Regression: DEFAULT_PREFS (and DEFAULT_ACCESSIBILITY_PREFS) are shared
-  // singleton objects (see prefs.ts / accessibility.ts). Seeding two DIFFERENT
-  // users must not hand out the SAME nested objects — this is a per-user
-  // singleton store, so each user's record must be independently mutable
-  // without leaking into anyone else's "defaults".
-  it('does not alias nested default objects across different users', () => {
-    const store = new InMemoryPrefsStore();
-    const a = store.getPrefs('userA');
-    const b = store.getPrefs('userB');
+  it('round-trips a full customization without losing anything', async () => {
+    await prefsStore.savePrefs({
+      theme: 'sepia',
+      typography: { size: 18, lineHeight: 1.6, spacing: 1, margins: 20 },
+      layout: { flow: 'scrolled-doc', spread: 'double' },
+    });
 
-    expect(a.accessibility).not.toBe(b.accessibility);
-    expect(a.typography).not.toBe(b.typography);
-    expect(a.font).not.toBe(b.font);
-    expect(a.layout).not.toBe(b.layout);
-    expect(a.zoom).not.toBe(b.zoom);
-
-    // Prove it's not just identity: a mutation on one user's nested object
-    // must not leak into another user's "independent" record.
-    a.accessibility.text.dyslexiaFont = true;
-    expect(b.accessibility.text.dyslexiaFont).toBe(false);
+    const read = await prefsStore.getPrefs();
+    expect(read.theme).toBe('sepia');
+    expect(read.typography).toEqual({ size: 18, lineHeight: 1.6, spacing: 1, margins: 20 });
+    expect(read.layout).toEqual({ flow: 'scrolled-doc', spread: 'double' });
   });
 
-  // Same aliasing hazard, but via resetPrefs: two users who both reset must
-  // not end up sharing the post-reset nested objects either.
-  it('does not alias nested default objects across different users after reset', () => {
-    const store = new InMemoryPrefsStore();
-    store.savePrefs('userA', { theme: 'dark' });
-    store.savePrefs('userB', { theme: 'sepia' });
+  it('resetPrefs restores defaults as a write, not a tombstone', async () => {
+    await prefsStore.savePrefs({ theme: 'dark' });
 
-    const a = store.resetPrefs('userA');
-    const b = store.resetPrefs('userB');
+    const reset = await prefsStore.resetPrefs();
+    expect(reset.theme).toBe('system');
+    expect(reset.isDeleted).toBe(false);
 
-    expect(a.accessibility).not.toBe(b.accessibility);
-    expect(a.typography).not.toBe(b.typography);
+    // Persisted, not just returned.
+    expect((await prefsStore.getPrefs()).theme).toBe('system');
+  });
+});
 
-    a.typography.size = 999;
-    expect(b.typography.size).toBe(16);
+// The live re-apply channel: the Reader subscribes here and re-applies on change, with no
+// event bus (Ahana's decision, 2026-08-18). Listeners are module-level, so every test
+// unsubscribes what it adds — a leaked listener would fire on the next test's beforeEach.
+describe('prefsStore.subscribe (live re-apply channel)', () => {
+  it('notifies with the fresh record after savePrefs', async () => {
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      await prefsStore.savePrefs({ theme: 'dark' });
+      expect(seen).toEqual(['dark']);
+    } finally {
+      off();
+    }
+  });
+
+  it('notifies with defaults after resetPrefs', async () => {
+    await prefsStore.savePrefs({ theme: 'dark' });
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      await prefsStore.resetPrefs();
+      expect(seen).toEqual(['system']);
+    } finally {
+      off();
+    }
+  });
+
+  it('stops notifying after unsubscribe', async () => {
+    const seen: string[] = [];
+    const off = prefsStore.subscribe((p) => seen.push(p.theme));
+    await prefsStore.savePrefs({ theme: 'dark' });
+    off();
+    await prefsStore.savePrefs({ theme: 'sepia' });
+    expect(seen).toEqual(['dark']); // only the write before unsubscribe
+  });
+
+  it('a throwing subscriber neither fails the write nor starves the others', async () => {
+    const seen: string[] = [];
+    const offThrow = prefsStore.subscribe(() => {
+      throw new Error('boom');
+    });
+    const offGood = prefsStore.subscribe((p) => seen.push(p.theme));
+    try {
+      const saved = await prefsStore.savePrefs({ theme: 'dark' });
+      expect(saved.theme).toBe('dark'); // write still settled and returned
+      expect(seen).toEqual(['dark']); // sibling subscriber still ran
+    } finally {
+      offThrow();
+      offGood();
+    }
   });
 });

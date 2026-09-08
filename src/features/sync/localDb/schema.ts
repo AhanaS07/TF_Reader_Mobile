@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS personalization (
   updated_at              TEXT NOT NULL,
   is_deleted              INTEGER NOT NULL DEFAULT 0,
   synced                  INTEGER NOT NULL DEFAULT 0,
-  server_updated_at       TEXT
+  server_updated_at       TEXT,
+  -- JSON map of field name -> ISO timestamp it was last changed. A whole-row updated_at
+  -- cannot support field-level merge: two devices editing different fields need to know
+  -- WHICH field each one touched and when, not just when the row as a whole last moved.
+  field_updated_at        TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_personalization_user ON personalization (user_id);
 
@@ -108,7 +112,9 @@ CREATE TABLE IF NOT EXISTS accessibility (
   updated_at                 TEXT NOT NULL,
   is_deleted                 INTEGER NOT NULL DEFAULT 0,
   synced                     INTEGER NOT NULL DEFAULT 0,
-  server_updated_at          TEXT
+  server_updated_at          TEXT,
+  -- See the identical column on personalization above - same reason, same shape.
+  field_updated_at           TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_accessibility_user ON accessibility (user_id);
 
@@ -120,7 +126,7 @@ CREATE TABLE IF NOT EXISTS downloads (
   local_path     TEXT,
   status         TEXT,
   -- NOT the entitlement gate. Encryption owns licence enforcement, offline included, from
-  -- SignedLicence.expiresAt inside the EncryptedPackage - see contentStore. This column only
+  -- LocalLicenceRecord.expiresAt inside the EncryptedPackage - see contentStore. This column only
   -- records that a download completed; a second, weaker source of entitlement truth sourced
   -- from a different backend collection is exactly what review rejected.
   is_valid       INTEGER DEFAULT 1,
@@ -161,4 +167,14 @@ export const SYNC_KEYS = {
   /** Server timestamp of the last pull that was fully applied locally. */
   LAST_PULL_TOKEN: 'last_pull_token',
   LAST_PUSH_AT: 'last_push_at',
+  /**
+   * When the `downloads` collection was last successfully pulled.
+   *
+   * `isValid` on that collection is now written server-side by the licence side, not computed by
+   * this device from a feed - so "the entitlement check" IS the downloads pull. This is what
+   * distinguishes "pulled, and nothing is revoked" from "never pulled" - the `downloads.is_valid`
+   * column reads as valid in both cases, and a UI that cannot tell them apart will claim an
+   * entitlement it has never confirmed.
+   */
+  LAST_ENTITLEMENT_CHECK_AT: 'last_entitlement_check_at',
 } as const;

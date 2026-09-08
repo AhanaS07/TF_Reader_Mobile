@@ -7,7 +7,7 @@
 //
 // Reconciled 2026-08-11 against the now-canonical `content-provider.ts` (Ahana, sourced
 // verbatim from the wokay backend spec): `encryption`/`licence` below reuse
-// `EncryptionDescriptor`/`SignedLicence` directly instead of a parallel, independently-named
+// `EncryptionDescriptor`/`LocalLicenceRecord` directly instead of a parallel, independently-named
 // shape, since those field names ARE the real wire format, not just an on-device convention.
 //
 // Fields deliberately NOT here, and why:
@@ -15,7 +15,7 @@
 //                  already scoped to the authenticated user. (Download's own LOCAL metadata
 //                  record still needs a userId per BuildPlan.md Phase 4.7 — that's a different,
 //                  unrelated type, not this wire response.)
-//   - `start`    — canonical `SignedLicence` only carries `expiresAt`. Phase 6's anti-rollback
+//   - `start`    — canonical `LocalLicenceRecord` only carries `expiresAt`. Phase 6's anti-rollback
 //                  high-water-mark can be seeded from local receipt time instead of a
 //                  server-provided start date.
 //   - `tier`     — redundant: BuildPlan.md Phase 0.3 already has tier on the catalogue/book
@@ -44,7 +44,7 @@
 // was reconciled against.
 
 import type { BookId, ContentFormat } from '../types/primitives';
-import type { EncryptionDescriptor, SignedLicence } from './content-provider';
+import type { EncryptionDescriptor, LocalLicenceRecord } from './content-provider';
 
 /** wokay's `IndexUrl`, forwarded by flambeau unchanged — see this file's header for the source. */
 export interface ContentLicenceIndexInfo {
@@ -64,7 +64,7 @@ export interface ContentLicenceResponse {
 
   // Reused verbatim from content-provider.ts. Both null => OA (open access, no encryption).
   encryption: EncryptionDescriptor | null;
-  licence: SignedLicence | null;
+  licence: LocalLicenceRecord | null;
 
   // Absent when this book has no search index, or (matching the real backend) when the client
   // didn't ask for one. This client always asks — see contentLicenceClient.ts.

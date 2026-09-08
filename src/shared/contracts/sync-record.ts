@@ -13,9 +13,12 @@
 //   - synced: false on create; the sync layer flips it true once the change is
 //     acknowledged. NON-null (false is the natural "not yet synced" state).
 //   - delete = soft delete: isDeleted=true (tombstone), whole record still sent.
-//   - conflict resolution is per-record: LWW on updatedAt for prefs / progress /
-//     bookmarks; MERGE/UNION for highlights (updatedAt still present, just not
-//     the resolution key there).
+//   - conflict resolution is per-record: LWW on updatedAt for prefs / progress;
+//     MERGE/UNION for bookmarks / highlights (updatedAt still present, just not
+//     the resolution key there). Bookmarks/highlights get union for free only
+//     because both are create/delete-only (fresh id per record, no edit path) —
+//     see annotations.ts. That stops being true the day either gets an
+//     update-in-place operation.
 import type { Timestamp } from '../types/primitives';
 
 export interface SyncRecordBase {

@@ -43,9 +43,20 @@
 //
 //   const indexBytes = await getIndex(bookId); // null if this book has no search index
 //   if (indexBytes) { /* Search decodes + queries these bytes */ }
+//
+// getFormat() — Reader's answer to "which of my (EPUB/PDF/Audio) templates does this book need",
+// added per API_CONTRACT_NOTES.md (this directory). Same one-call pattern as getBook/getIndex:
+// SessionHandle.format is already frozen (content-provider.ts) and already persisted through
+// `store()` into `.meta.json` (contentStore.ts's PersistedMeta.format) — this just exposes a value
+// that already exists, the same way getIndex exposes decrypted bytes that already exist. Call it
+// BEFORE getBook() so Reader knows which template to mount before paying for the decrypt.
+// openSession() only loads persisted metadata; it does not decrypt, so this is cheap even cold.
+//
+//   const format = await getFormat(bookId); // 'EPUB' | 'PDF' | 'AUDIO'
+//   const bytes = await getBook(bookId);     // decrypt, once the template is chosen
 
-import type { BookId, Bytes, ContentProvider } from '@/shared/contracts';
-import { contentStore, decryptSearchIndex } from './contentStore';
+import type { BookId, Bytes, ContentFormat, ContentProvider } from '@/shared/contracts';
+import { contentStore, decryptSearchIndex, getMimeType as getMimeTypeFromStore } from './contentStore';
 
 export async function getBook(bookId: BookId): Promise<Bytes> {
   await contentStore.openSession(bookId);
@@ -57,7 +68,16 @@ export async function getIndex(bookId: BookId): Promise<Bytes | null> {
   return decryptSearchIndex(bookId);
 }
 
-export const contentProvider: ContentProvider = { getBook };
+export async function getFormat(bookId: BookId): Promise<ContentFormat> {
+  const handle = await contentStore.openSession(bookId);
+  return handle.format;
+}
+
+export async function getMimeType(bookId: BookId): Promise<string> {
+  return getMimeTypeFromStore(bookId);
+}
+
+export const contentProvider: ContentProvider = { getBook, getMimeType };
 
 export async function closeBook(bookId: BookId): Promise<void> {
   return contentStore.close(bookId);

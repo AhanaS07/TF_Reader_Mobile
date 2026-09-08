@@ -1,4 +1,4 @@
-import { newId, nowIso } from '../localDb/database';
+import { getDatabase, newId, nowIso } from '../localDb/database';
 import { highlightMapper, parseLocator } from '../localDb/mappers';
 import type { HighlightRow, Locator } from '../localDb/types';
 import { BOOK_ID, USER_ID } from '../syncConfig';
@@ -20,8 +20,14 @@ export interface SelectionRange {
 export const highlightStore = {
   ...highlightTable,
 
-  list(): Promise<HighlightRow[]> {
-    return highlightTable.listActive(USER_ID, BOOK_ID);
+  /**
+   * `userId`/`bookId` default to the prototype's single hardcoded constants - every current
+   * caller gets identical behaviour to before. A caller that actually knows the signed-in user
+   * and/or the open book (multi-user/multi-book capable) should pass them explicitly instead of
+   * relying on the defaults.
+   */
+  list(userId: string = USER_ID, bookId: string = BOOK_ID): Promise<HighlightRow[]> {
+    return highlightTable.listActive(userId, bookId);
   },
 
   /**
@@ -33,6 +39,8 @@ export const highlightStore = {
   async addFromSelection(
     selection: SelectionRange,
     color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
   ): Promise<HighlightRow> {
     const startLocator: Locator = {
       type: 'PDF',
@@ -44,7 +52,7 @@ export const highlightStore = {
       page: selection.page,
       offset: selection.endOffset,
     };
-    return this.add(startLocator, endLocator, color);
+    return this.add(startLocator, endLocator, color, bookId, userId);
   },
 
   /**
@@ -54,23 +62,59 @@ export const highlightStore = {
    * locators, so a reflowable book could not record a highlight even though the contract has
    * always described one.
    */
-  addFromCfi(startCfi: string, endCfi: string, color = 'yellow'): Promise<HighlightRow> {
-    return this.add({ type: 'EPUB', cfi: startCfi }, { type: 'EPUB', cfi: endCfi }, color);
+  addFromCfi(
+    startCfi: string,
+    endCfi: string,
+    color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
+  ): Promise<HighlightRow> {
+    return this.add(
+      { type: 'EPUB', cfi: startCfi },
+      { type: 'EPUB', cfi: endCfi },
+      color,
+      bookId,
+      userId,
+    );
   },
 
-  /** Stores a highlight from two already-built locators of either format. */
+  /**
+   * Stores a highlight from two already-built locators of either format.
+   *
+   * Idempotent on (start, end): a device already holding an active highlight at this exact
+   * span returns it unchanged rather than creating a second one. This only catches a duplicate
+   * this DEVICE already knows about - either a genuine double-tap, or the same span this device
+   * already pulled down from another one. It cannot see a duplicate another device is creating
+   * at the same moment while both are offline; closing that requires a server-side uniqueness
+   * constraint - see API_CONTRACT_NOTES.md.
+   */
   async add(
     startLocator: Locator,
     endLocator: Locator,
     color = 'yellow',
+    bookId: string = BOOK_ID,
+    userId: string = USER_ID,
   ): Promise<HighlightRow> {
+    const startJson = JSON.stringify(startLocator);
+    const endJson = JSON.stringify(endLocator);
+
+    const db = await getDatabase();
+    const existing = await db.getFirstAsync<HighlightRow>(
+      `SELECT * FROM highlights
+        WHERE user_id = ? AND book_id = ? AND start_locator = ? AND end_locator = ?
+          AND is_deleted = 0
+        LIMIT 1`,
+      [userId, bookId, startJson, endJson],
+    );
+    if (existing) return existing;
+
     const now = nowIso();
     const row: HighlightRow = {
       id: newId(),
-      user_id: USER_ID,
-      book_id: BOOK_ID,
-      start_locator: JSON.stringify(startLocator),
-      end_locator: JSON.stringify(endLocator),
+      user_id: userId,
+      book_id: bookId,
+      start_locator: startJson,
+      end_locator: endJson,
       color,
       created_at: now,
       updated_at: now,

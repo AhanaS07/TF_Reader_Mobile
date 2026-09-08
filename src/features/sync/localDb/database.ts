@@ -77,6 +77,18 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       `ALTER TABLE accessibility ADD COLUMN screen_reader_hints INTEGER NOT NULL DEFAULT 0`,
     );
   }
+
+  // Field-level merge for the two multi-field singleton tables. An empty map is the correct
+  // default for an existing row: the merge logic falls back to the row's own `updated_at` for
+  // any field with no entry, so an upgraded row behaves exactly like whole-row LWW until a
+  // field is touched again post-upgrade, which is when it first gets its own timestamp.
+  for (const table of ['personalization', 'accessibility'] as const) {
+    if (!(await columnNames(db, table)).includes('field_updated_at')) {
+      await db.execAsync(
+        `ALTER TABLE ${table} ADD COLUMN field_updated_at TEXT NOT NULL DEFAULT '{}'`,
+      );
+    }
+  }
 }
 
 /** Client-generated UUID - ids are minted on the device, never by the server. */

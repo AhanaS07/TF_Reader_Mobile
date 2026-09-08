@@ -32,6 +32,13 @@ import type {
   AccessibilityPrefs,
   ReduceMotion,
   TtsHighlightMode,
+  ReadingIntent,
+  LicenceModel,
+  Loan,
+  ReadingSessionResponse,
+  FlambeauErrorCode,
+  EncryptionDescriptor,
+  AccessTier,
 } from '@/shared/contracts';
 
 // --- ContentError is a real enum (value import must work) ------------------
@@ -53,6 +60,12 @@ _fail.bookId satisfies string; // context travels to the catch site
 // --- Locator discriminants are UPPERCASE ----------------------------------
 ({ type: 'EPUB', cfi: 'epubcfi(/6/4)' }) satisfies Locator;
 ({ type: 'PDF', page: 12 }) satisfies Locator;
+({ type: 'AUDIO', positionMs: 872_000 }) satisfies Locator;
+({ type: 'AUDIO', positionMs: 872_000, trackId: 'ch-03' }) satisfies Locator;
+// @ts-expect-error audio position is milliseconds under its own key, never PDF's `offset`
+({ type: 'AUDIO', offset: 872_000 }) satisfies Locator;
+// @ts-expect-error seconds-as-`position` was considered and rejected - positionMs only
+({ type: 'AUDIO', position: 872 }) satisfies Locator;
 // @ts-expect-error lowercase discriminants were reconciled out
 ({ type: 'epub', cfi: 'x' }) satisfies Locator;
 
@@ -91,6 +104,10 @@ true satisfies 'cipherLength' extends keyof EncryptedPackage ? true : false;
 
 // --- getBook stays async (Promise<Bytes>), not a sync in-RAM read ----------
 true satisfies ReturnType<ContentProvider['getBook']> extends Promise<Bytes> ? true : false;
+
+// --- getMimeType returns Promise<string>, derived from PersistedMeta.mimeType --
+true satisfies 'getMimeType' extends keyof ContentProvider ? true : false;
+true satisfies ReturnType<ContentProvider['getMimeType']> extends Promise<string> ? true : false;
 
 // --- prefs is a PER-USER SINGLETON: bookId stays out ----------------------
 // Reversal guard for the T4_Ahana -> dev_T4 decision. A keyof check rather than
@@ -140,3 +157,96 @@ DEFAULT_PREFS.accessibility satisfies AccessibilityPrefs;
 // --- defaults are shared; "reset" must hand back a detached copy ----------
 DEFAULT_ACCESSIBILITY_PREFS satisfies AccessibilityPrefs;
 createDefaultAccessibilityPrefs() satisfies AccessibilityPrefs;
+
+// --- ReadingIntent is exactly the two wire values --------------------------
+// DOWNLOAD is refused for ELITE server-side regardless of this union — that's
+// a runtime gate (Loan.canPersist), not something the type system can pin.
+'STREAM' satisfies ReadingIntent;
+'DOWNLOAD' satisfies ReadingIntent;
+// @ts-expect-error only STREAM | DOWNLOAD are frozen
+'BORROW' satisfies ReadingIntent;
+
+// --- LicenceModel is exactly the three wire values --------------------------
+// wokay's ENTITLED_UNLIMITED/ENTITLED_CONCURRENT are renamed to
+// SUBSCRIPTION/ELITE at this file's boundary — pin the renamed values, not
+// the spec's own names.
+'OPEN_ACCESS' satisfies LicenceModel;
+'SUBSCRIPTION' satisfies LicenceModel;
+'ELITE' satisfies LicenceModel;
+// @ts-expect-error only OPEN_ACCESS | SUBSCRIPTION | ELITE are frozen
+'PREMIUM' satisfies LicenceModel;
+
+// --- Loan: canPersist is THE download-button gate, not licenceModel --------
+// institutionId / dueAt / returnedAt are legitimately optional (open access
+// never expires; an individual subscriber has no institution) — omitted from
+// this literal on purpose, not missing by oversight.
+({
+  loanId: 'loan_1',
+  itemId: 'book_1',
+  userId: 'user_1',
+  licenceModel: 'SUBSCRIPTION',
+  status: 'ACTIVE',
+  borrowedAt: '2026-08-14T00:00:00Z',
+  canPersist: true,
+  serverTime: '2026-08-14T00:00:00Z',
+}) satisfies Loan;
+
+// --- ReadingSessionResponse: content ships a SignedUrl ---------------------
+// loanId (open access) / index (wantSearchIndex unset) / encryption (open
+// access or audio) are all legitimately absent — omitted here on purpose.
+// content's cipherLength/originalLength/mimeType are ALSO optional on the
+// real spec (a null field is omitted, not sent as null — see SignedUrl's own
+// comment) — only url/expiresAt are required, so only those two appear here.
+({
+  sessionId: 'sess_1',
+  itemId: 'book_1',
+  expiresAt: '2026-08-14T00:05:00Z',
+  serverTime: '2026-08-14T00:00:00Z',
+  content: {
+    url: 'https://example.com/signed',
+    expiresAt: '2026-08-14T00:10:00Z',
+  },
+}) satisfies ReadingSessionResponse;
+
+// --- ReadingSessionResponse: the real backend's licenceId/licenceModel/canPersist ------------
+// Confirmed live against tf_reader_backend_temp (2026-08-23) — the real response carries these
+// directly, which is what lets checkLicense.ts skip a separate borrow/loan call. See this file's
+// header on ReadingSessionResponse.
+({
+  sessionId: 'sess_1',
+  licenceId: 'loan_1',
+  itemId: 'book_1',
+  accessLevel: 'ENTITLED_UNLIMITED',
+  licenceModel: 'SUBSCRIPTION',
+  canPersist: true,
+  expiresAt: '2026-08-14T00:05:00Z',
+  serverTime: '2026-08-14T00:00:00Z',
+  content: {
+    url: 'https://example.com/signed',
+    expiresAt: '2026-08-14T00:10:00Z',
+  },
+}) satisfies ReadingSessionResponse;
+
+// --- FlambeauErrorCode wires through the barrel (sample, not exhaustive) ---
+'NO_ACTIVE_LOAN' satisfies FlambeauErrorCode;
+'DEVICE_LIMIT_REACHED' satisfies FlambeauErrorCode;
+'TOKEN_EXPIRED' satisfies FlambeauErrorCode;
+
+// --- EncryptionDescriptor.keyId is OPTIONAL, matching wokay's schema ---------
+// Same "a null field is omitted, not sent as null" convention as SignedUrl
+// above. keyFingerprint stays required — it is the anti-key-substitution check
+// (CONTRACT_ALIGNMENT.md B3/C7), not an optional hint.
+({
+  algorithm: 'AES-256-GCM',
+  layout: 'nonce(12) || ciphertext || tag(16)',
+  wrappedBek: 'BASE64',
+  wrapAlgorithm: 'RSA-OAEP-256',
+  keyFingerprint: 'sha256:deadbeef',
+}) satisfies EncryptionDescriptor;
+
+// --- AccessTier carries no values of its own; it is LicenceModel ------------
+// It used to spell the three tiers 'OA' | 'Subscribed' | 'Elite' — a FOURTH
+// vocabulary for values that already had three (B9). Pins the collapse.
+'SUBSCRIPTION' satisfies AccessTier;
+// @ts-expect-error the old spelling is gone — nothing may reintroduce it
+'Subscribed' satisfies AccessTier;

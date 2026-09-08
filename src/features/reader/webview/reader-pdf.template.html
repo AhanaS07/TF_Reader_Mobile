@@ -1,0 +1,358 @@
+<!doctype html>
+<!--
+  src/features/reader/webview/reader-pdf.template.html
+
+  SOURCE TEMPLATE — not the file the app loads. `npm run reader:build-html`
+  (src/features/reader/scripts/buildReaderHtml.ts) inlines pdf.js, the pdf.js
+  worker and the shared bridge fragment into the @inject markers below and writes
+  the result to assets/reader/reader-pdf.html, which is what the WebView actually
+  loads. Edit THIS file, then re-run the build. Never hand-edit the generated one.
+
+  THIS IS THE PDF TEMPLATE. Its sibling is reader-epub.template.html, and the two
+  are separate files rather than one branching file so that an EPUB read does not
+  carry ~1.4MB of inlined pdf.js it can never call. What they SHARE — post(),
+  fail(), showFallback(), the catch-alls and base64ToArrayBuffer() — lives in
+  reader.bridge.html and is injected into both.
+
+  WHY THE LIBS ARE INLINED RATHER THAN <script src="./pdf.min.js">:
+  same reason as the EPUB template. Metro treats `.js` as a SOURCE extension, so a
+  `.js` file cannot be served as a sibling asset, and release Android renames
+  assets under file:///android_asset/. One self-contained file with zero
+  sub-resource requests is what lets ReaderWebView.tsx lock navigation down.
+
+  THERE IS NO SCRIPT IN THIS FILE ANY MORE, AND THAT IS THE POINT.
+  The behaviour lives in webview/src/pdf.entry.ts — real, typechecked TypeScript that
+  IMPORTS ReaderMessage and ReaderCommand from readerBridge.ts. esbuild compiles it into
+  the @inject:entry marker below. WEBVIEW_BRIDGE.md recorded when the hand-synced
+  arrangement would end; this is it.
+
+  WHAT STILL BELONGS HERE: the DOM the entry queries (#pdf-pages, #pdf-single, #pdf-page-1,
+  #pdf-page-2, #pdf-canvas, #pdf-canvas-2, #pdf-scroll, #pdf-scroll-content, #fallback, and the
+  text/plain worker block), plus the CSS — including .pdf-text-layer and .pdf-highlight-layer, which
+  the entry creates at runtime but cannot style from a .ts file. A .ts file cannot carry any of it, and readerTemplate.test.ts asserts they are present.
+  #pdf-single/#pdf-canvas(-2) are the single-page-at-a-time surface — #pdf-canvas-2 is hidden unless
+  a double-page spread is showing (pdf.entry.ts's renderCurrent toggles it); #pdf-scroll/
+  #pdf-scroll-content are continuous scroll's — pdf.entry.ts toggles which of #pdf-single/#pdf-scroll
+  is visible off `applyAppearance`'s flow.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>TF Reader</title>
+    <style>
+      /*
+        Same height chain as the EPUB template, for a different renderer but the
+        same reason: viewportSize() below measures #pdf-pages to pick a render
+        scale, and a zero-height container yields a zero-scale canvas — a blank
+        page with no error, which is an explicit non-acceptance criterion.
+      */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #ffffff;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      /*
+        HORIZONTAL safe-area insets only — identical rationale to the EPUB
+        template: env() reports the WINDOW inset, and App.tsx already wraps the
+        reader in a SafeAreaView with edges={['top','bottom']}, so adding vertical
+        insets here would inset twice.
+
+        The flex-centering that used to live here moved to #pdf-single below: #pdf-pages now holds
+        BOTH the single-page and the continuous-scroll surfaces, exactly one of which is visible at
+        a time (pdf.entry.ts toggles which), so the centring belongs to whichever mode is showing
+        rather than to their shared ancestor.
+      */
+      #pdf-pages {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+        overflow: hidden;
+      }
+
+      /*
+        NO max-width/max-height HERE, ON PURPOSE. At zoom 1.0, renderPage()'s `fitScale()` already
+        sizes the canvas to fit inside the viewport on both axes, so this is a no-op there. Above
+        1.0 (the user zoomed in), the canvas is DELIBERATELY bigger than the viewport — a max-*: 100%
+        rule would have clipped the enlarged page back down to the old size, which reads as "zoom did
+        nothing" or "zoom looks wrong" even though the rasterised pixels are already sharp (see
+        pdf.entry.ts's dpr-aware canvas sizing). #pdf-single's own scroll (below) is what makes the
+        excess reachable instead of clipped.
+      */
+      #pdf-canvas,
+      #pdf-canvas-2 {
+        display: block;
+      }
+
+      /*
+        ONE PAGE'S STACK: the canvas, the transparent text layer over it, and the highlight boxes
+        over that. `position: relative` is the whole reason this wrapper exists — the two layers are
+        absolutely positioned against it, and without a positioned ancestor they would resolve
+        against the viewport and land nowhere near the page. Used by BOTH surfaces: #pdf-single
+        holds two of these (a spread), and continuous scroll builds one per page inside each
+        .pdf-scroll-page.
+      */
+      .pdf-page {
+        position: relative;
+        display: block;
+        line-height: 0;
+      }
+
+      /*
+        THE SECOND SPREAD PAGE. Hidden until pdf.entry.ts's renderCurrent() decides the viewport is
+        wide enough for a double-page spread (see PDF_SPREAD_MIN_WIDTH in pdfOutline.ts, matched to
+        epub.js's own default) AND the current spread actually has two pages — page 1 (the cover)
+        and a trailing unpaired page still show alone even when spread is 'double'. The entry toggles
+        `display` directly rather than a class, same convention as #pdf-single/#pdf-scroll below.
+
+        THE WRAPPER IS WHAT HIDES, NOT THE CANVAS INSIDE IT: #pdf-single is a flex row with a gutter,
+        and `gap` applies between IN-FLOW children — an empty-but-present wrapper would keep an 8px
+        gap next to a single page and shift it off centre.
+      */
+      #pdf-page-2 {
+        display: none;
+      }
+
+      /*
+        THE TEXT LAYER — pdf.js's standard transparent overlay, one <span> per text item, positioned
+        by percentages of the page and scaled by the `--scale-factor` custom property the entry sets
+        (pdf.js 3.11 emits `calc(var(--scale-factor) * Npx)` into every span's font size, so a layer
+        without that property renders every glyph at zero and selects nothing).
+
+        WHY A PDF SHELL HAS ONE AT ALL: a rasterised page has no text to select and nothing to anchor
+        a highlight to. This is what makes selection possible and what character offsets — the way
+        `highlightStore` addresses a PDF highlight — are counted against. See pdfHighlightSeam.ts.
+
+        The rules below are pdf.js's own (text_layer_builder.css), trimmed to what this shell uses.
+        `color: transparent` rather than `opacity: 0`: the selection highlight the OS draws must stay
+        visible, and an opacity-0 layer takes its selection colour with it.
+      */
+      .pdf-text-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        line-height: 1;
+        text-align: initial;
+        text-size-adjust: none;
+        forced-color-adjust: none;
+        transform-origin: 0 0;
+      }
+      .pdf-text-layer span,
+      .pdf-text-layer br {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+      }
+      .pdf-text-layer .markedContent {
+        top: 0;
+        height: 0;
+        width: 0;
+      }
+
+      /*
+        THE SELECTION FILL, and it is not cosmetic here. The text layer is transparent, so the fill
+        is the ONLY visible sign that a long press selected anything — and WebKit's default is drawn
+        OPAQUE, which on a rasterised page covers the very words being selected. `--tf-selection` is
+        set by pdf.entry.ts's applyAppearance from the theme (selectionTheme.ts); the fallback is
+        what shows before the first appearance payload arrives.
+      */
+      .pdf-text-layer ::selection,
+      .pdf-text-layer span::selection {
+        background: var(--tf-selection, rgba(0, 0, 0, 0.18));
+      }
+
+      /*
+        THE USER HIGHLIGHT LAYER. `pointer-events: none` is LOAD-BEARING, not tidiness: a box that
+        takes touches is a box that swallows a drag beginning inside it, so extending or re-selecting
+        an existing highlight would be impossible. Taps on a highlight are resolved by hit-testing
+        the page container's own click against the painted geometry instead (highlightGeometry.ts's
+        `highlightAt`, shared with the EPUB shell).
+
+        `mix-blend-mode: multiply` is what makes a SOLID fill — the user layer's channel in
+        HIGHLIGHT_LAYERS.md §3 — readable rather than opaque: it darkens the rasterised glyphs
+        underneath towards the highlight colour instead of covering them, the same compositing the
+        EPUB shell gets from epub.js's own highlight defaults.
+      */
+      .pdf-highlight-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-highlight-layer > div {
+        position: absolute;
+        mix-blend-mode: multiply;
+        border-radius: 2px;
+      }
+
+      /*
+        THE SEARCH-MATCH LAYER — HIGHLIGHT_LAYERS.md §3's third channel, and the third layer over a
+        page: text (transparent, selectable), then the user's fill, then this.
+
+        ITS ORDER IN THE DOM IS THE Z-ORDER (§4: `tts > search > user`), which is why
+        `ensureSurface` appends it AFTER `.pdf-highlight-layer` rather than styling one layer twice.
+        A user fill painted over this outline is exactly the "losing search context" regression §3
+        names.
+
+        AN OUTLINE, WITH NO BACKGROUND AND NO `mix-blend-mode` — both are the point rather than
+        omissions. The user layer is the solid channel and multiplies so its fill darkens the glyphs
+        beneath; a search match has to remain findable OVER that fill without hiding it, so it draws
+        only a border and leaves every pixel inside it alone. `border-color` is set inline by
+        `paintSearchPage` because it is theme-derived (`matchStroke`); everything about the box's
+        SHAPE lives here, where a `.ts` file cannot carry it.
+
+        `pointer-events: none` for the same load-bearing reason the layer below has it: a box that
+        takes touches swallows the drag that starts inside it.
+
+        NO TRANSITION AND NO ANIMATION. A flashing cue was the obvious first idea and is the wrong
+        one twice over: readerTemplate.test.ts asserts both shells declare no animation at all, and
+        motion under the reader's eyes is the thing `reduceMotion` exists to suppress.
+      */
+      .pdf-search-layer {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      .pdf-search-layer > div {
+        position: absolute;
+        background: transparent;
+        border: 2px solid;
+        border-radius: 2px;
+      }
+      /*
+        The whole-page fallback cue, when the match is known to be on this page but its offset could
+        not be resolved to a box (a phrase split across two text runs is the known case). Inset by a
+        hair so the border is not clipped by the layer's own `overflow: hidden`.
+      */
+      .pdf-search-layer > div.tf-hl-search--page {
+        left: 1px;
+        top: 1px;
+        right: 1px;
+        bottom: 1px;
+        border-width: 3px;
+        border-radius: 6px;
+      }
+
+      /*
+        CONTINUOUS-SCROLL MODE. Hidden by default — pdf.entry.ts toggles #pdf-single/#pdf-scroll's
+        display when `applyAppearance`'s flow is 'scrolled-doc'. #pdf-scroll owns the ONLY scrolling
+        surface pdf.js content ever gets; #pdf-pages/html/body stay `overflow: hidden` regardless of
+        mode, same "one page" viewport-measuring contract viewportSize() relies on for single-page
+        mode.
+      */
+      #pdf-single {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        align-items: center;
+        justify-content: center;
+        /* The gutter between the two canvases of a spread — MUST match SPREAD_GAP_PX in
+           pdf.entry.ts, which subtracts this same 8px when computing each canvas's fit width. A
+           no-op whenever #pdf-canvas-2 is display:none — flex gap only applies space between
+           IN-FLOW children. */
+        gap: 8px;
+        /* Lets a zoomed-in page (bigger than the viewport, see #pdf-canvas's own note) be panned
+           to, rather than silently clipped by #pdf-pages's overflow: hidden. A no-op at zoom 1.0,
+           where the canvas already fits and there is nothing to scroll. */
+        overflow: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      #pdf-scroll {
+        display: none;
+        width: 100%;
+        height: 100%;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      /*
+        Each page gets one wrapper, pre-sized to its fit-to-width height BEFORE it is rasterised —
+        this is what keeps the scrollbar/scroll-length correct while pages are still being lazily
+        rendered around the visible window, rather than the content jumping taller as each one
+        renders in. See pdf.entry.ts's virtualised render pass.
+      */
+      .pdf-scroll-page {
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        box-sizing: border-box;
+      }
+      .pdf-scroll-page canvas {
+        max-width: 100%;
+        display: block;
+      }
+
+      /*
+        Last-resort visible failure state, driven by showFallback() in the shared
+        bridge fragment. DUPLICATED FROM THE EPUB TEMPLATE ON PURPOSE: it is CSS,
+        and the fragment can only carry JS. That duplication is a real coupling —
+        showFallback() silently does nothing if #fallback or .visible goes missing
+        here — so readerTemplate.test.ts asserts both selectors exist in BOTH
+        templates. Do not rename either without updating that guard.
+      */
+      #fallback {
+        display: none;
+        box-sizing: border-box;
+        padding: 24px;
+        font: 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #8a1c1c;
+        background: #fdf2f2;
+      }
+      #fallback.visible {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pdf-pages">
+      <div id="pdf-single">
+        <div class="pdf-page" id="pdf-page-1"><canvas id="pdf-canvas"></canvas></div>
+        <div class="pdf-page" id="pdf-page-2"><canvas id="pdf-canvas-2"></canvas></div>
+      </div>
+      <div id="pdf-scroll"><div id="pdf-scroll-content"></div></div>
+    </div>
+    <pre id="fallback"></pre>
+
+    <!-- @inject:pdfjs -->
+    <!--
+      THE WORKER IS INJECTED AS type="text/plain", NOT AS AN EXECUTABLE SCRIPT, AND
+      THAT IS THE WHOLE DESIGN. Read this before "simplifying" it.
+
+      pdf.js picks its execution mode by looking for an already-loaded worker
+      module: PDFWorker gates on `globalThis.pdfjsWorker?.WorkerMessageHandler`
+      (verified in node_modules/pdfjs-dist/build/pdf.min.js — the
+      `_mainThreadWorkerMessageHandler` getter). pdf.worker.min.js is UMD and its
+      header does `e.pdfjsWorker=t()`, so inlining it as a NORMAL <script> would
+      define that global and pdf.js would then skip the real worker entirely and
+      parse every page ON THE MAIN THREAD. For a book-sized PDF that is a frozen UI.
+
+      So: park the source as inert text, hand it to the browser as a Blob URL, and
+      let pdf.js spawn a real worker thread from it. `blob:` is already in
+      ReaderWebView.tsx's navigation allow-list and originWhitelist, so this needs
+      no lockdown change — and it keeps the zero-sub-resource-REQUEST property,
+      because a Blob URL is memory, not a fetch.
+
+      The two modes are mutually exclusive, not a primary plus a runtime fallback.
+      If blob workers ever prove unusable under file:// in WKWebView, the fallback
+      is a BUILD change — inject this as a plain <script> and delete the Blob
+      wiring below — and it costs main-thread parsing.
+    -->
+    <script type="text/plain" id="pdfjs-worker-src">
+      <!-- @inject:pdfjsworker -->
+    </script>
+
+    <!-- @inject:entry -->
+  </body>
+</html>

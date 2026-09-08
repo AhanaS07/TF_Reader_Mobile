@@ -5,12 +5,12 @@
 // and named the `content.lock` / `content.unlock` signals that live here.
 //
 // ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-// │ PROPOSAL — NOT FINALISED, NOT WIRED, NOT IMPLEMENTED.                                   │
-// │                                                                                         │
-// │ Types and signal shapes only. Nothing in the app imports this file and the barrel export │
-// │ in index.ts stays commented out until Encryption signs off. Deliberately no functions,   │
-// │ no store, no bus instance — a joint contract has to be agreed before it is built, and    │
-// │ the last attempt at this shipped an implementation instead of an agreement.              │
+// │ WIRED. The sign-off this box used to wait for happened; strike this box, don't re-litigate│
+// │ it. Sync emits from src/features/sync/offlineLock.ts (applyDownloadRecord ->              │
+// │ eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, ...)); Encryption subscribes and destroys the BEK  │
+// │ for reason: 'revoked' in contentStore.ts; Reader subscribes for the while-open case in     │
+// │ useContentLock.ts (see CLAUDE.md's "Offline-lock gating hook" section). The barrel export  │
+// │ in index.ts is live, not commented out — its own header note says so.                     │
 // └─────────────────────────────────────────────────────────────────────────────────────────┘
 //
 // WHY THIS FILE EXISTS AT ALL
@@ -18,7 +18,7 @@
 // Sync's first attempt at offline entitlement was withdrawn in review, and the reason is the
 // thing this contract has to fix. That attempt added a `downloads.is_valid` column driven by
 // `GET /api/v1/licences/book/{id}/expired` — a SECOND source of entitlement truth, from a
-// different backend collection than the `SignedLicence` that ships inside the
+// different backend collection than the `LocalLicenceRecord` that ships inside the
 // `EncryptedPackage` and that Encryption already verifies at decrypt time. Two sources that
 // can disagree in both directions, with `is_valid` also being a synced column, so one device's
 // verdict propagated to every other device.
@@ -26,7 +26,7 @@
 // The division of labour below is the correction:
 //
 //   Encryption OWNS ENFORCEMENT. It already refuses to decrypt an expired licence, offline
-//   included, from `SignedLicence.expiresAt` — raising ContentError.LICENCE_EXPIRED. That is
+//   included, from `LocalLicenceRecord.expiresAt` — raising ContentError.LICENCE_EXPIRED. That is
 //   the only gate. Nothing Sync writes can open a book that Encryption will not decrypt, and
 //   nothing Sync fails to write can close one.
 //
@@ -51,16 +51,19 @@ import type { BookId, Timestamp } from '../types/primitives';
  * has NOT learned that a book is fine, and it has not learned that it is revoked either. The
  * withdrawn implementation collapsed those two into "valid", which is why a book with no
  * licence document read as readable.
+ *
+ * Q4 RESOLVED (2026-08-26): `memory-only` (Elite / `canPersist: false`) is NOT a lock concern.
+ * The licence model is known at download time and never changes without an explicit new licence.
+ * Lock signals exist for the UNEXPECTED — revocation from the server, or expiry discovered only
+ * after caching. Elite status is neither. Removed from LockReason.
  */
 export type LockReason =
   /** Never asked, or asked and could not reach the server. Carries no verdict either way. */
   | 'unknown'
   /** The server says this licence no longer entitles the user. Privileged — see LockSignal. */
   | 'revoked'
-  /** `SignedLicence.expiresAt` has passed. Encryption detects this alone, offline, unaided. */
-  | 'expired'
-  /** Entitlement is fine; the licence forbids persistence (Elite / `canPersist: false`). */
-  | 'memory-only';
+  /** `LocalLicenceRecord.expiresAt` has passed. Encryption detects this alone, offline, unaided. */
+  | 'expired';
 
 export interface LockState {
   bookId: BookId;
@@ -72,7 +75,7 @@ export interface LockState {
    */
   locked: boolean;
   reason: LockReason;
-  /** From `SignedLicence.expiresAt`. ISO-8601 UTC on the wire, so kept as a string. */
+  /** From `LocalLicenceRecord.expiresAt`. ISO-8601 UTC on the wire, so kept as a string. */
   expiresAt: string | null;
   /**
    * When this verdict was last confirmed against the server.
@@ -145,7 +148,7 @@ export type OfflineLockSignal = LockSignal | UnlockSignal;
 // 1. [Abhinav] Which endpoint is authoritative for revocation? The withdrawn version used
 //    `GET /api/v1/licences/book/{id}/expired`, a bare boolean from a collection unrelated to
 //    the licence inside the EncryptedPackage. If revocation instead arrives as a re-issued
-//    SignedLicence via the download/licence endpoint, Sync should not be polling at all — it
+//    LocalLicenceRecord via the download/licence endpoint, Sync should not be polling at all — it
 //    should be refreshing the licence, and this whole signal collapses into that refresh.
 //
 // 2. [Abhinav] Does `reason: 'revoked'` destroy the BEK immediately, or mark it for destruction?
@@ -159,10 +162,11 @@ export type OfflineLockSignal = LockSignal | UnlockSignal;
 //    Encryption's verdict, never an input to it, and it must not be a synced column: one
 //    device's verdict must not propagate as another device's truth.
 //
-// 4. [Both] Is `memory-only` an offline-lock concern at all? `canPersist: false` is known at
-//    download time from the licence, so Encryption arguably never needs a signal for it. Listed
-//    as a LockReason so the UI has one vocabulary for "why can't I read this", but it may
-//    belong in tier.ts instead.
+// Q4 RESOLVED (2026-08-26): `memory-only` is NOT a lock concern. Elite status is known at
+// download time and does not change unexpectedly. Removed from LockReason type. Elite books are
+// simply never available offline; no signal needed.
 //
-// 5. [Ahana] What does Reader show for `reason: 'unknown'`? It is neither locked nor confirmed.
-//    Silence is probably right, but the state exists and needs a defined presentation.
+// Q5 RESOLVED (2026-08-26): `reason: 'unknown'` means "never pulled" — Reader should render it
+// as "status unknown" or remain silent in the UI. Do NOT claim entitlement. The absence of
+// confirmation is itself the message: if a device has not reached the server since download, it
+// has not confirmed this book is still entitled. Show uncertainty, not a false guarantee.

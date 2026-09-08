@@ -30,7 +30,7 @@
 // this wraps. Not configurable via the frozen contract (EncryptionDescriptor has no modulus-size
 // field), so this is a local implementation choice, not a wire-format one.
 
-import { generateKeyPairSync, publicEncrypt, privateDecrypt, createPrivateKey, createPublicKey, constants } from 'react-native-quick-crypto';
+import { generateKeyPairSync, publicEncrypt, privateDecrypt, createPrivateKey, createPublicKey, createHash, constants } from 'react-native-quick-crypto';
 import * as Keychain from 'react-native-keychain';
 import { bytesToBase64, base64ToBytes } from './base64';
 
@@ -74,6 +74,18 @@ function generateRsaPemKeyPair(): PemKeyPair {
 // which is all a single device's single keychain needs.
 let generationInFlight: Promise<{ publicKey: string }> | null = null;
 
+// TRIED AND REVERTED (2026-08-16): caching the derived public key in a module-level variable
+// across calls (not just across CONCURRENT calls, which generationInFlight already covers) would
+// save a keychain read + RSA PEM parse on every book open — real, but small next to the network
+// timeouts this call sits in front of. Reverted because it broke 5 test suites/13 tests
+// (deviceKeypair.test.ts, deviceKeypair.edgecases.test.ts, contentStore.test.ts,
+// contentStore.edgecases.test.ts, downloadManager.test.ts): those tests deliberately drive this
+// function through different keychain states ACROSS SEQUENTIAL CALLS within one test/module
+// instance (simulating rotation, a missing key, a corrupted one) — a cache surviving past the
+// in-flight window silently returns a stale key instead of re-reading. Worth revisiting with a
+// test-only reset hook if the keychain-read cost ever shows up as a real, measured cost — not
+// worth the test-isolation risk on a guess.
+
 /**
  * Generates a device-local RSA-OAEP-256 keypair and persists the private key (PEM, PKCS8) in the
  * device's secure keychain/keystore, via the same react-native-keychain API keyStorage.ts uses
@@ -105,8 +117,14 @@ export async function generateDeviceKeypair(): Promise<{ publicKey: string }> {
 
       const { publicKey, privateKey } = generateRsaPemKeyPair();
 
+      // THIS_DEVICE_ONLY: without it, react-native-keychain's default (AFTER_FIRST_UNLOCK, no
+      // device binding) lets this private key migrate through an encrypted backup/restore onto a
+      // second device — silently defeating the whole point of a per-device keypair (flagged in
+      // full-audit-report.md S2). Restoring a backup onto a new device must force a fresh keypair,
+      // not carry the old one over.
       const result = await Keychain.setGenericPassword('device-private-key', privateKey, {
         service: PRIVATE_KEY_SERVICE,
+        accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
       });
       if (result === false) {
         throw new Error('generateDeviceKeypair: keychain rejected storing the private key');
@@ -126,10 +144,12 @@ export async function generateDeviceKeypair(): Promise<{ publicKey: string }> {
  * flambeau backend's `ReadingSessionRequest.devicePublicKey` requires (reading-session.ts's own
  * header: "NOT a PEM, NOT a JWK"). A PEM body IS already base64 of the DER bytes, wrapped with a
  * header/footer and line breaks per RFC 7468 — so this is a string strip, not a re-encode: no
- * base64-decode/re-encode round trip, no DER parser dependency. Deliberately NOT what
- * deviceKeyRegistration.ts's (now-unused) `asciiToBytes`+`bytesToBase64` pair did — that
+ * base64-decode/re-encode round trip, no DER parser dependency. Deliberately NOT what the now-
+ * deleted `deviceKeyRegistration.ts`'s `asciiToBytes`+`bytesToBase64` pair did — that
  * base64-encoded the PEM's own ASCII TEXT (headers, footers and newlines included) for the old
  * mock `POST /device/register-key` body, a completely different, non-interoperable wire value.
+ * That file is gone (flambeau's real backend has no such endpoint — API_CONTRACT_NOTES.md B8),
+ * kept here only as the contrast that explains why this function does a plain string strip.
  *
  * @param publicKeyPem - PEM (SPKI) public key, as returned by generateDeviceKeypair().
  */
@@ -138,6 +158,25 @@ export function publicKeyToRawBase64(publicKeyPem: string): string {
     .replace(/-----BEGIN PUBLIC KEY-----/, '')
     .replace(/-----END PUBLIC KEY-----/, '')
     .replace(/\s+/g, '');
+}
+
+/**
+ * SHA-256 fingerprint of the device's own public key, in the "sha256:<hex>" format the real
+ * backend uses on EncryptionDescriptor.keyFingerprint/LocalLicenceRecord.keyFingerprint. Computed over
+ * the RAW DER bytes (same bytes publicKeyToRawBase64 sends on the wire), not the PEM text —
+ * hashing the wrong representation would make this "fingerprint of the raw key" claim false even
+ * though it would still produce SOME string.
+ *
+ * This is the ONE PLACE this app decides what its own key's fingerprint is. downloadManager.ts
+ * uses this value for LocalLicenceRecord.keyFingerprint — NOT the server's own reported
+ * EncryptionDescriptor.keyFingerprint — specifically so contentStore.ts's existing
+ * `licence.keyFingerprint !== encryption.keyFingerprint` check is comparing two INDEPENDENTLY
+ * derived values (ours vs. the server's claim) instead of a value against itself.
+ */
+export async function publicKeyFingerprint(publicKeyPem: string): Promise<string> {
+  const rawBytes = base64ToBytes(publicKeyToRawBase64(publicKeyPem));
+  const digestHex = createHash('sha256').update(rawBytes).digest('hex');
+  return `sha256:${digestHex}`;
 }
 
 /**

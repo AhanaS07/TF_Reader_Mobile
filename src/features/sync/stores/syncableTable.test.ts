@@ -150,6 +150,50 @@ describe('applyServerRecord (pull, Last-Write-Wins)', () => {
     expect(row?.server_updated_at).toBe('2026-02-01T00:00:00.000Z');
   });
 
+  it('a local tombstone rejects an incoming non-delete update, even carrying a later stamp', async () => {
+    // The delete-vs-rename race a same-id update-in-place op reintroduces (bookmarkStore.rename()) -
+    // see READER_BOOKMARKS_WIRING.md's "Real rename op" open item. Exercised generically here via
+    // progressTable since the guard lives in the shared applyServerRecord, not per-entity.
+    const id = 'p-sticky-delete-local';
+    await progressTable.writeRow({
+      ...progressRow(id, 1, '2026-01-01T00:00:00.000Z'),
+      is_deleted: 1,
+    });
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 99,
+      updatedAt: '2026-06-01T00:00:00.000Z', // later than the local tombstone
+      isDeleted: false,
+    });
+
+    expect(applied).toBe(false);
+    const row = await progressById(id);
+    expect(row?.is_deleted).toBe(1); // still a tombstone - not resurrected
+    expect(row?.offset).toBe(1); // untouched
+  });
+
+  it('an incoming delete wins over a live local row, even carrying an EARLIER stamp', async () => {
+    // The other half of "deletes are sticky": a delete must not be out-voted by the timestamp
+    // compare either, or the two directions of the guard would contradict each other.
+    const id = 'p-sticky-delete-incoming';
+    await progressTable.writeRow(progressRow(id, 1, '2026-06-01T00:00:00.000Z'));
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z', // earlier than the local row
+      isDeleted: true,
+    });
+
+    expect(applied).toBe(true);
+    expect((await progressById(id))?.is_deleted).toBe(1);
+  });
+
   it('leaves a newer local edit alone so its queued push still wins', async () => {
     const id = 'p-pull-older';
     await progressTable.writeRow(progressRow(id, 99, '2026-05-01T00:00:00.000Z'));
@@ -321,5 +365,89 @@ describe('listActive', () => {
     const ids = (await progressTable.listActive(USER, BOOK)).map((r) => r.id);
     expect(ids).toContain(live);
     expect(ids).not.toContain(dead);
+  });
+});
+
+// `prefsStore.subscribe` only fires on a LOCAL write through that store, by its own explicit
+// design (its header comment says a pulled prefs row does not pass through it). This table's own
+// `subscribe` deliberately covers BOTH: a local `saveLocal` edit AND a pulled `applyServerRecord`
+// change, because a caller (Reader's bookmarks panel) needs to know about a delete made on
+// another device while it is already open, not just its own edits. See `ReaderScreen.tsx`'s
+// subscribing effect for the one call site that needs the pulled half today.
+describe('subscribe (live-change notification)', () => {
+  it('notifies on a local saveLocal write', async () => {
+    const heard = jest.fn();
+    const unsubscribe = progressTable.subscribe(heard);
+
+    await progressTable.saveLocal(progressRow('p-sub-local', 1, '2026-01-01T00:00:00.000Z'), 'CREATE');
+
+    expect(heard).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('notifies when a pulled record actually applies', async () => {
+    const id = 'p-sub-pull-applied';
+    await progressTable.writeRow(progressRow(id, 1, '2026-01-01T00:00:00.000Z'));
+    const heard = jest.fn();
+    const unsubscribe = progressTable.subscribe(heard);
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 2,
+      updatedAt: '2026-02-01T00:00:00.000Z',
+      isDeleted: false,
+    });
+
+    expect(applied).toBe(true);
+    expect(heard).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('does NOT notify when applyServerRecord rejects the record (sticky delete)', async () => {
+    const id = 'p-sub-pull-rejected';
+    await progressTable.writeRow({ ...progressRow(id, 1, '2026-01-01T00:00:00.000Z'), is_deleted: 1 });
+    const heard = jest.fn();
+    const unsubscribe = progressTable.subscribe(heard);
+
+    const applied = await progressTable.applyServerRecord({
+      id,
+      userId: USER,
+      bookId: BOOK,
+      offset: 99,
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      isDeleted: false,
+    });
+
+    expect(applied).toBe(false);
+    expect(heard).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('stops notifying after unsubscribe', async () => {
+    const heard = jest.fn();
+    const unsubscribe = progressTable.subscribe(heard);
+    unsubscribe();
+
+    await progressTable.saveLocal(progressRow('p-sub-unsub', 1, '2026-01-01T00:00:00.000Z'), 'CREATE');
+
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it('a throwing subscriber does not stop the write or a sibling subscriber from hearing it', async () => {
+    const heard = jest.fn();
+    const unsubscribeThrow = progressTable.subscribe(() => {
+      throw new Error('boom');
+    });
+    const unsubscribeGood = progressTable.subscribe(heard);
+
+    await expect(
+      progressTable.saveLocal(progressRow('p-sub-throw', 1, '2026-01-01T00:00:00.000Z'), 'CREATE'),
+    ).resolves.toBeTruthy();
+
+    expect(heard).toHaveBeenCalledTimes(1);
+    unsubscribeThrow();
+    unsubscribeGood();
   });
 });

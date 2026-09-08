@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import { encrypt } from './aesGcm';
 import { storeBek } from './keyStorage';
 import { contentStore } from './contentStore';
-import { getBook, getIndex, closeBook } from './contentProvider';
+import { getBook, getIndex, getFormat, closeBook } from './contentProvider';
 import { encryptMockSearchIndex, decodeSearchIndex } from './mockSearchIndex';
 import { ContentFailure } from '@/shared/contracts';
 import type { EncryptedPackage } from '@/shared/contracts';
@@ -73,7 +73,6 @@ describe('contentProvider.getBook — encrypted (Subscription-style)', () => {
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
       },
       cipherLength: payload.cipherLength,
       originalLength: payload.originalLength,
@@ -120,7 +119,6 @@ describe('contentProvider.getIndex — search index available alongside the decr
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
       },
       cipherLength: payload.cipherLength,
       originalLength: payload.originalLength,
@@ -172,7 +170,6 @@ describe('contentProvider.getIndex — search index available alongside the decr
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
       },
       cipherLength: payload.cipherLength,
       originalLength: payload.originalLength,
@@ -221,7 +218,6 @@ describe('contentProvider.getIndex — search index available alongside the decr
         expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
         canPersist: true,
         rights: { print: false },
-        signature: { alg: 'RS256', kid: 'k1', value: 'unverified-in-this-test' },
       },
       cipherLength: payload.cipherLength,
       originalLength: payload.originalLength,
@@ -237,6 +233,65 @@ describe('contentProvider.getIndex — search index available alongside the decr
 
     await closeBook(bookId);
     expect(decryptedIndex!.every((b: number) => b === 0)).toBe(true);
+  });
+});
+
+describe('contentProvider.getFormat — which template Reader should mount, before decrypting', () => {
+  it('returns the stored format for an open-access package', async () => {
+    const bookId = 'provider-format-oa';
+    await contentStore.store(openAccessPackage(bookId, plaintextOf(64, 'audio body')));
+
+    await expect(getFormat(bookId)).resolves.toBe('AUDIO');
+  });
+
+  it('returns the stored format for an encrypted package WITHOUT needing the BEK — openSession loads metadata, it does not decrypt', async () => {
+    const bookId = 'provider-format-encrypted';
+    const key = randomKey();
+    const payload = await encrypt(plaintextOf(128, 'never actually decrypted below'), key);
+
+    const pkg: EncryptedPackage = {
+      bookId,
+      format: 'PDF',
+      content: payload.content,
+      encryption: {
+        algorithm: 'AES-256-GCM',
+        layout: 'nonce(12) || ciphertext || tag(16)',
+        wrappedBek: 'not-a-real-wrap-in-this-test',
+        wrapAlgorithm: 'RSA-OAEP-256',
+        keyId: 'master-v1',
+        keyFingerprint: 'sha256:test-fingerprint',
+      },
+      licence: {
+        licenceId: `lic-${bookId}`,
+        itemId: bookId,
+        keyFingerprint: 'sha256:test-fingerprint',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        canPersist: true,
+        rights: { print: false },
+      },
+      cipherLength: payload.cipherLength,
+      originalLength: payload.originalLength,
+      mimeType: 'application/pdf',
+    };
+
+    // Deliberately no storeBek(bookId, key) here — proves getFormat needs no key material at all.
+    await contentStore.store(pkg);
+
+    await expect(getFormat(bookId)).resolves.toBe('PDF');
+  });
+
+  it('does not disturb a later getBook — calling getFormat first is the intended order, not a side effect to guard against', async () => {
+    const bookId = 'provider-format-then-book';
+    const plaintext = plaintextOf(256, 'still decrypts fine after getFormat');
+    await contentStore.store(openAccessPackage(bookId, plaintext));
+
+    await expect(getFormat(bookId)).resolves.toBe('AUDIO');
+    const bytes = await getBook(bookId);
+    expect(Buffer.from(bytes).equals(Buffer.from(plaintext))).toBe(true);
+  });
+
+  it('rejects with the underlying ContentFailure when the book was never stored — same as getBook', async () => {
+    await expect(getFormat('provider-format-never-stored')).rejects.toBeInstanceOf(ContentFailure);
   });
 });
 

@@ -1,3 +1,4 @@
+import { getAuthToken } from './devAuthToken';
 import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './syncConfig';
 
 /**
@@ -87,10 +88,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResponse
 
   let response: Response;
   try {
+    // Real backend, always (see syncConfig.ts) — a bearer token is required or the resource-server
+    // chain 401s before routing runs, same as download/readingSessionClient.ts's real-backend calls.
+    // Fetched inside this try so a token-fetch failure surfaces as the same transient ApiError(0) a
+    // network failure below would, rather than an uncaught bare Error.
+    const token = await getAuthToken();
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers ?? {}),
+      },
     });
   } catch (error) {
     // Unreachable host, DNS failure, or the abort above. Status 0 = transient.
@@ -237,4 +247,14 @@ export const api = {
     request<T[]>(
       `${collection(entityPath)}${queryString({ ...params, includeDeleted: 'true' })}`,
     ),
+
+  /**
+   * Un-deletes a tombstoned record in place, under its OWN id. `downloads` only today: a create
+   * for a (bookId, format) that already has a record - even a soft-deleted one - answers 409
+   * CODE_TAKEN rather than creating a second one, and the only path back from that tombstone is
+   * this endpoint on the record's real id (confirmed against the real backend, 2026-08-31) - see
+   * `DownloadRestoreCollision` in syncEngine.ts.
+   */
+  restore: <T>(entityPath: string, id: string) =>
+    request<T>(`${collection(entityPath)}/${id}/restore`, { method: 'POST' }),
 };

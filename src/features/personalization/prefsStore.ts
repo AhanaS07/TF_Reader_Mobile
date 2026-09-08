@@ -1,97 +1,139 @@
 // /features/personalization/prefsStore.ts
-// Personalization store (STUB) — CAP-7 Reader & Offline (Team t4targaryen)
+// Personalization prefs store — CAP-7 Reader & Offline (Team t4targaryen)
 //
-// Owner: Personalization (Vaishnavi). Day-2 deliverable: "stub the
-// personalization store (settings → SQLite via Karthik's schema, marked for sync)."
+// Owner: Personalization (Vaishnavi). The settings-screen-facing seam for reading
+// and writing the user's SharedPrefs.
 //
-// STUB: persists SharedPrefs IN MEMORY only, behind the PrefsStore interface.
-// The on-device SQLite store isn't in this repo yet (Karthik's SQLite/Mongo live
-// in the backend repo; src/features/sync is a .gitkeep). We depend ONLY on the
-// frozen contract (SyncRecordBase, in shared/contracts) — not on the DB. When an
-// on-device SQLite adapter lands, add a SqlitePrefsStore implementing this same
-// interface and swap it in with no caller changes.
+// It does NOT own storage. The persisted, SQLite-backed layer is Sync's
+// (features/sync/stores/personalizationStore.ts + accessibilityStore.ts, behind
+// features/sync/sharedPrefs.ts), which merges the two tables into one SharedPrefs,
+// seeds DEFAULT_PREFS on first run, and marks every write for sync. This wrapper is
+// a thin, settings-facing adapter over that seam: `readSharedPrefs` / `writeSharedPrefs`
+// / `resetSharedPrefs` are the legitimate coupling point (their public read/write API),
+// so Personalization consumes them rather than reaching into Sync's stores or schema.
 //
-// Prefs are a per-user SINGLETON. Every write stamps updatedAt and sets
-// synced=false ("marked for sync"). LWW on updatedAt (see prefs.ts).
+// This REPLACES the former in-memory `InMemoryPrefsStore` stub, which persisted only
+// for the process lifetime and was never wired to anything. The shared-reference trap
+// that stub's `freshDefaultPrefs()` guarded no longer exists here: every read
+// reconstructs fresh nested objects from SQLite rows, and reset hands back a detached
+// copy on Sync's side (`resetSharedPrefs` -> `structuredClone(DEFAULT_PREFS)`).
 //
-// NO DELETE: prefs has no delete op (per prefs.ts). isDeleted comes from the
-// frozen SyncRecordBase and is REQUIRED by the type, so it must exist — we pin it
-// to false and never expose a way to change it.
+// Prefs are a per-user SINGLETON. There is no `userId` argument: the persisted layer
+// is single-account today (Sync's `USER_ID` constant); when auth lands and identity
+// becomes real, the account-vs-device question (see API_CONTRACT_NOTES.md §4) decides
+// whether this signature grows one.
+//
+// LIVE RE-APPLY: this store is the notification channel, NOT the event bus. Ahana's
+// prefs-application decision (2026-08-18) is explicit: no bus, and Karthik is not on the
+// critical path. Reader subscribes to `subscribe()` below; a `savePrefs`/`resetPrefs`
+// notifies subscribers with the fresh record, and Reader re-resolves + re-applies it into
+// the WebView with no reopen. This is why the event-bus `PrefsChangedEvent` follow-up that
+// used to live here is gone: the singleton store is the single JS-process source of truth,
+// so a direct subscription is simpler than a bus and needs no second emitter.
+// See READER_PREFS_APPLICATION.md §5.
+//
+// SCOPED TO LOCAL WRITES ON PURPOSE (decided 2026-09-07, Ahana). Bookmarks, reading progress
+// and highlights DO re-apply live from a sync pull while their screen is open — see
+// `progressStore`/`bookmarkStore`'s own `subscribe`, wired into `ReaderRouteScreen.tsx`/
+// `ReaderScreen.tsx`. Preferences and accessibility settings deliberately do not: see
+// `subscribe()`'s own doc below for why, and `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges`
+// for the bridge that exists but is intentionally not consumed here.
 
-import { SharedPrefs, DEFAULT_PREFS, createDefaultAccessibilityPrefs } from '@/shared/contracts';
+import type { SharedPrefs } from '@/shared/contracts';
+import {
+  readSharedPrefs,
+  writeSharedPrefs,
+  resetSharedPrefs,
+} from '@/features/sync/sharedPrefs';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
 // Caller may change value fields only. Identity + sync bookkeeping (and isDeleted,
-// which we don't use) are the store's job — mirrors the Omit in prefs.ts.
+// which prefs never set) are the store's job — mirrors the Omit in prefs.ts. A patch
+// merges at the TOP level, so a nested group (typography/font/layout/zoom/accessibility)
+// is replaced wholesale, not deep-merged — the settings screen sends the full group.
 export type PrefsPatch = Partial<
   Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>
 >;
 
+/** Notified with the fresh record after every successful write. Returns unsubscribe. */
+export type PrefsListener = (prefs: SharedPrefs) => void;
+
 export interface PrefsStore {
-  getPrefs(userId: string): SharedPrefs;                     // seeds DEFAULT_PREFS on first access
-  savePrefs(userId: string, patch: PrefsPatch): SharedPrefs; // merge + stamp + mark dirty
-  resetPrefs(userId: string): SharedPrefs;                   // restore defaults (still a write)
+  /** Current prefs. Returns DEFAULT_PREFS on first run, before any row is written. */
+  getPrefs(): Promise<SharedPrefs>;
+  /** Apply a patch, persist it (marked for sync), notify subscribers, and return the re-read result. */
+  savePrefs(patch: PrefsPatch): Promise<SharedPrefs>;
+  /** Restore defaults (a rewrite + updatedAt bump, not a tombstone), notify subscribers, and return them. */
+  resetPrefs(): Promise<SharedPrefs>;
+  /**
+   * Subscribe to prefs changes. The listener fires AFTER a `savePrefs`/`resetPrefs` write
+   * settles, with the fresh record — this is how the Reader re-applies live without a
+   * reopen and without an event bus (see the header note). Returns an unsubscribe.
+   *
+   * DELIBERATELY LOCAL-ONLY (decided 2026-09-07, Ahana). A prefs row pulled by Sync from
+   * another device does NOT notify here, and must not be made to. Unlike bookmarks/progress/
+   * highlights — facts *about* the book that can appear alongside an unchanged page — a prefs
+   * change is a rendering/behavioural change to the page the user is looking at RIGHT NOW:
+   * live-applying a remote theme/font/TTS edit while this device is mid-read means an
+   * unannounced reflow (and, per `epubLayoutSignature.ts`, every painted highlight
+   * re-measuring) or TTS going silent, driven by an edit the person reading here never made.
+   * `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges` exists (Karthik's) for exactly this kind
+   * of bridge and is intentionally NOT wired in here. The two-tables' field-level LWW merge
+   * (`mergeFieldLevel` in `syncableTable.ts`) still resolves a genuine cross-device conflict
+   * correctly regardless — it runs on every pull, whether or not anyone is listening for it —
+   * so nothing is lost: the reconciled record is simply picked up the ordinary way, by the next
+   * `getPrefs()` a remount performs, i.e. on the next close-and-reopen.
+   */
+  subscribe(listener: PrefsListener): () => void;
 }
 
-// Injectable — no hard uuid dep yet (Karthik fixes the client UUID scheme Day 4).
-type IdGen = () => string;
-type Clock = () => number;
+// Module-level, matching the store's singleton nature. A Set so the same listener added
+// twice is one entry, and unsubscribe is O(1).
+const listeners = new Set<PrefsListener>();
 
-const stubId: IdGen = () => `prefs-stub-${Math.floor(Math.random() * 1e9)}`;
-const wallClock: Clock = () => Date.now();
-
-// DEFAULT_PREFS' nested value objects (font/typography/layout/zoom/accessibility)
-// are shared singletons — see prefs.ts / accessibility.ts's "shared reference,
-// do NOT mutate" note on DEFAULT_ACCESSIBILITY_PREFS. Seeding a new user or
-// resetting one must hand out FRESH copies of each nested object, or every
-// user — and every reset — ends up sharing the exact same nested objects:
-// mutate one user's accessibility block and every other "independent" user's
-// record changes too. This is a per-user SINGLETON store; defaults must not
-// be aliased across users.
-function freshDefaultPrefs(): typeof DEFAULT_PREFS {
-  return {
-    ...DEFAULT_PREFS,
-    font: { ...DEFAULT_PREFS.font },
-    typography: { ...DEFAULT_PREFS.typography },
-    layout: { ...DEFAULT_PREFS.layout },
-    zoom: { ...DEFAULT_PREFS.zoom },
-    accessibility: createDefaultAccessibilityPrefs(),
-  };
+function notify(prefs: SharedPrefs): void {
+  // A throwing subscriber must not fail the write that already succeeded — mirrors the
+  // event-bus contract's "emit never throws to its caller". Snapshot first so a listener
+  // that unsubscribes mid-notify does not skip a sibling.
+  for (const listener of [...listeners]) {
+    try {
+      listener(prefs);
+    } catch {
+      // Swallowed deliberately: the persist is done, and one bad subscriber must not
+      // take out the others or the caller.
+    }
+  }
 }
 
-export class InMemoryPrefsStore implements PrefsStore {
-  private byUser = new Map<string, SharedPrefs>();
+export const prefsStore: PrefsStore = {
+  getPrefs() {
+    return readSharedPrefs();
+  },
 
-  constructor(private genId: IdGen = stubId, private now: Clock = wallClock) {}
+  async savePrefs(patch) {
+    // Merge onto the current object. writeSharedPrefs stamps id/userId/updatedAt/
+    // synced itself and ignores those on its input, so spreading the whole record
+    // (rather than stripping them) is harmless and keeps this a one-liner merge.
+    const current = await readSharedPrefs();
+    await writeSharedPrefs({ ...current, ...patch });
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    pushNow();
+    return fresh;
+  },
 
-  getPrefs(userId: string): SharedPrefs {
-    const existing = this.byUser.get(userId);
-    if (existing) return existing;
-    const seeded: SharedPrefs = {
-      id: this.genId(),
-      userId,
-      ...freshDefaultPrefs(),
-      isDeleted: false, // required by SyncRecordBase; pinned — no delete op
-      updatedAt: this.now(),
-      synced: true,     // seeded defaults aren't a user edit → not dirty yet
+  async resetPrefs() {
+    await resetSharedPrefs();
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    pushNow();
+    return fresh;
+  },
+
+  subscribe(listener) {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
     };
-    this.byUser.set(userId, seeded);
-    return seeded;
-  }
-
-  savePrefs(userId: string, patch: PrefsPatch): SharedPrefs {
-    const current = this.getPrefs(userId);
-    const next: SharedPrefs = {
-      ...current,
-      ...patch,
-      updatedAt: this.now(), // LWW stamp
-      synced: false,         // marked for sync → Karthik's outbox
-    };
-    this.byUser.set(userId, next);
-    return next;
-  }
-
-  resetPrefs(userId: string): SharedPrefs {
-    // Reset = rewrite + updatedAt bump, NOT a tombstone (per prefs.ts).
-    return this.savePrefs(userId, freshDefaultPrefs());
-  }
-}
+  },
+};

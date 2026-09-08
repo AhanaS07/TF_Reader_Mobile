@@ -164,6 +164,34 @@ describe('EPUB progress anchoring', () => {
 
     expect(await progressStore.currentLocator()).toEqual({ type: 'PDF', page: 18 });
   });
+
+  it('writes offset 0 and keeps the real position in locator.positionMs for AUDIO', async () => {
+    // offset is a required NOT NULL column with no meaning for AUDIO - the real position is
+    // locator.positionMs (annotations.ts's own comment on the AUDIO variant). Pins the
+    // `locator.type === 'AUDIO' ? 0 : ...` branch in progressStore.ts's savePosition().
+    const audio: Locator = { type: 'AUDIO', positionMs: 872_000, trackId: 'ch-03' };
+    await progressStore.savePosition(audio);
+
+    const row = await progressStore.current();
+    expect(row?.offset).toBe(0);
+    expect(await progressStore.currentLocator()).toEqual(audio);
+  });
+
+  it('returns null for a corrupt (non-null) locator — does not mislabel it as PDF', async () => {
+    // A non-null but unparseable locator means the row was written after the column existed but
+    // something corrupted the JSON. We don't know the format, so null is safer than fabricating
+    // a PDF page — callers treat null as "no saved position, start from beginning".
+    // Previously this returned { type:'PDF', page:0 } (the offset fallback). Fixed in
+    // progressStore.ts: the PDF fallback now only fires when locator IS null (legacy rows).
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT INTO progress (id, user_id, book_id, "offset", locator, updated_at, is_deleted, synced)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 1)`,
+      ['corrupt-audio', USER, BOOK, 0, '{not valid json', '2026-01-01T00:00:00.000Z'],
+    );
+
+    expect(await progressStore.currentLocator()).toBeNull();
+  });
 });
 
 describe('typography units', () => {
@@ -257,6 +285,7 @@ describe('SharedPrefs merge', () => {
       updated_at: '2026-01-01T00:00:00.000Z',
       is_deleted: 0,
       synced: 1,
+      field_updated_at: '{}',
     } satisfies PersonalizationRow;
 
     const merged = mergeSharedPrefs(personalization, {
@@ -273,7 +302,11 @@ describe('SharedPrefs merge', () => {
     await personalizationStore.update({ theme: 'highContrast' });
 
     const prefs = await readSharedPrefs();
-    expect(prefs.theme).not.toBe('highContrast');
+    // Base theme under the boost must be 'light' (classic high contrast is dark-on-light;
+    // ratified 2026-08-17). Asserting the exact value, not just "not highContrast", is the point:
+    // the merge and Personalization's migratePrefs.ts had silently diverged (dark vs light)
+    // precisely because this test never pinned the base. It must match HIGH_CONTRAST_BASE_THEME.
+    expect(prefs.theme).toBe('light');
     expect(prefs.accessibility.display.highContrast).toBe(true);
   });
 
@@ -376,5 +409,6 @@ function accessibilityDefaultsRow(): AccessibilityRow {
     updated_at: '2026-01-01T00:00:00.000Z',
     is_deleted: 0,
     synced: 1,
+    field_updated_at: '{}',
   };
 }

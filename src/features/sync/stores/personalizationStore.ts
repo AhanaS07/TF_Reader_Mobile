@@ -3,13 +3,34 @@ import { getDatabase, nowIso } from '../localDb/database';
 import { personalizationMapper } from '../localDb/mappers';
 import type { PersonalizationRow } from '../localDb/types';
 import { USER_ID } from '../syncConfig';
+import { parseFieldTimestamps, stampChangedFields, stringifyFieldTimestamps } from './fieldTimestamps';
 import { createSyncableTable, withWriteLock } from './syncableTable';
+
+/**
+ * Every column `update()` can independently change - the merge unit is one field, not the
+ * whole row. Meta columns (id, user_id, updated_at, is_deleted, synced, server_updated_at,
+ * field_updated_at) are deliberately excluded: they are bookkeeping, not user-editable content,
+ * and giving them their own merge timestamp would conflate a metadata write with a content edit.
+ */
+export const PERSONALIZATION_MERGE_FIELDS = [
+  'theme',
+  'font_family',
+  'custom_font_uri',
+  'typography_size',
+  'typography_line_height',
+  'typography_spacing',
+  'typography_margins',
+  'layout_flow',
+  'layout_spread',
+  'zoom',
+] as const;
 
 export const personalizationTable = createSyncableTable<PersonalizationRow>({
   table: 'personalization',
   entityType: 'personalization',
   toServer: personalizationMapper.toServer,
   toRow: personalizationMapper.toRow,
+  mergeFields: PERSONALIZATION_MERGE_FIELDS,
 });
 
 /**
@@ -37,9 +58,9 @@ export const personalizationId = (userId: string) => `prefs-${userId}`;
  * 1pt text, and because deriving it here means the decision changes in exactly one place: if
  * #4 lands on scale factors, DEFAULT_PREFS moves and this follows automatically.
  */
-const defaults = (): PersonalizationRow => ({
-  id: personalizationId(USER_ID),
-  user_id: USER_ID,
+const defaults = (userId: string): PersonalizationRow => ({
+  id: personalizationId(userId),
+  user_id: userId,
   theme: DEFAULT_PREFS.theme,
   font_family: DEFAULT_PREFS.font.family,
   custom_font_uri: null,
@@ -54,20 +75,28 @@ const defaults = (): PersonalizationRow => ({
   updated_at: nowIso(),
   is_deleted: 0,
   synced: 0,
+  field_updated_at: '{}',
 });
 
-/** Personalization is user scoped - one preference set applies to every book. */
+/**
+ * Personalization is user scoped - one preference set applies to every book.
+ *
+ * `userId` defaults to the prototype's single hardcoded `USER_ID` - every current caller gets
+ * identical behaviour to before. A caller that actually knows the signed-in user (or a
+ * verification harness that needs its own user without touching the app's data) should pass it
+ * explicitly instead - same pattern as bookmarkStore/progressStore/downloadStore already use.
+ */
 export const personalizationStore = {
   ...personalizationTable,
 
-  async current(): Promise<PersonalizationRow | null> {
+  async current(userId: string = USER_ID): Promise<PersonalizationRow | null> {
     const db = await getDatabase();
     return db.getFirstAsync<PersonalizationRow>(
       `SELECT * FROM personalization
         WHERE user_id = ? AND is_deleted = 0
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [USER_ID],
+      [userId],
     );
   },
 
@@ -76,18 +105,28 @@ export const personalizationStore = {
    * in quick succession) would each see "no row yet" and each create their own, silently
    * duplicating the one-preference-set-per-user invariant this store documents above.
    */
-  async update(patch: Partial<PersonalizationRow>): Promise<PersonalizationRow> {
+  async update(
+    patch: Partial<PersonalizationRow>,
+    userId: string = USER_ID,
+  ): Promise<PersonalizationRow> {
     return withWriteLock(async () => {
-      const existing = await this.current();
-      const base = existing ?? defaults();
+      const existing = await this.current(userId);
+      const base = existing ?? defaults(userId);
+      const now = nowIso();
       const row: PersonalizationRow = {
         ...base,
         ...patch,
         id: base.id,
-        user_id: USER_ID,
-        updated_at: nowIso(),
+        user_id: userId,
+        updated_at: now,
         is_deleted: 0,
         synced: 0,
+        // Stamps only the fields this patch actually touches, so the next merge can tell
+        // "I changed theme just now" from "I haven't touched theme since the last sync" -
+        // a single whole-row updated_at cannot make that distinction.
+        field_updated_at: stringifyFieldTimestamps(
+          stampChangedFields(parseFieldTimestamps(base.field_updated_at), patch, PERSONALIZATION_MERGE_FIELDS, now),
+        ),
       };
       return personalizationTable.saveLocal(row, existing ? 'UPDATE' : 'CREATE', {
         locked: true,
