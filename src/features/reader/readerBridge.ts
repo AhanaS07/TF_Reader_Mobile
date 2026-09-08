@@ -58,7 +58,7 @@ import type {
   PdfHighlightPaint,
 } from '@/features/personalization/readerHighlights';
 import type { ReaderSearchMatch } from '@/features/search/readerSearchMatch';
-import type { TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
+import type { SpokenWordRange, TtsFetchResult, TtsSentence } from './tts/readerTextProvider';
 
 /**
  * Somewhere in a book the reader can be asked to go, discriminated by format.
@@ -420,6 +420,7 @@ export const READER_COMMANDS = {
   applyAppearance: 'applyAppearance',
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
+  setSpokenWordRange: 'setSpokenWordRange',
   paintHighlights: 'paintHighlights',
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
@@ -502,6 +503,27 @@ export type ReaderCommand =
    * reason to interrupt speech if it fails.
    */
   | { type: 'setSpokenRange'; cfi: string | null }
+  /**
+   * Paint or clear the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
+   * is showing. `null` clears it. Fire-and-forget, on the same contract as its sibling.
+   *
+   * >>> ONE NULLABLE PAYLOAD OBJECT, NOT THREE FIELDS, AND THE PROOF IN bridge.ts IS WHY. <<<
+   * Every command here carries exactly one non-`type` field, because `ExpectedArgs` /
+   * `CommandArgsMatchPayloads` (webview/src/bridge.ts) derive the method's argument tuple from
+   * the payload's fields: a three-field command collapses to a 1-tuple of a union there and
+   * cannot match a 3-tuple, so the mismatch would surface as an unexplained compile error in
+   * the proof rather than at the thing that caused it. It also keeps this in the uniform
+   * `JSON.stringify(command.x)` chain in `buildCommandScript` instead of needing a bespoke
+   * branch, and makes "clear" mean `null` rather than `(null, 0, 0)`.
+   *
+   * NO REPLY, AND SO NO `parseReaderMessage` CASE — this is host → WebView only. Whether the
+   * word could actually be painted is deliberately not reported: the offsets are resolved
+   * against the live document and failing is ORDINARY (the reader paged away mid-utterance,
+   * the section is not rendered), so a reply would be a channel for something no caller can
+   * act on. The shell clears the previous word on every one of those, so a failure shows
+   * nothing rather than showing the wrong word.
+   */
+  | { type: 'setSpokenWordRange'; range: SpokenWordRange | null }
   /**
    * Paint the user's saved highlights — the WHOLE set, every time, never a patch.
    *
@@ -893,19 +915,25 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : command.type === 'paintHighlights'
-                ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
-                  // two locator fields explicitly into a flat per-shell shape, so this is exactly as
-                  // safe as `applyAppearance` above. The COLOUR is the one field that came from
-                  // storage rather than from a locator, and JSON.stringify escapes it like any other
-                  // string; nothing here is pasted into the script unquoted.
-                  JSON.stringify(command.highlights)
-                : command.type === 'paintSearchMatch'
-                  ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
-                    // book's text, so this is the payload rule 1 above is actually about — both are
-                    // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
-                    JSON.stringify(command.match)
-                  : '';
+              : command.type === 'setSpokenWordRange'
+                ? // The whole nullable object, in the same uniform chain as everything above —
+                  // which is the point of the shape. `cfi` is minted from the book's own text and
+                  // the two offsets are numbers reported by the platform TTS engine, so this is
+                  // the payload rule 1 is about, quoted rather than pasted.
+                  JSON.stringify(command.range)
+                : command.type === 'paintHighlights'
+                  ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                    // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                    // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                    // storage rather than from a locator, and JSON.stringify escapes it like any other
+                    // string; nothing here is pasted into the script unquoted.
+                    JSON.stringify(command.highlights)
+                  : command.type === 'paintSearchMatch'
+                    ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                      // book's text, so this is the payload rule 1 above is actually about — both are
+                      // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                      JSON.stringify(command.match)
+                    : '';
 
   return `(function(){
     try {

@@ -99,9 +99,9 @@ const sortedUnique = (values: string[]): string[] => [...new Set(values)].sort()
 /** Every `fail('CODE', ...)` call site across the WebView sources. */
 function errorCodesRaisedByWebView(): string[] {
   return sortedUnique(
-    WEBVIEW_SOURCES.flatMap((source) => [
-      ...source.text.matchAll(/fail\(\s*'([A-Z_]+)'/g),
-    ]).map((m) => m[1]),
+    WEBVIEW_SOURCES.flatMap((source) => [...source.text.matchAll(/fail\(\s*'([A-Z_]+)'/g)]).map(
+      (m) => m[1],
+    ),
   );
 }
 
@@ -298,7 +298,9 @@ describe('TOC nesting depth', () => {
 
   it('carries the depth the template flattened to', () => {
     expect(
-      depthsOf('[{"label":"Part","target":{"kind":"href","href":"a"},"depth":0},{"label":"Ch","target":{"kind":"href","href":"b"},"depth":1}]'),
+      depthsOf(
+        '[{"label":"Part","target":{"kind":"href","href":"a"},"depth":0},{"label":"Ch","target":{"kind":"href","href":"b"},"depth":1}]',
+      ),
     ).toEqual([0, 1]);
   });
 
@@ -324,7 +326,9 @@ describe('TOC nesting depth', () => {
 
   it('clamps an absurd depth to MAX_TOC_DEPTH rather than dropping the entry', () => {
     // Losing a chapter is worse than mis-indenting one.
-    expect(depthsOf('[{"label":"a","target":{"kind":"href","href":"a"},"depth":9001}]')).toEqual([MAX_TOC_DEPTH]);
+    expect(depthsOf('[{"label":"a","target":{"kind":"href","href":"a"},"depth":9001}]')).toEqual([
+      MAX_TOC_DEPTH,
+    ]);
   });
 });
 
@@ -401,6 +405,37 @@ describe('buildCommandScript', () => {
     );
   });
 
+  it('calls setSpokenWordRange with one JSON-encoded object, and with null to clear', () => {
+    // ONE ARGUMENT IS THE ASSERTION, not a detail of it. The shape exists so this command joins the
+    // uniform `JSON.stringify(command.x)` chain and so bridge.ts's `CommandArgsMatchPayloads` proof
+    // holds with a 1-tuple; a three-field variant could satisfy neither. A comma appearing between
+    // top-level arguments here is the regression.
+    const range = { cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', start: 4, end: 9 };
+    expect(buildCommandScript({ type: 'setSpokenWordRange', range })).toContain(
+      `window.TFReader.setSpokenWordRange(${JSON.stringify(range)})`,
+    );
+
+    // `null` is the clear, rather than a sentinel triple like `(null, 0, 0)`.
+    expect(buildCommandScript({ type: 'setSpokenWordRange', range: null })).toContain(
+      'window.TFReader.setSpokenWordRange(null)',
+    );
+  });
+
+  it('quotes a spoken-word CFI rather than pasting it into the script', () => {
+    // Same rule and same defence as the goTo case above, and it applies here for the same reason:
+    // the cfi is minted from the book's own text, so it is content, so it is untrusted. The
+    // assertion is that the call stays ONE argument with the payload inside its quotes — a genuine
+    // break-out would close the call, which is what the second expectation looks for.
+    const script = buildCommandScript({
+      type: 'setSpokenWordRange',
+      range: { cfi: `a'); alert('xss`, start: 0, end: 1 },
+    });
+    expect(script).toContain(
+      String.raw`window.TFReader.setSpokenWordRange({"cfi":"a'); alert('xss","start":0,"end":1})`,
+    );
+    expect(script).not.toContain(`alert('xss')`);
+  });
+
   it('never puts a ContentFormat value into a command payload', () => {
     // Trigger 3 in WEBVIEW_BRIDGE.md, as an executable assertion rather than a note.
     // Format is routed by CHOOSING a command, so the literals 'EPUB'/'PDF'/'AUDIO'
@@ -417,7 +452,14 @@ describe('buildCommandScript', () => {
       // this is that stripping, asserted rather than trusted.
       buildCommandScript({
         type: 'paintHighlights',
-        highlights: [{ id: 'hl-1', startCfi: 'epubcfi(/6/4!/4/2/1:0)', endCfi: 'epubcfi(/6/4!/4/2/1:9)', color: 'yellow' }],
+        highlights: [
+          {
+            id: 'hl-1',
+            startCfi: 'epubcfi(/6/4!/4/2/1:0)',
+            endCfi: 'epubcfi(/6/4!/4/2/1:9)',
+            color: 'yellow',
+          },
+        ],
       }),
       buildCommandScript({
         type: 'paintHighlights',
@@ -439,6 +481,13 @@ describe('buildCommandScript', () => {
       buildCommandScript({
         type: 'paintSearchMatch',
         match: { epub: null, pdf: { page: 4, startOffset: 10, matchText: 'compass' } },
+      }),
+      // The spoken-word range is EPUB-only in practice (the PDF shell's handler is a documented
+      // no-op), which is exactly the shape of thing that invites a `format` field to say so. It has
+      // none: the routing is the shell that received it, same as everything above.
+      buildCommandScript({
+        type: 'setSpokenWordRange',
+        range: { cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', start: 4, end: 9 },
       }),
     ]) {
       for (const format of ['EPUB', 'PDF', 'AUDIO']) {
@@ -465,7 +514,9 @@ describe('what the compiler cannot check about the WebView half', () => {
     // ownership boundary the codes' own names do not: HOST_ERROR_CODES are synthesised by
     // ReaderScreen for failures that happen before or outside the WebView.
     expect(
-      errorCodesRaisedByWebView().filter((code) => (HOST_ERROR_CODES as readonly string[]).includes(code)),
+      errorCodesRaisedByWebView().filter((code) =>
+        (HOST_ERROR_CODES as readonly string[]).includes(code),
+      ),
     ).toEqual([]);
   });
 

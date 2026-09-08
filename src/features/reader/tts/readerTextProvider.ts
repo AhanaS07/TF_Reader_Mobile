@@ -170,6 +170,32 @@ export type TtsFetchResult =
 export type TtsInterruption = 'closed' | 'revoked' | 'navigated';
 
 /**
+ * A sub-range of one spoken sentence — the word the engine is saying right now.
+ *
+ * `start`/`end` are half-open offsets into that sentence's `text`, which is the string the
+ * caller handed to the TTS engine, so they are exactly what the engine reports back
+ * (iOS `location`/`length`, Android `start`/`end`). They are NOT offsets into any DOM text
+ * node: `text` is whitespace-collapsed and trimmed and the sentence may span several nodes,
+ * so the mapping back to a paintable range is arithmetic the WebView does against the live
+ * document (`webview/src/ttsWordOffsets.ts`, `epubTtsResolver.ts`). A caller supplies the
+ * offsets it was given and nothing else.
+ *
+ * ONE OBJECT, NOT THREE ARGUMENTS, and that is a bridge constraint rather than a style
+ * preference: every `ReaderCommand` carries exactly one non-`type` field, and
+ * `webview/src/bridge.ts`'s `ExpectedArgs`/`CommandArgsMatchPayloads` proof enforces the
+ * 1:1 field-to-argument mapping. A three-field command collapses to a 1-tuple of a union
+ * there and cannot match a 3-tuple. It would also force a bespoke branch in
+ * `buildCommandScript` instead of the uniform `JSON.stringify` chain, and make "clear"
+ * mean `(null, 0, 0)` rather than `null`.
+ */
+export interface SpokenWordRange {
+  /** The `cfi` of the sentence being spoken — one this provider emitted. */
+  cfi: string;
+  start: number;
+  end: number;
+}
+
+/**
  * What Accessibility codes against.
  *
  * NOTE WHAT IS ABSENT: there is no `dispose`. Lifetime belongs to whoever owns the book
@@ -226,6 +252,35 @@ export interface ReaderTextProvider {
    * highlight that could not be painted must not be able to interrupt speech.
    */
   setSpokenRange(cfi: string | null): void;
+
+  /**
+   * Paint or move the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
+   * is currently showing. `null` clears it.
+   *
+   * A REFINEMENT OF THE SENTENCE HIGHLIGHT, NOT A REPLACEMENT FOR IT. The two layers compose:
+   * the sentence wash says which sentence, the word wash says where inside it. Both are the
+   * `tts` owner and the same colour at different intensities (HIGHLIGHT_LAYERS.md §3), so a
+   * caller in word mode paints BOTH — `setSpokenRange` when the utterance starts, this on
+   * every progress event.
+   *
+   * CALLING `setSpokenRange` CLEARS THIS. The word is a sub-range of one sentence, so moving
+   * to the next sentence invalidates it; the caller does not have to clear it first, and a
+   * caller that does anyway is harmless. That also means a caller which stops sending word
+   * ranges — because the reader turned word mode off mid-utterance — is not leaving a stale
+   * wash behind: the next sentence removes it.
+   *
+   * WHEN THE RANGE CANNOT BE RESOLVED, THE PREVIOUS WORD IS STILL CLEARED. Reader resolves
+   * these offsets against the live document and can legitimately fail — the reader paged
+   * away mid-utterance, the section is not rendered, the sentence is a single word already
+   * covered by the sentence highlight. Every one of those clears the previous word and paints
+   * nothing, because a highlight left on the last word while speech has moved on is worse
+   * than no word highlight at all. The sentence wash stays throughout, so what is lost is the
+   * refinement, not the "you are here".
+   *
+   * Fire-and-forget and best-effort, exactly like `setSpokenRange`: it never throws and never
+   * reports failure, so nothing here can interrupt speech.
+   */
+  setSpokenWordRange(range: SpokenWordRange | null): void;
 
   /**
    * Subscribe to teardown and navigation. Returns an unsubscribe.

@@ -117,7 +117,7 @@ regression, not a simplification. So each owner claims a different visual channe
 | -------- | ------- | --------- |
 | `user`   | **Solid/opaque fill** (the highlight colour) | It's the durable, user-authored layer; it reads as "the highlight." |
 | `search` | **Outline / box** (border, minimal fill) | Transient; must be findable *over* a user fill without hiding it. |
-| `tts`    | **Translucent overlay** on top | Ephemeral, moves every word; a low-alpha wash composites over whatever is beneath. |
+| `tts`    | **Translucent overlay** on top, at **two intensities** — sentence and word | Ephemeral, moves every word; a low-alpha wash composites over whatever is beneath. |
 
 **`styles` ARE SVG PRESENTATION ATTRIBUTES, NOT CSS DECLARATIONS** — the other half of the 2026-08-26
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
@@ -130,6 +130,29 @@ the two channels in the ordering this section's table intends). It goes through 
 `highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
 the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
 for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+
+**THE `tts` CHANNEL HAS TWO INTENSITIES, AND THEY ARE NOT A FOURTH OWNER.** Word-level highlighting
+(`tts.highlightMode === 'word'`) paints the spoken WORD inside the spoken SENTENCE — same owner, same
+`TTS_SPOKEN_COLOR`, same `highlightFill(colour, bg)` call, a higher `fill-opacity`, and the variant
+`spoken-word` (`tf-hl-tts--spoken-word`). It is a **variant**, which is what `highlightNaming.ts`'s
+second axis is for; §1's owner strings are still exactly three, and the cross-owner composition this
+table guarantees is unchanged. One feature owns both washes, always paints them as a pair, and always
+clears them as a pair.
+
+**Sharing one `highlightFill` call is what makes the pair legible on every theme, and it is a
+structural argument rather than a colour choice.** The two layers can never disagree about fill or
+blend, so more opacity is more prominent on every page — the pair cannot invert. A second HUE would
+have to be re-argued against three page colours, against `user`'s fill beneath it and against
+`search`'s stroke, and re-argued again the next time a palette moved.
+
+**The word's opacity is keyed on the BLEND, not on the theme**, because the two blends fail in
+opposite directions: `multiply` can only darken, so a near-black glyph is close to a fixed point and
+more alpha *raises* text contrast; `screen` can only lighten, so more alpha drives a dark page up
+toward its light glyph and the text under the word goes muddy. Hence a high value on multiply pages
+(light, sepia) and a low one on screen pages (dark) — `spokenWordOpacity` in `selectionTheme.ts`,
+pure and unit-tested, carries the numbers and the arithmetic behind them. **Those numbers are
+computed, not observed on hardware**, and the function's own comment names the two failure signatures
+a device pass is looking for; the pass belongs to Accessibility (Hruthik).
 
 **`user` paints `{ fill: <theme-adjusted colour>, 'fill-opacity': '0.25', 'mix-blend-mode':
 <theme-adjusted> }`** — not `fill-opacity: '1'` with a fixed `multiply`, which read as fully opaque
@@ -259,6 +282,27 @@ moving layer sits on top so it's always visible, the durable layer sits at the b
 matters when two owners would otherwise occupy the *same* channel; the distinct-channel rule (§3) is
 what keeps it from mattering most of the time. **This is priority, not mutual exclusion** — a lower
 layer is never removed to show a higher one.
+
+**Within `tts`, the WORD wash goes on after the SENTENCE wash**, for the same reason: it is a
+refinement drawn on top of it, and adding them the other way round hides the thing that moves.
+`epub.entry.ts`'s `repaintSpokenWord()` is called after every sentence add for exactly this.
+
+> #### ⚠️ Two places the EPUB shell does NOT currently honour this ordering
+>
+> Recorded 2026-09-05 while landing the word layer, which inherits both unchanged rather than
+> creating either:
+>
+> - **`rebuildForFlowIfNeeded`** ends with `liftSearchMatch()` *after* the tts adds, leaving `search`
+>   above both spoken layers.
+> - **`paintHighlights`** lifts only `search`, so a newly created user highlight is appended above
+>   both spoken layers.
+>
+> The fix, when someone takes it: a **`liftSpokenLayers()`** sibling of `liftSearchMatch()` that
+> removes-then-re-adds the sentence AND the word **as a pair** — the pair is the unit, because
+> lifting the sentence alone would put it over its own word — called last at the same three batch
+> boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`,
+> `rebuildForFlowIfNeeded`). It is a paint-order change in paths no unit test can see, so it wants a
+> device pass, which is why it was not bundled into a change that lands without one.
 
 ## PDF — IN scope as of 2026-08-26, with its own seam
 

@@ -6,7 +6,15 @@
 // Colours are inline for the same reason the navigation screens' (src/navigation/) are: src/theme/
 // has not landed yet. Replace with tokens when it does.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -356,6 +364,19 @@ function alertAnnotationWriteFailed(title: string, body: string, cause: unknown)
   Alert.alert(title, body, [{ text: 'OK', style: 'default' }]);
 }
 
+/**
+ * The one thing a caller may need to reach into this screen for from the outside: pausing an
+ * active TTS session before doing something that needs the on-screen position to hold still (a
+ * cross-device conflict prompt, currently the only caller — `ReaderRouteScreen.tsx`). Everything
+ * else about the TTS session (`status`, `play`, `stop`, prefs) stays exactly where it already was,
+ * internal to this file — this is a narrow, single-purpose escape hatch, not a general TTS
+ * remote-control surface for this component.
+ */
+export interface ReaderScreenHandle {
+  /** No-ops (and returns `false`) if TTS isn't currently speaking. Returns `true` if it paused. */
+  pauseTtsIfSpeaking(): boolean;
+}
+
 interface ReaderScreenProps {
   /**
    * Identifies the ContentStore session `getBook(bookId)` opens and
@@ -415,12 +436,10 @@ interface ReaderScreenProps {
   toolbarExtra?: React.ReactNode;
 }
 
-export function ReaderScreen({
-  bookId,
-  initialTarget,
-  onRelocated,
-  toolbarExtra,
-}: ReaderScreenProps): React.JSX.Element {
+function ReaderScreenComponent(
+  { bookId, initialTarget, onRelocated, toolbarExtra }: ReaderScreenProps,
+  ref: React.ForwardedRef<ReaderScreenHandle>,
+): React.JSX.Element {
   /**
    * The book's format and its matching shell — TAGGED WITH THE bookId THEY BELONG TO,
    * and set as ONE value so they can never disagree.
@@ -980,6 +999,24 @@ export function ReaderScreen({
   useEffect(() => {
     ttsSessionRef.current = ttsSession;
   });
+
+  // The one thing exposed outward — see `ReaderScreenHandle`'s own doc comment for why this is
+  // narrow on purpose. Reads through `ttsSessionRef`, not `ttsSession` directly, for the same
+  // reason `tearDownAndLock` does just above: closing over `ttsSession` itself would rebuild this
+  // handle (and, via `useImperativeHandle`'s own contract, re-run it) on every render, since the
+  // hook returns a fresh object each time — `ttsSessionRef` is already kept current for exactly
+  // this kind of external, non-rendering read.
+  useImperativeHandle(
+    ref,
+    () => ({
+      pauseTtsIfSpeaking: () => {
+        if (ttsSessionRef.current.status !== 'speaking') return false;
+        ttsSessionRef.current.pause();
+        return true;
+      },
+    }),
+    [],
+  );
 
   /**
    * The one reaction to "this book's access just ended, while it was open" — called from
@@ -2936,6 +2973,11 @@ export function ReaderScreen({
     </View>
   );
 }
+
+// `forwardRef` only for `ReaderScreenHandle` — see that type's own doc comment. Every existing
+// caller keeps working unchanged: a `ref` prop is simply optional on a forwardRef component.
+export const ReaderScreen = forwardRef(ReaderScreenComponent);
+ReaderScreen.displayName = 'ReaderScreen';
 
 /**
  * A target as a string, for React's key only.

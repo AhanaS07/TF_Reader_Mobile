@@ -15,6 +15,7 @@
 
 import type {
   ReaderTextProvider,
+  SpokenWordRange,
   TtsFetchResult,
   TtsInterruption,
   TtsSentence,
@@ -89,6 +90,8 @@ export interface FakeReaderTextProvider extends ReaderTextProvider {
   readonly sentences: readonly TtsSentence[];
   /** Every `setSpokenRange` argument, in call order. `null` entries are clears. */
   readonly spokenRanges: readonly (string | null)[];
+  /** Every `setSpokenWordRange` argument, in call order. `null` entries are clears. */
+  readonly spokenWordRanges: readonly (SpokenWordRange | null)[];
   /** Move the reader's position silently. The resume-position setup. */
   setPosition(index: number): void;
   /** Move the position AND fire `navigated`, as a Contents tap or search hit would. */
@@ -212,6 +215,7 @@ export function createFakeReaderTextProvider(
   const indexByCfi = new Map<string, number>(sentences.map((s, i) => [s.cfi, i]));
 
   const spokenRanges: (string | null)[] = [];
+  const spokenWordRanges: (SpokenWordRange | null)[] = [];
   const handlers = new Set<(reason: TtsInterruption) => void>();
 
   let position = startIndex;
@@ -252,6 +256,7 @@ export function createFakeReaderTextProvider(
   return {
     sentences,
     spokenRanges,
+    spokenWordRanges,
 
     async current(from: string | null, signal?: AbortSignal): Promise<TtsFetchResult> {
       if (terminated) return UNAVAILABLE;
@@ -280,6 +285,14 @@ export function createFakeReaderTextProvider(
       // against a guarantee it will not get.
       if (terminated) return;
       spokenRanges.push(cfi);
+    },
+
+    setSpokenWordRange(range: SpokenWordRange | null): void {
+      // Recorded the same way setSpokenRange is — useTtsSession's tts-progress wiring is the
+      // caller now (see useTtsSession.test.ts's tts-progress cases), so there is an assertion
+      // surface worth having.
+      if (terminated) return;
+      spokenWordRanges.push(range);
     },
 
     onInterrupted(handler: (reason: TtsInterruption) => void): () => void {

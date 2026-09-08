@@ -183,9 +183,16 @@ header; (2) `commitCurrentPlayerPosition()` (`audioPlayerInstance.ts`, the app-b
 used to be a synchronous write specifically because it runs at the last reliable callback before the
 OS may kill the process — it is now a fire-and-forget async write, a real (accepted) reduction in
 guarantee at exactly that edge. See also the `currentLocator()` legacy-fallback hazard the
-proposal's §4 flagged and that is STILL open: an AUDIO or EPUB row whose `locator` column is
-null/corrupt gets misreported as `PDF` (pinned by a test in `contractConformance.test.ts` — Karthik's
-call to fix or accept).
+proposal's §4 flagged — **CLOSED by `ce23884` (2026-09-07).** `currentLocator()`
+(`src/features/sync/stores/progressStore.ts:108-116`) no longer misreports a corrupt-but-non-null
+AUDIO/EPUB `locator` as `PDF`; only a genuinely `null` legacy-row locator still gets that fallback,
+and a corrupt one returns `null` (both callers already treat that as "no saved position"). Pinned by
+the rewritten test in `contractConformance.test.ts` (`'returns null for a corrupt (non-null)
+locator — does not mislabel it as PDF'`). The same commit also closed the related
+offline-flush-order race in `serverHasDiverged()` (`syncEngine.ts:623-658`): a `null`
+`server_updated_at` on a deterministic-scoped `UPDATE` op now GETs the server record first instead
+of pushing blindly, covered by `syncEngine.test.ts`'s `'serverHasDiverged: null server_updated_at on
+a deterministic-id entity'` block.
 
 **EPUB/PDF now call `progressStore` too, as of this change** — parity with AUDIO reached for all
 three formats, with no in-memory cache in front of it for any of them. `reader/sessionProgress.ts`

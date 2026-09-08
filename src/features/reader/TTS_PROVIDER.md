@@ -126,11 +126,40 @@ removes it and stops speech, because `ttsEnabled` collapses `ttsProvider` to nul
 toolbar was a second control for a decision the preference already owned; what remains of it is a
 non-interactive 🔊 cue painted on the page while `status === 'speaking'`.
 
-**Not done as part of step 5, on purpose — out of scope, not overlooked:** word-level highlighting
-(`TtsHighlightMode: 'word'` in the accessibility contract; the seam still only carries sentence-level
-CFIs), scroll-follow-the-spoken-range (open item 2, unchanged below), and a real `onInterrupted`
-source for `'revoked'` (open item 1, unchanged below — `terminate()` handles the reason identically to
-`'closed'` internally, but nothing calls it yet).
+**Not done as part of step 5, on purpose — out of scope, not overlooked:**
+~~word-level highlighting~~ (**landed 2026-09-05, see below**), scroll-follow-the-spoken-range (open
+item 2, unchanged below), and a real `onInterrupted` source for `'revoked'` (open item 1, unchanged
+below — `terminate()` handles the reason identically to `'closed'` internally, but nothing calls it
+yet).
+
+### Word-level highlighting — `setSpokenWordRange`, landed 2026-09-05
+
+```ts
+type SpokenWordRange = { cfi: string; start: number; end: number };
+setSpokenWordRange(range: SpokenWordRange | null): void;   // null clears
+```
+
+The seam carries sub-sentence ranges now. `setSpokenRange` says which SENTENCE; this says which WORD
+inside it. Accessibility calls it on every `tts-progress` event while
+`tts.highlightMode === 'word'`. `WEBVIEW_BRIDGE.md`'s "The spoken word" section is the bridge half
+and `HIGHLIGHT_LAYERS.md` §3 the visual half; what belongs to this seam:
+
+- **`start`/`end` index `TtsSentence.text`** — the string the caller handed the engine — so they are
+  exactly what the platform reports back (iOS `location`/`length`, Android `start`/`end`). A caller
+  passes on what it was given and nothing else. They are NOT DOM offsets, and the mapping between the
+  two is the Reader side's problem, not the caller's.
+- **One nullable object, not three arguments.** The bridge's `CommandArgsMatchPayloads` proof
+  requires one payload field per command; the reasoning is on the type itself.
+- **Failure is silent and clears the previous word.** Resolution genuinely fails in ordinary
+  situations — paged away mid-utterance, section not rendered, a one-word sentence the sentence wash
+  already covers — and on all of them the previous word is removed rather than left painted. A
+  highlight on the last word while the voice has moved on is a lie; showing nothing is not.
+- **`setSpokenRange` clears it**, so a caller changing sentence, stopping, or turning word mode off
+  mid-utterance needs no separate clear.
+- **Device verification is Accessibility's**, deferred deliberately: nothing on `T4_Ahana` calls this
+  yet, so it landed unverified on hardware. What that pass is actually checking is the two opacity
+  constants in `webview/src/selectionTheme.ts`'s `spokenWordOpacity` — computed from the palettes and
+  WCAG contrast, never observed — and its comment names the two failure signatures to look for.
 
 **Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
 Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount
@@ -207,10 +236,61 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
    `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
    consumers should build against the reason, not the source. **Karthik + Abhinav.**
-2. **Does the reader scroll to follow the spoken range?** Undecided. Today `setSpokenRange` paints
-   and nothing else, so speech can run past the visible page. The fake does not scroll either.
-   Reader's call, but it changes what `current(null)` means after a long read, so it should be
-   settled before step 6.
+2. ~~**Does the reader scroll to follow the spoken range?**~~ **SOLVED, 2026-09-07 — word-precise,
+   not just the sentence-level version originally proposed.** `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md`
+   was Accessibility's sentence-level proposal (a visibility check plus `rendition.display(cfi)`
+   inside `setSpokenRange`'s own handler, no new bridge command). Landed as designed, PLUS a
+   word-level refinement on top: `followSpokenRange(cfi)`
+   (`webview/src/epub.entry.ts`, next to `contentsForCfi`) is called from BOTH `setSpokenRange`
+   (coarse — a whole new sentence starting off-screen) and `setSpokenWordRange` (precise — this
+   specific word has crossed off-screen), sharing one `lastAutoFollowedCfi` dedupe so neither
+   double-navigates for the same target. The word-level call is what actually delivers "turn on the
+   first word of the next page, not before the last word of this one": each `tts-progress` tick
+   checks that word's own geometry, so a sentence straddling a page break gets checked word-by-word
+   as speech crosses it, where the sentence-level call alone could only check the sentence as a whole
+   at its start.
+
+   The visibility test itself (`spokenRangeVisible`, same file) treats PARTIAL overlap as visible,
+   not full containment — a sentence painted where it starts, that also runs onto the next page, is
+   not "off-screen" the instant it paints. `anyRectOnScreen` (`highlightGeometry.ts`, pure,
+   unit-tested) is the rect/viewport arithmetic this rests on. **Neither `contents.window`'s own
+   dimensions nor the outer `#viewer` `viewportSize()` measures is the right viewport for this** —
+   epub.js resizes each section's `<iframe>` to its own full content size on whichever axis
+   `IframeView.size()` leaves free (width in paginated flow, height in scrolled-doc), so the iframe's
+   own `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one
+   axis that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
+   `rendition.manager`, reached through a cast since `epubjs`'s types don't expose it), compared
+   against each rect after shifting it by the view's own `position()` (`element
+   .getBoundingClientRect()`, which correctly reflects scroll position) — the same geometry epub.js's
+   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally. Both flows share this
+   one check with no branch on which is active, same as `rendition.display()` itself.
+
+   Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
+   `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see
+   `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s `tts.highlightMode` row for why that RN-side wiring needed
+   re-landing). `'sentence'`-mode readers still get the coarse, once-per-sentence follow — no page
+   ever fails to turn — just not the exact-word boundary.
+
+   The word wash being cleared at the TOP of `setSpokenRange`, before anything paints, remains the
+   load-bearing precondition it always was: a `display()` that re-renders the view while a stale mark
+   is still attached would carry it into the new one.
+
+   **Auto-follow also re-checks itself after any font-size/typography/margin change and after a
+   paginated<->scrolled flow toggle**, not just at the next spoken sentence or word.
+   `scheduleGeometryRefresh`'s `finish()` and `rebuildForFlowIfNeeded`'s post-rebuild callback both
+   re-run `followSpokenRange` against whichever of `currentSpokenWordCfi`/`currentSpokenCfi` is set,
+   with `lastAutoFollowedCfi` explicitly cleared first. This matters because both of those paths
+   re-anchor the reader at `lastCfi` (wherever they were last relocated) rather than at the spoken
+   position specifically — the two usually coincide, since auto-follow's own `display()` calls are
+   what move `lastCfi` in the first place, but not when several sentences have played on the same
+   page since the last one. A font-size increase can push a mid-page sentence off the bottom of the
+   reflowed page even though the page's own reanchor "succeeds"; this catches that case rather than
+   leaving the reader on a page that no longer shows what is being spoken.
+
+   **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
+   manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back
+   to wherever speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented
+   no-ops (`pdf.entry.ts`) — nothing to follow there yet.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

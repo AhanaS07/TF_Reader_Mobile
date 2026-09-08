@@ -544,9 +544,139 @@ BEFORE it, not passively in the background. Porting one screen's mechanism onto 
 would reintroduce exactly the failure mode each shape was chosen to avoid.
 
 The corrupt/legacy-row fallback hazard in `progressStore.currentLocator()` — a null or unparseable
-`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is unrelated to this
-wiring and still open; see `src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and
-the pinning test in `src/features/sync/contractConformance.test.ts` (Karthik's call to fix or accept).
+`locator` column on ANY row gets reported as `{type:'PDF', page: row.offset}` — is **fixed**, by
+`ce23884` (2026-09-07): only a genuinely `null` legacy-row locator still gets that fallback; a
+corrupt-but-non-null one returns `null`, which both `ReaderRouteScreen.tsx` and
+`AudioPlayerRouteScreen.tsx` already treat as "no saved position." See
+`src/shared/contracts/CONTRACT_ALIGNMENT.md`'s audio-progress section and the rewritten pin in
+`src/features/sync/contractConformance.test.ts`.
+
+**An already-open EPUB/PDF screen also pulls on its own now, not only at resume.** The
+already-open-screen subscription above tells you when a pulled record changed something; it does not
+make anything pull. `useAutoSync.ts` is strictly edge-triggered (a NetInfo offline→online transition,
+mounted once at the app root) and the resume effect's own `syncEngine.run()` call fires exactly once,
+so a book left open and foregrounded the whole time while another device writes was invisible until
+*something else* happened to trigger a sync. `ReaderRouteScreen.tsx` closes that with two
+Reader-only mechanisms, both calling the same public `syncEngine.run()`: an `AppState` listener that
+pulls on the edge into `'active'` (covers backgrounding/foregrounding without a connectivity drop),
+and a `READER_LIVE_SYNC_POLL_MS` (2-minute) `setInterval` that runs only while the screen is
+resolved and the app is foregrounded, torn down on backgrounding and on unmount/book-switch.
+**`AudioPlayerRouteScreen.tsx` deliberately does NOT get either mechanism** — it already re-checks
+synchronously at the one moment that matters (`onBeforePlay`, immediately before an irreversible
+`play()`), and a background poll would false-positive against its own continuous position drift the
+same way a subscription would (see this section's own audio-divergence paragraph above).
+
+**A conflict Alert left unanswered on the same book no longer freezes on the first notification's
+data.** `conflictPendingRef` still suppresses stacking a SECOND `Alert.alert` while one is pending —
+`Alert.alert` has no imperative dismiss or update — but a `latestIncomingRef` behind it keeps
+advancing on every further `progressStore` notification for that book. "Resume from there" adopts
+whichever locator is latest at the moment it's finally pressed, not whichever arrived first. This is
+deliberately not a timeout/auto-dismiss: that would make an implicit choice for the user, which is
+exactly what this whole mechanism exists to avoid for EPUB/PDF (unlike audio's immediate-action
+gate, where nothing is running that a stale read could corrupt).
+
+**An active TTS session is paused the instant a conflict is found, before the Alert shows — because
+polling made "the Alert can appear while `autoContinueChapter` is mid-chapter" a real case, not a
+theoretical one.** `ReaderScreen` exposes exactly one thing outward for this:
+`ReaderScreenHandle.pauseTtsIfSpeaking()` (a `forwardRef`/`useImperativeHandle` pair, reading through
+the same `ttsSessionRef` `tearDownAndLock` already uses, so it costs nothing extra to keep current).
+`ReaderRouteScreen.tsx` calls it right before `Alert.alert`, for two reasons that both matter:
+`autoContinueChapter` (Reader accessibility rule 3) would otherwise keep moving `lastPositionRef`
+for as long as the dialog sits unanswered, making "the currently displayed position" a moving
+target; and TTS speaking over whatever a screen reader announces for the Alert itself is exactly the
+"neither ducks" collision that rule already names for announcements. Left paused either way the user
+answers — no auto-resume, same "never silently continue" reasoning as the rest of this mechanism.
+**This is a Reader-internal seam, not a new crossing of `TTS_PROVIDER.md`'s Reader/Accessibility
+boundary**: the `useTtsSession` hook instance itself is still only ever called from
+`ReaderScreen.tsx`, and `pauseTtsIfSpeaking()` merely re-exposes that instance's own already-existing
+`status`/`pause()` one level up, to another Reader file.
+
+**Audiobooks now get a live check too, but it is a SEPARATE mechanism from the play-gate above, and
+each owns a different moment.** `handleBeforePlay` owns "resuming from a paused, at-rest position"
+(unchanged). A second effect in `AudioPlayerRouteScreen.tsx` subscribes to `progressStore` and
+handles "a fresher record lands while this device is already playing" — gated on
+`AudioPlayerScreenHandle.isPlaying()` (a fresh read of the native player, not a snapshot), so it
+never runs during the paused case the play-gate already owns. On a genuine divergence (past the same
+`CONFLICT_THRESHOLD_MS` the play-gate uses) it calls `AudioPlayerScreenHandle.pause()` — stopping
+playback BEFORE the Alert shows, both so the compared position stops moving and so the reader is not
+left listening to audio that no longer matches where the app is about to say it is — then shows the
+identical, compulsory `Alert.alert`. **This is not the "earlier version… rejected" shape this file's
+own header used to warn against** — that rejection was specifically about comparing against a value
+that only updates at pause/seek/unmount (stale the instant playback resumes, which really would
+false-positive on every throttled write); the live effect instead compares against
+`currentPositionSeconds()`, a fresh read of the player's OWN live position, which is what makes the
+`CONFLICT_THRESHOLD_MS` tolerance correctly absorb this device's own echo instead of flagging it.
+Both mechanisms share one `conflictPendingRef` guard (only one dialog up at a time) and a
+`latestIncomingRef` (mirroring `ReaderRouteScreen.tsx`'s own fix, for the same reason: a second
+notification arriving while the live-conflict Alert is up still needs somewhere to land).
+
+**One confirmed edge neither the play-gate NOR the live check covers**: `setActiveForLockScreen`
+wires the OS lock-screen/Control-Center/media-notification Play and Toggle commands to expo-audio's
+NATIVE player directly. Resuming from there never runs `onBeforePlay`, and — because it also never
+goes through `progressStore` — the live-conflict effect has nothing to react to either. Closing it
+would mean either patching expo-audio to route the remote command through JS first, or dropping
+lock-screen transport controls entirely — both are real product trade-offs, not a follow-up to make
+unilaterally, so this is recorded rather than fixed.
+
+**The conflict `Alert` is compulsory, EXPLICITLY, on both screens.** `Alert.alert`'s 4th argument is
+`{ cancelable: false }` on the `ReaderRouteScreen.tsx` and `AudioPlayerRouteScreen.tsx` calls alike.
+This was already the effective behaviour without it — Android's own `Alert.alert` defaults
+`cancelable` to `false` unless overridden (`react-native/Libraries/Alert/Alert.js`), and iOS's
+`.alert`-style `UIAlertController` has no tap-outside-to-dismiss gesture to begin with (that only
+exists for `.actionSheet` style) — but "the reader cannot read past this without resolving it" is a
+real product requirement, not an accident of an unset default, so it is written down rather than
+left for the next person to flip by passing `cancelable: true` for a nicer-seeming UX. Pinned by
+`ReaderRouteScreen.test.tsx`/`AudioPlayerRouteScreen.test.tsx`'s own `Alert.alert` assertions, which
+now check all four arguments.
+
+**The poll only closes the gap to ~2 minutes, not to zero — that ceiling is a stated trade-off, not
+an oversight, and it does not mean either screen can silently lose progress inside that window.**
+Applies identically to `READER_LIVE_SYNC_POLL_MS` (EPUB/PDF) and `AUDIO_LIVE_SYNC_POLL_MS` (audio) —
+same interval, same reasoning, same trade-off; audio needed its own poll for a reason worth stating
+because it's easy to miss: the live-conflict effect above only REACTS to a `progressStore` change,
+it does not itself cause one, so without a poll pulling on its own, that effect would sit correctly
+built but permanently inert on stable wifi (no NetInfo edge ever fires, and nothing else calls
+`syncEngine.run()` while the screen just sits open, playing or not).
+
+Two things are true at once here. First, every comparison either mechanism EVER makes is against a
+genuinely CURRENT value at the moment it runs — Reader re-reads `toLocator(lastPositionRef.current)`
+fresh on every notification; audio's live-conflict effect reads `currentPositionSeconds()` straight
+off the native player, fresher still, since text only moves on a discrete event while audio moves
+continuously — so nothing about either poll's 2-minute cadence makes any SINGLE comparison stale; it
+only bounds how soon a comparison happens at all. Second, and this is the part worth being explicit
+about: for up to that ~2 minutes (or until the next foreground edge, whichever comes first), a
+device can keep advancing and writing its own throttled progress while a genuinely newer remote
+write from another device sits undetected. Because conflict resolution is last-write-wins by
+timestamp (`syncableTable.ts`'s `isAtOrAfter`), if this device's own next write lands with a LATER
+timestamp than that undetected remote write, the remote write is rejected as stale the moment the
+poll finally pulls it — `applyServerRecord` returns `false`, `notifyChanged()` never fires, and the
+Alert never appears at all for that particular remote write, because by the time it's checked this
+device has already legitimately moved past it. This is not data loss on THIS device (nothing here is
+ever overwritten without the user's own explicit "Continue here"/"Resume from there" choice, and for
+audio, playback is also explicitly paused before that choice is offered) — it is the other device's
+write losing a race it was never told it was in. That race exists in any poll-based (not push-based)
+design, and a 2-minute interval was a deliberate choice among the options presented when this was
+built (see `READER_LIVE_SYNC_POLL_MS`'s own comment) — shortening it narrows the race window but
+cannot close it to zero without a server-push mechanism this app does not have.
+
+**Every `syncEngine.run()` call site that cares about ONE specific book goes through a
+`syncForThisBook()` helper now, in both route screens — a real gap, not a hypothetical one, found
+while auditing the poll additions above.** `syncEngine.run()`'s regular sweep only refreshes
+progress for books with a local `downloads` row (`syncEngine.ts`'s own `pullBook` doc) — a book read
+online without ever being downloaded is invisible to it, no matter how long either device stays
+online. `ReaderRouteScreen.tsx`'s original resume effect already knew this and top-up'd via
+`syncEngine.pullBook(bookId)`, but that top-up lived ONLY in the resume effect — the poll and
+foreground-edge effects added above called plain `syncEngine.run()` directly, so they silently never
+refreshed an undownloaded book's progress, indefinitely, even though the resume-time check worked
+fine. `AudioPlayerRouteScreen.tsx` had it WORSE: it never had this top-up anywhere, not even at
+resume, not even in the original play-gate (`handleBeforePlay`) — meaning cross-device conflict
+detection for a streamed-without-downloading audiobook never worked at all, from the feature's first
+commit. Both files now define `syncForThisBook()` once and route every relevant call site through it
+(the resume effect, the poll/foreground-edge effect, and — for audio — `handleBeforePlay` too).
+Pinned by an `'an audiobook read online without ever being downloaded'` describe block in
+`AudioPlayerRouteScreen.test.tsx` (mirroring `ReaderRouteScreen.test.tsx`'s existing one) and by a
+dedicated test in each file's live-pull describe block asserting `pullBook` fires again on the
+foreground edge, not just at resume.
 
 ## Verifying a change
 

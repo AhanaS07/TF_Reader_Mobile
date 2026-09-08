@@ -12,7 +12,10 @@
 // abort/teardown racing a reply — against a harness that stubs `send` and manually drives
 // `handleReply`, standing in for the WebView.
 
-import { createEpubReaderTextProvider, type EpubReaderTextProvider } from './realReaderTextProvider';
+import {
+  createEpubReaderTextProvider,
+  type EpubReaderTextProvider,
+} from './realReaderTextProvider';
 import type { ReaderCommand } from '@/features/reader/readerBridge';
 import type { TtsFetchResult, TtsSentence } from './readerTextProvider';
 
@@ -44,8 +47,16 @@ function lastRequestId(sent: ReaderCommand[]): number {
   return last.request.requestId;
 }
 
-function replyOk(provider: EpubReaderTextProvider, requestId: number, ttsSentence: TtsSentence): void {
-  provider.handleReply({ type: 'ttsSentence', requestId, result: { status: 'ok', sentence: ttsSentence } });
+function replyOk(
+  provider: EpubReaderTextProvider,
+  requestId: number,
+  ttsSentence: TtsSentence,
+): void {
+  provider.handleReply({
+    type: 'ttsSentence',
+    requestId,
+    result: { status: 'ok', sentence: ttsSentence },
+  });
 }
 
 function reply(provider: EpubReaderTextProvider, requestId: number, result: TtsFetchResult): void {
@@ -58,7 +69,10 @@ describe('realReaderTextProvider — request/reply correlation', () => {
 
     const pending = provider.current(null);
     expect(sent).toEqual([
-      { type: 'requestTtsSentence', request: { requestId: expect.any(Number), from: null, mode: 'current' } },
+      {
+        type: 'requestTtsSentence',
+        request: { requestId: expect.any(Number), from: null, mode: 'current' },
+      },
     ]);
 
     replyOk(provider, lastRequestId(sent), sentence());
@@ -72,7 +86,11 @@ describe('realReaderTextProvider — request/reply correlation', () => {
     const [command] = sent;
     expect(command).toEqual({
       type: 'requestTtsSentence',
-      request: { requestId: expect.any(Number), from: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', mode: 'next' },
+      request: {
+        requestId: expect.any(Number),
+        from: 'epubcfi(/6/2!/4/2,/1:0,/1:11)',
+        mode: 'next',
+      },
     });
 
     reply(provider, lastRequestId(sent), { status: 'endOfBook' });
@@ -97,7 +115,10 @@ describe('realReaderTextProvider — request/reply correlation', () => {
     replyOk(provider, firstId, sentence({ sentenceIndex: 1 }));
 
     await expect(second).resolves.toEqual({ status: 'endOfBook' });
-    await expect(first).resolves.toEqual({ status: 'ok', sentence: sentence({ sentenceIndex: 1 }) });
+    await expect(first).resolves.toEqual({
+      status: 'ok',
+      sentence: sentence({ sentenceIndex: 1 }),
+    });
   });
 
   it('silently drops a reply for an unknown or already-settled requestId', async () => {
@@ -124,7 +145,9 @@ describe('realReaderTextProvider — cancellation', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(provider.current(null, controller.signal)).resolves.toEqual({ status: 'unavailable' });
+    await expect(provider.current(null, controller.signal)).resolves.toEqual({
+      status: 'unavailable',
+    });
     expect(sent).toEqual([]); // never even sent — nothing to correlate a reply against
   });
 
@@ -277,5 +300,50 @@ describe('realReaderTextProvider — highlighting', () => {
       { type: 'setSpokenRange', cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)' },
       { type: 'setSpokenRange', cfi: null },
     ]);
+  });
+
+  it('sends setSpokenWordRange with the whole range object, and null to clear', () => {
+    const { provider, sent } = createHarness();
+    const range = { cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', start: 4, end: 9 };
+
+    provider.setSpokenWordRange(range);
+    provider.setSpokenWordRange(null);
+
+    expect(sent).toEqual([
+      { type: 'setSpokenWordRange', range },
+      { type: 'setSpokenWordRange', range: null },
+    ]);
+  });
+
+  it('forwards a word range unvalidated — resolving it is the shells job', () => {
+    const { provider, sent } = createHarness();
+
+    // An unknown cfi and a nonsense span. Whether either resolves is a question only the live
+    // document can answer, and the shell answers it silently; refusing here would be a guess, and a
+    // wrong guess would drop a range that would have painted.
+    provider.setSpokenWordRange({ cfi: 'epubcfi(/6/999!/4/2)', start: 9, end: 4 });
+
+    expect(sent).toHaveLength(1);
+  });
+
+  it('setSpokenWordRange is a no-op after notifyClosed, without throwing', () => {
+    const { provider, sent } = createHarness();
+    provider.notifyClosed();
+    sent.length = 0;
+
+    expect(() =>
+      provider.setSpokenWordRange({ cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', start: 0, end: 3 }),
+    ).not.toThrow();
+    expect(sent).toEqual([]);
+  });
+
+  it('does not send a second clear for the word when the sentence is cleared', () => {
+    // ONE CALL CLEARS BOTH LAYERS, in the shell. A `setSpokenWordRange(null)` here would be a no-op
+    // that implies the two can be cleared independently — see notifyRelocated's own note.
+    const { provider, sent } = createHarness();
+
+    provider.notifyRelocated();
+
+    expect(sent).toEqual([{ type: 'setSpokenRange', cfi: null }]);
   });
 });
