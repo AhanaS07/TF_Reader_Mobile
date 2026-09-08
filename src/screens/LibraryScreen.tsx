@@ -127,11 +127,12 @@
 // merge, mounting the real provider makes the exact same tap open the reader,
 // with no change to this screen. Loan/offer/waiting rows stay non-tappable —
 // they are not a reading destination.
-import { Children, type ReactNode, useCallback, useEffect, useState } from 'react';
+import { Children, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { Bookmark } from '@/shared/contracts';
 import { useLibraryProvider } from '@/features/library/context';
+import { ReaderUnavailableError } from '@/features/library/ports';
 import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ContentCard } from '@components/ContentCard';
@@ -300,10 +301,16 @@ export default function LibraryScreen() {
     void refresh();
   }, [refresh]);
 
+  // Guards against a second tap while an open is in flight — with the real
+  // provider two concurrent `openBook` calls would race a licence session. A ref
+  // rather than state so it takes effect synchronously and never re-renders; read
+  // only inside this callback, never during render.
+  const openingRef = useRef(false);
+
   // Open a book through the provider: the licence gate (`openBook`) THEN the
   // reader (`openReader`) — never one without the other, and the screen decides
-  // no access itself. Today the stand-in's `openBook` rejects, so this lands on
-  // the honest notice; at merge the same path opens the reader for real.
+  // no access itself. Today the stand-in's `openBook` throws `ReaderUnavailableError`,
+  // so this lands on the honest notice; at merge the same path opens for real.
   const openItem = useCallback(
     async (itemId: string, format: ContentFormat | undefined, target?: ReaderTargetLike) => {
       if (format === undefined) {
@@ -311,12 +318,25 @@ export default function LibraryScreen() {
         setOpenNotice('This one isn’t ready to open yet — still loading its details.');
         return;
       }
+      if (openingRef.current) return;
+      openingRef.current = true;
       try {
         await provider.openBook(itemId, format);
         provider.openReader({ itemId, format, ...(target === undefined ? {} : { initialTarget: target }) });
         setOpenNotice(undefined);
-      } catch {
-        setOpenNotice('Reading opens here once the reader ships in the merged app.');
+      } catch (err) {
+        // ONLY the "no reader in this build" case gets the placeholder line. Every
+        // other error — a real network or licence failure once the reader is wired
+        // — must propagate rather than be disguised as "coming soon". At merge,
+        // that branch becomes the `DownloadFailure.code` → copy mapping (see
+        // INTEGRATION.md), not a rethrow.
+        if (err instanceof ReaderUnavailableError) {
+          setOpenNotice('Reading opens here once the reader ships in the merged app.');
+        } else {
+          throw err;
+        }
+      } finally {
+        openingRef.current = false;
       }
     },
     [provider],
@@ -386,6 +406,15 @@ export default function LibraryScreen() {
         />
       </View>
 
+      {/* PINNED, not inside the scroll: this is feedback for a tap the reader just
+          made on a row that may be well below the fold, so it has to be visible
+          wherever they are rather than only at the top of the list. */}
+      {openNotice !== undefined && (
+        <Text style={[styles.notice, styles.pinnedNotice]} testID="library-open-notice">
+          {openNotice}
+        </Text>
+      )}
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
@@ -397,8 +426,6 @@ export default function LibraryScreen() {
             Titles couldn’t be loaded. Pull to try again — your books are still here.
           </Text>
         )}
-
-        {openNotice !== undefined && <Text style={styles.notice}>{openNotice}</Text>}
 
         {truncated > 0 && (
           <Text style={styles.notice}>
@@ -573,7 +600,7 @@ function Section({
         {...(action === undefined ? {} : { actionLabel: action.label, onAction: action.onPress })}
       />
       {caption !== undefined && (
-        <Text style={styles.sectionCaption} testID="section-caption">
+        <Text style={styles.sectionCaption} testID={`section-caption-${title}`}>
           {caption}
         </Text>
       )}
@@ -841,6 +868,12 @@ const styles = StyleSheet.create({
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
+  },
+  // The pinned open-notice sits outside the scroll's content padding, so it
+  // carries its own horizontal inset to line up with the tab bar above it.
+  pinnedNotice: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
   },
   // Loud on purpose: `color.error` is the palette's destructive/restricted
   // colour, and an offer running out is the one thing on this shelf that takes

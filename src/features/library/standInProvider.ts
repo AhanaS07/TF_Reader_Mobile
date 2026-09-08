@@ -9,22 +9,17 @@
 import { useBookmarkStore, liveBookmarks } from '@store/bookmarkStore';
 import { useDownloadStore } from '@store/downloadStore';
 
-import type { BookmarkView, ContentFormat, DownloadView, LibraryProvider } from './ports';
+import {
+  ReaderUnavailableError,
+  type BookmarkView,
+  type ContentFormat,
+  type DownloadView,
+  type LibraryProvider,
+} from './ports';
 
-/**
- * Thrown by `openBook` in this build. The reader, the licence gate and the
- * content store are Team 4's and not in this repo, so there is nothing to open
- * yet — the screen catches this and keeps the row inert rather than pretending
- * to open a book it cannot. At merge the real `openBook` replaces this and the
- * catch turns into real error copy (mapping Team 4's `DownloadFailure.code`).
- */
-export class ReaderUnavailableError extends Error {
-  constructor() {
-    super('Reading is not available in this build yet.');
-    this.name = 'ReaderUnavailableError';
-    Object.setPrototypeOf(this, ReaderUnavailableError.prototype);
-  }
-}
+// Re-exported so existing importers of `./standInProvider` keep working; the
+// class itself lives in `ports.ts` as part of the seam contract.
+export { ReaderUnavailableError };
 
 /**
  * `userId` is ACCEPTED BUT IGNORED here: these stores are device-local and not

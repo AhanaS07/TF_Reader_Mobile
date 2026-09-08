@@ -851,4 +851,56 @@ describe('LibraryScreen — opening a book through the provider', () => {
       ).toBeTruthy(),
     );
   });
+
+  // A row whose title never hydrated has no format to open against — the screen
+  // must say so and NOT call the gate with an undefined format.
+  it('does not open and explains when the format is still unknown', async () => {
+    setCatalogueSource(fakeSource(async () => ({ items: [], notFound: ['item_42'], denied: [] })));
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    const provider = makeProvider();
+
+    await renderWith(provider);
+
+    // Rendered against its id, since the title could not resolve.
+    await waitFor(() => expect(screen.getByText('item_42')).toBeTruthy());
+    fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('This one isn’t ready to open yet — still loading its details.'),
+      ).toBeTruthy(),
+    );
+    expect(provider.openBook).not.toHaveBeenCalled();
+  });
+
+  // With the real provider a second tap would race a licence session, so a tap
+  // while one open is in flight is ignored.
+  it('ignores a second tap while the first open is still in flight', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    // The first tap holds the in-flight guard until we release it, so the second
+    // tap lands while the first open is still pending.
+    let releaseOpen: () => void = () => {};
+    const openBook = jest.fn(() => new Promise<void>((resolve) => (releaseOpen = resolve)));
+    const provider = makeProvider({ openBook });
+
+    await renderWith(provider);
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    const card = screen.getByTestId('content-card');
+    fireEvent.press(card);
+    fireEvent.press(card);
+
+    await waitFor(() => expect(openBook).toHaveBeenCalledTimes(1));
+
+    // Let the first open finish so nothing is left pending at teardown.
+    releaseOpen();
+    await waitFor(() => expect(provider.openReader).toHaveBeenCalledTimes(1));
+  });
 });

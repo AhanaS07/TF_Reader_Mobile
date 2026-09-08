@@ -104,5 +104,20 @@ export interface BookOpener {
 /** Everything the Library screen needs from the outside world, in one object. */
 export interface LibraryProvider extends LibraryReads, BookOpener {}
 
+/**
+ * `openBook` throws this when there is no reader to open into — the state this
+ * repo is in until Team 4's stack merges. It is part of the SEAM CONTRACT (not
+ * the stand-in's private detail) so the screen can catch exactly this and let
+ * every other error — a real network/licence failure once the reader is wired —
+ * propagate instead of being mistaken for "not built yet".
+ */
+export class ReaderUnavailableError extends Error {
+  constructor() {
+    super('Reading is not available in this build yet.');
+    this.name = 'ReaderUnavailableError';
+    Object.setPrototypeOf(this, ReaderUnavailableError.prototype);
+  }
+}
+
 // Re-exported so callers that only touch ids stay off `@/shared/types` directly.
 export type { BookId, ContentFormat };
