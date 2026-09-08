@@ -43,7 +43,7 @@ import { cfiSpinePos, expandPointCfi, joinCfiRange, splitCfiRange } from './epub
 import { layoutSignature } from './epubLayoutSignature';
 import { flattenToc, type NavItem } from './epubOutline';
 import { forceReflow } from './epubViewGeometry';
-import { highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
+import { anyRectOnScreen, highlightAt, rangesOverlap, type HighlightBox } from './highlightGeometry';
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import { highlightFill, matchStroke, spokenWordOpacity } from './selectionTheme';
@@ -130,6 +130,17 @@ let currentSpokenCfi: string | null = null;
  * Text nodes belonging to a document that may since have been re-rendered; `resolveSpokenWordCfi`'s
  * own header says the same thing about caching, at more length. */
 let currentSpokenWordCfi: string | null = null;
+
+/** The CFI last brought on screen by auto-follow's own `display()`, or null. Lets a repeat call for
+ * the SAME target skip re-checking geometry — once auto-follow has just displayed it, re-issuing
+ * `display()` for it again would fight the manager mid-settle rather than dedupe. See
+ * `followSpokenRange`. Reset alongside the other TTS CFI state in `openEpub`. */
+let lastAutoFollowedCfi: string | null = null;
+
+/** True while a `followSpokenRange`-triggered `display()` has not yet settled. See
+ * `followSpokenRange`'s own note for why a second, overlapping call must wait rather than fire.
+ * Reset alongside the other TTS CFI state in `openEpub`. */
+let followDisplayInFlight = false;
 
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
@@ -1029,10 +1040,19 @@ let geometryReanchor = false;
  *  3. `repaintLiveAnnotations` re-measures the user, search and TTS layers.
  *  4. the press hit-test cache is dropped, because it holds pre-reflow rects and a stale one deletes
  *     the wrong highlight.
+ *  5. if TTS is speaking, auto-follow re-checks the CURRENTLY spoken position — not merely re-checks
+ *     that `lastCfi` (step 2's anchor) still shows correctly, which is a different question. `lastCfi`
+ *     is wherever the reader was last relocated to, which is a stale proxy for "where the voice
+ *     currently is" whenever several sentences have been spoken on the same page since the last
+ *     `relocated` event — a font-size increase can still push a MID-page sentence off the bottom of
+ *     the reflowed page even though `lastCfi` (the page's anchor) redisplays "successfully". See the
+ *     note at this step below.
  *
  * THIS CANNOT LOOP, which is what makes it safe to hang off a contents resize: the marks live in the
  * OUTER document (the view element), not the chapter iframe, so re-adding them cannot move anything
- * the chapter's own `ResizeObserver` is watching.
+ * the chapter's own `ResizeObserver` is watching. Step 5 cannot loop either — `followSpokenRange`
+ * only calls `display()` when its own geometry check disagrees, and re-measuring after a display it
+ * just caused finds it agreeing.
  */
 function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
   if (options.reanchor === true) geometryReanchor = true;
@@ -1051,6 +1071,17 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
     const finish = (): void => {
       repaintLiveAnnotations();
       invalidateHighlightBoxes();
+
+      // Word-level position wins when it exists — it is the more precise of the two, and it is
+      // what `setSpokenWordRange`'s own auto-follow call already prefers. `lastAutoFollowedCfi` is
+      // deliberately NOT trusted here even if it equals this target: it records "this CFI was
+      // on-screen as of the last CHECK", and a reflow is exactly the event that can make that
+      // stale without the CFI itself changing.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     };
 
     // >>> RE-ANCHORING IS NOT COSMETIC EITHER. <<< A re-flow changes how much text fits on a page,
@@ -1114,6 +1145,113 @@ function contentsForCfi(cfi: string): Contents | null {
     if (contents.sectionIndex === spinePos) return contents;
   }
   return null;
+}
+
+/** A rect shape both `View.position()` and the manager's `bounds()` return — real `DOMRect`s from
+ * `getBoundingClientRect()`, so `left`/`top`/`right`/`bottom` are already there with no width/height
+ * arithmetic needed. */
+interface EpubRectLike {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** epub.js's internal per-view manager surface this file reaches into — NOT in `epubjs`'s published
+ * types (`Rendition.manager` has no public type at all; `rendition.js:68/165/229` sets it at
+ * runtime). Both the paginated (`DefaultViewManager`) and scrolled-doc (`ContinuousViewManager`,
+ * which extends it) managers share this shape, which is why nothing here branches on flow. */
+interface EpubRenditionManager {
+  views: { find(section: { index: number }): { position(): EpubRectLike } | undefined };
+  bounds(): EpubRectLike;
+}
+
+function renditionManager(): EpubRenditionManager | null {
+  if (!rendition) return null;
+  return (rendition as unknown as { manager?: EpubRenditionManager }).manager ?? null;
+}
+
+/** Is any rect of `cfi`'s range inside the CURRENTLY SCROLLED/PAGED window, not just somewhere
+ * inside its section's rendered content?
+ *
+ * >>> `contents.window.innerWidth`/`innerHeight` ARE NOT THE VIEWPORT. DO NOT GO BACK TO THEM. <<<
+ * They look right and are wrong on the axis that actually matters. epub.js resizes each section's
+ * `<iframe>` to its own full content size on whichever axis `IframeView.size()` leaves unlocked —
+ * WIDTH in paginated flow (`expand()`'s horizontal branch sizes it to `contents.textWidth()`,
+ * however many pages wide the whole chapter is), HEIGHT in scrolled-doc flow
+ * (`contents.textHeight()`, the whole chapter's height). The OUTER, fixed-size stage container is
+ * what actually clips and scrolls (`container.scrollLeft`/`scrollTop`, `DefaultViewManager.scrollTo`)
+ * — so `contents.window`'s own inner dimensions report "how big is this chapter," not "how much of
+ * it is on screen right now," on the one axis that would ever change with scroll position. A rect
+ * check against them is true for almost the entire chapter regardless of scroll, in BOTH flows.
+ *
+ * The correct comparison — same one epub.js's own `isVisible()`/`paginatedLocation()`/
+ * `scrolledLocation()` use internally (`managers/default/index.js`) — is the RANGE's rect, shifted
+ * into the OUTER document's coordinate space by the view's own `position()` (== `element
+ * .getBoundingClientRect()`, which DOES move with scroll, since the element sits inside the
+ * scrolling container), compared against the manager's `bounds()` (the fixed stage viewport, also a
+ * `getBoundingClientRect()`, in the same outer coordinate space already — no further translation
+ * needed between the two).
+ *
+ * False for a different section — `contentsForCfi` returns null for one that is not currently
+ * rendered. False for a range or view that fails to resolve. All three "false" paths mean the same
+ * thing: cannot be shown to be visible, so treat it as not.
+ */
+function spokenRangeVisible(cfi: string): boolean {
+  const contents = contentsForCfi(cfi);
+  if (!contents) return false;
+  const range = rangeForCfi(contents, cfi);
+  if (!range) return false;
+  const manager = renditionManager();
+  if (!manager) return false;
+  const view = manager.views.find({ index: contents.sectionIndex });
+  if (!view) return false;
+
+  const offset = view.position();
+  const rects = Array.from(range.getClientRects(), (rect) => ({
+    left: rect.left + offset.left,
+    top: rect.top + offset.top,
+    width: rect.width,
+    height: rect.height,
+  }));
+  return anyRectOnScreen(rects, manager.bounds());
+}
+
+/** Bring `cfi` on screen if it is not already — a page turn in paginated flow, a scroll in
+ * scrolled-doc (including the screen-reader-forced override, `readerA11yLayout.ts`), via the same
+ * `rendition.display()` `goTo` uses. epub.js's manager resolves which of those two it is; there is
+ * no separate branch here for flow.
+ *
+ * Called from BOTH `setSpokenRange` (coarse: a whole new sentence starting off-screen) and
+ * `setSpokenWordRange` (precise: THIS word specifically has crossed off-screen, which is what makes
+ * a page turn land on the first word of the next page rather than the first word of the next
+ * sentence). Both share `lastAutoFollowedCfi` so a sentence-level call and the word-level calls that
+ * follow it for the same still-off-screen target don't double up on `display()`.
+ *
+ * >>> ALSO SKIPS WHILE A PREVIOUS FOLLOW IS STILL IN FLIGHT, EVEN FOR A DIFFERENT CFI. <<< Word
+ * ticks arrive roughly every 200-400ms of speech; a `display()` that has to render a freshly-loaded
+ * section can take longer than that. Without this guard, a word crossing off-screen mid-transition
+ * would read `spokenRangeVisible` against the STILL-OLD page (the new one has not painted yet), see
+ * "not visible" again, and issue a SECOND, overlapping `display()` for a different target before the
+ * first has settled — competing navigations is exactly the "fight" this feature exists to avoid,
+ * just self-inflicted rather than against the reader's own gesture. Skipping here just means the
+ * NEXT tick re-evaluates once the current transition's promise settles, so a slow chapter load
+ * catches up incrementally rather than never, or twice.
+ */
+function followSpokenRange(cfi: string): void {
+  if (!rendition) return;
+  if (followDisplayInFlight) return;
+  if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
+  lastAutoFollowedCfi = cfi;
+  followDisplayInFlight = true;
+  rendition
+    .display(cfi)
+    .catch(() => {
+      // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
+    })
+    .finally(() => {
+      followDisplayInFlight = false;
+    });
 }
 
 /**
@@ -1262,6 +1400,12 @@ function liftSearchMatch(): void {
  * A flow change is the one appearance change epub.js cannot do in place — crossing the
  * paginated <-> scrolled boundary needs a different MANAGER (see `mapManager`), and there is no
  * public API to hot-swap one.
+ *
+ * If TTS is speaking, auto-follow re-checks the CURRENTLY spoken position once the new rendition
+ * is up — same reasoning as `scheduleGeometryRefresh`'s own re-check, for the same underlying
+ * cause: the re-anchor above targets `lastCfi`, a stale proxy for "where the voice is" whenever
+ * several sentences have played since the last relocate, and a brand-new manager is even less
+ * guaranteed than a reflow to put that page back on the same content.
  */
 function rebuildForFlowIfNeeded(): boolean {
   if (!rendition || openInFlight) return false;
@@ -1308,6 +1452,18 @@ function rebuildForFlowIfNeeded(): boolean {
       // boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`, here), last.
       // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
+
+      // Same reasoning as `scheduleGeometryRefresh`'s own step 5: `cfi` (this rebuild's re-anchor,
+      // captured from `lastCfi` before destroying the old rendition) is wherever the reader was last
+      // relocated, not necessarily where the voice currently is — a paginated<->scrolled toggle
+      // rebuilds the manager entirely, and the new one may not fit the same content on screen at
+      // that same anchor. Reset the dedupe for the same reason: a fresh rendition means this CFI's
+      // last-checked visibility, if any, was against a manager that no longer exists.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     })
     .catch((error: unknown) => {
       fail('NAVIGATION_FAILED', error);
@@ -1508,6 +1664,14 @@ const api: TFReaderApi<'openEpub'> = {
         // resolve happily against this one's first chapter and be re-painted by the first repaint
         // that came along, over whatever text sits at the same tree position.
         currentSpokenWordCfi = null;
+        // A CFI auto-followed in the previous book addresses nothing here either — same
+        // cross-book-resolves-anyway hazard, and a stale match would wrongly skip a follow this
+        // book's first spoken CFI genuinely needs.
+        lastAutoFollowedCfi = null;
+        // A follow's display() tied to the previous book's (now-discarded) rendition may never
+        // settle its own promise, which would otherwise strand this true forever and silently
+        // disable auto-follow for the entire new book.
+        followDisplayInFlight = false;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for
@@ -1800,11 +1964,9 @@ const api: TFReaderApi<'openEpub'> = {
    * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
    * strand the last word wash on screen with nothing left that would ever remove it.
    *
-   * It also happens to be the precondition the auto-follow proposal
-   * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
-   * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
-   * stale word mark is still attached can re-attach it into the new one. Clearing before anything
-   * else keeps that free — do not move it below the paint.
+   * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
+   * re-renders the view while a stale word mark is still attached would carry it into the new view.
+   * Clearing before anything else keeps that free — do not move it below the paint.
    */
   setSpokenRange: (cfi) => {
     try {
@@ -1812,8 +1974,14 @@ const api: TFReaderApi<'openEpub'> = {
       clearSpokenWord();
       if (currentSpokenCfi !== null) highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
       currentSpokenCfi = cfi;
-      if (cfi !== null)
+      if (cfi !== null) {
         highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+        // Coarse auto-follow: a brand-new sentence starting entirely off-screen. The word-level
+        // handler below refines this for a sentence that straddles a page/column break.
+        followSpokenRange(cfi);
+      } else {
+        lastAutoFollowedCfi = null;
+      }
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }
@@ -1836,6 +2004,14 @@ const api: TFReaderApi<'openEpub'> = {
    * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
    * the host's commands), and with no rendition there is nothing painted for the state to disagree
    * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+   *
+   * ALSO THE PRECISE HALF OF AUTO-FOLLOW. `followSpokenRange(cfi)` runs on the resolved word CFI
+   * regardless of whether the paint above was skipped for colliding with another owner's highlight —
+   * the word's position is real even when its paint is suppressed. This is what turns a page turn
+   * exactly on the first word to fall off the current one, not before and not a whole sentence late:
+   * `useTtsSession` calls this once per `tts-progress` tick while `highlightMode === 'word'`, so a
+   * sentence that straddles a page break gets checked word-by-word as speech crosses it, where
+   * `setSpokenRange`'s own once-per-sentence call could only check the sentence as a whole.
    */
   setSpokenWordRange: (range) => {
     try {
@@ -1849,11 +2025,12 @@ const api: TFReaderApi<'openEpub'> = {
       if (cfi === null) return;
       // The paint side's half of the collision guard — the resolver's own bail only covers the
       // sentence it was handed. See `spokenWordCollides` for why this refuses rather than displaces.
-      if (spokenWordCollides(cfi)) return;
-
-      currentSpokenWordCfi = cfi;
-      // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
-      repaintSpokenWord({ live: false });
+      if (!spokenWordCollides(cfi)) {
+        currentSpokenWordCfi = cfi;
+        // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
+        repaintSpokenWord({ live: false });
+      }
+      followSpokenRange(cfi);
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
     }

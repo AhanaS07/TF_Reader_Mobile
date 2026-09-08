@@ -97,3 +97,39 @@ export function rangesOverlap(a: Range, b: Range): boolean {
     a.compareBoundaryPoints(Range.END_TO_START, b) < 0
   );
 }
+
+/** A viewport as a real bounding box, in whatever coordinate space the caller's rects are already
+ * in — NOT anchored at (0,0). `epub.entry.ts`'s caller needs this: its rects and its viewport are
+ * both already in the OUTER document's coordinate space (a `getBoundingClientRect()` each), and
+ * that viewport does not start at the document's origin. */
+export interface ViewportBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Does any of these rects intersect this viewport?
+ *
+ * PARTIAL OVERLAP COUNTS, NOT FULL CONTAINMENT — the caller this was built for
+ * (`epub.entry.ts`'s TTS auto-follow, `spokenRangeVisible`) tests a target that can legitimately
+ * straddle a page or column break. Requiring every rect fully inside would call a sentence
+ * "off-screen" the instant it starts painting if it also runs onto the next page, even though the
+ * reader can plainly see where it starts — and would turn the page out from under text most of
+ * which is still visible.
+ */
+export function anyRectOnScreen(
+  rects: readonly { left: number; top: number; width: number; height: number }[],
+  viewport: ViewportBounds,
+): boolean {
+  return rects.some(
+    (rect) =>
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.left < viewport.right &&
+      rect.left + rect.width > viewport.left &&
+      rect.top < viewport.bottom &&
+      rect.top + rect.height > viewport.top,
+  );
+}

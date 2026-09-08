@@ -719,6 +719,11 @@ ${text}`;
   function rangesOverlap(a, b) {
     return a.compareBoundaryPoints(Range.START_TO_END, b) > 0 && a.compareBoundaryPoints(Range.END_TO_START, b) < 0;
   }
+  function anyRectOnScreen(rects, viewport) {
+    return rects.some(
+      (rect) => rect.width > 0 && rect.height > 0 && rect.left < viewport.right && rect.left + rect.width > viewport.left && rect.top < viewport.bottom && rect.top + rect.height > viewport.top
+    );
+  }
 
   // src/features/reader/webview/src/highlightPaint.ts
   function isEpub(entry) {
@@ -1140,6 +1145,8 @@ ${text}`;
   var lastCfi = null;
   var currentSpokenCfi = null;
   var currentSpokenWordCfi = null;
+  var lastAutoFollowedCfi = null;
+  var followDisplayInFlight = false;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
@@ -1520,6 +1527,11 @@ ${columnOverrideCss()}` : currentCss;
       const finish = () => {
         repaintLiveAnnotations();
         invalidateHighlightBoxes();
+        const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+        if (spokenTarget !== null) {
+          lastAutoFollowedCfi = null;
+          followSpokenRange(spokenTarget);
+        }
       };
       if (reanchor && lastCfi !== null && !openInFlight) {
         active.display(lastCfi).then(finish).catch(() => {
@@ -1542,6 +1554,39 @@ ${columnOverrideCss()}` : currentCss;
       if (contents.sectionIndex === spinePos) return contents;
     }
     return null;
+  }
+  function renditionManager() {
+    if (!rendition) return null;
+    return rendition.manager ?? null;
+  }
+  function spokenRangeVisible(cfi) {
+    const contents = contentsForCfi(cfi);
+    if (!contents) return false;
+    const range = rangeForCfi(contents, cfi);
+    if (!range) return false;
+    const manager = renditionManager();
+    if (!manager) return false;
+    const view = manager.views.find({ index: contents.sectionIndex });
+    if (!view) return false;
+    const offset = view.position();
+    const rects = Array.from(range.getClientRects(), (rect) => ({
+      left: rect.left + offset.left,
+      top: rect.top + offset.top,
+      width: rect.width,
+      height: rect.height
+    }));
+    return anyRectOnScreen(rects, manager.bounds());
+  }
+  function followSpokenRange(cfi) {
+    if (!rendition) return;
+    if (followDisplayInFlight) return;
+    if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
+    lastAutoFollowedCfi = cfi;
+    followDisplayInFlight = true;
+    rendition.display(cfi).catch(() => {
+    }).finally(() => {
+      followDisplayInFlight = false;
+    });
   }
   function applySearchMatch(match) {
     if (!rendition) {
@@ -1605,6 +1650,11 @@ ${columnOverrideCss()}` : currentCss;
       repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     }).catch((error) => {
       fail("NAVIGATION_FAILED", error);
     });
@@ -1711,6 +1761,8 @@ ${columnOverrideCss()}` : currentCss;
           resetTtsState();
           currentSpokenCfi = null;
           currentSpokenWordCfi = null;
+          lastAutoFollowedCfi = null;
+          followDisplayInFlight = false;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;
@@ -1910,11 +1962,9 @@ ${columnOverrideCss()}` : currentCss;
      * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
      * strand the last word wash on screen with nothing left that would ever remove it.
      *
-     * It also happens to be the precondition the auto-follow proposal
-     * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
-     * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
-     * stale word mark is still attached can re-attach it into the new one. Clearing before anything
-     * else keeps that free — do not move it below the paint.
+     * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
+     * re-renders the view while a stale word mark is still attached would carry it into the new view.
+     * Clearing before anything else keeps that free — do not move it below the paint.
      */
     setSpokenRange: (cfi) => {
       try {
@@ -1922,8 +1972,12 @@ ${columnOverrideCss()}` : currentCss;
         clearSpokenWord();
         if (currentSpokenCfi !== null) remove(rendition, TTS_OWNER, currentSpokenCfi);
         currentSpokenCfi = cfi;
-        if (cfi !== null)
+        if (cfi !== null) {
           add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+          followSpokenRange(cfi);
+        } else {
+          lastAutoFollowedCfi = null;
+        }
       } catch {
       }
     },
@@ -1944,6 +1998,14 @@ ${columnOverrideCss()}` : currentCss;
      * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
      * the host's commands), and with no rendition there is nothing painted for the state to disagree
      * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+     *
+     * ALSO THE PRECISE HALF OF AUTO-FOLLOW. `followSpokenRange(cfi)` runs on the resolved word CFI
+     * regardless of whether the paint above was skipped for colliding with another owner's highlight —
+     * the word's position is real even when its paint is suppressed. This is what turns a page turn
+     * exactly on the first word to fall off the current one, not before and not a whole sentence late:
+     * `useTtsSession` calls this once per `tts-progress` tick while `highlightMode === 'word'`, so a
+     * sentence that straddles a page break gets checked word-by-word as speech crosses it, where
+     * `setSpokenRange`'s own once-per-sentence call could only check the sentence as a whole.
      */
     setSpokenWordRange: (range) => {
       try {
@@ -1952,9 +2014,11 @@ ${columnOverrideCss()}` : currentCss;
         if (range === null) return;
         const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
         if (cfi === null) return;
-        if (spokenWordCollides(cfi)) return;
-        currentSpokenWordCfi = cfi;
-        repaintSpokenWord({ live: false });
+        if (!spokenWordCollides(cfi)) {
+          currentSpokenWordCfi = cfi;
+          repaintSpokenWord({ live: false });
+        }
+        followSpokenRange(cfi);
       } catch {
       }
     },

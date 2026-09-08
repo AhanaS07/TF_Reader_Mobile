@@ -117,7 +117,7 @@ a TTS session needs to handle the book's key being destroyed underneath it.
 
 ---
 
-## 6. `accessibility.tts.highlightMode === 'word'` — engine-half attempt reverted; still deferred
+## 6. `accessibility.tts.highlightMode === 'word'` — landed 2026-09-07, both halves together
 
 **2026-09-02** landed an engine-side attempt at this: native `tts-progress` subscribed
 (`ttsEngine.ts:TTS_EVENTS`), normalized per-platform in `ttsProgress.ts`, and dispatched from
@@ -138,32 +138,31 @@ subscription/gating (`handleTtsProgress`, and the gated calls in `handleTtsStart
 `ttsProgress.ts`'s `normalizeTtsProgressEvent` itself was left in place (pure, still unit-tested,
 independent of the bridge) since a future attempt will likely still need it.
 
-**Net effect:** `'word'` mode currently behaves identically to `'sentence'` mode — no word-level
-highlight is painted, no bridge command is sent. `TTS_PROVIDER.md`'s "Not done as part of step 5,
-on purpose" framing for word-level highlighting is accurate again.
+**Net effect of the revert, while it lasted:** `'word'` mode behaved identically to `'sentence'`
+mode — no word-level highlight painted, no bridge command sent.
 
-**For whoever lands this properly next, landing BOTH halves together in one change:**
-- `webview/src/bridge.ts`'s `CommandArgs` needs a `setSpokenWordRange` entry.
-- `epub.entry.ts` needs a `setSpokenWordRange` handler — `TFReaderApi<'openEpub'>` will not compile
-  without it. Painting should reuse `highlightSeam.ts`'s `add`/`remove` with the existing
-  `TTS_OWNER` and a new variant (e.g. `'spoken-word'`) so it doesn't collide with the sentence wash
-  `setSpokenRange` already paints — same pattern `setSpokenRange` uses with `currentSpokenCfi`.
-  Resolving `(sentenceCfi, start, end)` into a word-range CFI is NOT a pure reuse of
-  `epubCfiRange.ts`'s existing exports: `expandPointCfi(startCfi, length)` only extends a GIVEN
-  start point forward into a range — it has no way to produce a NEW point CFI offset from an
-  existing one, which is exactly what the leading `start` offset needs (the word's own beginning
-  within the sentence, not the sentence's own start). The offset arithmetic that would do this lives
-  inline and unexported inside `expandPointCfi`. This needs new code — either exporting a
-  point-advance step from `epubCfiRange.ts` (a natural, testable addition next to its siblings) or
-  writing the equivalent in `epub.entry.ts` itself. Confirmed by reading `expandPointCfi`'s source,
-  not inferred.
-- `pdf.entry.ts` needs the same no-op row `setSpokenRange` already has.
-- `WEBVIEW_BRIDGE.md`'s "Host → WebView" table needs the new row.
-- `npm run reader:build-html` needs a run once the above lands, both HTML artifacts committed.
-- On the RN side, this section's 2026-09-02 description above (the `ReaderTextProvider` method,
-  `realReaderTextProvider.ts`'s implementation, `useTtsSession.ts`'s gated `tts-progress` wiring,
-  the fakes' `spokenWordRanges` handles) is the shape to re-add — same design, just needs to land
-  together with the WebView half this time rather than ahead of it.
+**Landed for real, 2026-09-05 through 2026-09-07, both halves together this time.** The WebView-facing
+half (`webview/src/bridge.ts`'s `CommandArgs`, `epub.entry.ts`'s `setSpokenWordRange` handler,
+`pdf.entry.ts`'s no-op, `ReaderTextProvider`/`realReaderTextProvider.ts`, both HTML artifacts
+rebuilt) landed 2026-09-05/07 (`13cb99f`/`6d9530e`) — with one shape change from the reverted
+2026-09-02 attempt: `setSpokenWordRange` now takes one object argument
+(`{ cfi, start, end } | null`), not three positional ones, per `bridge.ts`'s
+`CommandArgsMatchPayloads` proof. The offset-arithmetic gap this section originally flagged
+(`expandPointCfi` cannot produce a new point CFI offset from an existing one) was resolved by writing
+fresh resolution logic in `epubTtsResolver.ts`'s `resolveSpokenWordCfi`, not by extending
+`epubCfiRange.ts` — see that function's own doc comment for why.
+
+The RN side — `useTtsSession.ts`'s `tts-progress` subscription and gated `handleTtsProgress`, and
+both fakes' `spokenWordRanges` recording handles — was re-landed the same day, same design as the
+2026-09-02 attempt, updated for the object-shaped call. One deliberate deviation: the reverted
+attempt also sent a second, explicit `setSpokenWordRange(null, 0, 0)` clear from `clearHighlight()`
+and `handleTtsStart()`; that's redundant now; `setSpokenRange`'s WebView handler already clears the
+word wash unconditionally at its own top (`clearSpokenWord()`), a consolidation that landed with the
+2026-09-05/07 work, after the original attempt was written.
+
+**`'word'` mode now does more than paint.** `setSpokenWordRange` also drives the word-precise half of
+TTS auto-follow (`TTS_PROVIDER.md` open item 2) — the reason the RN-side wiring was worth re-landing
+now rather than leaving deferred.
 
 ---
 
