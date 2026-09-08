@@ -1,6 +1,6 @@
 # API_CONTRACT_NOTES.md — Sync
 
-**Owner: Karthik. Status as of `83f4e2e` (2026-08-17).**
+**Owner: Karthik. Status as of `4752229` (2026-09-07).**
 
 Sync's position in the wokay/flambeau contract review. The headline is unusual: **almost nothing in
 this directory conflicts with either contract, because neither contract mentions any of it.** That

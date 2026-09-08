@@ -1606,6 +1606,16 @@ function ReaderScreenComponent(
             pendingInitialVerifyRef.current = { target, attempts: attempts + 1 };
             sendRef.current?.({ type: 'goTo', target });
           }
+        } else if (initialTargetRef.current !== null) {
+          // `relocated` arrived before `rendered`: both pdf.entry.ts (renderCurrent(1) inside
+          // openPdf) and epub.entry.ts (display() inside openEpub) post `relocated` before they
+          // post `rendered`. `pendingInitialVerifyRef` is set by the effect that waits for
+          // `isRendered`, so it is null here — the existing guard above cannot fire. But
+          // `initialTargetRef` still holds the resume target, meaning the goTo has not been sent
+          // yet and this `relocated` is the book's own default landing (page 1 / start CFI), not
+          // the position the user should resume at. Suppress it exactly as the post-rendered case
+          // does for a mid-resend wrong landing.
+          isUnverifiedInitialRelocate = true;
         }
 
         // Every real `relocated` is a navigation signal — epub.js never fires it for
