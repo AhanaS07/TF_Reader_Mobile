@@ -418,6 +418,11 @@ describe('AudioPlayerScreen', () => {
 
   it('sets this player active for lock screen controls with seek forward/backward, not next/prev', async () => {
     const fakePlayer = getFakePlayer();
+    // Lock screen registration only fires once status.playing is true (see AudioPlayerScreen.tsx
+    // comment on why: iOS ignores MPNowPlayingInfoCenter registrations that arrive with rate=0).
+    // Set before render() so the component's first re-render after resolver resolves already sees
+    // playing:true — same "set fields before render" pattern the file header mandates.
+    fakePlayer.playing = true;
     await render(<AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />);
 
     await waitFor(() =>
