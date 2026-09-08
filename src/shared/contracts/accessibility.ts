@@ -1,98 +1,310 @@
 // src/shared/contracts/accessibility.ts
-// Accessibility preferences — CAP-7 Reader & Offline (Team t4targaryen)
-// Owner: Accessibility (Hruthik). FINAL, confirmed 2026-09-02.
+// Accessibility preferences — CAP-7 Reader & Offline.
 //
-// SPLIT OUT OF prefs.ts RATHER THAN GROWN INSIDE IT. The flat four-boolean
-// `AccessibilityPrefs` that used to live in prefs.ts carried a "PROVISIONAL —
-// NEEDS HRUTHIK'S SIGN-OFF" note for exactly this reason: the shape was another
-// owner's to publish. It is published now, and it lives in its own file so the
-// boundary is visible in the folder rather than only in a comment.
+// This file defines the SHAPE of the accessibility block. `SharedPrefs` in prefs.ts embeds it
+// as `accessibility`, the same way it extends `SyncRecordBase` from sync-record.ts, so every
+// consumer still reads one merged prefs object and this file still owns every a11y type,
+// default, guard and resolver.
 //
-// FOUR SUB-BLOCKS, AND THE NESTING IS LOad-BEARING. Patches merge at the top
-// level only, so `text`, `display`, `announce` and `tts` each replace wholesale.
-// A writer naming one field has to spread its group AND the parent — see
-// `expandPatch` in useReaderPrefs.ts, which does both so no section has to.
+//     sync-record.ts    ──imported by──>  prefs.ts   (extends SyncRecordBase)
+//     accessibility.ts  ──imported by──>  prefs.ts   (accessibility: AccessibilityPrefs)
 //
-// `tts` IS DECLARED AND NOT OURS TO WRITE. Its fields (enabled, voiceId, rate,
-// pitch, autoContinueChapter, highlightMode, backgroundPlayback) are controlled
-// from the in-reader `TtsControls` panel, which is Ahana's surface. The Reader
-// Preferences screen renders no TTS section and exposes no TTS field. The key
-// stays in the type so the record round-trips through this app unchanged rather
-// than being silently dropped on write.
+// Applied universally per user, like the rest of the prefs record — NOT scoped
+// per book.
+//
+// AMENDED (a11y persistence, Sync — resolves prefs.ts STILL-OPEN #1):
+// This block PERSISTS AND SYNCS AS ITS OWN RECORD, with its own row, its own endpoint and its
+// own `updatedAt`. It previously read "NOT a synced record… no accessibility endpoint, no
+// accessibility table, no separate updatedAt", which described the composed SHAPE and was then
+// read as a storage mandate.
+//
+// Why the change: folding a11y onto the prefs singleton gave both blocks ONE `updatedAt`, and
+// conflict resolution for prefs is whole-record LWW. Two devices — one changing `tts.rate`, the
+// other changing `theme` — would resolve by picking one whole record, silently discarding the
+// other edit. For a reading preference that is annoying; for an accessibility setting a user
+// depends on, it is a correctness failure. Two records resolve independently, so neither edit
+// can be lost to the other.
+//
+// What did NOT change: this is a storage decision, not a shape decision. `AccessibilityPrefs`
+// still carries no identity or sync fields of its own — the canary in __typecheck__.ts still
+// pins that — and consumers still receive it composed into `SharedPrefs`. Sync joins the two
+// rows on read and splits them on write (see features/sync/sharedPrefs.ts); Reader and the
+// settings UI never see the seam.
+//
+// Owner note: the shape here remains Accessibility's (Hruthik). Only the persistence sentence
+// moved, and it moved into Sync's area. Flag it if the split causes trouble at the settings-UI
+// layer.
+
+/* ────────────────────────────────────────────────────────────────
+   VALUE TYPES
+   ──────────────────────────────────────────────────────────────── */
 
 /**
- * Whether page-turn and transition animation is suppressed.
+ * Reduced motion is a TRI-STATE, not a boolean.
  *
- * A TRI-STATE, NEVER A BOOLEAN, and the third member is the point: 'system'
- * means "follow whatever the OS reports right now", which is not the same fact
- * as 'off' and cannot be recovered once collapsed. Settings stores the raw
- * string; resolving it to an effective boolean against live OS state is the
- * reader's job, not this app's.
+ * A boolean cannot express "follow the OS": once written, `false` is ambiguous
+ * between "the user turned it off" and "the user never chose, and the OS says
+ * off". That distinction is not recoverable later.
+ *
+ * Consumers must resolve this against live OS state via `resolveReduceMotion`
+ * rather than reading the stored value directly.
  */
 export type ReduceMotion = 'system' | 'on' | 'off';
 
-export interface AccessibilityPrefs {
-  text: {
-    /** OpenDyslexic. */
-    dyslexiaFont: boolean;
-    /** Honour the OS Dynamic Type setting. */
-    respectOsFontScale: boolean;
-    /**
-     * Applied ON TOP OF the OS scale, not instead of it.
-     *
-     * THE TYPE IS UNBOUNDED ON PURPOSE — the contract says so. Sensible
-     * on-screen bounds are the UI's to choose and the UI's to enforce; see
-     * `FONT_SCALE_MULTIPLIER` in prefsOptions.ts and the clamp in
-     * useReaderPrefs.ts.
-     */
-    fontScaleMultiplier: number;
-    /** Looser line and word spacing preset. */
-    readableSpacing: boolean;
-  };
+export const REDUCE_MOTION_VALUES = ['system', 'on', 'off'] as const;
 
-  display: {
-    /** Heavier weight throughout. */
-    boldText: boolean;
-    /**
-     * THE ONLY PLACE CONTRAST LIVES. The `Theme` union's deprecated
-     * 'highContrast' member is not offered by the Theme picker and must not be
-     * reintroduced there — contrast is independent of theme, so dark plus high
-     * contrast is a valid combination.
-     */
-    highContrast: boolean;
-    reduceMotion: ReduceMotion;
-    /** Enlarges reader control hit targets. */
-    largeTouchTargets: boolean;
-    /** Enlarges the TTS transport controls. */
-    largeAudioControls: boolean;
-  };
+/** TTS highlight granularity. */
+export type TtsHighlightMode = 'none' | 'word' | 'sentence';
 
+export const TTS_HIGHLIGHT_MODE_VALUES = ['none', 'word', 'sentence'] as const;
+
+/** Inclusive bounds for `tts.rate`. */
+export const TTS_RATE_MIN = 0.5;
+export const TTS_RATE_MAX = 3.0;
+
+/**
+ * Inclusive bounds for `tts.pitch`. The intersection of both native ranges: iOS
+ * `AVSpeechUtterance.pitchMultiplier` hard-clamps to 0.5-2.0, and Android's
+ * `TextToSpeech.setPitch` accepts the same range without an OEM-unsafe ceiling.
+ */
+export const TTS_PITCH_MIN = 0.5;
+export const TTS_PITCH_MAX = 2.0;
+
+/* ────────────────────────────────────────────────────────────────
+   PREFERENCE BLOCKS
+   ────────────────────────────────────────────────────────────────
+   Grouped text / display / tts / announce so the shape maps 1:1 onto the
+   persisted a11y.* namespace — `accessibility.tts.rate` ⇄ `a11y.tts.rate` —
+   and matches the nesting prefs.ts already uses for font / typography /
+   layout / zoom.
+   ──────────────────────────────────────────────────────────────── */
+
+/** Text rendering and scaling. */
+export interface A11yTextPrefs {
+  /** OpenDyslexic. */
+  dyslexiaFont: boolean;
   /**
-   * Ahana's, via the in-reader `TtsControls` panel. Declared so the record
-   * round-trips; never rendered or written by Reader Preferences.
-   */
-  // `{}` IS THE CONTRACT'S OWN SHAPE, and the lint rule is right in general —
-  // it allows any non-nullish value. It is suppressed rather than "fixed"
-  // because the two obvious fixes are both worse: `object` or
-  // `Record<string, unknown>` would invite this app to write into a group it
-  // does not own, and naming the seven TTS fields would claim Ahana's surface
-  // outright. The group exists here only so the record round-trips.
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  tts: {};
-
-  announce: {
-    /** Screen-reader announcement on page turn. */
-    pageChanges: boolean;
-    /** Screen-reader announcement on chapter change. */
-    chapterChanges: boolean;
-  };
-
-  /**
-   * Extra a11y labels on NATIVE React Native controls.
+   * Honour the OS font-scale setting.
    *
-   * SCOPE LIMIT, CARRIED INTO THE UI COPY: this does not reach EPUB content
-   * inside the WebView — that accessibility tree comes from the DOM and is
-   * unreachable from RN props. The label must not imply otherwise.
+   * OVERLAP: interacts with `typography.size` in prefs.ts, whose units are not
+   * yet agreed (pt vs scale factor). Three knobs scale text — typography.size,
+   * this, and fontScaleMultiplier — and their composition order is undecided.
+   */
+  respectOsFontScale: boolean;
+  /** Additional user multiplier applied on top of OS scaling. 1.0 = none. */
+  fontScaleMultiplier: number;
+  /** Looser line/word spacing preset for readability. */
+  readableSpacing: boolean;
+}
+
+/** Visual presentation. */
+export interface A11yDisplayPrefs {
+  /** Heavier font weight throughout. */
+  boldText: boolean;
+  /**
+   * Single source of truth for contrast.
+   *
+   * prefs.ts still carries a deprecated `Theme` variant `'highContrast'`. This
+   * flag wins; the theme variant exists only so old records parse. Keeping
+   * contrast separate from colour scheme lets a user run dark + high contrast,
+   * which the theme variant could not express.
+   */
+  highContrast: boolean;
+  /** Tri-state — resolve with `resolveReduceMotion` before applying. */
+  reduceMotion: ReduceMotion;
+  /** Enlarged hit targets for reader controls. */
+  largeTouchTargets: boolean;
+  /** Enlarged TTS / audio transport controls. */
+  largeAudioControls: boolean;
+}
+
+/**
+ * Text-to-speech.
+ *
+ * Library: react-native-tts. Requires an Expo Development Build — it is a
+ * native module and is not present in standard Expo Go.
+ */
+export interface A11yTtsPrefs {
+  /** Master switch. */
+  enabled: boolean;
+  /** Platform voice identifier; null = platform default. */
+  voiceId: string | null;
+  /** Speech rate. Valid range TTS_RATE_MIN..TTS_RATE_MAX. */
+  rate: number;
+  /** Speech pitch. */
+  pitch: number;
+  /** Not read yet — persisted now so the shape does not move later. */
+  highlightMode: TtsHighlightMode;
+  /** Continue reading into the next chapter without user input. */
+  autoContinueChapter: boolean;
+  /**
+   * Keep speaking when the app backgrounds.
+   * Unverified on both platforms — neither TTS library's documented API
+   * guarantees it, so this needs a device spike before it is exposed in the UI.
+   */
+  backgroundPlayback: boolean;
+}
+
+/**
+ * Screen-reader announcements on navigation.
+ *
+ * Announcements must be deliberate: a page turn should not re-announce the
+ * whole page, every control, or unrelated content. Over-announcing interrupts
+ * the book, which is the failure mode that matters most in a reading app.
+ */
+export interface A11yAnnouncePrefs {
+  pageChanges: boolean;
+  chapterChanges: boolean;
+}
+
+/** The accessibility block of the prefs record. */
+export interface AccessibilityPrefs {
+  text: A11yTextPrefs;
+  display: A11yDisplayPrefs;
+  tts: A11yTtsPrefs;
+  announce: A11yAnnouncePrefs;
+  /**
+   * Extra a11y labels for TalkBack / VoiceOver.
+   *
+   * SCOPE WARNING: this reaches native React Native controls only. It does NOT
+   * affect EPUB content inside the WebView — that accessibility tree is built
+   * from the DOM and is unreachable from React Native props. Do not let the
+   * name imply otherwise when wiring the settings UI.
    */
   screenReaderHints: boolean;
+}
+
+/* ────────────────────────────────────────────────────────────────
+   DEFAULTS
+   ────────────────────────────────────────────────────────────────
+   Note the four that are not "off": respectOsFontScale,
+   tts.autoContinueChapter, announce.pageChanges, announce.chapterChanges.
+   ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Shared reference — do NOT mutate, and do not rely on a shallow spread to
+ * detach it. "Reset to defaults" must deep-copy (e.g. structuredClone) or every
+ * reset will hand out the same nested objects.
+ */
+export const DEFAULT_ACCESSIBILITY_PREFS: AccessibilityPrefs = {
+  text: {
+    dyslexiaFont: false,
+    respectOsFontScale: true,
+    fontScaleMultiplier: 1.0,
+    readableSpacing: false,
+  },
+  display: {
+    boldText: false,
+    highContrast: false,
+    reduceMotion: 'system',
+    largeTouchTargets: false,
+    largeAudioControls: false,
+  },
+  tts: {
+    enabled: false,
+    voiceId: null,
+    rate: 1.0,
+    pitch: 1.0,
+    highlightMode: 'sentence',
+    autoContinueChapter: true,
+    backgroundPlayback: false,
+  },
+  announce: {
+    pageChanges: true,
+    chapterChanges: true,
+  },
+  screenReaderHints: false,
+};
+
+/** Fresh, fully detached copy of the defaults. Use this for "reset". */
+export function createDefaultAccessibilityPrefs(): AccessibilityPrefs {
+  return {
+    text: { ...DEFAULT_ACCESSIBILITY_PREFS.text },
+    display: { ...DEFAULT_ACCESSIBILITY_PREFS.display },
+    tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts },
+    announce: { ...DEFAULT_ACCESSIBILITY_PREFS.announce },
+    screenReaderHints: DEFAULT_ACCESSIBILITY_PREFS.screenReaderHints,
+  };
+}
+
+/* ────────────────────────────────────────────────────────────────
+   GUARDS
+   ──────────────────────────────────────────────────────────────── */
+
+export function isValidTtsRate(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= TTS_RATE_MIN &&
+    value <= TTS_RATE_MAX
+  );
+}
+
+export function isValidTtsPitch(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= TTS_PITCH_MIN &&
+    value <= TTS_PITCH_MAX
+  );
+}
+
+export function isValidReduceMotion(value: unknown): value is ReduceMotion {
+  return (REDUCE_MOTION_VALUES as readonly unknown[]).includes(value);
+}
+
+export function isValidTtsHighlightMode(value: unknown): value is TtsHighlightMode {
+  return (TTS_HIGHLIGHT_MODE_VALUES as readonly unknown[]).includes(value);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   RESOLVERS & MIGRATION
+   ────────────────────────────────────────────────────────────────
+   These encode rules that are part of the contract itself — how a stored value
+   becomes an applied value.
+   ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Collapses the tri-state against live OS state.
+ *
+ * Reader should call this rather than reading `display.reduceMotion` directly —
+ * the stored value alone cannot tell it whether to suppress the page-turn
+ * animation.
+ */
+export function resolveReduceMotion(
+  preference: ReduceMotion,
+  osReduceMotionEnabled: boolean,
+): boolean {
+  if (preference === 'system') return osReduceMotionEnabled;
+  return preference === 'on';
+}
+
+/**
+ * Read-time migration for records written before the tri-state change.
+ *
+ * `false` maps to `'system'`, not `'off'`: the old default was false, so a
+ * stored false is overwhelmingly "never touched" rather than "explicitly
+ * disabled". This does silently upgrade the rare user who genuinely disabled it
+ * to following the OS — acceptable, because the alternative pins every
+ * untouched user to "ignore the OS", which is the worse failure for an
+ * accessibility setting.
+ */
+export function migrateReduceMotion(stored: boolean | ReduceMotion): ReduceMotion {
+  if (typeof stored === 'boolean') return stored ? 'on' : 'system';
+  return stored;
+}
+
+/**
+ * Resolves the effective text scale.
+ *
+ * PLACEHOLDER ORDER: OS scale applies only when the user opted in, then the
+ * user multiplier applies on top. `typography.size` is deliberately not
+ * consumed here until its units are agreed.
+ */
+export function resolveFontScale(
+  prefs: A11yTextPrefs,
+  osFontScale: number,
+): number {
+  const base = prefs.respectOsFontScale ? osFontScale : 1.0;
+  return base * prefs.fontScaleMultiplier;
 }

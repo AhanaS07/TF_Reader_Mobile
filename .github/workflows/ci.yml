@@ -59,9 +59,47 @@ jobs:
         run: npm run lint
 
       # Unguarded since P0-1: jest + jest-expo are real dependencies, so a
-      # missing binary is a genuine failure, not a skip. `test:ci` also carries
-      # a coverage gate (see the npm script and `jest.coverageThreshold` in
-      # package.json) — thresholds are today's measured floor, not aspirational,
-      # so a real regression fails the job rather than silently landing.
+      # missing binary is a genuine failure, not a skip. `test:ci` carries both a
+      # coverage gate (see `jest.coverageThreshold` in package.json — thresholds are
+      # today's measured floor, not aspirational, so a real regression fails the job
+      # rather than silently landing) AND --passWithNoTests (most feature folders are
+      # not empty any more, but this stays until every CAP is certain to have a spec).
       - name: Test
         run: npm run test:ci
+
+      # assets/reader/reader-epub.html and reader-pdf.html are GENERATED (from
+      # webview/reader-*.template.html plus the shared webview/reader.bridge.html)
+      # AND TRACKED, so editing a template or the fragment without rerunning the
+      # generator ships HTML that no longer matches its source — and nothing else
+      # catches it. The bridge drift guard in readerBridge.test.ts reads the
+      # TEMPLATES, not these artifacts, so the whole suite goes green on a stale
+      # file. This step is the only thing standing between a forgotten rebuild and
+      # shipping stale HTML.
+      #
+      # BOTH artifacts, named explicitly rather than `-- assets/reader/`: that
+      # directory also holds sample-plaintext.epub, which is deliberately NOT covered
+      # (see below).
+      #
+      # Editing the shared fragment makes this matter more than it used to, not less:
+      # one edit invalidates BOTH artifacts, so it is now possible to rebuild and
+      # commit only the one you were looking at.
+      #
+      # Regenerate-and-diff rather than a jest test: the check is "is the tracked
+      # artifact what the generator produces", and only git can answer that.
+      - name: Reader HTML is freshly generated
+        run: |
+          npm run reader:build-html
+          git diff --exit-code -- assets/reader/reader-epub.html assets/reader/reader-pdf.html
+
+      # The sample PDF is generated and tracked too, and UNLIKE the sample EPUB it is
+      # byte-reproducible, so it can be checked the same way. generateSamplePdf.ts
+      # emits no /CreationDate, /ModDate or /ID; that is asserted by the script itself,
+      # so this step and that assertion fail together rather than drifting apart.
+      #
+      # `reader:build-sample` (the EPUB) is still deliberately EXCLUDED:
+      # generateSampleEpub.ts builds a zip whose entries carry generation timestamps,
+      # so it is not byte-reproducible and the same check would fail on every run.
+      - name: Sample PDF is freshly generated
+        run: |
+          npm run reader:build-sample-pdf
+          git diff --exit-code -- assets/reader/sample-plaintext.pdf

@@ -2,13 +2,24 @@
 
 ## Stack
 
-**TypeScript** (`strict: true`), Expo managed, React Navigation
-(`bottom-tabs` + `native-stack`), Zustand, AsyncStorage, Jest + React Native Testing Library.
+**TypeScript** (team decision — this reverses the earlier JavaScript call), Expo SDK 57 with a
+**development build**, React Navigation (`bottom-tabs` + `native-stack`), Zustand, AsyncStorage,
+Jest + React Native Testing Library.
 
-> **Changed 11 Aug: TypeScript, not JavaScript.** The contract is now
-> `src/model/types.ts` with real interfaces, and `MockAdapter implements DataAdapter` is
-> compiler-checked. Anything in the planning documents that says "JavaScript, not
-> TypeScript" is superseded by this line.
+`strict: true` is on and `npm run typecheck` is its own CI job. The compiler is now the contract
+enforcement mechanism, which retires the three things that were standing in for it:
+
+| Was                                                                                  | Now                                                                                                                       |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| JSDoc `@typedef` in `src/model/types.js`                                             | Real types in `src/shared/` — `tsc --noEmit` enforces them                                                                |
+| `prop-types` on every component                                                      | **Deleted.** Its only job was runtime prop warnings without a compiler. It is not a dependency and should not become one. |
+| An adapter conformance suite as the only thing keeping mock and real interchangeable | Still valuable, but now backed by a shared `interface` both must implement                                                |
+
+`allowJs`/`checkJs` stay on only to keep the door open during the changeover. There is no
+JavaScript in `src/` today; once that is still true at the end of Week 2, turn them off.
+
+Frozen contracts are enforced by a typecheck canary that runs as its own CI job. It is
+team-scoped, so it is documented with the team that owns it — see the team docs below.
 
 ## Structure
 
@@ -115,8 +126,8 @@ reports drift and is worth running after any dependency change. Two consequences
 knowing:
 
 - **TypeScript is 6.0.x**, not 5.x — SDK 57 expects it. TS 6 deprecates `baseUrl`, so
-  `tsconfig.json` uses tsconfig-relative `paths` instead, and it no longer auto-includes
-  `@types`, hence the explicit `"types": ["jest", "node"]`.
+  `tsconfig.json` uses tsconfig-relative `paths` instead (see the comment there), and it no
+  longer auto-includes `@types`, hence the explicit `"types": ["jest", "node"]`.
 - **`render` from `@testing-library/react-native` v14 is async.** `await` it. Destructuring the
   Promise gives you `getByText is not a function`, which reads like a broken install.
 

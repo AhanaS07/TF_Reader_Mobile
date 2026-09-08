@@ -1,204 +1,166 @@
-// src/features/personalization/prefsStore.ts
-// Persistent reader preferences — AsyncStorage via Zustand persist.
+// /features/personalization/prefsStore.ts
+// Personalization prefs store — CAP-7 Reader & Offline (Team t4targaryen)
 //
-// ─── WHAT IS STORED AND WHY ──────────────────────────────────────────────────
+// Owner: Personalization (Vaishnavi). The settings-screen-facing seam for reading
+// and writing the user's SharedPrefs.
 //
-// The store holds PrefsValues (theme, font, typography, layout, zoom,
-// accessibility) plus `updatedAt` — the client wall-time ms stamped on every
-// write, which is the LWW comparison key per sync-record.ts. The sync fields
-// (id, userId, isDeleted, synced) are the sync layer's job and are not stored
-// here — they arrive when Karthik's sync layer runs.
+// It does NOT own storage. The persisted, SQLite-backed layer is Sync's
+// (features/sync/stores/personalizationStore.ts + accessibilityStore.ts, behind
+// features/sync/sharedPrefs.ts), which merges the two tables into one SharedPrefs,
+// seeds DEFAULT_PREFS on first run, and marks every write for sync. This wrapper is
+// a thin, settings-facing adapter over that seam: `readSharedPrefs` / `writeSharedPrefs`
+// / `resetSharedPrefs` are the legitimate coupling point (their public read/write API),
+// so Personalization consumes them rather than reaching into Sync's stores or schema.
 //
-// ─── SIGNATURES MATCH PrefsSource ────────────────────────────────────────────
+// This REPLACES the former in-memory `InMemoryPrefsStore` stub, which persisted only
+// for the process lifetime and was never wired to anything. The shared-reference trap
+// that stub's `freshDefaultPrefs()` guarded no longer exists here: every read
+// reconstructs fresh nested objects from SQLite rows, and reset hands back a detached
+// copy on Sync's side (`resetSharedPrefs` -> `structuredClone(DEFAULT_PREFS)`).
 //
-// All four exported functions match the PrefsSource interface in useReaderPrefs.ts
-// exactly: async getPrefs/savePrefs/resetPrefs and a subscribe that passes the
-// new values to its listener. `useReaderPrefs` imports this module as its
-// default `PrefsSource` — every real screen is wired to this store already;
-// only tests pass a fake source instead.
+// Prefs are a per-user SINGLETON. There is no `userId` argument: the persisted layer
+// is single-account today (Sync's `USER_ID` constant); when auth lands and identity
+// becomes real, the account-vs-device question (see API_CONTRACT_NOTES.md §4) decides
+// whether this signature grows one.
 //
-// ─── WRITES ARE SYNCHRONOUS, PROMISE WRAPPING IS FOR THE SEAM ───────────────
+// LIVE RE-APPLY: this store is the notification channel, NOT the event bus. Ahana's
+// prefs-application decision (2026-08-18) is explicit: no bus, and Karthik is not on the
+// critical path. Reader subscribes to `subscribe()` below; a `savePrefs`/`resetPrefs`
+// notifies subscribers with the fresh record, and Reader re-resolves + re-applies it into
+// the WebView with no reopen. This is why the event-bus `PrefsChangedEvent` follow-up that
+// used to live here is gone: the singleton store is the single JS-process source of truth,
+// so a direct subscription is simpler than a bus and needs no second emitter.
+// See READER_PREFS_APPLICATION.md §5.
 //
-// savePrefs and resetPrefs apply the change to Zustand in-memory immediately
-// (the hook's optimistic update lands before they return) and resolve instantly.
-// The AsyncStorage write happens in the background via Zustand's persist
-// middleware. If AsyncStorage fails, the in-memory state is still correct — the
-// hook's rollback path is available if a future version makes this async-aware.
-//
-// ─── HYDRATION GUARD IN getPrefs ─────────────────────────────────────────────
-//
-// On cold start, AsyncStorage is read asynchronously. Until `_hasHydrated` flips
-// true, the in-memory values are the Zustand defaults, not the stored ones.
-// getPrefs() blocks until hydration completes so the screen never shows stale
-// defaults — same pattern institutionStore uses for RootNavigator's splash.
-import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+// SCOPED TO LOCAL WRITES ON PURPOSE (decided 2026-09-07, Ahana). Bookmarks, reading progress
+// and highlights DO re-apply live from a sync pull while their screen is open — see
+// `progressStore`/`bookmarkStore`'s own `subscribe`, wired into `ReaderRouteScreen.tsx`/
+// `ReaderScreen.tsx`. Preferences and accessibility settings deliberately do not: see
+// `subscribe()`'s own doc below for why, and `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges`
+// for the bridge that exists but is intentionally not consumed here.
 
-import { DEFAULT_PREFS, type SharedPrefs } from '@/shared/contracts/prefs';
-import storage from '@storage/storage';
+import type { SharedPrefs } from '@/shared/contracts';
+import {
+  readSharedPrefs,
+  writeSharedPrefs,
+  resetSharedPrefs,
+} from '@/features/sync/sharedPrefs';
+import { pushNow } from '@/features/personalization/pushOnEdit';
 
-// Matches the PrefsValues type in useReaderPrefs.ts — same Omit, structural
-// identity. Not imported from there to avoid a circular dependency (the hook
-// is supposed to import the store, not the reverse).
-type PrefsValues = Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>;
+// Caller may change value fields only. Identity + sync bookkeeping (and isDeleted,
+// which prefs never set) are the store's job — mirrors the Omit in prefs.ts. A patch
+// merges at the TOP level, so a nested group (typography/font/layout/zoom/accessibility)
+// is replaced wholesale, not deep-merged — the settings screen sends the full group.
+export type PrefsPatch = Partial<
+  Omit<SharedPrefs, 'id' | 'userId' | 'updatedAt' | 'isDeleted' | 'synced'>
+>;
 
-interface PrefsStoreState {
-  values: PrefsValues;
-  // Client wall-time ms, stamped on every write. LWW resolution key.
-  updatedAt: number;
-  // True once AsyncStorage has loaded. getPrefs() waits on this before returning.
-  _hasHydrated: boolean;
+/** Notified with the fresh record after every successful write. Returns unsubscribe. */
+export type PrefsListener = (prefs: SharedPrefs) => void;
 
-  _patch: (partial: Partial<PrefsValues>) => void;
-  _reset: () => void;
-  _setHasHydrated: (value: boolean) => void;
+export interface PrefsStore {
+  /** Current prefs. Returns DEFAULT_PREFS on first run, before any row is written. */
+  getPrefs(): Promise<SharedPrefs>;
+  /** Apply a patch, persist it (marked for sync), notify subscribers, and return the re-read result. */
+  savePrefs(patch: PrefsPatch): Promise<SharedPrefs>;
+  /** Restore defaults (a rewrite + updatedAt bump, not a tombstone), notify subscribers, and return them. */
+  resetPrefs(): Promise<SharedPrefs>;
+  /**
+   * Subscribe to prefs changes. The listener fires AFTER a `savePrefs`/`resetPrefs` write
+   * settles, with the fresh record — this is how the Reader re-applies live without a
+   * reopen and without an event bus (see the header note). Returns an unsubscribe.
+   *
+   * DELIBERATELY LOCAL-ONLY (decided 2026-09-07, Ahana). A prefs row pulled by Sync from
+   * another device does NOT notify here, and must not be made to. Unlike bookmarks/progress/
+   * highlights — facts *about* the book that can appear alongside an unchanged page — a prefs
+   * change is a rendering/behavioural change to the page the user is looking at RIGHT NOW:
+   * live-applying a remote theme/font/TTS edit while this device is mid-read means an
+   * unannounced reflow (and, per `epubLayoutSignature.ts`, every painted highlight
+   * re-measuring) or TTS going silent, driven by an edit the person reading here never made.
+   * `sharedPrefs.ts`'s `subscribeToSharedPrefsChanges` exists (Karthik's) for exactly this kind
+   * of bridge and is intentionally NOT wired in here. The two-tables' field-level LWW merge
+   * (`mergeFieldLevel` in `syncableTable.ts`) still resolves a genuine cross-device conflict
+   * correctly regardless — it runs on every pull, whether or not anyone is listening for it —
+   * so nothing is lost: the reconciled record is simply picked up the ordinary way, by the next
+   * `getPrefs()` a remount performs, i.e. on the next close-and-reopen.
+   */
+  subscribe(listener: PrefsListener): () => void;
 }
 
-// Exported (matching institutionStore.ts's own convention) so a migration test
-// can drive rehydration directly — everything else keeps going through the
-// PrefsSource functions below, not this hook.
-export const usePrefsStore = create<PrefsStoreState>()(
-  persist(
-    (set) => ({
-      values: { ...DEFAULT_PREFS },
-      updatedAt: 0,
-      _hasHydrated: false,
+// Module-level, matching the store's singleton nature. A Set so the same listener added
+// twice is one entry, and unsubscribe is O(1).
+const listeners = new Set<PrefsListener>();
 
-      _patch: (partial) =>
-        set((state) => ({
-          values: { ...state.values, ...partial },
-          updatedAt: Date.now(),
-        })),
-
-      _reset: () =>
-        set({
-          values: { ...DEFAULT_PREFS },
-          updatedAt: Date.now(),
-        }),
-
-      _setHasHydrated: (value) => set({ _hasHydrated: value }),
-    }),
-    {
-      name: 'reader-prefs',
-      storage: createJSONStorage(() => storage),
-      // Only values and the LWW timestamp cross the storage boundary.
-      // _hasHydrated resets to false on every cold start by design.
-      // Actions are never serialisable.
-      partialize: (state) => ({
-        values: state.values,
-        updatedAt: state.updatedAt,
-      }),
-      // Flip _hasHydrated on BOTH paths — success and failure — matching the
-      // institutionStore pattern. A failed rehydrate means we fall back to
-      // DEFAULT_PREFS, which is safe and recoverable.
-      onRehydrateStorage: () => (state, error) => {
-        if (error) {
-          usePrefsStore.setState({ _hasHydrated: true });
-          return;
-        }
-        state?._setHasHydrated(true);
-      },
-      // NOT `version`/`migrate` — zustand only calls `migrate` when the stored
-      // blob has an explicit numeric `version` field that differs from this
-      // one (node_modules/zustand's persist middleware, checked directly: the
-      // check is `typeof deserializedStorageValue.version === 'number'`).
-      // This store never set `version` before, so real on-disk data from
-      // before the accessibility rewrite has NO version field at all —
-      // `migrate` would silently never run for the actual legacy data it
-      // needs to catch. `merge` runs on every rehydration unconditionally,
-      // versioned or not, which is what a shape check like this needs.
-      //
-      // What it catches: pre-Sep-2026 data may carry `values.accessibility`
-      // in the OLD FLAT shape — dyslexiaFont/highContrast/reduceMotion/
-      // screenReaderHints as direct booleans, predating the rewrite into
-      // text/display/announce/tts sub-groups (accessibility.ts).
-      // AccessibilityScreen reads `prefs.accessibility.text.dyslexiaFont`,
-      // which throws on the old shape since `text` never existed on it.
-      //
-      // Not hand-translated field by field: the old `reduceMotion` was a
-      // plain boolean and the new one is a three-way 'system' | 'on' | 'off',
-      // with no exact equivalent to map to. Falling back to
-      // DEFAULT_PREFS.accessibility wholesale is the same "drop and reset"
-      // choice institutionStore.ts makes for its own breaking shape change,
-      // scoped to just the accessibility group — every other prefs group
-      // (font, theme, layout, typography, zoom) survives untouched.
-      merge: (persistedState, currentState) => {
-        const persisted = persistedState as Partial<PrefsStoreState> | undefined;
-        const persistedValues = persisted?.values as
-          | (Partial<PrefsValues> & { accessibility?: { text?: unknown } })
-          | undefined;
-        const hasNewShape =
-          persistedValues?.accessibility != null &&
-          typeof persistedValues.accessibility.text === 'object' &&
-          persistedValues.accessibility.text !== null;
-
-        return {
-          ...currentState,
-          ...persisted,
-          values: {
-            ...currentState.values,
-            ...persistedValues,
-            accessibility: hasNewShape
-              ? (persistedValues.accessibility as PrefsValues['accessibility'])
-              : DEFAULT_PREFS.accessibility,
-          },
-        };
-      },
-    },
-  ),
-);
-
-// ─── PrefsSource interface ────────────────────────────────────────────────────
-
-/**
- * Resolves the current prefs values. Waits for AsyncStorage hydration on cold
- * start so the caller never receives stale defaults.
- */
-export function getPrefs(): Promise<PrefsValues> {
-  const state = usePrefsStore.getState();
-  if (state._hasHydrated) {
-    return Promise.resolve(state.values);
-  }
-  return new Promise((resolve) => {
-    const unsub = usePrefsStore.subscribe((next) => {
-      if (next._hasHydrated) {
-        unsub();
-        resolve(next.values);
-      }
-    });
-  });
-}
-
-/**
- * Merges a partial patch into the current values and stamps updatedAt.
- * The hook spreads nested groups (font, layout, typography) before calling
- * here, so a top-level merge is correct — no deep merge needed.
- */
-export function savePrefs(partial: Partial<PrefsValues>): Promise<void> {
-  usePrefsStore.getState()._patch(partial);
-  return Promise.resolve();
-}
-
-/**
- * Resets all values to DEFAULT_PREFS with a fresh updatedAt stamp.
- * One write, one timestamp — LWW settles correctly across devices.
- */
-export function resetPrefs(): Promise<void> {
-  usePrefsStore.getState()._reset();
-  return Promise.resolve();
-}
-
-/**
- * Notifies whenever the prefs values change — including writes from other
- * sources (a second device settling LWW once the sync layer lands).
- * Returns the unsubscribe function.
- */
-export function subscribe(listener: (next: PrefsValues) => void): () => void {
-  return usePrefsStore.subscribe((state, prevState) => {
-    // Reference equality: Zustand's immutable updates guarantee a new object
-    // on every write, so this fires exactly when values actually changed.
-    if (state.values !== prevState.values) {
-      listener(state.values);
+function notify(prefs: SharedPrefs): void {
+  // A throwing subscriber must not fail the write that already succeeded — mirrors the
+  // event-bus contract's "emit never throws to its caller". Snapshot first so a listener
+  // that unsubscribes mid-notify does not skip a sibling.
+  for (const listener of [...listeners]) {
+    try {
+      listener(prefs);
+    } catch {
+      // Swallowed deliberately: the persist is done, and one bad subscriber must not
+      // take out the others or the caller.
     }
-  });
+  }
+}
+
+export const prefsStore: PrefsStore = {
+  getPrefs() {
+    return readSharedPrefs();
+  },
+
+  async savePrefs(patch) {
+    // Merge onto the current object. writeSharedPrefs stamps id/userId/updatedAt/
+    // synced itself and ignores those on its input, so spreading the whole record
+    // (rather than stripping them) is harmless and keeps this a one-liner merge.
+    const current = await readSharedPrefs();
+    await writeSharedPrefs({ ...current, ...patch });
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    pushNow();
+    return fresh;
+  },
+
+  async resetPrefs() {
+    await resetSharedPrefs();
+    const fresh = await readSharedPrefs();
+    notify(fresh);
+    pushNow();
+    return fresh;
+  },
+
+  subscribe(listener) {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  },
+};
+
+// ─── Compatibility seam for useReaderPrefs.ts's PrefsSource ──────────────────────────
+//
+// useReaderPrefs.ts does `import * as prefsStore from './prefsStore'` and calls
+// `prefsStore.getPrefs()` / `.savePrefs(patch)` / `.resetPrefs()` / `.subscribe(listener)` as
+// free module functions matching its own `PrefsSource` interface (PrefsValues = SharedPrefs
+// minus sync bookkeeping fields; savePrefs/resetPrefs resolve `Promise<void>`, not the fresh
+// record). Rather than touch that file (owned by the app-team screens, not Personalization) or
+// its call sites, these wrappers give the module BOTH shapes: the real `PrefsStore` object above
+// for anything that wants the fresh SharedPrefs back, and these free functions for the existing
+// seam. SharedPrefs is a strict superset of PrefsValues, so passing it through Promise/listener
+// positions typed against PrefsValues is structurally sound — no field stripping needed.
+export function getPrefs(): Promise<SharedPrefs> {
+  return prefsStore.getPrefs();
+}
+
+export function savePrefs(patch: PrefsPatch): Promise<void> {
+  return prefsStore.savePrefs(patch).then(() => undefined);
+}
+
+export function resetPrefs(): Promise<void> {
+  return prefsStore.resetPrefs().then(() => undefined);
+}
+
+export function subscribe(listener: PrefsListener): () => void {
+  return prefsStore.subscribe(listener);
 }

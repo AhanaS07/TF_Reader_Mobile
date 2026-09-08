@@ -1,6 +1,8 @@
 // Route param types for the entire navigation tree — P0-6 (Keshav)
 // Keep in sync with RootNavigator.tsx. If a param changes here, update the navigator.
 import type { NavigatorScreenParams } from '@react-navigation/native';
+import type { BookId, ContentFormat } from '@/shared/contracts';
+import type { ReaderTarget } from '@/features/reader/readerBridge';
 
 /**
  * Which form PersonalAccountScreen shows. It rides in the route params rather than
@@ -54,6 +56,14 @@ export type CatalogueStackParamList = {
   // account" card. Registered here as well as in Profile for the same reason
   // SignIn is: a flow that started in this tab finishes in it.
   PersonalAccount: { mode: PersonalAccountMode };
+  // Reader engine integration seam (integration_ref.md Phase 2.1) — pushed from
+  // ItemDetailScreen's 'read' action after openBook() resolves. `initialTarget` is
+  // optional and orthogonal to progressStore's own resume mechanism: most callers never
+  // pass it and let the reader resume from the last saved position.
+  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
+  // Accessibility's publication-info screen, pushed from ReaderRouteScreen's info button.
+  // No `format` param — re-derived via getPublicationAccessibility's own getFormat(bookId).
+  BookInfo: { bookId: BookId };
 };
 
 /** Search nested stack — shares ItemDetail shape. */
@@ -69,6 +79,10 @@ export type SearchStackParamList = {
   SignIn: undefined;
   InstitutionList: undefined;
   PersonalAccount: { mode: PersonalAccountMode };
+  // Same reader engine seam as CatalogueStackParamList.Reader — registered here too so
+  // "Read" from a Search result doesn't have to jump to the Catalogue tab.
+  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
+  BookInfo: { bookId: BookId };
 };
 
 /** Single-screen stack — no pushed screens in Week 1. */

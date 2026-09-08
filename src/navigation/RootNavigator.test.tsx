@@ -85,6 +85,20 @@ jest.mock('../screens/GalleryScreen', () => ({
   default: () => null,
 }));
 
+// ReaderRouteScreen pulls in ReaderScreen -> useTtsSession -> ttsEngine.ts's
+// `import Tts from '@iternio/react-native-tts'` at REQUIRE time (native-stack resolves the whole
+// module graph eagerly, regardless of which route is on screen — see CLAUDE.md). Stubbed like
+// every other screen here rather than mocking the native module directly, since this file only
+// tests navigator wiring, not reader behaviour.
+jest.mock('./ReaderRouteScreen', () => ({
+  __esModule: true,
+  ReaderRouteScreen: () => null,
+}));
+jest.mock('./BookInfoRouteScreen', () => ({
+  __esModule: true,
+  BookInfoRouteScreen: () => null,
+}));
+
 // QueueNotificationHost renders the D16 offer banner above every screen.
 jest.mock('../features/queue/QueueNotificationHost', () => ({
   __esModule: true,

@@ -803,11 +803,17 @@ function BookmarkRow({
 
 // A bookmark's stored `Locator` → the reader target that reaches it, mirroring
 // Team 4's `toTarget` (readerBookmarks.ts). EPUB anchors by CFI, PDF by page —
-// the two schemes `ReaderTargetLike` carries. Local `Locator` has no AUDIO case.
-function bookmarkTarget(locator: Bookmark['locator']): ReaderTargetLike {
-  return locator.type === 'EPUB'
-    ? { kind: 'href', href: locator.cfi }
-    : { kind: 'page', page: locator.page };
+// the two schemes `ReaderTargetLike` carries. AUDIO has neither (matches the real
+// `toTarget`, which also returns null for AUDIO locators) — `openItem`'s `target`
+// param is optional, so callers fall back to the stored reading position.
+function bookmarkTarget(locator: Bookmark['locator']): ReaderTargetLike | undefined {
+  if (locator.type === 'EPUB') {
+    return { kind: 'href', href: locator.cfi };
+  }
+  if (locator.type === 'PDF') {
+    return { kind: 'page', page: locator.page };
+  }
+  return undefined;
 }
 
 // Reassurance, not action: no buttons, and nothing here expires. Cancelling a

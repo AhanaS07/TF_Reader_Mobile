@@ -32,6 +32,11 @@ import AccessGateScreen from '../screens/AccessGateScreen';
 import SignInMethodScreen from '../screens/SignInMethodScreen';
 import PersonalAccountScreen from '../screens/PersonalAccountScreen';
 
+// Reader engine integration seam (integration_ref.md Phase 2.1) — the reader team's own route
+// screens, mounted directly into the Catalogue/Search stacks rather than a separate flat shell.
+import { ReaderRouteScreen } from './ReaderRouteScreen';
+import { BookInfoRouteScreen } from './BookInfoRouteScreen';
+
 import type {
   RootStackParamList,
   RootTabParamList,
@@ -148,6 +153,23 @@ function CatalogueNavigator() {
         component={PersonalAccountScreen}
         options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
       />
+      {/* Reader engine integration seam — the screen sets its own header title via
+          navigation.setOptions (depends on the route's `format` param, not known here), so this
+          keeps the stack's own AppHeader rather than hiding it. `gestureEnabled: false` per
+          integration_ref.md: native-stack's default edge-swipe-back can conflict with the WebView's
+          own internal gesture recognizer — see ReaderRouteScreen.tsx's own note. */}
+      <CatalogueStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      {/* headerShown: false + presentation: 'modal': this screen adds its own close control
+          rather than relying on native-stack's default header back button. */}
+      <CatalogueStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -184,6 +206,17 @@ function SearchNavigator() {
         name="PersonalAccount"
         component={PersonalAccountScreen}
         options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.Reader — see its own comment there. */}
+      <SearchStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      <SearchStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
       />
     </SearchStack.Navigator>
   );

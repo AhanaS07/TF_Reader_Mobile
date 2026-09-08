@@ -1,10 +1,15 @@
 // App.tsx — Expo entry component.
-// Grows to exactly this shape and nothing more (per the original comment).
-// NavigationContainer + SafeAreaProvider are the two required wrappers.
+//
+// NavigationContainer + SafeAreaProvider are the two required wrappers — RootNavigator (the
+// tab-based Catalogue/Search/Library/Profile shell) owns no NavigationContainer of its own.
 //
 // Fonts load here, once, before anything renders. Nothing downstream ever
 // touches expo-font directly — by the time RootNavigator mounts, every
 // fontFamily name in tokens.ts is guaranteed to be registered.
+//
+// `useAutoSync()` and `useAudioPlayerSetup()` are app-wide and unrelated to routing, so they mount
+// here rather than inside RootNavigator — see the reader engine's own integration reference for why
+// useAutoSync must be mounted once at the true app root.
 import { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -15,6 +20,8 @@ import { Aleo_300Light, Aleo_400Regular, Aleo_700Bold } from '@expo-google-fonts
 import { NotoSans_300Light, NotoSans_400Regular, NotoSans_700Bold } from '@expo-google-fonts/noto-sans';
 import RootNavigator from './src/navigation/RootNavigator';
 import { bootstrapAuth } from './src/auth/tokenRefresh';
+import { useAudioPlayerSetup } from '@/features/reader/audio/useAudioPlayerSetup';
+import { useAutoSync } from '@/features/sync/useAutoSync';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -42,6 +49,12 @@ export default function App() {
   useEffect(() => {
     bootstrapAuth();
   }, []);
+
+  useAutoSync();
+  // AUDIO PHASE 2: bootstraps expo-audio's global audio session once, app-wide — see that hook's
+  // own header for why this lives here (mirrors useAutoSync's placement) rather than in
+  // ReaderScreen.
+  useAudioPlayerSetup();
 
   if (!fontsLoaded) {
     return null;

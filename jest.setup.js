@@ -75,3 +75,20 @@ jest.mock('expo-secure-store', () => {
     },
   };
 });
+
+// react-native-webview is a NATIVE module (CAP-7 reader, Ahana). Under Jest there
+// is no native runtime, so importing it pulls in a TurboModule/requireNativeComponent
+// registration that jest-expo does not shim — the suite fails at IMPORT time, which
+// reads as a broken test rather than a missing mock. Anything in the App tree that
+// reaches ReaderScreen hits this, including App.test.tsx.
+//
+// Unlike safe-area-context, react-native-webview ships no official jest mock, so
+// this is a hand-rolled stand-in: a plain <View> carrying testID="reader-webview".
+// It renders NOTHING and speaks no bridge — the RN<->WebView protocol is only
+// exercisable on a device, and pretending otherwise in a unit test would assert
+// against the mock instead of the reader. Registered globally rather than per-file
+// so nobody has to rediscover the import-time failure.
+jest.mock('react-native-webview', () => {
+  const { View } = require('react-native');
+  return { WebView: (props) => <View testID="reader-webview" {...props} /> };
+});
