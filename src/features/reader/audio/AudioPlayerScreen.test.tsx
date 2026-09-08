@@ -34,6 +34,10 @@ import { OFFLINE_LOCK_EVENTS } from '@/shared/contracts';
 import { eventBus, resetEventBusForTests } from '@/shared/eventBus';
 
 import { AudioPlayerScreen } from './AudioPlayerScreen';
+import {
+  _resetAudioTtsCoordinatorForTests,
+  registerActiveTtsSession,
+} from './audioTtsCoordinator';
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception — see ReaderRouteScreen.test.tsx
 // for the same convention.
@@ -113,6 +117,7 @@ describe('AudioPlayerScreen', () => {
     // It is a module singleton, so every test starts from zero subscribers regardless of whether
     // it touches locking at all.
     resetEventBusForTests();
+    _resetAudioTtsCoordinatorForTests();
   });
 
   it('renders a distinct "access ended" state on a content.lock signal, not the generic load-error heading', async () => {
@@ -266,6 +271,24 @@ describe('AudioPlayerScreen', () => {
 
     expect(getByText('My Audiobook')).toBeTruthy();
     await fireEvent.press(await findByLabelText('Play'));
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
+  it('stops active TTS when Play is pressed', async () => {
+    const ttsStopMock = jest.fn();
+    registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => true,
+      isActive: () => true,
+    });
+
+    const fakePlayer = getFakePlayer();
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+    expect(ttsStopMock).toHaveBeenCalledTimes(1);
     expect(fakePlayer.play).toHaveBeenCalled();
   });
 

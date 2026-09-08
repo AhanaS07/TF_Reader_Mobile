@@ -44,6 +44,7 @@ import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
 import { getAudioPlayerFor } from './audioPlayerInstance';
+import { stopActiveTts } from './audioTtsCoordinator';
 import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 const SKIP_SECONDS = 15;
@@ -317,6 +318,10 @@ export function AudioPlayerScreen({
     try {
       const allowed = (await beforePlayRef.current?.()) ?? true;
       if (allowed) {
+        // AUDIO SESSION CONCURRENCY: Only one audio stream runs at a time.
+        // Stop any active TTS speech before audiobook playback begins.
+        stopActiveTts();
+
         // At end of track the position is already duration, so play() is a no-op.
         // Reads from the PLAYER, not `status`: `status` can be up to one 250ms tick stale
         // (the same reasoning the unmount-commit effect already documents).

@@ -26,12 +26,18 @@
 // necessary (AudioPlayerScreen must not re-seek to a stale resume position on top of a player
 // that has been quietly continuing to play the whole time it was away).
 
-import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
+import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audio';
 
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
 
+import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator';
+
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
+
+// Registers the module singleton's pause action with the coordinator so TTS playback
+// automatically pauses active audiobook sound.
+registerAudioPauseHandler(pauseCurrentAudioPlayer);
 
 /**
  * AUDIO PHASE 4, TASK B. Records the LIVE player's position for whichever book it is holding.
@@ -106,6 +112,18 @@ export function isAudioPlaying(): boolean {
 }
 
 /**
+ * Pauses the live player if one is active and producing sound, and commits its live position.
+ * Called by audioTtsCoordinator when TTS begins playback so the two never overlap.
+ * Idempotent, and a safe no-op when nothing is loaded or playing.
+ */
+export function pauseCurrentAudioPlayer(): void {
+  if (current && current.player.isLoaded && current.player.playing) {
+    current.player.pause();
+    commitCurrentPlayerPosition();
+  }
+}
+
+/**
  * Stops playback and drops the native player, if there is one.
  *
  * The ONE caller today is entitlement loss (`audioScratchReclaimer.ts`, on Sync's `content.lock`),
@@ -146,6 +164,13 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
   // audiobook — where pausing is constant and the card must survive it — must opt out. iOS-only
   // per expo-audio's own types; a no-op elsewhere.
   const player = createAudioPlayer(null, { updateInterval: 250, keepAudioSessionActive: true });
+  let wasPlaying = false;
+  player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+    if (status.playing && !wasPlaying) {
+      stopActiveTts();
+    }
+    wasPlaying = status.playing;
+  });
   current = { bookId, player };
   return { player, isNew: true };
 }
