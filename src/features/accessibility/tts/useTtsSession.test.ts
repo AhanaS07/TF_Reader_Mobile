@@ -575,6 +575,25 @@ describe('a PDF-shaped provider (non-CFI opaque anchor)', () => {
     expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
   });
 
+  it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word', with a non-CFI cfi field", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
+
+    expect(provider.spokenWordRanges.at(-1)).toEqual({
+      cfi: provider.sentences[0].cfi,
+      start: 4,
+      end: 7,
+    });
+    expect(provider.spokenWordRanges.at(-1)?.cfi).not.toMatch(/^epubcfi\(/);
+  });
+
   it('stops at the end of a page when autoContinueChapter is off, and clears the highlight', async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
     // DEFAULT_FAKE_PDF_BOOK's page 0 has 2 sentences; sentence index 1 is lastInSection.

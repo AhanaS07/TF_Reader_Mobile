@@ -55,6 +55,8 @@ export interface FakePdfReaderTextProviderOptions {
 export interface FakePdfReaderTextProvider extends ReaderTextProvider {
   readonly sentences: readonly TtsSentence[];
   readonly spokenRanges: readonly (string | null)[];
+  /** Every `setSpokenWordRange` argument, in call order. `null` entries are clears. */
+  readonly spokenWordRanges: readonly (SpokenWordRange | null)[];
   setPosition(index: number): void;
   navigate(index: number): void;
   interrupt(reason: TtsInterruption): void;
@@ -95,6 +97,7 @@ export function createFakePdfReaderTextProvider(
   const indexByAnchor = new Map<string, number>(sentences.map((s, i) => [s.cfi, i]));
 
   const spokenRanges: (string | null)[] = [];
+  const spokenWordRanges: (SpokenWordRange | null)[] = [];
   const handlers = new Set<(reason: TtsInterruption) => void>();
 
   let position = startIndex;
@@ -128,6 +131,7 @@ export function createFakePdfReaderTextProvider(
   return {
     sentences,
     spokenRanges,
+    spokenWordRanges,
 
     async current(from: string | null): Promise<TtsFetchResult> {
       if (terminated) return UNAVAILABLE;
@@ -146,10 +150,12 @@ export function createFakePdfReaderTextProvider(
       spokenRanges.push(anchor);
     },
 
-    setSpokenWordRange(_range: SpokenWordRange | null): void {
-      // No test on this fake inspects word-level ranges — see fakeReaderTextProvider.ts's
-      // identical no-op for why.
+    setSpokenWordRange(range: SpokenWordRange | null): void {
+      // Recorded the same way fakeReaderTextProvider.ts's does — useTtsSession's tts-progress
+      // wiring is the real caller, and this fixture's whole point is proving that wiring doesn't
+      // care that `range.cfi` is a "pdf#..." anchor rather than a CFI.
       if (terminated) return;
+      spokenWordRanges.push(range);
     },
 
     onInterrupted(handler: (reason: TtsInterruption) => void): () => void {
