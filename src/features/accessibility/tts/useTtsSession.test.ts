@@ -15,6 +15,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 
+import { createFakePdfReaderTextProvider } from './testSupport/fakePdfReaderTextProvider';
 import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS, DEFAULT_PREFS } from '@/shared/contracts';
@@ -544,6 +545,94 @@ describe('useTtsSession', () => {
     await renderHook(() => useTtsSession(provider));
 
     expect(mockTts.addListener).not.toHaveBeenCalledWith('tts-error', expect.any(Function));
+  });
+});
+
+// PDF_TTS_HANDOFF.md's central claim is that this session needs no code change to speak a PDF
+// once Reader ships a conforming provider, because `sentence.cfi` is opaque here — never parsed,
+// only ever passed back to the provider. This block pins that empirically: the same classes of
+// scenario the EPUB fake exercises above (ordering, a section-boundary stop, crossing an empty
+// section, an interruption), run instead against `createFakePdfReaderTextProvider`, whose anchors
+// are deliberately NOT CFI-shaped. If this session ever starts assuming CFI structure, these fail
+// exactly like the EPUB versions do, and say so before a real PDF provider ships.
+describe('a PDF-shaped provider (non-CFI opaque anchor)', () => {
+  it('speaks sentences in order, painting the highlight only once the utterance starts', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[0].text);
+    expect(provider.spokenRanges).toHaveLength(0);
+
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+    expect(provider.sentences[0].cfi).not.toMatch(/^epubcfi\(/);
+
+    await act(() => fireTtsEvent('tts-finish'));
+    expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
+  });
+
+  it('stops at the end of a page when autoContinueChapter is off, and clears the highlight', async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
+    // DEFAULT_FAKE_PDF_BOOK's page 0 has 2 sentences; sentence index 1 is lastInSection.
+    const provider = createFakePdfReaderTextProvider({ startIndex: 1 });
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.autoContinueChapter).toBe(false));
+
+    await act(() => result.current.play());
+    await finishCurrentUtterance();
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.speak).toHaveBeenCalledTimes(1);
+    expect(provider.spokenRanges.at(-1)).toBeNull();
+  });
+
+  it('crosses an empty page when autoContinueChapter is on', async () => {
+    // Sentence index 1 (flattened) is page 0's last sentence; page 1 is empty, so the next real
+    // sentence is page 2's first.
+    const provider = createFakePdfReaderTextProvider({ startIndex: 1 });
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await finishCurrentUtterance();
+
+    const spoken = provider.sentences[2];
+    expect(spoken.spineIndex).toBe(2); // confirms the jump from page 0 to page 2.
+    expect(mockTts.speak).toHaveBeenLastCalledWith(spoken.text);
+  });
+
+  it('stops on a closed interruption and tries to clear the highlight', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+
+    await act(() => provider.interrupt('closed'));
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.stop).toHaveBeenCalled();
+  });
+
+  it('does not stop on a navigated interruption', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+
+    await act(() => provider.navigate(2));
+
+    expect(result.current.status).toBe('speaking');
   });
 });
 
