@@ -11,6 +11,19 @@ the encryption layer, which are separate, larger efforts.
 > branch at merge time** — treat this as a map, not a frozen contract. It is a
 > code-shape guide; the merged app has not been run.
 
+## Merge-day checklist
+
+Copy these into issues/PR tasks. Each maps to a step below.
+
+- [ ] Write `syncProvider.ts` adapter over `downloadTable` / `bookmarkTable` / `openBook` (Step 1)
+- [ ] Apply the field mapping — verify each against `dev_T4` first (Step 2)
+- [ ] Mount `<LibraryProviderContext.Provider value={syncProvider}>` (Step 3) — the only screen-adjacent edit
+- [ ] Add the `Reader` route + bring over `ReaderRouteScreen` (Step 4)
+- [ ] Switch reads to the provider (`listDownloads`/`listBookmarks`) and delete the stand-ins (Step 5)
+- [ ] Map `DownloadFailure.code` → user copy in `openItem`'s catch (Step 6)
+- [ ] Re-run `LibraryScreen` tests with a real provider; device-verify open + bookmark-resume + offline
+- [ ] Deferred (needs other teams' data, not this seam): action buttons on rows, stale/refused states, estimated-wait label
+
 ## The idea
 
 `LibraryScreen` depends only on `LibraryProvider` (see `ports.ts`), never on any
