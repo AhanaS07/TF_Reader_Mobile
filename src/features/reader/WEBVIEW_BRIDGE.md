@@ -98,7 +98,7 @@ about behaviour changed.
 | ----------- | ------------------------------------------- |
 | `ready`     | —                                           |
 | `rendered`  | —                                           |
-| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`) |
+| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`), `internalReposition?` (`boolean`) |
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 | `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
@@ -578,6 +578,28 @@ not storing it. Persistence, write-throttling, and what wins on a cross-device c
 been decided and landed in `ReaderRouteScreen.tsx`/`AudioPlayerRouteScreen.tsx` (Reader's own
 navigation layer, not this bridge) — see CLAUDE.md's "Reading-position resume" section for the full
 account, not this paragraph.
+
+**`internalReposition` was added 2026-09-08, and it exists because `relocated` stopped meaning one
+thing.** `ReaderScreen.tsx`'s handler used to forward every `relocated` to
+`ttsProviderRef.current?.notifyRelocated()` unconditionally, on the reasoning that epub.js only ever
+fires `relocated` for a genuine navigation — `setSpokenRange`'s handler painted an annotation and
+did nothing else. TTS auto-follow's `rendition.display()`/`scrollBy()` calls, a font-size reflow's
+reanchor, and a paginated<->scrolled flow rebuild's redisplay all now live INSIDE that same
+`epub.entry.ts` machinery and all fire a genuine `relocated` too — none of them are the reader going
+anywhere new, all three redisplay a position the reader was already conceptually at. Before this
+field existed, `notifyRelocated()` treated every one of them as "the reader navigated away," which
+cleared the TTS session's highlight and invalidated its prefetched next sentence — the on-device
+symptom was TTS silently stopping the moment the sentence that triggered the first auto-follow jump
+finished speaking. `epub.entry.ts` sets it via one module-level flag
+(`nextRelocationIsInternal`) checked immediately before each of those four call sites and consumed
+(read then reset) by the `relocated` handler when it builds the outgoing message — see that flag's
+own doc comment for the exact four sites and the accepted narrow mis-attribution race with a
+host-driven navigation landing in the same instant. `ReaderRouteScreen.tsx`'s progress-tracking is
+unaffected either way — it reads every `relocated` regardless of this field, since persisted
+progress is deliberately "wherever the view/voice currently is," cause-agnostic. Optional, not
+required: `pdf.entry.ts` never sets it (none of the four triggers exist there), and every existing
+test literal constructing a `relocated` message without it stays meaningful as an ordinary,
+non-internal relocation.
 
 ## The prefs-application design, as signed off
 

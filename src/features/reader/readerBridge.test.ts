@@ -119,6 +119,7 @@ describe('parseReaderMessage', () => {
       atStart: true,
       atEnd: false,
       section: null,
+      internalReposition: false,
     });
     expect(
       parseReaderMessage(
@@ -130,6 +131,7 @@ describe('parseReaderMessage', () => {
       atStart: false,
       atEnd: false,
       section: null,
+      internalReposition: false,
     });
     expect(
       parseReaderMessage(
@@ -162,6 +164,7 @@ describe('parseReaderMessage', () => {
       atStart: false,
       atEnd: false,
       section: null,
+      internalReposition: false,
     });
     // Non-conforming TOC entries are dropped, not passed through — and since the target became
     // discriminated that now includes a row whose TARGET is unusable, which the old shape could not

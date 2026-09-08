@@ -148,6 +148,78 @@ let lastAutoFollowedCfi: string | null = null;
  * `display()`'s promise settles. Reset alongside the other TTS CFI state in `openEpub`. */
 let followCooldownUntil = 0;
 
+/** 0 when no `rendition.display()` outside auto-follow's own is in flight; otherwise the id of
+ * whichever one currently is — a geometry-refresh reanchor (`scheduleGeometryRefresh`) or a flow
+ * rebuild's initial display (`rebuildForFlowIfNeeded`). `followSpokenRange` backs off entirely
+ * whenever this is non-zero.
+ *
+ * >>> NOT A HYPOTHETICAL RACE. TTS KEEPS RUNNING REGARDLESS OF WHAT THE WEBVIEW IS DOING. <<< The
+ * native TTS engine and its `tts-progress`/`tts-start` events are on a completely separate clock
+ * from the WebView's rendering — nothing pauses speech for a font-size change, a flow toggle, or a
+ * rotation. Without this guard, a word tick landing DURING one of those async transitions would read
+ * geometry against a rendition mid-navigation, find it "not visible" (correctly — the new content
+ * has not painted yet), and fire a SECOND, competing `rendition.display()` on the very SAME
+ * rendition before the first has settled. Both `scheduleGeometryRefresh` and `rebuildForFlowIfNeeded`
+ * already re-check auto-follow themselves once their own transition resolves, so blocking follow
+ * during the transition loses nothing — the position gets checked a beat later instead of racing to
+ * check it sooner.
+ *
+ * >>> AN ID, NOT A BOOLEAN — BECAUSE A SECOND TRANSITION CAN START BEFORE THE FIRST SETTLES. <<< A
+ * reader mashing a layout toggle, or a flow change landing while a font-size reflow is still
+ * resolving, starts a SECOND transition before the first one's `.then()`/`.catch()` has fired. A
+ * plain boolean cleared unconditionally on settlement would let the FIRST (now-stale) transition's
+ * late callback clear the guard while the SECOND is still genuinely in flight — reopening the exact
+ * race this guard exists to close, just for the rarer double-transition case. `beginRenditionTransition`/
+ * `endRenditionTransition` are the two-line seam: each transition captures its own id, and only
+ * clears the guard if it is still the CURRENT one when it settles — the same shape as
+ * `useTtsSession.ts`'s own `generation` counter, for the identical reason (a stale async
+ * continuation must not act as if it were still current). Reset alongside the other TTS CFI state in
+ * `openEpub`. */
+let renditionTransitionGeneration = 0;
+
+/** Call when a new transition starts; pass the returned id to `endRenditionTransition` when it
+ * settles. */
+function beginRenditionTransition(): number {
+  renditionTransitionGeneration += 1;
+  return renditionTransitionGeneration;
+}
+
+/** Clears the guard ONLY if `id` is still the current transition — a superseded transition's late
+ * settlement must not clear a guard a newer transition is still relying on. */
+function endRenditionTransition(id: number): void {
+  if (renditionTransitionGeneration === id) renditionTransitionGeneration = 0;
+}
+
+/** Bumped every time `createRendition()` builds a new `Rendition` — both `openEpub` (a new book) and
+ * `rebuildForFlowIfNeeded` (a flow toggle) go through it. `requestTtsSentence`'s handler captures
+ * this at entry and checks it again once its async resolve settles: the SAME "capture on entry,
+ * check after every await" idiom `useTtsSession.ts`'s own `generation` counter uses, for the
+ * identical reason — a continuation that started against one rendition must not trust or act on a
+ * result once that rendition has been destroyed and replaced out from under it, even if computing
+ * that result happened not to throw. See `requestTtsSentence`'s own note for why a thrown error in
+ * that window is treated the same way. */
+let renditionInstanceGeneration = 0;
+
+/** True if the very next `relocated` event epub.js emits should be attributed to Reader's OWN
+ * internal repositioning machinery rather than a reader-initiated gesture. Set immediately before
+ * EVERY `rendition.display()`/`scrollBy()` call this file makes on the reader's behalf without
+ * them having asked for a new position — `followSpokenRange`'s own `display()`,
+ * `repositionForReadingZone`'s `scrollBy()`, `scheduleGeometryRefresh`'s reanchor `display()`, and
+ * `rebuildForFlowIfNeeded`'s post-rebuild `display()`. Read and reset by the `relocated` handler
+ * when it builds the outgoing bridge message — see `ReaderMessage`'s `internalReposition` field for
+ * why this exists at all: ALL FOUR of those call sites redisplay the reader at a position they were
+ * already conceptually at (the spoken CFI, or `lastCfi`), not a navigation to somewhere new, and
+ * `ReaderScreen.tsx`'s `notifyRelocated()` call must not treat any of them as if the reader had
+ * navigated away.
+ *
+ * Not a generation-tracked id like `renditionTransitionGeneration`/`renditionInstanceGeneration`
+ * above: a host-driven navigation (`goTo`, search) landing in the narrow window between this being
+ * set and its own `relocated` firing would misattribute that ONE event as internal instead —
+ * accepted as a rare, low-consequence race (a genuine navigation's prefetch survives one call it
+ * should have invalidated) rather than engineered away, since these internal repositions and a
+ * host-driven navigation are not naturally issued in close succession to begin with. */
+let nextRelocationIsInternal = false;
+
 const TTS_OWNER = 'tts';
 const TTS_SPOKEN_VARIANT = 'spoken';
 const TTS_SPOKEN_WORD_VARIANT = 'spoken-word';
@@ -688,6 +760,62 @@ function highlightIdForRange(contents: Contents, selected: Range): string | null
   return null;
 }
 
+/** Every painted user highlight the given range overlaps, by id. Same overlap test as
+ * `highlightIdForRange` (touching at all is enough), but returns ALL matches rather than the
+ * first — used to decide which of the reader's OWN highlights need to stay visually on top of a
+ * TTS wash painted over them, and there can legitimately be more than one if the reader made
+ * several overlapping highlights. */
+function userHighlightIdsOverlapping(contents: Contents, cfiRange: string): string[] {
+  const range = rangeForCfi(contents, cfiRange);
+  if (!range) return [];
+
+  const ids: string[] = [];
+  for (const [id, painted] of paintedUserHighlights) {
+    const paintedRange = rangeForCfi(contents, painted);
+    if (!paintedRange) continue;
+    try {
+      if (rangesOverlap(range, paintedRange)) ids.push(id);
+    } catch {
+      // Ranges in different documents throw rather than compare — a highlight from another chapter.
+      continue;
+    }
+  }
+  return ids;
+}
+
+/** Re-add one user highlight so it renders ABOVE whatever was painted after it last — a lift,
+ * exactly like `liftSearchMatch`'s, just for the `user` owner instead of `search`. Needs
+ * `highlight.color` from `lastUserHighlights` (`paintedUserHighlights` only keeps id -> cfiRange),
+ * so it is a no-op if the id is not currently painted or its record is missing — both mean there is
+ * nothing to lift. */
+function liftUserHighlight(id: string): void {
+  if (!rendition) return;
+  const cfiRange = paintedUserHighlights.get(id);
+  if (cfiRange === undefined) return;
+  const highlight = lastUserHighlights.find((entry) => entry.id === id);
+  if (!highlight) return;
+  highlightRemove(rendition, USER_OWNER, cfiRange);
+  highlightAdd(rendition, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+}
+
+/**
+ * Keep the reader's OWN highlight more emphasized than the ephemeral TTS wash wherever they
+ * overlap — the reader's saved work should not visually recede under a highlight that will move on
+ * in a few seconds. A deliberate, EXPLICIT departure from HIGHLIGHT_LAYERS.md §4's default z-order
+ * (`tts > search > user`) for exactly the overlapping range, and only for it: this does not touch
+ * §4's ordering anywhere the two do not overlap, because DOM/paint-order z-index only has any visual
+ * effect where two marks occupy the same screen space to begin with. Called once per spoken
+ * SENTENCE (`setSpokenRange`, not `setSpokenWordRange`) — "the tts whole highlight" the reader
+ * asked for this against is the sentence wash, and checking at sentence granularity means a user
+ * highlight lifts as soon as TTS's sentence wash reaches it, not only once the exact word being
+ * read happens to fall inside it.
+ */
+function liftOverlappingUserHighlights(contents: Contents, spokenCfi: string): void {
+  for (const id of userHighlightIdsOverlapping(contents, spokenCfi)) {
+    liftUserHighlight(id);
+  }
+}
+
 /** The live selection in whichever rendered chapter has one, with that chapter's `Contents`. */
 function currentSelectionRange(): { contents: Contents; range: Range } | null {
   if (!rendition) return null;
@@ -1023,6 +1151,16 @@ function repaintLiveAnnotations(): void {
   // apply to it too: `spokenWordOpacity` is derived from the blend, which is derived from the page
   // colour, and the re-add is what re-measures the rects a text-size change invalidated.
   repaintSpokenWord();
+
+  // AND LAST OF ALL, RE-ESTABLISH `user`-over-`tts` FOR THE OVERLAP, IF ANY. `applyUserHighlights`
+  // above re-added every user highlight FIRST, so this repaint just re-established the plain §4
+  // default (`tts` last-added, on top of everyone) — undoing whatever `setSpokenRange` had lifted
+  // before this repaint ran. Without this, a font-size/theme change mid-utterance would flash the
+  // reader's own highlight back underneath the wash until the next spoken sentence re-lifts it.
+  if (currentSpokenCfi !== null) {
+    const spokenContents = contentsForCfi(currentSpokenCfi);
+    if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+  }
 }
 
 /** The pending geometry-refresh frame, or 0. */
@@ -1084,9 +1222,17 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
 
     forceReflow(active);
 
-    const finish = (): void => {
+    // `transitionId` is set only by the reanchor branch below — the plain (non-reanchor) call at
+    // the bottom of this function passes none, since it started no transition to end.
+    const finish = (transitionId?: number): void => {
       repaintLiveAnnotations();
       invalidateHighlightBoxes();
+
+      // Cleared BEFORE the re-check below, not after — the re-check IS a followSpokenRange call,
+      // and it would otherwise trip its own guard. Only clears if THIS is still the current
+      // transition — see `endRenditionTransition`'s own note on why a stale one must not clear a
+      // newer one's guard.
+      if (transitionId !== undefined) endRenditionTransition(transitionId);
 
       // Word-level position wins when it exists — it is the more precise of the two, and it is
       // what `setSpokenWordRange`'s own auto-follow call already prefers. `lastAutoFollowedCfi` is
@@ -1107,14 +1253,23 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
     // the same reason. Skipped while an open is in flight, because `openEpub` owns the rendition
     // until its first `display()` resolves.
     if (reanchor && lastCfi !== null && !openInFlight) {
+      // Blocks auto-follow for the duration of this display() — see
+      // renditionTransitionGeneration's own note. Cleared inside `finish()` itself, BEFORE its own
+      // follow re-check, in both settlements — and only if a newer transition has not superseded
+      // this one in the meantime.
+      const transitionId = beginRenditionTransition();
+      // This redisplays the reader at `lastCfi` — where they already conceptually were, not
+      // somewhere new — so the `relocated` this fires must not read as a navigation. See
+      // `nextRelocationIsInternal`'s own note.
+      nextRelocationIsInternal = true;
       // Re-measured in BOTH settlements rather than only on success: `display()` re-renders the
       // view, so the marks epub.js re-injects are already fresh — but a rejected display leaves the
       // old view standing with the old rects, which is exactly the case that still needs repairing.
       active
         .display(lastCfi)
-        .then(finish)
+        .then(() => finish(transitionId))
         .catch(() => {
-          finish();
+          finish(transitionId);
         });
       return;
     }
@@ -1281,6 +1436,7 @@ function repositionForReadingZone(cfi: string): boolean {
   if (delta === null) return true;
 
   followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+  nextRelocationIsInternal = true;
   manager.container.scrollBy({
     top: delta,
     behavior: currentAppearance?.reduceMotion ? 'instant' : 'smooth',
@@ -1338,6 +1494,7 @@ const FOLLOW_COOLDOWN_MS = 500;
 
 function followSpokenRange(cfi: string): void {
   if (!rendition) return;
+  if (renditionTransitionGeneration !== 0) return;
   if (Date.now() < followCooldownUntil) return;
 
   if (currentFlow() === 'scrolled-doc' && repositionForReadingZone(cfi)) return;
@@ -1347,6 +1504,7 @@ function followSpokenRange(cfi: string): void {
   if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
   lastAutoFollowedCfi = cfi;
   followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+  nextRelocationIsInternal = true;
   rendition.display(cfi).catch(() => {
     // Best-effort, matching setSpokenRange's own contract — a failed follow must not surface.
   });
@@ -1510,6 +1668,14 @@ function rebuildForFlowIfNeeded(): boolean {
   if (renditionFlow === currentFlow()) return false;
 
   const cfi = lastCfi;
+  // Blocks auto-follow for the duration of the destroy+recreate+display below — see
+  // renditionTransitionGeneration's own note. Cleared just before this callback's own follow
+  // re-check, in both settlements, and only if a newer transition has not superseded this one.
+  const transitionId = beginRenditionTransition();
+  // This redisplays the reader at `cfi` (the position captured from `lastCfi` above) — where they
+  // already conceptually were before the flow toggle, not somewhere new — so the `relocated` this
+  // fires must not read as a navigation. See `nextRelocationIsInternal`'s own note.
+  nextRelocationIsInternal = true;
   rendition.destroy();
   createRendition()
     .display(cfi ?? undefined)
@@ -1551,6 +1717,20 @@ function rebuildForFlowIfNeeded(): boolean {
       // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
 
+      // A fresh rendition means a fresh DOM order too — re-establish `user`-over-`tts` for the
+      // overlap, if any, same reasoning as `repaintLiveAnnotations`'s own note. (Currently a no-op
+      // in practice: the §4 deviation noted above already leaves `user` on top of both `tts` layers
+      // here by accident. Explicit anyway, so this keeps working the day that deviation is fixed.)
+      if (currentSpokenCfi !== null && rendition) {
+        const spokenContents = contentsForCfi(currentSpokenCfi);
+        if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+      }
+
+      // Cleared BEFORE the re-check below, not after — the re-check IS a followSpokenRange call,
+      // and it would otherwise trip its own guard. Only clears if THIS is still the current
+      // transition — see `endRenditionTransition`'s own note.
+      endRenditionTransition(transitionId);
+
       // Same reasoning as `scheduleGeometryRefresh`'s own step 5: `cfi` (this rebuild's re-anchor,
       // captured from `lastCfi` before destroying the old rendition) is wherever the reader was last
       // relocated, not necessarily where the voice currently is — a paginated<->scrolled toggle
@@ -1564,6 +1744,10 @@ function rebuildForFlowIfNeeded(): boolean {
       }
     })
     .catch((error: unknown) => {
+      // The rebuild itself failed — there is no live rendition state left for auto-follow to have
+      // been protecting, but clear the flag anyway rather than leave it stuck for whatever opens
+      // next (openEpub resets it too, defensively, but this path does not go through openEpub).
+      endRenditionTransition(transitionId);
       fail('NAVIGATION_FAILED', error);
     });
 
@@ -1573,6 +1757,9 @@ function rebuildForFlowIfNeeded(): boolean {
 function createRendition(): Rendition {
   if (!book) throw new Error('createRendition() called before a book was opened');
 
+  // Every new instance invalidates whatever a request captured `rendition` as before this call —
+  // see renditionInstanceGeneration's own note.
+  renditionInstanceGeneration += 1;
   renditionFlow = currentFlow();
   rendition = book.renderTo('viewer', {
     flow: currentFlow(),
@@ -1677,6 +1864,12 @@ function createRendition(): Rendition {
     }) => {
       lastCfi = location?.start?.cfi ?? null;
 
+      // Read AND reset immediately — whatever caused THIS relocation, the flag must not linger and
+      // misattribute some later, unrelated relocation as internal too. See its own declaration for
+      // why this is a plain flag rather than a generation-tracked id.
+      const internalReposition = nextRelocationIsInternal;
+      nextRelocationIsInternal = false;
+
       // A page turn drops whatever was selected — the view it lived in is no longer on screen, so a
       // later requestCurrentSelection must not answer with words nobody can see any more.
       lastSelection = null;
@@ -1719,6 +1912,7 @@ function createRendition(): Rendition {
         atStart: !!location?.atStart,
         atEnd: !!location?.atEnd,
         section,
+        internalReposition,
       });
     },
   );
@@ -1769,6 +1963,15 @@ const api: TFReaderApi<'openEpub'> = {
         // Not load-bearing (the timestamp self-expires), but keeps a book switch from inheriting a
         // cooldown that has nothing to do with it.
         followCooldownUntil = 0;
+        // Defensive: nothing about opening a new book goes through rebuildForFlowIfNeeded or a
+        // pending geometry reanchor, so this should already be 0 — but a book switch is exactly
+        // the moment a stuck non-zero value here would silently disable auto-follow for the whole
+        // new book.
+        renditionTransitionGeneration = 0;
+        // Same defensive reasoning: a fresh book's very first `relocated` (from openEpub's own
+        // initial display) must not be misattributed to a repositioning left set by whatever the
+        // previous book was doing.
+        nextRelocationIsInternal = false;
 
         // Same reasoning one line up, for the user layer: ids and CFIs from the previous book
         // address nothing in this one, and a stale map would make the first `paintHighlights` for
@@ -1955,15 +2158,32 @@ const api: TFReaderApi<'openEpub'> = {
 
   /**
    * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
-   * async resolve work starts and used throughout it, rather than re-read from the module-locals —
-   * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
-   * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
-   * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
-   * per-book provider instance is what actually discards a stale reply, not this shell.
+   * async resolve work starts and used throughout it, rather than re-read from the module-locals, so
+   * this request keeps operating against a stable pair for its own duration instead of one that could
+   * be reassigned mid-computation.
+   *
+   * >>> THAT CAPTURE ALONE IS NOT ENOUGH, AND TREATING IT AS ENOUGH WAS A REAL BUG. <<< This
+   * historically reasoned that a reassignment left the captured rendition "still functional, just
+   * orphaned" — true for a NEW `openEpub` landing mid-request (nothing destroys the old book/rendition,
+   * it is simply superseded), but false for `rebuildForFlowIfNeeded`'s flow rebuild, which calls
+   * `rendition.destroy()` on the very object this handler may have already captured into
+   * `activeRendition`. `resolveCurrent`/`resolveNext` calling into a DESTROYED rendition can throw —
+   * `Rendition.destroy()` sets `this.book = undefined` and tears down its manager — which the
+   * try/catch below turns into an `'error'` reply, surfacing an alarming message to the reader for
+   * something that is actually benign: a layout toggle mid-utterance, not a real content problem.
+   *
+   * `renditionInstanceGeneration` is the fix — captured on entry, checked again once the async
+   * resolve settles, in BOTH the success and the catch path. A mismatch means the rendition this
+   * request computed against has since been destroyed/replaced, so the result (even one that did not
+   * throw) is discarded and replaced with `'unavailable'` — the status this seam already defines for
+   * "the request was superseded, nothing to surface" (`readerTextProvider.ts`). The host's own
+   * per-book provider instance still discards a stale reply on its own side too; this is the WebView
+   * half not manufacturing a false error report in the meantime.
    */
   requestTtsSentence: ({ requestId, from, mode }) => {
     const activeBook = book;
     const activeRendition = rendition;
+    const myRenditionGeneration = renditionInstanceGeneration;
 
     if (!activeBook || !activeRendition) {
       post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
@@ -1976,8 +2196,16 @@ const api: TFReaderApi<'openEpub'> = {
           mode === 'current'
             ? await resolveCurrent(activeBook, activeRendition, from, lastCfi)
             : await resolveNext(activeBook, activeRendition, from ?? '');
+        if (renditionInstanceGeneration !== myRenditionGeneration) {
+          post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
+          return;
+        }
         post({ type: 'ttsSentence', requestId, result });
       } catch (error) {
+        if (renditionInstanceGeneration !== myRenditionGeneration) {
+          post({ type: 'ttsSentence', requestId, result: { status: 'unavailable' } });
+          return;
+        }
         post({
           type: 'ttsSentence',
           requestId,
@@ -2064,6 +2292,11 @@ const api: TFReaderApi<'openEpub'> = {
    * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
    * re-renders the view while a stale word mark is still attached would carry it into the new view.
    * Clearing before anything else keeps that free — do not move it below the paint.
+   *
+   * Also lifts any of the reader's OWN highlights this sentence overlaps back above the wash just
+   * painted (`liftOverlappingUserHighlights`) — a deliberate, explicit departure from §4's default
+   * z-order for exactly the overlapping range, so the reader's saved work stays more emphasized than
+   * the wash that will move on in a few seconds, not visually buried under it.
    */
   setSpokenRange: (cfi) => {
     try {
@@ -2073,6 +2306,8 @@ const api: TFReaderApi<'openEpub'> = {
       currentSpokenCfi = cfi;
       if (cfi !== null) {
         highlightAdd(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+        const spokenContents = contentsForCfi(cfi);
+        if (spokenContents) liftOverlappingUserHighlights(spokenContents, cfi);
         // Coarse auto-follow: a brand-new sentence starting entirely off-screen. The word-level
         // handler below refines this for a sentence that straddles a page/column break.
         followSpokenRange(cfi);

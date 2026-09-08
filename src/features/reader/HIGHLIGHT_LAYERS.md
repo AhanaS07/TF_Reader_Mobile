@@ -307,6 +307,38 @@ refinement drawn on top of it, and adding them the other way round hides the thi
 > `rebuildForFlowIfNeeded`). It is a paint-order change in paths no unit test can see, so it wants a
 > device pass, which is why it was not bundled into a change that lands without one.
 
+**2026-09-08 — `user` deliberately goes ABOVE `tts` too, but ONLY for the range they overlap.** This
+is a second, intentional exception to `tts > search > user`, not a third bug to fold into the one
+above: the reader's own saved highlight should not visually recede under a wash that will move on in
+a few seconds once TTS reads over it. `liftOverlappingUserHighlights(contents, spokenCfi)`
+(`epub.entry.ts`) finds every painted `user` highlight that overlaps the CURRENTLY SPOKEN SENTENCE
+(`rangesOverlap`, the same overlap test `highlightIdForRange` already uses for "does a selection
+meet an existing highlight") and re-lifts each one — remove-then-add through the SAME
+owner-namespaced seam `liftSearchMatch` uses, just for `USER_OWNER`.
+
+**Why this does not contradict §4's own z-order table above.** DOM/paint order only has a visual
+effect where two marks occupy the *same* screen space — everywhere the sentence wash and a user
+highlight do NOT overlap, this changes nothing, because there is nothing for the two owners' relative
+order to affect there. The table's `tts > search > user` priority still holds as the default
+everywhere else; this is a targeted, per-pair override for exactly the overlapping range, checked at
+SENTENCE granularity ("the tts whole highlight") rather than per-word, so a highlight lifts the
+moment the sentence wash reaches it rather than only once the exact word being spoken happens to fall
+inside it.
+
+**Called from three places, matching the same batch boundaries `liftSearchMatch` already uses**:
+`setSpokenRange` (the primary trigger, once per sentence), `repaintLiveAnnotations` (a theme/font-size
+repaint re-adds every `user` highlight BEFORE re-adding `tts`, which would otherwise silently undo
+whatever `setSpokenRange` had lifted, until the next sentence), and `rebuildForFlowIfNeeded` (a fresh
+`Rendition` is a fresh DOM order). The rebuild call site is currently a no-op in practice — the
+§4 deviation recorded above already leaves `user` on top of both `tts` layers there by accident — but
+it is explicit anyway, so this keeps working the day that deviation is fixed rather than silently
+relying on it.
+
+**No interaction with `search`.** A three-way overlap (a search match landing inside both a user
+highlight and the currently spoken sentence) is not specifically handled — `liftOverlappingUserHighlights`
+only re-lifts `user`, which as a side effect also puts it above `search` (whatever was last-added
+becomes topmost), but nothing here reasons about that case beyond "reachable, not designed for."
+
 ## PDF — IN scope as of 2026-08-26, with its own seam
 
 Was "out of scope, and when it lands it will need its own seam, spread-aware from day one." It

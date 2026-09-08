@@ -230,12 +230,24 @@ request must resolve `unavailable` when teardown arrives, and every call after t
 
 ## Open items
 
-1. **`onInterrupted('revoked')` has no source yet.** There is no `onAccessRevoked` anywhere in this
-   repo. `offline-lock.ts` defines a `revoked` signal and `event-bus.ts` defines a carrier for it,
-   but that file is marked "PROPOSAL — NOT FINALISED, NOT WIRED", is not exported from the barrel,
-   and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
-   `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
-   consumers should build against the reason, not the source. **Karthik + Abhinav.**
+1. ~~**`onInterrupted('revoked')` has no source yet.**~~ **The safety property holds, and has since
+   before this line was last true — only the `'revoked'` LABEL is still unused.** This was stale the
+   moment it was last edited (2026-09-08): a live, mid-read revocation path already exists and
+   already stops TTS from an already-mounted `ReaderScreen`, through two independent sources —
+   Sync's `content.lock` bus event (`useContentLock`, pushed) and `startAccessMonitor`'s 5-minute
+   re-verification poll (pulled) — both converging on `ReaderScreen.tsx`'s `tearDownAndLock`, which
+   calls `ttsSessionRef.current.stop()` AND `ttsProviderRef.current?.notifyClosed()` (redundantly,
+   deliberately) before `closeBook(bookId)` ever runs. `event-bus.ts`'s "PROPOSAL — NOT FINALISED,
+   NOT WIRED" header is itself stale in the same way — `src/shared/contracts/index.ts` already
+   exports it, and `offline-lock.ts` and `contentStore.ts` both consume it for real.
+   What genuinely does not exist is the LABEL: every one of these paths fires `onInterrupted('closed')`
+   — `terminate('revoked')` is reachable in `realReaderTextProvider.ts` but nothing calls it, since
+   `EpubReaderTextProvider` has no `notifyRevoked()` method, only `notifyClosed()`.
+   `useTtsSession.ts` needs no change either way — its handler already treats `'closed'`/`'revoked'`
+   identically. Landing the distinct label, if it's ever wanted (e.g. to report a revocation
+   differently from a normal close), is a small, localized addition: a `notifyRevoked()` mirroring
+   `notifyClosed()`, called from `tearDownAndLock` instead when the teardown reason is a revocation
+   specifically. **Karthik + Abhinav's call on whether the label is worth the distinction.**
 2. ~~**Does the reader scroll to follow the spoken range?**~~ **SOLVED, 2026-09-07 — word-precise,
    not just the sentence-level version originally proposed.** `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md`
    was Accessibility's sentence-level proposal (a visibility check plus `rendition.display(cfi)`
@@ -319,6 +331,29 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    500ms cooldown timestamp (`followCooldownUntil`, `FOLLOW_COOLDOWN_MS`) — it serves the same
    purpose (absorb the gap between rapid word ticks and a slower transition) without depending on
    epub.js's internal promise ever settling.
+
+   **Third on-device defect, and the most severe: auto-follow's own jump/scroll made TTS stop
+   entirely, deterministically, on the very first one.** `ReaderScreen.tsx`'s `relocated` handler
+   forwarded every relocation to `ttsProviderRef.current?.notifyRelocated()` unconditionally, on a
+   premise that was true right up until auto-follow existed: "epub.js never fires `relocated` for
+   `setSpokenRange`, which only touches annotations." Auto-follow's `rendition.display()`/`scrollBy()`
+   calls are now INSIDE `setSpokenRange`'s/`setSpokenWordRange`'s own handlers, so that premise broke
+   — auto-follow's own reposition fired the same `relocated` a manual page turn would, and
+   `notifyRelocated()` treated it as the reader navigating away: it cleared the very highlight
+   auto-follow had just centered on screen (`notifyRelocated()` calls `setSpokenRange(null)`) AND
+   invalidated the session's prefetched next sentence, so the moment the current, auto-follow-
+   triggered sentence finished, `handleTtsFinish()` found no prefetch and mistook it for end-of-book.
+   The same premise-break also applies to `scheduleGeometryRefresh`'s reflow reanchor and
+   `rebuildForFlowIfNeeded`'s post-rebuild redisplay — both redisplay the reader at a position they
+   were already at, not somewhere new, and both fire a `display()` too.
+
+   Fixed with a new, optional `ReaderMessage['relocated'].internalReposition` field
+   (`WEBVIEW_BRIDGE.md` has the full account): `epub.entry.ts` marks the NEXT `relocated` as internal
+   immediately before each of the four call sites that redisplay-without-navigating, and
+   `ReaderScreen.tsx` skips `notifyRelocated()` specifically when the field is true.
+   Progress-tracking (`ReaderRouteScreen.tsx`) is unaffected either way — it already reads every
+   `relocated` cause-agnostically, which is correct and intentional (persisted "resume position" is
+   supposed to be wherever the view/voice currently is).
 
    **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
    manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back

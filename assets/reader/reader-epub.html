@@ -1157,6 +1157,16 @@ ${text}`;
   var currentSpokenWordCfi = null;
   var lastAutoFollowedCfi = null;
   var followCooldownUntil = 0;
+  var renditionTransitionGeneration = 0;
+  function beginRenditionTransition() {
+    renditionTransitionGeneration += 1;
+    return renditionTransitionGeneration;
+  }
+  function endRenditionTransition(id) {
+    if (renditionTransitionGeneration === id) renditionTransitionGeneration = 0;
+  }
+  var renditionInstanceGeneration = 0;
+  var nextRelocationIsInternal = false;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
@@ -1364,6 +1374,35 @@ ${columnOverrideCss()}` : currentCss;
     }
     return null;
   }
+  function userHighlightIdsOverlapping(contents, cfiRange) {
+    const range = rangeForCfi(contents, cfiRange);
+    if (!range) return [];
+    const ids = [];
+    for (const [id, painted] of paintedUserHighlights) {
+      const paintedRange = rangeForCfi(contents, painted);
+      if (!paintedRange) continue;
+      try {
+        if (rangesOverlap(range, paintedRange)) ids.push(id);
+      } catch {
+        continue;
+      }
+    }
+    return ids;
+  }
+  function liftUserHighlight(id) {
+    if (!rendition) return;
+    const cfiRange = paintedUserHighlights.get(id);
+    if (cfiRange === void 0) return;
+    const highlight = lastUserHighlights.find((entry) => entry.id === id);
+    if (!highlight) return;
+    remove(rendition, USER_OWNER, cfiRange);
+    add(rendition, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+  }
+  function liftOverlappingUserHighlights(contents, spokenCfi) {
+    for (const id of userHighlightIdsOverlapping(contents, spokenCfi)) {
+      liftUserHighlight(id);
+    }
+  }
   function currentSelectionRange() {
     if (!rendition) return null;
     for (const contents of rendition.getContents()) {
@@ -1521,6 +1560,10 @@ ${columnOverrideCss()}` : currentCss;
       add(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
     }
     repaintSpokenWord();
+    if (currentSpokenCfi !== null) {
+      const spokenContents = contentsForCfi(currentSpokenCfi);
+      if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+    }
   }
   var geometryRaf = 0;
   var geometryReanchor = false;
@@ -1534,9 +1577,10 @@ ${columnOverrideCss()}` : currentCss;
       if (!rendition) return;
       const active = rendition;
       forceReflow(active);
-      const finish = () => {
+      const finish = (transitionId) => {
         repaintLiveAnnotations();
         invalidateHighlightBoxes();
+        if (transitionId !== void 0) endRenditionTransition(transitionId);
         const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
         if (spokenTarget !== null) {
           lastAutoFollowedCfi = null;
@@ -1544,8 +1588,10 @@ ${columnOverrideCss()}` : currentCss;
         }
       };
       if (reanchor && lastCfi !== null && !openInFlight) {
-        active.display(lastCfi).then(finish).catch(() => {
-          finish();
+        const transitionId = beginRenditionTransition();
+        nextRelocationIsInternal = true;
+        active.display(lastCfi).then(() => finish(transitionId)).catch(() => {
+          finish(transitionId);
         });
         return;
       }
@@ -1604,6 +1650,7 @@ ${columnOverrideCss()}` : currentCss;
     });
     if (delta === null) return true;
     followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+    nextRelocationIsInternal = true;
     manager.container.scrollBy({
       top: delta,
       behavior: currentAppearance?.reduceMotion ? "instant" : "smooth"
@@ -1613,11 +1660,13 @@ ${columnOverrideCss()}` : currentCss;
   var FOLLOW_COOLDOWN_MS = 500;
   function followSpokenRange(cfi) {
     if (!rendition) return;
+    if (renditionTransitionGeneration !== 0) return;
     if (Date.now() < followCooldownUntil) return;
     if (currentFlow() === "scrolled-doc" && repositionForReadingZone(cfi)) return;
     if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
     lastAutoFollowedCfi = cfi;
     followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+    nextRelocationIsInternal = true;
     rendition.display(cfi).catch(() => {
     });
   }
@@ -1675,6 +1724,8 @@ ${columnOverrideCss()}` : currentCss;
     if (!rendition || openInFlight) return false;
     if (renditionFlow === currentFlow()) return false;
     const cfi = lastCfi;
+    const transitionId = beginRenditionTransition();
+    nextRelocationIsInternal = true;
     rendition.destroy();
     createRendition().display(cfi ?? void 0).then(() => {
       if (currentSpokenCfi !== null && rendition) {
@@ -1683,18 +1734,25 @@ ${columnOverrideCss()}` : currentCss;
       repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
+      if (currentSpokenCfi !== null && rendition) {
+        const spokenContents = contentsForCfi(currentSpokenCfi);
+        if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+      }
+      endRenditionTransition(transitionId);
       const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
       if (spokenTarget !== null) {
         lastAutoFollowedCfi = null;
         followSpokenRange(spokenTarget);
       }
     }).catch((error) => {
+      endRenditionTransition(transitionId);
       fail("NAVIGATION_FAILED", error);
     });
     return true;
   }
   function createRendition() {
     if (!book) throw new Error("createRendition() called before a book was opened");
+    renditionInstanceGeneration += 1;
     renditionFlow = currentFlow();
     rendition = book.renderTo("viewer", {
       flow: currentFlow(),
@@ -1741,6 +1799,8 @@ ${columnOverrideCss()}` : currentCss;
       "relocated",
       (location) => {
         lastCfi = location?.start?.cfi ?? null;
+        const internalReposition = nextRelocationIsInternal;
+        nextRelocationIsInternal = false;
         lastSelection = null;
         invalidateHighlightBoxes();
         retrySearchMatch();
@@ -1760,7 +1820,8 @@ ${columnOverrideCss()}` : currentCss;
           position: { kind: "cfi", cfi: lastCfi },
           atStart: !!location?.atStart,
           atEnd: !!location?.atEnd,
-          section
+          section,
+          internalReposition
         });
       }
     );
@@ -1796,6 +1857,8 @@ ${columnOverrideCss()}` : currentCss;
           currentSpokenWordCfi = null;
           lastAutoFollowedCfi = null;
           followCooldownUntil = 0;
+          renditionTransitionGeneration = 0;
+          nextRelocationIsInternal = false;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;
@@ -1906,15 +1969,32 @@ ${columnOverrideCss()}` : currentCss;
     },
     /**
      * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
-     * async resolve work starts and used throughout it, rather than re-read from the module-locals —
-     * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
-     * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
-     * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
-     * per-book provider instance is what actually discards a stale reply, not this shell.
+     * async resolve work starts and used throughout it, rather than re-read from the module-locals, so
+     * this request keeps operating against a stable pair for its own duration instead of one that could
+     * be reassigned mid-computation.
+     *
+     * >>> THAT CAPTURE ALONE IS NOT ENOUGH, AND TREATING IT AS ENOUGH WAS A REAL BUG. <<< This
+     * historically reasoned that a reassignment left the captured rendition "still functional, just
+     * orphaned" — true for a NEW `openEpub` landing mid-request (nothing destroys the old book/rendition,
+     * it is simply superseded), but false for `rebuildForFlowIfNeeded`'s flow rebuild, which calls
+     * `rendition.destroy()` on the very object this handler may have already captured into
+     * `activeRendition`. `resolveCurrent`/`resolveNext` calling into a DESTROYED rendition can throw —
+     * `Rendition.destroy()` sets `this.book = undefined` and tears down its manager — which the
+     * try/catch below turns into an `'error'` reply, surfacing an alarming message to the reader for
+     * something that is actually benign: a layout toggle mid-utterance, not a real content problem.
+     *
+     * `renditionInstanceGeneration` is the fix — captured on entry, checked again once the async
+     * resolve settles, in BOTH the success and the catch path. A mismatch means the rendition this
+     * request computed against has since been destroyed/replaced, so the result (even one that did not
+     * throw) is discarded and replaced with `'unavailable'` — the status this seam already defines for
+     * "the request was superseded, nothing to surface" (`readerTextProvider.ts`). The host's own
+     * per-book provider instance still discards a stale reply on its own side too; this is the WebView
+     * half not manufacturing a false error report in the meantime.
      */
     requestTtsSentence: ({ requestId, from, mode }) => {
       const activeBook = book;
       const activeRendition = rendition;
+      const myRenditionGeneration = renditionInstanceGeneration;
       if (!activeBook || !activeRendition) {
         post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
         return;
@@ -1922,8 +2002,16 @@ ${columnOverrideCss()}` : currentCss;
       void (async () => {
         try {
           const result = mode === "current" ? await resolveCurrent(activeBook, activeRendition, from, lastCfi) : await resolveNext(activeBook, activeRendition, from ?? "");
+          if (renditionInstanceGeneration !== myRenditionGeneration) {
+            post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
+            return;
+          }
           post({ type: "ttsSentence", requestId, result });
         } catch (error) {
+          if (renditionInstanceGeneration !== myRenditionGeneration) {
+            post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
+            return;
+          }
           post({
             type: "ttsSentence",
             requestId,
@@ -1998,6 +2086,11 @@ ${columnOverrideCss()}` : currentCss;
      * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
      * re-renders the view while a stale word mark is still attached would carry it into the new view.
      * Clearing before anything else keeps that free — do not move it below the paint.
+     *
+     * Also lifts any of the reader's OWN highlights this sentence overlaps back above the wash just
+     * painted (`liftOverlappingUserHighlights`) — a deliberate, explicit departure from §4's default
+     * z-order for exactly the overlapping range, so the reader's saved work stays more emphasized than
+     * the wash that will move on in a few seconds, not visually buried under it.
      */
     setSpokenRange: (cfi) => {
       try {
@@ -2007,6 +2100,8 @@ ${columnOverrideCss()}` : currentCss;
         currentSpokenCfi = cfi;
         if (cfi !== null) {
           add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+          const spokenContents = contentsForCfi(cfi);
+          if (spokenContents) liftOverlappingUserHighlights(spokenContents, cfi);
           followSpokenRange(cfi);
         } else {
           lastAutoFollowedCfi = null;

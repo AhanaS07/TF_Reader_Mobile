@@ -3361,6 +3361,7 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       await reportReady();
       await setTtsPref(true);
       await startSpeaking();
+      __injectJavaScript.mockClear();
 
       await deliver({
         type: 'relocated',
@@ -3370,6 +3371,37 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       });
 
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      // notifyRelocated() really did fire for this genuine page turn — confirmed by its own visible
+      // effect (setSpokenRange(null) clearing the highlight), not just inferred from the cue.
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(true);
+    });
+
+    it('does NOT clear the highlight or interrupt TTS for an internal reposition (auto-follow, a reflow reanchor, a flow rebuild)', async () => {
+      // The bug this guards against, found on-device: TTS auto-follow's own rendition.display()/
+      // scrollBy() calls fire a genuine `relocated` event too. Before `internalReposition` existed,
+      // ReaderScreen.tsx could not tell that apart from a real page turn — notifyRelocated() ran
+      // unconditionally, clearing the highlight it had just centered on screen and wiping the
+      // session's prefetched next sentence, which silently stopped TTS the moment the current
+      // (auto-follow-triggered) sentence finished speaking. A relocated message the WebView marks
+      // `internalReposition: true` must not reach notifyRelocated() at all.
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+      __injectJavaScript.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/8/2)' },
+        atStart: false,
+        atEnd: false,
+        internalReposition: true,
+      });
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(false);
     });
   });
 

@@ -894,6 +894,47 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body.indexOf('highlightAdd(')).toBeLessThan(body.indexOf('followSpokenRange(cfi)'));
   });
 
+  it("a spoken sentence lifts the reader's own overlapping highlight above the TTS wash", () => {
+    // A deliberate, explicit departure from HIGHLIGHT_LAYERS.md §4's default z-order (tts > search
+    // > user), scoped to exactly the overlapping range — the reader's saved work should not
+    // visually recede under a wash that will move on in a few seconds. Checked at sentence
+    // granularity ("the tts whole highlight"), inside the `cfi !== null` branch, after the paint.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, cfi)');
+    expect(body.indexOf('highlightAdd(')).toBeLessThan(
+      body.indexOf('liftOverlappingUserHighlights(spokenContents, cfi)'),
+    );
+  });
+
+  it('liftUserHighlight re-adds through the SAME owner-namespaced seam as every other repaint', () => {
+    // Not a bespoke DOM poke — remove-then-add through highlightSeam.ts, exactly like
+    // liftSearchMatch's own lift, so it participates in the same collision/removal guarantees
+    // every other owner already gets.
+    const body = blockAfter(EPUB_ENTRY, 'function liftUserHighlight(id: string): void');
+    expect(body).toContain('highlightRemove(rendition, USER_OWNER, cfiRange)');
+    expect(body).toContain('highlightAdd(');
+    expect(body).toContain('USER_OWNER');
+    expect(body.indexOf('highlightRemove(')).toBeLessThan(body.indexOf('highlightAdd('));
+  });
+
+  it('a theme/font-size repaint re-establishes the overlap lift, since the user layer repaints first', () => {
+    // repaintLiveAnnotations re-adds every user highlight BEFORE re-adding the TTS sentence/word —
+    // the plain §4 default, tts-last-so-tts-on-top — which would silently undo whatever
+    // setSpokenRange had lifted before this repaint ran. Without re-establishing it here, a
+    // font-size or theme change mid-utterance would flash the reader's own highlight back
+    // underneath the wash until the next spoken sentence.
+    const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations(): void');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)');
+    expect(body.indexOf('repaintSpokenWord()')).toBeLessThan(
+      body.indexOf('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)'),
+    );
+  });
+
+  it('a flow rebuild also re-establishes the overlap lift on the freshly built rendition', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)');
+  });
+
   it('a spoken word follows even when its paint is refused for colliding with another owner', () => {
     // The resolved word's position is real regardless of whether painting it was refused — refusing
     // only protects another owner's mark from being displaced, per `spokenWordCollides`'s own note.
@@ -998,6 +1039,141 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body.indexOf('lastAutoFollowedCfi = null;')).toBeLessThan(
       body.indexOf('followSpokenRange(spokenTarget)'),
     );
+  });
+
+  it('every internal reposition marks its own relocated event, not just auto-follow\'s', () => {
+    // A real, shipped bug: ReaderScreen.tsx's relocated handler used to treat every relocation as
+    // "the reader navigated away" and told the TTS session so — which wiped its prefetched next
+    // sentence and cleared the very highlight auto-follow had just centered on screen. ALL FOUR
+    // call sites that redisplay the reader at a position they were already conceptually at (not a
+    // navigation to somewhere new) must mark the next relocated as internal, not just the two
+    // auto-follow itself uses — a font-size reflow's reanchor and a flow rebuild's redisplay fire
+    // rendition.display() too, and would reintroduce the exact same bug for those triggers instead.
+    const followBody = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(followBody).toContain('nextRelocationIsInternal = true;');
+    expect(followBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      followBody.indexOf('rendition.display(cfi)'),
+    );
+
+    const repositionBody = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(repositionBody).toContain('nextRelocationIsInternal = true;');
+    expect(repositionBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      repositionBody.indexOf('manager.container.scrollBy('),
+    );
+
+    const reanchorBody = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(reanchorBody).toContain('nextRelocationIsInternal = true;');
+    expect(reanchorBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      reanchorBody.indexOf('.display(lastCfi)'),
+    );
+
+    const rebuildBody = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(rebuildBody).toContain('nextRelocationIsInternal = true;');
+    expect(rebuildBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      rebuildBody.indexOf('rendition.destroy();'),
+    );
+  });
+
+  it('the relocated handler reads and resets the internal flag, and posts it on the message', () => {
+    const body = blockAfter(EPUB_ENTRY, 'atEnd?: boolean;\n    }) =>');
+    expect(body).toContain('const internalReposition = nextRelocationIsInternal;');
+    // Reset immediately, not deferred — a later, unrelated relocation must not inherit it.
+    expect(body.indexOf('const internalReposition = nextRelocationIsInternal;')).toBeLessThan(
+      body.indexOf('nextRelocationIsInternal = false;'),
+    );
+    expect(body).toContain('internalReposition,');
+  });
+
+  it("openEpub resets the internal-reposition flag too, for a fresh book's own first relocated", () => {
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'nextRelocationIsInternal = false',
+    );
+  });
+
+  it('auto-follow backs off entirely while a geometry reanchor or flow rebuild is mid-display()', () => {
+    // TTS keeps running (and emitting tts-progress ticks) on a clock completely independent of the
+    // WebView's own rendering, so a font-size change, flow toggle, or rotation landing mid-utterance
+    // is not a hypothetical: without this guard, a tick arriving while `scheduleGeometryRefresh`'s
+    // reanchor or `rebuildForFlowIfNeeded`'s rebuild is still mid-display() would read geometry
+    // against a rendition mid-navigation and fire a SECOND, competing display() on the SAME
+    // rendition before the first has settled. Asserted as the first thing followSpokenRange checks,
+    // ahead of even the cooldown.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body).toContain('if (renditionTransitionGeneration !== 0) return;');
+    expect(body.indexOf('if (renditionTransitionGeneration !== 0) return;')).toBeLessThan(
+      body.indexOf('Date.now() < followCooldownUntil'),
+    );
+  });
+
+  it('a stale transition settling late must not clear the guard out from under a newer one', () => {
+    // A reader mashing a layout toggle (or a flow change landing mid-reflow) can start a SECOND
+    // transition before the first one's display() has settled. A plain boolean cleared
+    // unconditionally on settlement would let the FIRST (now-stale) transition's late callback
+    // clear the guard while the SECOND is still genuinely in flight — reopening the exact race the
+    // guard exists to close. `endRenditionTransition` must only clear the counter if its own id is
+    // still the current one — the same shape as useTtsSession.ts's own `generation` counter.
+    expect(EPUB_ENTRY).toContain('renditionTransitionGeneration += 1;');
+    const endFn = blockAfter(EPUB_ENTRY, 'function endRenditionTransition(id: number): void');
+    expect(endFn).toContain('renditionTransitionGeneration === id');
+  });
+
+  it('the geometry reanchor begins a transition before display() and ends it before its own re-check', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(body.indexOf('beginRenditionTransition()')).toBeLessThan(
+      body.indexOf('.display(lastCfi)'),
+    );
+    // Ended inside finish(), before the follow re-check finish() itself makes — otherwise that very
+    // re-check would trip the guard it is supposed to run after.
+    expect(body.indexOf('endRenditionTransition(transitionId)')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+  });
+
+  it('the flow rebuild begins a transition before destroy() and ends it in BOTH settlements', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body.indexOf('beginRenditionTransition()')).toBeLessThan(
+      body.indexOf('rendition.destroy();'),
+    );
+    expect(body.indexOf('endRenditionTransition(transitionId)')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+    // A rejected rebuild must not leave the guard stuck forever — same failure shape as the
+    // promise-settled cooldown bug this file already fixed once.
+    const catchBlock = blockAfter(body, 'catch((error: unknown) =>');
+    expect(catchBlock).toContain('endRenditionTransition(transitionId)');
+  });
+
+  it('openEpub resets the transition guard defensively, alongside the other TTS follow state', () => {
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'renditionTransitionGeneration = 0',
+    );
+  });
+
+  it('createRendition bumps the instance generation every time it builds a new Rendition', () => {
+    // Both openEpub (a new book) and rebuildForFlowIfNeeded (a flow toggle) go through this one
+    // function, so bumping here covers a stale in-flight requestTtsSentence for either cause.
+    const body = blockAfter(EPUB_ENTRY, 'function createRendition(): Rendition');
+    expect(body).toContain('renditionInstanceGeneration += 1;');
+    expect(body.indexOf('renditionInstanceGeneration += 1;')).toBeLessThan(
+      body.indexOf("rendition = book.renderTo('viewer'"),
+    );
+  });
+
+  it('a requestTtsSentence reply discards a result computed against a since-destroyed rendition', () => {
+    // resolveCurrent/resolveNext can throw when the captured rendition was destroyed mid-await (a
+    // flow rebuild's rendition.destroy()) — surfacing that as 'error' would alarm the reader over a
+    // benign layout toggle. Both the success path and the catch path must check the generation and
+    // downgrade to 'unavailable' — the status this seam already defines for "superseded, nothing to
+    // surface" — rather than post a result or a scary error computed against a rendition that no
+    // longer exists.
+    const body = blockAfter(EPUB_ENTRY, 'requestTtsSentence: ({ requestId, from, mode }) =>');
+    expect(body).toContain('const myRenditionGeneration = renditionInstanceGeneration;');
+    const occurrences = body.split('renditionInstanceGeneration !== myRenditionGeneration').length - 1;
+    expect(occurrences).toBe(2); // once after the await, once in the catch
+    expect(
+      (body.match(/renditionInstanceGeneration !== myRenditionGeneration\)[\s\S]*?'unavailable'/g) ?? [])
+        .length,
+    ).toBe(2);
   });
 
   it('every EPUB signal that can move a glyph reaches the refresh', () => {
