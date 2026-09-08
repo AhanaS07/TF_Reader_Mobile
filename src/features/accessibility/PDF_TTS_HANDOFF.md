@@ -33,7 +33,9 @@ const ttsProvider = useMemo<EpubReaderTextProvider | null>(() => {
 }, [bookId, format, send, ttsEnabled]);
 ```
 
-`TTS_PROVIDER.md` never mentions PDF — this is new design territory, not a deferred item.
+`TTS_PROVIDER.md` mentions PDF now only to say it still gets nothing: *"PDF's
+`setSpokenRange`/`setSpokenWordRange` remain documented no-ops (`pdf.entry.ts`) — nothing to
+follow there yet."* This is new design territory, not a deferred item.
 
 **This is buildable, but it's genuinely new engineering, not just wiring an existing path to a new
 command.** PDF already has a real text layer — `pdf.entry.ts` calls `page.getTextContent()` inside
@@ -47,12 +49,14 @@ hard part; the bridge and the box-painting machinery already exist and are reusa
 
 **Nothing.** `useTtsSession.ts` and `ttsEngine.ts` never parse `TtsSentence.cfi` — it's read once
 per sentence and passed straight back to the provider (`source.next(sentence.cfi)`,
-`source.setSpokenRange(currentlySpeaking.cfi)`), never inspected for CFI structure. This is now
-pinned by a test, not just asserted here: `useTtsSession.test.ts`'s `'a PDF-shaped provider
-(non-CFI opaque anchor)'` describe block runs the same session scenarios (ordering, a
-section/page-boundary stop, crossing an empty section, a `closed`/`navigated` interruption)
-against `testSupport/fakePdfReaderTextProvider.ts` — a second fixture whose anchors are shaped
-like `"pdf#page=2&sentence=0"`, not `"epubcfi(...)"`. All pass unchanged. So once Reader ships any
+`source.setSpokenRange(currentlySpeaking.cfi)`, and now `handleTtsProgress`'s
+`source.setSpokenWordRange({cfi: currentlySpeaking.cfi, ...})` too — see the next section), never
+inspected for CFI structure. This is now pinned by a test, not just asserted here:
+`useTtsSession.test.ts`'s `'a PDF-shaped provider (non-CFI opaque anchor)'` describe block runs the
+same session scenarios (ordering, word-range forwarding, a section/page-boundary stop, crossing an
+empty section, a `closed`/`navigated` interruption) against
+`testSupport/fakePdfReaderTextProvider.ts` — a second fixture whose anchors are shaped like
+`"pdf#page=2&sentence=0"`, not `"epubcfi(...)"`. All pass unchanged. So once Reader ships any
 provider that satisfies the existing `ReaderTextProvider` interface, `ReaderScreen.tsx` can
 construct it for `format === 'PDF'` and the session, controls, and prefs need no code change.
 
@@ -95,16 +99,32 @@ Mirrors the EPUB seam wherever the shapes allow it:
   `createEpubReaderTextProvider` and `createPdfReaderTextProvider` by format, instead of always
   returning `null` for PDF.
 
-## Explicit non-goals
+## Explicit non-goals (revised — see below)
 
-- **Word-level highlighting.** Implement PDF's `setSpokenWordRange` as the same kind of
-  documented no-op the rest of the PDF bridge is today, and hold off on real work there. Its
-  status is currently contradictory even for EPUB: `TTS_PROVIDER.md` says it "landed"
-  (2026-09-05), but `API_CONTRACT_NOTES.md`/`ACCESSIBILITY_ARCHITECTURE_MAP.md` say the RN-side
-  wiring was reverted (`97a20c2`) over a failed typecheck and never re-added after Reader
-  re-landed the WebView half (`559c47b`) — so nothing in the app calls it today, on either
-  format. Worth a direct conversation between the two of us independent of PDF; PDF shouldn't
-  build new work on a mechanism that's already dead for EPUB.
+**Correction to this doc's original version:** it previously said word-level highlighting was
+dead/reverted for EPUB too, citing `97a20c2`'s revert. That was accurate at the time but is stale
+now — since then, word-level highlighting has actually landed end-to-end (`2a59f29`), and EPUB has
+kept moving well past it: auto-follow (`b1757e8`, `7def2a1`), teleprompter-style repositioning in
+scrolled-doc flow (`18d9590`), and gesture lock during speech (`9367016`) are all real and all
+EPUB-only, entirely inside `src/features/reader/**` (`epub.entry.ts`, `readerBridge.ts`,
+`highlightGeometry.ts`, `ReaderScreen.tsx` — confirmed by `git log`, none of it touches
+`src/features/accessibility/`). `TTS_PROVIDER.md` itself now says explicitly: *"PDF's
+`setSpokenRange`/`setSpokenWordRange` remain documented no-ops (`pdf.entry.ts`) — nothing to
+follow there yet."* So the gap between EPUB and PDF TTS is now considerably wider than when this
+doc was first written — PDF still has zero TTS support while EPUB has gained a highlight mode,
+auto-follow, and gesture handling on top of basic sentence playback.
+
+This doesn't change the core proposal above (segmentation is still the hard, PDF-specific problem;
+the bridge/box-painting/session machinery still reuses as described), but it does mean:
+
+- **Word-level highlighting is no longer something to defer as "already broken."** It's real,
+  tested infrastructure now. Sequencing sentence-level PDF TTS first and word-level second is
+  still the right call — word-level needs `pdfTtsResolver.ts` to also resolve
+  utterance-offset-into-string back to a page position, which is more work than sentence-level
+  anchoring alone — but it's a scoping choice now, not a "don't build on broken ground" one.
+- **Auto-follow and gesture lock are further out of scope for a first PDF TTS pass**, and are not
+  addressed by this doc at all — they'd need their own follow-up once basic PDF TTS exists,
+  the same way they were built as follow-ups to basic EPUB TTS rather than in the same change.
 - **Scanned/OCR PDFs with no extractable text layer.** TTS is impossible for these — the same
   pre-existing limitation search/highlighting already has silently today. A known limitation,
   not a blocker.
