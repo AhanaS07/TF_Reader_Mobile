@@ -69,6 +69,21 @@ const BACKEND_AUDIO_BOOK_ID = 'dev-sample-audio-encrypted' as BookId;
  */
 const BACKEND_EPUB_OPEN_BOOK_ID = 'dev-sample-epub-open' as BookId;
 
+/**
+ * A SECOND real-backend audio book, added 2026-09-08 specifically so there is more than one
+ * audiobook to open — `BACKEND_AUDIO_BOOK_ID` alone can't exercise "opening a different book
+ * releases whatever was playing before" (`audioPlayerInstance.ts`'s `getAudioPlayerFor`), since
+ * that path only runs when a SECOND bookId is opened while the first is still live.
+ *
+ * Unencrypted OPEN_ACCESS, matching `dev-sample-epub-open`'s pattern rather than
+ * `BACKEND_AUDIO_BOOK_ID`'s — team wokay's own shared.md states audio is never encrypted in any
+ * tier except that one named dev fixture, so a second encrypted audio item would need its own
+ * carve-out in their `ContentAccessGrantImpl` and in `DemoDataSeederTest`'s
+ * `seededAudioAssetsAreUnencryptedAndUnindexed`, which already asserts every OTHER audio asset is
+ * unencrypted. Riding the existing exception was the wrong ask; this rides the existing rule.
+ */
+const BACKEND_AUDIO_OPEN_BOOK_ID = 'dev-sample-audio-open' as BookId;
+
 const DEV_FIXTURES: readonly DevFixture[] = [
   { label: 'EPUB', bookId: DEV_SAMPLE_EPUB_BOOK_ID, format: 'EPUB' },
   { label: 'PDF', bookId: DEV_SAMPLE_PDF_BOOK_ID, format: 'PDF' },
@@ -78,6 +93,8 @@ const DEV_FIXTURES: readonly DevFixture[] = [
   // AudioPlayer route (see onPress below); the row's Download button persists it for offline
   // playback through the same `useDownloadProgress` hook every other row uses.
   { label: 'Audiobook (Encrypted)', bookId: BACKEND_AUDIO_BOOK_ID, format: 'AUDIO' },
+  // See BACKEND_AUDIO_OPEN_BOOK_ID's own comment — the second audiobook, for multi-book testing.
+  { label: 'Audiobook (Open Access)', bookId: BACKEND_AUDIO_OPEN_BOOK_ID, format: 'AUDIO' },
   // See BACKEND_EPUB_OPEN_BOOK_ID's own comment — the genuinely-unencrypted OPEN_ACCESS control.
   { label: 'EPUB (Open Access)', bookId: BACKEND_EPUB_OPEN_BOOK_ID, format: 'EPUB' },
 ];
