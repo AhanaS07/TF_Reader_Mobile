@@ -767,6 +767,15 @@ describe('reduceMotion has nothing to suppress, and must not quietly acquire one
   ])('%s declares no animation', (_name, source) => {
     expect(ANIMATED_DECLARATION.filter((re) => re.test(source()))).toEqual([]);
   });
+
+  // THE FIRST DELIBERATE, GATED ANIMATION, per this describe block's own instruction above: do not
+  // delete the absence checks (CSS transition/animation/@keyframes are still genuinely absent — this
+  // one is a JS `Element.scrollBy({ behavior })` call, which the regexes above do not and should not
+  // match), and assert the GATE instead of another absence.
+  it('the one animation the reader has — the teleprompter scroll — is reachable only when reduceMotion is false', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(body).toContain("currentAppearance?.reduceMotion ? 'instant' : 'smooth'");
+  });
 });
 
 // --- every re-layout path re-measures EVERY painted layer ---------------------------------------
@@ -848,12 +857,9 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
     // CFI would wrongly skip a follow it genuinely needs.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
-    // A display() tied to the previous book's discarded rendition may never settle its own
-    // promise, which would otherwise strand this flag true and silently disable auto-follow for
-    // the entire new book.
-    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
-      'followDisplayInFlight = false',
-    );
+    // Not load-bearing on its own (the cooldown is a timestamp and self-expires), but keeps a
+    // book switch from inheriting a cooldown that has nothing to do with it.
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('followCooldownUntil = 0');
   });
 
   it('changing the spoken SENTENCE clears the word inside it', () => {
@@ -888,6 +894,47 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body.indexOf('highlightAdd(')).toBeLessThan(body.indexOf('followSpokenRange(cfi)'));
   });
 
+  it("a spoken sentence lifts the reader's own overlapping highlight above the TTS wash", () => {
+    // A deliberate, explicit departure from HIGHLIGHT_LAYERS.md §4's default z-order (tts > search
+    // > user), scoped to exactly the overlapping range — the reader's saved work should not
+    // visually recede under a wash that will move on in a few seconds. Checked at sentence
+    // granularity ("the tts whole highlight"), inside the `cfi !== null` branch, after the paint.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenRange: (cfi) =>');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, cfi)');
+    expect(body.indexOf('highlightAdd(')).toBeLessThan(
+      body.indexOf('liftOverlappingUserHighlights(spokenContents, cfi)'),
+    );
+  });
+
+  it('liftUserHighlight re-adds through the SAME owner-namespaced seam as every other repaint', () => {
+    // Not a bespoke DOM poke — remove-then-add through highlightSeam.ts, exactly like
+    // liftSearchMatch's own lift, so it participates in the same collision/removal guarantees
+    // every other owner already gets.
+    const body = blockAfter(EPUB_ENTRY, 'function liftUserHighlight(id: string): void');
+    expect(body).toContain('highlightRemove(rendition, USER_OWNER, cfiRange)');
+    expect(body).toContain('highlightAdd(');
+    expect(body).toContain('USER_OWNER');
+    expect(body.indexOf('highlightRemove(')).toBeLessThan(body.indexOf('highlightAdd('));
+  });
+
+  it('a theme/font-size repaint re-establishes the overlap lift, since the user layer repaints first', () => {
+    // repaintLiveAnnotations re-adds every user highlight BEFORE re-adding the TTS sentence/word —
+    // the plain §4 default, tts-last-so-tts-on-top — which would silently undo whatever
+    // setSpokenRange had lifted before this repaint ran. Without re-establishing it here, a
+    // font-size or theme change mid-utterance would flash the reader's own highlight back
+    // underneath the wash until the next spoken sentence.
+    const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations(): void');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)');
+    expect(body.indexOf('repaintSpokenWord()')).toBeLessThan(
+      body.indexOf('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)'),
+    );
+  });
+
+  it('a flow rebuild also re-establishes the overlap lift on the freshly built rendition', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body).toContain('liftOverlappingUserHighlights(spokenContents, currentSpokenCfi)');
+  });
+
   it('a spoken word follows even when its paint is refused for colliding with another owner', () => {
     // The resolved word's position is real regardless of whether painting it was refused — refusing
     // only protects another owner's mark from being displaced, per `spokenWordCollides`'s own note.
@@ -898,19 +945,60 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(collisionGuard).not.toContain('followSpokenRange');
   });
 
-  it('a follow already in flight blocks a second, overlapping display() for a different target', () => {
-    // Word ticks can arrive faster than a display() transition settles — without this guard, a
+  it('a fixed cooldown, not a promise-settled flag, blocks a second overlapping display()', () => {
+    // Word ticks can arrive faster than a display() transition settles — without SOME guard, a
     // still-off-screen check against the STILL-OLD page would issue a second, competing
-    // navigation before the first lands. Asserted as ordering: the in-flight check comes first, is
-    // set before display() is called, and is cleared in a .finally() so it can't stick forever.
+    // navigation before the first lands.
+    //
+    // >>> MUST NOT BE GATED ON display()'S OWN PROMISE SETTLING. <<< This was a real, shipped bug:
+    // in scrolled-doc flow, rendition.display() resolves through epub.js's ContinuousViewManager,
+    // which chains its own requestAnimationFrame-gated virtualization pass onto every display() —
+    // a pass that can stall on a real device and never settle. A flag cleared in that promise's
+    // .finally() then stays set FOREVER, silently disabling auto-follow for the rest of the
+    // session — exactly the on-device report ("it just stops") that found this. A timestamp
+    // comparison cannot get stuck this way regardless of what epub.js's internals do.
     const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
-    expect(body.indexOf('if (followDisplayInFlight) return;')).toBeLessThan(
-      body.indexOf('followDisplayInFlight = true;'),
+    expect(body).toContain('Date.now() < followCooldownUntil');
+    expect(body).not.toContain('.finally(');
+    expect(body.indexOf('Date.now() < followCooldownUntil')).toBeLessThan(
+      body.indexOf('followCooldownUntil = Date.now()'),
     );
-    expect(body.indexOf('followDisplayInFlight = true;')).toBeLessThan(
-      body.indexOf('rendition\n    .display(cfi)'),
+    expect(body.indexOf('followCooldownUntil = Date.now()')).toBeLessThan(
+      body.indexOf('rendition.display(cfi)'),
     );
-    expect(body).toContain('.finally(() => {');
+  });
+
+  it('scrolled-doc gets a teleprompter reposition; paginated keeps the original jump untouched', () => {
+    // The flow branch must be the FIRST thing followSpokenRange checks after the cooldown — before
+    // touching lastAutoFollowedCfi/spokenRangeVisible/display() at all, so paginated's original path
+    // is reached only when scrolled-doc's own mechanism did not (or could not) handle the call.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body).toContain("currentFlow() === 'scrolled-doc' && repositionForReadingZone(cfi)");
+    expect(body.indexOf('Date.now() < followCooldownUntil')).toBeLessThan(
+      body.indexOf("currentFlow() === 'scrolled-doc'"),
+    );
+    expect(body.indexOf("currentFlow() === 'scrolled-doc'")).toBeLessThan(
+      body.indexOf('spokenRangeVisible(cfi)'),
+    );
+  });
+
+  it('repositionForReadingZone never calls display() — it only scrolls the current section', () => {
+    // Scrolled-doc's reposition must not duplicate the discrete cross-section jump; that stays
+    // followSpokenRange's job on a `false` return. Asserted as absence within this function's own
+    // block, not just "the file contains scrollBy somewhere".
+    const body = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(body).not.toContain('rendition.display');
+    expect(body).toContain('manager.container.scrollBy(');
+  });
+
+  // reduceMotion's own gate is pinned in the "reduceMotion has nothing to suppress" describe block
+  // below, not duplicated here — this repo's existing convention for exactly that invariant.
+
+  it('manager.container.scrollBy is called from nowhere but the scrolled-doc reposition', () => {
+    // The one guarantee paginated's unaffectedness rests on: no global CSS scroll-behavior toggle,
+    // no second call site that could smooth-scroll a paginated column turn.
+    const occurrences = EPUB_ENTRY.split('.scrollBy(').length - 1;
+    expect(occurrences).toBe(1);
   });
 
   it('the EPUB geometry refresh repaints AND drops the press hit-test cache', () => {
@@ -953,6 +1041,141 @@ describe('re-measuring every painted layer after a re-layout', () => {
     );
   });
 
+  it('every internal reposition marks its own relocated event, not just auto-follow\'s', () => {
+    // A real, shipped bug: ReaderScreen.tsx's relocated handler used to treat every relocation as
+    // "the reader navigated away" and told the TTS session so — which wiped its prefetched next
+    // sentence and cleared the very highlight auto-follow had just centered on screen. ALL FOUR
+    // call sites that redisplay the reader at a position they were already conceptually at (not a
+    // navigation to somewhere new) must mark the next relocated as internal, not just the two
+    // auto-follow itself uses — a font-size reflow's reanchor and a flow rebuild's redisplay fire
+    // rendition.display() too, and would reintroduce the exact same bug for those triggers instead.
+    const followBody = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(followBody).toContain('nextRelocationIsInternal = true;');
+    expect(followBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      followBody.indexOf('rendition.display(cfi)'),
+    );
+
+    const repositionBody = blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(');
+    expect(repositionBody).toContain('nextRelocationIsInternal = true;');
+    expect(repositionBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      repositionBody.indexOf('manager.container.scrollBy('),
+    );
+
+    const reanchorBody = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(reanchorBody).toContain('nextRelocationIsInternal = true;');
+    expect(reanchorBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      reanchorBody.indexOf('.display(lastCfi)'),
+    );
+
+    const rebuildBody = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(rebuildBody).toContain('nextRelocationIsInternal = true;');
+    expect(rebuildBody.indexOf('nextRelocationIsInternal = true;')).toBeLessThan(
+      rebuildBody.indexOf('rendition.destroy();'),
+    );
+  });
+
+  it('the relocated handler reads and resets the internal flag, and posts it on the message', () => {
+    const body = blockAfter(EPUB_ENTRY, 'atEnd?: boolean;\n    }) =>');
+    expect(body).toContain('const internalReposition = nextRelocationIsInternal;');
+    // Reset immediately, not deferred — a later, unrelated relocation must not inherit it.
+    expect(body.indexOf('const internalReposition = nextRelocationIsInternal;')).toBeLessThan(
+      body.indexOf('nextRelocationIsInternal = false;'),
+    );
+    expect(body).toContain('internalReposition,');
+  });
+
+  it("openEpub resets the internal-reposition flag too, for a fresh book's own first relocated", () => {
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'nextRelocationIsInternal = false',
+    );
+  });
+
+  it('auto-follow backs off entirely while a geometry reanchor or flow rebuild is mid-display()', () => {
+    // TTS keeps running (and emitting tts-progress ticks) on a clock completely independent of the
+    // WebView's own rendering, so a font-size change, flow toggle, or rotation landing mid-utterance
+    // is not a hypothetical: without this guard, a tick arriving while `scheduleGeometryRefresh`'s
+    // reanchor or `rebuildForFlowIfNeeded`'s rebuild is still mid-display() would read geometry
+    // against a rendition mid-navigation and fire a SECOND, competing display() on the SAME
+    // rendition before the first has settled. Asserted as the first thing followSpokenRange checks,
+    // ahead of even the cooldown.
+    const body = blockAfter(EPUB_ENTRY, 'function followSpokenRange(');
+    expect(body).toContain('if (renditionTransitionGeneration !== 0) return;');
+    expect(body.indexOf('if (renditionTransitionGeneration !== 0) return;')).toBeLessThan(
+      body.indexOf('Date.now() < followCooldownUntil'),
+    );
+  });
+
+  it('a stale transition settling late must not clear the guard out from under a newer one', () => {
+    // A reader mashing a layout toggle (or a flow change landing mid-reflow) can start a SECOND
+    // transition before the first one's display() has settled. A plain boolean cleared
+    // unconditionally on settlement would let the FIRST (now-stale) transition's late callback
+    // clear the guard while the SECOND is still genuinely in flight — reopening the exact race the
+    // guard exists to close. `endRenditionTransition` must only clear the counter if its own id is
+    // still the current one — the same shape as useTtsSession.ts's own `generation` counter.
+    expect(EPUB_ENTRY).toContain('renditionTransitionGeneration += 1;');
+    const endFn = blockAfter(EPUB_ENTRY, 'function endRenditionTransition(id: number): void');
+    expect(endFn).toContain('renditionTransitionGeneration === id');
+  });
+
+  it('the geometry reanchor begins a transition before display() and ends it before its own re-check', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function scheduleGeometryRefresh(');
+    expect(body.indexOf('beginRenditionTransition()')).toBeLessThan(
+      body.indexOf('.display(lastCfi)'),
+    );
+    // Ended inside finish(), before the follow re-check finish() itself makes — otherwise that very
+    // re-check would trip the guard it is supposed to run after.
+    expect(body.indexOf('endRenditionTransition(transitionId)')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+  });
+
+  it('the flow rebuild begins a transition before destroy() and ends it in BOTH settlements', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function rebuildForFlowIfNeeded()');
+    expect(body.indexOf('beginRenditionTransition()')).toBeLessThan(
+      body.indexOf('rendition.destroy();'),
+    );
+    expect(body.indexOf('endRenditionTransition(transitionId)')).toBeLessThan(
+      body.indexOf('followSpokenRange(spokenTarget)'),
+    );
+    // A rejected rebuild must not leave the guard stuck forever — same failure shape as the
+    // promise-settled cooldown bug this file already fixed once.
+    const catchBlock = blockAfter(body, 'catch((error: unknown) =>');
+    expect(catchBlock).toContain('endRenditionTransition(transitionId)');
+  });
+
+  it('openEpub resets the transition guard defensively, alongside the other TTS follow state', () => {
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'renditionTransitionGeneration = 0',
+    );
+  });
+
+  it('createRendition bumps the instance generation every time it builds a new Rendition', () => {
+    // Both openEpub (a new book) and rebuildForFlowIfNeeded (a flow toggle) go through this one
+    // function, so bumping here covers a stale in-flight requestTtsSentence for either cause.
+    const body = blockAfter(EPUB_ENTRY, 'function createRendition(): Rendition');
+    expect(body).toContain('renditionInstanceGeneration += 1;');
+    expect(body.indexOf('renditionInstanceGeneration += 1;')).toBeLessThan(
+      body.indexOf("rendition = book.renderTo('viewer'"),
+    );
+  });
+
+  it('a requestTtsSentence reply discards a result computed against a since-destroyed rendition', () => {
+    // resolveCurrent/resolveNext can throw when the captured rendition was destroyed mid-await (a
+    // flow rebuild's rendition.destroy()) — surfacing that as 'error' would alarm the reader over a
+    // benign layout toggle. Both the success path and the catch path must check the generation and
+    // downgrade to 'unavailable' — the status this seam already defines for "superseded, nothing to
+    // surface" — rather than post a result or a scary error computed against a rendition that no
+    // longer exists.
+    const body = blockAfter(EPUB_ENTRY, 'requestTtsSentence: ({ requestId, from, mode }) =>');
+    expect(body).toContain('const myRenditionGeneration = renditionInstanceGeneration;');
+    const occurrences = body.split('renditionInstanceGeneration !== myRenditionGeneration').length - 1;
+    expect(occurrences).toBe(2); // once after the await, once in the catch
+    expect(
+      (body.match(/renditionInstanceGeneration !== myRenditionGeneration\)[\s\S]*?'unavailable'/g) ?? [])
+        .length,
+    ).toBe(2);
+  });
+
   it('every EPUB signal that can move a glyph reaches the refresh', () => {
     // A stylesheet change does not reach epub.js's own re-measure (`View.reframe` is width-gated and
     // paginated flow hides the resize), so each of these has to ask explicitly. Listed as call-sites
@@ -990,6 +1213,70 @@ describe('re-measuring every painted layer after a re-layout', () => {
     const body = blockAfter(PDF_ENTRY, 'applyAppearance: (appearance: ReaderAppearance) =>');
     expect(body).toContain('resizeScrollList(');
     expect(body).toContain('renderCurrentGuarded(');
+  });
+});
+
+describe('manual scroll/page-turn is gated while TTS speaks', () => {
+  // `touch-action` only gates the browser's native gesture recognizer, not JS-driven navigation —
+  // so the lock must be applied to the manager's container (a CSS property), never to a global or
+  // to document.body, and must never appear inside followSpokenRange/repositionForReadingZone
+  // (auto-follow's own programmatic moves must stay unaffected).
+
+  it('applyTtsScrollLock sets touch-action on the manager container, not a global', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function applyTtsScrollLock(): void');
+    expect(body).toContain('manager.container.style.touchAction');
+    expect(body).not.toContain('document.body');
+  });
+
+  it('createRendition re-applies the lock so a rebuilt container inherits the current state', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function createRendition(): Rendition');
+    expect(body).toContain('applyTtsScrollLock();');
+    // After building the rendition, not before — the container the lock targets does not exist yet
+    // until renderTo() runs.
+    expect(body.indexOf('applyTtsScrollLock();')).toBeGreaterThan(
+      body.indexOf("rendition = book.renderTo('viewer'"),
+    );
+  });
+
+  it('the setTtsSpeaking handler flips the flag and re-applies the lock', () => {
+    const body = blockAfter(EPUB_ENTRY, 'setTtsSpeaking: (speaking) =>');
+    expect(body).toContain('ttsSpeaking = speaking;');
+    expect(body).toContain('applyTtsScrollLock();');
+  });
+
+  it('the touchend swipe guard checks ttsSpeaking after the paginated guard and before swipeDirection', () => {
+    const body = blockAfter(EPUB_ENTRY, "'touchend',");
+    const paginatedGuardIndex = body.indexOf('if (!isPaginated(currentFlow())) return;');
+    const ttsGuardIndex = body.indexOf('if (ttsSpeaking) return;');
+    const swipeDirectionIndex = body.indexOf('swipeDirection(');
+    expect(paginatedGuardIndex).toBeGreaterThan(-1);
+    expect(ttsGuardIndex).toBeGreaterThan(paginatedGuardIndex);
+    expect(swipeDirectionIndex).toBeGreaterThan(ttsGuardIndex);
+  });
+
+  it('long-press-to-select returns before the ttsSpeaking guard is ever reached', () => {
+    // longPressFired/selection-collapsed both return earlier in touchend than the new guard, so a
+    // long-press never sees it — pinning the ORDER is what proves selection stays unaffected.
+    const body = blockAfter(EPUB_ENTRY, "'touchend',");
+    const longPressGuardIndex = body.indexOf('if (!origin || !touch || longPressFired) return;');
+    const selectionGuardIndex = body.indexOf("if (!view.getSelection()?.isCollapsed) return;");
+    const ttsGuardIndex = body.indexOf('if (ttsSpeaking) return;');
+    expect(longPressGuardIndex).toBeGreaterThan(-1);
+    expect(selectionGuardIndex).toBeGreaterThan(longPressGuardIndex);
+    expect(ttsGuardIndex).toBeGreaterThan(selectionGuardIndex);
+  });
+
+  it('the PDF shell defines a documented no-op, not real behavior', () => {
+    expect(PDF_ENTRY).toContain('setTtsSpeaking: () => {}');
+  });
+
+  it('applyTtsScrollLock is not reachable from auto-follow’s own programmatic moves', () => {
+    expect(blockAfter(EPUB_ENTRY, 'function followSpokenRange(')).not.toContain(
+      'applyTtsScrollLock',
+    );
+    expect(blockAfter(EPUB_ENTRY, 'function repositionForReadingZone(')).not.toContain(
+      'applyTtsScrollLock',
+    );
   });
 });
 

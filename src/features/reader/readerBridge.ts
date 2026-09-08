@@ -309,6 +309,40 @@ export type ReaderMessage =
        * a shell that could not name one.
        */
       section: ReaderSection | null;
+      /**
+       * True when THIS relocation was `epub.entry.ts`'s OWN internal repositioning machinery
+       * redisplaying the reader at a position they were already conceptually at — TTS auto-follow
+       * (`followSpokenRange`/`repositionForReadingZone`), a font-size/layout reflow's reanchor
+       * (`scheduleGeometryRefresh`), or a paginated<->scrolled flow rebuild's redisplay
+       * (`rebuildForFlowIfNeeded`). False for every genuine navigation (a page turn, a swipe,
+       * `goTo`, search). PDF never sets this — none of those four mechanisms exist there, and TTS
+       * never mounts for a PDF book — so the field is always absent/`false` for a PDF book.
+       *
+       * >>> WHY THIS EXISTS: A RELOCATED EVENT USED TO MEAN ONE THING, AND TTS AUTO-FOLLOW MADE THAT
+       * STOP BEING TRUE. <<< `ReaderScreen.tsx`'s `relocated` handler forwards every relocation to
+       * `ttsProviderRef.current?.notifyRelocated()`, on the reasoning (once correct) that "epub.js
+       * never fires `relocated` for `setSpokenRange`, which only touches annotations." Auto-follow's
+       * `rendition.display()`/`scrollBy()` calls are *inside* `setSpokenRange`'s/`setSpokenWordRange`'s
+       * own handlers now, so that stopped being true: auto-follow's own reposition fired exactly the
+       * same `relocated` a manual page turn would, `notifyRelocated()` treated it as "the reader
+       * navigated away," which (a) cleared the very highlight auto-follow had just centered on screen
+       * (`notifyRelocated()` calls `setSpokenRange(null)`) and (b) invalidated the session's
+       * prefetched next sentence, so the moment the current sentence finished, `handleTtsFinish()`
+       * found no prefetch and treated it as end-of-book — TTS stopped, silently, on the very first
+       * auto-follow action every time. The same logic applies to a reflow reanchor or a flow rebuild
+       * redisplaying `lastCfi`: neither is the reader going anywhere new either. This field is what
+       * lets `ReaderScreen.tsx` tell all of these apart from a genuine navigation without guessing:
+       * progress-tracking (`ReaderRouteScreen.tsx`) still gets EVERY relocation unconditionally,
+       * cause-agnostic, exactly as before — this field only gates the `notifyRelocated()` call
+       * specifically.
+       *
+       * OPTIONAL, NOT REQUIRED — the safe default (`undefined` reads as `false`, "a real navigation")
+       * matters more here than exhaustiveness: `pdf.entry.ts` omits it entirely rather than adding a
+       * dead `false` to both its `post()` call sites, and every existing test literal constructing a
+       * `relocated` message without this field stays meaningful (a manual/host-driven relocation)
+       * rather than needing a mechanical `internalReposition: false` added everywhere.
+       */
+      internalReposition?: boolean;
     }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string }
@@ -425,6 +459,7 @@ export const READER_COMMANDS = {
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
   paintSearchMatch: 'paintSearchMatch',
+  setTtsSpeaking: 'setTtsSpeaking',
 } as const;
 
 /**
@@ -585,7 +620,19 @@ export type ReaderCommand =
    * Replies `searchMatchPainted` for a paint (not for a clear). That is a NOTICE, not an ack: the
    * command is fire-and-forget like `paintHighlights`, and nothing waits on it.
    */
-  | { type: 'paintSearchMatch'; match: ReaderSearchMatch };
+  | { type: 'paintSearchMatch'; match: ReaderSearchMatch }
+  /**
+   * Gate manual scroll/page-turn GESTURES while TTS is actively speaking — `true` the instant status
+   * becomes `'speaking'`, `false` the instant it leaves that status (paused, idle, or error). Only
+   * the two gesture-driven paths (paginated swipe, scrolled-doc drag) are affected; `goTo`/TOC/search
+   * taps are untouched on purpose. See `TTS_PROVIDER.md`'s open item: manual navigation while
+   * speaking is a separate, pre-existing behavior (auto-follow pulls the view back) that this does
+   * not change — it only stops the reader from fighting auto-follow with a raw drag/swipe.
+   *
+   * Fire-and-forget, no reply, on the same contract as `setSpokenRange` — a lock that fails to apply
+   * must not be able to interrupt reading.
+   */
+  | { type: 'setTtsSpeaking'; speaking: boolean };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -821,6 +868,12 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
         // itself is still valid and still has to reach the page indicator, TTS and session
         // progress. Dropping the message over it would trade a missing word for a stuck reader.
         section: asSection(parsed.section),
+        // Defaulted to false, same reasoning as atStart/atEnd above: an unrecognised or absent
+        // value must not be misread as "this was internal" — that would wrongly suppress
+        // notifyRelocated() for what might be a genuine navigation, silently breaking the
+        // TTS-invalidation behaviour this field exists to protect rather than merely dropping this
+        // one message. False is the safe default in both directions this field is used for.
+        internalReposition: parsed.internalReposition === true,
       };
     }
 
@@ -933,7 +986,10 @@ export function buildCommandScript(command: ReaderCommand): string {
                       // book's text, so this is the payload rule 1 above is actually about — both are
                       // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
                       JSON.stringify(command.match)
-                    : '';
+                    : command.type === 'setTtsSpeaking'
+                      ? // A plain boolean, same as any other primitive payload in this chain.
+                        JSON.stringify(command.speaking)
+                      : '';
 
   return `(function(){
     try {

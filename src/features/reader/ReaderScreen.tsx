@@ -1618,10 +1618,21 @@ function ReaderScreenComponent(
           isUnverifiedInitialRelocate = true;
         }
 
-        // Every real `relocated` is a navigation signal — epub.js never fires it for
-        // setSpokenRange, which only touches annotations — so this is the one call site needed,
-        // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
-        ttsProviderRef.current?.notifyRelocated();
+        // Every real `relocated` USED TO BE a navigation signal unconditionally — epub.js never
+        // fired it for `setSpokenRange`, which only touched annotations — so this was the one call
+        // site needed, not one at every next/prev/goTo send. TTS auto-follow's `rendition.display()`/
+        // `scrollBy()` calls (and a font-size reflow's reanchor, and a flow rebuild's redisplay) now
+        // live INSIDE handlers that used to only paint, so a `relocated` can originate from Reader's
+        // own internal repositioning too — `message.internalReposition` is how the WebView says so.
+        // Skipping `notifyRelocated()` for one is not skipping the relocation itself: `onRelocatedRef`
+        // below (progress tracking) still runs unconditionally, cause-agnostic, exactly as before —
+        // this gate is specifically about not telling the TTS session "the reader navigated away"
+        // when they did not, which used to wipe the session's prefetched next sentence and clear the
+        // highlight it had just centered on screen, silently stopping speech on the very first
+        // auto-follow action every time. A no-op while TTS isn't active either way (ref is null).
+        if (!message.internalReposition) {
+          ttsProviderRef.current?.notifyRelocated();
+        }
         if (!isUnverifiedInitialRelocate) {
           onRelocatedRef.current?.(message.position);
         }
@@ -2070,6 +2081,20 @@ function ReaderScreenComponent(
       match: searchMatchFor(search.hits, search.activeIndex, search.submittedTerm),
     });
   }, [isRendered, send, format, search.hits, search.activeIndex, search.submittedTerm]);
+
+  /**
+   * Gate manual swipe/drag in the WebView the instant TTS starts or stops speaking — see
+   * `setTtsSpeaking`'s own doc comment in readerBridge.ts for scope (gestures only, not
+   * `goTo`/TOC/search).
+   *
+   * DEPENDS ON `ttsSession.status`, A PRIMITIVE, NOT `ttsSession` ITSELF — `useTtsSession` returns a
+   * fresh object every render (no `useMemo`, see `ttsStatusRef`'s own note above), so depending on
+   * the object would resend this command on every render instead of only on an actual transition.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null || format === null) return;
+    send({ type: 'setTtsSpeaking', speaking: ttsSession.status === 'speaking' });
+  }, [isRendered, send, format, ttsSession.status]);
 
   /**
    * Jump to a typed page, or refuse without navigating.

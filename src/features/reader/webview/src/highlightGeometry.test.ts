@@ -15,7 +15,12 @@
 // EPUB shell stopped converting a touch to a caret and started measuring rects like the PDF shell
 // always has — see highlightGeometry.ts's header for why a caret was the wrong primitive.
 
-import { anyRectOnScreen, highlightAt, rangesOverlap } from './highlightGeometry';
+import {
+  anyRectOnScreen,
+  highlightAt,
+  rangesOverlap,
+  readingZoneScrollDelta,
+} from './highlightGeometry';
 
 describe('hit-testing a tap against painted boxes', () => {
   const BOXES = [
@@ -183,5 +188,79 @@ describe('whether any rect is on screen', () => {
 
   it('is false for an empty list', () => {
     expect(anyRectOnScreen([], VIEWPORT)).toBe(false);
+  });
+});
+
+describe('the teleprompter reading-zone reposition delta', () => {
+  // A 0-100 tall viewport (anchored at the origin for readability), reposition triggers past 75%
+  // down and lands the target's deepest point at 35% down.
+  const VIEWPORT = { left: 0, top: 0, right: 200, bottom: 100 };
+  const ZONE = { triggerFraction: 0.75, targetFraction: 0.35 };
+
+  it('is null when the target is comfortably inside the zone', () => {
+    // Deepest bottom at 50 -> 50% down, well short of the 75% trigger.
+    expect(
+      readingZoneScrollDelta([{ left: 0, top: 40, width: 100, height: 10 }], VIEWPORT, ZONE),
+    ).toBeNull();
+  });
+
+  it('returns a positive (downward) delta once the target reaches the trigger fraction', () => {
+    // Deepest bottom at 80 -> 80% down, past the 75% trigger. Target lands at 35% (=35), so the
+    // delta scrolls the content up by 80 - 35 = 45.
+    const delta = readingZoneScrollDelta(
+      [{ left: 0, top: 70, width: 100, height: 10 }],
+      VIEWPORT,
+      ZONE,
+    );
+    expect(delta).toBe(45);
+  });
+
+  it('fires exactly AT the trigger fraction, not only past it', () => {
+    // Deepest bottom at exactly 75 -> boundary case, must still reposition.
+    const delta = readingZoneScrollDelta(
+      [{ left: 0, top: 65, width: 100, height: 10 }],
+      VIEWPORT,
+      ZONE,
+    );
+    expect(delta).not.toBeNull();
+  });
+
+  it('never fires for a target above the zone — this mechanism only ever scrolls forward', () => {
+    // Deepest bottom at 10 -> 10% down, comfortably above the trigger. There is no "scroll up"
+    // branch to reach here regardless of how far above the zone the target sits.
+    expect(
+      readingZoneScrollDelta([{ left: 0, top: 0, width: 100, height: 10 }], VIEWPORT, ZONE),
+    ).toBeNull();
+    // Even a target that starts negative (partially scrolled past the top already) must not
+    // trigger — this mechanism does not correct for that direction at all.
+    expect(
+      readingZoneScrollDelta([{ left: 0, top: -50, width: 100, height: 5 }], VIEWPORT, ZONE),
+    ).toBeNull();
+  });
+
+  it('judges a multi-line (multi-rect) target by its DEEPEST rect, not its first', () => {
+    // The sentence starts comfortably in view (first rect at 10% down) but wraps down to 90% —
+    // the part that would actually be cut off first. Must reposition off the second rect.
+    const delta = readingZoneScrollDelta(
+      [
+        { left: 0, top: 10, width: 100, height: 10 }, // first line: 10-20%, in view
+        { left: 0, top: 85, width: 100, height: 5 }, // second line: 85-90%, past trigger
+      ],
+      VIEWPORT,
+      ZONE,
+    );
+    expect(delta).not.toBeNull();
+    expect(delta).toBe(90 - 35); // deepest bottom (90) minus the target position (35)
+  });
+
+  it('is null for an empty rects list — nothing to measure', () => {
+    expect(readingZoneScrollDelta([], VIEWPORT, ZONE)).toBeNull();
+  });
+
+  it('is null for a degenerate zero-height viewport rather than dividing by zero', () => {
+    const flatViewport = { left: 0, top: 50, right: 200, bottom: 50 };
+    expect(
+      readingZoneScrollDelta([{ left: 0, top: 40, width: 100, height: 10 }], flatViewport, ZONE),
+    ).toBeNull();
   });
 });

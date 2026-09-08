@@ -146,6 +146,14 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     // re-resolving the reader's live position. In-memory only — never persisted. Cleared on
     // resume, on a real stop, and when the reader navigates away while paused.
     let pausedSentence: TtsSentence | null = null;
+    // BOTH platforms: true when the reader navigated away WHILE paused, so the position a paused
+    // engine is holding (natively, on iOS) or `pausedSentence` (Android) no longer matches where
+    // they actually are. Set only by the `'navigated'` interruption while `liveStatus === 'paused'`
+    // — a navigation that happens while genuinely SPEAKING is a different, already-handled case
+    // (`pendingNext`/`pausedSentence` are cleared there too, but there is nothing paused to resume
+    // stale content FROM). Consumed once, by the very next `play()`; see its own note for why iOS
+    // needed this and Android's own fallback already worked without it.
+    let pausedPositionInvalidated = false;
     let awaitingUtterance = false;
     let pendingNext: Promise<TtsFetchResult> | null = null;
     // Opt-in diagnostic only (readerTiming.ts's EXPO_PUBLIC_READER_TIMING flag) — set when a fresh
@@ -187,6 +195,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       pendingNext = null;
       currentlySpeaking = null;
       pausedSentence = null;
+      pausedPositionInvalidated = false;
       playPressedAt = null;
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
@@ -402,6 +411,29 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       // this session declined to honour.
       if (liveStatus === 'speaking') return;
       if (liveStatus === 'paused') {
+        // >>> THE READER MOVED WHILE PAUSED — RESUME IS WRONG HERE, NOT JUST STALE. <<< Both
+        // `Tts.resume()` (iOS, a genuine native resume of the SUSPENDED utterance) and re-speaking
+        // `pausedSentence` (Android) continue content tied to wherever the reader WAS, not where
+        // they are now — correct for "paused to think for a second," wrong for "paused, then
+        // scrolled/swiped somewhere else." `pausedPositionInvalidated` is the signal a navigation
+        // already fired while paused; discard the stale position entirely and re-resolve fresh, the
+        // same way a first play() from idle does. `Tts.stop()` first on iOS specifically: the native
+        // engine is genuinely holding the OLD utterance suspended, and it must be told to drop it —
+        // not resumed — before a new one can start.
+        if (pausedPositionInvalidated) {
+          pausedPositionInvalidated = false;
+          pausedSentence = null;
+          if (PAUSE_RESUME_SUPPORTED) {
+            try {
+              void Tts.stop().catch(noop);
+            } catch {
+              // Best-effort — the engine may already be stopped.
+            }
+          }
+          playPressedAt = now();
+          void beginFrom(null, generation);
+          return;
+        }
         if (PAUSE_RESUME_SUPPORTED) {
           void Tts.resume().catch(noop);
           return;
@@ -498,6 +530,11 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
         generation += 1;
         pendingNext = null;
         pausedSentence = null;
+        // Only meaningful while paused — there is a stale PAUSED position to protect the next
+        // play() from resuming. A navigation while genuinely speaking doesn't set this: nothing is
+        // paused yet for a later play() to wrongly resume, and TTS_PROVIDER.md's own open item
+        // already covers what a manual navigation does to an ACTIVE session.
+        if (liveStatus === 'paused') pausedPositionInvalidated = true;
         return;
       }
       // closed / revoked are terminal.

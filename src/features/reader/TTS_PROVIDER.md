@@ -230,12 +230,24 @@ request must resolve `unavailable` when teardown arrives, and every call after t
 
 ## Open items
 
-1. **`onInterrupted('revoked')` has no source yet.** There is no `onAccessRevoked` anywhere in this
-   repo. `offline-lock.ts` defines a `revoked` signal and `event-bus.ts` defines a carrier for it,
-   but that file is marked "PROPOSAL — NOT FINALISED, NOT WIRED", is not exported from the barrel,
-   and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
-   `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
-   consumers should build against the reason, not the source. **Karthik + Abhinav.**
+1. ~~**`onInterrupted('revoked')` has no source yet.**~~ **The safety property holds, and has since
+   before this line was last true — only the `'revoked'` LABEL is still unused.** This was stale the
+   moment it was last edited (2026-09-08): a live, mid-read revocation path already exists and
+   already stops TTS from an already-mounted `ReaderScreen`, through two independent sources —
+   Sync's `content.lock` bus event (`useContentLock`, pushed) and `startAccessMonitor`'s 5-minute
+   re-verification poll (pulled) — both converging on `ReaderScreen.tsx`'s `tearDownAndLock`, which
+   calls `ttsSessionRef.current.stop()` AND `ttsProviderRef.current?.notifyClosed()` (redundantly,
+   deliberately) before `closeBook(bookId)` ever runs. `event-bus.ts`'s "PROPOSAL — NOT FINALISED,
+   NOT WIRED" header is itself stale in the same way — `src/shared/contracts/index.ts` already
+   exports it, and `offline-lock.ts` and `contentStore.ts` both consume it for real.
+   What genuinely does not exist is the LABEL: every one of these paths fires `onInterrupted('closed')`
+   — `terminate('revoked')` is reachable in `realReaderTextProvider.ts` but nothing calls it, since
+   `EpubReaderTextProvider` has no `notifyRevoked()` method, only `notifyClosed()`.
+   `useTtsSession.ts` needs no change either way — its handler already treats `'closed'`/`'revoked'`
+   identically. Landing the distinct label, if it's ever wanted (e.g. to report a revocation
+   differently from a normal close), is a small, localized addition: a `notifyRevoked()` mirroring
+   `notifyClosed()`, called from `tearDownAndLock` instead when the teardown reason is a revocation
+   specifically. **Karthik + Abhinav's call on whether the label is worth the distinction.**
 2. ~~**Does the reader scroll to follow the spoken range?**~~ **SOLVED, 2026-09-07 — word-precise,
    not just the sentence-level version originally proposed.** `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md`
    was Accessibility's sentence-level proposal (a visibility check plus `rendition.display(cfi)`
@@ -250,20 +262,38 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    as speech crosses it, where the sentence-level call alone could only check the sentence as a whole
    at its start.
 
-   The visibility test itself (`spokenRangeVisible`, same file) treats PARTIAL overlap as visible,
-   not full containment — a sentence painted where it starts, that also runs onto the next page, is
-   not "off-screen" the instant it paints. `anyRectOnScreen` (`highlightGeometry.ts`, pure,
-   unit-tested) is the rect/viewport arithmetic this rests on. **Neither `contents.window`'s own
-   dimensions nor the outer `#viewer` `viewportSize()` measures is the right viewport for this** —
-   epub.js resizes each section's `<iframe>` to its own full content size on whichever axis
-   `IframeView.size()` leaves free (width in paginated flow, height in scrolled-doc), so the iframe's
-   own `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one
-   axis that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
+   The geometry both flows build on (`spokenRangeGeometry`, same file) treats PARTIAL overlap as
+   relevant, not full containment — a sentence painted where it starts, that also runs onto the next
+   page, is not "off-screen" the instant it paints. **Neither `contents.window`'s own dimensions nor
+   the outer `#viewer` `viewportSize()` measures is the right viewport for this** — epub.js resizes
+   each section's `<iframe>` to its own full content size on whichever axis `IframeView.size()`
+   leaves free (width in paginated flow, height in scrolled-doc), so the iframe's own
+   `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one axis
+   that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
    `rendition.manager`, reached through a cast since `epubjs`'s types don't expose it), compared
    against each rect after shifting it by the view's own `position()` (`element
    .getBoundingClientRect()`, which correctly reflects scroll position) — the same geometry epub.js's
-   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally. Both flows share this
-   one check with no branch on which is active, same as `rendition.display()` itself.
+   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally.
+
+   **2026-09-08 — the two flows stopped sharing one DECISION on that geometry, on purpose, though
+   they still share the MEASUREMENT.** Paginated kept the original mechanism exactly as it shipped: a
+   boolean `spokenRangeVisible` (`anyRectOnScreen`), a discrete `rendition.display(cfi)` page turn on
+   a miss. Scrolled-doc now gets a teleprompter-style continuous reposition instead
+   (`repositionForReadingZone`) — as the spoken position drifts toward the bottom quarter of the
+   viewport (`READING_ZONE_TRIGGER_FRACTION = 0.75`), it smoothly scrolls (`manager.container
+   .scrollBy`) to land it back at the upper-middle (`READING_ZONE_TARGET_FRACTION = 0.35`), rather
+   than waiting for it to go fully off-screen and jumping. `readingZoneScrollDelta`
+   (`highlightGeometry.ts`, pure, unit-tested) is the arithmetic; it never fires for a target ABOVE
+   the zone, so it only ever catches up with forward reading, never fights a reader who scrolled back
+   manually. Reserved for a section that IS currently rendered — a different, not-yet-mounted section
+   still falls through to the same discrete `display()` jump paginated uses, since only epub.js's own
+   `display()` can load and render a new section at all. The scroll is `behavior: 'smooth'` unless
+   `currentAppearance?.reduceMotion` is true (read fresh on every call, no cached flag) — the first
+   animation either shell has added; see `WEBVIEW_BRIDGE.md`'s decision #2.
+
+   "Off-screen, jump" and "continuous, smooth" are different products, not two spellings of the same
+   behaviour — this is the one place in the whole feature with an explicit flow branch, and it is
+   deliberate precisely because `rendition.display()` itself stays flow-agnostic everywhere else.
 
    Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
    `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see
@@ -287,10 +317,58 @@ request must resolve `unavailable` when teardown arrives, and every call after t
    reflowed page even though the page's own reanchor "succeeds"; this catches that case rather than
    leaving the reader on a page that no longer shows what is being spoken.
 
-   **Genuinely still open, not solved by this:** auto-follow does not back off after the reader's own
-   manual swipe/scroll — no "recently navigated" signal exists, so the next tick pulls the view back
-   to wherever speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented
-   no-ops (`pdf.entry.ts`) — nothing to follow there yet.
+   **Second on-device defect, found and fixed the same week: auto-follow worked in paginated flow
+   and went permanently inert in scrolled-doc flow, silently.** The dedupe guard against overlapping
+   `display()` calls was originally a flag cleared in `rendition.display()`'s own `.finally()`. In
+   scrolled-doc flow, `display()` resolves through epub.js's `ContinuousViewManager`, which chains an
+   UNBOUNDED virtualization pass onto every display — `.then(() => this.fill())`, recursing through
+   `check()` via a queue gated on `requestAnimationFrame` (`managers/continuous/index.js`) —
+   `DefaultViewManager` (paginated) has no such tail. On a real device that tail's `requestAnimationFrame`
+   can stall (backgrounded, throttled, GPU-starved) and never resolve, which left the promise-settled
+   flag stuck `true` FOREVER — every later auto-follow call silently no-opped on the guard check ahead
+   of it, for the rest of the reading session, in scrolled-doc flow only. Paginated kept working
+   because it has no such tail to hang on. Fixed by replacing the promise-gated flag with a fixed
+   500ms cooldown timestamp (`followCooldownUntil`, `FOLLOW_COOLDOWN_MS`) — it serves the same
+   purpose (absorb the gap between rapid word ticks and a slower transition) without depending on
+   epub.js's internal promise ever settling.
+
+   **Third on-device defect, and the most severe: auto-follow's own jump/scroll made TTS stop
+   entirely, deterministically, on the very first one.** `ReaderScreen.tsx`'s `relocated` handler
+   forwarded every relocation to `ttsProviderRef.current?.notifyRelocated()` unconditionally, on a
+   premise that was true right up until auto-follow existed: "epub.js never fires `relocated` for
+   `setSpokenRange`, which only touches annotations." Auto-follow's `rendition.display()`/`scrollBy()`
+   calls are now INSIDE `setSpokenRange`'s/`setSpokenWordRange`'s own handlers, so that premise broke
+   — auto-follow's own reposition fired the same `relocated` a manual page turn would, and
+   `notifyRelocated()` treated it as the reader navigating away: it cleared the very highlight
+   auto-follow had just centered on screen (`notifyRelocated()` calls `setSpokenRange(null)`) AND
+   invalidated the session's prefetched next sentence, so the moment the current, auto-follow-
+   triggered sentence finished, `handleTtsFinish()` found no prefetch and mistook it for end-of-book.
+   The same premise-break also applies to `scheduleGeometryRefresh`'s reflow reanchor and
+   `rebuildForFlowIfNeeded`'s post-rebuild redisplay — both redisplay the reader at a position they
+   were already at, not somewhere new, and both fire a `display()` too.
+
+   Fixed with a new, optional `ReaderMessage['relocated'].internalReposition` field
+   (`WEBVIEW_BRIDGE.md` has the full account): `epub.entry.ts` marks the NEXT `relocated` as internal
+   immediately before each of the four call sites that redisplay-without-navigating, and
+   `ReaderScreen.tsx` skips `notifyRelocated()` specifically when the field is true.
+   Progress-tracking (`ReaderRouteScreen.tsx`) is unaffected either way — it already reads every
+   `relocated` cause-agnostically, which is correct and intentional (persisted "resume position" is
+   supposed to be wherever the view/voice currently is).
+
+   **Narrowed, not solved, by `setTtsSpeaking` (landed 2026-09-08):** the reader can no longer
+   trigger a manual swipe (paginated) or drag-scroll (scrolled-doc) at all while `ttsSession.status`
+   is `'speaking'` — `ReaderScreen.tsx` sends `{type: 'setTtsSpeaking', speaking}` on every status
+   transition, and `epub.entry.ts` sets `touch-action: none` on the manager's container while true,
+   plus an explicit `if (ttsSpeaking) return;` guard in `watchTouches`'s swipe handler
+   (`WEBVIEW_BRIDGE.md` has the full surface entry). This closes the gesture path entirely, so it no
+   longer fights auto-follow.
+
+   **Genuinely still open, not solved by this:** a manual navigation reached WITHOUT a gesture — a
+   TOC tap, a search-result tap, a bookmark tap — is deliberately NOT blocked while speaking (out of
+   scope for `setTtsSpeaking`, by design: those are intentional host-driven jumps). Auto-follow still
+   has no "recently navigated" signal for that path, so the next tick pulls the view back to wherever
+   speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented no-ops
+   (`pdf.entry.ts`) — nothing to follow there yet.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

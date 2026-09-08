@@ -1516,6 +1516,12 @@ ${text}`;
      * command in both shells. */
     setSpokenWordRange: () => {
     },
+    /** Documented no-op for the same reason as `setSpokenRange`/`setSpokenWordRange` above: TTS never
+     * mounts for a PDF book, so nothing ever tells this shell it started or stopped speaking, and there
+     * is no gesture-lock to apply. Defined only because `TFReaderApi<'openPdf'>` requires every SHARED
+     * command in both shells. */
+    setTtsSpeaking: () => {
+    },
     /**
      * Paint or clear the one active search match. Unlike `setSpokenRange` above this is REAL here,
      * not a no-op: search has PDF locators (`{page, offset}`), and `pdfHighlightSeam.ts` has had the
