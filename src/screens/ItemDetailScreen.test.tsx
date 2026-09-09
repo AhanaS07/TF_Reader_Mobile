@@ -581,18 +581,68 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     expect(screen.queryByText(/table of contents/i)).toBeNull();
   });
 
-  // §10 (revised): every title the catalogue source currently returns carries
-  // an internal ingestion note in `description`, not a genuine abstract — so
-  // the "About this title" section stays unwired for now rather than
-  // rendering that note as if it were real book content.
-  it('renders no "About this title" section, the description field not yet carrying real abstracts', async () => {
-    setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
+  // §9 (revised again): "About this book" is now a real, always-present
+  // section — a genuine description (today's one-liners included) is shown
+  // rather than withheld.
+  describe('the "About this book" section', () => {
+    it('shows a real, non-fixture description under "About this book"', async () => {
+      setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
 
-    await render(<ItemDetailScreen {...routeProps} />);
+      await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
-    expect(screen.queryByText('About this title')).toBeNull();
-    expect(screen.queryByText('A study of legal personhood.')).toBeNull();
+      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      expect(screen.getByText('A study of legal personhood.')).toBeTruthy();
+    });
+
+    // The one thing this section must never show, whatever else changes —
+    // confirmed present on a real catalog title ("Politics of Coalition in
+    // Korea"), not a hypothetical.
+    it('filters out the known dev-fixture ingestion note, for either format', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ description: 'Real EPUB fixture (ELITE), ingested from a real file.' }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      expect(screen.queryByText(/ingested from a real file/i)).toBeNull();
+      expect(screen.getByText('Description not available yet.')).toBeTruthy();
+    });
+
+    it('shows the honest fallback when the feed sent no description at all', async () => {
+      setCatalogueSource(fakeSource(async () => aBook({ description: undefined })));
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      expect(screen.getByText('Description not available yet.')).toBeTruthy();
+    });
+
+    it('offers no "Read more" for a short description', async () => {
+      setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      expect(screen.queryByRole('button', { name: 'Read more' })).toBeNull();
+    });
+
+    it('clamps a long description behind "Read more", and expands it on press', async () => {
+      const longDescription = 'A study of legal personhood. '.repeat(20);
+      setCatalogueSource(fakeSource(async () => aBook({ description: longDescription })));
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText(longDescription)).toBeTruthy());
+      expect(screen.getByText(longDescription).props.numberOfLines).toBe(4);
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Read more' }));
+
+      expect(screen.getByText(longDescription).props.numberOfLines).toBeUndefined();
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+    });
   });
 
   it('shows the format strip without pulling in the unavailable-tag treatment', async () => {

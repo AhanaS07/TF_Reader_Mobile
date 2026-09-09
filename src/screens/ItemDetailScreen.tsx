@@ -39,7 +39,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { ContentFormat } from '@/shared/types/primitives';
 import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
@@ -129,6 +129,81 @@ function formatPublishedDate(iso: string): string {
   const monthName = MONTH_NAMES[Number(month) - 1];
   if (monthName === undefined) return iso;
   return `${Number(day)} ${monthName} ${year}`;
+}
+
+// The exact known ingestion note the catalogue source currently returns in
+// `description` for at least one real title ("Politics of Coalition in
+// Korea") — "Real EPUB fixture (ELITE), ingested from a real file." and its
+// PDF sibling. A named, literal pattern rather than a general "does this
+// look real" guess: the latter is exactly the kind of inference this
+// codebase's own conventions rule out (CONVENTIONS §3's spirit, applied to
+// content rather than access logic) — this matches only the specific
+// dev-fixture wording, so a genuine short abstract that happens to mention
+// "PDF" or "EPUB" in passing is not caught by it.
+const FIXTURE_DESCRIPTION_PATTERN = /real (epub|pdf) fixture.*ingested from a real file/i;
+
+function isFixtureDescription(text: string): boolean {
+  return FIXTURE_DESCRIPTION_PATTERN.test(text);
+}
+
+// Lines shown before "Read more" appears — a real book-detail refinement
+// requirement (§9): today's descriptions are one-liners with nothing to
+// clamp, but the section has to already behave correctly the day a genuine,
+// paragraph-length abstract arrives.
+const DESCRIPTION_CLAMP_LINES = 4;
+// A rough proxy for "long enough to likely exceed the clamp" — approximated
+// by length rather than a measure-then-clamp render pass (RN's
+// `onTextLayout` reports the CLAMPED line count while `numberOfLines` is
+// already set, so measuring accurately needs an extra unclamped render
+// first). Good enough for "does 'Read more' need to exist at all", not
+// pretending to be an exact line count.
+const DESCRIPTION_LONG_THRESHOLD = 220;
+
+// A real, structural section — always rendered, per §9, in one of three
+// states: a genuine description (today's short one-liners and tomorrow's
+// full abstracts alike), the honest "not available yet" line, or (silently,
+// same visual slot as "not available") the fixture note filtered out. Never
+// omitted outright: the earlier pass that hid the whole section when
+// `description` was absent read as the page quietly deciding for itself
+// what to show rather than a stable place a reader can expect this
+// information to live.
+//
+// A REAL COMPONENT, NOT A PLAIN FUNCTION LIKE `MetaRow`/`FormatStrip` BELOW.
+// It owns `expanded` state, and hooks follow whichever component is
+// actually rendering — a plain function called mid-render (the shape every
+// other local helper in this file takes) would register its hooks against
+// `ItemDetailScreen`'s own fiber instead, the same trap `coverFailed`'s own
+// comment on the main component already documents. Invoked as JSX for
+// exactly that reason.
+function DescriptionSection({ description }: { description?: string }): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+
+  const real = description !== undefined && !isFixtureDescription(description) ? description : undefined;
+  const long = real !== undefined && real.length > DESCRIPTION_LONG_THRESHOLD;
+
+  return (
+    <View style={styles.sectionBlock}>
+      <SectionHeader title="About this book" />
+      {real !== undefined ? (
+        <>
+          <Text style={styles.description} numberOfLines={!expanded && long ? DESCRIPTION_CLAMP_LINES : undefined}>
+            {real}
+          </Text>
+          {long && (
+            <Pressable
+              onPress={() => setExpanded((value) => !value)}
+              accessibilityRole="button"
+              accessibilityLabel={expanded ? 'Show less' : 'Read more'}
+            >
+              <Text style={styles.readMoreLabel}>{expanded ? 'Show less' : 'Read more'}</Text>
+            </Pressable>
+          )}
+        </>
+      ) : (
+        <Text style={styles.descriptionUnavailable}>Description not available yet.</Text>
+      )}
+    </View>
+  );
 }
 
 // Screen 05's presentation. Exported for the same reason `renderArticleContent`
@@ -265,31 +340,22 @@ export function renderBookContent(
           )}
         </View>
 
-        {/* NOT WIRED TO `detail.description`, ON PURPOSE — despite the field
-            existing on the model. Every title currently returned by the
-            catalogue source, real "Politics of Coalition in Korea" included,
-            carries an internal ingestion note in this field
-            ("Real EPUB fixture (ELITE), ingested from a real file.") rather
-            than a genuine publisher abstract — confirmed by inspecting a real
-            title's own response, not assumed. Rendering it verbatim would be
-            "render what came back" working exactly as designed against data
-            that is not yet what it claims to be. This is a deliberate,
-            temporary product decision (book-detail refinement, real-data
-            review), not a missing-data branch: the day the feed carries a
-            genuine abstract, this is the one block to restore — same
-            `SectionHeader title="About this title"` + `Text` shape the
-            article branch's own "Abstract" block below already uses, so
-            reinstating it is a two-line change, not a rewrite.
+        {/* ALWAYS RENDERED — a structural section, not conditional on
+            `detail.description` being present, per the book-detail
+            refinement's own instruction: show real short descriptions today,
+            support a genuinely long one later, and fall back to an honest
+            "not available yet" rather than omitting the section outright.
+            `DescriptionSection` itself is the one place that filters out the
+            known dev-fixture note ("Real EPUB/PDF fixture… ingested from a
+            real file") — confirmed present on a real catalog title
+            ("Politics of Coalition in Korea"), not assumed — so it never
+            renders as if it were a genuine abstract. */}
+        <DescriptionSection description={detail.description} />
 
-            TABLE OF CONTENTS IS ABSENT FOR THE SAME REASON DESCRIPTION IS
-            ONE LEVEL STRONGER: THE FIELD DOES NOT EXIST AT ALL. No endpoint,
-            no model field, nothing to leave a gap for — an earlier pass
-            here showed an honest "not currently available" section instead
-            of hiding it, which read as the page announcing its own
-            unfinished-ness rather than as a clean, focused screen. Omitting
-            the section entirely is the stronger form of the same "leave gaps
-            blank rather than blocking" rule the metadata rows above already
-            follow. */}
+        {/* TABLE OF CONTENTS IS OMITTED ENTIRELY. No endpoint, no model
+            field — there is nothing to leave a gap for, and a lone heading
+            with nothing beneath it read as the page announcing its own
+            unfinished-ness rather than as a clean, focused screen. */}
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
@@ -1009,7 +1075,6 @@ const styles = StyleSheet.create({
   // own (this is the biggest, most important text on the page), only the
   // family and tracking change.
   title: {
-    fontWeight: typeScale.pageTitle.weight,
     fontFamily: typeScale.cardTitle.fontFamily,
     fontSize: typeScale.pageTitle.size,
     lineHeight: typeScale.pageTitle.lineHeight,
@@ -1017,7 +1082,6 @@ const styles = StyleSheet.create({
     color: color.textPrimary,
   },
   subtitle: {
-    fontWeight: typeScale.body.weight,
     fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
@@ -1025,7 +1089,6 @@ const styles = StyleSheet.create({
   },
   // "By" in the body colour; the names nested inside it take the link colour.
   byLine: {
-    fontWeight: typeScale.body.weight,
     fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
@@ -1037,7 +1100,6 @@ const styles = StyleSheet.create({
   // Screen 04's title and author line. Same tokens as `title`/`authors` above,
   // minus the centring.
   articleTitle: {
-    fontWeight: typeScale.pageTitle.weight,
     fontSize: typeScale.pageTitle.size,
     lineHeight: typeScale.pageTitle.lineHeight,
     color: color.textPrimary,
@@ -1050,7 +1112,6 @@ const styles = StyleSheet.create({
   // underline and no `accessibilityRole="link"`; the moment an author route
   // exists this becomes a Pressable and nothing about the colour changes.
   articleAuthors: {
-    fontWeight: typeScale.body.weight,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
     color: color.primary,
@@ -1076,14 +1137,12 @@ const styles = StyleSheet.create({
   // D12's queue position: a status line, styled as metadata rather than as an
   // action, because that is what it is.
   queuePosition: {
-    fontWeight: typeScale.meta.weight,
     fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
   },
   metaRow: {
-    fontWeight: typeScale.meta.weight,
     fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
@@ -1096,6 +1155,38 @@ const styles = StyleSheet.create({
   metaRowText: {
     flex: 1,
   },
+  // "About this book" — a `SectionHeader` plus whichever body follows it,
+  // spaced as one unit against the `content` gap separating it from the
+  // metadata block above and whatever real section follows it.
+  sectionBlock: {
+    gap: space.xs,
+    marginTop: space.sm,
+  },
+  // No `numberOfLines` clamp baked in here — `DescriptionSection` applies
+  // one conditionally, only once a description is actually long enough to
+  // need it, so a short one-liner today reads exactly like plain body text.
+  description: {
+    alignSelf: 'stretch',
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textPrimary,
+  },
+  readMoreLabel: {
+    marginTop: space.xs,
+    fontFamily: typeScale.button.fontFamily,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
+  },
+  // The one honest fallback the description section can show — never
+  // rendered for a title that has a real (non-fixture) description.
+  descriptionUnavailable: {
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textSecondary,
+  },
   // Article-only. No `marginTop` any more: `articleContent`'s own `gap` spaces
   // it off the badge above, and the old margin stacked on top of that.
   abstractBlock: {
@@ -1104,7 +1195,6 @@ const styles = StyleSheet.create({
   // No marginTop of its own: abstractBlock's own gap already spaces it under
   // the SectionHeader, and description's margin would double it up.
   abstractText: {
-    fontWeight: typeScale.body.weight,
     fontFamily: typeScale.body.fontFamily,
     fontSize: typeScale.body.size,
     lineHeight: typeScale.body.lineHeight,
@@ -1133,7 +1223,6 @@ const styles = StyleSheet.create({
     backgroundColor: color.white,
   },
   formatStripLabel: {
-    fontWeight: typeScale.smallLabel.weight,
     fontFamily: typeScale.smallLabel.fontFamily,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
@@ -1155,7 +1244,6 @@ const styles = StyleSheet.create({
     gap: space.xs,
   },
   unavailableInlineLabel: {
-    fontWeight: typeScale.smallLabel.weight,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textSecondary,
@@ -1180,7 +1268,6 @@ const styles = StyleSheet.create({
   // five on the mockup's single line; it is also the honest weight here, since
   // the mockup's bold is reserved for the active tab and this row has none.
   tabRowLabel: {
-    fontWeight: typeScale.smallLabel.weight,
     fontFamily: typeScale.smallLabel.fontFamily,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
@@ -1198,7 +1285,6 @@ const styles = StyleSheet.create({
   licenceError: {
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    fontWeight: typeScale.smallLabel.weight,
     fontFamily: typeScale.smallLabel.fontFamily,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
