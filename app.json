@@ -25,6 +25,15 @@
     "plugins": [
       "expo-dev-client",
       "expo-font",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone so you can search the catalogue by voice.",
+          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to turn what you say into text so you can search the catalogue by voice."
+        }
+      ],
+      "expo-secure-store",
+      "expo-web-browser",
       "expo-asset",
       [
         "expo-build-properties",

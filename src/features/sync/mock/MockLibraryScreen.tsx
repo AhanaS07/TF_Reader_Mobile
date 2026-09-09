@@ -32,14 +32,21 @@ import { downloadTable } from '@/features/sync/stores/downloadStore';
 import { api } from '@/features/sync/syncApi';
 import { USER_ID } from '@/features/sync/syncConfig';
 import { useConnectivity } from '@/features/sync/useConnectivity';
-import type { ContentFormat } from '@/shared/contracts';
-
-import type { RootStackParamList } from '@/navigation/RootNavigator';
+import type { BookId, ContentFormat } from '@/shared/contracts';
+import type { ReaderTarget } from '@/features/reader/readerBridge';
 
 type Tab = 'downloaded' | 'bookmarked';
 type BookmarkSource = 'mongo' | 'sqlite';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'MockLibrary'>;
+// Not registered in RootNavigator (this whole folder is scaffolding integration_ref.md marks as
+// not to carry forward — see its own header note) — types itself against its own param shape
+// rather than a live navigator's param list.
+type MockLibraryRouteParamList = {
+  MockLibrary: undefined;
+  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
+};
+
+type Props = NativeStackScreenProps<MockLibraryRouteParamList, 'MockLibrary'>;
 
 export function MockLibraryScreen({ navigation }: Props): React.JSX.Element {
   const online = useConnectivity();

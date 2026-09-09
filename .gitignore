@@ -35,6 +35,17 @@ GoogleService-Info.plist
 
 .DS_Store
 
+# Personal Claude Code files — not shared with the team.
+CLAUDE.md
+AUTH_CONTEXT.md
+.claude/
+docs/superpowers/
+.idea/
+
+PROJECT_CONTEXT.md
+TF_Reader_Design_Specification.md
+WEEK3_TASKS.md
+
 # scratch git worktrees (superpowers:using-git-worktrees) — never committed
 .worktrees/
 
@@ -48,7 +59,6 @@ mock-backend/
 # on-device plaintext itself (that copy must be deleted from the container after use).
 assets/20mb_EPUB.epub
 
-
 docs
 samples
 
@@ -59,6 +69,3 @@ samples
 # a local copy needed for `eas build` isn't silently committed with a feature change. If/when the
 # team decides to adopt EAS, delete this entry in the same change that adds the file back.
 eas.json
-
-.idea/
-

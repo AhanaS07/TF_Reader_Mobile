@@ -1,0 +1,91 @@
+{
+  "items": [
+    {
+      "id": "inst_7f3",
+      "name": "Imperial College London",
+      "country": "United Kingdom",
+      "code": "ICL",
+      "city": "London",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_7f3/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_7f3.png",
+        "primaryColor": "#003E74"
+      }
+    },
+    {
+      "id": "inst_a21",
+      "name": "University of Manchester",
+      "country": "United Kingdom",
+      "code": "UOM",
+      "city": "Manchester",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_a21/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_a21.png"
+      }
+    },
+    {
+      "id": "inst_b04",
+      "name": "Trinity College Dublin",
+      "country": "Ireland",
+      "code": "TCD",
+      "city": "Dublin",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_b04/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_b04.png"
+      }
+    },
+    {
+      "id": "inst_c88",
+      "name": "Kwame Nkrumah University of Science and Technology",
+      "country": "Ghana",
+      "code": "KNUST",
+      "city": "Kumasi",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_c88/catalogue"
+    },
+    {
+      "id": "inst_d15",
+      "name": "Universidade de São Paulo",
+      "country": "Brazil",
+      "code": "USP",
+      "city": "São Paulo",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_d15/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_d15.png"
+      }
+    },
+    {
+      "id": "inst_e62",
+      "name": "Indian Institute of Technology Bombay",
+      "country": "India",
+      "code": "IITB",
+      "city": "Mumbai",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_e62/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_e62.png",
+        "primaryColor": "#00519E"
+      }
+    },
+    {
+      "id": "inst_f39",
+      "name": "Nanyang Technological University",
+      "country": "Singapore",
+      "code": "NTU",
+      "city": "Singapore",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_f39/catalogue",
+      "branding": {
+        "logoUrl": "https://cdn.tf/crests/inst_f39.png"
+      }
+    },
+    {
+      "id": "inst_09c",
+      "name": "The Royal Netherlands Institute for Southeast Asian and Caribbean Studies",
+      "country": "Netherlands",
+      "code": "KITLV",
+      "city": "Leiden",
+      "catalogueUrl": "https://api.tf/opds/v1/institutions/inst_09c/catalogue"
+    }
+  ],
+  "total": 8,
+  "page": 0,
+  "size": 20
+}

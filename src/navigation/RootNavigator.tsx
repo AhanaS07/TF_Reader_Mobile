@@ -1,106 +1,335 @@
-// Owner: Reader (Ahana) for now — see the header note on BookListScreen.tsx for why this is still
-// dev scaffolding rather than a real library screen, and CLAUDE.md's "Temporary scaffolding"
-// section for what that means for deletion later.
-//
-// Replaces App.tsx's old state-swapped `bookId` picker with real routes: BookList is
-// the initial screen, Reader and AudioPlayer are pushed on top of it and pop back to it for free via
-// native-stack's own header back button. Nothing here owns book state any more — each screen reads
-// what it needs from its own route params.
-
-import { NavigationContainer } from '@react-navigation/native';
+// P0-6 — App shell and navigation (Keshav, paired with Khushi on BottomTabBar)
+import { StyleSheet, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
+import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation/bottom-tabs';
 
-import { useAutoSync } from '@/features/sync/useAutoSync';
-import type { BookId, ContentFormat } from '@/shared/contracts';
-import { MockLibraryScreen } from '@/features/sync/mock/MockLibraryScreen';
-import type { ReaderTarget } from '@/features/reader/readerBridge';
+import { useInstitutionStore } from '@store/institutionStore';
+import { useSessionStore } from '@store/sessionStore';
+import { color } from '@theme/tokens';
+import QueueNotificationHost from '../features/queue/QueueNotificationHost';
 
-import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
-import { BookInfoRouteScreen } from './BookInfoRouteScreen';
-import { BookListScreen } from './BookListScreen';
+import { TopAppBar } from '../components/TopAppBar';
+import { BottomTabBar } from '../components/BottomTabBar';
+import type { TabItem } from '../components/BottomTabBar';
+
+// Picks between the institution catalogue and the public one — see the file.
+import CatalogueHomeScreen from '../screens/CatalogueHomeScreen';
+import SearchScreen from '../screens/SearchScreen';
+import LibraryScreen from '../screens/LibraryScreen';
+import ProfileScreen from '../screens/ProfileScreen';
+import ReaderPreferencesScreen from '../screens/ReaderPreferencesScreen';
+import AccessibilityScreen from '../screens/AccessibilityScreen';
+import GalleryScreen from '../screens/GalleryScreen';
+import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
+import InstitutionListScreen from '../screens/InstitutionListScreen';
+import ItemDetailScreen from '../screens/ItemDetailScreen';
+import ShelfScreen from '../screens/ShelfScreen';
+import SignInScreen from '../screens/SignInScreen';
+import AccessGateScreen from '../screens/AccessGateScreen';
+import SignInMethodScreen from '../screens/SignInMethodScreen';
+import PersonalAccountScreen from '../screens/PersonalAccountScreen';
+
+// Reader engine integration seam (integration_ref.md Phase 2.1) — the reader team's own route
+// screens, mounted directly into the Catalogue/Search stacks rather than a separate flat shell.
 import { ReaderRouteScreen } from './ReaderRouteScreen';
+import { BookInfoRouteScreen } from './BookInfoRouteScreen';
 
-export type RootStackParamList = {
-  BookList: undefined;
-  // `format` travels as a param rather than being re-derived from `bookId` on the other side —
-  // it's fixture metadata BookListScreen already knows statically (same reasoning as the old
-  // DevFixture table in App.tsx), and ReaderRouteScreen needs it before ReaderScreen has resolved
-  // anything, to gate DevPreferencesMenu's format-specific sections.
-  //
-  // `initialTarget` is optional and orthogonal to `progressStore`'s own resume mechanism —
-  // ReaderRouteScreen prefers this when a caller supplies it (e.g. tapping a bookmark elsewhere in
-  // the app) and falls back to the stored reading position otherwise. Most callers (BookListScreen)
-  // never pass it.
-  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
-  // AUDIO PHASE 3. No `format` param — this route only ever hosts AUDIO, so there's nothing to
-  // gate the way ReaderRouteScreen gates DevPreferencesMenu's sections. `title` is fixture
-  // metadata BookListScreen already has statically, same reasoning `format` was passed for
-  // Reader. BookListScreen decides AUDIO vs Reader at tap time — this route never receives an
-  // EPUB/PDF bookId, and ReaderScreen never receives an AUDIO one.
-  AudioPlayer: { bookId: BookId; title: string };
-  // Accessibility's own screen (Day 3) — no `format` param, it re-derives one via
-  // getPublicationAccessibility's own getFormat(bookId) call.
-  BookInfo: { bookId: BookId };
-  // TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes.
-  MockLibrary: undefined;
-};
+import type {
+  RootStackParamList,
+  RootTabParamList,
+  CatalogueStackParamList,
+  SearchStackParamList,
+  LibraryStackParamList,
+  ProfileStackParamList,
+  PersonalAccountMode,
+} from './types';
 
-const Stack = createNativeStackNavigator<RootStackParamList>();
+// The header echoes the form the reader is looking at, and that form comes off the
+// route param, so the title is read from it rather than fixed per registration.
+function personalAccountTitle(mode: PersonalAccountMode) {
+  if (mode === 'signUp') return 'Create account';
+  return 'Sign in';
+}
 
-export function RootNavigator(): React.JSX.Element {
-  // Mounted here (the always-present app root) so the sync engine actually runs: it fires
-  // syncEngine.run() on app open and on every offline->online reconnect, draining the SQLite
-  // outbox to Mongo and pulling back. Without this call the whole sync layer was built but never
-  // triggered. Edge-triggered on connectivity, NOT on edits — an edit made while already online
-  // still waits for the next reconnect/app-open unless a per-edit push is added separately.
-  useAutoSync();
+const styles = StyleSheet.create({
+  splash: { flex: 1, backgroundColor: color.white },
+  root: { flex: 1 },
+});
+
+// ─── Navigator instances ──────────────────────────────────────────────────────
+
+const RootStack = createNativeStackNavigator<RootStackParamList>();
+const Tab = createBottomTabNavigator<RootTabParamList>();
+const CatalogueStack = createNativeStackNavigator<CatalogueStackParamList>();
+const SearchStack = createNativeStackNavigator<SearchStackParamList>();
+const LibraryStack = createNativeStackNavigator<LibraryStackParamList>();
+const ProfileStack = createNativeStackNavigator<ProfileStackParamList>();
+
+// ─── Tab config — drives both the navigator and BottomTabBar ─────────────────
+
+const TAB_CONFIG: TabItem[] = [
+  { key: 'Catalogue', label: 'Catalogue', iconActive: 'book', iconInactive: 'book-outline' },
+  { key: 'Search', label: 'Search', iconActive: 'search', iconInactive: 'search-outline' },
+  { key: 'Library', label: 'Library', iconActive: 'library', iconInactive: 'library-outline' },
+  { key: 'Profile', label: 'Profile', iconActive: 'person', iconInactive: 'person-outline' },
+];
+
+// ─── Header wrapper — reads safe-area inset and passes it to TopAppBar ───────
+
+function AppHeader({ route, options, back, navigation }: NativeStackHeaderProps) {
+  const insets = useSafeAreaInsets();
+  return (
+    <TopAppBar
+      title={options.title ?? route.name}
+      onBack={back ? navigation.goBack : undefined}
+      topInset={insets.top}
+    />
+  );
+}
+
+// ─── Tab bar wrapper — bridges React Navigation props to BottomTabBar ─────────
+
+function AppTabBar({ state, navigation, insets }: RNBottomTabBarProps) {
+  const activeKey = state.routes[state.index]?.name ?? 'Catalogue';
+  return (
+    <BottomTabBar
+      tabs={TAB_CONFIG}
+      activeKey={activeKey}
+      onTabPress={(key) => navigation.navigate(key)}
+      bottomInset={insets.bottom}
+    />
+  );
+}
+
+// ─── Nested stack navigators ─────────────────────────────────────────────────
+
+function CatalogueNavigator() {
+  return (
+    <CatalogueStack.Navigator screenOptions={{ header: (props) => <AppHeader {...props} /> }}>
+      <CatalogueStack.Screen
+        name="CatalogueHome"
+        component={CatalogueHomeScreen}
+        options={{ title: 'Taylor & Francis' }}
+      />
+      <CatalogueStack.Screen
+        name="InstitutionDetail"
+        component={InstitutionDetailScreen}
+        options={{ title: 'Institution' }}
+      />
+      <CatalogueStack.Screen
+        name="ItemDetail"
+        component={ItemDetailScreen}
+        options={{ title: 'Item Detail' }}
+      />
+      <CatalogueStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <CatalogueStack.Screen
+        name="Shelf"
+        component={ShelfScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
+      {/* 'fade', not 'slide_from_bottom' — the sheet's navy backdrop is part of
+          this screen, so a slide animation would translate the backdrop along
+          with the sheet, reading as a dark tint wiping up from the bottom.
+          The sheet still slides up on its own — see its Animated.View. */}
+      <CatalogueStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <CatalogueStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <CatalogueStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      {/* Reader engine integration seam — the screen sets its own header title via
+          navigation.setOptions (depends on the route's `format` param, not known here), so this
+          keeps the stack's own AppHeader rather than hiding it. `gestureEnabled: false` per
+          integration_ref.md: native-stack's default edge-swipe-back can conflict with the WebView's
+          own internal gesture recognizer — see ReaderRouteScreen.tsx's own note. */}
+      <CatalogueStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      {/* headerShown: false + presentation: 'modal': this screen adds its own close control
+          rather than relying on native-stack's default header back button. */}
+      <CatalogueStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
+      />
+    </CatalogueStack.Navigator>
+  );
+}
+
+function SearchNavigator() {
+  return (
+    <SearchStack.Navigator screenOptions={{ header: (props) => <AppHeader {...props} /> }}>
+      <SearchStack.Screen
+        name="SearchHome"
+        component={SearchScreen}
+        options={{ title: 'Search' }}
+      />
+      <SearchStack.Screen
+        name="ItemDetail"
+        component={ItemDetailScreen}
+        options={{ title: 'Item Detail' }}
+      />
+      <SearchStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <SearchStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <SearchStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <SearchStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.Reader — see its own comment there. */}
+      <SearchStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      <SearchStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
+      />
+    </SearchStack.Navigator>
+  );
+}
+
+function LibraryNavigator() {
+  return (
+    <LibraryStack.Navigator screenOptions={{ header: (props) => <AppHeader {...props} /> }}>
+      <LibraryStack.Screen
+        name="LibraryHome"
+        component={LibraryScreen}
+        options={{ title: 'Library' }}
+      />
+    </LibraryStack.Navigator>
+  );
+}
+
+function ProfileNavigator() {
+  return (
+    <ProfileStack.Navigator screenOptions={{ header: (props) => <AppHeader {...props} /> }}>
+      <ProfileStack.Screen
+        name="ProfileHome"
+        component={ProfileScreen}
+        options={{ title: 'Profile' }}
+      />
+      {/* Pushed from the "Reading Preferences" row on screen 10. The title
+          matches that row's own label, so the header echoes the thing that was
+          tapped. `AppHeader` supplies the back chevron because this is a pushed
+          screen rather than a tab root. */}
+      <ProfileStack.Screen
+        name="ReaderPreferences"
+        component={ReaderPreferencesScreen}
+        options={{ title: 'Reading Preferences' }}
+      />
+      {/* Pushed from the "Accessibility" row on screen 10, beside Reading
+          Preferences rather than inside it — see the header comment on
+          AccessibilityScreen.tsx for why the two are separate destinations. */}
+      <ProfileStack.Screen
+        name="Accessibility"
+        component={AccessibilityScreen}
+        options={{ title: 'Accessibility' }}
+      />
+      {/* The signed-out sign-in flow. All four are registered here rather than
+          reused from Catalogue so the reader stays on the Profile tab they
+          started from — see the note on ProfileStackParamList. */}
+      <ProfileStack.Screen
+        name="SignInMethod"
+        component={SignInMethodScreen}
+        options={{ title: 'Sign in' }}
+      />
+      <ProfileStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      <ProfileStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
+      />
+      <ProfileStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+    </ProfileStack.Navigator>
+  );
+}
+
+// ─── Bottom tab navigator ─────────────────────────────────────────────────────
+
+function TabNavigator() {
+  return (
+    <Tab.Navigator
+      tabBar={(props) => <AppTabBar {...props} />}
+      screenOptions={{ headerShown: false }}
+    >
+      <Tab.Screen name="Catalogue" component={CatalogueNavigator} />
+      <Tab.Screen name="Search" component={SearchNavigator} />
+      <Tab.Screen name="Library" component={LibraryNavigator} />
+      <Tab.Screen name="Profile" component={ProfileNavigator} />
+    </Tab.Navigator>
+  );
+}
+
+// ─── Root navigator (wraps tabs + Gallery modal) ──────────────────────────────
+
+export default function RootNavigator() {
+  const hasHydrated = useInstitutionStore((s) => s._hasHydrated);
+  const authReady = useSessionStore((s) => s._authReady);
+
+  if (!hasHydrated || !authReady) {
+    return <View style={styles.splash} />;
+  }
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator initialRouteName="BookList">
-        <Stack.Screen name="BookList" component={BookListScreen} options={{ title: 'TF Reader' }} />
-        {/*
-          title is set from inside the screen (ReaderRouteScreen's own useLayoutEffect) — it
-          depends on the route's `format` param, which isn't known here.
-
-          `gestureEnabled: false`: native-stack's default is an iOS edge-swipe-to-go-back gesture.
-          THE MECHANISM THIS ORIGINALLY DEFENDED AGAINST IS GONE: it named a raw PanResponder
-          ReaderScreen mounted over the whole book for its next/prev page-turn swipe, competing
-          with native-stack's own gesture for the same touch stream. That PanResponder was removed
-          when both reading gestures (long-press-to-select, directional-drag-to-turn-page) moved
-          INSIDE the WebView (see ReaderScreen.tsx's own note near its `viewer`, and
-          webview/src/touchGesture.ts) — there is no RN-side gesture responder over the book any
-          more. Whether the WebView's OWN internal gesture recognizer still conflicts with the
-          native-stack edge-swipe (a partial-then-cancelled swipe-back is a known trigger for
-          flaky blur/focus ordering) is UNVERIFIED — flip this only with a device check covering
-          that specifically, not on the strength of this comment. The symptom this was originally
-          fixed for (BookList's Pressables going dead after visiting Reader, no error) has not been
-          re-confirmed on a device either way. The header back button is untouched regardless and
-          is the only way back now; that is a fine trade since it already worked.
-        */}
-        <Stack.Screen
-          name="Reader"
-          component={ReaderRouteScreen}
-          options={{ gestureEnabled: false }}
+    <View style={styles.root}>
+      <RootStack.Navigator screenOptions={{ headerShown: false }}>
+        <RootStack.Screen name="Main" component={TabNavigator} />
+        <RootStack.Screen
+          name="Gallery"
+          component={GalleryScreen}
+          options={{
+            headerShown: true,
+            header: (props) => <AppHeader {...props} />,
+            title: 'State Gallery',
+          }}
         />
-        {/* No gestureEnabled: false here — AudioPlayerScreen has no competing PanResponder-style
-            swipe the way ReaderScreen does, so the default edge-swipe-back gesture is fine. */}
-        <Stack.Screen name="AudioPlayer" component={AudioPlayerRouteScreen} />
-        {/* headerShown: false + presentation: 'modal': this screen adds its own close control
-            (MIN_TOUCH_TARGET-sized), rather than relying on native-stack's default header back
-            button, which isn't chrome this screen owns. */}
-        <Stack.Screen
-          name="BookInfo"
-          component={BookInfoRouteScreen}
-          options={{ headerShown: false, presentation: 'modal' }}
-        />
-        {/* TEMP, with src/features/sync/mock/ — remove this route when that whole folder goes. */}
-        <Stack.Screen
-          name="MockLibrary"
-          component={MockLibraryScreen}
-          options={{ title: 'Sync Mock' }}
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
+      </RootStack.Navigator>
+      {/* D16 — global queue-offer banner. Sits above every screen so an offer is
+          answerable from wherever the reader is, not only from the item's own
+          detail screen. See QueueNotificationHost for why it lives here. */}
+      <QueueNotificationHost />
+    </View>
   );
 }

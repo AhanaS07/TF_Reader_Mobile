@@ -17,6 +17,11 @@
 // reconstructs fresh nested objects from SQLite rows, so there is nothing to alias.
 // First-run "no row at all -> defaults" is Sync's mergeSharedPrefs fallback, covered
 // on its side (contractConformance) — not re-proven here through its internals.
+//
+// The old-flat-accessibility-shape migration this file used to cover (Zustand's own
+// `persist.merge`) no longer applies — this store holds no client-side persisted shape of
+// its own to migrate. That concern now lives in Sync's SQLite-backed merge logic; see
+// `personalizationStore.fieldMerge.test.ts` / `accessibilityStore.fieldMerge.test.ts`.
 
 import { prefsStore } from '@/features/personalization/prefsStore';
 

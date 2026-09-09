@@ -14,17 +14,21 @@
 // and then throws "Unable to resolve module" the moment it executes. Importing
 // a real runtime value (ContentError is an enum, so it survives erasure) proves
 // the babel half is wired. A `import type` here would prove nothing.
-//
-// The old "temporary fixture picker" and "TTS Demo tab" describe blocks that used to live here
-// covered App.tsx's own state-swapped picker, which RootNavigator has replaced — see
-// src/navigation/BookListScreen.test.tsx for the equivalent coverage of the real routes.
-import { render } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
 
 import { ContentError } from '@/shared/contracts';
 
 import App from './App';
 
-// App now mounts useAutoSync (sync), which reads NetInfo through useConnectivity.
+// CatalogueScreen (the app's default route) now calls useNetworkStatus for
+// real, which talks to NetInfo — a library with no meaningful behaviour under
+// Jest. Mocked here for the same reason ItemDetailScreen.test.tsx mocks it:
+// this is a toolchain smoke test, not a network-state test.
+jest.mock('@hooks/useNetworkStatus', () => ({
+  useNetworkStatus: () => true,
+}));
+
+// App now also mounts useAutoSync (sync), which reads NetInfo through useConnectivity.
 // Real NetInfo has no JS-only implementation for Jest to fall back on - same mock
 // as useConnectivity.test.ts.
 jest.mock('@react-native-community/netinfo', () => ({
@@ -40,7 +44,7 @@ jest.mock('@react-native-community/netinfo', () => ({
 // real native module. That import runs at REQUIRE time regardless of which route is actually on
 // screen (native-stack lazily RENDERS screens, but the module graph is resolved eagerly). Same mock
 // as useTtsSession.test.ts, so this toolchain smoke test doesn't have to transform the real native
-// module. Still required after the TTS Demo route's removal — the reader itself pulls it in now.
+// module.
 jest.mock('@/features/accessibility/tts/ttsEngine', () => ({
   __esModule: true,
   default: {
@@ -63,14 +67,18 @@ describe('toolchain', () => {
   // RenderResult. Forget the `await` and you get the baffling
   // "getByText is not a function", because you destructured a Promise.
   it('renders the app root', async () => {
-    // NOT 'TF Reader': that text now lives only in native-stack's header CONFIG
-    // (`RNSScreenStackHeaderConfig title="TF Reader"`), which RNTL cannot query as text — it is a
-    // prop on a native config component, not a rendered <Text>. 'Audiobook (Encrypted)' is
-    // BookListScreen's own row content, unique among its rows (see BookListScreen.test.tsx), so it
-    // proves the navigator actually mounted and rendered its initial route. It replaced 'TTS Demo'
-    // when that row and its route were deleted.
-    const { getByText } = await render(<App />);
-    expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
+    // App now mounts the full navigator. 'Taylor & Francis' is the title
+    // TopAppBar renders on the Catalogue home screen. waitFor is needed
+    // here because bootstrapAuth() (an async secure-storage read) must
+    // settle and flip sessionStore._authReady before RootNavigator renders
+    // anything past the splash screen.
+    //
+    // getAllByText, not getByText: with no institution selected the home route
+    // is the public catalogue, and a publisher in that feed is legitimately
+    // called 'Taylor & Francis' too. Matching more than once is correct here —
+    // this is a toolchain smoke test, and the claim is that the tree rendered.
+    const { getAllByText } = await render(<App />);
+    await waitFor(() => expect(getAllByText('Taylor & Francis').length).toBeGreaterThan(0));
   });
 
   it('resolves the @/ alias to a runtime value', () => {

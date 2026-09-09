@@ -1,0 +1,145 @@
+{
+  "metadata": {
+    "title": "New this month",
+    "numberOfItems": 2,
+    "itemsPerPage": 20,
+    "currentPage": 0,
+    "modified": "2026-08-16T08:30:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_1?page=0",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9780367559021",
+        "title": "Sociology of Everyday Risk",
+        "author": [
+          {
+            "name": "Tom Weller"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2022-09-01",
+        "subject": [
+          {
+            "name": "Sociology"
+          }
+        ],
+        "numberOfPages": 298
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_soc",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/borrow",
+          "href": "https://api.tf/api/v1/loans?itemId=item_soc",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "application/epub+zip"
+              }
+            ],
+            "encrypted": {
+              "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+              "originalLength": 2210544
+            },
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_soc.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9780367211745",
+        "title": "Rights for Robots",
+        "author": [
+          {
+            "name": "Joshua C. Gellers"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2020-09-30",
+        "subject": [
+          {
+            "name": "Law"
+          },
+          {
+            "name": "Technology"
+          }
+        ],
+        "numberOfPages": 212
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_42",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/borrow",
+          "href": "https://api.tf/api/v1/loans?itemId=item_42",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "ELITE",
+            "indirectAcquisition": [
+              {
+                "type": "application/pdf"
+              }
+            ],
+            "copies": {
+              "total": 2
+            },
+            "encrypted": {
+              "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+              "originalLength": 6373752
+            },
+            "hasSearchIndex": true,
+            "canPersist": false
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_42.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    }
+  ]
+}

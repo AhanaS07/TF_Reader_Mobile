@@ -1,0 +1,601 @@
+// The Search tab — screen 09, the catalogue search surface. B1's query surface.
+//
+// IT RENDERS WHAT CAME BACK AND NOTHING ELSE. Catalogue search is server-side and
+// entitlement-scoped: "we filter, you render." There is no matching, no
+// tokenising, no ranking and no local narrowing anywhere below this line — the
+// query and the filters go out as one request, and the list is drawn in the order
+// it arrived. Everything that could tempt a screen into doing otherwise lives
+// behind `useCatalogueSearch`, which hands this file a lifecycle union and a list.
+//
+// SEARCH IS METADATA-ONLY, AND THE COPY HAS TO SAY SO. The corpus is title,
+// authors, subjects and description. It is NOT the text inside a book — that is a
+// separate index, per book, built at ingestion and owned by t4targaryen. The
+// placeholder and the line beneath the field both exist to stop a reader
+// concluding otherwise, because the failure is silent: they search for a phrase
+// they remember from chapter nine, get nothing, and reasonably decide the app is
+// broken.
+//
+// THE BADGE IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place
+// access logic may live (Design Spec §5.1) — this screen calls it per row and
+// passes only the resolved `.tier` into `ContentCard`'s `badge` slot. It never
+// reads `publication.acquisition.licenceModel` itself.
+//
+// EMPTY AND ERROR RENDER THROUGH THE SHARED COMPONENTS. Khushi's `EmptyState`
+// (K1) and `ErrorState` own this copy and this layout now that both exist —
+// this screen supplies only the variant and the already-resolved message, per
+// CONVENTIONS §3. Only the load-more failure stays inline: it is a row beneath
+// results already on screen, not a screen-level takeover either component models.
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
+import { useCurrentSession } from '@access/currentSession';
+import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
+import { ContentCard } from '@components/ContentCard';
+import { EmptyState } from '@components/EmptyState';
+import { ErrorState } from '@components/ErrorState';
+import { FilterSortSheet } from '@components/FilterSortSheet';
+import { SearchInput } from '@components/SearchInput';
+import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
+import { getSearchPipeline } from '@config/search';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
+import type { SearchFilters, SearchStatus, VoiceStatus } from '@/search';
+import { useCatalogueSearch, useVoiceSearch, VOICE_ERROR_COPY } from '@/search';
+import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
+import { useRecentSearchesStore } from '@store/recentSearchesStore';
+import { color, radius, space, type } from '@theme/tokens';
+
+// Composite, not a plain stack prop, because "Browse the full catalogue"
+// crosses into the Catalogue tab's Shelf screen — same cross-tab pattern
+// ProfileScreen and AccessGateScreen already use to reach the other tab.
+type Nav = CompositeNavigationProp<
+  NativeStackNavigationProp<SearchStackParamList, 'SearchHome'>,
+  BottomTabNavigationProp<RootTabParamList, 'Search'>
+>;
+
+const SKELETON_COUNT = 3;
+
+// ─── Copy ────────────────────────────────────────────────────────────────────
+
+// Stated twice, on purpose. The placeholder names the four fields so a reader
+// forms the right expectation before typing; the helper line rules out the wrong
+// one explicitly, because "searches titles" does not by itself tell anybody that
+// it does not also search inside the book.
+const PLACEHOLDER = 'Search titles, authors, subjects, and descriptions';
+const HELPER = 'Catalogue metadata only — this does not search inside books.';
+
+// Browse-instead cards cycle the accents so three targets do not read as one
+// block of colour. Cycled by INDEX, never chosen from the title — types.ts is
+// explicit that navigation is data, not code, and no shelf may be named in a
+// branch anywhere.
+//
+// A ramp of blues. The status and access-tier colours that used to be in this
+// cycle are semantic — see the CategoryCard header.
+const BROWSE_ACCENTS: readonly CategoryAccent[] = ['primary', 'navy', 'blueBright'];
+
+// How the recogniser's lifecycle renders. `VoiceStatus` is the machine
+// (src/search/voiceState.ts); `VoiceOverlayState` is the four things the surface
+// can look like — they are deliberately not the same list, because the overlay
+// has no reason to distinguish a refusal from a broken recogniser and the
+// machine very much does.
+//
+// A full Record, so a new `VoiceStatus` member is a compile error here rather
+// than a state that silently renders as something else.
+const VOICE_OVERLAY_STATE: Record<VoiceStatus, VoiceOverlayState> = {
+  // Never read — the overlay is hidden when the machine is closed. Present only
+  // because the map is exhaustive.
+  closed: 'listening',
+  // The OS permission dialog is covering the screen, so "Listening…" is what
+  // the reader sees behind it either way.
+  checkingPermission: 'listening',
+  listening: 'listening',
+  processing: 'transcribing',
+  done: 'success',
+  // All three are one surface: the copy carries the difference, and it comes
+  // from VOICE_ERROR_COPY rather than from a fourth visual state.
+  noSpeech: 'error',
+  permissionDenied: 'error',
+  failed: 'error',
+};
+
+// Search has no sort parameter at all — searchCatalogue's own contract carries
+// none (see SORT_ORDERS in model/types.ts). This satisfies FilterSortSheet's
+// required onSelectSort prop for a row that stays permanently disabled below.
+function noopSort() {
+  /* sort is not a search parameter — see sortDisabled on <FilterSortSheet> */
+}
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
+
+export default function SearchScreen() {
+  const navigation = useNavigation<Nav>();
+
+  // Null unless the reader has actually signed in — see currentSession.ts's
+  // note on why this replaced handToggledSession.
+  const session = useCurrentSession();
+
+  // The real institution, never a hardcoded fallback — null when the reader
+  // has no institution (not signed in, or an individual subscriber), in which
+  // case search runs as a public search instead of one scoped to a catalogue
+  // that doesn't apply to this reader. Every use below reads this instead of
+  // re-deriving it, so there's exactly one place this can go stale.
+  const institutionId = session !== null ? session.institutionId ?? null : null;
+
+  // Resolved once. `getSearchPipeline` is lazy and process-wide, so this is also
+  // where the fixture-vs-api choice gets made — by config, never by this file.
+  const pipeline = useMemo(() => getSearchPipeline(), []);
+  const search = useCatalogueSearch({
+    institutionId: institutionId ?? undefined,
+    pipeline,
+  });
+
+  // Client-side only — see recentSearchesStore.ts for why this is not a wokay
+  // capability. Recorded on submit, never on every keystroke: a draft is not
+  // a search until it is actually one.
+  const recentQueries = useRecentSearchesStore((s) => s.queries);
+  const addRecentQuery = useRecentSearchesStore((s) => s.addQuery);
+  const clearRecentQueries = useRecentSearchesStore((s) => s.clear);
+  const onSubmit = useCallback(() => {
+    addRecentQuery(search.draft);
+    search.onSubmit();
+  }, [addRecentQuery, search]);
+  const onSelectRecentQuery = useCallback(
+    (query: string) => {
+      search.onChangeQuery(query);
+      search.onSubmit();
+    },
+    [search],
+  );
+
+  // Screen 11. The overlay stays a pure view — the recogniser and the microphone
+  // permission live in this hook, and it knows nothing about searching.
+  const voice = useVoiceSearch();
+
+  // WHERE VOICE REJOINS ORDINARY SEARCH, and the whole of it. A transcript is
+  // "simply a second way to produce a query string", so it goes through the same
+  // two calls `onSelectRecentQuery` above makes — no voice-shaped search path,
+  // no second pipeline, and nothing new on the wire.
+  const onVoiceSubmit = useCallback(() => {
+    const transcript = voice.transcript.trim();
+    // Belt and braces: the machine cannot reach `submitted` from a silence, and
+    // the overlay disables Search without a transcript. Neither of those is
+    // visible from here, and a blank query fired at an entitlement-scoped
+    // endpoint is the failure worth two guards.
+    if (transcript.length === 0) return;
+
+    voice.onSubmit();
+    addRecentQuery(transcript);
+    search.onChangeQuery(transcript);
+    search.onSubmit();
+  }, [voice, addRecentQuery, search]);
+
+  // Filter & sort sheet — same draft-then-Apply shape ShelfScreen uses.
+  // `search.filters` already IS the applied value (it mirrors the reducer's
+  // own state), so unlike ShelfScreen there is no separate "applied" copy to
+  // keep here — only what the sheet is showing before Apply is pressed.
+  const [draftFilters, setDraftFilters] = useState<SearchFilters>({});
+  const [sheetVisible, setSheetVisible] = useState(false);
+
+  const openSheet = useCallback(() => {
+    setDraftFilters(search.filters);
+    setSheetVisible(true);
+  }, [search.filters]);
+
+  // Both setters fire in one synchronous handler, so React batches them into
+  // one re-render and the reducer threads them correctly — see
+  // searchState.ts's mergeFilters/beginSearch, which apply each action against
+  // the true prior state rather than a stale render-time snapshot. That is
+  // what lets one Apply press commit both dimensions together.
+  const applyFilters = useCallback(() => {
+    setSheetVisible(false);
+    search.onSelectContentType(draftFilters.contentType);
+    search.onSelectAccessTier(draftFilters.accessTier);
+  }, [draftFilters, search]);
+
+  const clearAllFilters = useCallback(() => {
+    setDraftFilters({});
+    setSheetVisible(false);
+    search.onSelectContentType(undefined);
+    search.onSelectAccessTier(undefined);
+  }, [search]);
+
+  const state: SearchStatus = search.state;
+  const hasResults = search.publications.length > 0;
+  const hasActiveFilter =
+    search.filters.contentType !== undefined || search.filters.accessTier !== undefined;
+  // A failure with results already on screen is a failed NEXT PAGE — the reader
+  // keeps what they were reading and gets a retry where the page would have been.
+  const pageFailed = state === 'error' && hasResults;
+
+  return (
+    <View style={styles.screen}>
+      <View style={styles.field}>
+        <SearchInput
+          value={search.draft}
+          placeholder={PLACEHOLDER}
+          onChangeText={search.onChangeQuery}
+          onSubmit={onSubmit}
+          onClear={search.onClear}
+          // Screen 09 is catalogue search, so the mic belongs here. Screen 06
+          // (institution search) passes nothing and gets no mic.
+          //
+          // The press asks for the microphone permission and then opens it —
+          // see `useVoiceSearch`. Nothing about a recogniser reaches this file.
+          onVoicePress={voice.onMicPress}
+        />
+
+        <Text testID="search-helper" style={styles.helper}>
+          {HELPER}
+        </Text>
+      </View>
+
+      {/* Content type and access tier both live behind this one sheet now —
+          same FilterSortSheet ShelfScreen already uses. Nothing re-searches
+          until Apply is pressed inside it. */}
+      <Pressable
+        testID="search-filter-button"
+        onPress={openSheet}
+        style={styles.filterButton}
+        accessibilityRole="button"
+        accessibilityLabel="Filter and sort"
+      >
+        <Text style={styles.filterButtonLabel}>Filter & Sort</Text>
+      </Pressable>
+
+      <ScrollView contentContainerStyle={styles.results}>
+        {state === 'idle' && (
+          <Text testID="search-idle" style={styles.message}>
+            Search this catalogue by title, author, subject or description.
+          </Text>
+        )}
+
+        {/* Recent searches — client-side only (recentSearchesStore.ts).
+            Shown only before a fresh query is typed: once a reader has
+            started their own, a list of old ones is clutter, not help. */}
+        {state === 'idle' && search.draft.trim().length === 0 && recentQueries.length > 0 && (
+          <View testID="search-recent" style={styles.recent}>
+            <View style={styles.recentHeader}>
+              <Text style={styles.recentHeading}>Recent searches</Text>
+              <Pressable
+                testID="search-recent-clear"
+                onPress={clearRecentQueries}
+                accessibilityRole="button"
+                accessibilityLabel="Clear recent searches"
+              >
+                <Text style={styles.action}>Clear</Text>
+              </Pressable>
+            </View>
+            {recentQueries.map((query) => (
+              <Pressable
+                key={query}
+                testID="search-recent-item"
+                onPress={() => onSelectRecentQuery(query)}
+                style={styles.recentRow}
+                accessibilityRole="button"
+                accessibilityLabel={`Search again for ${query}`}
+              >
+                <Text style={styles.recentRowLabel}>{query}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        {state === 'loading' &&
+          Array.from({ length: SKELETON_COUNT }, (_, index) => (
+            <ContentCard key={index} state="loading" title="" />
+          ))}
+
+        {/* THE ERROR STATE, and only for an actual failure. A response that
+            arrived and contained nothing never reaches this branch. */}
+        {state === 'error' && !hasResults && (
+          <View testID="search-error">
+            <ErrorState
+              variant={
+                search.errorCode === undefined ? 'not_ready' : catalogueErrorVariant(search.errorCode)
+              }
+              message={
+                search.errorCode === undefined
+                  ? 'The search could not be completed.'
+                  : CATALOGUE_ERROR_COPY[search.errorCode]
+              }
+              onRetry={search.onRetry}
+            />
+          </View>
+        )}
+
+        {/* THE ZERO-RESULT STATE. A successful response with nothing in it —
+            including one that carried no `publications` key at all and only
+            browse targets. Not an error, and it must never render as one.
+            A filter narrows the same query to nothing, which reads as a
+            different fact than the query itself matching nothing — hence the
+            two EmptyState variants rather than one generic message. */}
+        {state === 'empty' && (
+          <View testID="search-empty" style={styles.panel}>
+            <EmptyState
+              variant={hasActiveFilter ? 'no_filter_results' : 'no_query_results'}
+              query={search.query}
+              onClearFilters={clearAllFilters}
+              // Screen 17 — "Clear search" beside the no-results message. The
+              // same `onClear` the input's own clear button uses, so the two
+              // routes out of a dead query land in the same state.
+              onClearSearch={search.onClear}
+            />
+
+            {/* A shelf only exists within one institution's catalogue, so this
+                is only offered when the reader actually has one — otherwise
+                Shelf would receive an institutionId that isn't theirs. */}
+            {search.browseInstead.length > 0 && institutionId !== null && (
+              <View testID="search-browse-instead" style={styles.browse}>
+                <Text style={styles.browseHeading}>Browse instead</Text>
+                {search.browseInstead.map((entry, index) => (
+                  // Shelf now exists (Catalogue stack), so a shelf target crosses
+                  // tabs to it — same cross-tab pattern AccessGateScreen already
+                  // uses to reach SignIn. A catalogue target has no group to open
+                  // by id (see NavLink.target in types.ts) — getShelf would only
+                  // 404 on it — so it goes to the catalogue home instead.
+                  <CategoryCard
+                    key={entry.shelfId}
+                    title={entry.title}
+                    accent={BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]}
+                    onPress={() =>
+                      entry.target === 'shelf'
+                        ? navigation.navigate('Catalogue', {
+                            screen: 'Shelf',
+                            params: {
+                              shelfId: entry.shelfId,
+                              title: entry.title,
+                              institutionId,
+                            },
+                          })
+                        : navigation.navigate('Catalogue', { screen: 'CatalogueHome' })
+                    }
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
+        {search.publications.map((publication) => {
+          // SESSION PASSED, NOT NULL — corrected for D12. This used to pass
+          // `session: null` and say it matched CatalogueScreen and
+          // ItemDetailScreen; both actually pass `handToggledSession`, so this
+          // row was the outlier. It mattered: `resolveAccess` §4 answers
+          // `requires_signin` for ANY licensed tier when the session is null, so
+          // the Elite branch was unreachable here and a search result could
+          // never offer the queue. resolveAccess's own §5 states the goal this
+          // restores — "an Elite row resolving identically on a list and on a
+          // detail screen".
+          //
+          // No loan/hold: a search result carries no holdings. The session IS
+          // passed — that half is not part of the D12 revert, and it is what
+          // makes an Elite result resolve consistently with the detail screen.
+          const access = resolveAccess({
+            item: publication,
+            institutionId,
+            session,
+          });
+
+          return (
+            <ContentCard
+              key={publication.id}
+              title={publication.title}
+              publisher={publication.publisher}
+              imageUrl={publication.coverUrl}
+              // D8 — `not_entitled` renders nothing at all, badge included.
+              badge={
+                isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+              }
+              // NO `action` PROP. D12's Elite queue affordance is
+              // ItemDetailScreen only — confirmed team decision, 26 Aug.
+              onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
+            />
+          );
+        })}
+
+        {/* PAGINATION IS THE RESPONSE'S `next`, FOLLOWED. No page numbers: the
+            server said where the next page is, and there is nothing else to
+            offer — a numbered control would have to invent a total page count
+            from a cursor it cannot read. */}
+        {search.canLoadMore && (
+          <Pressable
+            testID="search-load-more"
+            onPress={search.onLoadMore}
+            style={styles.moreButton}
+            accessibilityRole="button"
+            accessibilityLabel="Show more results"
+          >
+            <Text style={styles.action}>Show more results</Text>
+          </Pressable>
+        )}
+
+        {/* One skeleton where the next page will land, so the list grows downward
+            instead of the results already read being replaced by a loading view. */}
+        {state === 'paging' && <ContentCard state="loading" title="" />}
+
+        {pageFailed && (
+          <View testID="search-page-error" style={styles.panel}>
+            <Text style={styles.message}>
+              {search.errorCode === undefined
+                ? 'More results could not be loaded.'
+                : CATALOGUE_ERROR_COPY[search.errorCode]}
+            </Text>
+            <Pressable
+              testID="search-retry-page"
+              onPress={search.onRetry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading more results"
+            >
+              <Text style={styles.action}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* Server-reported, never counted locally: `publications.length` is what
+            has been paged in so far, not how many there are. */}
+        {hasResults && search.totalItems !== undefined && (
+          <Text testID="search-total" style={styles.note}>
+            Showing {search.publications.length} of {search.totalItems}
+          </Text>
+        )}
+      </ScrollView>
+
+      {/* Screen 11. Still a pure view — every prop below is already-resolved
+          state, and the copy is looked up here rather than in the machine, the
+          same way this screen resolves CATALOGUE_ERROR_COPY for ErrorState. */}
+      <VoiceOverlay
+        visible={voice.status !== 'closed'}
+        state={VOICE_OVERLAY_STATE[voice.status]}
+        transcript={voice.transcript}
+        errorMessage={voice.errorCode === undefined ? undefined : VOICE_ERROR_COPY[voice.errorCode]}
+        onCancel={voice.onCancel}
+        onClear={voice.onClear}
+        onSubmit={onVoiceSubmit}
+      />
+
+      <FilterSortSheet
+        visible={sheetVisible}
+        onDismiss={() => setSheetVisible(false)}
+        contentType={draftFilters.contentType}
+        onSelectContentType={(contentType) =>
+          setDraftFilters((previous) => ({ ...previous, contentType }))
+        }
+        accessTier={draftFilters.accessTier}
+        onSelectAccessTier={(accessTier) =>
+          setDraftFilters((previous) => ({ ...previous, accessTier }))
+        }
+        sort={undefined}
+        onSelectSort={noopSort}
+        sortDisabled
+        onApply={applyFilters}
+        onClearAll={clearAllFilters}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: color.white,
+  },
+  // SearchInput sets no outer margin of its own (CONVENTIONS §8), so the screen
+  // laying it out provides the gutter.
+  field: {
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+  },
+  helper: {
+    fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+    marginTop: space.sm,
+  },
+  filterButton: {
+    alignSelf: 'flex-start',
+    marginHorizontal: space.md,
+    marginTop: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.border,
+  },
+  filterButtonLabel: {
+    fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
+    fontSize: type.button.size,
+    lineHeight: type.button.lineHeight,
+    color: color.textPrimary,
+  },
+  recent: {
+    gap: space.xs,
+  },
+  recentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.xs,
+  },
+  recentHeading: {
+    fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  recentRow: {
+    paddingVertical: space.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: color.border,
+  },
+  recentRowLabel: {
+    fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textPrimary,
+  },
+  note: {
+    fontWeight: type.meta.weight,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+    paddingHorizontal: space.md,
+    paddingTop: space.sm,
+    textAlign: 'center',
+  },
+  results: {
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+    paddingBottom: space.xl,
+    gap: space.sm,
+  },
+  panel: {
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.lg,
+  },
+  browse: {
+    alignSelf: 'stretch',
+    gap: space.sm,
+    marginTop: space.md,
+  },
+  browseHeading: {
+    fontWeight: type.sectionHeader.weight,
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  message: {
+    fontWeight: type.body.weight,
+    fontFamily: type.body.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textSecondary,
+    textAlign: 'center',
+  },
+  moreButton: {
+    height: space.xl + space.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.card,
+    borderWidth: 1,
+    borderColor: color.border,
+  },
+  action: {
+    fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
+    fontSize: type.button.size,
+    lineHeight: type.button.lineHeight,
+    color: color.primary,
+  },
+});

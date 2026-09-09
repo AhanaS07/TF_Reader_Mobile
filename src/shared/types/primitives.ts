@@ -22,6 +22,7 @@ export type Timestamp = number;
 
 // Content/asset format from the backend (source-of-truth contentType enum).
 // SINGLE SOURCE — Locator discriminants and search index format reference this
-// casing. AUDIO is encrypted (as of 2026-08-25), same AES-256-GCM as EPUB/PDF;
-// never has a search index.
+// casing. AUDIO never has a search index. It CAN be encrypted (reversed 3 Sep
+// 2026 — backend team confirmed audio will ship encrypted, contradicting the
+// original "audio is always plaintext" assumption baked into content-provider.ts).
 export type ContentFormat = 'PDF' | 'EPUB' | 'AUDIO';

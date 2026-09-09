@@ -1,0 +1,340 @@
+// P0-3/P0-4 (Prayas) — wires CategoryCard and ContentCard to the DataSource seam.
+//
+// SHAPE FOLLOWS THE FEED, NOT THE MOCKUP'S TAB BEHAVIOUR. The top strip is one
+// CategoryCard per `catalogue.navigation` entry; the "Recently published" section
+// below is the home catalogue's OWN shelves, each under its own heading. Both
+// lists come from the feed and neither has a fixed length or a known name — an
+// administrator configures the shelves per institution (AGENTS.md L-5, settled
+// 16 Aug 2026), so handle none, one and many.
+//
+// Tapping a category card does not filter the list below. A shelf is not a
+// filter: it pushes ShelfDetail (ShelfScreen), which fetches that shelf's own
+// full, paginated listing via getShelf(). See ShelfScreen.tsx.
+//
+// THE INSTITUTION ARRIVES AS A PROP, and there is no fallback id any more.
+// CatalogueHomeScreen owns the choice: a reader without an institution gets
+// PublicCatalogueScreen instead of this one, so by the time this renders there
+// is always a real institution. The old `?? 'inst_7f3'` quietly served one
+// institution's catalogue to a reader who had picked none — the bug A1 fixes.
+// The picker above the category row still navigates to the list to change it.
+//
+// THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
+// passes only the resulting `.tier` into ContentCard's slot — reading
+// `publication.acquisition.licenceModel` in this file would be the Design Spec
+// §5.1 violation ("the UI must never calculate access rights"). The session
+// comes from `handToggledSession` — A7's stand-in for real sign-in — which is
+// never null here: CatalogueHomeScreen only renders this screen once an
+// institution is selected. loan/hold are joined per item from the library cache
+// so each badge reflects the reader's live holdings without a per-card call.
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import EmptyState from '@/components/EmptyState';
+import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
+import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
+import { ContentCard } from '../components/ContentCard';
+import { ErrorState } from '@components/ErrorState';
+import { SectionHeader } from '../components/SectionHeader';
+import { getCatalogueSource } from '../config/catalogue';
+import { type CatalogueError, isCatalogueFailure } from '@model/errors';
+import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
+import type { Catalogue } from '../model/types';
+import type { CatalogueStackParamList } from '../navigation/types';
+import type { Institution } from '@model/institution';
+import { color, space, type as typeScale } from '../theme/tokens';
+import { useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
+import OfflineBanner from '@/components/OfflineBanner';
+import { useLibraryStore } from '@store/libraryStore';
+
+type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
+
+// Cycled by POSITION, never by shelf name — types.ts: "NAVIGATION IS DATA, NOT
+// CODE ... no shelf is named in a type or a branch anywhere". There are already
+// more shelves than accents, so the cycle wraps rather than running out.
+//
+// A ramp of blues, ordered so adjacent cards alternate light and dark rather
+// than putting two near-identical shades side by side. The status and
+// access-tier colours that used to be in this cycle are semantic — see the
+// CategoryCard header.
+const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'blueBright', 'blueDeep'];
+
+// How many skeleton rows/cards to show before the first real payload arrives.
+// Arbitrary — there is no data yet to size it from.
+const SKELETON_COUNT = 3;
+
+export interface CatalogueScreenProps {
+  institution: Institution;
+}
+
+export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
+  const navigation = useNavigation<Nav>();
+  const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  // Undefined covers both "no failure" and "failed with something that was not
+  // a CatalogueFailure" — the fallback copy below handles the second case, the
+  // same way SearchScreen's own errorCode does.
+  const [errorCode, setErrorCode] = useState<CatalogueError | undefined>(undefined);
+
+  const isOnline = useNetworkStatus();
+
+  const institutionId = institution.id;
+
+  // Null unless the reader has actually signed in — selecting an institution
+  // alone is no longer enough (see currentSession.ts's note on why this
+  // replaced handToggledSession).
+  const session = useCurrentSession();
+
+  // getHomeCatalogue now requires this (wokay's contract: appToken), but this
+  // screen mounts off institution selection alone, ahead of sign-in — a
+  // reader can be looking at it, signed out and failed, with the sign-in
+  // sheet stacked on top. Without isSignedIn in fetchCatalogue's deps, a
+  // sign-in completing while this screen stays mounted would never re-run
+  // the effect below, leaving the reader stuck on the earlier failure until
+  // they pressed Retry themselves.
+  const isSignedIn = useIsSignedIn();
+
+  // Holdings joined per item so each badge reflects the reader's live state.
+  // One fetch per mount — not one per card.
+  const loans = useLibraryStore((s) => s.loans);
+  const holds = useLibraryStore((s) => s.holds);
+
+  const refresh = useLibraryStore((s) => s.refresh);
+
+  // A7 — keyed on the institution, not one shared offset: signing out swaps this
+  // screen for the public feed, and each has its own place to return to. Changing
+  // institution is a different feed too, so it starts at the top.
+  const { scrollRef, onScroll, onContentSizeChange } = useFeedScrollMemory(institutionId);
+
+  let body: ReactNode;
+  // No synchronous setState here — only inside the async continuations. A
+  // setState reachable directly from an effect body triggers a lint error
+  // ("cascading renders"); `loading`/`failed` are also already at these exact
+  // values on mount, so resetting them here would be redundant anyway. Retry
+  // is the one path that truly needs to reset them, and it runs from a press
+  // handler, not an effect — see below.
+  const fetchCatalogue = useCallback(() => {
+    getCatalogueSource()
+      .getHomeCatalogue(institutionId)
+      .then((result) => {
+        setCatalogue(result);
+        // Clears a failure left over from a previous institution — this fetch
+        // succeeded, so a stale "no catalogue" from before must not stick
+        // around when the reader switches back to one that works.
+        setFailed(false);
+        setErrorCode(undefined);
+      })
+      .catch((err: unknown) => {
+        setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
+        setFailed(true);
+      })
+      .finally(() => setLoading(false));
+    // isSignedIn is intentionally listed even though the body never reads it:
+    // getHomeCatalogue's own success depends on it (appToken), so a sign-in
+    // completing while this screen is mounted must give fetchCatalogue a new
+    // identity to re-run the effect below — see the isSignedIn comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [institutionId, isSignedIn]);
+
+  useEffect(() => {
+    fetchCatalogue();
+    // Populate the holdings cache once per mount so every card's badge is live
+    // rather than the empty-cache default. Runs in parallel with fetchCatalogue.
+    void refresh();
+  }, [fetchCatalogue, refresh]);
+
+  const retry = useCallback(() => {
+    setLoading(true);
+    setFailed(false);
+    fetchCatalogue();
+  }, [fetchCatalogue]);
+
+  if (failed) {
+    body = (
+      <View style={styles.center}>
+        <ErrorState
+          variant={errorCode === undefined ? 'not_ready' : catalogueErrorVariant(errorCode)}
+          message={errorCode === undefined ? "Couldn't load the catalogue." : CATALOGUE_ERROR_COPY[errorCode]}
+          onRetry={retry}
+        />
+      </View>
+    );
+  }
+  else{
+    body = (
+      <ScrollView
+        testID="catalogue-feed"
+        ref={scrollRef}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={onContentSizeChange}
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+      >
+      <Pressable
+        style={styles.institutionPicker}
+        onPress={() => navigation.navigate('InstitutionList')}
+        accessibilityRole="button"
+        accessibilityLabel="Change institution"
+      >
+        <Text style={styles.institutionName} numberOfLines={1}>
+          {institution.name}
+        </Text>
+        <Text style={styles.institutionChange}>Change</Text>
+      </Pressable>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.categoryStrip}
+      >
+        {loading
+          ? ACCENTS.slice(0, SKELETON_COUNT).map((accent, index) => (
+              <View key={index} style={styles.categoryCard}>
+                <CategoryCard title="" state="loading" accent={accent} />
+              </View>
+            ))
+          : catalogue?.navigation.map((entry, index) => (
+              <View key={entry.shelfId} style={styles.categoryCard}>
+                <CategoryCard
+                  title={entry.title}
+                  accent={ACCENTS[index % ACCENTS.length]}
+                  // `title` rides along so the pushed screen's app bar can name
+                  // the shelf immediately, before its feed has loaded, and
+                  // `institutionId` so the listing is fetched for the same
+                  // institution whose catalogue advertised this entry.
+                  onPress={() =>
+                    navigation.navigate('Shelf', {
+                      shelfId: entry.shelfId,
+                      title: entry.title,
+                      institutionId,
+                    })
+                  }
+                />
+              </View>
+            ))}
+      </ScrollView>
+
+      {loading
+        ? Array.from({ length: SKELETON_COUNT }, (_, index) => (
+            <ContentCard key={index} state="loading" title="" />
+          ))
+        :catalogue?.shelves.length !== 0 ? catalogue?.shelves.map((shelf) => (
+            <View key={shelf.id} style={styles.section}>
+              {/* No `actionLabel`: these are the home-catalogue's own preview
+                  shelves, not one of the tappable navigation categories above,
+                  so there is no "See all" destination for them. Screen 01's
+                  design shows no action on these headers either. */}
+              <SectionHeader title={shelf.title} />
+              <View style={styles.list}>
+                {shelf.publications.map((publication) => {
+                  const pubLoan = loans.find((l) => l.itemId === publication.id);
+                  const pubHold = holds.find((h) => h.itemId === publication.id);
+                  const access = resolveAccess({
+                    item: publication,
+                    institutionId,
+                    session,
+                    loan: pubLoan,
+                    hold: pubHold,
+                  });
+                  return (
+                    <ContentCard
+                      key={publication.id}
+                      title={publication.title}
+                      publisher={publication.publisher}
+                      imageUrl={publication.coverUrl}
+                      format={publication.format}
+                      // D8 — `not_entitled` renders nothing at all, badge
+                      // included. `tier` is a required field, so that state
+                      // carries an OPEN_ACCESS filler; drawing it would label a
+                      // title the reader cannot open as free to read.
+                      badge={
+                        isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
+                      }
+                      // No `action`: the Elite queue button ("Grant access") is
+                      // ItemDetailScreen only, not on this shelf row.
+                      onPress={() =>
+                        navigation.navigate('ItemDetail', { itemId: publication.id })
+                      }
+                    />
+                  );
+                })}
+              </View>
+            </View>
+          )) : (
+            <EmptyState variant="no_content"/>
+          )}
+    </ScrollView>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      <OfflineBanner visible={!isOnline} />
+      {body}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: color.white,
+  },
+  institutionPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    backgroundColor: color.white,
+    borderRadius: space.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  institutionName: {
+    flex: 1,
+    fontWeight: typeScale.body.weight,
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textPrimary,
+  },
+  institutionChange: {
+    fontWeight: typeScale.button.weight,
+    fontFamily: typeScale.button.fontFamily,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
+    marginLeft: space.sm,
+  },
+  content: {
+    padding: space.md,
+    gap: space.lg,
+  },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+    backgroundColor: color.white,
+  },
+  categoryStrip: {
+    gap: space.md,
+    paddingHorizontal: space.xs,
+  },
+  // The strip owns tile width; neither card sets its own (CONVENTIONS §8).
+  categoryCard: {
+    width: space.xl * 5,
+  },
+  section: {
+    gap: space.sm,
+  },
+  list: {
+    gap: space.sm,
+  },
+});

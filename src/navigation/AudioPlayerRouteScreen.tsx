@@ -93,11 +93,14 @@ import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlaye
 import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
-import type { Locator } from '@/shared/contracts';
+import type { BookId, Locator } from '@/shared/contracts';
 
-import type { RootStackParamList } from './RootNavigator';
+// Not yet registered in RootNavigator (Phase 4.4 of integration_ref.md — the AudioPlayer route into
+// the tab-based Catalogue/Search stacks is still pending), so this types itself against its own
+// param shape rather than a live navigator's param list. Update this if/when the route is wired.
+type AudioPlayerRouteParamList = { AudioPlayer: { bookId: BookId; title: string } };
 
-type Props = NativeStackScreenProps<RootStackParamList, 'AudioPlayer'>;
+type Props = NativeStackScreenProps<AudioPlayerRouteParamList, 'AudioPlayer'>;
 
 // Ticks arrive every 250ms (audioPlayerInstance.ts's updateInterval). Writing to SQLite (and
 // enqueueing an outbox row) on each one would be ~4 writes a second for a value nobody reads until

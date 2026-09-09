@@ -84,9 +84,12 @@ import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId, Locator } from '@/shared/contracts';
 
 import { DevPreferencesMenu } from '../../DevPreferencesMenu';
-import type { RootStackParamList } from './RootNavigator';
+import type { CatalogueStackParamList } from './types';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Reader'>;
+// Registered identically in both CatalogueStackParamList and SearchStackParamList (integration_ref.md
+// Phase 2.1) — Catalogue's shape is used here for typing since the two are structurally identical
+// for every route name this screen navigates to.
+type Props = NativeStackScreenProps<CatalogueStackParamList, 'Reader'>;
 
 // Reading is user-paced far below AUDIO's 250ms tick rate, but PDF's scroll-mode `virtualize()`
 // (pdf.entry.ts) posts `relocated` on every rAF during a continuous drag — unthrottled writes there

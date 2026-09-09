@@ -1,0 +1,383 @@
+{
+  "metadata": {
+    "title": "Imperial College London Library",
+    "numberOfItems": 8,
+    "modified": "2026-08-16T08:30:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/catalogue",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "navigation": [
+    {
+      "title": "All titles",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/all",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    },
+    {
+      "title": "New this month",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_1",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    },
+    {
+      "title": "Nineteenth-century literary criticism",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_2",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    },
+    {
+      "title": "Audio picks",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_3",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    }
+  ],
+  "groups": [
+    {
+      "metadata": {
+        "title": "New this month",
+        "numberOfItems": 2
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_1",
+          "type": "application/opds+json",
+          "title": "Open this shelf"
+        }
+      ],
+      "publications": [
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:isbn:9780367559021",
+            "title": "Sociology of Everyday Risk",
+            "author": [
+              {
+                "name": "Tom Weller"
+              }
+            ],
+            "publisher": {
+              "name": "Routledge"
+            },
+            "language": "en",
+            "published": "2022-09-01",
+            "subject": [
+              {
+                "name": "Sociology"
+              }
+            ],
+            "numberOfPages": 298
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_soc",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/borrow",
+              "href": "https://api.tf/api/v1/loans?itemId=item_soc",
+              "type": "application/json",
+              "properties": {
+                "licenceModel": "SUBSCRIPTION",
+                "indirectAcquisition": [
+                  {
+                    "type": "application/epub+zip"
+                  }
+                ],
+                "encrypted": {
+                  "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+                  "originalLength": 2210544
+                },
+                "hasSearchIndex": true,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            {
+              "href": "https://cdn.tf/covers/item_soc.jpg",
+              "type": "image/jpeg",
+              "width": 400,
+              "height": 600
+            }
+          ]
+        },
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:isbn:9780367211745",
+            "title": "Rights for Robots",
+            "author": [
+              {
+                "name": "Joshua C. Gellers"
+              }
+            ],
+            "publisher": {
+              "name": "Routledge"
+            },
+            "language": "en",
+            "published": "2020-09-30",
+            "subject": [
+              {
+                "name": "Law"
+              },
+              {
+                "name": "Technology"
+              }
+            ],
+            "numberOfPages": 212
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_42",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/borrow",
+              "href": "https://api.tf/api/v1/loans?itemId=item_42",
+              "type": "application/json",
+              "properties": {
+                "licenceModel": "ELITE",
+                "indirectAcquisition": [
+                  {
+                    "type": "application/pdf"
+                  }
+                ],
+                "copies": {
+                  "total": 2
+                },
+                "encrypted": {
+                  "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+                  "originalLength": 6373752
+                },
+                "hasSearchIndex": true,
+                "canPersist": false
+              }
+            }
+          ],
+          "images": [
+            {
+              "href": "https://cdn.tf/covers/item_42.jpg",
+              "type": "image/jpeg",
+              "width": 400,
+              "height": 600
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "title": "Criticism & theory, 1800–1899",
+        "numberOfItems": 2
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_2",
+          "type": "application/opds+json",
+          "title": "Open this shelf"
+        }
+      ],
+      "publications": [
+        {
+          "metadata": {
+            "@type": "http://schema.org/Book",
+            "identifier": "urn:isbn:9781138385047",
+            "title": "The Victorian Serial and Its Readers",
+            "author": [
+              {
+                "name": "Linda K. Hughes"
+              }
+            ],
+            "publisher": {
+              "name": "Routledge"
+            },
+            "language": "en",
+            "published": "2019-06-11",
+            "subject": [
+              {
+                "name": "Literary Criticism"
+              },
+              {
+                "name": "Victorian Studies"
+              }
+            ],
+            "numberOfPages": 334
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_c19",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/borrow",
+              "href": "https://api.tf/api/v1/loans?itemId=item_c19",
+              "type": "application/json",
+              "properties": {
+                "licenceModel": "ELITE",
+                "indirectAcquisition": [
+                  {
+                    "type": "application/epub+zip"
+                  }
+                ],
+                "copies": {
+                  "total": 5
+                },
+                "encrypted": {
+                  "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+                  "originalLength": 4180992
+                },
+                "hasSearchIndex": true,
+                "canPersist": false
+              }
+            }
+          ],
+          "images": [
+            {
+              "href": "https://cdn.tf/covers/item_c19.jpg",
+              "type": "image/jpeg",
+              "width": 400,
+              "height": 600
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "title": "Audio picks",
+        "numberOfItems": 2
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/shelf_3",
+          "type": "application/opds+json",
+          "title": "Open this shelf"
+        }
+      ],
+      "publications": [
+        {
+          "metadata": {
+            "@type": "http://schema.org/Audiobook",
+            "identifier": "urn:tf:catalogue:item_stat",
+            "title": "Statistics for Social Research",
+            "author": [
+              {
+                "name": "Marta Silva"
+              }
+            ],
+            "publisher": {
+              "name": "Routledge"
+            },
+            "language": "en",
+            "published": "2019-11-04",
+            "subject": [
+              {
+                "name": "Research Methods"
+              }
+            ]
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_stat",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition",
+              "href": "https://api.tf/api/v1/loans?itemId=item_stat",
+              "type": "application/json",
+              "properties": {
+                "licenceModel": "SUBSCRIPTION",
+                "indirectAcquisition": [
+                  {
+                    "type": "audio/mpeg"
+                  }
+                ],
+                "hasSearchIndex": false,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            {
+              "href": "https://cdn.tf/covers/item_stat.jpg",
+              "type": "image/jpeg",
+              "width": 400,
+              "height": 600
+            }
+          ]
+        },
+        {
+          "metadata": {
+            "@type": "http://schema.org/Audiobook",
+            "title": "Voices of the Archive",
+            "author": [
+              {
+                "name": "Priya Raman"
+              }
+            ],
+            "publisher": {
+              "name": "Routledge"
+            },
+            "language": "en",
+            "published": "2024-05-09",
+            "subject": [
+              {
+                "name": "Oral History"
+              }
+            ]
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_aud2",
+              "type": "application/opds-publication+json"
+            },
+            {
+              "rel": "http://opds-spec.org/acquisition/open-access",
+              "href": "https://api.tf/api/v1/content/item_aud2/access",
+              "type": "application/json",
+              "properties": {
+                "licenceModel": "OPEN_ACCESS",
+                "indirectAcquisition": [
+                  {
+                    "type": "audio/mpeg"
+                  }
+                ],
+                "hasSearchIndex": false,
+                "canPersist": true
+              }
+            }
+          ],
+          "images": [
+            {
+              "href": "https://cdn.tf/covers/item_aud2.jpg",
+              "type": "image/jpeg",
+              "width": 400,
+              "height": 600
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

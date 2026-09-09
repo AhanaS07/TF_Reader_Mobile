@@ -7,9 +7,9 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { AccessibilityInfoScreen } from '@/features/accessibility/AccessibilityInfoScreen';
 
-import type { RootStackParamList } from './RootNavigator';
+import type { CatalogueStackParamList } from './types';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'BookInfo'>;
+type Props = NativeStackScreenProps<CatalogueStackParamList, 'BookInfo'>;
 
 export function BookInfoRouteScreen({ route, navigation }: Props): React.JSX.Element {
   const { bookId } = route.params;

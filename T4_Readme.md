@@ -201,6 +201,6 @@ scroll).
 
 ## Deferred
 
-`offline-lock.ts` is finalised jointly by **Sync** (Karthik) and **Encryption** (Abhinav). Its
-export is commented out of `src/shared/contracts/index.ts`; restore that line when the file lands.
-The `content.lock` / `content.unlock` signals live there.
+`offline-lock.ts` was finalised jointly by **Sync** (Karthik) and **Encryption** (Abhinav) and is
+now live-exported from `src/shared/contracts/index.ts` — see CLAUDE.md's "Known open items" for
+current status. The `content.lock` / `content.unlock` signals live there.

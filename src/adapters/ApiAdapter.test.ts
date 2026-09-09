@@ -1,0 +1,863 @@
+// src/adapters/ApiAdapter.test.ts
+// ApiAdapter runs the SAME conformance suite as MockAdapter, with fetch replaced
+// by a fake that serves the frozen fixtures over the URL scheme the real API is
+// expected to use. That is what makes "interchangeable" checkable today: api.tf
+// does not exist, but the adapter's parsing, URL building and error mapping all
+// do, and all three are exercised here.
+import { ApiAdapter, withAuthHeader, type FetchLike, type FetchResponse } from '@adapters/ApiAdapter';
+import {
+  DENIED_BATCH_ITEM_ID,
+  describeCatalogueSourceConformance,
+  KNOWN_INSTITUTION,
+  KNOWN_PUBLICATION,
+  KNOWN_SHELF,
+} from '@adapters/conformance';
+import { describeInstitutionSourceConformance } from '@adapters/institutionConformance';
+import { CatalogueError } from '@model/errors';
+import { normalizeInstitutionList } from '@model/institution';
+import { idFromHref } from '@model/opds/rels';
+
+import batchItemsFixture from '@model/fixtures/batch-items.json';
+import homeCatalogueFixture from '@model/fixtures/OPDS-samples/01-home-catalogue.json';
+import newInstitutionCatalogueFixture from '@model/fixtures/OPDS-samples/02-home-catalogue-new-institution.json';
+import allTitlesPage0Fixture from '@model/fixtures/OPDS-samples/03-shelf-all-page0.json';
+import allTitlesPage1Fixture from '@model/fixtures/OPDS-samples/04-shelf-all-page1.json';
+import curatedShelfFixture from '@model/fixtures/OPDS-samples/05-shelf-curated-page0.json';
+import curatedShelfAltFixture from '@model/fixtures/OPDS-samples/06-shelf-curated-alt-page0.json';
+import publicationDetailFixture from '@model/fixtures/OPDS-samples/07-publication-detail.json';
+import publicCataloguePage0Fixture from '@model/fixtures/OPDS-samples/08-public-catalogue-page0.json';
+import publicCataloguePage1Fixture from '@model/fixtures/OPDS-samples/09-public-catalogue-page1.json';
+import institutionsFixture from '@model/fixtures/institutions.json';
+
+const BASE_URL = 'https://api.tf';
+
+function ok(body: unknown): FetchResponse {
+  return { ok: true, status: 200, json: async () => body };
+}
+
+function notFound(): FetchResponse {
+  return { ok: false, status: 404, json: async () => ({}) };
+}
+
+// The institution id inside a fixture's own self href, so no id is written twice.
+function selfHrefOf(fixture: unknown): string {
+  const { links } = fixture as { links: { rel: string; href: string }[] };
+  const self = links.find((link) => link.rel === 'self');
+  if (self === undefined) throw new Error('fixture has no self link');
+  return self.href;
+}
+
+function institutionIdOf(fixture: unknown): string {
+  const match = /\/institutions\/([^/]+)\//.exec(selfHrefOf(fixture));
+  if (match === null) throw new Error('fixture self href names no institution');
+  return match[1];
+}
+
+const CATALOGUE_BY_INSTITUTION: Record<string, unknown> = {
+  [institutionIdOf(homeCatalogueFixture)]: homeCatalogueFixture,
+  [institutionIdOf(newInstitutionCatalogueFixture)]: newInstitutionCatalogueFixture,
+};
+
+// Shelf listings keyed by the id in each fixture's own self href, so no shelf
+// name is spelled out here — the ids are the administrator's, not ours. Index in
+// the array is the page number.
+const SHELF_PAGES = new Map<string, unknown[]>();
+for (const pages of [
+  [allTitlesPage0Fixture, allTitlesPage1Fixture],
+  [curatedShelfFixture],
+  [curatedShelfAltFixture],
+]) {
+  SHELF_PAGES.set(idFromHref(selfHrefOf(pages[0])), pages);
+}
+
+const PUBLIC_PAGES = [publicCataloguePage0Fixture, publicCataloguePage1Fixture];
+
+// Every publication the public feed lists, keyed by the id in its own self href.
+const PUBLIC_PUBLICATIONS = new Map<string, unknown>();
+for (const page of PUBLIC_PAGES) {
+  for (const publication of page.publications) {
+    PUBLIC_PUBLICATIONS.set(idFromHref(selfHrefOf(publication)), publication);
+  }
+}
+
+// F9's known items, keyed by the fixture's own item id — same idiom as
+// PUBLIC_PUBLICATIONS above.
+const BATCH_ITEMS_BY_ID = new Map<string, unknown>();
+for (const item of batchItemsFixture.items) {
+  BATCH_ITEMS_BY_ID.set(item.id, item);
+}
+
+// Serves the fixtures at the paths the real OPDS API is expected to expose,
+// derived from the self-hrefs inside the fixtures themselves.
+const serveFixtures: FetchLike = async (url, init) => {
+  const { pathname, searchParams } = new URL(url);
+
+  // items:batch lives at the API host's root (/api/v1/...), a sibling
+  // namespace to every /opds/v1/... route below — checked first purely for
+  // visibility, no collision risk since the prefixes are disjoint.
+  if (pathname === '/api/v1/catalogue/items:batch') {
+    const parsedBody = JSON.parse((init?.body as string | undefined) ?? '{}') as {
+      ids?: string[];
+    };
+    const requested = parsedBody.ids ?? [];
+    if (requested.length > 100) {
+      return { ok: false, status: 400, json: async () => ({ code: 'TOO_MANY_IDS' }) };
+    }
+    const items: unknown[] = [];
+    const notFoundIds: string[] = [];
+    const deniedIds: string[] = [];
+    for (const id of requested) {
+      if (id === DENIED_BATCH_ITEM_ID) {
+        deniedIds.push(id);
+        continue;
+      }
+      const item = BATCH_ITEMS_BY_ID.get(id);
+      if (item === undefined) {
+        notFoundIds.push(id);
+        continue;
+      }
+      items.push(item);
+    }
+    return ok({ items, notFound: notFoundIds, denied: deniedIds });
+  }
+
+  // The public routes come next: '/public' would otherwise match the
+  // `/institutions/([^/]+)` patterns below if those paths ever loosen, and a
+  // public request quietly answered by an institution fixture is exactly the
+  // bug this whole card exists to prevent.
+  if (pathname === '/opds/v1/public/catalogue') {
+    // Paged on the query string, exactly as the adapter builds it — serving page
+    // 0 for every request would let the adapter drop the param entirely and
+    // nothing here would notice.
+    const page = searchParams.get('page');
+    const body = PUBLIC_PAGES[page === null ? 0 : Number(page)];
+    return body === undefined ? notFound() : ok(body);
+  }
+
+  const publicPublication = /^\/opds\/v1\/public\/publications\/([^/]+)$/.exec(pathname);
+  if (publicPublication) {
+    const body = PUBLIC_PUBLICATIONS.get(decodeURIComponent(publicPublication[1]));
+    return body === undefined ? notFound() : ok(body);
+  }
+
+  const catalogue = /^\/opds\/v1\/institutions\/([^/]+)\/catalogue$/.exec(pathname);
+  if (catalogue) {
+    const fixture = CATALOGUE_BY_INSTITUTION[decodeURIComponent(catalogue[1])];
+    return fixture === undefined ? notFound() : ok(fixture);
+  }
+
+  const group = /^\/opds\/v1\/institutions\/([^/]+)\/groups\/([^/]+)$/.exec(pathname);
+  if (group) {
+    // An institution the fixtures do not know is a 404 before the shelf is even
+    // looked at, so both adapters agree that an unknown institution is NOT_FOUND
+    // whichever method asked.
+    if (CATALOGUE_BY_INSTITUTION[decodeURIComponent(group[1])] === undefined) return notFound();
+    const pages = SHELF_PAGES.get(decodeURIComponent(group[2]));
+    if (pages === undefined) return notFound();
+    // Paged on the query string, exactly as the adapter builds it. Serving page 0
+    // for every request would let a paging bug pass this suite — the adapter
+    // could drop the page param entirely and nothing here would notice.
+    const page = searchParams.get('page');
+    const index = page === null ? 0 : Number(page);
+    const body = pages[index];
+    return body === undefined ? notFound() : ok(body);
+  }
+
+  const publication = /^\/opds\/v1\/institutions\/([^/]+)\/publications\/([^/]+)$/.exec(pathname);
+  if (publication) {
+    if (CATALOGUE_BY_INSTITUTION[decodeURIComponent(publication[1])] === undefined) {
+      return notFound();
+    }
+    if (decodeURIComponent(publication[2]) === KNOWN_PUBLICATION) {
+      return ok(publicationDetailFixture);
+    }
+    return notFound();
+  }
+
+  // The institution endpoints — /api/v1/..., NOT /opds/v1/..., since these are
+  // the real backend's "shape we invented" endpoints (see ApiAdapter.ts),
+  // a sibling namespace to every OPDS route above rather than nested under it.
+  // `/institutions` is the list; `/institutions/<id>` with no trailing
+  // collection is a single institution.
+  if (pathname === '/api/v1/institutions') {
+    return ok(institutionsFixture);
+  }
+  const single = /^\/api\/v1\/institutions\/([^/]+)$/.exec(pathname);
+  if (single) {
+    const institution = normalizeInstitutionList(institutionsFixture).find(
+      (candidate) => candidate.id === decodeURIComponent(single[1]),
+    );
+    return institution === undefined ? notFound() : ok(institution);
+  }
+
+  return notFound();
+};
+
+describeCatalogueSourceConformance(
+  'ApiAdapter',
+  () => new ApiAdapter({ baseUrl: BASE_URL, fetch: serveFixtures }),
+);
+describeInstitutionSourceConformance(
+  'ApiAdapter',
+  () => new ApiAdapter({ baseUrl: BASE_URL, fetch: serveFixtures }),
+);
+
+describe('ApiAdapter institution endpoints', () => {
+  it('requests the institutions collection', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getInstitutions();
+
+    expect(requested).toEqual([`${BASE_URL}/api/v1/institutions`]);
+  });
+
+  it('escapes the institution id in the detail path', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return notFound();
+      },
+    });
+
+    await expect(adapter.getInstitution('../../admin')).rejects.toMatchObject({
+      code: CatalogueError.NOT_FOUND,
+    });
+    expect(requested[0]).not.toContain('../');
+  });
+
+  it('maps a non-institution payload to MALFORMED_FEED', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok({ results: [] }),
+    });
+
+    await expect(adapter.getInstitutions()).rejects.toMatchObject({
+      code: CatalogueError.MALFORMED_FEED,
+    });
+  });
+});
+
+describe('ApiAdapter authorization header', () => {
+  // Whether a request carries a token is each endpoint's own decision (see
+  // authenticatedHeaders() in ApiAdapter.ts) — not something this shared
+  // adapter applies to every call. getInstitutions is `security: []` by
+  // wokay's contract and must never send one; this pins that down as a
+  // regression test, not just an absence of a feature.
+  it('sends no Authorization header even when a getToken that resolves one is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getInstitutions();
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+
+  // getHomeCatalogue/getShelf/getPublication/getItemsBatch are all
+  // `security: [{ appToken }]` by wokay's contract, so these are the mirror
+  // image of the test above: the token must actually go out.
+  it('sends the Authorization header on getHomeCatalogue when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return { ok: true, status: 200, json: async () => homeCatalogueFixture };
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getShelf when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getPublication when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getPublication(KNOWN_INSTITUTION, KNOWN_PUBLICATION);
+
+    expect(requestInits[0]?.headers).toEqual({ Authorization: 'Bearer tok_abc123' });
+  });
+
+  it('sends the Authorization header on getItemsBatch when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url, init);
+      },
+    });
+
+    await adapter.getItemsBatch(['item_42']);
+
+    expect(requestInits[0]?.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+
+  it('sends no Authorization header on getPublicFeed even when a getToken is configured', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      getToken: async () => 'tok_abc123',
+      fetch: async (url, init) => {
+        requestInits.push(init ?? {});
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getPublicFeed();
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+});
+
+// Regression: a live dev backend served one open-access title (id
+// 'dev-sample-epub') whose acquisition link carried a full `encrypted` block —
+// a genuine contract violation (open access is plaintext by definition,
+// docs/contracts/wokay-api.yaml's own getPublicFeed example carries no
+// `encrypted` key at all). `assertPublication` correctly rejected it, but
+// `.forEach(assertPublication)` let that one bad title fail the ENTIRE public
+// catalogue for every signed-out reader — the one feed anonymous readers have
+// no other way to see anything through. These pin the fix: the violation is
+// still caught (nothing here weakens `assertPublication`), it is just no
+// longer allowed to take the rest of the shelf down with it.
+describe('ApiAdapter getPublicFeed resilience to one malformed publication', () => {
+  function feedWith(...publications: unknown[]): unknown {
+    return {
+      metadata: { title: 'Open access titles', numberOfItems: publications.length },
+      links: [{ rel: 'self', href: 'https://api.tf/opds/v1/public/catalogue?page=0' }],
+      publications,
+    };
+  }
+
+  function openAccessPublication(id: string, extraProperties: Record<string, unknown> = {}) {
+    return {
+      metadata: { title: `Title ${id}`, subject: [] },
+      links: [
+        { rel: 'self', href: `https://api.tf/opds/v1/public/publications/${id}` },
+        {
+          rel: 'http://opds-spec.org/acquisition/open-access',
+          href: `https://flambeau.tf/api/v1/content/${id}/access`,
+          properties: {
+            licenceModel: 'OPEN_ACCESS',
+            indirectAcquisition: [{ type: 'application/epub+zip' }],
+            hasSearchIndex: true,
+            canPersist: true,
+            ...extraProperties,
+          },
+        },
+      ],
+    };
+  }
+
+  // Reproduces the live dev-backend response exactly: open access, but with an
+  // `encrypted` block — the one combination `assertPublication` rejects.
+  const validTitle = openAccessPublication('item_oa_ok');
+  const invalidTitle = openAccessPublication('dev-sample-epub', {
+    encrypted: {
+      algorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm',
+      originalLength: 42,
+    },
+  });
+
+  it('drops the malformed publication and still returns the valid ones', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle, invalidTitle)),
+    });
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications.map((p) => p.id)).toEqual(['item_oa_ok']);
+  });
+
+  it('does not throw, even though the feed contains a contract-violating publication', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle, invalidTitle)),
+    });
+
+    await expect(adapter.getPublicFeed()).resolves.toBeDefined();
+  });
+
+  it('still rejects the violation rather than silently accepting it', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(invalidTitle)),
+    });
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-sample-epub'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('open access carries an encryption block'));
+
+    warn.mockRestore();
+  });
+
+  it('returns every publication untouched when none are malformed', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok(feedWith(validTitle)),
+    });
+
+    const feed = await adapter.getPublicFeed();
+
+    expect(feed.publications.map((p) => p.id)).toEqual(['item_oa_ok']);
+  });
+});
+
+// withAuthHeader is the pure merge logic authenticatedHeaders() calls for
+// every appToken-gated method — unit-tested directly here as well as via the
+// 'ApiAdapter authorization header' describe block above.
+describe('withAuthHeader', () => {
+  it('returns headers unchanged when there is no token', () => {
+    expect(withAuthHeader({ 'If-None-Match': 'W/"v1"' }, undefined)).toEqual({
+      'If-None-Match': 'W/"v1"',
+    });
+  });
+
+  it('returns undefined unchanged when there is no token and no other headers', () => {
+    expect(withAuthHeader(undefined, undefined)).toBeUndefined();
+  });
+
+  it('adds the Authorization header when there is a token and no other headers', () => {
+    expect(withAuthHeader(undefined, 'tok_abc123')).toEqual({
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+
+  it('merges the Authorization header alongside existing headers', () => {
+    expect(withAuthHeader({ 'If-None-Match': 'W/"v1"' }, 'tok_abc123')).toEqual({
+      'If-None-Match': 'W/"v1"',
+      Authorization: 'Bearer tok_abc123',
+    });
+  });
+});
+
+describe('ApiAdapter URL construction', () => {
+  it('requests the catalogue endpoint for the given institution', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requested).toEqual([`${BASE_URL}/opds/v1/institutions/${KNOWN_INSTITUTION}/catalogue`]);
+  });
+
+  it('sends no page parameter when no page was asked for', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF);
+
+    expect(requested[0]).not.toContain('page=');
+  });
+
+  it('appends the page index when paging', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return ok(allTitlesPage0Fixture);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 2);
+
+    expect(requested[0]).toBe(
+      `${BASE_URL}/opds/v1/institutions/${KNOWN_INSTITUTION}/groups/${KNOWN_SHELF}?page=2`,
+    );
+  });
+
+  it('escapes ids so a crafted id cannot reshape the URL path', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return notFound();
+      },
+    });
+
+    await expect(
+      adapter.getPublication(KNOWN_INSTITUTION, '../../admin'),
+    ).rejects.toMatchObject({ code: CatalogueError.NOT_FOUND });
+    expect(requested[0]).not.toContain('../');
+  });
+
+  // Screen 12's filter/sort dimensions, built through the shared query helper
+  // (browseParams) rather than spelled out in the adapter.
+  it('sends contentType and accessTier as query parameters', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      contentType: 'AUDIO',
+      accessTier: 'OPEN_ACCESS',
+    });
+
+    const { searchParams } = new URL(requested[0]);
+    expect(searchParams.get('contentType')).toBe('AUDIO');
+    expect(searchParams.get('accessTier')).toBe('OPEN_ACCESS');
+  });
+
+  it('sends sort for the all shelf', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, 'all', undefined, { sort: 'title.asc' });
+
+    expect(new URL(requested[0]).searchParams.get('sort')).toBe('title.asc');
+  });
+
+  // browseLink.ts's own contract: sort is dropped for anything but 'all',
+  // because a curated shelf's own order is the order.
+  it('drops sort for a curated shelf', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return serveFixtures(url);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, undefined, {
+      sort: 'title.asc',
+    }).catch(() => {});
+    await adapter
+      .getShelf(KNOWN_INSTITUTION, 'shelf_1', undefined, { sort: 'title.asc' })
+      .catch(() => {});
+
+    expect(new URL(requested[requested.length - 1]).searchParams.has('sort')).toBe(false);
+  });
+
+  it('combines page with a filter in the same request', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return ok(allTitlesPage0Fixture);
+      },
+    });
+
+    await adapter.getShelf(KNOWN_INSTITUTION, KNOWN_SHELF, 2, { contentType: 'EPUB' });
+
+    const { searchParams } = new URL(requested[0]);
+    expect(searchParams.get('page')).toBe('2');
+    expect(searchParams.get('contentType')).toBe('EPUB');
+  });
+});
+
+describe('ApiAdapter failure mapping', () => {
+  it('maps 404 to NOT_FOUND', async () => {
+    const adapter = new ApiAdapter({ baseUrl: BASE_URL, fetch: async () => notFound() });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.NOT_FOUND,
+    });
+  });
+
+  it('maps a server error to NETWORK_UNAVAILABLE, since retrying may succeed', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ({ ok: false, status: 503, json: async () => ({}) }),
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.NETWORK_UNAVAILABLE,
+    });
+  });
+
+  it('maps a thrown fetch to NETWORK_UNAVAILABLE', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => {
+        throw new TypeError('Network request failed');
+      },
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.NETWORK_UNAVAILABLE,
+    });
+  });
+
+  it('maps an aborted request to TIMEOUT', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => {
+        const aborted = new Error('Aborted');
+        aborted.name = 'AbortError';
+        throw aborted;
+      },
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.TIMEOUT,
+    });
+  });
+
+  it('maps an unparseable body to MALFORMED_FEED', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON');
+        },
+      }),
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.MALFORMED_FEED,
+    });
+  });
+
+  it('maps a well-formed JSON body that is not an OPDS feed to MALFORMED_FEED', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ok({ hello: 'world' }),
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.MALFORMED_FEED,
+    });
+  });
+});
+
+// Home-feed ETag caching (getHomeCatalogue only — see the file header for why
+// this method and not the others).
+describe('ApiAdapter home-feed ETag caching', () => {
+  function okWithEtag(body: unknown, etag: string): FetchResponse {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      headers: { get: (name) => (name === 'ETag' ? etag : null) },
+    };
+  }
+
+  function notModified(): FetchResponse {
+    return {
+      ok: false,
+      status: 304,
+      json: async () => {
+        throw new Error('304 has no body — a caller reading it is the bug this test catches');
+      },
+    };
+  }
+
+  it('sends no If-None-Match on the first request', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return okWithEtag(homeCatalogueFixture, 'W/"v1"');
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[0]?.headers).toBeUndefined();
+  });
+
+  it('sends the ETag it was given as If-None-Match on the next request', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    let call = 0;
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        call += 1;
+        return call === 1 ? okWithEtag(homeCatalogueFixture, 'W/"v1"') : notModified();
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[1]?.headers).toEqual({ 'If-None-Match': 'W/"v1"' });
+  });
+
+  it('serves the cached catalogue on a 304 without reading a body', async () => {
+    let call = 0;
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => {
+        call += 1;
+        return call === 1 ? okWithEtag(homeCatalogueFixture, 'W/"v1"') : notModified();
+      },
+    });
+
+    const first = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    // notModified()'s json() throws if ever called — resolving here proves the
+    // 304 path never tried to read a (nonexistent) body, i.e. the download
+    // was actually skipped, not just the cache silently re-served.
+    const second = await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(second).toEqual(first);
+  });
+
+  it('does not cache, and sends no If-None-Match, when the server sends no ETag', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return ok(homeCatalogueFixture);
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+
+    expect(requestInits[1]?.headers).toBeUndefined();
+  });
+
+  it('caches per institution, not globally', async () => {
+    const requestInits: { headers?: Record<string, string> }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (_url, init) => {
+        requestInits.push(init ?? {});
+        return okWithEtag(newInstitutionCatalogueFixture, 'W/"other"');
+      },
+    });
+
+    await adapter.getHomeCatalogue(KNOWN_INSTITUTION);
+    await adapter.getHomeCatalogue('inst_a21');
+
+    // The second institution has never been fetched before, so it must not
+    // carry the first institution's ETag.
+    expect(requestInits[1]?.headers).toBeUndefined();
+  });
+});
+
+// Adapter-specific behaviour — the shared conformance suite only pins the
+// contract (shapes, ids, notFound/denied semantics), not how ApiAdapter talks
+// to the network to get there.
+describe('ApiAdapter items:batch', () => {
+  it('posts to the frozen path at the host root, not under baseUrl’s OPDS suffix', async () => {
+    const requests: { url: string; method?: string; body?: string }[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url, init) => {
+        requests.push({ url, method: init?.method, body: init?.body });
+        return serveFixtures(url, init);
+      },
+    });
+
+    await adapter.getItemsBatch(['item_42']);
+
+    expect(requests).toEqual([
+      {
+        url: 'https://api.tf/api/v1/catalogue/items:batch',
+        method: 'POST',
+        body: JSON.stringify({ ids: ['item_42'] }),
+      },
+    ]);
+  });
+
+  it('maps a 400 response to TOO_MANY_IDS', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ({ ok: false, status: 400, json: async () => ({ code: 'TOO_MANY_IDS' }) }),
+    });
+
+    await expect(adapter.getItemsBatch(['item_42'])).rejects.toMatchObject({
+      code: CatalogueError.TOO_MANY_IDS,
+    });
+  });
+
+  it('never calls fetch when the client-side cap is exceeded', async () => {
+    const requested: string[] = [];
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async (url) => {
+        requested.push(url);
+        return notFound();
+      },
+    });
+    const tooManyIds = Array.from({ length: 101 }, (_, index) => `item_${index}`);
+
+    await expect(adapter.getItemsBatch(tooManyIds)).rejects.toMatchObject({
+      code: CatalogueError.TOO_MANY_IDS,
+    });
+    expect(requested).toEqual([]);
+  });
+});
