@@ -4,6 +4,7 @@
 // and the same failure-mode priority — a typo'd env var that silently falls
 // back to fixtures is the failure that is hardest to notice and ships the most
 // quietly wrong build.
+import { ApiSearchPipeline } from '@search/ApiSearchPipeline';
 import { FixtureSearchPipeline } from '@search/FixtureSearchPipeline';
 import {
   createSearchPipeline,
@@ -58,9 +59,9 @@ describe('createSearchPipeline', () => {
 
   // NOT silently the fixture. Asking for the real endpoint and being handed
   // canned data is the one outcome that would make a green integration test
-  // meaningless in Week 4.
-  it("throws for api — ApiSearchPipeline does not exist until Week 4", () => {
-    expect(() => createSearchPipeline({ kind: 'api' })).toThrow(/api/i);
+  // meaningless.
+  it('builds an ApiSearchPipeline for api', () => {
+    expect(createSearchPipeline({ kind: 'api' })).toBeInstanceOf(ApiSearchPipeline);
   });
 
   it('passes fixture options through so the gallery can inject latency', () => {

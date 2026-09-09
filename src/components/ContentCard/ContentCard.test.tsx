@@ -50,9 +50,12 @@ describe('ContentCard content', () => {
   it('renders the cover when an image url is given', async () => {
     await render(<ContentCard title="Rights for Robots" imageUrl="https://cdn.tf/a.jpg" />);
 
-    expect(screen.getByTestId('content-card-image').props.source).toEqual({
-      uri: 'https://cdn.tf/a.jpg',
-    });
+    // expo-image normalizes a single `{ uri }` source into a one-element array
+    // on the rendered host node — unlike RN's Image, which passes it through
+    // unchanged.
+    expect(screen.getByTestId('content-card-image').props.source).toEqual([
+      { uri: 'https://cdn.tf/a.jpg' },
+    ]);
   });
 
   // types.ts: "a publication with no cover renders a placeholder, it is not an

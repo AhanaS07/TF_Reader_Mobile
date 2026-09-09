@@ -39,7 +39,8 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
 import type { ContentFormat } from '@/shared/types/primitives';
 import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
@@ -129,7 +130,8 @@ export function renderBookContent(
           <Image
             source={{ uri: detail.coverUrl }}
             style={styles.cover}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
             accessibilityLabel={`${detail.title} cover`}
           />
         )}

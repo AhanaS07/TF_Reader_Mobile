@@ -17,7 +17,8 @@
 // It sets no outer width, margin or position (CONVENTIONS §8) — the list that
 // lays the rows out owns that.
 import type { ReactNode } from 'react';
-import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
 import { color, elevation, radius, space, type } from '@theme/tokens';
 
@@ -114,7 +115,8 @@ export default function ContentCard({
               source={{ uri: imageUrl }}
               style={styles.thumb}
               // `contain` would letterbox a portrait cover inside a square thumb.
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy="memory-disk"
             />
           )}
 
