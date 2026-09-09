@@ -1,14 +1,15 @@
 // P0-6 — App shell and navigation (Keshav, paired with Khushi on BottomTabBar)
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
+import type { NativeStackHeaderProps, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation/bottom-tabs';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { useInstitutionStore } from '@store/institutionStore';
 import { useSessionStore } from '@store/sessionStore';
-import { color } from '@theme/tokens';
+import { color, radius, space, type } from '@theme/tokens';
 import QueueNotificationHost from '../features/queue/QueueNotificationHost';
 
 import { TopAppBar } from '../components/TopAppBar';
@@ -59,6 +60,29 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
 });
 
+// A translucent fill on the header's own navy rather than a flat white pill —
+// reads as part of the bar's chrome instead of a card floating on top of it.
+const headerStyles = StyleSheet.create({
+  institutionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    maxWidth: space.xl * 5,
+  },
+  institutionPillLabel: {
+    flexShrink: 1,
+    fontWeight: type.smallLabel.weight,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+    color: color.white,
+  },
+});
+
 // ─── Navigator instances ──────────────────────────────────────────────────────
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
@@ -79,21 +103,86 @@ const TAB_CONFIG: TabItem[] = [
 
 // ─── Header wrapper — reads safe-area inset and passes it to TopAppBar ───────
 
+// The institution pill replaces CatalogueScreen's own in-body picker row —
+// it names the scope the Catalogue tab is reading from, which belongs beside
+// the brand mark, not repeated as a full-width row under it. Tab-root-only
+// (no `back`) and Catalogue-only: a pushed screen already has its own title
+// in that slot, and no other tab reads from an institution's catalogue.
+function InstitutionPill({ name, onPress }: { name: string; onPress: () => void }) {
+  return (
+    <Pressable
+      style={headerStyles.institutionPill}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Change institution, currently ${name}`}
+    >
+      <Ionicons name="business" size={14} color={color.white} />
+      <Text style={headerStyles.institutionPillLabel} numberOfLines={1}>
+        {name}
+      </Text>
+      <Ionicons name="checkmark-circle" size={14} color={color.white} />
+    </Pressable>
+  );
+}
+
 function AppHeader({ route, options, back, navigation }: NativeStackHeaderProps) {
   const insets = useSafeAreaInsets();
+  const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
+
+  const showInstitutionPill =
+    back === undefined && route.name === 'CatalogueHome' && selectedInstitution !== null;
+
   return (
     <TopAppBar
       title={options.title ?? route.name}
       onBack={back ? navigation.goBack : undefined}
       topInset={insets.top}
+      action={
+        showInstitutionPill ? (
+          <InstitutionPill
+            name={selectedInstitution.name}
+            // `AppHeader` serves all four tab stacks, so `navigation` here is
+            // typed against the generic base param list. `showInstitutionPill`
+            // above already restricts this branch to `CatalogueHome`, so the
+            // cast below only ever runs inside `CatalogueStack`, where
+            // `InstitutionList` is a real, registered route.
+            onPress={() =>
+              (navigation as NativeStackNavigationProp<CatalogueStackParamList>).navigate(
+                'InstitutionList',
+              )
+            }
+          />
+        ) : undefined
+      }
     />
   );
 }
 
 // ─── Tab bar wrapper — bridges React Navigation props to BottomTabBar ─────────
 
-function AppTabBar({ state, navigation, insets }: RNBottomTabBarProps) {
-  const activeKey = state.routes[state.index]?.name ?? 'Catalogue';
+// Screens that own their own navigation/action chrome rather than the shared
+// four-tab shell — a detail page, not one of Catalogue/Search/Library/Profile
+// — hide it by calling `navigation.getParent()?.setOptions({ tabBarStyle:
+// { display: 'none' } })` on mount and restoring it on unmount (see
+// ItemDetailScreen.tsx). That is the ONLY reliable trigger: `state` (a plain
+// nested-navigation push, no `setOptions` call) does NOT re-render this
+// custom tabBar — confirmed by instrumenting it directly, not assumed —
+// whereas a screen's own `setOptions` call always does, because it is a real
+// navigation action dispatched through context rather than a state field the
+// tabBar happens to read. `descriptors[route.key].options` is where that
+// per-screen option lands; `getFocusedRouteNameFromRoute` was the wrong tool
+// for this specific job even though it is the right one for setting a STATIC
+// `tabBarStyle` in a `Tab.Screen`'s own `options` — this app's `AppTabBar` is
+// fully custom and does not consult that option at all on its own.
+function AppTabBar({ state, navigation, insets, descriptors }: RNBottomTabBarProps) {
+  const activeRoute = state.routes[state.index];
+  const activeKey = activeRoute?.name ?? 'Catalogue';
+  const hidden = activeRoute !== undefined && descriptors[activeRoute.key]?.options.tabBarStyle !== undefined;
+
+  if (hidden) {
+    return null;
+  }
+
   return (
     <BottomTabBar
       tabs={TAB_CONFIG}
@@ -119,10 +208,13 @@ function CatalogueNavigator() {
         component={InstitutionDetailScreen}
         options={{ title: 'Institution' }}
       />
+      {/* Title is 'Book Details' by default and overridden to 'Article
+          Details' by the screen itself via navigation.setOptions once it
+          knows the item's workType — see ItemDetailScreen.tsx. */}
       <CatalogueStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Item Detail' }}
+        options={{ title: 'Book Details' }}
       />
       <CatalogueStack.Screen
         name="InstitutionList"
@@ -182,10 +274,12 @@ function SearchNavigator() {
         component={SearchScreen}
         options={{ title: 'Search' }}
       />
+      {/* See CatalogueNavigator's identical registration for why the title
+          here is only the default. */}
       <SearchStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Item Detail' }}
+        options={{ title: 'Book Details' }}
       />
       <SearchStack.Screen
         name="AccessGate"

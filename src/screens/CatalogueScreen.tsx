@@ -1,22 +1,27 @@
-// P0-3/P0-4 (Prayas) — wires CategoryCard and ContentCard to the DataSource seam.
+// P0-3/P0-4 (Prayas) — wires ContentCard to the DataSource seam.
 //
-// SHAPE FOLLOWS THE FEED, NOT THE MOCKUP'S TAB BEHAVIOUR. The top strip is one
-// CategoryCard per `catalogue.navigation` entry; the "Recently published" section
-// below is the home catalogue's OWN shelves, each under its own heading. Both
-// lists come from the feed and neither has a fixed length or a known name — an
-// administrator configures the shelves per institution (AGENTS.md L-5, settled
-// 16 Aug 2026), so handle none, one and many.
+// SHAPE FOLLOWS THE FEED. The hero banner is static editorial chrome, matched
+// against a reference design; everything below it is the home catalogue's OWN
+// shelves, each under its own heading, in feed order. That list comes from
+// the feed and has neither a fixed length nor a known name — an administrator
+// configures the shelves per institution (AGENTS.md L-5, settled 16 Aug 2026),
+// so handle none, one and many.
 //
-// Tapping a category card does not filter the list below. A shelf is not a
-// filter: it pushes ShelfDetail (ShelfScreen), which fetches that shelf's own
-// full, paginated listing via getShelf(). See ShelfScreen.tsx.
+// `catalogue.navigation` is no longer rendered as its own strip of cards — a
+// reference-design pass (see git history for the CategoryCard strip this
+// replaced) found it added a section with nothing in the reference and no
+// content of its own beyond what a shelf's "See all" already reaches. The
+// feed's first navigation entry is still read, just for the hero's own CTA
+// (by position, same rule `isFeatured` below follows) rather than for a row
+// of tappable cards.
 //
 // THE INSTITUTION ARRIVES AS A PROP, and there is no fallback id any more.
 // CatalogueHomeScreen owns the choice: a reader without an institution gets
 // PublicCatalogueScreen instead of this one, so by the time this renders there
 // is always a real institution. The old `?? 'inst_7f3'` quietly served one
 // institution's catalogue to a reader who had picked none — the bug A1 fixes.
-// The picker above the category row still navigates to the list to change it.
+// The institution itself is named in the header's own pill now (AppHeader,
+// RootNavigator.tsx), not in this screen's body.
 //
 // THE BADGE IS RESOLVED, NEVER DERIVED HERE. Each row calls `resolveAccess` and
 // passes only the resulting `.tier` into ContentCard's slot — reading
@@ -27,16 +32,16 @@
 // institution is selected. loan/hold are joined per item from the library cache
 // so each badge reflects the reader's live holdings without a per-card call.
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import EmptyState from '@/components/EmptyState';
 import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { CategoryCard, type CategoryAccent } from '../components/CategoryCard';
 import { ContentCard } from '../components/ContentCard';
 import { ErrorState } from '@components/ErrorState';
+import { HeroBanner } from '@components/HeroBanner';
 import { SectionHeader } from '../components/SectionHeader';
 import { getCatalogueSource } from '../config/catalogue';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -44,7 +49,7 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
 import type { Catalogue } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
 import type { Institution } from '@model/institution';
-import { color, space, type as typeScale } from '../theme/tokens';
+import { color, space } from '../theme/tokens';
 import { useFeedScrollMemory } from '@hooks/useFeedScrollMemory';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import OfflineBanner from '@/components/OfflineBanner';
@@ -52,19 +57,28 @@ import { useLibraryStore } from '@store/libraryStore';
 
 type Nav = NativeStackNavigationProp<CatalogueStackParamList, 'CatalogueHome'>
 
-// Cycled by POSITION, never by shelf name — types.ts: "NAVIGATION IS DATA, NOT
-// CODE ... no shelf is named in a type or a branch anywhere". There are already
-// more shelves than accents, so the cycle wraps rather than running out.
-//
-// A ramp of blues, ordered so adjacent cards alternate light and dark rather
-// than putting two near-identical shades side by side. The status and
-// access-tier colours that used to be in this cycle are semantic — see the
-// CategoryCard header.
-const ACCENTS: CategoryAccent[] = ['primary', 'navy', 'blueBright', 'blueDeep'];
-
 // How many skeleton rows/cards to show before the first real payload arrives.
 // Arbitrary — there is no data yet to size it from.
 const SKELETON_COUNT = 3;
+
+// Static editorial copy for the hero — matched verbatim against the reference
+// design, the same way its gradient and layout are. None of this is derived
+// from the feed: `statLabel` is not `Shelf.totalItems` (absent on these
+// preview shelves) or any other real count, it is the reference design's own
+// wording, same status as a magazine's own masthead copy.
+const HERO_STAT = 'Over 140,000 peer-reviewed titles';
+const HERO_TITLE = 'The Scholarly Archive';
+const HERO_SUBTITLE =
+  'Full-text access to world-leading research monographs, handbooks, and journal volumes.';
+const HERO_ACTION_LABEL = 'Explore All Titles';
+const HERO_UPDATED_LABEL = 'Updated daily';
+
+// The width CatalogueScreen's first-shelf carousel gives each cover tile —
+// ContentCard sets no width of its own (CONVENTIONS §8). Wide enough that two
+// tiles fill most of the content width with only a small peek of a third,
+// rather than the narrower tile this replaced, which left each card reading
+// as tall and cramped relative to how little of the row's own width it used.
+const COVER_CARD_WIDTH = space.xl * 5 + space.md;
 
 export interface CatalogueScreenProps {
   institution: Institution;
@@ -165,6 +179,12 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
     );
   }
   else{
+    // The first navigation entry, by POSITION — same rule `isFeatured` below
+    // follows, never a name or an assumption about what an institution calls
+    // it. Absent when a catalogue advertises none, in which case the hero
+    // shows no action at all (both-or-neither — see HeroBanner's own header).
+    const heroNavEntry = catalogue?.navigation[0];
+
     body = (
       <ScrollView
         testID="catalogue-feed"
@@ -175,97 +195,130 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
         style={styles.screen}
         contentContainerStyle={styles.content}
       >
-      <Pressable
-        style={styles.institutionPicker}
-        onPress={() => navigation.navigate('InstitutionList')}
-        accessibilityRole="button"
-        accessibilityLabel="Change institution"
-      >
-        <Text style={styles.institutionName} numberOfLines={1}>
-          {institution.name}
-        </Text>
-        <Text style={styles.institutionChange}>Change</Text>
-      </Pressable>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.categoryStrip}
-      >
-        {loading
-          ? ACCENTS.slice(0, SKELETON_COUNT).map((accent, index) => (
-              <View key={index} style={styles.categoryCard}>
-                <CategoryCard title="" state="loading" accent={accent} />
-              </View>
-            ))
-          : catalogue?.navigation.map((entry, index) => (
-              <View key={entry.shelfId} style={styles.categoryCard}>
-                <CategoryCard
-                  title={entry.title}
-                  accent={ACCENTS[index % ACCENTS.length]}
-                  // `title` rides along so the pushed screen's app bar can name
-                  // the shelf immediately, before its feed has loaded, and
-                  // `institutionId` so the listing is fetched for the same
-                  // institution whose catalogue advertised this entry.
-                  onPress={() =>
-                    navigation.navigate('Shelf', {
-                      shelfId: entry.shelfId,
-                      title: entry.title,
-                      institutionId,
-                    })
-                  }
-                />
-              </View>
-            ))}
-      </ScrollView>
+      <HeroBanner
+        statLabel={loading ? undefined : HERO_STAT}
+        title={loading ? '' : HERO_TITLE}
+        subtitle={loading ? undefined : HERO_SUBTITLE}
+        actionLabel={loading || heroNavEntry === undefined ? undefined : HERO_ACTION_LABEL}
+        onPressAction={
+          loading || heroNavEntry === undefined
+            ? undefined
+            : () =>
+                navigation.navigate('Shelf', {
+                  shelfId: heroNavEntry.shelfId,
+                  title: heroNavEntry.title,
+                  institutionId,
+                })
+        }
+        updatedLabel={loading ? undefined : HERO_UPDATED_LABEL}
+        state={loading ? 'loading' : 'idle'}
+      />
 
       {loading
         ? Array.from({ length: SKELETON_COUNT }, (_, index) => (
             <ContentCard key={index} state="loading" title="" />
           ))
-        :catalogue?.shelves.length !== 0 ? catalogue?.shelves.map((shelf) => (
-            <View key={shelf.id} style={styles.section}>
-              {/* No `actionLabel`: these are the home-catalogue's own preview
-                  shelves, not one of the tappable navigation categories above,
-                  so there is no "See all" destination for them. Screen 01's
-                  design shows no action on these headers either. */}
-              <SectionHeader title={shelf.title} />
-              <View style={styles.list}>
-                {shelf.publications.map((publication) => {
-                  const pubLoan = loans.find((l) => l.itemId === publication.id);
-                  const pubHold = holds.find((h) => h.itemId === publication.id);
-                  const access = resolveAccess({
-                    item: publication,
-                    institutionId,
-                    session,
-                    loan: pubLoan,
-                    hold: pubHold,
-                  });
-                  return (
-                    <ContentCard
-                      key={publication.id}
-                      title={publication.title}
-                      publisher={publication.publisher}
-                      imageUrl={publication.coverUrl}
-                      format={publication.format}
-                      // D8 — `not_entitled` renders nothing at all, badge
-                      // included. `tier` is a required field, so that state
-                      // carries an OPEN_ACCESS filler; drawing it would label a
-                      // title the reader cannot open as free to read.
-                      badge={
-                        isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
-                      }
-                      // No `action`: the Elite queue button ("Grant access") is
-                      // ItemDetailScreen only, not on this shelf row.
-                      onPress={() =>
-                        navigation.navigate('ItemDetail', { itemId: publication.id })
-                      }
-                    />
-                  );
-                })}
+        :catalogue?.shelves.length !== 0 ? catalogue?.shelves.map((shelf, shelfIndex) => {
+            // Position, never name or id — same rule ACCENTS already follows
+            // below. Only the shelf in the feed's first slot becomes a
+            // carousel; which shelf that is comes entirely from the feed.
+            const isFeatured = shelfIndex === 0;
+
+            const cards = shelf.publications.map((publication) => {
+              const pubLoan = loans.find((l) => l.itemId === publication.id);
+              const pubHold = holds.find((h) => h.itemId === publication.id);
+              const access = resolveAccess({
+                item: publication,
+                institutionId,
+                session,
+                loan: pubLoan,
+                hold: pubHold,
+              });
+              // D8 — `not_entitled` renders nothing at all, badge included.
+              // `tier` is a required field, so that state carries an
+              // OPEN_ACCESS filler; drawing it would label a title the reader
+              // cannot open as free to read. The carousel tile gets the
+              // bigger `md` pill — it has the width a book cover affords;
+              // the dense row list keeps `sm` (the component's own default).
+              const badge = isNotEntitled(access) ? undefined : (
+                <AccessTierBadge tier={access.tier} size={isFeatured ? 'md' : 'sm'} />
+              );
+              const onPress = () => navigation.navigate('ItemDetail', { itemId: publication.id });
+
+              // `authors` is a real array that is sometimes empty — an empty
+              // grey line where a name should be reads as a bug the same way
+              // a blank publisher line would, so this only ever hands
+              // ContentCard a non-empty string or nothing at all.
+              const authors =
+                publication.authors.length > 0 ? publication.authors.join(', ') : undefined;
+
+              // Real page count, not an invented edition — `numberOfPages` is
+              // the one printed-extent field the feed actually carries.
+              const meta =
+                publication.numberOfPages === undefined
+                  ? undefined
+                  : `${publication.numberOfPages} pp.`;
+
+              return isFeatured ? (
+                <View key={publication.id} style={styles.coverCard}>
+                  <ContentCard
+                    variant="cover"
+                    title={publication.title}
+                    publisher={publication.publisher}
+                    imageUrl={publication.coverUrl}
+                    format={publication.format}
+                    authors={authors}
+                    badge={badge}
+                    onPress={onPress}
+                  />
+                </View>
+              ) : (
+                <ContentCard
+                  key={publication.id}
+                  title={publication.title}
+                  publisher={publication.publisher}
+                  imageUrl={publication.coverUrl}
+                  format={publication.format}
+                  authors={authors}
+                  meta={meta}
+                  badge={badge}
+                  onPress={onPress}
+                />
+              );
+            });
+
+            return (
+              <View key={shelf.id} style={styles.section}>
+                <SectionHeader
+                  title={shelf.title}
+                  emphasis="editorial"
+                  // `shelf.id` is the same opaque key `getShelf` already takes
+                  // from a navigation entry's `shelfId` — a preview shelf can
+                  // open its own full listing the same way, it just isn't one
+                  // of the tappable categories in the strip above.
+                  actionLabel="See all"
+                  onAction={() =>
+                    navigation.navigate('Shelf', {
+                      shelfId: shelf.id,
+                      title: shelf.title,
+                      institutionId,
+                    })
+                  }
+                />
+                {isFeatured ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.carousel}
+                  >
+                    {cards}
+                  </ScrollView>
+                ) : (
+                  <View style={styles.list}>{cards}</View>
+                )}
               </View>
-            </View>
-          )) : (
+            );
+          }) : (
             <EmptyState variant="no_content"/>
           )}
     </ScrollView>
@@ -285,33 +338,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: color.white,
   },
-  institutionPicker: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: space.sm,
-    paddingHorizontal: space.md,
-    backgroundColor: color.white,
-    borderRadius: space.xs,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: color.border,
-  },
-  institutionName: {
-    flex: 1,
-    fontWeight: typeScale.body.weight,
-    fontFamily: typeScale.body.fontFamily,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textPrimary,
-  },
-  institutionChange: {
-    fontWeight: typeScale.button.weight,
-    fontFamily: typeScale.button.fontFamily,
-    fontSize: typeScale.button.size,
-    lineHeight: typeScale.button.lineHeight,
-    color: color.primary,
-    marginLeft: space.sm,
-  },
   content: {
     padding: space.md,
     gap: space.lg,
@@ -323,18 +349,20 @@ const styles = StyleSheet.create({
     gap: space.sm,
     backgroundColor: color.white,
   },
-  categoryStrip: {
-    gap: space.md,
-    paddingHorizontal: space.xs,
-  },
-  // The strip owns tile width; neither card sets its own (CONVENTIONS §8).
-  categoryCard: {
-    width: space.xl * 5,
-  },
   section: {
     gap: space.sm,
   },
   list: {
     gap: space.sm,
+  },
+  // The first shelf's horizontal carousel. Gap between tiles, not around the
+  // whole row — the row itself sits inside `content`'s own padding already.
+  carousel: {
+    gap: space.md,
+  },
+  // The carousel owns each cover tile's width — ContentCard sets none of its
+  // own (CONVENTIONS §8).
+  coverCard: {
+    width: COVER_CARD_WIDTH,
   },
 });

@@ -153,9 +153,18 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
 // navigation — those read `mockNavigate` directly rather than needing their
 // own `navigation` object.
 const mockNavigate = jest.fn();
+// The header title call — see ItemDetailRouteProps's own comment for why the
+// screen calls this itself rather than the stack registration knowing the
+// title ahead of time. No test asserts on it directly; it exists so the
+// mocked navigation prop satisfies the real type.
+const mockSetOptions = jest.fn();
+// Same reason: satisfies the real type for the tab-bar-hiding effect (see
+// ItemDetailRouteProps's own comment), returning a fresh mock `setOptions`
+// each call — no test asserts on it directly either.
+const mockGetParent = jest.fn(() => ({ setOptions: jest.fn() }));
 const routeProps = {
   route: { params: { itemId: 'item_42' } },
-  navigation: { navigate: mockNavigate },
+  navigation: { navigate: mockNavigate, setOptions: mockSetOptions, getParent: mockGetParent },
 };
 
 const INSTITUTION: Institution = {
@@ -188,6 +197,8 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
   mockNavigate.mockClear();
+  mockSetOptions.mockClear();
+  mockGetParent.mockClear();
   // CALL HISTORY, NOT JUST RETURN VALUES. These four had their resolved values
   // reset but never their call lists, so a `not.toHaveBeenCalled()` assertion
   // saw the PREVIOUS test's calls — which is why "does NOT fall through to
@@ -351,12 +362,13 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText(/Routledge/)).toBeTruthy());
   });
 
-  it('renders the published date when present', async () => {
+  it('renders the published date when present, as a human date rather than the feed’s raw ISO string', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText(/2020-09-30/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/30 September 2020/)).toBeTruthy());
+    expect(screen.queryByText(/2020-09-30/)).toBeNull();
   });
 
   it('renders the access tier badge for the resolved tier', async () => {
@@ -540,40 +552,59 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     expect(screen.queryByTestId('format-strip')).toBeNull();
   });
 
-  it('shows the price area as unavailable, with no invented amount', async () => {
+  // Book-detail refinement §10: a meaningless "Price unavailable" pill is
+  // worse than no price section at all — there is no price field in either
+  // contract, so this omits the row entirely rather than naming the gap.
+  it('never shows a price row, invented or otherwise', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Price unavailable')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText(/price/i)).toBeNull();
     // Nothing that looks like an actual price (a currency symbol and digits)
     // is ever built — there is no price field in either contract.
     expect(screen.queryByText(/[$£€]\s?\d/)).toBeNull();
   });
 
-  it('shows Table of Contents as unavailable, with no expand/collapse behaviour', async () => {
+  // Book-detail refinement §11 (revised): no TOC field exists on the model at
+  // all, so the section is omitted entirely rather than shown with an
+  // honest-but-empty body — the earlier "not currently available" text read
+  // as the page announcing its own unfinished-ness.
+  it('renders no Table of Contents section at all, there being no TOC field on the model', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Table of Contents')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: /table of contents/i })).toBeNull();
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText('Table of Contents')).toBeNull();
+    expect(screen.queryByText(/table of contents/i)).toBeNull();
   });
 
-  // Price and Table of Contents are this screen's two unavailable elements, and
-  // the format strip is deliberately NOT one of them — see `FormatStrip`'s
-  // header comment. What this counts is the marker, not the shape: `variant`
-  // gives the three call sites across both screens the shape their own mockup
-  // draws (price a chip, Table of Contents a ruled row, screen 04's pair plain
-  // inline text), so the boxing is no longer what they have in common. Being
-  // muted and untappable is.
-  it('marks price and table of contents unavailable, but not the format strip', async () => {
+  // §10 (revised): every title the catalogue source currently returns carries
+  // an internal ingestion note in `description`, not a genuine abstract — so
+  // the "About this title" section stays unwired for now rather than
+  // rendering that note as if it were real book content.
+  it('renders no "About this title" section, the description field not yet carrying real abstracts', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText('About this title')).toBeNull();
+    expect(screen.queryByText('A study of legal personhood.')).toBeNull();
+  });
+
+  it('shows the format strip without pulling in the unavailable-tag treatment', async () => {
     setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByTestId('format-strip')).toBeTruthy());
-    expect(screen.getAllByTestId('unavailable-tag')).toHaveLength(2);
+    // `unavailable-tag` is screen 04's marker now (the research-article eyebrow
+    // and the citation link) — screen 05 no longer has anything muted enough
+    // to need it, price and Table of Contents having moved to their own shapes.
+    expect(screen.queryAllByTestId('unavailable-tag')).toHaveLength(0);
   });
 });
 
@@ -624,7 +655,10 @@ describe('ItemDetailScreen errors', () => {
 
     await render(
       <ItemDetailScreen
-        {...{ route: { params: { itemId: 'item_missing' } }, navigation: { navigate: mockNavigate } }}
+        {...{
+          route: { params: { itemId: 'item_missing' } },
+          navigation: { navigate: mockNavigate, setOptions: mockSetOptions, getParent: mockGetParent },
+        }}
       />,
     );
 

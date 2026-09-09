@@ -70,12 +70,24 @@ interface ItemDetailRouteProps {
   // Hand-typed rather than one stack's generated props, same reason as
   // `route` above — this screen is shared by both stacks, and `navigate` is
   // typed for exactly the one real call it makes: opening the access gate
-  // when `resolveAccess` resolves to `requires_signin`.
+  // when `resolveAccess` resolves to `requires_signin`. `setOptions` is the
+  // second real call — the header title is 'Book Details' by default (both
+  // stacks' own registration) and this screen narrows it to 'Article
+  // Details' once it knows the item is one, since the same route serves both
+  // work types and the stack registration cannot know which ahead of time.
+  // `getParent` is the third — hiding the shared four-tab bar for this one
+  // detail screen, see the effect that calls it below and AppTabBar's own
+  // header comment in RootNavigator.tsx for why this is the reliable trigger
+  // (a plain nested push is not).
   navigation: {
     navigate: (
       screen: 'AccessGate',
       params: { itemId: string; title: string; authors: string },
     ) => void;
+    setOptions: (options: { title: string }) => void;
+    getParent: () =>
+      | { setOptions: (options: { tabBarStyle?: { display: 'none' } }) => void }
+      | undefined;
   };
 }
 
@@ -89,11 +101,35 @@ export const BOOK_WORK_TYPE: WorkType = 'book';
 // would use, rather than a second hand-typed 'article' string that could drift.
 export const ARTICLE_WORK_TYPE: WorkType = 'article';
 
-const COVER_WIDTH = space.xl * 3;
-const COVER_HEIGHT = space.xl * 4 + space.md;
+// A real book-cover ratio (2:3), sized to be the prominent element a detail
+// page's jacket should be — bigger than the row/carousel thumbnail this same
+// `coverUrl` renders as elsewhere (192dp, within the 180–210dp a phone-sized
+// detail page's jacket should read as), but well short of filling the
+// screen (288dp tall, on a device whose own height is roughly triple that).
+const COVER_WIDTH = space.xl * 6;
+const COVER_HEIGHT = space.xl * 9;
 
 const GENERIC_MESSAGE = "We couldn't load this title.";
 const LICENCE_GENERIC_MESSAGE = "That action couldn't be completed. Please try again.";
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
+
+// `detail.published` is whatever date string the feed sent — normalize.ts
+// documents it as ISO (`YYYY-MM-DD...`), same shape the fixtures use. Falls
+// back to the raw string rather than throwing or hiding the date entirely if
+// that shape is ever wrong — a slightly-off-format date is still more useful
+// to a reader than no date at all.
+function formatPublishedDate(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (match === null) return iso;
+  const [, year, month, day] = match;
+  const monthName = MONTH_NAMES[Number(month) - 1];
+  if (monthName === undefined) return iso;
+  return `${Number(day)} ${monthName} ${year}`;
+}
 
 // Screen 05's presentation. Exported for the same reason `renderArticleContent`
 // below is — a test can render it directly from a hand-built `ItemDetail`
@@ -121,18 +157,39 @@ export function renderBookContent(
   pending?: ActionId,
   // D13: plain-English message from a failed licence call, shown above the bar.
   licenceMessage?: string,
+  // Whether the cover Image itself reported a load failure — lives in
+  // ItemDetailScreen's own state (hooks cannot live in a plain function
+  // called mid-render, only in the component actually rendering), reset there
+  // whenever a new publication arrives.
+  coverFailed = false,
+  onCoverError?: () => void,
 ): ReactElement {
+  const showCoverPlaceholder = detail.coverUrl === undefined || coverFailed;
+
   return (
     <>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-        {detail.coverUrl !== undefined && (
-          <Image
-            source={{ uri: detail.coverUrl }}
-            style={styles.cover}
-            resizeMode="contain"
-            accessibilityLabel={`${detail.title} cover`}
-          />
-        )}
+        {/* Always renders a well — a missing cover and a failed fetch used to
+            leave nothing at all where the jacket goes, which reads as a
+            layout bug rather than "this title has no cover on file". The
+            icon marks it as a deliberate stand-in, same device ContentCard's
+            own placeholder uses for exactly this pair of cases. */}
+        <View style={styles.coverWrap}>
+          {showCoverPlaceholder ? (
+            <View testID="item-detail-cover-placeholder" style={[styles.cover, styles.coverPlaceholder]}>
+              <MaterialCommunityIcons name="book-outline" size={COVER_WIDTH / 2} color={color.textSecondary} />
+            </View>
+          ) : (
+            <Image
+              testID="item-detail-cover"
+              source={{ uri: detail.coverUrl }}
+              style={styles.cover}
+              resizeMode="cover"
+              accessibilityLabel={`${detail.title} cover`}
+              onError={onCoverError}
+            />
+          )}
+        </View>
 
         <Text style={styles.title}>{detail.title}</Text>
 
@@ -150,27 +207,21 @@ export function renderBookContent(
           </Text>
         )}
 
-        {/* The one confirmed format, shown once as a plain strip — the contract
-          says every title has exactly one, so there is nothing to switch
-          between (index.html: "it becomes a single-format display strip
-          rather than a control"). Absent only when normalize.ts could not
-          derive one (a `subscribe` rel carries no file), same "leave gaps
-          blank" rule as everything else here. */}
-        {detail.format !== undefined && <FormatStrip format={detail.format} />}
-
-        {/* The mockup fuses a price pair into the same control as the format
-          toggle, but price is a separate, unconfirmed fact — neither contract
-          has a price field, and printing a number would misrepresent real
-          commerce data rather than merely omit it. Shown, muted, not
-          invented, same rule as citation and the type label on screen 04. */}
-        <UnavailableTag label="Price unavailable" />
-
-        {/* D8 — `not_entitled` renders nothing at all, badge included. `tier`
-            is required on AccessResult, so that state carries an OPEN_ACCESS
-            filler; drawing it would label a title the reader cannot open as
-            free to read. ActionBar already renders null on the empty action
-            set, so the buttons need no gate. */}
-        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+        {/* Format and access tier share one row — both are short, compact
+            facts about the same title ("EPUB" / "Elite"), not two separate
+            sections. D8 — `not_entitled` renders no badge at all; `tier` is
+            required on AccessResult, so that state carries an OPEN_ACCESS
+            filler that would mislabel a title the reader cannot open as free
+            to read. ActionBar already renders null on the empty action set,
+            so the buttons need no gate of their own. Renders nothing at all
+            (not even the row) when neither is present, rather than an empty
+            band of padding. */}
+        {(detail.format !== undefined || !isNotEntitled(detail.access)) && (
+          <View style={styles.badgeRow}>
+            {detail.format !== undefined && <FormatStrip format={detail.format} />}
+            {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+          </View>
+        )}
 
         {/* D12 — the `queued` half: "queued shows a position and nothing
             tappable". `resolveAccess` returns no actions in that state, so
@@ -186,8 +237,9 @@ export function renderBookContent(
           is what turns four bare strings into a spec block.
 
           PUBLISHER AND DATE SHARE A LINE when both arrived — "Published <date>
-          by <publisher>", the mockup's own phrasing. Either one alone still
-          gets its own row, because half that sentence is not a sentence. */}
+          · <publisher>", a human date rather than the feed's raw ISO string.
+          Either one alone still gets its own row, because half that sentence
+          is not a sentence. */}
         <View style={styles.metaBlock}>
           <View style={styles.rule} />
 
@@ -202,28 +254,42 @@ export function renderBookContent(
           {detail.published !== undefined && detail.publisher !== undefined && (
             <MetaRow
               icon="calendar-blank-outline"
-              text={`Published ${detail.published} by ${detail.publisher}`}
+              text={`Published ${formatPublishedDate(detail.published)} · ${detail.publisher}`}
             />
           )}
           {detail.published !== undefined && detail.publisher === undefined && (
-            <MetaRow icon="calendar-blank-outline" text={`Published ${detail.published}`} />
+            <MetaRow icon="calendar-blank-outline" text={`Published ${formatPublishedDate(detail.published)}`} />
           )}
           {detail.published === undefined && detail.publisher !== undefined && (
             <MetaRow icon="domain" text={`Publisher ${detail.publisher}`} />
           )}
         </View>
 
-        {detail.description !== undefined && (
-          <Text style={styles.description}>{detail.description}</Text>
-        )}
+        {/* NOT WIRED TO `detail.description`, ON PURPOSE — despite the field
+            existing on the model. Every title currently returned by the
+            catalogue source, real "Politics of Coalition in Korea" included,
+            carries an internal ingestion note in this field
+            ("Real EPUB fixture (ELITE), ingested from a real file.") rather
+            than a genuine publisher abstract — confirmed by inspecting a real
+            title's own response, not assumed. Rendering it verbatim would be
+            "render what came back" working exactly as designed against data
+            that is not yet what it claims to be. This is a deliberate,
+            temporary product decision (book-detail refinement, real-data
+            review), not a missing-data branch: the day the feed carries a
+            genuine abstract, this is the one block to restore — same
+            `SectionHeader title="About this title"` + `Text` shape the
+            article branch's own "Abstract" block below already uses, so
+            reinstating it is a two-line change, not a rewrite.
 
-        {/* "Table of Contents" — a real mockup row with no data behind it; no
-          endpoint returns a chapter list. It takes the mockup's full-width row
-          and its list glyph, but NOT its trailing chevron and NOT a Pressable:
-          the chevron promises an expand interaction that does not exist, the
-          same half-measure the article branch's tab row already avoids for its
-          own four dead tabs. */}
-        <UnavailableTag label="Table of Contents" variant="row" icon="format-list-bulleted" />
+            TABLE OF CONTENTS IS ABSENT FOR THE SAME REASON DESCRIPTION IS
+            ONE LEVEL STRONGER: THE FIELD DOES NOT EXIST AT ALL. No endpoint,
+            no model field, nothing to leave a gap for — an earlier pass
+            here showed an honest "not currently available" section instead
+            of hiding it, which read as the page announcing its own
+            unfinished-ness rather than as a clean, focused screen. Omitting
+            the section entirely is the stronger form of the same "leave gaps
+            blank rather than blocking" rule the metadata rows above already
+            follow. */}
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
@@ -328,21 +394,16 @@ const ARTICLE_TAB_LABELS = [
 // `AccessTierBadge` sets the same precedent one line above every call site: a
 // resolved value that is looked at, not pressed.
 //
-// THREE SHAPES, ONE MEANING. The two mockups draw their unavailable elements
-// differently, so `variant` follows the mockup being built rather than forcing
-// one screen into the other's furniture:
-//
-//   pill   — screen 05's price, a bordered chip among the badges
-//   inline — screen 04's eyebrow and citation link: plain muted text
-//   row     — screen 05's Table of Contents, a full-width ruled row
-//
-// All three stay muted, all three keep `accessibilityRole="text"`, and all three
-// keep the same testID — the honesty is in the muting and the missing tap, not
-// in the border.
+// ONE SHAPE NOW. This used to be three — a bordered pill (screen 05's price)
+// and a full-width ruled row (screen 05's Table of Contents) alongside this
+// one — but the price tag was a removed field (§10 of the book-detail
+// refinement: don't expose a meaningless "unavailable" pill) and the TOC row
+// became a `SectionHeader` + explanatory line instead (a real section, not a
+// muted tag standing in for one). Screen 04's eyebrow and citation link are
+// the only callers left, and both already wanted this shape.
 function UnavailableTag({
   label,
   accessibilityLabel,
-  variant = 'pill',
   icon,
 }: {
   label: string;
@@ -355,7 +416,6 @@ function UnavailableTag({
    * this prop existed.
    */
   accessibilityLabel?: string;
-  variant?: 'pill' | 'inline' | 'row';
   /**
    * Leading glyph, for the one call site whose mockup draws one — the quote
    * mark against "Download citation". Decorative: the label beside it already
@@ -363,33 +423,17 @@ function UnavailableTag({
    */
   icon?: ComponentProps<typeof MaterialCommunityIcons>['name'];
 }): ReactElement {
-  const boxStyle =
-    variant === 'inline'
-      ? styles.unavailableInline
-      : variant === 'row'
-        ? styles.unavailableRow
-        : styles.unavailableTag;
-
-  // The row variant carries the mockup's own weight for this line — it reads as
-  // a section heading there, not as a caption — while the other two stay small.
-  const labelStyle =
-    variant === 'pill' ? styles.unavailableTagLabel : styles.unavailableInlineLabel;
-
   return (
     <View
       testID="unavailable-tag"
-      style={boxStyle}
+      style={styles.unavailableInline}
       accessibilityRole="text"
       accessibilityLabel={accessibilityLabel ?? label}
     >
       {icon !== undefined && (
-        <MaterialCommunityIcons
-          name={icon}
-          size={variant === 'row' ? typeScale.sectionHeader.size : typeScale.smallLabel.size}
-          color={color.textSecondary}
-        />
+        <MaterialCommunityIcons name={icon} size={typeScale.smallLabel.size} color={color.textSecondary} />
       )}
-      <Text style={variant === 'row' ? styles.unavailableRowLabel : labelStyle} numberOfLines={1}>
+      <Text style={styles.unavailableInlineLabel} numberOfLines={1}>
         {label}
       </Text>
     </View>
@@ -500,7 +544,6 @@ export function renderArticleContent(
           <UnavailableTag
             label="Research article"
             accessibilityLabel="Research article — not confirmed by the current contract"
-            variant="inline"
           />
 
           <Text style={styles.articleTitle}>{detail.title}</Text>
@@ -524,7 +567,7 @@ export function renderArticleContent(
             the mockup's own position: the row under the metadata, quote glyph
             included. The mockup's other half of this row was the DOI link,
             which is a settled removal and leaves no gap behind it. */}
-        <UnavailableTag label="Download citation" variant="inline" icon="format-quote-close" />
+        <UnavailableTag label="Download citation" icon="format-quote-close" />
 
         {/* None of the five is made an exception, PDF included. A tab's whole
             point is switching to what it names, and there is nothing behind the
@@ -627,6 +670,13 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   // Plain-English message from a failed licence call. Cleared at the start of the
   // next tap so the reader knows whether the new attempt also failed.
   const [licenceMessage, setLicenceMessage] = useState<string | undefined>(undefined);
+  // Whether the cover Image reported a load failure — lives here rather than
+  // inside `renderBookContent` because that is a plain function called
+  // during this component's own render, not a component of its own; hooks
+  // follow the fiber that is actually rendering, so they can only live here.
+  // Reset on every successful fetch, same as `failed`/`errorCode` above, so a
+  // stale failure from a previous item does not survive a fresh one.
+  const [coverFailed, setCoverFailed] = useState(false);
 
   // Recomputed whenever the publication or the reader's holdings change. Pure and
   // fast — no call is made, resolveAccess is synchronous.
@@ -644,6 +694,30 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // nothing else here changes.
     return buildItemDetail({ publication, workType: publication.workType ?? BOOK_WORK_TYPE, access });
   }, [publication, institutionId, session, loan, hold]);
+
+  // The header title narrows from both stacks' shared 'Book Details' default
+  // (RootNavigator.tsx) to 'Article Details' for the one work type this
+  // screen also renders — the registration itself cannot know which ahead of
+  // fetching. Left at the default while `detail` is null (loading/failed).
+  useEffect(() => {
+    if (detail !== null && detail.workType === 'article') {
+      navigation.setOptions({ title: 'Article Details' });
+    }
+  }, [detail, navigation]);
+
+  // Hides the shared four-tab bar for exactly this screen — a detail page,
+  // not one of Catalogue/Search/Library/Profile. `getParent()` reaches the
+  // Tab.Navigator; `setOptions` on it sets `tabBarStyle` for the CURRENTLY
+  // FOCUSED TAB SCREEN only (Catalogue or Search, whichever stack pushed
+  // this), which is exactly the per-screen scope wanted — the other three
+  // tabs' own bar is untouched. Restored on unmount so navigating back
+  // reveals it again; see AppTabBar's own header comment in
+  // RootNavigator.tsx for why this, and not a plain nested push, is what the
+  // custom tab bar actually re-renders on.
+  useEffect(() => {
+    navigation.getParent()?.setOptions({ tabBarStyle: { display: 'none' } });
+    return () => navigation.getParent()?.setOptions({ tabBarStyle: undefined });
+  }, [navigation]);
 
   // No synchronous setState in here — only inside the async continuations. Same
   // note as InstitutionDetailScreen: retry is the one path that resets
@@ -665,6 +739,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         // stale error state does not survive a fetch that just succeeded.
         setFailed(false);
         setErrorCode(undefined);
+        setCoverFailed(false);
       })
       .catch((err: unknown) => {
         setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
@@ -828,7 +903,14 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     body =
       detail.workType === 'article'
         ? renderArticleContent(detail, handleAction, pendingAction, licenceMessage)
-        : renderBookContent(detail, handleAction, pendingAction, licenceMessage);
+        : renderBookContent(
+            detail,
+            handleAction,
+            pendingAction,
+            licenceMessage,
+            coverFailed,
+            () => setCoverFailed(true),
+          );
   }
 
   return (
@@ -903,21 +985,35 @@ const styles = StyleSheet.create({
   // one element on this screen with an axis worth centring on. Elevation from
   // the token set, so the cover sits ON the white page the way the mockup draws
   // it rather than being a flat rectangle cut out of it.
+  coverWrap: {
+    alignItems: 'center',
+    // Tight, not loose — the title belongs to the cover above it, not a
+    // separate block with its own breathing room.
+    marginBottom: space.lg,
+  },
   cover: {
-    alignSelf: 'center',
     width: COVER_WIDTH,
     height: COVER_HEIGHT,
     borderRadius: radius.card,
     backgroundColor: color.border,
-    marginBottom: space.md,
     ...elevation.card.ios,
     ...elevation.card.android,
   },
+  coverPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Aleo, tight tracking — the same treatment Catalogue's own book titles
+  // (`cardTitle`) use, since a title is exactly that "editorial content" case
+  // the brand guide reserves Aleo for. Size/line-height stay `pageTitle`'s
+  // own (this is the biggest, most important text on the page), only the
+  // family and tracking change.
   title: {
     fontWeight: typeScale.pageTitle.weight,
-    fontFamily: typeScale.pageTitle.fontFamily,
+    fontFamily: typeScale.cardTitle.fontFamily,
     fontSize: typeScale.pageTitle.size,
     lineHeight: typeScale.pageTitle.lineHeight,
+    letterSpacing: -0.3,
     color: color.textPrimary,
   },
   subtitle: {
@@ -1000,15 +1096,6 @@ const styles = StyleSheet.create({
   metaRowText: {
     flex: 1,
   },
-  description: {
-    alignSelf: 'stretch',
-    fontWeight: typeScale.body.weight,
-    fontFamily: typeScale.body.fontFamily,
-    fontSize: typeScale.body.size,
-    lineHeight: typeScale.body.lineHeight,
-    color: color.textPrimary,
-    marginTop: space.sm,
-  },
   // Article-only. No `marginTop` any more: `articleContent`'s own `gap` spaces
   // it off the badge above, and the old margin stacked on top of that.
   abstractBlock: {
@@ -1026,6 +1113,13 @@ const styles = StyleSheet.create({
   // Same box shape as `unavailableTag`, deliberately, so the two read as
   // siblings — but full opacity and primary-coloured text, because this one
   // is confirmed data rather than a gap.
+  // Format and access tier, side by side — see the render's own comment for
+  // why these two share a row instead of stacking.
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
   // `alignSelf` now that `content` no longer centres its children — same one
   // line AccessTierBadge sets on itself, and for the same reason: a chip that
   // stretches to the column width stops looking like a chip.
@@ -1044,27 +1138,6 @@ const styles = StyleSheet.create({
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.textPrimary,
-  },
-  // Muted and outlined rather than filled, mirroring FilterChip's own
-  // `chipDisabled: { opacity: 0.4 }` — the same "greyed control" language, not
-  // the component itself (a filter dimension and an unavailable mockup element
-  // are different things wearing a similar look).
-  unavailableTag: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: color.border,
-    backgroundColor: color.white,
-    opacity: 0.5,
-  },
-  unavailableTagLabel: {
-    fontWeight: typeScale.smallLabel.weight,
-    fontFamily: typeScale.smallLabel.fontFamily,
-    fontSize: typeScale.smallLabel.size,
-    lineHeight: typeScale.smallLabel.lineHeight,
-    color: color.textSecondary,
   },
   // Screen 04's shape: no border, no fill, no box — a row of muted text with an
   // optional glyph, which is how its mockup draws both call sites. `alignSelf`
@@ -1085,31 +1158,6 @@ const styles = StyleSheet.create({
     fontWeight: typeScale.smallLabel.weight,
     fontSize: typeScale.smallLabel.size,
     lineHeight: typeScale.smallLabel.lineHeight,
-    color: color.textSecondary,
-  },
-  // Screen 05's Table of Contents shape: the mockup's full-width ruled row with
-  // a leading glyph. Stretches rather than hugging its label, and takes a rule
-  // above it the same way the metadata block does, so it reads as the section
-  // heading the mockup makes it — minus the chevron, which is the whole point.
-  //
-  // Vertical padding rather than a fixed height, so a large accessibility text
-  // size grows the row instead of clipping the label inside it.
-  unavailableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingVertical: space.md,
-    marginTop: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: color.border,
-  },
-  // `sectionHeader`, matching the weight the mockup gives this line and the
-  // weight SectionHeader gives "Abstract" on screen 04 — but on the secondary
-  // colour, because there is still nothing behind it.
-  unavailableRowLabel: {
-    fontWeight: typeScale.sectionHeader.weight,
-    fontSize: typeScale.sectionHeader.size,
-    lineHeight: typeScale.sectionHeader.lineHeight,
     color: color.textSecondary,
   },
   // Plain text and a divider, matching the mockup's own tab strip shape —

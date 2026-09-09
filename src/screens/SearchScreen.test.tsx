@@ -272,9 +272,14 @@ describe('recent searches', () => {
 
     await submit('climate');
     await fireEvent.press(screen.getByTestId('search-input-clear'));
-    await waitFor(() => expect(screen.getByTestId('search-recent-clear')).toBeTruthy());
+    // The "Clear" action now comes from SectionHeader's own action slot —
+    // same component Catalogue's shelf headers use, accessibilityLabel names
+    // the section per that component's own header comment.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Clear Recent searches' })).toBeTruthy(),
+    );
 
-    await fireEvent.press(screen.getByTestId('search-recent-clear'));
+    await fireEvent.press(screen.getByRole('button', { name: 'Clear Recent searches' }));
 
     expect(screen.queryByTestId('search-recent')).toBeNull();
   });
@@ -639,7 +644,7 @@ describe('a response with no publications key, carrying browseInstead', () => {
 
     await submit('quantum basket weaving');
 
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(2));
   });
 
   it('shows no browse section when the response offered none', async () => {
@@ -665,9 +670,9 @@ describe('tapping a browse-instead card routes by its target', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: BROWSE }))));
     await render(<SearchScreen />);
     await submit('quantum basket weaving');
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(2));
 
-    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+    fireEvent.press(screen.getAllByTestId('search-browse-item')[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', {
       screen: 'Shelf',
@@ -685,9 +690,9 @@ describe('tapping a browse-instead card routes by its target', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: [catalogueRoot] }))));
     await render(<SearchScreen />);
     await submit('quantum basket weaving');
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(1));
 
-    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+    fireEvent.press(screen.getAllByTestId('search-browse-item')[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'CatalogueHome' });
   });

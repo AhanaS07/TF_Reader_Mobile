@@ -6,6 +6,15 @@ import { color, space, type } from '@theme/tokens';
 // Bar height excluding the safe-area inset above it.
 const BAR_HEIGHT = 56;
 
+// The real T&F lockup (icon + "Taylor & Francis" + "by informa"), white-on-
+// transparent — the variant meant to sit on a dark/navy surface, matching
+// this bar's own background. Source aspect ratio is 300×72 (@3x); rendered
+// height below preserves it rather than a hand-built icon+stacked-text
+// reconstruction, which is what this replaced.
+const BRAND_LOGO = require('../../../assets/logo.png');
+const BRAND_LOGO_HEIGHT = 32;
+const BRAND_LOGO_ASPECT = 300 / 72;
+
 // ─── Props ───────────────────────────────────────────────────────────────────
 
 /**
@@ -44,8 +53,9 @@ export default function TopAppBar({
   return (
     <View style={[styles.bar, { paddingTop: topInset }]}>
       <View style={styles.inner}>
-        {/* Left — back chevron + title on pushed screens, logo only on tab roots */}
-        <View style={[styles.leftSlot, !onBack && styles.leftSlotLogo]}>
+        {/* Left — back chevron + title on pushed screens, the real logo
+            lockup on tab roots. */}
+        <View style={[styles.leftSlot, !onBack && styles.leftSlotBrand]}>
           {onBack ? (
             <TouchableOpacity
               style={styles.iconBtn}
@@ -56,11 +66,9 @@ export default function TopAppBar({
               <Ionicons name="chevron-back" size={24} color={color.white} />
             </TouchableOpacity>
           ) : (
-            <Image
-              source={require('../../../assets/logo.png')}
-              style={styles.logo}
-              accessibilityLabel="Taylor & Francis"
-            />
+            <View accessibilityRole="image" accessibilityLabel="Taylor & Francis">
+              <Image source={BRAND_LOGO} style={styles.brandLogo} resizeMode="contain" />
+            </View>
           )}
 
           {onBack && (
@@ -108,21 +116,18 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: space.sm,
   },
-  leftSlotLogo: {
-    alignSelf: 'flex-end',
-    marginBottom: space.md,
+  leftSlotBrand: {
+    alignSelf: 'center',
   },
-  logo: {
-    width: 150,
-    height: 36,
-    resizeMode: 'contain'
+  brandLogo: {
+    height: BRAND_LOGO_HEIGHT,
+    width: BRAND_LOGO_HEIGHT * BRAND_LOGO_ASPECT,
   },
   iconBtn: {
     padding: space.xs,
     marginRight: space.xs,
   },
   title: {
-    fontWeight: type.sectionHeader.weight,
     fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,

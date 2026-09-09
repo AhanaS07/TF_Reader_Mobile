@@ -26,20 +26,21 @@
 // CONVENTIONS §3. Only the load-more failure stays inline: it is a row beneath
 // results already on screen, not a screen-level takeover either component models.
 import { useCallback, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { useCurrentSession } from '@access/currentSession';
-import { CategoryCard, type CategoryAccent } from '@components/CategoryCard';
+import type { CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
-import { EmptyState } from '@components/EmptyState';
 import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
 import { SearchInput } from '@components/SearchInput';
+import { SectionHeader } from '@components/SectionHeader';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
@@ -47,7 +48,7 @@ import type { SearchFilters, SearchStatus, VoiceStatus } from '@/search';
 import { useCatalogueSearch, useVoiceSearch, VOICE_ERROR_COPY } from '@/search';
 import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
-import { color, radius, space, type } from '@theme/tokens';
+import { color, elevation, radius, space, type, weight } from '@theme/tokens';
 
 // Composite, not a plain stack prop, because "Browse the full catalogue"
 // crosses into the Catalogue tab's Shelf screen — same cross-tab pattern
@@ -58,6 +59,12 @@ type Nav = CompositeNavigationProp<
 >;
 
 const SKELETON_COUNT = 3;
+
+// The leading/trailing glyphs on a recent-search row and the no-results
+// panel's own icon — sized against `type.body`'s own line height so an icon
+// sits on the same visual baseline as the text beside it, composed rather
+// than a bare number (CONVENTIONS §5).
+const ROW_ICON_SIZE = type.body.lineHeight;
 
 // ─── Copy ────────────────────────────────────────────────────────────────────
 
@@ -248,9 +255,11 @@ export default function SearchScreen() {
 
       <ScrollView contentContainerStyle={styles.results}>
         {state === 'idle' && (
-          <Text testID="search-idle" style={styles.message}>
-            Search this catalogue by title, author, subject or description.
-          </Text>
+          <View style={styles.compactCard}>
+            <Text testID="search-idle" style={styles.message}>
+              Search this catalogue by title, author, subject or description.
+            </Text>
+          </View>
         )}
 
         {/* Recent searches — client-side only (recentSearchesStore.ts).
@@ -258,17 +267,12 @@ export default function SearchScreen() {
             started their own, a list of old ones is clutter, not help. */}
         {state === 'idle' && search.draft.trim().length === 0 && recentQueries.length > 0 && (
           <View testID="search-recent" style={styles.recent}>
-            <View style={styles.recentHeader}>
-              <Text style={styles.recentHeading}>Recent searches</Text>
-              <Pressable
-                testID="search-recent-clear"
-                onPress={clearRecentQueries}
-                accessibilityRole="button"
-                accessibilityLabel="Clear recent searches"
-              >
-                <Text style={styles.action}>Clear</Text>
-              </Pressable>
-            </View>
+            <SectionHeader
+              title="Recent searches"
+              emphasis="editorial"
+              actionLabel="Clear"
+              onAction={clearRecentQueries}
+            />
             {recentQueries.map((query) => (
               <Pressable
                 key={query}
@@ -278,7 +282,19 @@ export default function SearchScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`Search again for ${query}`}
               >
-                <Text style={styles.recentRowLabel}>{query}</Text>
+                <Ionicons name="time-outline" size={ROW_ICON_SIZE} color={color.textSecondary} />
+                <Text style={styles.recentRowLabel} numberOfLines={1}>
+                  {query}
+                </Text>
+                {/* The classic "fills the search field" glyph — a plain up
+                    arrow rotated to point at the field above rather than a
+                    bespoke asset. */}
+                <Ionicons
+                  name="arrow-up-outline"
+                  size={ROW_ICON_SIZE}
+                  color={color.textSecondary}
+                  style={styles.recentRowFillIcon}
+                />
               </Pressable>
             ))}
           </View>
@@ -292,7 +308,7 @@ export default function SearchScreen() {
         {/* THE ERROR STATE, and only for an actual failure. A response that
             arrived and contained nothing never reaches this branch. */}
         {state === 'error' && !hasResults && (
-          <View testID="search-error">
+          <View testID="search-error" style={styles.cardChrome}>
             <ErrorState
               variant={
                 search.errorCode === undefined ? 'not_ready' : catalogueErrorVariant(search.errorCode)
@@ -315,32 +331,65 @@ export default function SearchScreen() {
             two EmptyState variants rather than one generic message. */}
         {state === 'empty' && (
           <View testID="search-empty" style={styles.panel}>
-            <EmptyState
-              variant={hasActiveFilter ? 'no_filter_results' : 'no_query_results'}
-              query={search.query}
-              onClearFilters={clearAllFilters}
-              // Screen 17 — "Clear search" beside the no-results message. The
-              // same `onClear` the input's own clear button uses, so the two
-              // routes out of a dead query land in the same state.
-              onClearSearch={search.onClear}
-            />
+            {/* A Search-local panel, not the shared EmptyState component.
+                EmptyState's own padding (`space.xl`, the most generous in the
+                whole scale) is right for the full-screen centred panel it was
+                built for (ShelfScreen, PublicCatalogueScreen) — inline below
+                a search field it read as a card built to fill a screen it
+                was not on, which is the "too spacious" of it. Same copy
+                contract as EmptyState's own `no_query_results`/
+                `no_filter_results` (curly-quoted query, "Clear search" vs
+                "Clear filters"), just laid out at this screen's own density. */}
+            <View style={styles.compactCard}>
+              <Ionicons name="search-outline" size={ROW_ICON_SIZE * 1.5} color={color.textSecondary} />
+              <Text style={styles.message}>
+                {hasActiveFilter
+                  ? 'Try adjusting your filters.'
+                  : `No articles or books match “${search.query}”.`}
+              </Text>
+              <Pressable
+                // Screen 17 — "Clear search" beside the no-results message. The
+                // same `onClear` the input's own clear button uses when there is
+                // no active filter, so the two routes out of a dead query land
+                // in the same state.
+                onPress={hasActiveFilter ? clearAllFilters : search.onClear}
+                style={styles.clearButton}
+                accessibilityRole="button"
+                accessibilityLabel={hasActiveFilter ? 'Clear filters' : 'Clear search'}
+              >
+                <Text style={styles.clearButtonLabel}>
+                  {hasActiveFilter ? 'Clear filters' : 'Clear search'}
+                </Text>
+              </Pressable>
+            </View>
 
             {/* A shelf only exists within one institution's catalogue, so this
                 is only offered when the reader actually has one — otherwise
                 Shelf would receive an institutionId that isn't theirs. */}
             {search.browseInstead.length > 0 && institutionId !== null && (
               <View testID="search-browse-instead" style={styles.browse}>
-                <Text style={styles.browseHeading}>Browse instead</Text>
+                <SectionHeader title="Browse instead" emphasis="editorial" />
+                {/* A Search-local row, not CategoryCard — that component's
+                    fixed height (`CARD_HEIGHT`, tokens.ts's `space.xl * 3`)
+                    is tuned for a narrow tile in a horizontal strip
+                    (ShelfScreen, InstitutionDetailScreen); stretched to this
+                    screen's full content width it read as a squat, padded
+                    banner rather than a single-line action row. */}
                 {search.browseInstead.map((entry, index) => (
                   // Shelf now exists (Catalogue stack), so a shelf target crosses
                   // tabs to it — same cross-tab pattern AccessGateScreen already
                   // uses to reach SignIn. A catalogue target has no group to open
                   // by id (see NavLink.target in types.ts) — getShelf would only
                   // 404 on it — so it goes to the catalogue home instead.
-                  <CategoryCard
+                  <Pressable
                     key={entry.shelfId}
-                    title={entry.title}
-                    accent={BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]}
+                    testID="search-browse-item"
+                    style={[
+                      styles.browseRow,
+                      { backgroundColor: color[BROWSE_ACCENTS[index % BROWSE_ACCENTS.length]] },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={entry.title}
                     onPress={() =>
                       entry.target === 'shelf'
                         ? navigation.navigate('Catalogue', {
@@ -353,7 +402,12 @@ export default function SearchScreen() {
                           })
                         : navigation.navigate('Catalogue', { screen: 'CatalogueHome' })
                     }
-                  />
+                  >
+                    <Text style={styles.browseRowLabel} numberOfLines={1}>
+                      {entry.title}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={ROW_ICON_SIZE} color={color.white} />
+                  </Pressable>
                 ))}
               </View>
             )}
@@ -418,7 +472,7 @@ export default function SearchScreen() {
         {state === 'paging' && <ContentCard state="loading" title="" />}
 
         {pageFailed && (
-          <View testID="search-page-error" style={styles.panel}>
+          <View testID="search-page-error" style={styles.compactCard}>
             <Text style={styles.message}>
               {search.errorCode === undefined
                 ? 'More results could not be loaded.'
@@ -506,6 +560,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: color.border,
+    // A card, not a bare outline — same family as the search field and the
+    // result panels below, so this reads as one designed surface next to
+    // them rather than a plain HTML-style pill.
+    backgroundColor: color.white,
+    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
   },
   filterButtonLabel: {
     fontWeight: type.button.weight,
@@ -517,30 +576,27 @@ const styles = StyleSheet.create({
   recent: {
     gap: space.xs,
   },
-  recentHeader: {
+  recentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: space.xs,
-  },
-  recentHeading: {
-    fontWeight: type.sectionHeader.weight,
-    fontFamily: type.sectionHeader.fontFamily,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
-    color: color.textPrimary,
-  },
-  recentRow: {
-    paddingVertical: space.sm,
+    gap: space.sm,
+    paddingVertical: space.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: color.border,
   },
   recentRowLabel: {
+    flex: 1,
     fontWeight: type.body.weight,
     fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
+  },
+  // Points at the field above rather than the plain "up" the glyph reads as
+  // on its own — the same "fills the search box" convention as most search
+  // history lists.
+  recentRowFillIcon: {
+    transform: [{ rotate: '-45deg' }],
   },
   note: {
     fontWeight: type.meta.weight,
@@ -558,22 +614,86 @@ const styles = StyleSheet.create({
     paddingBottom: space.xl,
     gap: space.sm,
   },
+  // Groups the no-results card with the browse-instead section beneath it —
+  // spacing between the two comes from `results`' own `gap`, not from padding
+  // here, so this adds no extra air of its own.
   panel: {
     alignItems: 'center',
-    gap: space.sm,
-    paddingVertical: space.lg,
+    gap: space.md,
   },
+  // The card surface for every plain-text message block on this screen (the
+  // idle prompt, the no-results message, the inline "more results failed"
+  // row) — deliberately tighter than EmptyState's own `space.xl` padding.
+  // That padding is right for the full-screen centred panel EmptyState was
+  // built for (ShelfScreen, PublicCatalogueScreen); reused inline below a
+  // search field, on a screen already dense with its own controls, it read
+  // as a card sized for a screen it was not on. Search-local, on purpose —
+  // EmptyState and ErrorState themselves stay bare, since Catalogue renders
+  // both directly (its own `no_content` state, its own failed-load state)
+  // and must not pick up a border/shadow it never asked for.
+  compactCard: {
+    alignItems: 'center',
+    gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: 1,
+    borderColor: color.border,
+    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
+  },
+  // `cardChrome` — chrome only, no padding — for wrapping ErrorState, which
+  // already pads itself; a network failure keeps going through that shared
+  // component rather than a duplicated local copy, since its copy varies by
+  // `ErrorStateVariant` in a way the no-results panel's two cases do not.
+  cardChrome: {
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: 1,
+    borderColor: color.border,
+    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
+  },
+  // The outlined pill EmptyState's own "Clear search"/"Clear filters" button
+  // used — replicated here rather than imported, since this screen no longer
+  // renders through that component for this state (see `compactCard`).
+  clearButton: {
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: color.primary,
+  },
+  clearButtonLabel: {
+    fontWeight: type.button.weight,
+    fontFamily: type.button.fontFamily,
+    fontSize: type.button.size,
+    lineHeight: type.button.lineHeight,
+    color: color.primary,
+  },
+  // No `marginTop` — `panel`'s own `gap` already spaces this from the
+  // no-results card above it.
   browse: {
     alignSelf: 'stretch',
     gap: space.sm,
-    marginTop: space.md,
   },
-  browseHeading: {
-    fontWeight: type.sectionHeader.weight,
-    fontFamily: type.sectionHeader.fontFamily,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
-    color: color.textPrimary,
+  // A single-line action row at this screen's own width, not a squarish
+  // tile — see the comment where this is used for why CategoryCard's own
+  // fixed height was the wrong shape here.
+  browseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: radius.card,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
+    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
+  },
+  browseRowLabel: {
+    flex: 1,
+    fontWeight: weight.bold,
+    fontFamily: type.body.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.white,
   },
   message: {
     fontWeight: type.body.weight,

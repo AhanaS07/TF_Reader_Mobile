@@ -7,7 +7,7 @@
 // the scroll view's padding.
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import SectionHeader from './SectionHeader';
+import SectionHeader, { type SectionHeaderEmphasis } from './SectionHeader';
 import { color, space, type } from '@theme/tokens';
 
 // One labelled row.
@@ -16,11 +16,13 @@ function Row({
   title,
   actionLabel,
   withAction,
+  emphasis,
 }: {
   label: string;
   title: string;
   actionLabel?: string;
   withAction?: boolean;
+  emphasis?: SectionHeaderEmphasis;
 }) {
   return (
     <View style={styles.row}>
@@ -30,6 +32,7 @@ function Row({
           title={title}
           actionLabel={actionLabel}
           onAction={withAction ? () => {} : undefined}
+          emphasis={emphasis}
         />
       </View>
     </View>
@@ -84,6 +87,26 @@ export default function SectionHeaderGallery() {
         label="half-given action — label with no handler draws nothing, on purpose"
         title="Free to read"
         actionLabel="See all"
+      />
+
+      <Row
+        label={'emphasis="editorial" — CatalogueScreen\'s shelf titles, Aleo instead of Open Sans'}
+        title="New this month"
+        emphasis="editorial"
+      />
+
+      <Row
+        label={'emphasis="editorial", with an action — the family changes, the layout does not'}
+        title="Recently Published"
+        actionLabel="See all"
+        withAction
+        emphasis="editorial"
+      />
+
+      <Row
+        label={'emphasis="editorial", long title — wraps the same as default'}
+        title="Environmental Policy, Air Pollution and Sustainable Development in Contemporary China"
+        emphasis="editorial"
       />
 
       <View style={styles.spacer} />

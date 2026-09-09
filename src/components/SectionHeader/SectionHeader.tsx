@@ -16,9 +16,17 @@
 //
 // It sets no outer margin or padding: the parent owns where the header sits,
 // the same rule that keeps CategoryCard from setting its own width.
+//
+// `emphasis="editorial"` swaps the title to Aleo (serif, via `cardTitle` —
+// see that style's own comment for why not `editorialTitle`) for a screen
+// that wants its section headings to read as editorial content rather than
+// UI chrome — CatalogueScreen's shelves are the first caller. Defaults to
+// the existing Open Sans treatment, so every other screen is unaffected.
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { color, space, type } from '@theme/tokens';
+
+export type SectionHeaderEmphasis = 'default' | 'editorial';
 
 export interface SectionHeaderProps {
   // The section's own label, rendered verbatim — a shelf title off the feed
@@ -29,9 +37,15 @@ export interface SectionHeaderProps {
   // of screen 01; the with_action variant belongs to screens 06 and 09.
   actionLabel?: string;
   onAction?: () => void;
+  emphasis?: SectionHeaderEmphasis;
 }
 
-export default function SectionHeader({ title, actionLabel, onAction }: SectionHeaderProps) {
+export default function SectionHeader({
+  title,
+  actionLabel,
+  onAction,
+  emphasis = 'default',
+}: SectionHeaderProps) {
   // Both, or neither — see the header.
   const showAction = actionLabel !== undefined && onAction !== undefined;
 
@@ -39,7 +53,7 @@ export default function SectionHeader({ title, actionLabel, onAction }: SectionH
     <View testID="section-header" style={styles.header}>
       <Text
         testID="section-header-title"
-        style={styles.title}
+        style={[styles.title, emphasis === 'editorial' && styles.titleEditorial]}
         // Announced as a heading so a screen reader can jump section to section
         // instead of reading the whole feed linearly.
         accessibilityRole="header"
@@ -79,11 +93,28 @@ const styles = StyleSheet.create({
     // Takes the spare width, which both pushes the action to the far edge and
     // makes a long title wrap inside the row instead of overflowing it.
     flex: 1,
-    fontWeight: type.sectionHeader.weight,
     fontFamily: type.sectionHeader.fontFamily,
     fontSize: type.sectionHeader.size,
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
+  },
+  // Overrides the family and tracking only — size, line height, colour and
+  // everything else about the row stay identical to `default`. `cardTitle`,
+  // not `editorialTitle`: the hero's own headline is this screen's primary
+  // title and correctly stays Open Sans now (the brand guide's "Regular for
+  // titles"), so borrowing its family here would make this a no-op — a
+  // shelf heading is closer to the guide's "smaller/secondary titles or
+  // headings", the same case `cardTitle`'s own note in tokens.ts already
+  // makes for a book title, so this reaches for that token instead.
+  // `letterSpacing` is the same negative tightening `cardTitle`'s own title
+  // style takes, slightly less aggressive: a heading is a short label, not a
+  // wrapped block of prose, so it can afford to sit closer to Aleo's own
+  // (loose-reading) default tracking than a book title does.
+  titleEditorial: {
+    fontFamily: type.cardTitle.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    letterSpacing: -0.2,
   },
   // Explicitly refuses to shrink, so the action keeps its full label however
   // long the title runs. This is the done-when clause, stated in one property.
@@ -93,7 +124,6 @@ const styles = StyleSheet.create({
   action: {
     // The token meant for tappable text; the spec fixes the colour here and
     // leaves the size unstated.
-    fontWeight: type.button.weight,
     fontFamily: type.button.fontFamily,
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,

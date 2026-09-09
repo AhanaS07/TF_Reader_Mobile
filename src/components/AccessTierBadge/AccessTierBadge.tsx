@@ -8,7 +8,7 @@ import { color, radius, space, type } from '@theme/tokens';
 /**
  * Pill-shaped access-tier indicator.
  *
- * Takes a resolved tier and computes nothing 
+ * Takes a resolved tier and computes nothing
  * The tier is derived in the adapter from the acquisition link's licenceModel, never here.
  *
  * No loading, empty, error or offline state: this renders one resolved value,
@@ -19,30 +19,54 @@ export interface AccessTierBadgeProps {
   size?: 'sm' | 'md';
 }
 
-/** One table, so a new tier is a single compile error rather than three gaps. */
+/**
+ * One table, so a new tier is a single compile error rather than three gaps.
+ *
+ * `foreground` varies per tier, not a single shared white: `SUBSCRIPTION`'s
+ * background is now a light tint (`color.subscriptionTint`), and white text
+ * on that would fail contrast the same way `color.surface`'s own note in
+ * tokens.ts already describes for a different pairing. `OPEN_ACCESS` and
+ * `ELITE` keep saturated fills, so white stays correct for those two.
+ */
 const TIERS: Record<
   AccessTier,
   {
     label: string;
     icon: ComponentProps<typeof MaterialCommunityIcons>['name'];
     background: string;
+    foreground: string;
   }
 > = {
-  OPEN_ACCESS: { label: 'Open Access', icon: 'lock-open-variant', background: color.success },
-  SUBSCRIPTION: { label: 'Subscription', icon: 'lock', background: color.subscription },
-  ELITE: { label: 'Elite', icon: 'crown', background: color.elite },
+  OPEN_ACCESS: {
+    label: 'Open Access',
+    icon: 'lock-open-variant',
+    background: color.success,
+    foreground: color.white,
+  },
+  SUBSCRIPTION: {
+    label: 'Subscription',
+    icon: 'lock',
+    background: color.subscriptionTint,
+    foreground: color.navy,
+  },
+  ELITE: {
+    label: 'Elite',
+    icon: 'crown',
+    background: color.elite,
+    foreground: color.white,
+  },
 };
 
 export default function AccessTierBadge({ tier, size = 'sm' }: AccessTierBadgeProps) {
-  const { label, icon, background } = TIERS[tier];
+  const { label, icon, background, foreground } = TIERS[tier];
 
   return (
     <View
       accessibilityRole="text"
       style={[styles.badge, styles[size], { backgroundColor: background }]}
     >
-      <MaterialCommunityIcons name={icon} size={type.smallLabel.size} color={color.white} />
-      <Text style={styles.label}>{label}</Text>
+      <MaterialCommunityIcons name={icon} size={type.smallLabel.size} color={foreground} />
+      <Text style={[styles.label, { color: foreground }]}>{label}</Text>
     </View>
   );
 }
@@ -60,10 +84,8 @@ const styles = StyleSheet.create({
   sm: { paddingHorizontal: space.sm, paddingVertical: space.xs },
   md: { paddingHorizontal: space.md, paddingVertical: space.xs },
   label: {
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
-    color: color.white,
   },
 });

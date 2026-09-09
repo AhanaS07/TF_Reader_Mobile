@@ -15,6 +15,7 @@ import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
 import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
 import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
 import FilterSortSheetGallery from '@/components/FilterSortSheet/FilterSortSheet.gallery';
+import HeroBannerGallery from '@/components/HeroBanner/HeroBanner.gallery';
 import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
@@ -53,6 +54,7 @@ const SECTIONS = [
   // Not a component. It is here because the access RULES are the thing most worth
   // reviewing by eye, and the only surface that shows them resolving.
   'resolveAccess',
+  'HeroBanner',
   'CategoryCard',
   'ContentCard',
   'SubjectChip',
@@ -114,6 +116,7 @@ export default function StateGallery() {
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
       {section === 'resolveAccess' && <ResolveAccessGallery />}
+      {section === 'HeroBanner' && <HeroBannerGallery />}
       {section === 'CategoryCard' && <CategoryCardGallery />}
       {section === 'ContentCard' && <ContentCardGallery />}
       {section === 'SubjectChip' && <SubjectChipGallery />}
