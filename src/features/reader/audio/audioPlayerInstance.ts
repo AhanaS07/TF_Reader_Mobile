@@ -32,10 +32,11 @@ import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
 
 import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator';
+import { audioQueueStore } from './audioQueueStore';
 
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
 
-type TrackCompletionHandler = () => void | Promise<void>;
+type TrackCompletionHandler = () => void | Promise<unknown>;
 let onTrackCompletionHandler: TrackCompletionHandler | null = null;
 
 /**
@@ -135,6 +136,7 @@ export function pauseCurrentAudioPlayer(): void {
   if (current && current.player.isLoaded && current.player.playing) {
     current.player.pause();
     commitCurrentPlayerPosition();
+    audioQueueStore.getState().setIsPlaying(false);
   }
 }
 
@@ -159,6 +161,7 @@ export function releaseCurrentAudioPlayer(): void {
   commitCurrentPlayerPosition();
   current.player.remove();
   current = null;
+  audioQueueStore.getState().setIsPlaying(false);
 }
 
 export function getCurrentAudioPlayer(): AudioPlayer | null {
@@ -184,6 +187,7 @@ export function switchActiveAudioTrack(
       { showSeekForward: true, showSeekBackward: true },
     );
     player.play();
+    audioQueueStore.getState().setIsPlaying(true);
     return;
   }
 
@@ -196,6 +200,7 @@ export function switchActiveAudioTrack(
     { showSeekForward: true, showSeekBackward: true },
   );
   current.player.play();
+  audioQueueStore.getState().setIsPlaying(true);
 }
 
 export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew: boolean } {
@@ -222,6 +227,13 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
       stopActiveTts();
     }
     wasPlaying = status.playing;
+    audioQueueStore.getState().setIsPlaying(status.playing);
+    if (status.isLoaded) {
+      audioQueueStore.getState().setPlaybackProgress({
+        positionSeconds: status.currentTime,
+        durationSeconds: status.duration,
+      });
+    }
 
     if (status.didJustFinish) {
       if (onTrackCompletionHandler) {

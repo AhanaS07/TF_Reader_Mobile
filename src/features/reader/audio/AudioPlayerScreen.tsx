@@ -51,6 +51,13 @@ import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
 import { getAudioPlayerFor } from './audioPlayerInstance';
+import { AudioQueueModal } from './AudioQueueModal';
+import {
+  jumpToQueueIndex,
+  skipToNextTrack,
+  skipToPreviousTrack,
+} from './audioQueueCoordinator';
+import { useAudioQueueStore } from './audioQueueStore';
 import { stopActiveTts } from './audioTtsCoordinator';
 import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
@@ -175,6 +182,11 @@ function AudioPlayerScreenComponent(
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
   const hasSetLockScreenRef = useRef(false);
+  const [queueModalVisible, setQueueModalVisible] = useState(false);
+
+  const hasNext = useAudioQueueStore((s) => s.hasNext());
+  const hasPrevious = useAudioQueueStore((s) => s.hasPrevious());
+  const queueLength = useAudioQueueStore((s) => s.items.length);
 
   /**
    * Sync's `content.lock` bus signal for THIS book, rendered — the visible half of the
@@ -439,9 +451,21 @@ function AudioPlayerScreenComponent(
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title} numberOfLines={2}>
-        {title}
-      </Text>
+      <View style={styles.headerRow}>
+        <Text style={styles.title} numberOfLines={2}>
+          {title}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Open queue, ${queueLength} track${queueLength === 1 ? '' : 's'}`}
+          onPress={() => setQueueModalVisible(true)}
+          style={styles.queueButton}
+        >
+          <Text style={styles.queueButtonLabel}>
+            Queue {queueLength > 0 ? `(${queueLength})` : ''}
+          </Text>
+        </Pressable>
+      </View>
 
       <Scrubber
         positionSeconds={status.currentTime}
@@ -453,6 +477,28 @@ function AudioPlayerScreenComponent(
       />
 
       <View style={styles.transportRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Previous track"
+          disabled={!hasPrevious && status.currentTime <= 3.0}
+          onPress={() => void skipToPreviousTrack(status.currentTime)}
+          style={[
+            styles.transportButton,
+            styles.trackNavButton,
+            !hasPrevious && status.currentTime <= 3.0 && styles.transportButtonDisabled,
+          ]}
+        >
+          <Text
+            style={[
+              styles.transportButtonLabel,
+              styles.trackNavIcon,
+              !hasPrevious && status.currentTime <= 3.0 && styles.transportButtonLabelDisabled,
+            ]}
+          >
+            |◀◀
+          </Text>
+        </Pressable>
+
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Skip back ${SKIP_SECONDS} seconds`}
@@ -493,6 +539,28 @@ function AudioPlayerScreenComponent(
         >
           <Text style={styles.transportButtonLabel}>+{SKIP_SECONDS}s</Text>
         </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Next track"
+          disabled={!hasNext}
+          onPress={() => void skipToNextTrack()}
+          style={[
+            styles.transportButton,
+            styles.trackNavButton,
+            !hasNext && styles.transportButtonDisabled,
+          ]}
+        >
+          <Text
+            style={[
+              styles.transportButtonLabel,
+              styles.trackNavIcon,
+              !hasNext && styles.transportButtonLabelDisabled,
+            ]}
+          >
+            ▶▶|
+          </Text>
+        </Pressable>
       </View>
 
       <View style={styles.rateRow}>
@@ -512,6 +580,12 @@ function AudioPlayerScreenComponent(
           </Pressable>
         ))}
       </View>
+
+      <AudioQueueModal
+        visible={queueModalVisible}
+        onClose={() => setQueueModalVisible(false)}
+        onSelectTrack={(idx) => void jumpToQueueIndex(idx)}
+      />
     </View>
   );
 }
@@ -527,7 +601,26 @@ const styles = StyleSheet.create({
   loadingLabel: { fontSize: 15, color: '#555555' },
   errorTitle: { fontSize: 17, fontWeight: '600', color: '#b00020', textAlign: 'center' },
   errorDetail: { fontSize: 14, color: '#555555', textAlign: 'center' },
-  title: { fontSize: 20, fontWeight: '700', color: '#111111', marginTop: 12 },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  title: { fontSize: 20, fontWeight: '700', color: '#111111', flex: 1, marginRight: 12 },
+  queueButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#f3f4f6',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  queueButtonLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#374151',
+  },
   scrubberRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   timeLabel: { fontSize: 12, color: '#555555', width: 40, textAlign: 'center' },
   scrubberTrack: {
@@ -561,6 +654,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#f0f0f0',
   },
   transportButtonLabel: { fontSize: 15, fontWeight: '600', color: '#111111' },
+  trackNavButton: {
+    paddingHorizontal: 12,
+  },
+  trackNavIcon: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  transportButtonDisabled: {
+    opacity: 0.35,
+  },
+  transportButtonLabelDisabled: {
+    color: '#9ca3af',
+  },
   playButton: { backgroundColor: '#111111', minWidth: 96, alignItems: 'center' },
   playButtonLabel: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
   rateRow: { flexDirection: 'row', justifyContent: 'center', gap: 8 },

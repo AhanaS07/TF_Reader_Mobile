@@ -31,9 +31,11 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { OFFLINE_LOCK_EVENTS } from '@/shared/contracts';
+import type { BookId } from '@/shared/contracts';
 import { eventBus, resetEventBusForTests } from '@/shared/eventBus';
 
 import { AudioPlayerScreen } from './AudioPlayerScreen';
+import { useAudioQueueStore } from './audioQueueStore';
 import {
   _resetAudioTtsCoordinatorForTests,
   registerActiveTtsSession,
@@ -83,6 +85,19 @@ jest.mock('./audioAssetResolver', () => ({
 
 jest.mock('./audioPlayerInstance', () => ({
   getAudioPlayerFor: () => ({ player: mockFakePlayer, isNew: mockIsNewAudioPlayer }),
+  getCurrentAudioPlayer: () => mockFakePlayer,
+  registerTrackCompletionHandler: jest.fn(),
+  switchActiveAudioTrack: jest.fn(),
+}));
+
+const mockSkipToNextTrack = jest.fn();
+const mockSkipToPreviousTrack = jest.fn();
+const mockJumpToQueueIndex = jest.fn();
+
+jest.mock('./audioQueueCoordinator', () => ({
+  skipToNextTrack: (...args: unknown[]) => mockSkipToNextTrack(...args),
+  skipToPreviousTrack: (...args: unknown[]) => mockSkipToPreviousTrack(...args),
+  jumpToQueueIndex: (...args: unknown[]) => mockJumpToQueueIndex(...args),
 }));
 
 // setAudioModeAsync is here because AudioPlayerScreen now imports ensureAudioModeConfigured
@@ -118,6 +133,8 @@ describe('AudioPlayerScreen', () => {
     // it touches locking at all.
     resetEventBusForTests();
     _resetAudioTtsCoordinatorForTests();
+    useAudioQueueStore.getState().clearQueue();
+    useAudioQueueStore.getState().setRepeatMode('off');
   });
 
   it('renders a distinct "access ended" state on a content.lock signal, not the generic load-error heading', async () => {
@@ -609,5 +626,59 @@ describe('AudioPlayerScreen', () => {
     // currentTime on an unloaded player is 0; persisting it would overwrite a real stored position
     // with the top of the book just because the user opened and immediately left.
     expect(onPositionCommit).not.toHaveBeenCalled();
+  });
+
+  it('calls skipToNextTrack when Next track button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [
+        { bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' },
+        { bookId: 'book-next' as BookId, title: 'Next Book' },
+      ],
+      0,
+    );
+
+    const { getByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const nextBtn = getByLabelText('Next track');
+    await fireEvent.press(nextBtn);
+
+    expect(mockSkipToNextTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls skipToPreviousTrack when Previous track button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [
+        { bookId: 'book-prev' as BookId, title: 'Prev Book' },
+        { bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' },
+      ],
+      1,
+    );
+
+    const { getByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const prevBtn = getByLabelText('Previous track');
+    await fireEvent.press(prevBtn);
+
+    expect(mockSkipToPreviousTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens queue modal when Queue button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [{ bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' }],
+      0,
+    );
+
+    const { getByLabelText, getByText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const queueBtn = getByLabelText('Open queue, 1 track');
+    await fireEvent.press(queueBtn);
+
+    await waitFor(() => expect(getByText('Clear Queue')).toBeTruthy());
   });
 });

@@ -174,9 +174,25 @@ describe('audioQueueStore', () => {
   it('clears queue properly', () => {
     const store = useAudioQueueStore.getState();
     store.setQueue([itemA, itemB], 0);
+    store.setIsPlaying(true);
+    store.setPlaybackProgress({ positionSeconds: 15, durationSeconds: 60 });
 
     store.clearQueue();
     expect(useAudioQueueStore.getState().items).toEqual([]);
     expect(useAudioQueueStore.getState().currentIndex).toBe(-1);
+    expect(useAudioQueueStore.getState().isPlaying).toBe(false);
+    expect(useAudioQueueStore.getState().playbackProgress).toEqual({ positionSeconds: 0, durationSeconds: 0 });
+  });
+
+  it('updates isPlaying and playbackProgress state', () => {
+    const store = useAudioQueueStore.getState();
+    expect(store.isPlaying).toBe(false);
+    expect(store.playbackProgress).toEqual({ positionSeconds: 0, durationSeconds: 0 });
+
+    store.setIsPlaying(true);
+    expect(useAudioQueueStore.getState().isPlaying).toBe(true);
+
+    store.setPlaybackProgress({ positionSeconds: 42, durationSeconds: 120 });
+    expect(useAudioQueueStore.getState().playbackProgress).toEqual({ positionSeconds: 42, durationSeconds: 120 });
   });
 });

@@ -10,13 +10,23 @@
 // BEFORE navigation; this test verifies that navigation happens AFTER it succeeds, not that
 // openBook itself works (that is licenseCheck.test.ts's job).
 
+import { Alert } from 'react-native';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { BookListScreen } from './BookListScreen';
 import { openBook } from '@/features/download/openBook';
+import { audioQueueStore, useAudioQueueStore } from '@/features/reader/audio/audioQueueStore';
+import { selectAndPlayAudiobook, toggleAudioPlayback } from '@/features/reader/audio/audioQueueCoordinator';
 
 jest.mock('@/features/download/openBook', () => ({
   openBook: jest.fn().mockResolvedValue(new Uint8Array()),
+}));
+
+jest.mock('@/features/reader/audio/audioQueueCoordinator', () => ({
+  selectAndPlayAudiobook: jest.fn().mockResolvedValue(true),
+  toggleAudioPlayback: jest.fn().mockResolvedValue(true),
+  skipToNextTrack: jest.fn().mockResolvedValue(true),
+  skipToPreviousTrack: jest.fn().mockResolvedValue(true),
 }));
 
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
@@ -31,19 +41,40 @@ function renderBookList(navigate: jest.Mock) {
 
 describe('BookListScreen', () => {
   beforeEach(() => {
-    jest.mocked(openBook).mockClear();
+    audioQueueStore.getState().clearQueue();
+    jest.clearAllMocks();
     jest.mocked(openBook).mockResolvedValue(new Uint8Array());
   });
 
-  it('lists all five book fixtures', async () => {
+  it('lists both audiobook and book fixtures in sections by default', async () => {
     const { getByText } = await renderBookList(jest.fn());
 
+    expect(getByText('🎧 Audiobooks')).toBeTruthy();
+    expect(getByText('📖 E-Books & Documents')).toBeTruthy();
     expect(getByText('EPUB')).toBeTruthy();
     expect(getByText('PDF')).toBeTruthy();
-    expect(getByText('Big EPUB')).toBeTruthy();
-    expect(getByText('Big PDF')).toBeTruthy();
-    // The one row NOT backed by a local seed — it names the backend's catalogue item.
     expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
+    expect(getByText('Audiobook (Open Access)')).toBeTruthy();
+  });
+
+  it('switches views via filter tabs', async () => {
+    const { getByLabelText, getByText, queryByText } = await renderBookList(jest.fn());
+
+    // Switch to Audiobooks tab
+    await fireEvent.press(getByLabelText('Audiobooks'));
+    expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
+    expect(queryByText('EPUB')).toBeNull();
+    expect(queryByText('PDF')).toBeNull();
+
+    // Switch to Books tab
+    await fireEvent.press(getByLabelText('Books and PDFs'));
+    expect(getByText('EPUB')).toBeTruthy();
+    expect(queryByText('Audiobook (Encrypted)')).toBeNull();
+
+    // Switch back to All tab
+    await fireEvent.press(getByLabelText('All items'));
+    expect(getByText('Audiobook (Encrypted)')).toBeTruthy();
+    expect(getByText('EPUB')).toBeTruthy();
   });
 
   it.each([
@@ -57,7 +88,7 @@ describe('BookListScreen', () => {
       const navigate = jest.fn();
       const { getByText } = await renderBookList(navigate);
 
-      fireEvent.press(getByText(label));
+      await fireEvent.press(getByText(label));
 
       await waitFor(() => {
         expect(openBook).toHaveBeenCalledWith(bookId, format);
@@ -71,7 +102,7 @@ describe('BookListScreen', () => {
     const navigate = jest.fn();
     const { getByText } = await renderBookList(navigate);
 
-    fireEvent.press(getByText('EPUB'));
+    await fireEvent.press(getByText('EPUB'));
 
     // Give the async handler time to settle
     await new Promise((r) => setTimeout(r, 50));
@@ -80,25 +111,86 @@ describe('BookListScreen', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  // AUDIO PHASE 3: the one row that does NOT navigate to Reader — pins the open-path diversion
-  // this phase added (BookListScreen.tsx's onPress), the one thing standing between an audio book
-  // and the (now backstop-only) UNSUPPORTED_FORMAT banner.
-  //
-  // It does not call openBook() HERE, and that is no longer a gap in the licence gate: the resolver
-  // calls openBook() itself on every resolve, inside the player screen. Calling it here too would be
-  // undone immediately — the resolver's closeBook() is terminal for a streamed package — so the gate
-  // runs once, in the place that can guarantee the bytes are still live when the file is written.
-  it('tapping Audiobook navigates to AudioPlayer, not Reader, and does not call openBook here', async () => {
+  it('tapping Audiobook card triggers selectAndPlayAudiobook without navigating away', async () => {
     const navigate = jest.fn();
     const { getByText } = await renderBookList(navigate);
 
-    fireEvent.press(getByText('Audiobook (Encrypted)'));
+    await fireEvent.press(getByText('Audiobook (Encrypted)'));
+
+    expect(selectAndPlayAudiobook).toHaveBeenCalledWith({
+      bookId: 'dev-sample-audio-encrypted',
+      title: 'Audiobook (Encrypted)',
+    });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(openBook).not.toHaveBeenCalled();
+  });
+
+  it('tapping "Open Player" on audiobook row navigates to AudioPlayer', async () => {
+    const navigate = jest.fn();
+    const { getByLabelText } = await renderBookList(navigate);
+
+    await fireEvent.press(getByLabelText('Open player for Audiobook (Encrypted)'));
 
     expect(navigate).toHaveBeenCalledWith('AudioPlayer', {
       bookId: 'dev-sample-audio-encrypted',
       title: 'Audiobook (Encrypted)',
     });
-    expect(navigate).not.toHaveBeenCalledWith('Reader', expect.anything());
-    expect(openBook).not.toHaveBeenCalled();
+  });
+
+  it('tapping mini player navigates to full AudioPlayer screen', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [{ bookId: 'dev-sample-audio-encrypted' as never, title: 'Audiobook (Encrypted)' }],
+      0,
+    );
+
+    const navigate = jest.fn();
+    const { getByLabelText } = await renderBookList(navigate);
+
+    await fireEvent.press(getByLabelText('Open audio player: Audiobook (Encrypted)'));
+
+    expect(navigate).toHaveBeenCalledWith('AudioPlayer', {
+      bookId: 'dev-sample-audio-encrypted',
+      title: 'Audiobook (Encrypted)',
+    });
+  });
+
+  it('allows adding audiobooks to queue via "Play Next" and "+ Queue"', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    const { getByLabelText } = await renderBookList(jest.fn());
+
+    await fireEvent.press(getByLabelText('Play next: Audiobook (Encrypted)'));
+    expect(audioQueueStore.getState().items).toEqual([
+      { bookId: 'dev-sample-audio-encrypted', title: 'Audiobook (Encrypted)' },
+    ]);
+    expect(alertSpy).toHaveBeenCalledWith('Queue Updated', '"Audiobook (Encrypted)" will play next.');
+
+    await fireEvent.press(getByLabelText('Add to queue: Audiobook (Open Access)'));
+    expect(audioQueueStore.getState().items).toEqual([
+      { bookId: 'dev-sample-audio-encrypted', title: 'Audiobook (Encrypted)' },
+      { bookId: 'dev-sample-audio-open', title: 'Audiobook (Open Access)' },
+    ]);
+    expect(alertSpy).toHaveBeenCalledWith('Queue Updated', 'Added "Audiobook (Open Access)" to queue.');
+
+    alertSpy.mockRestore();
+  });
+
+  it('toggles playback via play/switch button on active audiobook row', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [{ bookId: 'dev-sample-audio-encrypted' as never, title: 'Audiobook (Encrypted)' }],
+      0,
+    );
+    useAudioQueueStore.getState().setIsPlaying(true);
+
+    const { getByLabelText } = await renderBookList(jest.fn());
+
+    await fireEvent.press(getByLabelText('Play or switch to Audiobook (Encrypted)'));
+    expect(toggleAudioPlayback).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render queue buttons for non-audio fixtures', async () => {
+    const { queryByLabelText } = await renderBookList(jest.fn());
+    expect(queryByLabelText('Play next: EPUB')).toBeNull();
+    expect(queryByLabelText('Add to queue: EPUB')).toBeNull();
+    expect(queryByLabelText('Play next: PDF')).toBeNull();
   });
 });

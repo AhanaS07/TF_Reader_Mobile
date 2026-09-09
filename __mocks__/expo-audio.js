@@ -19,15 +19,20 @@
 // AudioPlayerScreen.tsx) — not the full real module surface.
 function createAudioPlayer() {
   const listeners = new Map();
-  return {
+  const player = {
     playing: false,
     currentTime: 0,
     duration: 0,
     isLoaded: true,
     playbackRate: 1,
-    play: () => undefined,
-    pause: () => undefined,
+    play: () => {
+      player.playing = true;
+    },
+    pause: () => {
+      player.playing = false;
+    },
     seekTo: () => Promise.resolve(),
+    replace: () => undefined,
     setPlaybackRate: () => undefined,
     setActiveForLockScreen: () => undefined,
     updateLockScreenMetadata: () => undefined,
@@ -47,6 +52,7 @@ function createAudioPlayer() {
       listeners.get(event)?.forEach((handler) => handler(payload));
     },
   };
+  return player;
 }
 
 // STATIC, NOT REACTIVE — a fixed "already loaded, at rest" snapshot, matching this file's own

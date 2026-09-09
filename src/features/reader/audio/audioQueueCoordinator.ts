@@ -6,6 +6,7 @@
 
 import { audioAssetResolver } from './audioAssetResolver';
 import {
+  commitCurrentPlayerPosition,
   getCurrentAudioPlayer,
   registerTrackCompletionHandler,
   switchActiveAudioTrack,
@@ -104,5 +105,47 @@ export async function jumpToQueueIndex(index: number): Promise<boolean> {
   return playQueueItem(targetItem);
 }
 
+/**
+ * Toggles play/pause on the current active player, or starts playback of current queue item.
+ */
+export async function toggleAudioPlayback(): Promise<boolean> {
+  const player = getCurrentAudioPlayer();
+  if (player && player.isLoaded) {
+    if (player.playing) {
+      player.pause();
+      commitCurrentPlayerPosition();
+      audioQueueStore.getState().setIsPlaying(false);
+    } else {
+      stopActiveTts();
+      await ensureAudioModeConfigured(true);
+      player.play();
+      audioQueueStore.getState().setIsPlaying(true);
+    }
+    return true;
+  }
+
+  const currentItem = audioQueueStore.getState().getCurrentItem();
+  if (currentItem) {
+    return playQueueItem(currentItem);
+  }
+  return false;
+}
+
+/**
+ * User action: Selects an audiobook, ensures it is in queue, and starts playing immediately.
+ */
+export async function selectAndPlayAudiobook(item: AudioQueueItem): Promise<boolean> {
+  const { items } = audioQueueStore.getState();
+  let index = items.findIndex((i) => i.bookId === item.bookId);
+  if (index === -1) {
+    audioQueueStore.getState().enqueue(item);
+    index = audioQueueStore.getState().items.length - 1;
+  }
+  audioQueueStore.getState().skipToIndex(index);
+  return playQueueItem(item);
+}
+
 // Register auto-advance listener with player singleton
-registerTrackCompletionHandler(handleTrackFinished);
+registerTrackCompletionHandler(async () => {
+  await handleTrackFinished();
+});

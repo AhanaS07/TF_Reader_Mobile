@@ -20,12 +20,18 @@
 
 import { useState } from 'react';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { Alert, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { openBook } from '@/features/download/openBook';
 import { clearAllDownloads } from '@/features/download/downloadManager';
+import { MiniAudioPlayer } from '@/features/reader/audio/MiniAudioPlayer';
+import {
+  selectAndPlayAudiobook,
+  toggleAudioPlayback,
+} from '@/features/reader/audio/audioQueueCoordinator';
+import { audioQueueStore, useAudioQueueStore } from '@/features/reader/audio/audioQueueStore';
 import { formatDiagnosticErrorMessage } from '@/shared/contracts/errors';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
@@ -99,47 +105,123 @@ const DEV_FIXTURES: readonly DevFixture[] = [
   { label: 'EPUB (Open Access)', bookId: BACKEND_EPUB_OPEN_BOOK_ID, format: 'EPUB' },
 ];
 
+const AUDIO_FIXTURES: readonly DevFixture[] = DEV_FIXTURES.filter((f) => f.format === 'AUDIO');
+const BOOK_FIXTURES: readonly DevFixture[] = DEV_FIXTURES.filter((f) => f.format !== 'AUDIO');
+
+type TabType = 'all' | 'audio' | 'books';
+
 type Props = NativeStackScreenProps<RootStackParamList, 'BookList'>;
 
 function FixtureRow({
   fixture,
+  isActive = false,
+  isPlaying = false,
   onPress,
+  onPlaySwitch,
+  onOpenPlayer,
+  onPlayNext,
+  onAddToQueue,
 }: {
   fixture: DevFixture;
+  isActive?: boolean;
+  isPlaying?: boolean;
   onPress: () => void;
+  onPlaySwitch?: () => void;
+  onOpenPlayer?: () => void;
+  onPlayNext?: () => void;
+  onAddToQueue?: () => void;
 }): React.JSX.Element {
   // One instance per row — see the header note on why this isn't one shared hook.
   const downloadProgress = useDownloadProgress();
+  const isAudio = fixture.format === 'AUDIO';
 
   return (
-    // THE WHOLE CARD IS THE PRESSABLE, not just a band around the label. It used to be a plain
-    // View with a small Pressable wrapped tightly around the label text only — visually the card
-    // filled its border, but only that thin label-height strip actually navigated, so tapping
-    // anywhere else in the (much taller, once the Download button and its indicator are counted)
-    // rectangle did nothing. Nesting the Download button's own Pressable inside this one still
-    // works correctly — RN awards the touch to the innermost Pressable actually hit, so tapping
-    // Download fires only its own onPress, not this row's.
-    <Pressable accessibilityRole="button" onPress={onPress} style={styles.row}>
-      {/*
-        NO SEPARATE FORMAT SUBTITLE, deliberately: for the two bundled fixtures the label already
-        IS the format ("EPUB", "PDF"), so a second line repeating it would be redundant, and for
-        the "Big EPUB"/"Big PDF" rows the label already says it too. `fixture.format` stays used
-        for navigation and the download button below; nothing here needs to render it separately.
-      */}
-      <Text style={styles.rowLabel}>{fixture.label}</Text>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={isAudio ? `Select audiobook: ${fixture.label}` : fixture.label}
+      onPress={onPress}
+      style={[
+        styles.row,
+        isAudio && styles.audioRow,
+        isActive && styles.activeAudioRow,
+      ]}
+    >
+      <View style={styles.rowHeader}>
+        <View style={styles.labelWithIcon}>
+          {isAudio && <Text style={styles.audioIcon}>🎧</Text>}
+          <Text style={[styles.rowLabel, isActive && styles.activeRowLabel]}>
+            {fixture.label}
+          </Text>
+        </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Download ${fixture.label}`}
-        onPress={() => downloadProgress.start(fixture.bookId, fixture.format)}
-        disabled={downloadProgress.status === 'downloading'}
-        style={[
-          styles.downloadButton,
-          downloadProgress.status === 'downloading' && styles.downloadButtonDisabled,
-        ]}
-      >
-        <Text style={styles.downloadButtonLabel}>Download</Text>
-      </Pressable>
+        {isAudio && isActive && (
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusBadgeText}>
+              {isPlaying ? '▶ Now Playing' : '⏸ Paused'}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.rowActions}>
+        {isAudio && (
+          <View style={styles.audioMainActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Play or switch to ${fixture.label}`}
+              onPress={onPlaySwitch}
+              style={[styles.primaryButton, isActive && isPlaying && styles.pauseButton]}
+            >
+              <Text style={styles.primaryButtonLabel}>
+                {isActive ? (isPlaying ? '⏸ Pause' : '▶ Resume') : '▶ Play'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open player for ${fixture.label}`}
+              onPress={onOpenPlayer}
+              style={styles.openPlayerButton}
+            >
+              <Text style={styles.openPlayerButtonLabel}>Open Player ↗</Text>
+            </Pressable>
+          </View>
+        )}
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Download ${fixture.label}`}
+          onPress={() => downloadProgress.start(fixture.bookId, fixture.format)}
+          disabled={downloadProgress.status === 'downloading'}
+          style={[
+            styles.downloadButton,
+            downloadProgress.status === 'downloading' && styles.downloadButtonDisabled,
+          ]}
+        >
+          <Text style={styles.downloadButtonLabel}>Download</Text>
+        </Pressable>
+
+        {isAudio && (
+          <View style={styles.audioQueueActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Play next: ${fixture.label}`}
+              onPress={onPlayNext}
+              style={styles.queueButton}
+            >
+              <Text style={styles.queueButtonLabel}>Play Next</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Add to queue: ${fixture.label}`}
+              onPress={onAddToQueue}
+              style={styles.queueButton}
+            >
+              <Text style={styles.queueButtonLabel}>+ Queue</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
 
       <DownloadProgressIndicator {...downloadProgress} />
     </Pressable>
@@ -147,14 +229,46 @@ function FixtureRow({
 }
 
 export function BookListScreen({ navigation }: Props): React.JSX.Element {
-  // Bumped on every successful clear, and folded into each FixtureRow's `key` below — remounting
-  // the row is what resets its own useDownloadProgress() hook back to idle. That hook's state is
-  // in-memory only and has no way to learn "the book you thought was downloaded just got wiped"
-  // on its own; without this, a row would keep showing "Download complete" for a book that
-  // clearAllDownloads() just destroyed, which is exactly the kind of stale-UI-vs-real-disk-state
-  // mismatch this whole feature exists to let you get OUT of.
+  const [activeTab, setActiveTab] = useState<TabType>('all');
   const [clearedGeneration, setClearedGeneration] = useState(0);
   const [clearingAll, setClearingAll] = useState(false);
+
+  const currentItem = useAudioQueueStore((s) => s.getCurrentItem());
+  const isPlaying = useAudioQueueStore((s) => s.isPlaying);
+
+  const handlePlayNext = (fixture: DevFixture) => {
+    audioQueueStore.getState().playNext({ bookId: fixture.bookId, title: fixture.label });
+    Alert.alert('Queue Updated', `"${fixture.label}" will play next.`);
+  };
+
+  const handleAddToQueue = (fixture: DevFixture) => {
+    audioQueueStore.getState().enqueue({ bookId: fixture.bookId, title: fixture.label });
+    Alert.alert('Queue Updated', `Added "${fixture.label}" to queue.`);
+  };
+
+  const handleSelectAudiobook = async (fixture: DevFixture) => {
+    try {
+      await selectAndPlayAudiobook({
+        bookId: fixture.bookId,
+        title: fixture.label,
+      });
+    } catch (error) {
+      const message = formatDiagnosticErrorMessage(error);
+      Alert.alert('Cannot play audiobook', message);
+    }
+  };
+
+  const handlePlaySwitch = async (fixture: DevFixture) => {
+    if (currentItem?.bookId === fixture.bookId) {
+      await toggleAudioPlayback();
+    } else {
+      await handleSelectAudiobook(fixture);
+    }
+  };
+
+  const handleOpenPlayer = (fixture: DevFixture) => {
+    navigation.navigate('AudioPlayer', { bookId: fixture.bookId, title: fixture.label });
+  };
 
   const handleClearAllDownloads = async () => {
     setClearingAll(true);
@@ -171,10 +285,6 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
 
   const handleOpen = async (bookId: BookId, format: ContentFormat) => {
     try {
-      // openBook() is the unified STREAM-intent licence gate: checkLicense → fetch/store →
-      // openSession → decryptBook. For already-downloaded books it short-circuits to the disk
-      // copy; for online books it streams into RAM as an Elite (canPersist:false) package that
-      // ReaderScreen's getBookBase64() picks up.
       await openBook(bookId, format);
       navigation.navigate('Reader', { bookId, format });
     } catch (error) {
@@ -184,94 +294,295 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* DEV/TEST TOOLING — see downloadManager.ts's clearAllDownloads() for what this actually
-          does (destroy every persisted book + tombstone its downloads row) and why. */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Clear all downloads"
-        onPress={handleClearAllDownloads}
-        disabled={clearingAll}
-        style={[styles.clearAllButton, clearingAll && styles.clearAllButtonDisabled]}
-      >
-        <Text style={styles.clearAllButtonLabel}>
-          {clearingAll ? 'Clearing…' : 'Clear All Downloads'}
-        </Text>
-      </Pressable>
+    <View style={styles.screenContainer}>
+      {/* Segmented Filter Tabs */}
+      <View style={styles.tabBar} accessibilityRole="tablist">
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'all' }}
+          accessibilityLabel="All items"
+          onPress={() => setActiveTab('all')}
+          style={[styles.tabButton, activeTab === 'all' && styles.tabButtonActive]}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'all' && styles.tabButtonTextActive]}>
+            All ({DEV_FIXTURES.length})
+          </Text>
+        </Pressable>
 
-      {DEV_FIXTURES.map((fixture) => (
-        <FixtureRow
-          key={`${fixture.bookId}-${clearedGeneration}`}
-          fixture={fixture}
-          onPress={() =>
-            // AUDIO PHASE 3: the open-path diversion. Decided HERE, at tap time, rather than
-            // inside ReaderScreen's own format switch — ReaderScreen has no navigation dependency
-            // today and this keeps it that way, rather than teaching a WebView-only screen how to
-            // redirect elsewhere. See BookId AudioPlayer route's own header for the rest of the
-            // split. ReaderScreen's own `case 'AUDIO':` (its exhaustive switch, previously the
-            // only thing standing between an audio book and a blank screen) is INTENTIONALLY left
-            // in place as a backstop — see that file's updated comment.
-            //
-            // AUDIO DOES NOT CALL handleOpen() HERE, and — unlike when this comment first said so
-            // — that is no longer a gap. `audioAssetResolver.resolveAudioAssetUri` now calls
-            // `openBook()` itself, on every resolve, so audio runs the SAME licence gate every other
-            // format does; it just runs it a moment later, inside the player screen.
-            //
-            // Deliberately not called twice. Doing it here as well would gate correctly and then
-            // immediately be undone: the resolver's `closeBook()` is terminal for a streamed
-            // (ephemeral) package, so a tap-time `openBook()` would be discarded before the player
-            // ever saw it, and re-entry would need the resolver to re-acquire anyway. One call, in
-            // the one place that can guarantee the bytes are still live when the file is written.
-            //
-            // The visible consequence: a licence failure for audio surfaces in the player screen's
-            // own error state rather than as this screen's alert.
-            //
-            // KNOWN LIMITATION, not solved here: this assumes one bookId maps to exactly one
-            // format, decided statically per DevFixture row. B12 (CONTRACT_ALIGNMENT.md) already
-            // flags that a real catalogue book can carry more than one asset (e.g. an EPUB
-            // alongside an AUDIO edition of the same title) — this tap-time branch has no way to
-            // offer a choice between them. Not a regression (today's dev fixtures are 1:1 anyway),
-            // but whoever builds the real library screen against a real catalogue will need a
-            // different decision point than "the row's one static format field."
-            fixture.format === 'AUDIO'
-              ? navigation.navigate('AudioPlayer', { bookId: fixture.bookId, title: fixture.label })
-              : handleOpen(fixture.bookId, fixture.format)
-          }
-        />
-      ))}
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'audio' }}
+          accessibilityLabel="Audiobooks"
+          onPress={() => setActiveTab('audio')}
+          style={[styles.tabButton, activeTab === 'audio' && styles.tabButtonActive]}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'audio' && styles.tabButtonTextActive]}>
+            🎧 Audiobooks ({AUDIO_FIXTURES.length})
+          </Text>
+        </Pressable>
 
-      {/* TEMP, with src/features/sync/mock/ — remove this row when that whole folder goes. */}
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => navigation.navigate('MockLibrary')}
-        style={styles.row}
-      >
-        <Text style={styles.rowLabel}>Sync Mock (Downloaded / Bookmarked)</Text>
-      </Pressable>
-    </ScrollView>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'books' }}
+          accessibilityLabel="Books and PDFs"
+          onPress={() => setActiveTab('books')}
+          style={[styles.tabButton, activeTab === 'books' && styles.tabButtonActive]}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'books' && styles.tabButtonTextActive]}>
+            📖 Books ({BOOK_FIXTURES.length})
+          </Text>
+        </Pressable>
+      </View>
+
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        {/* Audiobooks Section */}
+        {(activeTab === 'all' || activeTab === 'audio') && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>🎧 Audiobooks</Text>
+              <Text style={styles.sectionSubtitle}>
+                Select an audiobook to play and switch in the mini player
+              </Text>
+            </View>
+
+            {AUDIO_FIXTURES.map((fixture) => {
+              const isActive = currentItem?.bookId === fixture.bookId;
+              return (
+                <FixtureRow
+                  key={`${fixture.bookId}-${clearedGeneration}`}
+                  fixture={fixture}
+                  isActive={isActive}
+                  isPlaying={isActive && isPlaying}
+                  onPress={() => {
+                    void handleSelectAudiobook(fixture);
+                  }}
+                  onPlaySwitch={() => {
+                    void handlePlaySwitch(fixture);
+                  }}
+                  onOpenPlayer={() => handleOpenPlayer(fixture)}
+                  onPlayNext={() => handlePlayNext(fixture)}
+                  onAddToQueue={() => handleAddToQueue(fixture)}
+                />
+              );
+            })}
+          </View>
+        )}
+
+        {/* E-Books & Documents Section */}
+        {(activeTab === 'all' || activeTab === 'books') && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>📖 E-Books & Documents</Text>
+              <Text style={styles.sectionSubtitle}>Tap a book to open in reader</Text>
+            </View>
+
+            {BOOK_FIXTURES.map((fixture) => (
+              <FixtureRow
+                key={`${fixture.bookId}-${clearedGeneration}`}
+                fixture={fixture}
+                onPress={() => {
+                  void handleOpen(fixture.bookId, fixture.format);
+                }}
+              />
+            ))}
+          </View>
+        )}
+
+        {/* Dev & Testing Tools Section */}
+        {activeTab === 'all' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>⚙️ Dev & Testing Tools</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear all downloads"
+              onPress={handleClearAllDownloads}
+              disabled={clearingAll}
+              style={[styles.clearAllButton, clearingAll && styles.clearAllButtonDisabled]}
+            >
+              <Text style={styles.clearAllButtonLabel}>
+                {clearingAll ? 'Clearing…' : 'Clear All Downloads'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => navigation.navigate('MockLibrary')}
+              style={styles.row}
+            >
+              <Text style={styles.rowLabel}>Sync Mock (Downloaded / Bookmarked)</Text>
+            </Pressable>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Persistent Bottom Mini Player */}
+      <MiniAudioPlayer
+        onExpand={(item) =>
+          navigation.navigate('AudioPlayer', { bookId: item.bookId, title: item.title })
+        }
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff' },
-  content: { padding: 16, gap: 12 },
+  screenContainer: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1 },
+  content: { padding: 16, gap: 16 },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#f8f9fa',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e9ecef',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  tabButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'transparent',
+  },
+  tabButtonActive: {
+    backgroundColor: '#111111',
+  },
+  tabButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  tabButtonTextActive: {
+    color: '#ffffff',
+  },
+  section: {
+    gap: 10,
+  },
+  sectionHeader: {
+    marginBottom: 4,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111111',
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#666666',
+    marginTop: 2,
+  },
   row: {
     borderWidth: 1,
     borderColor: '#e2e2e2',
     borderRadius: 12,
-    padding: 12,
+    padding: 14,
+    backgroundColor: '#ffffff',
   },
-  rowLabel: { fontSize: 17, fontWeight: '600', color: '#111111' },
-  downloadButton: {
-    marginTop: 8,
-    alignSelf: 'flex-start',
+  audioRow: {
+    borderColor: '#d0d7de',
+    backgroundColor: '#fcfcfd',
+  },
+  activeAudioRow: {
+    borderColor: '#111111',
+    borderWidth: 2,
+    backgroundColor: '#f6f8fa',
+  },
+  rowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  labelWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  audioIcon: {
+    fontSize: 18,
+  },
+  rowLabel: { fontSize: 16, fontWeight: '600', color: '#111111' },
+  activeRowLabel: { fontWeight: '700' },
+  statusBadge: {
+    backgroundColor: '#e6f4ea',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#34a853',
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#137333',
+  },
+  rowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  audioMainActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  primaryButton: {
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 14,
     backgroundColor: '#111111',
   },
+  pauseButton: {
+    backgroundColor: '#444444',
+  },
+  primaryButtonLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  openPlayerButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#888888',
+    backgroundColor: '#ffffff',
+  },
+  openPlayerButtonLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#444444',
+  },
+  downloadButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#333333',
+  },
   downloadButtonDisabled: { backgroundColor: '#9a9a9a' },
   downloadButtonLabel: { fontSize: 13, fontWeight: '600', color: '#ffffff' },
+  audioQueueActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  queueButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#bbbbbb',
+    backgroundColor: '#ffffff',
+  },
+  queueButtonLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333333',
+  },
   clearAllButton: {
     borderWidth: 1,
     borderColor: '#c0392b',

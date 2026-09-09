@@ -21,8 +21,12 @@ export interface AudioQueueState {
   items: AudioQueueItem[];
   currentIndex: number;
   repeatMode: RepeatMode;
+  isPlaying: boolean;
+  playbackProgress: { positionSeconds: number; durationSeconds: number };
 
   // Actions
+  setIsPlaying: (isPlaying: boolean) => void;
+  setPlaybackProgress: (progress: { positionSeconds: number; durationSeconds: number }) => void;
   setQueue: (items: AudioQueueItem[], startIndex?: number) => void;
   enqueue: (item: AudioQueueItem) => void;
   playNext: (item: AudioQueueItem) => void;
@@ -43,6 +47,11 @@ export const useAudioQueueStore = create<AudioQueueState>((set, get) => ({
   items: [],
   currentIndex: -1,
   repeatMode: 'off',
+  isPlaying: false,
+  playbackProgress: { positionSeconds: 0, durationSeconds: 0 },
+
+  setIsPlaying: (isPlaying) => set({ isPlaying }),
+  setPlaybackProgress: (playbackProgress) => set({ playbackProgress }),
 
   setQueue: (items, startIndex = 0) => {
     const validIndex = items.length > 0 ? Math.min(Math.max(0, startIndex), items.length - 1) : -1;
@@ -181,7 +190,13 @@ export const useAudioQueueStore = create<AudioQueueState>((set, get) => ({
     });
   },
 
-  clearQueue: () => set({ items: [], currentIndex: -1 }),
+  clearQueue: () =>
+    set({
+      items: [],
+      currentIndex: -1,
+      isPlaying: false,
+      playbackProgress: { positionSeconds: 0, durationSeconds: 0 },
+    }),
 
   getCurrentItem: () => {
     const { items, currentIndex } = get();

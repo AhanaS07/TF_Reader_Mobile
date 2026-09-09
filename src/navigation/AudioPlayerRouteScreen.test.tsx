@@ -24,6 +24,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { Alert, AppState } from 'react-native';
 
 import type { Locator } from '@/shared/contracts';
+import { useAudioQueueStore } from '@/features/reader/audio/audioQueueStore';
 
 import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 
@@ -170,6 +171,7 @@ describe('AudioPlayerRouteScreen', () => {
     mockCurrentPositionSeconds.mockReturnValue(0);
     mockPullBook.mockResolvedValue(undefined);
     mockCurrentForBook.mockResolvedValue(null);
+    useAudioQueueStore.getState().clearQueue();
   });
 
   it('passes the route bookId and title through to AudioPlayerScreen once resolved, after awaiting a sync run first', async () => {
@@ -630,6 +632,46 @@ describe('AudioPlayerRouteScreen', () => {
       expect(mockSyncRun).toHaveBeenCalledTimes(3); // no poll while backgrounded
 
       jest.useRealTimers();
+      await act(async () => {
+        unmount();
+      });
+    });
+  });
+
+  describe('queue synchronization', () => {
+    it('updates route params when the audio queue advances to a different book', async () => {
+      const mockSetParams = jest.fn();
+      useAudioQueueStore.getState().setQueue(
+        [
+          { bookId: 'book-current' as never, title: 'Current Title' },
+          { bookId: 'book-next' as never, title: 'Next Title' },
+        ],
+        0,
+      );
+
+      const { getByText, unmount } = await render(
+        <AudioPlayerRouteScreen
+          navigation={{ setOptions: jest.fn(), setParams: mockSetParams } as never}
+          route={
+            {
+              key: 'AudioPlayer',
+              name: 'AudioPlayer',
+              params: { bookId: 'book-current', title: 'Current Title' },
+            } as never
+          }
+        />,
+      );
+      await waitFor(() => expect(getByText('playing book-current')).toBeTruthy());
+
+      await act(async () => {
+        useAudioQueueStore.getState().skipToNext();
+      });
+
+      expect(mockSetParams).toHaveBeenCalledWith({
+        bookId: 'book-next',
+        title: 'Next Title',
+      });
+
       await act(async () => {
         unmount();
       });

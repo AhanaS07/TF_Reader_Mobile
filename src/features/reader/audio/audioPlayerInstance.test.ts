@@ -14,12 +14,16 @@ import {
   registerActiveTtsSession,
 } from './audioTtsCoordinator';
 import {
+  _resetTrackCompletionHandlerForTests,
   commitCurrentPlayerPosition,
   currentAudioBookId,
   getAudioPlayerFor,
+  getCurrentAudioPlayer,
   isAudioPlaying,
   pauseCurrentAudioPlayer,
+  registerTrackCompletionHandler,
   releaseCurrentAudioPlayer,
+  switchActiveAudioTrack,
 } from './audioPlayerInstance';
 
 jest.mock('@/features/sync/stores/progressStore', () => ({
@@ -164,6 +168,60 @@ describe('audioPlayerInstance', () => {
       });
 
       expect(ttsStopMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('triggers registered track completion handler when didJustFinish is true', () => {
+      const completionMock = jest.fn();
+      registerTrackCompletionHandler(completionMock);
+
+      const book = 'book-finished' as BookId;
+      const { player } = getAudioPlayerFor(book);
+
+      type PlayerWithEmit = typeof player & { emit: (event: string, payload: unknown) => void };
+      const playerWithEmit = player as PlayerWithEmit;
+
+      playerWithEmit.emit('playbackStatusUpdate', {
+        playing: false,
+        currentTime: 100,
+        duration: 100,
+        isLoaded: true,
+        isBuffering: false,
+        playbackRate: 1,
+        shouldCorrectPitch: false,
+        didJustFinish: true,
+      });
+
+      expect(completionMock).toHaveBeenCalledTimes(1);
+      _resetTrackCompletionHandlerForTests();
+    });
+
+    it('switches active audio track replacing source and lock-screen metadata', () => {
+      const book1 = 'book-switch-1' as BookId;
+      const book2 = 'book-switch-2' as BookId;
+
+      const { player } = getAudioPlayerFor(book1);
+      player.isLoaded = true;
+      player.currentTime = 50;
+
+      const replaceSpy = jest.spyOn(player, 'replace');
+      const lockScreenSpy = jest.spyOn(player, 'setActiveForLockScreen');
+      const playSpy = jest.spyOn(player, 'play');
+
+      switchActiveAudioTrack(book2, 'file:///scratch/new.wav', 'New Title', 'New Artist');
+
+      expect(mockSavePosition).toHaveBeenCalledWith(
+        { type: 'AUDIO', positionMs: 50000 },
+        book1,
+      );
+      expect(currentAudioBookId()).toBe(book2);
+      expect(getCurrentAudioPlayer()).toBe(player);
+      expect(replaceSpy).toHaveBeenCalledWith({ uri: 'file:///scratch/new.wav' });
+      expect(lockScreenSpy).toHaveBeenCalledWith(
+        true,
+        { title: 'New Title', artist: 'New Artist' },
+        { showSeekForward: true, showSeekBackward: true },
+      );
+      expect(playSpy).toHaveBeenCalled();
     });
   });
 });
