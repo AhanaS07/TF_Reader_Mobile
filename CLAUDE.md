@@ -441,13 +441,15 @@ downstream routes off the stored format. A distinct id is load-bearing, not cosm
 `ensureSeeded()` short-circuits on `isAvailableOffline()`, so a shared id would serve whichever book
 was stored first and `getFormat()` would report the wrong format for it.
 
-### `fakeReaderTextProvider.ts` — stood in for the real TTS text provider
+### `testReaderTextProvider.ts` — stood in for the real TTS text provider (renamed from `fakeReaderTextProvider.ts`, 2026-09-09)
 
 **`src/features/reader/tts/fakeReaderTextProvider.ts` is DELETED**, on 2026-09-09, together with
-its test — Accessibility (Hruthik) already had its own forked, permanent copy at
-`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` since 2026-08-28, and by the
-time of deletion nothing outside `reader/tts/` still imported Reader's original. Read the rest of
-this section as a record of what happened, not a to-do list.
+its test — Accessibility (Hruthik) already had its own forked, permanent copy (renamed the same
+day to `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts`, dropping "Fake" from
+every identifier and the filename — "fake" was confusable with a mocking-library fake rather than
+what this is: a deterministic, hand-written test double) since 2026-08-28, and by the time of
+deletion nothing outside `reader/tts/` still imported Reader's original. Read the rest of this
+section as a record of what happened, not a to-do list.
 
 It served canned sentences with **synthetic CFIs that resolve against no book**, so Accessibility
 could build a TTS session before the real provider existed. `src/features/reader/tts/readerTextProvider.ts`
@@ -455,8 +457,8 @@ is **not** scaffolding and was never on the deletion list — it is the permanen
 it stays.
 
 The deleted test file's cases were ported into the fork's test file rather than dropped — every
-case pins a property of the seam, not of the fake, so each is a checklist the real provider (and
-the fork, now the sole surviving copy) must keep satisfying. Four cases (`setSpokenWordRange`/
+case pins a property of the seam, not of the test double, so each is a checklist the real provider
+(and the fork, now the sole surviving copy) must keep satisfying. Four cases (`setSpokenWordRange`/
 `spokenWordRanges`: call-order, independence from the sentence log, teardown, silent-accept of an
 unresolvable range) were missing from the fork and were added as part of this deletion, not left as
 a gap.

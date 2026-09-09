@@ -2,7 +2,7 @@
 
 **Owner:** Reader (Ahana) · **Consumer:** Accessibility (Hruthik) · **Status:** real EPUB provider
 implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23);
-`fakeReaderTextProvider.ts` itself deleted (2026-09-09), see "The fake, and deleting it" below
+`fakeReaderTextProvider.ts` itself deleted (2026-09-09), see "The test double, and its deletion" below
 **Agreed:** 2026-08-16
 
 The interface is `src/features/reader/tts/readerTextProvider.ts` and it is the whole of what
@@ -92,18 +92,19 @@ neither passes nor sees it — pushing that across the seam would be exporting R
 
 ## Sequencing
 
-Steps 3 and 4–5 run in parallel. That is the point of the fake: Accessibility is not blocked on the
-WebView conversion.
+Steps 3 and 4–5 run in parallel. That is the point of the test double: Accessibility is not blocked
+on the WebView conversion.
 
 ```
 1. Agree the interface                      ✅ 2026-08-16
-2. Ship types + FakeReaderTextProvider       ✅ 2026-08-16
-3. Accessibility builds the TTS session      ← unblocked, against the fake
+2. Ship types + TestReaderTextProvider       ✅ 2026-08-16 (named FakeReaderTextProvider until the
+                                                            2026-09-09 rename, see below)
+3. Accessibility builds the TTS session      ← unblocked, against the test double
 4. Reader: typechecked WebView conversion    ✅ 2026-08-18
 5. Reader: sentence/highlight bridge + real provider   ✅ 2026-08-23
-6. Swap fake → real; integration and device testing    ← Accessibility's demo call site done,
-                                                            2026-08-23; fake file itself not yet
-                                                            deleted, see below
+6. Swap test double → real; integration and device testing   ← Accessibility's demo call site done,
+                                                            2026-08-23; test-double file itself
+                                                            deleted 2026-09-09, see below
 ```
 
 **Step 4 is done** — prefs-application called the conversion in and it landed the same day, so the
@@ -177,15 +178,18 @@ declares work done is how the second surface went unnoticed.
 deletion table below assumed the demo was the only call site outside `reader/tts/` — it wasn't.
 `useTtsSession.test.ts` (~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) used
 `createFakeReaderTextProvider` as a session-logic test double — prefetch, generation counters,
-teardown — independent of whether a real book exists. Deleting the fake would have broken those
-tests then.
+teardown — independent of whether a real book exists. Deleting it would have broken those tests
+then.
 
-**That open call is decided, and closed: Accessibility forked its own private copy, 2026-08-28.**
-`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` (same content,
-`Owner: Accessibility (Hruthik)`) is the permanent test double for `useTtsSession`'s tests; both
-files above now import from it instead of from `reader/tts/`. Reader's original — this file's own
-copy — is DELETED as of 2026-09-09, with its test cases ported into the fork's test file rather than
-dropped (see the table below).
+**That open call is decided, and closed: Accessibility forked its own private copy, 2026-08-28,
+renamed `testReaderTextProvider.ts` on 2026-09-09.** The fork (same content,
+`Owner: Accessibility (Hruthik)`, now at
+`src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` — "Fake" dropped from the
+filename and every exported identifier in the same change, since it was confusable with a
+mocking-library fake rather than what this is) is the permanent test double for `useTtsSession`'s
+tests; both files above now import from it instead of from `reader/tts/`. Reader's original — this
+file's own copy — is DELETED as of 2026-09-09, with its test cases ported into the fork's test file
+rather than dropped (see the table below).
 
 **What the conversion did NOT do for this seam, so nobody plans around a saving that is not there.**
 It removed the hand-sync risk; it did not build request/reply. `requestSentence` still needs a
@@ -195,7 +199,7 @@ injects a call, and nothing correlates a response back to its caller. That corre
 cheaper now is that the reply's seven-field payload is a shared type rather than a shape to
 hand-copy, and that a mismatch is a compile error.
 
-## The fake, and its deletion — DONE, 2026-09-09
+## The test double, and its deletion — DONE, 2026-09-09
 
 `fakeReaderTextProvider.ts` served canned sentences with **synthetic CFIs that resolved against no
 book**. It exercised the shape of the seam — ordering, section boundaries, the character cap,
@@ -211,13 +215,14 @@ what happened, not a to-do list.
 
 `readerTextProvider.ts` stays — it is the permanent contract, never was on this list.
 
-Every case in the deleted test file pinned a property of the seam, not a property of the fake, so
-rather than drop them they were ported into
-`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.test.ts` (Accessibility's fork,
-which already carried the fake's other cases but was missing the four covering
-`setSpokenWordRange`/`spokenWordRanges` — call-order, independence from the sentence log, teardown,
-and silent-accept of an unresolvable range). That fork is now the sole surviving copy of this test
-double, and future changes to it are Accessibility's (Hruthik's) call.
+Every case in the deleted test file pinned a property of the seam, not a property of the test
+double, so rather than drop them they were ported into
+`src/features/accessibility/tts/testSupport/testReaderTextProvider.test.ts` (Accessibility's fork,
+renamed from `fakeReaderTextProvider.test.ts` the same day — which already carried the test
+double's other cases but was missing the four covering `setSpokenWordRange`/`spokenWordRanges` —
+call-order, independence from the sentence log, teardown, and silent-accept of an unresolvable
+range). That fork is now the sole surviving copy of this test double, and future changes to it are
+Accessibility's (Hruthik's) call.
 
 ## Open items
 

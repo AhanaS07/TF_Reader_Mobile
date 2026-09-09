@@ -31,7 +31,7 @@
 // ALL SESSION STATE LIVES INSIDE ONE EFFECT, deliberately. `provider` is the only thing this
 // hook depends on (its lifetime belongs to whoever owns the book, per TTS_PROVIDER.md, so it is
 // expected to be referentially stable for the life of this hook — create it once per book at
-// the call site, e.g. via useState(() => createFakeReaderTextProvider())). Every other piece of
+// the call site, e.g. via useState(() => createTestReaderTextProvider())). Every other piece of
 // bookkeeping (the in-flight prefetch, whether an utterance is outstanding, a generation counter
 // that invalidates stale async continuations after stop/interruption) is a plain closure
 // variable inside that effect rather than a separate useRef — there is only ever one "session"

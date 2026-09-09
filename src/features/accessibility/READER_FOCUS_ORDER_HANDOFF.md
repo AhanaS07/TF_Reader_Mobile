@@ -297,6 +297,13 @@ covering `setSpokenWordRange`/`spokenWordRanges` (call-order, independence from 
 teardown, silent-accept of an unresolvable range) — ported into the fork's own test file rather
 than dropped. Worth knowing about since it's your test file now.
 
+**Also renamed the same day: your fork is no longer `fakeReaderTextProvider.ts`.** Since Reader's
+copy is gone and yours is the sole survivor, "Fake" is dropped from the filename and every exported
+identifier — now `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts`,
+`TestReaderTextProvider`, `createTestReaderTextProvider`, `TestBook`, `DEFAULT_TEST_BOOK`. Reason:
+"fake" reads as a mocking-library fake, which this never was — it's a deterministic, hand-written
+test double. `useTtsSession.ts`/`.test.ts`/`.android.test.ts` are updated to match.
+
 Also, separately: `accessibility-frontend-integration-contract.md` had a documentation error (§0,
 §2.3, §3, §4, §5 attributed `TtsControls`/`VoicePicker` to you) that's now corrected to match
 `CLAUDE.md`'s ownership table and both files' own headers — Accessibility (Hruthik) owns them, not

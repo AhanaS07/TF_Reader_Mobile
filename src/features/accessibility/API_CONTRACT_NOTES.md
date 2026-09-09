@@ -31,25 +31,27 @@ You have more of a contract than the directory suggests:
 - **`sync/stores/accessibilityStore.ts`** — the persistence and sync path, Karthik's.
 - **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract.
   Reader's own `fakeReaderTextProvider.ts`, which used to sit next to it, is deleted (2026-09-09);
-  your own forked copy at `src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` is
-  now the sole surviving copy — see "On the fake" below.
+  your own forked copy — renamed the same day to
+  `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` — is now the sole
+  surviving copy — see "On the test double" below.
 - **`WEBVIEW_A11Y_FINDINGS.md`** (this directory) — consolidated desk research on WebView/epub.js
   screen-reader accessibility (VoiceOver/TalkBack), including the architecture split between native
   RN and the Reader WebView and the risk register that governs it. **`WEBVIEW_A11Y_SPIKE.md`** is
   the on-device spike instrument it depends on — not yet run.
 
-**On the fake:** the real provider landed (step 5, 2026-08-23) and Reader's copy of the fake is
-deleted (2026-09-09, per `CLAUDE.md`'s deletion table). Your fork at
-`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` is not scaffolding waiting to
-be substituted — it's permanent test infrastructure for `useTtsSession.test.ts`/`.android.test.ts`,
-which use it to drive the session hook's own state machine (prefetch, generation counters, teardown)
-without needing a real book or WebView, independent of whether the real provider exists. While
-diffing before deleting Reader's copy, 4 cases it had (`setSpokenWordRange`/`spokenWordRanges`:
-call-order, independence from the sentence log, teardown, silent-accept of an unresolvable range)
-were found missing from your fork's test file and ported in rather than dropped — worth a look
-since it's your file now. The test-only handles still live on `FakeReaderTextProvider` and
-deliberately **not** on `ReaderTextProvider`, so production code typed against the interface can't
-reach them.
+**On the test double** (renamed from `fakeReaderTextProvider.ts`/`FakeReaderTextProvider` on
+2026-09-09 — "fake" read as a mocking-library fake, which this never was): the real provider landed
+(step 5, 2026-08-23) and Reader's copy is deleted (2026-09-09, per `CLAUDE.md`'s deletion table).
+Your fork at `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` is not
+scaffolding waiting to be substituted — it's permanent test infrastructure for
+`useTtsSession.test.ts`/`.android.test.ts`, which use it to drive the session hook's own state
+machine (prefetch, generation counters, teardown) without needing a real book or WebView,
+independent of whether the real provider exists. While diffing before deleting Reader's copy, 4
+cases it had (`setSpokenWordRange`/`spokenWordRanges`: call-order, independence from the sentence
+log, teardown, silent-accept of an unresolvable range) were found missing from your fork's test
+file and ported in rather than dropped — worth a look since it's your file now. The test-only
+handles still live on `TestReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so
+production code typed against the interface can't reach them.
 
 ---
 
