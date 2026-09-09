@@ -192,20 +192,22 @@ The adjacent behaviour is already pinned in `ReaderScreen.test.tsx`: "does NOT m
 TOC closes because Search is opening" exists precisely because Search brings its own entry focus,
 and would start failing if that stopped being true and something else were added here.
 
-## 6. Search result focus
+## 6. Search result focus — **IMPLEMENTED, 2026-09-09 (Reader)**
 
-`selectHit`, `ReaderScreen.tsx:1010–1043`. On the success path (`send` is ready): the panel closes
-(`setShowSearch(false)`) and `send({ type: 'goTo', target })` navigates the WebView, but nothing
-redirects focus anywhere — it likely lands nowhere meaningful. `SearchMatchBar` mounts right after
-(per the `!showSearch && search.hits.length > 0` condition at `ReaderScreen.tsx:1533`). Suggested:
-after `setShowSearch(false)` in this branch, move focus onto one of:
-- The `ReaderWebView` container ref (see item 10 — same native-side-boundary technique), or
-- `SearchMatchBar`'s counter once it mounts, which needs its own ref + open-effect mirroring
-  `VoicePicker`'s `firstRowRef`/`useEffect` pattern (`VoicePicker.tsx:42–55`).
+Picked the match-bar-counter option this item's own note left open: the immediate next thing a
+result selection should announce is "here's your match count," not silently re-entering the book.
 
-Either is defensible; picking between them is a design call for whoever implements this, since it
-depends on whether the immediate next thing a user should hear is "here's your match count" or
-"here's the book content you jumped to."
+`ReaderScreen.tsx`'s `selectHit` and the queued-seek flush effect both bump a `matchBarFocusSignal`
+counter (not a boolean — `stepHit` calls back into `selectHit` too, and must NOT re-trigger this) at
+the two points search genuinely closes because of a selection, direct and queued. A `matchBarCounterRef`
+effect keyed on that counter calls `focusOn`, mirroring `firstTocRowRef`'s own entry-effect pattern —
+in `ReaderScreen`, not inside `SearchMatchBar`, because `SearchMatchBar` unmounts/remounts
+independently of a fresh selection (reopening the results list from its own counter, then an
+explicit Close with nothing newly chosen) and a bump-counter comparison only works cleanly in a
+component whose lifetime outlasts that transition. `SearchMatchBar` now forwards a ref to its
+counter button for this. Covered by four new cases in `ReaderScreen.test.tsx`'s "focus restoration"
+block: results-list selection, arrow-stepping (must NOT re-fire), a queued selection resolving after
+`send` becomes ready, and explicit Close with stale hits present (must NOT fire either).
 
 ## 7. Search focus restoration
 
@@ -288,6 +290,12 @@ So, on your side: `TTS_PROVIDER.md`'s deletion-table items 1, 2, and 4
 ("every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/`") is now
 satisfied. Deleting those two files and updating that doc's status line is yours to do, since they
 live in `src/features/reader/`.
+
+**Done, 2026-09-09.** Both files deleted; `TTS_PROVIDER.md` updated. One thing found while diffing
+the two test files before deleting: the fork was missing 4 cases the original still had, all
+covering `setSpokenWordRange`/`spokenWordRanges` (call-order, independence from the sentence log,
+teardown, silent-accept of an unresolvable range) — ported into the fork's own test file rather
+than dropped. Worth knowing about since it's your test file now.
 
 Also, separately: `accessibility-frontend-integration-contract.md` had a documentation error (§0,
 §2.3, §3, §4, §5 attributed `TtsControls`/`VoicePicker` to you) that's now corrected to match

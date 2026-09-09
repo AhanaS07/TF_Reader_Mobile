@@ -720,6 +720,37 @@ function ReaderScreenComponent(
   const accessibilityButtonRef = useRef<View | null>(null);
 
   /**
+   * The MATCH BAR's counter button — where focus lands once a result is actually chosen. Item 6 of
+   * `READER_FOCUS_ORDER_HANDOFF.md`. A ref into `SearchMatchBar`, not a prop it manages itself:
+   * `SearchMatchBar` unmounts and remounts independently of a fresh selection (e.g. reopening the
+   * results list from its own counter, then an explicit Close with nothing newly chosen), and a
+   * component that outlives all of that is what lets `matchBarFocusSignal`'s effect (below) tell
+   * "a genuine new bump" apart from "a stale value seen again on a fresh mount" — a comparison that
+   * cannot be made correctly from inside the remounting component itself.
+   */
+  const matchBarCounterRef = useRef<View | null>(null);
+
+  /**
+   * A COUNTER, not a boolean or `showSearch` itself, because `selectHit` is also the target of
+   * `stepHit` (the match bar's own Previous/Next arrows), which runs while the panel is ALREADY
+   * closed and must NOT steal focus back to the counter on every step — that would yank a
+   * screen-reader user off the arrow they are actively pressing. Bumped only at the two places
+   * search genuinely CLOSES because of a selection (`selectHit`'s direct success path, and the
+   * queued-seek flush effect below it).
+   */
+  const [matchBarFocusSignal, setMatchBarFocusSignal] = useState(0);
+
+  // Fires only on a genuine bump — `ReaderScreen` itself never remounts, so comparing against the
+  // previous render's value (React's default effect-dependency behavior) is reliable here in a way
+  // it would not be inside `SearchMatchBar`. Deferred to an effect, not called inline in `selectHit`,
+  // because the match bar is not mounted yet at the moment a result is tapped from the list — its
+  // own render condition is `!showSearch`, which only flips true after that same event finishes
+  // closing the panel. Same ordering `firstTocRowRef`'s entry effect relies on.
+  useEffect(() => {
+    if (matchBarFocusSignal > 0) focusOn(matchBarCounterRef);
+  }, [matchBarFocusSignal]);
+
+  /**
    * Where focus ENTERS the Contents panel — the first chapter row, and the counterpart to
    * `contentsButtonRef` above. See the effect next to `closeToc` for why it is the only entry ref
    * the panel needs and why it carries no `setTimeout`.
@@ -1730,6 +1761,10 @@ function ReaderScreenComponent(
     setShowSearch(false);
     pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
     send({ type: 'goTo', target });
+    // This flush only ever runs after `selectHit`'s queuing branch reopened search to show the
+    // wait — so, same as that branch's own success path, this IS a selection closing the panel,
+    // unconditionally. See `matchBarFocusSignal`'s own note.
+    setMatchBarFocusSignal((n) => n + 1);
   }, [send]);
 
   /**
@@ -2161,12 +2196,17 @@ function ReaderScreenComponent(
         return;
       }
 
+      // CAPTURED BEFORE THE CLOSE, not after: this is what tells a genuine results-list
+      // selection (panel was open) apart from `stepHit` calling back in here (panel is already
+      // closed) — see `matchBarFocusSignal`'s own note for why that distinction matters.
+      const wasOpen = showSearch;
       setShowSearch(false);
       setShowBookmarks(false);
       pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
       send({ type: 'goTo', target });
+      if (wasOpen) setMatchBarFocusSignal((n) => n + 1);
     },
-    [closeToc, search, send],
+    [closeToc, search, send, showSearch],
   );
 
   const stepHit = useCallback(
@@ -2649,6 +2689,9 @@ function ReaderScreenComponent(
                         ref={index === 0 ? firstTocRowRef : null}
                         disabled={!isNavigable}
                         accessibilityState={{ disabled: !isNavigable }}
+                        // NO HINT ON A DISABLED ROW. `disabled` already tells TalkBack/VoiceOver
+                        // the row is non-interactive; a hint repeating that is noise, not signal.
+                        accessibilityHint={isNavigable ? 'Navigates to this chapter' : undefined}
                         onPress={() => {
                           goTo(item.target);
                           // THE ONE "restore focus" CASE. `goTo` deliberately does not do this
@@ -2791,6 +2834,7 @@ function ReaderScreenComponent(
             and only while the panel is closed, since the panel covers it anyway. */}
         {!showSearch && search.hits.length > 0 && (
           <SearchMatchBar
+            ref={matchBarCounterRef}
             hits={search.hits}
             activeIndex={search.activeIndex}
             submittedTerm={search.submittedTerm}

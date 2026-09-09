@@ -547,6 +547,24 @@ describe('an EPUB grouping heading with no href', () => {
       disabled: true,
     });
   });
+
+  it('gets no accessibilityHint, unlike a navigable row', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents();
+
+    expect(screen.getByText('Grouping heading').parent?.props.accessibilityHint).toBeUndefined();
+    expect(screen.getByText('Chapter 1').parent?.props.accessibilityHint).toBe(
+      'Navigates to this chapter',
+    );
+  });
 });
 
 describe('Prev/Next navigation controls', () => {
@@ -3513,6 +3531,18 @@ describe('screen-reader focus order', () => {
     };
   }
 
+  function twoHits(): SearchHit[] {
+    return [
+      oneHit(),
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'EPUB', cfi: 'epubcfi(/6/2[ch1]!/4/4/2:1)' },
+        snippet: '…a second wolf appeared…',
+      },
+    ];
+  }
+
   describe('toggle buttons report expanded state', () => {
     it('Search reports collapsed, then expanded, then collapsed again', async () => {
       await mountReader();
@@ -3767,10 +3797,9 @@ describe('screen-reader focus order', () => {
       expect(focusOnMock).toHaveBeenCalledTimes(1);
     });
 
-    it('does NOT restore to Search when a result is selected', async () => {
+    it('moves focus to the match bar, not back to Search, when a result is selected', async () => {
       // Selecting a result closes the panel too, but the user's journey ends at the book, not back
-      // at the toolbar. Where focus SHOULD land is a separate open question — this pins only that
-      // it is not silently sent backwards.
+      // at the toolbar — item 6 of READER_FOCUS_ORDER_HANDOFF.md.
       jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
       await mountReader();
       await reportReady();
@@ -3781,7 +3810,68 @@ describe('screen-reader focus order', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
 
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+      const matchBarRef = focusOnMock.mock.calls[0][0];
+
+      // Not the same ref Search's own explicit-close restores to.
+      focusOnMock.mockClear();
+      await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+      expect(focusOnMock.mock.calls[0][0]).not.toBe(matchBarRef);
+    });
+
+    it('does NOT move focus again when stepping via the match bar arrows', async () => {
+      // `stepHit` reaches the same `selectHit` a results-list tap does, but the match bar is
+      // already mounted and the user is already focused on the arrow they just pressed —
+      // re-focusing the counter on every step would yank them off it.
+      jest.mocked(queryBookIndex).mockResolvedValue(twoHits());
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 2:/ }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+
       expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('moves focus to the match bar once a queued selection finally resolves', async () => {
+      // Tapped before `send` exists — the queued-seek flush effect closes search on the book's
+      // behalf, later, and needs the same signal the direct path bumps.
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      // No reportReady() yet — send is still null.
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+
+      await reportReady();
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not signal the match bar when Search is closed explicitly with stale hits present', async () => {
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+      // Reopen the list from the match bar's own counter, without selecting anything new.
+      await fireEvent.press(screen.getByRole('button', { name: /^Match 1 of 1/ }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+
+      // Only the toolbar-restore call — not a second one to the match bar.
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
     });
   });
 });

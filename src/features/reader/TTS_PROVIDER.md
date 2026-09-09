@@ -1,8 +1,8 @@
 # Reader → TTS seam (`ReaderTextProvider`)
 
 **Owner:** Reader (Ahana) · **Consumer:** Accessibility (Hruthik) · **Status:** real EPUB provider
-implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23) —
-`fakeReaderTextProvider.ts` itself stays for now, see "The fake, and deleting it" below
+implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23);
+`fakeReaderTextProvider.ts` itself deleted (2026-09-09), see "The fake, and deleting it" below
 **Agreed:** 2026-08-16
 
 The interface is `src/features/reader/tts/readerTextProvider.ts` and it is the whole of what
@@ -173,14 +173,19 @@ sentences whose synthetic CFIs resolve against no book. Anyone testing TTS from 
 plausible speech unrelated to any book. Recorded rather than quietly corrected, because a doc that
 declares work done is how the second surface went unnoticed.
 
-**What did NOT happen: `fakeReaderTextProvider.ts` itself was not deleted.** The deletion table below
-assumed the demo was the only call site outside `reader/tts/` — it wasn't. `useTtsSession.test.ts`
-(~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) use `createFakeReaderTextProvider`
-as a session-logic test double — prefetch, generation counters, teardown — independent of whether a
-real book exists. Deleting the fake would break those tests today. Whether Accessibility should fork
-its own private test double instead (so this file can eventually close) or whether the fake keeps
-double-duty as shared test infra permanently is an open call between Hruthik and Ahana, not decided by
-this change.
+**What did NOT happen at the time: `fakeReaderTextProvider.ts` itself was not deleted.** The
+deletion table below assumed the demo was the only call site outside `reader/tts/` — it wasn't.
+`useTtsSession.test.ts` (~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) used
+`createFakeReaderTextProvider` as a session-logic test double — prefetch, generation counters,
+teardown — independent of whether a real book exists. Deleting the fake would have broken those
+tests then.
+
+**That open call is decided, and closed: Accessibility forked its own private copy, 2026-08-28.**
+`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` (same content,
+`Owner: Accessibility (Hruthik)`) is the permanent test double for `useTtsSession`'s tests; both
+files above now import from it instead of from `reader/tts/`. Reader's original — this file's own
+copy — is DELETED as of 2026-09-09, with its test cases ported into the fork's test file rather than
+dropped (see the table below).
 
 **What the conversion did NOT do for this seam, so nobody plans around a saving that is not there.**
 It removed the hand-sync risk; it did not build request/reply. `requestSentence` still needs a
@@ -190,43 +195,29 @@ injects a call, and nothing correlates a response back to its caller. That corre
 cheaper now is that the reply's seven-field payload is a shared type rather than a shape to
 hand-copy, and that a mismatch is a compile error.
 
-## The fake, and deleting it
+## The fake, and its deletion — DONE, 2026-09-09
 
-`fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs that resolve against no
-book**. It exercises the shape of the seam — ordering, section boundaries, the character cap,
-cancellation, teardown — and nothing about rendering.
+`fakeReaderTextProvider.ts` served canned sentences with **synthetic CFIs that resolved against no
+book**. It exercised the shape of the seam — ordering, section boundaries, the character cap,
+cancellation, teardown — and nothing about rendering. Read the rest of this section as a record of
+what happened, not a to-do list.
 
-It exports from the same folder the real provider will live in, so the swap on the Accessibility
-side is one import changing. That only holds while nothing depends on the test-only handles
-(`sentences`, `spokenRanges`, `setPosition`, `navigate`, `interrupt`), which exist on
-`FakeReaderTextProvider` and **not** on `ReaderTextProvider`. Production code typed as
-`ReaderTextProvider` cannot reach them; that is the intended pressure.
+| # | Delete | Status |
+| - | ------ | ------ |
+| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` | **Done** |
+| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` | **Done** |
+| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` | **Already satisfied before this change** — both remaining call sites (`useTtsSession.test.ts`, `useTtsSession.android.test.ts`) had already moved to Accessibility's fork on 2026-08-28 |
+| 4 | this section | **Done** — struck above |
 
-The production call site that used to exist — `src/features/accessibility/tts/TtsReadingScreen.tsx`,
-the "TTS Demo" route, standing in for a real mount point until step 5 landed — is gone as of
-2026-08-26. **The remaining call sites outside `reader/tts/` are test-only:**
-`src/features/accessibility/tts/useTtsSession.test.ts` and `useTtsSession.android.test.ts`, which use
-`createFakeReaderTextProvider` to drive `useTtsSession`'s own state machine (prefetch, generation
-counters, teardown) without a real book or WebView. That is a different kind of dependency than "no
-real provider exists yet" — it would still be useful even after every production caller is real,
-which is why item 3 below is not auto-satisfied by the demo's removal.
+`readerTextProvider.ts` stays — it is the permanent contract, never was on this list.
 
-Delete together, once items 1-3 are actually all gone:
-
-| #   | Delete                                                                            |
-| --- | --------------------------------------------------------------------------------- |
-| 1   | `src/features/reader/tts/fakeReaderTextProvider.ts`                               |
-| 2   | `src/features/reader/tts/fakeReaderTextProvider.test.ts`                          |
-| 3   | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` — as of 2026-08-23 that's just `useTtsSession.test.ts` / `.android.test.ts`; see the note above before assuming this is done |
-| 4   | this section                                                                      |
-
-`readerTextProvider.ts` is **not** on that list — it is the permanent contract. Neither is
-`TTS_PROVIDER.md`; strike the table above and leave the rest.
-
-Before deleting, port `fakeReaderTextProvider.test.ts` rather than dropping it. Every case in it
-pins a property of the seam, not a property of the fake, so it is the checklist the real provider
-has to satisfy — most sharply the two that carry the data-minimisation guarantee: an in-flight
-request must resolve `unavailable` when teardown arrives, and every call after teardown must too.
+Every case in the deleted test file pinned a property of the seam, not a property of the fake, so
+rather than drop them they were ported into
+`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.test.ts` (Accessibility's fork,
+which already carried the fake's other cases but was missing the four covering
+`setSpokenWordRange`/`spokenWordRanges` — call-order, independence from the sentence log, teardown,
+and silent-accept of an unresolvable range). That fork is now the sole surviving copy of this test
+double, and future changes to it are Accessibility's (Hruthik's) call.
 
 ## Open items
 

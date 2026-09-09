@@ -123,8 +123,8 @@ Every interactive control was checked for `accessible`, `accessibilityLabel`, `a
 
 ### `src/features/reader/ReaderScreen.tsx`
 
-**Audited 2026-08-25; closed by Reader 2026-08-26.** Every gap this table listed is now fixed except
-the TOC-row hint, which was declined with a reason.
+**Audited 2026-08-25; closed by Reader 2026-08-26.** Every gap this table listed is now fixed,
+including the TOC-row hint — reversed and added on 2026-09-09, see that row.
 
 | Control | Has today | Gap |
 |---|---|---|
@@ -134,7 +134,7 @@ the TOC-row hint, which was declined with a reason.
 | Prev button | role, explicit label ("Previous page"), explicit `accessibilityState={{disabled}}` | — complete |
 | Next button | role, explicit label ("Next page"), explicit `accessibilityState={{disabled}}` | — complete |
 | Contents/TOC toggle | role, label ("Contents"/"Close contents"), `accessibilityState` | — complete. Reports `expanded` when a TOC exists and `disabled` alone when it does not: a control that can never open is not "collapsed" |
-| TOC row | role, `accessibilityState={{disabled}}` | **Hint declined, not overlooked.** `AccessibilityPrefs.screenReaderHints` is a frozen field defaulting to `false` and scoped to native RN controls — exactly this. A hardcoded always-on hint contradicts a preference the user is opted out of. Revisit behind a `useScreenReaderHints()` primitive when a settings screen exists |
+| TOC row | role, `accessibilityState={{disabled}}`, `accessibilityHint` | **Added, 2026-09-09** — `accessibilityHint="Navigates to this chapter"` on navigable rows, `undefined` on a grouping heading (already `disabled`, so a repeated "not selectable" hint would be noise, not signal). This reverses the earlier decision to withhold it behind a future `useScreenReaderHints()` primitive; the hint is hardcoded on, same as every other row prop in this table — not gated on `AccessibilityPrefs.screenReaderHints`, which stays a frozen field for the native-control affordances it was scoped to. Worth Accessibility knowing this reversed rather than got extended |
 | Page indicator / page-jump button | role, explicit label | — complete |
 | Page-jump `TextInput` | explicit label | — complete |
 | Error banner | `accessibilityRole="alert"` + `accessibilityLiveRegion="polite"` | — complete |
@@ -207,9 +207,18 @@ landed on both sides. What is still true is listed second.
 - One shared `focusOn` helper (`src/features/reader/a11yFocus.ts`), used by both capabilities.
 
 **Still open:**
-- Focus ENTRY into the TOC and Search panels, and where focus should land after a search hit. All
-  three want the on-device VoiceOver/TalkBack spike first: Search's `autoFocus` may already carry
-  AT focus, in which case an explicit call is redundant plumbing.
+- Focus ENTRY into the TOC and Search panels. Both want the on-device VoiceOver/TalkBack spike
+  first: Search's `autoFocus` may already carry AT focus, in which case an explicit call is
+  redundant plumbing.
+- ~~Where focus should land after a search hit~~ — **implemented 2026-09-09, not gated on the
+  spike after all.** `ReaderScreen.tsx`'s `selectHit` (plus the queued-seek flush effect) bumps a
+  `matchBarFocusSignal` counter only when search closes because of a genuine selection — not on
+  `stepHit`'s arrow presses, which reach the same function while the match bar is already mounted
+  and must not steal focus back onto the counter every step. `SearchMatchBar` now forwards a ref to
+  its counter; the focus-effect itself lives in `ReaderScreen`, not inside `SearchMatchBar`, because
+  `SearchMatchBar` remounts independently of a fresh selection (reopening the results list, then an
+  explicit Close with nothing newly chosen) and a bump-counter comparison only works cleanly in a
+  component whose lifetime outlasts that transition.
 - ~~No reading-order/focus-order handling across the native↔WebView seam: the `relocated` bridge
   message only updates RN visual state; it never calls `AccessibilityInfo.announceForAccessibility`~~
   — **the announcement half closed 2026-08-28.** `relocated` now carries a `ReaderSection` and drives
@@ -248,7 +257,7 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 | ~~`announcePageChanges`~~ / `reduceMotion` unconsumed | Medium | **Half closed 2026-08-28** | `announcePageChanges` and the new `announceChapterChanges` are consumed natively by `ReaderScreen` (see §3 and READER_ANNOUNCEMENTS.md). `reduceMotion` is still read by nothing in either entry |
 | On-device confirmation of the F4 fixes | **Critical/Blocking (re-confirmed 2026-08-31)** | **Partially run — still open** | Configuration A run against Sample A on-device (`WEBVIEW_A11Y_SPIKE.md` §12): cause (b)'s bounds fix confirmed working for on-screen content, but F4's core symptom — TalkBack cannot reach book content via touch exploration — is UNCHANGED, tested at 3 independent points all with correct bounds. Bounds were necessary but not sufficient. Configurations B/C/D (needed to isolate cause (a)) and Sample B / the real book are not run. |
 | Reader overrides `layout.flow` when a screen reader is running | Low | **Deliberate, 2026-08-28** | Paginated flow makes book content unreachable (F4/F6). The override is announced with an `Alert` and a session-only opt-out, and `DevPreferencesMenu` disables and annotates its Flow rows while it is in effect — a stored preference is never silently changed. See `src/features/reader/readerA11yLayout.ts` |
-| ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5)** | Restoration and background-hiding landed on both sides. What remains is focus ENTRY into TOC/Search and the post-search-hit destination, all gated on the device spike. Full control-by-control status: `READER_FOCUS_ORDER_HANDOFF.md` (same directory) |
+| ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5); post-search-hit destination closed 2026-09-09** | Restoration and background-hiding landed on both sides, and the post-search-hit destination shipped without waiting on the device spike (§5 above). What remains is focus ENTRY into TOC/Search, still gated on the spike. Full control-by-control status: `READER_FOCUS_ORDER_HANDOFF.md` (same directory) |
 | `useTtsSession` bypasses `prefsStore` write path | Low–Medium | **Confirmed via code (§3)** | Writes via `readSharedPrefs`/`writeSharedPrefs` directly; no live-subscriber notification on TTS pref changes; inconsistent with the app's single-write-path pattern |
 | VoiceOver vs. TalkBack divergence | Medium | Open, unconfirmed | Same DOM can produce different navigation/grouping/announcements; every spike matrix row needs two independent verdicts |
 | Image / alt-text quality | Medium | Open, out of app's control | Third-party EPUB metadata quality varies; test with one good and one poor sample EPUB |
@@ -271,8 +280,9 @@ against a substituted real book rather than the intended sample A/B fixtures, an
 run at all. Re-run Android with the sample A/B fixtures, run the full pass on iOS, complete the
 DOM-inspection checklist, the 21-area matrix, and the end-to-end journey test on both platforms,
 then re-rate the risk register in §6 against what was actually observed. Focus-entry work in §5
-(TOC/Search panel entry, post-search-hit destination — tracked in `READER_FOCUS_ORDER_HANDOFF.md`)
-is gated on this same spike.
+(TOC/Search panel entry — tracked in `READER_FOCUS_ORDER_HANDOFF.md`) is gated on this same spike;
+the post-search-hit destination that used to be listed alongside it shipped 2026-09-09, independent
+of the spike.
 
 Nothing else here is blocked on that spike — the labelling/state gaps in §4, the focus-restoration
 gaps in §5, and the `prefsStore` bypass in §3/§6 are all independently actionable today.

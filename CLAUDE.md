@@ -441,29 +441,25 @@ downstream routes off the stored format. A distinct id is load-bearing, not cosm
 `ensureSeeded()` short-circuits on `isAvailableOffline()`, so a shared id would serve whichever book
 was stored first and `getFormat()` would report the wrong format for it.
 
-### `fakeReaderTextProvider.ts` — stands in for the real TTS text provider
+### `fakeReaderTextProvider.ts` — stood in for the real TTS text provider
 
-`src/features/reader/tts/fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs
-that resolve against no book**, so Accessibility (Hruthik) can build a TTS session before the real
-provider exists. The real one is blocked behind the typechecked-WebView conversion; without the
-fake, Accessibility either idles or hand-rolls a stub, and a hand-rolled stub is a guess at the
-interface that makes integration a rewrite rather than a substitution.
+**`src/features/reader/tts/fakeReaderTextProvider.ts` is DELETED**, on 2026-09-09, together with
+its test — Accessibility (Hruthik) already had its own forked, permanent copy at
+`src/features/accessibility/tts/testSupport/fakeReaderTextProvider.ts` since 2026-08-28, and by the
+time of deletion nothing outside `reader/tts/` still imported Reader's original. Read the rest of
+this section as a record of what happened, not a to-do list.
 
-**`src/features/reader/tts/readerTextProvider.ts` is NOT scaffolding.** It is the permanent,
-agreed contract and it stays. Only the fake goes. Delete together:
+It served canned sentences with **synthetic CFIs that resolve against no book**, so Accessibility
+could build a TTS session before the real provider existed. `src/features/reader/tts/readerTextProvider.ts`
+is **not** scaffolding and was never on the deletion list — it is the permanent, agreed contract and
+it stays.
 
-| # | Delete |
-| - | ------ |
-| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` |
-| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` |
-| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` |
-| 4 | the fake's section in `src/features/reader/TTS_PROVIDER.md`, and this one |
-
-Port `fakeReaderTextProvider.test.ts` rather than dropping it — every case pins a property of the
-seam, not of the fake, so it is the checklist the real provider must satisfy. The test-only handles
-live on `FakeReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so production
-code typed against the interface cannot reach them; if deleting the fake breaks something outside
-`tts/`, the boundary has leaked and that is the bug.
+The deleted test file's cases were ported into the fork's test file rather than dropped — every
+case pins a property of the seam, not of the fake, so each is a checklist the real provider (and
+the fork, now the sole surviving copy) must keep satisfying. Four cases (`setSpokenWordRange`/
+`spokenWordRanges`: call-order, independence from the sentence log, teardown, silent-accept of an
+unresolvable range) were missing from the fork and were added as part of this deletion, not left as
+a gap.
 
 `src/features/reader/TTS_PROVIDER.md` is the source of truth for this seam — the decisions, the
 ownership boundary, the sequencing, and the open items. Read it before changing
