@@ -134,6 +134,27 @@ describe('useTtsSession on Android', () => {
     expect(result.current.status).toBe('speaking');
   });
 
+  it('play() after the reader navigates away while paused re-resolves fresh, not the stale pausedSentence snapshot', async () => {
+    // Android's own 'navigated' handler already nulls pausedSentence, and playRef's fallback
+    // already re-resolves when it's null — this pins that the shared pausedPositionInvalidated
+    // fix (added for iOS) does not fight or duplicate that, and the end result is still correct.
+    const provider = createFakeReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    expect(result.current.status).toBe('paused');
+
+    await act(() => provider.navigate(2));
+
+    mockTts.speak.mockClear();
+    await act(() => result.current.play());
+
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[2].text);
+  });
+
   it('backgrounding while speaking resets to idle — the reset itself is not platform-gated', async () => {
     const provider = createFakeReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));

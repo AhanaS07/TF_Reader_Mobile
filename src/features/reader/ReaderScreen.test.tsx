@@ -3361,6 +3361,7 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       await reportReady();
       await setTtsPref(true);
       await startSpeaking();
+      __injectJavaScript.mockClear();
 
       await deliver({
         type: 'relocated',
@@ -3370,6 +3371,77 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       });
 
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      // notifyRelocated() really did fire for this genuine page turn — confirmed by its own visible
+      // effect (setSpokenRange(null) clearing the highlight), not just inferred from the cue.
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(true);
+    });
+
+    it('does NOT clear the highlight or interrupt TTS for an internal reposition (auto-follow, a reflow reanchor, a flow rebuild)', async () => {
+      // The bug this guards against, found on-device: TTS auto-follow's own rendition.display()/
+      // scrollBy() calls fire a genuine `relocated` event too. Before `internalReposition` existed,
+      // ReaderScreen.tsx could not tell that apart from a real page turn — notifyRelocated() ran
+      // unconditionally, clearing the highlight it had just centered on screen and wiping the
+      // session's prefetched next sentence, which silently stopped TTS the moment the current
+      // (auto-follow-triggered) sentence finished speaking. A relocated message the WebView marks
+      // `internalReposition: true` must not reach notifyRelocated() at all.
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+      __injectJavaScript.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/8/2)' },
+        atStart: false,
+        atEnd: false,
+        internalReposition: true,
+      });
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(false);
+    });
+
+    it('tells the WebView to lock manual scroll the moment speech starts, and unlock it when it stops', async () => {
+      // The reader must not be able to fight auto-follow with a raw swipe/drag while TTS speaks —
+      // see setTtsSpeaking's own doc comment in readerBridge.ts for scope (gestures only).
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      __injectJavaScript.mockClear();
+
+      await startSpeaking();
+
+      const scriptsWhileSpeaking = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsWhileSpeaking.some((script) => script.includes('setTtsSpeaking(true)')),
+      ).toBe(true);
+      __injectJavaScript.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Pause' }));
+      // pause() is event-driven, same as startSpeaking()'s tts-start above — status only actually
+      // moves to 'paused' once the native (or Android stop-and-remember) tts-pause event arrives.
+      const ttsEngine = (
+        jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+          default: { addListener: jest.Mock };
+        }
+      ).default;
+      const pauseHandler = ttsEngine.addListener.mock.calls
+        .filter((call: unknown[]) => call[0] === 'tts-pause')
+        .at(-1)?.[1] as (() => void) | undefined;
+      if (pauseHandler) {
+        await act(async () => {
+          pauseHandler();
+        });
+      }
+
+      const scriptsAfterPause = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsAfterPause.some((script) => script.includes('setTtsSpeaking(false)')),
+      ).toBe(true);
     });
   });
 
@@ -4748,6 +4820,37 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     expect(onRelocated).not.toHaveBeenCalled();
 
     // The resend lands correctly - THIS one must reach onRelocated, with the real target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+    expect(onRelocated).toHaveBeenCalledTimes(1);
+    expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });
+  });
+
+  // Regression pin: both pdf.entry.ts (renderCurrent(1) inside openPdf) and epub.entry.ts
+  // (display() inside openEpub) post `relocated` BEFORE they post `rendered`. The effect that
+  // sets pendingInitialVerifyRef waits for isRendered, so when the pre-rendered `relocated`
+  // arrives, pendingInitialVerifyRef is null and the existing post-rendered guard cannot fire.
+  // Without the fix, that pre-rendered `relocated` (page 1 / beginning CFI) reached
+  // onRelocated unthrottled — durably overwriting a correct synced resume position with the
+  // book's default landing on every open.
+  it('does not report a relocate outward for a pre-rendered relocated (before rendered fires)', async () => {
+    const onRelocated = jest.fn();
+    await render(
+      <ReaderScreen
+        bookId="test-book-pre-rendered-relocated"
+        initialTarget={{ kind: 'page', page: 5 }}
+        onRelocated={onRelocated}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // Pre-rendered relocated: arrives before `rendered`, the real-WebView order for both shells.
+    // This is the book's natural default landing (page 1), not the resume target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    expect(onRelocated).not.toHaveBeenCalled();
+
+    // Now rendered fires, the goTo effect runs, and the target lands.
+    await deliver({ type: 'rendered' });
     await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
     expect(onRelocated).toHaveBeenCalledTimes(1);
     expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });

@@ -417,14 +417,12 @@ async function findDuplicateRecord(
   const fields = DUPLICATE_LOOKUP_FIELDS[entityType];
   if (!fields) return null;
 
-  // The OP'S OWN book, not the hardcoded BOOK_ID constant - a collision on, say,
-  // `dev-fixture-pdf` must list that book's bookmarks, not `book-001`'s. Latent since
-  // pull() went multi-book (§7, API_CONTRACT_NOTES.md): a duplicate on any book other than
-  // the prototype's original hardcoded one would never find its match here and would fall
-  // through to the plain PUT-under-own-id path, which 404s the same way DownloadRestoreCollision
-  // exists to avoid below.
+  // The OP'S OWN user and book, not the hardcoded constants - a collision on a different
+  // user or book must list that scope's collection, not the prototype's. Same latent bug
+  // as the bookId fix above (§7, API_CONTRACT_NOTES.md): a duplicate under any userId other
+  // than the hardcoded one would never find its match and fall through to a 404 on PUT.
   const response = await api.list<any>(ENTITY_PATHS[entityType], {
-    userId: USER_ID,
+    userId: String(payload.userId ?? USER_ID),
     bookId: String(payload.bookId ?? BOOK_ID),
   });
 

@@ -501,6 +501,11 @@ describe('AudioPlayerScreen', () => {
 
   it('sets this player active for lock screen controls with seek forward/backward, not next/prev', async () => {
     const fakePlayer = getFakePlayer();
+    // Lock screen registration only fires once status.playing is true (see AudioPlayerScreen.tsx
+    // comment on why: iOS ignores MPNowPlayingInfoCenter registrations that arrive with rate=0).
+    // Set before render() so the component's first re-render after resolver resolves already sees
+    // playing:true — same "set fields before render" pattern the file header mandates.
+    fakePlayer.playing = true;
     await render(<AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />);
 
     await waitFor(() =>
@@ -535,6 +540,44 @@ describe('AudioPlayerScreen', () => {
     );
 
     await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(7));
+  });
+
+  // Regression pin: when a new player loads at currentTime=0 and a seekTo(initialPosition) is
+  // about to run, both the seek effect and the onPositionChange effect fire on the same
+  // status.isLoaded transition. The seek is async — currentTime is still 0 at this point — so
+  // without the guard, handlePositionChange writes positionMs=0 unthrottled and pushes it to
+  // the server before the correct position lands, triggering false conflict alerts on Device 1.
+  it('does not report position 0 via onPositionChange when a new player has not yet seeked to initialPosition', async () => {
+    // currentTime starts at 0 (default) — the player just loaded, seek hasn't run yet.
+    const onPositionChange = jest.fn();
+    await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        initialPosition={60}
+        onPositionChange={onPositionChange}
+      />,
+    );
+
+    // Position 0 must not reach onPositionChange — it is the player's default load state,
+    // not the real starting position. The post-seek position (60) is the correct first report.
+    expect(onPositionChange).not.toHaveBeenCalledWith(0);
+    await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(60));
+  });
+
+  it('does report position 0 via onPositionChange for a fresh book with no saved position', async () => {
+    // No initialPosition — there is no seek pending, so position 0 IS the correct starting
+    // point and must be reported.
+    const onPositionChange = jest.fn();
+    await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionChange={onPositionChange}
+      />,
+    );
+
+    await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(0));
   });
 
   // AUDIO PHASE 4. onPositionCommit marks the edges where the next tick may never arrive. These

@@ -181,7 +181,6 @@ function AudioPlayerScreenComponent(
   const [uri, setUri] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
-  const hasSetLockScreenRef = useRef(false);
   const [queueModalVisible, setQueueModalVisible] = useState(false);
 
   const hasNext = useAudioQueueStore((s) => s.hasNext());
@@ -299,16 +298,24 @@ function AudioPlayerScreenComponent(
   // "another player" today means only the one a previous book left behind — releasing that one
   // calls setActivePlayer(nil) natively (AudioPlayer.sharedObjectWillRelease), which clears the
   // card, so re-claiming here is what puts it back.
+  //
+  // GATED ON status.playing, NOT status.isLoaded — iOS lock-screen fix. MPNowPlayingInfoCenter
+  // only shows the lock-screen card when the first registration arrives with a non-zero playback
+  // rate. If we register while the player is loaded-but-paused (rate = 0.0), iOS silently accepts
+  // the info but never surfaces the card. Waiting for the first actual play event guarantees the
+  // initial nowPlayingInfo has MPNowPlayingInfoPropertyPlaybackRate > 0, which is what iOS needs
+  // to transition from "no card" to "card visible". For a reused player that is already playing
+  // on mount (isNew: false), status.playing is true on the first render and the call fires
+  // immediately — same timing as before for that case.
   useEffect(() => {
-    if (status.isLoaded && !hasSetLockScreenRef.current) {
-      hasSetLockScreenRef.current = true;
+    if (status.playing) {
       player.setActiveForLockScreen(
         true,
         { title, artist: 'TF Reader' },
         { showSeekForward: true, showSeekBackward: true },
       );
     }
-  }, [status.isLoaded, player, title]);
+  }, [status.playing, player, title]);
 
   // NO clearLockScreenControls()/remove() ON UNMOUNT, DELIBERATELY. The player is owned by
   // audioPlayerInstance.ts, not by this component — unmounting this screen (navigating back) must
@@ -320,10 +327,15 @@ function AudioPlayerScreenComponent(
   // is opened (audioPlayerInstance.ts releases the old one then) or the app process ends.
 
   useEffect(() => {
-    if (status.isLoaded) {
-      onPositionChange?.(status.currentTime);
-    }
-  }, [status.isLoaded, status.currentTime, onPositionChange]);
+    if (!status.isLoaded) return;
+    // Skip the initial zero-position tick when a new player hasn't yet seeked to the saved
+    // position. Both this effect and the seekTo effect above fire when `status.isLoaded` first
+    // becomes true — but seekTo is async, so `currentTime` is still 0 at this point. Without
+    // this guard, handlePositionChange writes positionMs=0 unthrottled (lastWriteAtRef=0) and
+    // pushes it before the correct position lands, triggering false conflict alerts on Device 1.
+    if (isNew && status.currentTime === 0 && initialPosition && initialPosition > 0) return;
+    onPositionChange?.(status.currentTime);
+  }, [status.isLoaded, status.currentTime, onPositionChange, initialPosition, isNew]);
 
   // AUDIO PHASE 4. Held in a ref so the unmount effect below can stay `[player]`-scoped: reading
   // the prop directly would put `onPositionCommit` in that effect's deps, and a caller passing an

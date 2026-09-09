@@ -121,6 +121,24 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   rather than trusting the first plausible-looking property name; no test would have caught the
   wrong version either, since a jsdom/mock `Contents` object would happily report whatever
   `innerWidth`/`innerHeight` the test gave it.
+
+  **A SECOND defect shipped after that fix, this time reported from an actual device rather than
+  caught before merging: auto-follow worked in paginated flow and went permanently, silently inert
+  in scrolled-doc flow.** The dedupe guard against overlapping `display()` calls was a boolean
+  cleared in `rendition.display()`'s own `.finally()`. That is fine for `DefaultViewManager`
+  (paginated), whose `display()` resolves as soon as the page is shown — but in scrolled-doc flow,
+  `display()` resolves through `ContinuousViewManager`, which chains its own UNBOUNDED
+  virtualization pass onto every display (`.then(() => this.fill())`, recursing through `check()`
+  via a `requestAnimationFrame`-gated queue). On a real device that `requestAnimationFrame` can
+  stall — backgrounded, throttled, GPU-starved — and the tail promise then never settles. A flag
+  cleared in that promise's `.finally()` stays `true` forever, and every later auto-follow call
+  silently no-ops on the guard check ahead of it — for the rest of the reading session, in
+  scrolled-doc flow specifically, with nothing on screen to explain why. Fixed by replacing the
+  promise-gated flag with a fixed-duration cooldown timestamp instead (`followCooldownUntil`) — it
+  cannot get stuck regardless of whether epub.js's own internal promise ever resolves. Neither this
+  nor the first defect had a unit test that could have caught it: this one is specifically an
+  async-timing interaction with a real `requestAnimationFrame` under real device load, which a
+  synchronous jsdom test cannot reproduce.
 - On-device: paginated flow, scrolled-doc flow, and the screen-reader-forced scrolled-doc override —
   pending device verification (same status as word-level highlighting's own on-device pass,
   `TTS_PROVIDER.md`'s note on `selectionTheme.ts`'s opacity constants).
