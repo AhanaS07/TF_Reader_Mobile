@@ -414,8 +414,8 @@ async function reportReady(): Promise<void> {
   await deliver({ type: 'ready' });
 }
 
-async function mountReader(): Promise<void> {
-  await render(<ReaderScreen bookId="test-book" />);
+async function mountReader(props?: { onOpenAccessibilityInfo?: () => void }): Promise<void> {
+  await render(<ReaderScreen bookId="test-book" {...props} />);
   // The WebView only mounts once getReaderHtmlUri() resolves.
   await screen.findByTestId('reader-webview');
 }
@@ -1414,25 +1414,30 @@ describe('applyAppearance — the accessibility overrides', () => {
   });
 });
 
-describe('the accessibility settings panel', () => {
-  it('opens from the toolbar and closes back to the button that opened it', async () => {
+describe('the merged accessibility dropdown', () => {
+  it('opens from one ♿ toolbar button, with no title or named close row', async () => {
     await mountReader();
 
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
-    expect(screen.getByText('Accessibility')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
-    await fireEvent.press(screen.getByLabelText('Close accessibility'));
+    // No header any more — matches DevPreferencesMenu's own headerless dropdown. Dismiss is
+    // tap-outside/back/re-press only, not a named "Close accessibility" control.
+    expect(screen.queryByText('Accessibility')).toBeNull();
     expect(screen.queryByLabelText('Close accessibility')).toBeNull();
-    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
-    expect(focusOn).toHaveBeenCalled();
   });
 
-  it('names its own close, so a screen reader can tell which panel it is in', async () => {
+  it('dismisses on a backdrop tap and restores focus to the toolbar button', async () => {
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
-    // Not a bare "Close" — three panels can be open one at a time and each names itself.
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId('accessibility-dropdown-backdrop', { includeHiddenElements: true }),
+    );
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
+    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
+    expect(focusOn).toHaveBeenCalled();
   });
 
   it('is mutually exclusive with Search and Bookmarks, both ways round', async () => {
@@ -1445,24 +1450,24 @@ describe('the accessibility settings panel', () => {
 
     await mountReader();
 
-    await toolbar('Accessibility settings');
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    await toolbar('Accessibility');
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
     await toolbar('Search this book');
-    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
 
-    await toolbar('Accessibility settings');
+    await toolbar('Accessibility');
     expect(screen.queryByLabelText('Close search')).toBeNull();
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
     await toolbar('Bookmarks');
-    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
     expect(screen.getByLabelText('Close bookmarks')).toBeTruthy();
   });
 
   it('shows the Dyslexia Font row for an EPUB', async () => {
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
 
     expect(screen.getByLabelText('Dyslexia font: Off')).toBeTruthy();
   });
@@ -1470,11 +1475,30 @@ describe('the accessibility settings panel', () => {
   it('passes the format through, so a PDF loses the row it cannot honour', async () => {
     jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
 
     expect(screen.queryByLabelText(/Dyslexia font/)).toBeNull();
     // The other two apply to every format, which is why the ENTRY POINT is not format-gated.
     expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
+  });
+
+  it('renders "Accessibility information" as a plain button, not a toggle, inside the dropdown', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+
+    const infoButton = screen.getByLabelText('Accessibility information');
+    expect(infoButton.props.accessibilityState?.selected).toBeUndefined();
+  });
+
+  it('pressing "Accessibility information" closes the dropdown and calls onOpenAccessibilityInfo', async () => {
+    const onOpenAccessibilityInfo = jest.fn();
+    await mountReader({ onOpenAccessibilityInfo });
+
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    await fireEvent.press(screen.getByLabelText('Accessibility information'));
+
+    expect(onOpenAccessibilityInfo).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
   });
 });
 
