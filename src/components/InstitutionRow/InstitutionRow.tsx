@@ -1,4 +1,5 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { Institution } from '@model/institution';
 import { color, radius, space, type } from '@theme/tokens';
@@ -45,7 +46,8 @@ export default function InstitutionRow({
           <Image
             source={{ uri: institution.branding.logoUrl }}
             style={styles.crest}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
             accessibilityLabel={`${institution.name} logo`}
           />
         ) : (

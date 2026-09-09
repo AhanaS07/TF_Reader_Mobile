@@ -8,7 +8,8 @@
 //
 // It also means authType cannot be rendered, because it never arrives — sign-in
 // is always SAML, so there is nothing to display and nothing to choose.
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
 import { color, radius, space, type } from '@theme/tokens';
 
@@ -49,7 +50,8 @@ export default function InstitutionDetailView({
         <Image
           source={{ uri: logoUrl }}
           style={styles.logo}
-          resizeMode="contain"
+          contentFit="contain"
+          cachePolicy="memory-disk"
           accessibilityLabel={`${name} logo`}
         />
       ) : (
