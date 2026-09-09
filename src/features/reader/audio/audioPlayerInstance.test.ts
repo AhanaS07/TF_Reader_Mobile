@@ -223,5 +223,59 @@ describe('audioPlayerInstance', () => {
       );
       expect(playSpy).toHaveBeenCalled();
     });
+
+    it('seeks to initialPositionSeconds on switchActiveAudioTrack', () => {
+      const book1 = 'book-resume-1' as BookId;
+      const { player } = getAudioPlayerFor(book1);
+      player.isLoaded = true;
+      player.duration = 300;
+
+      const seekSpy = jest.spyOn(player, 'seekTo');
+
+      switchActiveAudioTrack(
+        'book-resume-2' as BookId,
+        'file:///scratch/track2.wav',
+        'Track 2',
+        'Artist 2',
+        120,
+      );
+
+      expect(seekSpy).toHaveBeenCalledWith(120);
+    });
+
+    it('clamps to 0 when initialPositionSeconds is near the end of the track', () => {
+      const book = 'book-finished-resume' as BookId;
+      const { player } = getAudioPlayerFor(book);
+      player.isLoaded = true;
+      player.duration = 100;
+
+      const seekSpy = jest.spyOn(player, 'seekTo');
+
+      switchActiveAudioTrack(
+        'book-finished-next' as BookId,
+        'file:///scratch/track3.wav',
+        'Track 3',
+        'Artist 3',
+        99.5, // near end of 100s track
+      );
+
+      // Clamped to 0:00 rather than seeking to end
+      expect(seekSpy).not.toHaveBeenCalledWith(99.5);
+    });
+
+    it('reuses loaded book without replacing source if switching to same active book', () => {
+      const book = 'book-same' as BookId;
+      const { player } = getAudioPlayerFor(book);
+      player.isLoaded = true;
+      player.playing = false;
+
+      const replaceSpy = jest.spyOn(player, 'replace');
+      const playSpy = jest.spyOn(player, 'play');
+
+      switchActiveAudioTrack(book, 'file:///scratch/same.wav', 'Same Title');
+
+      expect(replaceSpy).not.toHaveBeenCalled();
+      expect(playSpy).toHaveBeenCalled();
+    });
   });
 });

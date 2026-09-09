@@ -195,4 +195,31 @@ describe('audioQueueStore', () => {
     store.setPlaybackProgress({ positionSeconds: 42, durationSeconds: 120 });
     expect(useAudioQueueStore.getState().playbackProgress).toEqual({ positionSeconds: 42, durationSeconds: 120 });
   });
+
+  it('does not add duplicate items on enqueue or playNext', () => {
+    const store = useAudioQueueStore.getState();
+    store.setQueue([itemA, itemB], 0);
+
+    // Try to enqueue itemA again
+    store.enqueue(itemA);
+    expect(useAudioQueueStore.getState().items).toEqual([itemA, itemB]);
+
+    // Try to playNext itemB again
+    store.playNext(itemB);
+    expect(useAudioQueueStore.getState().items).toEqual([itemA, itemB]);
+  });
+
+  it('deduplicates items on setQueue', () => {
+    const store = useAudioQueueStore.getState();
+    store.setQueue([itemA, itemB, itemA, itemC, itemB], 0);
+    expect(useAudioQueueStore.getState().items).toEqual([itemA, itemB, itemC]);
+  });
+
+  it('reports isInQueue correctly', () => {
+    const store = useAudioQueueStore.getState();
+    store.setQueue([itemA], 0);
+
+    expect(store.isInQueue(itemA.bookId)).toBe(true);
+    expect(store.isInQueue(itemB.bookId)).toBe(false);
+  });
 });

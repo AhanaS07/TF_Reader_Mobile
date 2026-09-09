@@ -10,14 +10,25 @@ import {
 } from './audioPlayerInstance';
 import { audioQueueStore } from './audioQueueStore';
 import {
+  clearAudioQueue,
   handleTrackFinished,
   jumpToQueueIndex,
   playQueueItem,
+  removeQueueItem,
   selectAndPlayAudiobook,
   skipToNextTrack,
   skipToPreviousTrack,
   toggleAudioPlayback,
 } from './audioQueueCoordinator';
+
+const mockCurrentLocator = jest.fn();
+
+jest.mock('@/features/sync/stores/progressStore', () => ({
+  progressStore: {
+    currentLocator: (...args: unknown[]) => mockCurrentLocator(...args),
+    savePosition: jest.fn(() => Promise.resolve()),
+  },
+}));
 
 jest.mock('./audioAssetResolver', () => ({
   audioAssetResolver: {
@@ -39,6 +50,7 @@ describe('audioQueueCoordinator', () => {
   beforeEach(() => {
     releaseCurrentAudioPlayer();
     jest.clearAllMocks();
+    mockCurrentLocator.mockResolvedValue(null);
     audioQueueStore.getState().clearQueue();
     audioQueueStore.getState().setRepeatMode('off');
     mockResolve.mockResolvedValue('file:///scratch/audio.wav');
@@ -166,5 +178,64 @@ describe('audioQueueCoordinator', () => {
     expect(playedResult).toBe(true);
     expect(player.playing).toBe(true);
     expect(audioQueueStore.getState().isPlaying).toBe(true);
+  });
+
+  it('restores stored progress position when playing a queue item', async () => {
+    mockCurrentLocator.mockResolvedValueOnce({
+      type: 'AUDIO',
+      positionMs: 65000,
+    });
+
+    const { player } = getAudioPlayerFor(itemA.bookId);
+    player.isLoaded = true;
+    player.duration = 200;
+    const seekSpy = jest.spyOn(player, 'seekTo');
+
+    await playQueueItem(itemB);
+
+    expect(seekSpy).toHaveBeenCalledWith(65);
+  });
+
+  it('switches playback to next item when removing active item via removeQueueItem', async () => {
+    audioQueueStore.getState().setQueue([itemA, itemB], 0);
+    getAudioPlayerFor(itemA.bookId);
+
+    await removeQueueItem(0);
+
+    expect(audioQueueStore.getState().items).toEqual([itemB]);
+    expect(audioQueueStore.getState().currentIndex).toBe(0);
+    expect(mockResolve).toHaveBeenCalledWith(itemB.bookId);
+  });
+
+  it('pauses player when removing the only remaining item via removeQueueItem', async () => {
+    audioQueueStore.getState().setQueue([itemA], 0);
+    const { player } = getAudioPlayerFor(itemA.bookId);
+    player.isLoaded = true;
+    player.playing = true;
+
+    const pauseSpy = jest.spyOn(player, 'pause');
+
+    await removeQueueItem(0);
+
+    expect(audioQueueStore.getState().items).toEqual([]);
+    expect(audioQueueStore.getState().currentIndex).toBe(-1);
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(audioQueueStore.getState().isPlaying).toBe(false);
+  });
+
+  it('pauses playback and clears queue on clearAudioQueue', async () => {
+    audioQueueStore.getState().setQueue([itemA, itemB], 0);
+    const { player } = getAudioPlayerFor(itemA.bookId);
+    player.isLoaded = true;
+    player.playing = true;
+
+    const pauseSpy = jest.spyOn(player, 'pause');
+
+    clearAudioQueue();
+
+    expect(pauseSpy).toHaveBeenCalled();
+    expect(audioQueueStore.getState().items).toEqual([]);
+    expect(audioQueueStore.getState().currentIndex).toBe(-1);
+    expect(audioQueueStore.getState().isPlaying).toBe(false);
   });
 });

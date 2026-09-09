@@ -676,5 +676,40 @@ describe('AudioPlayerRouteScreen', () => {
         unmount();
       });
     });
+
+    it('preserves existing queue items when opened with a new book not in queue', async () => {
+      useAudioQueueStore.getState().setQueue(
+        [
+          { bookId: 'book-1' as never, title: 'Book 1' },
+          { bookId: 'book-2' as never, title: 'Book 2' },
+        ],
+        0,
+      );
+
+      const { getByText, unmount } = await render(
+        <AudioPlayerRouteScreen
+          navigation={{ setOptions: jest.fn(), setParams: jest.fn() } as never}
+          route={
+            {
+              key: 'AudioPlayer',
+              name: 'AudioPlayer',
+              params: { bookId: 'book-3', title: 'Book 3' },
+            } as never
+          }
+        />,
+      );
+      await waitFor(() => expect(getByText('playing book-3')).toBeTruthy());
+
+      const state = useAudioQueueStore.getState();
+      expect(state.items).toHaveLength(3);
+      expect(state.items[0].bookId).toBe('book-1');
+      expect(state.items[1].bookId).toBe('book-2');
+      expect(state.items[2].bookId).toBe('book-3');
+      expect(state.currentIndex).toBe(2);
+
+      await act(async () => {
+        unmount();
+      });
+    });
   });
 });

@@ -278,7 +278,13 @@ function AudioPlayerScreenComponent(
     if (status.isLoaded && !hasResumedRef.current) {
       hasResumedRef.current = true;
       if (isNew && initialPosition && initialPosition > 0) {
-        void player.seekTo(clamp(initialPosition, 0, status.duration || initialPosition));
+        const target =
+          status.duration > 0 && initialPosition >= status.duration - 2
+            ? 0
+            : clamp(initialPosition, 0, status.duration || initialPosition);
+        if (target > 0) {
+          void player.seekTo(target);
+        }
       }
     }
   }, [status.isLoaded, status.duration, initialPosition, isNew, player]);

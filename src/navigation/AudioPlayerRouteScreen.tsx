@@ -127,7 +127,15 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
     const queue = audioQueueStore.getState();
     const itemIndex = queue.items.findIndex((item) => item.bookId === bookId);
     if (itemIndex === -1) {
-      queue.setQueue([{ bookId, title }], 0);
+      if (queue.items.length === 0) {
+        queue.setQueue([{ bookId, title }], 0);
+      } else {
+        queue.enqueue({ bookId, title });
+        const newIndex = audioQueueStore.getState().items.findIndex((item) => item.bookId === bookId);
+        if (newIndex !== -1) {
+          queue.skipToIndex(newIndex);
+        }
+      }
     } else if (queue.currentIndex !== itemIndex) {
       queue.skipToIndex(itemIndex);
     }

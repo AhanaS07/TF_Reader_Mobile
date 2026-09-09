@@ -4,6 +4,7 @@
 // Coordinates auto-advancing, skipping, and just-in-time decryption between
 // audioQueueStore, audioAssetResolver, and audioPlayerInstance.
 
+import { progressStore } from '@/features/sync/stores/progressStore';
 import { audioAssetResolver } from './audioAssetResolver';
 import {
   commitCurrentPlayerPosition,
@@ -22,7 +23,8 @@ let isTransitioning = false;
  * 1. Stops any active TTS.
  * 2. Reconfigures audio session if needed.
  * 3. Resolves/decrypts the book via audioAssetResolver (JIT).
- * 4. Switches active audio track on the singleton player.
+ * 4. Checks saved reading/listening position in progressStore.
+ * 5. Switches active audio track on the singleton player with resume position.
  */
 export async function playQueueItem(item: AudioQueueItem): Promise<boolean> {
   if (isTransitioning) return false;
@@ -31,10 +33,23 @@ export async function playQueueItem(item: AudioQueueItem): Promise<boolean> {
     stopActiveTts();
     await ensureAudioModeConfigured(true);
     const uri = await audioAssetResolver.resolveAudioAssetUri(item.bookId);
-    switchActiveAudioTrack(item.bookId, uri, item.title, item.artist);
+
+    // Read stored listening/reading progress for this book
+    let resumePositionSeconds: number | undefined;
+    try {
+      const locator = await progressStore.currentLocator(undefined, item.bookId);
+      if (locator?.type === 'AUDIO' && locator.positionMs > 0) {
+        resumePositionSeconds = locator.positionMs / 1000;
+      }
+    } catch {
+      // Best-effort: resume from start if progress read fails
+    }
+
+    switchActiveAudioTrack(item.bookId, uri, item.title, item.artist, resumePositionSeconds);
     return true;
   } catch {
-    // If acquisition fails (e.g. licence revoked or offline without download), return false
+    // If acquisition fails (e.g. licence revoked or offline without download), return false and ensure isPlaying is false
+    audioQueueStore.getState().setIsPlaying(false);
     return false;
   } finally {
     isTransitioning = false;
@@ -145,7 +160,51 @@ export async function selectAndPlayAudiobook(item: AudioQueueItem): Promise<bool
   return playQueueItem(item);
 }
 
+/**
+ * User action: Removes an item from the queue by index.
+ * If the removed item was the currently playing track:
+ * - If other items remain in queue, switches playback to the new current track.
+ * - If the queue becomes empty, pauses playback and resets progress.
+ */
+export async function removeQueueItem(index: number): Promise<void> {
+  const { items, currentIndex } = audioQueueStore.getState();
+  if (index < 0 || index >= items.length) return;
+
+  const wasCurrent = index === currentIndex;
+  audioQueueStore.getState().removeItem(index);
+
+  if (wasCurrent) {
+    const nextCurrent = audioQueueStore.getState().getCurrentItem();
+    if (nextCurrent) {
+      await playQueueItem(nextCurrent);
+    } else {
+      const player = getCurrentAudioPlayer();
+      if (player && player.playing) {
+        player.pause();
+        commitCurrentPlayerPosition();
+      }
+      audioQueueStore.getState().setIsPlaying(false);
+      audioQueueStore.getState().setPlaybackProgress({ positionSeconds: 0, durationSeconds: 0 });
+    }
+  }
+}
+
+/**
+ * User action: Clears the entire audio queue and pauses any active playback.
+ */
+export function clearAudioQueue(): void {
+  const player = getCurrentAudioPlayer();
+  if (player && player.playing) {
+    player.pause();
+    commitCurrentPlayerPosition();
+  }
+  audioQueueStore.getState().setIsPlaying(false);
+  audioQueueStore.getState().setPlaybackProgress({ positionSeconds: 0, durationSeconds: 0 });
+  audioQueueStore.getState().clearQueue();
+}
+
 // Register auto-advance listener with player singleton
 registerTrackCompletionHandler(async () => {
   await handleTrackFinished();
 });
+

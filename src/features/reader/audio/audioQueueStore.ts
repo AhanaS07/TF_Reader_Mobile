@@ -39,6 +39,7 @@ export interface AudioQueueState {
   toggleRepeatMode: () => void;
   clearQueue: () => void;
   getCurrentItem: () => AudioQueueItem | null;
+  isInQueue: (bookId: BookId) => boolean;
   hasNext: () => boolean;
   hasPrevious: () => boolean;
 }
@@ -54,12 +55,26 @@ export const useAudioQueueStore = create<AudioQueueState>((set, get) => ({
   setPlaybackProgress: (playbackProgress) => set({ playbackProgress }),
 
   setQueue: (items, startIndex = 0) => {
-    const validIndex = items.length > 0 ? Math.min(Math.max(0, startIndex), items.length - 1) : -1;
-    set({ items: [...items], currentIndex: validIndex });
+    const seen = new Set<string>();
+    const deduplicatedItems: AudioQueueItem[] = [];
+    for (const item of items) {
+      if (!seen.has(item.bookId)) {
+        seen.add(item.bookId);
+        deduplicatedItems.push(item);
+      }
+    }
+    const validIndex =
+      deduplicatedItems.length > 0
+        ? Math.min(Math.max(0, startIndex), deduplicatedItems.length - 1)
+        : -1;
+    set({ items: deduplicatedItems, currentIndex: validIndex });
   },
 
   enqueue: (item) => {
     set((state) => {
+      if (state.items.some((i) => i.bookId === item.bookId)) {
+        return state;
+      }
       const items = [...state.items, item];
       const currentIndex = state.currentIndex === -1 ? 0 : state.currentIndex;
       return { items, currentIndex };
@@ -68,6 +83,9 @@ export const useAudioQueueStore = create<AudioQueueState>((set, get) => ({
 
   playNext: (item) => {
     set((state) => {
+      if (state.items.some((i) => i.bookId === item.bookId)) {
+        return state;
+      }
       if (state.items.length === 0 || state.currentIndex === -1) {
         return { items: [item], currentIndex: 0 };
       }
@@ -204,6 +222,10 @@ export const useAudioQueueStore = create<AudioQueueState>((set, get) => ({
       return items[currentIndex];
     }
     return null;
+  },
+
+  isInQueue: (bookId: BookId) => {
+    return get().items.some((i) => i.bookId === bookId);
   },
 
   hasNext: () => {

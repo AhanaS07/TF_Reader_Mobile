@@ -5,6 +5,7 @@
 // toggle play/pause, skip tracks, and tap to expand into the full AudioPlayer screen.
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   skipToNextTrack,
@@ -22,6 +23,7 @@ function clamp(val: number, min: number, max: number): number {
 }
 
 export function MiniAudioPlayer({ onExpand }: MiniAudioPlayerProps): React.JSX.Element | null {
+  const insets = useSafeAreaInsets();
   const currentItem = useAudioQueueStore((s) => s.getCurrentItem());
   const isPlaying = useAudioQueueStore((s) => s.isPlaying);
   const playbackProgress = useAudioQueueStore((s) => s.playbackProgress);
@@ -40,7 +42,7 @@ export function MiniAudioPlayer({ onExpand }: MiniAudioPlayerProps): React.JSX.E
   const canRewindOrPrevious = hasPrevious || playbackProgress.positionSeconds > 3.0;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, 6) }]}>
       {/* Progress Bar Header */}
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${progressRatio * 100}%` }]} />

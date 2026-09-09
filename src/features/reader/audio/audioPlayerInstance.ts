@@ -35,6 +35,7 @@ import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator'
 import { audioQueueStore } from './audioQueueStore';
 
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
+let pendingResumePosition: number | null = null;
 
 type TrackCompletionHandler = () => void | Promise<unknown>;
 let onTrackCompletionHandler: TrackCompletionHandler | null = null;
@@ -161,6 +162,7 @@ export function releaseCurrentAudioPlayer(): void {
   commitCurrentPlayerPosition();
   current.player.remove();
   current = null;
+  pendingResumePosition = null;
   audioQueueStore.getState().setIsPlaying(false);
 }
 
@@ -171,16 +173,30 @@ export function getCurrentAudioPlayer(): AudioPlayer | null {
 /**
  * Switches the active singleton player to a new audio track (e.g. queue progression)
  * without tearing down the native player object or audio session.
+ * Restores saved progress via optional initialPositionSeconds and guards against finished tracks.
  */
 export function switchActiveAudioTrack(
   bookId: BookId,
   uri: string,
   title: string,
   artist: string = 'TF Reader',
+  initialPositionSeconds?: number,
 ): void {
+  const seekPos =
+    initialPositionSeconds && initialPositionSeconds > 0 ? initialPositionSeconds : null;
+
   if (!current) {
     const { player } = getAudioPlayerFor(bookId);
+    pendingResumePosition = seekPos;
     player.replace({ uri });
+    if (player.isLoaded && pendingResumePosition !== null) {
+      const pos = pendingResumePosition;
+      pendingResumePosition = null;
+      const target = player.duration > 0 && pos >= player.duration - 2 ? 0 : pos;
+      if (target > 0) {
+        void player.seekTo(target);
+      }
+    }
     player.setActiveForLockScreen(
       true,
       { title, artist },
@@ -191,9 +207,34 @@ export function switchActiveAudioTrack(
     return;
   }
 
+  // If the same book is already loaded, avoid reloading source (which resets to 0:00)
+  if (current.bookId === bookId && current.player.isLoaded) {
+    if (!current.player.playing) {
+      if (seekPos !== null) {
+        const target =
+          current.player.duration > 0 && seekPos >= current.player.duration - 2 ? 0 : seekPos;
+        if (target > 0) {
+          void current.player.seekTo(target);
+        }
+      }
+      current.player.play();
+      audioQueueStore.getState().setIsPlaying(true);
+    }
+    return;
+  }
+
   commitCurrentPlayerPosition();
   current.bookId = bookId;
+  pendingResumePosition = seekPos;
   current.player.replace({ uri });
+  if (current.player.isLoaded && pendingResumePosition !== null) {
+    const pos = pendingResumePosition;
+    pendingResumePosition = null;
+    const target = current.player.duration > 0 && pos >= current.player.duration - 2 ? 0 : pos;
+    if (target > 0) {
+      void current.player.seekTo(target);
+    }
+  }
   current.player.setActiveForLockScreen(
     true,
     { title, artist },
@@ -233,6 +274,15 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
         positionSeconds: status.currentTime,
         durationSeconds: status.duration,
       });
+
+      if (pendingResumePosition !== null) {
+        const pos = pendingResumePosition;
+        pendingResumePosition = null;
+        const target = status.duration > 0 && pos >= status.duration - 2 ? 0 : pos;
+        if (target > 0) {
+          void player.seekTo(target);
+        }
+      }
     }
 
     if (status.didJustFinish) {

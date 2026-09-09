@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { clearAudioQueue, removeQueueItem } from './audioQueueCoordinator';
 import { useAudioQueueStore, type AudioQueueItem, type RepeatMode } from './audioQueueStore';
 
 export interface AudioQueueModalProps {
@@ -48,10 +49,8 @@ export function AudioQueueModal({
   const items = useAudioQueueStore((s) => s.items);
   const currentIndex = useAudioQueueStore((s) => s.currentIndex);
   const repeatMode = useAudioQueueStore((s) => s.repeatMode);
-  const removeItem = useAudioQueueStore((s) => s.removeItem);
   const reorder = useAudioQueueStore((s) => s.reorder);
   const toggleRepeatMode = useAudioQueueStore((s) => s.toggleRepeatMode);
-  const clearQueue = useAudioQueueStore((s) => s.clearQueue);
 
   const handleSelectTrack = useCallback(
     (index: number) => {
@@ -132,7 +131,9 @@ export function AudioQueueModal({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Remove ${item.title} from queue`}
-              onPress={() => removeItem(index)}
+              onPress={() => {
+                void removeQueueItem(index);
+              }}
               style={styles.actionButton}
             >
               <Text style={styles.removeIcon}>✕</Text>
@@ -141,7 +142,7 @@ export function AudioQueueModal({
         </View>
       );
     },
-    [currentIndex, items.length, handleSelectTrack, reorder, removeItem],
+    [currentIndex, items.length, handleSelectTrack, reorder],
   );
 
   return (
@@ -210,7 +211,7 @@ export function AudioQueueModal({
               accessibilityRole="button"
               accessibilityLabel="Clear queue"
               disabled={items.length === 0}
-              onPress={clearQueue}
+              onPress={clearAudioQueue}
               style={[
                 styles.clearButton,
                 items.length === 0 && styles.clearButtonDisabled,

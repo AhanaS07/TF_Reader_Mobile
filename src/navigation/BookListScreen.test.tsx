@@ -193,4 +193,28 @@ describe('BookListScreen', () => {
     expect(queryByLabelText('Add to queue: EPUB')).toBeNull();
     expect(queryByLabelText('Play next: PDF')).toBeNull();
   });
+
+  it('prevents adding a book to queue if it is already in the queue and alerts user', async () => {
+    useAudioQueueStore.getState().setQueue([
+      { bookId: 'dev-sample-audio-encrypted' as never, title: 'Audiobook (Encrypted)' },
+    ]);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    const { getByLabelText } = await renderBookList(jest.fn());
+
+    await fireEvent.press(getByLabelText('Add to queue: Audiobook (Encrypted)'));
+    expect(audioQueueStore.getState().items).toHaveLength(1);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Already in Queue',
+      '"Audiobook (Encrypted)" is already in the queue.',
+    );
+
+    await fireEvent.press(getByLabelText('Play next: Audiobook (Encrypted)'));
+    expect(audioQueueStore.getState().items).toHaveLength(1);
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Already in Queue',
+      '"Audiobook (Encrypted)" is already in the queue.',
+    );
+
+    alertSpy.mockRestore();
+  });
 });

@@ -21,6 +21,7 @@
 import { useState } from 'react';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
@@ -116,6 +117,7 @@ function FixtureRow({
   fixture,
   isActive = false,
   isPlaying = false,
+  isInQueue = false,
   onPress,
   onPlaySwitch,
   onOpenPlayer,
@@ -125,6 +127,7 @@ function FixtureRow({
   fixture: DevFixture;
   isActive?: boolean;
   isPlaying?: boolean;
+  isInQueue?: boolean;
   onPress: () => void;
   onPlaySwitch?: () => void;
   onOpenPlayer?: () => void;
@@ -207,17 +210,21 @@ function FixtureRow({
               accessibilityRole="button"
               accessibilityLabel={`Play next: ${fixture.label}`}
               onPress={onPlayNext}
-              style={styles.queueButton}
+              style={[styles.queueButton, isInQueue && styles.queueButtonDisabled]}
             >
-              <Text style={styles.queueButtonLabel}>Play Next</Text>
+              <Text style={[styles.queueButtonLabel, isInQueue && styles.queueButtonLabelDisabled]}>
+                Play Next
+              </Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Add to queue: ${fixture.label}`}
               onPress={onAddToQueue}
-              style={styles.queueButton}
+              style={[styles.queueButton, isInQueue && styles.queueButtonDisabled]}
             >
-              <Text style={styles.queueButtonLabel}>+ Queue</Text>
+              <Text style={[styles.queueButtonLabel, isInQueue && styles.queueButtonLabelDisabled]}>
+                {isInQueue ? 'In Queue ✓' : '+ Queue'}
+              </Text>
             </Pressable>
           </View>
         )}
@@ -229,25 +236,41 @@ function FixtureRow({
 }
 
 export function BookListScreen({ navigation }: Props): React.JSX.Element {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [clearedGeneration, setClearedGeneration] = useState(0);
   const [clearingAll, setClearingAll] = useState(false);
 
   const currentItem = useAudioQueueStore((s) => s.getCurrentItem());
   const isPlaying = useAudioQueueStore((s) => s.isPlaying);
+  const queueItems = useAudioQueueStore((s) => s.items);
 
   const handlePlayNext = (fixture: DevFixture) => {
+    if (audioQueueStore.getState().isInQueue(fixture.bookId)) {
+      Alert.alert('Already in Queue', `"${fixture.label}" is already in the queue.`);
+      return;
+    }
     audioQueueStore.getState().playNext({ bookId: fixture.bookId, title: fixture.label });
     Alert.alert('Queue Updated', `"${fixture.label}" will play next.`);
   };
 
   const handleAddToQueue = (fixture: DevFixture) => {
+    if (audioQueueStore.getState().isInQueue(fixture.bookId)) {
+      Alert.alert('Already in Queue', `"${fixture.label}" is already in the queue.`);
+      return;
+    }
     audioQueueStore.getState().enqueue({ bookId: fixture.bookId, title: fixture.label });
     Alert.alert('Queue Updated', `Added "${fixture.label}" to queue.`);
   };
 
   const handleSelectAudiobook = async (fixture: DevFixture) => {
     try {
+      if (currentItem?.bookId === fixture.bookId) {
+        if (!isPlaying) {
+          await toggleAudioPlayback();
+        }
+        return;
+      }
       await selectAndPlayAudiobook({
         bookId: fixture.bookId,
         title: fixture.label,
@@ -334,7 +357,13 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
         </Pressable>
       </View>
 
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[
+          styles.content,
+          currentItem ? { paddingBottom: 88 + insets.bottom } : undefined,
+        ]}
+      >
         {/* Audiobooks Section */}
         {(activeTab === 'all' || activeTab === 'audio') && (
           <View style={styles.section}>
@@ -347,12 +376,14 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
 
             {AUDIO_FIXTURES.map((fixture) => {
               const isActive = currentItem?.bookId === fixture.bookId;
+              const isInQueue = queueItems.some((i) => i.bookId === fixture.bookId);
               return (
                 <FixtureRow
                   key={`${fixture.bookId}-${clearedGeneration}`}
                   fixture={fixture}
                   isActive={isActive}
                   isPlaying={isActive && isPlaying}
+                  isInQueue={isInQueue}
                   onPress={() => {
                     void handleSelectAudiobook(fixture);
                   }}
@@ -578,10 +609,17 @@ const styles = StyleSheet.create({
     borderColor: '#bbbbbb',
     backgroundColor: '#ffffff',
   },
+  queueButtonDisabled: {
+    backgroundColor: '#f1f3f5',
+    borderColor: '#e2e8f0',
+  },
   queueButtonLabel: {
     fontSize: 12,
     fontWeight: '600',
     color: '#333333',
+  },
+  queueButtonLabelDisabled: {
+    color: '#868e96',
   },
   clearAllButton: {
     borderWidth: 1,
