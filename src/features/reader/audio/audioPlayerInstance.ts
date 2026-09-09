@@ -35,6 +35,21 @@ import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator'
 
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
 
+type TrackCompletionHandler = () => void | Promise<void>;
+let onTrackCompletionHandler: TrackCompletionHandler | null = null;
+
+/**
+ * Registers a callback to be invoked when the current track finishes playing.
+ * Used by the audio queue coordinator to advance to the next track automatically.
+ */
+export function registerTrackCompletionHandler(handler: TrackCompletionHandler | null): void {
+  onTrackCompletionHandler = handler;
+}
+
+export function _resetTrackCompletionHandlerForTests(): void {
+  onTrackCompletionHandler = null;
+}
+
 // Registers the module singleton's pause action with the coordinator so TTS playback
 // automatically pauses active audiobook sound.
 registerAudioPauseHandler(pauseCurrentAudioPlayer);
@@ -146,6 +161,43 @@ export function releaseCurrentAudioPlayer(): void {
   current = null;
 }
 
+export function getCurrentAudioPlayer(): AudioPlayer | null {
+  return current?.player ?? null;
+}
+
+/**
+ * Switches the active singleton player to a new audio track (e.g. queue progression)
+ * without tearing down the native player object or audio session.
+ */
+export function switchActiveAudioTrack(
+  bookId: BookId,
+  uri: string,
+  title: string,
+  artist: string = 'TF Reader',
+): void {
+  if (!current) {
+    const { player } = getAudioPlayerFor(bookId);
+    player.replace({ uri });
+    player.setActiveForLockScreen(
+      true,
+      { title, artist },
+      { showSeekForward: true, showSeekBackward: true },
+    );
+    player.play();
+    return;
+  }
+
+  commitCurrentPlayerPosition();
+  current.bookId = bookId;
+  current.player.replace({ uri });
+  current.player.setActiveForLockScreen(
+    true,
+    { title, artist },
+    { showSeekForward: true, showSeekBackward: true },
+  );
+  current.player.play();
+}
+
 export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew: boolean } {
   if (current && current.bookId === bookId) {
     return { player: current.player, isNew: false };
@@ -170,6 +222,12 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
       stopActiveTts();
     }
     wasPlaying = status.playing;
+
+    if (status.didJustFinish) {
+      if (onTrackCompletionHandler) {
+        void onTrackCompletionHandler();
+      }
+    }
   });
   current = { bookId, player };
   return { player, isNew: true };

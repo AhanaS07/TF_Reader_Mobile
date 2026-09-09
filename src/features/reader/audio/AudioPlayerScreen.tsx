@@ -363,6 +363,9 @@ function AudioPlayerScreenComponent(
         // Stop any active TTS speech before audiobook playback begins.
         stopActiveTts();
 
+        // Re-assert audio session configuration in case TTS modified AVAudioSession mode/options.
+        await ensureAudioModeConfigured(true);
+
         // At end of track the position is already duration, so play() is a no-op.
         // Reads from the PLAYER, not `status`: `status` can be up to one 250ms tick stale
         // (the same reasoning the unmount-commit effect already documents).

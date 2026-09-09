@@ -404,6 +404,49 @@ describe('AudioPlayerScreen', () => {
     expect(fakePlayer.play).toHaveBeenCalled();
   });
 
+  it('plays unhindered when TTS is registered but idle (TTS is ON, but not playing)', async () => {
+    const fakePlayer = getFakePlayer();
+    const ttsStopMock = jest.fn();
+    const unregister = registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => false,
+      isActive: () => false, // idle
+    });
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    // stop() not called because TTS is not playing
+    expect(ttsStopMock).not.toHaveBeenCalled();
+    expect(fakePlayer.play).toHaveBeenCalled();
+
+    unregister();
+  });
+
+  it('stops active TTS when playing audiobook while TTS is actively speaking', async () => {
+    const fakePlayer = getFakePlayer();
+    const ttsStopMock = jest.fn();
+    const unregister = registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => true,
+      isActive: () => true, // speaking
+    });
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    expect(ttsStopMock).toHaveBeenCalledTimes(1);
+    expect(fakePlayer.play).toHaveBeenCalled();
+
+    unregister();
+  });
+
   it('skip back calls seekTo clamped to 0, not negative', async () => {
     const fakePlayer = getFakePlayer();
     fakePlayer.currentTime = 5;

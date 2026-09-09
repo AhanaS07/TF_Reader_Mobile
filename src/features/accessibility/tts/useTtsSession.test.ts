@@ -577,7 +577,7 @@ describe('a null provider — there is no book to read yet', () => {
 });
 
 describe('useTtsSession — concurrency with audio playback', () => {
-  it('pauses active audiobook playback when play() is pressed', async () => {
+  it('does not pause audio merely when TTS is enabled or mounted; pauses only when play() is pressed', async () => {
     const pauseAudioMock = jest.fn();
     registerAudioPauseHandler(pauseAudioMock);
 
@@ -585,8 +585,12 @@ describe('useTtsSession — concurrency with audio playback', () => {
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
-    await act(() => result.current.play());
+    // TTS is ON and idle — audiobook must NOT be paused
+    expect(result.current.status).toBe('idle');
+    expect(pauseAudioMock).not.toHaveBeenCalled();
 
+    // Only when TTS actually begins playing does it pause the audiobook
+    await act(() => result.current.play());
     expect(pauseAudioMock).toHaveBeenCalled();
   });
 
