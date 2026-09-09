@@ -740,7 +740,7 @@ describe('useTtsSession — concurrency with audio playback', () => {
     const pauseAudioMock = jest.fn();
     registerAudioPauseHandler(pauseAudioMock);
 
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -754,7 +754,7 @@ describe('useTtsSession — concurrency with audio playback', () => {
   });
 
   it('stops active TTS speech when stopActiveTts is invoked by the coordinator', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
