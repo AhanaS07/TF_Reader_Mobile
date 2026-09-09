@@ -999,24 +999,9 @@ notes the simulator has no jetsam — so 25 MB is not arbitrary, it is close to 
 the client a way to know that before download (`hasSearchIndex` has a precedent for exactly this kind
 of capability hint).
 
-> **Update 2026-08-25 (this section is the evidence as reviewed; the ledger has the current status).**
-> The client cap is now **per-format** — `maxDecryptedBytesFor()`: 25 MB for EPUB/PDF,
-> **20 MB for AUDIO**, the latter being the OPDS team's agreed prototype storage limit rather than a
-> RAM figure. It is enforced on the write side too (`store()`), not only on read. The finding itself
-> is unchanged: *neither* number appears in any contract, so the ask above stands for both, and the
-> 40 MB-book scenario is still reachable. See `CONTRACT_ALIGNMENT.md` `B11` and
-> `encryption/API_CONTRACT_NOTES.md` §4.
-
 ---
 
 ### B12 — 🟡 `format` is hardcoded `'EPUB'` at the read path, and there is no source for the real value
-
-> **RESOLVED IN PART, 2026-08-17 (PDF support).** The READ PATH no longer hardcodes it:
-> `readerAssets.ts` resolves the format from `SessionHandle.format` through Encryption's new
-> `getFormat(bookId)` and passes it to `verifyReadingAccess`, and Reader routes it to one of two
-> renderers. The SOURCE half is untouched and still `C3`: `downloadBook(bookId, format = 'EPUB')`
-> still defaults, no caller supplies a real value, and there is no catalogue client to ask. So the
-> evidence below still describes the producing side accurately — only the consuming side changed.
 
 `readerAssets.ts`'s `getBookBase64` calls `verifyReadingAccess(bookId, 'EPUB')`, and
 `downloadManager.downloadBook(bookId, format = 'EPUB')` defaults the same way. Both are honestly
@@ -1215,7 +1200,7 @@ The one path where mobile and the contracts genuinely meet. Read `A7` before tru
 | Field | wokay `ContentGrantRequest` | flambeau `ReadingSessionRequest` | Mobile | Verdict |
 | --- | --- | --- | --- | --- |
 | `itemId` | required | required | `BookId` (`= string`) | ✅ |
-| `format` | required, `PDF\|EPUB\|AUDIO` (`AssetFormat`) | required | `ContentFormat`, from `SessionHandle.format` on the read path; still defaulted `'EPUB'` when downloading | ⚠️ `B12` |
+| `format` | required, `PDF\|EPUB\|AUDIO` (`AssetFormat`) | required | `ContentFormat`, hardcoded `'EPUB'` | ⚠️ `B12` |
 | `intent` | required, `STREAM\|DOWNLOAD` | required | derived from `loan.canPersist` | ✅ `B_ok3` |
 | `subject` | required (`userId` + nullable `institutionId`) | **not on the HTTP surface** — flambeau supplies it from the token | absent | ✅ correct: it comes from the token, which mobile does not yet have (`B1`) |
 | `devicePublicKey` | nullable; Base64 SPKI DER, 392 chars, RSA-2048 min | required; "base64 of raw bytes" | `publicKeyToRawBase64()`, 392 chars | ✅ `B_ok1`; wording conflict `A6` |
@@ -1249,11 +1234,7 @@ The one path where mobile and the contracts genuinely meet. Read `A7` before tru
 | — | — | — | mobile `AccessTier` = `OA`/`Subscribed`/`Elite` | — | — | — | — | 🔴 `B9`, unused |
 
 ¹ Disputed within flambeau's own document — `A9`.
-² Except audio, which is never encrypted — and that is the `B15` hole. **Both halves of that
-footnote are now out of date** (it is the evidence as reviewed, so it is annotated rather than
-rewritten): `B15` was closed 2026-08-25, and audio is no longer unencrypted — the backend
-overrode its own "never encrypted" rule the same day, so audio takes the same AES-256-GCM path
-as EPUB/PDF. See `CONTRACT_ALIGNMENT.md` and `reader/AUDIO_ENCRYPTION_RECON.md`.
+² Except audio, which is never encrypted — and that is the `B15` hole.
 
 ---
 
@@ -1399,7 +1380,7 @@ single addition here.**
 | `B9` | 🟡 | `AccessTier` is a fourth tier spelling, and dead code |
 | `B10` | 🟡 | `INVALID_DEVICE_PUBLIC_KEY` in no contract; auth codes unmapped |
 | `B11` | 🟡 | 25 MB client ceiling, no contract bound |
-| `B12` | 🟡 | `format` hardcoded `'EPUB'` — read path fixed 2026-08-17, source still blocked on `C3` |
+| `B12` | 🟡 | `format` hardcoded `'EPUB'`; blocked on `C3` |
 | `B13` | 🟢 | `reachableAssetUrl` port rewrite, hazardous after `B2` |
 | `B14` | 🟢 | Wrong `wantSearchIndex` default in a comment |
 | `B15` | 🟢 | Subscription audio would persist with no licence or expiry |
