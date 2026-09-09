@@ -1,9 +1,10 @@
 // Owner: Reader (Ahana). Temp, and it goes with the file it tests.
 //
-// Only the two behaviours added for the accessibility work are covered here: the announce gates
-// (which nothing else in the app can write, so without a control they are unreachable on a device)
-// and the Flow/Spread rows going inert while the Reader is overriding `layout.flow` for a screen
-// reader. The rest of this menu is exercised through ReaderScreen's own prefs-application tests.
+// Only one behaviour added for the accessibility work is covered here now: the Flow/Spread rows
+// going inert while the Reader is overriding `layout.flow` for a screen reader. The announce-gate
+// coverage that used to live here moved to AccessibilitySettingsPanel.test.tsx along with the UI
+// itself — the TTS on/off toggle and the two announce toggles are no longer in this menu at all.
+// The rest of this menu is exercised through ReaderScreen's own prefs-application tests.
 
 import { render, screen, fireEvent, act } from '@testing-library/react-native';
 
@@ -52,43 +53,6 @@ async function openMenu(): Promise<void> {
   });
   await fireEvent.press(screen.getByLabelText('Open preferences menu'));
 }
-
-describe('the announcement gates', () => {
-  it('shows both, on by default', async () => {
-    // Both are among the four DEFAULT_ACCESSIBILITY_PREFS entries that are not "off" — which is why
-    // these are plain flips rather than this file's usual revert-to-default toggles.
-    await openMenu();
-
-    expect(screen.getByLabelText('Pages announcements: On')).toBeTruthy();
-    expect(screen.getByLabelText('Chapters announcements: On')).toBeTruthy();
-  });
-
-  it('turns page announcements off without touching chapters', async () => {
-    // Separate preferences on purpose: a page turn announces constantly, a chapter change a handful
-    // of times a book. Silencing one must not silence the other.
-    await openMenu();
-
-    await fireEvent.press(screen.getByLabelText('Pages announcements: On'));
-
-    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
-      accessibility: expect.objectContaining({
-        announce: { pageChanges: false, chapterChanges: true },
-      }),
-    });
-  });
-
-  it('turns chapter announcements off without touching pages', async () => {
-    await openMenu();
-
-    await fireEvent.press(screen.getByLabelText('Chapters announcements: On'));
-
-    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
-      accessibility: expect.objectContaining({
-        announce: { pageChanges: true, chapterChanges: false },
-      }),
-    });
-  });
-});
 
 describe('the Layout rows while a screen reader is running', () => {
   it('leaves them alone when nothing is overridden', async () => {

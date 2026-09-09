@@ -1,16 +1,27 @@
 // src/features/accessibility/AccessibilitySettingsPanel.tsx
 // Owner: Accessibility (Hruthik).
 //
-// Self-contained, exportable accessibility settings controls — dyslexia font, high contrast, and
-// reduced motion. Not wired into any screen here: mounting it inside the in-reader panel stack
-// (ReaderScreen) or a standalone Settings screen is the caller's job, since both surfaces need it —
-// see the ownership note in day-5-accessibility-compressed-whistle.md. Modeled on TtsControls.tsx's
-// chip-row pattern (accessibilityRole="button", accessibilityState={{ selected }}) for the same
-// accessibility guarantees on the controls themselves.
+// Self-contained, exportable accessibility settings controls — dyslexia font, high contrast,
+// reduced motion, the TTS on/off switch, and the two navigation-announcement gates. Not wired into
+// any screen here: mounting it inside the in-reader panel stack (ReaderScreen) or a standalone
+// Settings screen is the caller's job, since both surfaces need it — see the ownership note in
+// day-5-accessibility-compressed-whistle.md. Modeled on TtsControls.tsx's chip-row pattern
+// (accessibilityRole="button", accessibilityState={{ selected }}) for the same accessibility
+// guarantees on the controls themselves.
 //
 // Writes go through prefsStore.savePrefs with a whole-group `accessibility` patch, spreading both
-// `accessibility` and whichever sub-block (`text`/`display`) changed — the same "patches merge at
-// the top level only" rule every other prefs writer in this app follows.
+// `accessibility` and whichever sub-block (`text`/`display`/`tts`/`announce`) changed — the same
+// "patches merge at the top level only" rule every other prefs writer in this app follows.
+//
+// THE TTS AND ANNOUNCE SECTIONS MOVED HERE FROM `DevPreferencesMenu.tsx` (repo root, temp
+// scaffolding), not duplicated: that file's own header called its "Accessibility" section
+// temporary, standing in only "until Personalization/Accessibility ships a real settings screen."
+// This panel — already the permanent home for Dyslexia Font/High Contrast/Reduce Motion — is that
+// screen for these two preferences too, so they get a permanent home instead of staying in
+// scaffolding. The move is UI-only: `useTtsEnabled()`'s subscription, the
+// `ttsProvider`/`useTtsSession` stop-on-disable chain (TTS_PROVIDER.md), and the "TTS must not be
+// speaking" announcement gate (READER_ANNOUNCEMENTS.md) all react to `prefsStore`, not to which
+// component renders the toggle — so relocating the buttons changes nothing about any of those.
 
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -32,6 +43,15 @@ const REDUCE_MOTION_OPTIONS: readonly { value: ReduceMotion; label: string }[] =
   { value: 'system', label: 'System' },
   { value: 'on', label: 'On' },
   { value: 'off', label: 'Off' },
+];
+
+/** Labels kept short — these two sit side by side in one row, like every other chip pair here. */
+const ANNOUNCE_OPTIONS: readonly {
+  label: string;
+  field: 'pageChanges' | 'chapterChanges';
+}[] = [
+  { label: 'Pages', field: 'pageChanges' },
+  { label: 'Chapters', field: 'chapterChanges' },
 ];
 
 /**
@@ -111,6 +131,48 @@ export function AccessibilitySettingsPanel({
       });
   };
 
+  /**
+   * `accessibility.tts.enabled` is `useTtsEnabled()`'s one source of truth (TTS_PROVIDER.md's "one
+   * boolean that crosses the seam") — this is the only way to flip it. `PrefsPatch` already covers
+   * `accessibility` as a top-level group (same "whole group, not deep-merged" contract as every
+   * other toggle in this file), so this is a plain flip rather than a revert-to-default toggle —
+   * there is no third state.
+   */
+  const toggleTts = (): void => {
+    void prefsStore
+      .savePrefs({
+        accessibility: { ...prefs, tts: { ...prefs.tts, enabled: !prefs.tts.enabled } },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save tts.enabled', error);
+      });
+  };
+
+  /**
+   * The two `announce.*` gates, flipped the same way `toggleTts` flips its one.
+   *
+   * A PLAIN FLIP, not this file's usual revert-to-default toggle, and the difference is worth
+   * stating because it looks like an inconsistency: both of these DEFAULT TO TRUE, so "press the
+   * active option again to revert to the default" would mean the Off state could never stay
+   * pressed.
+   *
+   * TWO CONTROLS BECAUSE THEY ARE TWO PREFERENCES. A page turn announces constantly and a chapter
+   * change a handful of times a book; a reader who silenced pages has not asked to stop being told
+   * which chapter they are in.
+   */
+  const toggleAnnounce = (field: 'pageChanges' | 'chapterChanges'): void => {
+    void prefsStore
+      .savePrefs({
+        accessibility: {
+          ...prefs,
+          announce: { ...prefs.announce, [field]: !prefs.announce[field] },
+        },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save announce prefs', error);
+      });
+  };
+
   return (
     <View style={styles.container}>
       {showDyslexiaFont && (
@@ -132,6 +194,10 @@ export function AccessibilitySettingsPanel({
         </>
       )}
 
+      {/* No leading divider above whichever section renders FIRST — Dyslexia Font is the only
+          conditional one, so this is the only divider that has to check for it; every later
+          section is preceded by a fixed, always-rendered section and needs no such check. */}
+      {showDyslexiaFont && <View style={styles.divider} />}
       <Text style={styles.sectionLabel}>High Contrast</Text>
       <View style={styles.chipRow} testID="high-contrast-row">
         <Pressable
@@ -147,6 +213,7 @@ export function AccessibilitySettingsPanel({
         </Pressable>
       </View>
 
+      <View style={styles.divider} />
       <Text style={styles.sectionLabel}>Reduce Motion</Text>
       <View style={styles.chipRow} testID="reduce-motion-row">
         {REDUCE_MOTION_OPTIONS.map(({ value, label }) => {
@@ -161,6 +228,53 @@ export function AccessibilitySettingsPanel({
               style={[styles.chip, selected && styles.chipSelected]}
             >
               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <View style={styles.divider} />
+      {/* NOT format-gated, unlike Dyslexia Font above: TTS is a device-wide accessibility
+          preference, not a per-document one. ReaderScreen's own EPUB-only gate
+          (`ttsEnabled && format === 'EPUB'`) is what actually restricts where the transport
+          controls this switch unlocks can appear — this toggle itself applies to every format. */}
+      <Text style={styles.sectionLabel}>Text-to-Speech</Text>
+      <View style={styles.chipRow} testID="tts-row">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`TTS: ${prefs.tts.enabled ? 'On' : 'Off'}`}
+          accessibilityState={{ selected: prefs.tts.enabled }}
+          onPress={toggleTts}
+          style={[styles.chip, prefs.tts.enabled && styles.chipSelected]}
+        >
+          <Text style={[styles.chipText, prefs.tts.enabled && styles.chipTextSelected]}>
+            TTS: {prefs.tts.enabled ? 'On' : 'Off'}
+          </Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.divider} />
+      {/* THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a
+          device — nothing else in the app writes `accessibility.announce.*`. SEPARATE ROWS
+          BECAUSE THEY ARE SEPARATE PREFERENCES — see `toggleAnnounce`'s own comment. No divider
+          below this section: `AccessibilityInfoButton`, the next thing rendered after this panel
+          (in ReaderScreen.tsx), already supplies its own leading hairline. */}
+      <Text style={styles.sectionLabel}>Announcements</Text>
+      <View style={styles.chipRow} testID="announce-row">
+        {ANNOUNCE_OPTIONS.map(({ label, field }) => {
+          const on = prefs.announce[field];
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${label} announcements: ${on ? 'On' : 'Off'}`}
+              accessibilityState={{ selected: on }}
+              key={field}
+              onPress={() => toggleAnnounce(field)}
+              style={[styles.chip, on && styles.chipSelected]}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextSelected]}>
+                {label}: {on ? 'On' : 'Off'}
+              </Text>
             </Pressable>
           );
         })}
@@ -183,12 +297,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  // Uppercase + tracked, like an iOS Settings section header — reads as a deliberate list
+  // structure now that there are five of these plus the info row below, rather than three
+  // floating labels. Style only: the accessible name is still the plain-case text content.
   sectionLabel: {
     fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
     color: '#777777',
     marginTop: 10,
     marginBottom: 4,
     textAlign: 'center',
+  },
+  // A plain hairline between sections, same colour as AccessibilityInfoButton's own top border in
+  // ReaderScreen.tsx so the whole panel — this component's sections plus that trailing row — reads
+  // as one continuously-divided list rather than two different divider styles.
+  divider: {
+    height: 1,
+    backgroundColor: '#e2e2e2',
+    marginTop: 8,
   },
   chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center' },
   chip: {

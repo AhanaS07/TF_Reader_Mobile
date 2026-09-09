@@ -37,7 +37,7 @@ type TtsSentenceMessage = Extract<ReaderMessage, { type: 'ttsSentence' }>;
 
 /**
  * What `ReaderScreen.tsx` gets beyond the public `ReaderTextProvider` surface Accessibility codes
- * against — the same split `fakeReaderTextProvider.ts`'s test-only handles use, and for the same
+ * against — the same split `testReaderTextProvider.ts`'s test-only handles use, and for the same
  * reason: nothing outside Reader should be able to reach these, so a caller typed as plain
  * `ReaderTextProvider` cannot.
  */
@@ -77,7 +77,7 @@ export function createEpubReaderTextProvider(
 
   function fire(reason: TtsInterruption): void {
     // Iterate a copy: a one-shot handler that unsubscribes itself during dispatch would otherwise
-    // mutate `handlers` mid-iteration — same reasoning as the fake's `fire`.
+    // mutate `handlers` mid-iteration — same reasoning as the test double's `fire`.
     for (const handler of [...handlers]) {
       try {
         handler(reason);
