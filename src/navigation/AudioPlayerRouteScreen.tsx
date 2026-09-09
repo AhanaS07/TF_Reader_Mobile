@@ -90,6 +90,7 @@ import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-nati
 
 import { AudioPlayerScreen } from '@/features/reader/audio/AudioPlayerScreen';
 import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlayerScreen';
+import { audioQueueStore } from '@/features/reader/audio/audioQueueStore';
 import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
@@ -118,8 +119,38 @@ const CONFLICT_THRESHOLD_MS = 5_000;
 // Reader's, for the same accepted trade-off (see CLAUDE.md's "Reading-position resume" section).
 const AUDIO_LIVE_SYNC_POLL_MS = 120_000;
 
-export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
+export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.Element {
   const { bookId, title } = route.params;
+
+  // Initialize or align the audio queue with route params on mount or route update
+  useEffect(() => {
+    const queue = audioQueueStore.getState();
+    const itemIndex = queue.items.findIndex((item) => item.bookId === bookId);
+    if (itemIndex === -1) {
+      if (queue.items.length === 0) {
+        queue.setQueue([{ bookId, title }], 0);
+      } else {
+        queue.enqueue({ bookId, title });
+        const newIndex = audioQueueStore.getState().items.findIndex((item) => item.bookId === bookId);
+        if (newIndex !== -1) {
+          queue.skipToIndex(newIndex);
+        }
+      }
+    } else if (queue.currentIndex !== itemIndex) {
+      queue.skipToIndex(itemIndex);
+    }
+  }, [bookId, title]);
+
+  // Synchronize route.params when the audio queue advances to a different track
+  useEffect(() => {
+    const unsubscribe = audioQueueStore.subscribe((state) => {
+      const current = state.items[state.currentIndex];
+      if (current && current.bookId !== bookId && navigation?.setParams) {
+        navigation.setParams({ bookId: current.bookId, title: current.title });
+      }
+    });
+    return unsubscribe;
+  }, [bookId, navigation]);
 
   const [resolved, setResolved] = useState<{ bookId: string; positionSeconds?: number } | null>(
     null,
@@ -335,7 +366,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
 
     return () => {
       stopPoll();
-      subscription.remove();
+      subscription?.remove?.();
     };
   }, [positionReady, syncForThisBook]);
 

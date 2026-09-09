@@ -49,8 +49,8 @@ let setupPromise: Promise<void> | null = null;
  * `setAudioModeAsync`, and nowhere else. App.tsx calling this hook at mount makes that ordering
  * true in practice today; awaiting the same memoized promise makes it true by construction.
  * Idempotent: every caller shares the one in-flight/settled promise. */
-export function ensureAudioModeConfigured(): Promise<void> {
-  if (!setupPromise) {
+export function ensureAudioModeConfigured(force = false): Promise<void> {
+  if (!setupPromise || force) {
     setupPromise = setAudioModeAsync({
       playsInSilentMode: true,
       shouldPlayInBackground: true,

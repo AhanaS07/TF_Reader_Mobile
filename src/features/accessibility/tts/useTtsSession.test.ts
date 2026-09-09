@@ -20,6 +20,11 @@ import { createTestReaderTextProvider } from './testSupport/testReaderTextProvid
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS, DEFAULT_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs, SharedPrefs } from '@/shared/contracts';
+import {
+  _resetAudioTtsCoordinatorForTests,
+  registerAudioPauseHandler,
+  stopActiveTts,
+} from '@/features/reader/audio/audioTtsCoordinator';
 
 import { useTtsSession } from './useTtsSession';
 
@@ -118,6 +123,7 @@ function fireAppStateChange(next: 'active' | 'background' | 'inactive'): Promise
 
 beforeEach(() => {
   jest.clearAllMocks();
+  _resetAudioTtsCoordinatorForTests();
   readSharedPrefsMock.mockResolvedValue(makeSharedPrefs());
 });
 
@@ -726,5 +732,44 @@ describe('a null provider — there is no book to read yet', () => {
 
     expect(mockTts.speak).not.toHaveBeenCalled();
     expect(result.current.status).toBe('idle');
+  });
+});
+
+describe('useTtsSession — concurrency with audio playback', () => {
+  it('does not pause audio merely when TTS is enabled or mounted; pauses only when play() is pressed', async () => {
+    const pauseAudioMock = jest.fn();
+    registerAudioPauseHandler(pauseAudioMock);
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    // TTS is ON and idle — audiobook must NOT be paused
+    expect(result.current.status).toBe('idle');
+    expect(pauseAudioMock).not.toHaveBeenCalled();
+
+    // Only when TTS actually begins playing does it pause the audiobook
+    await act(() => result.current.play());
+    expect(pauseAudioMock).toHaveBeenCalled();
+  });
+
+  it('stops active TTS speech when stopActiveTts is invoked by the coordinator', async () => {
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+
+    // An audiobook begins playback and calls stopActiveTts()
+    await act(() => {
+      stopActiveTts();
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.stop).toHaveBeenCalled();
+    expect(provider.spokenRanges.at(-1)).toBeNull();
   });
 });

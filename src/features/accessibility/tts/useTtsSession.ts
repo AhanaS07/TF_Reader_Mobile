@@ -50,6 +50,10 @@ import type {
   TtsSentence,
 } from '@/features/reader/tts/readerTextProvider';
 import { logSpan, now } from '@/features/reader/readerTiming';
+import {
+  pauseActiveAudio,
+  registerActiveTtsSession,
+} from '@/features/reader/audio/audioTtsCoordinator';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs } from '@/shared/contracts';
@@ -210,6 +214,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     }
 
     function speakSentence(sentence: TtsSentence, myGeneration: number): void {
+      pauseActiveAudio();
       currentlySpeaking = sentence;
       setCurrentSentence(sentence);
       // Prefetch now, while this sentence is still speaking — see the file header.
@@ -255,6 +260,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     function handleTtsStart(): void {
       if (!awaitingUtterance) return;
+      pauseActiveAudio();
       if (playPressedAt !== null) {
         logSpan('tts play-to-start', playPressedAt);
         playPressedAt = null;
@@ -410,6 +416,11 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       // status change and no error would leave a caller unable to tell a real press from one
       // this session declined to honour.
       if (liveStatus === 'speaking') return;
+
+      // AUDIO SESSION CONCURRENCY: Only one audio stream runs at a time.
+      // If an audiobook is currently playing, pause it before TTS begins.
+      pauseActiveAudio();
+
       if (liveStatus === 'paused') {
         // >>> THE READER MOVED WHILE PAUSED — RESUME IS WRONG HERE, NOT JUST STALE. <<< Both
         // `Tts.resume()` (iOS, a genuine native resume of the SUSPENDED utterance) and re-speaking
@@ -558,8 +569,18 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (livePrefs.voiceId) void Tts.setDefaultVoice(livePrefs.voiceId).catch(noop);
     });
 
+    // AUDIO SESSION CONCURRENCY: Registers this active session with the coordinator so that
+    // when an audiobook begins playback (from the player screen or lock screen / bluetooth),
+    // this TTS speech is cleanly stopped, highlights cleared, and status set to idle.
+    const unregisterTtsSession = registerActiveTtsSession({
+      stop: () => stopInternal(),
+      isSpeaking: () => liveStatus === 'speaking',
+      isActive: () => liveStatus !== 'idle',
+    });
+
     return () => {
       torn = true;
+      unregisterTtsSession();
       // Before anything else: a pending debounced patch must not be lost just because the
       // session is going away (provider changed, TTS toggled off, the reader closed) before its
       // timer fired.

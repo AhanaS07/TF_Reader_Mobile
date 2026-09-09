@@ -26,12 +26,35 @@
 // necessary (AudioPlayerScreen must not re-seek to a stale resume position on top of a player
 // that has been quietly continuing to play the whole time it was away).
 
-import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
+import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audio';
 
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
 
+import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator';
+import { audioQueueStore } from './audioQueueStore';
+
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
+let pendingResumePosition: number | null = null;
+
+type TrackCompletionHandler = () => void | Promise<unknown>;
+let onTrackCompletionHandler: TrackCompletionHandler | null = null;
+
+/**
+ * Registers a callback to be invoked when the current track finishes playing.
+ * Used by the audio queue coordinator to advance to the next track automatically.
+ */
+export function registerTrackCompletionHandler(handler: TrackCompletionHandler | null): void {
+  onTrackCompletionHandler = handler;
+}
+
+export function _resetTrackCompletionHandlerForTests(): void {
+  onTrackCompletionHandler = null;
+}
+
+// Registers the module singleton's pause action with the coordinator so TTS playback
+// automatically pauses active audiobook sound.
+registerAudioPauseHandler(pauseCurrentAudioPlayer);
 
 /**
  * AUDIO PHASE 4, TASK B. Records the LIVE player's position for whichever book it is holding.
@@ -106,6 +129,19 @@ export function isAudioPlaying(): boolean {
 }
 
 /**
+ * Pauses the live player if one is active and producing sound, and commits its live position.
+ * Called by audioTtsCoordinator when TTS begins playback so the two never overlap.
+ * Idempotent, and a safe no-op when nothing is loaded or playing.
+ */
+export function pauseCurrentAudioPlayer(): void {
+  if (current && current.player.isLoaded && current.player.playing) {
+    current.player.pause();
+    commitCurrentPlayerPosition();
+    audioQueueStore.getState().setIsPlaying(false);
+  }
+}
+
+/**
  * Stops playback and drops the native player, if there is one.
  *
  * The ONE caller today is entitlement loss (`audioScratchReclaimer.ts`, on Sync's `content.lock`),
@@ -126,6 +162,86 @@ export function releaseCurrentAudioPlayer(): void {
   commitCurrentPlayerPosition();
   current.player.remove();
   current = null;
+  pendingResumePosition = null;
+  audioQueueStore.getState().setIsPlaying(false);
+}
+
+export function getCurrentAudioPlayer(): AudioPlayer | null {
+  return current?.player ?? null;
+}
+
+/**
+ * Switches the active singleton player to a new audio track (e.g. queue progression)
+ * without tearing down the native player object or audio session.
+ * Restores saved progress via optional initialPositionSeconds and guards against finished tracks.
+ */
+export function switchActiveAudioTrack(
+  bookId: BookId,
+  uri: string,
+  title: string,
+  artist: string = 'TF Reader',
+  initialPositionSeconds?: number,
+): void {
+  const seekPos =
+    initialPositionSeconds && initialPositionSeconds > 0 ? initialPositionSeconds : null;
+
+  if (!current) {
+    const { player } = getAudioPlayerFor(bookId);
+    pendingResumePosition = seekPos;
+    player.replace({ uri });
+    if (player.isLoaded && pendingResumePosition !== null) {
+      const pos = pendingResumePosition;
+      pendingResumePosition = null;
+      const target = player.duration > 0 && pos >= player.duration - 2 ? 0 : pos;
+      if (target > 0) {
+        void player.seekTo(target);
+      }
+    }
+    player.setActiveForLockScreen(
+      true,
+      { title, artist },
+      { showSeekForward: true, showSeekBackward: true },
+    );
+    player.play();
+    audioQueueStore.getState().setIsPlaying(true);
+    return;
+  }
+
+  // If the same book is already loaded, avoid reloading source (which resets to 0:00)
+  if (current.bookId === bookId && current.player.isLoaded) {
+    if (!current.player.playing) {
+      if (seekPos !== null) {
+        const target =
+          current.player.duration > 0 && seekPos >= current.player.duration - 2 ? 0 : seekPos;
+        if (target > 0) {
+          void current.player.seekTo(target);
+        }
+      }
+      current.player.play();
+      audioQueueStore.getState().setIsPlaying(true);
+    }
+    return;
+  }
+
+  commitCurrentPlayerPosition();
+  current.bookId = bookId;
+  pendingResumePosition = seekPos;
+  current.player.replace({ uri });
+  if (current.player.isLoaded && pendingResumePosition !== null) {
+    const pos = pendingResumePosition;
+    pendingResumePosition = null;
+    const target = current.player.duration > 0 && pos >= current.player.duration - 2 ? 0 : pos;
+    if (target > 0) {
+      void current.player.seekTo(target);
+    }
+  }
+  current.player.setActiveForLockScreen(
+    true,
+    { title, artist },
+    { showSeekForward: true, showSeekBackward: true },
+  );
+  current.player.play();
+  audioQueueStore.getState().setIsPlaying(true);
 }
 
 export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew: boolean } {
@@ -146,6 +262,35 @@ export function getAudioPlayerFor(bookId: BookId): { player: AudioPlayer; isNew:
   // audiobook — where pausing is constant and the card must survive it — must opt out. iOS-only
   // per expo-audio's own types; a no-op elsewhere.
   const player = createAudioPlayer(null, { updateInterval: 250, keepAudioSessionActive: true });
+  let wasPlaying = false;
+  player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+    if (status.playing && !wasPlaying) {
+      stopActiveTts();
+    }
+    wasPlaying = status.playing;
+    audioQueueStore.getState().setIsPlaying(status.playing);
+    if (status.isLoaded) {
+      audioQueueStore.getState().setPlaybackProgress({
+        positionSeconds: status.currentTime,
+        durationSeconds: status.duration,
+      });
+
+      if (pendingResumePosition !== null) {
+        const pos = pendingResumePosition;
+        pendingResumePosition = null;
+        const target = status.duration > 0 && pos >= status.duration - 2 ? 0 : pos;
+        if (target > 0) {
+          void player.seekTo(target);
+        }
+      }
+    }
+
+    if (status.didJustFinish) {
+      if (onTrackCompletionHandler) {
+        void onTrackCompletionHandler();
+      }
+    }
+  });
   current = { bookId, player };
   return { player, isNew: true };
 }
