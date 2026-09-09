@@ -29,24 +29,29 @@ You have more of a contract than the directory suggests:
   **detached copy** rather than a shared reference to the defaults. That property is load-bearing —
   if it broke, resetting one reader's prefs would mutate the defaults for everyone.
 - **`sync/stores/accessibilityStore.ts`** — the persistence and sync path, Karthik's.
-- **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract,
-  plus `fakeReaderTextProvider.ts`, which serves canned sentences with **synthetic CFIs that resolve
-  against no book** so you can build a TTS session before the real provider exists.
+- **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract.
+  Reader's own `fakeReaderTextProvider.ts`, which used to sit next to it, is deleted (2026-09-09);
+  your own forked copy — renamed the same day to
+  `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` — is now the sole
+  surviving copy — see "On the test double" below.
 - **`WEBVIEW_A11Y_FINDINGS.md`** (this directory) — consolidated desk research on WebView/epub.js
   screen-reader accessibility (VoiceOver/TalkBack), including the architecture split between native
   RN and the Reader WebView and the risk register that governs it. **`WEBVIEW_A11Y_SPIKE.md`** is
   the on-device spike instrument it depends on — not yet run.
 
-**On the fake:** it is scaffolding and it is meant to be substituted, not extended. Its test file
-pins properties of the *seam*, not of the fake, so it's the checklist the real provider must satisfy
-— port it rather than dropping it. The test-only handles live on `FakeReaderTextProvider` and
-deliberately **not** on `ReaderTextProvider`, so production code typed against the interface can't
-reach them. If something outside `reader/tts/` breaks when the fake is deleted, the boundary leaked
-and that's the bug. `CLAUDE.md` has the four-item deletion table.
-
-The real provider is blocked behind converting the WebView JS to a typechecked build — see
-`src/features/reader/WEBVIEW_BRIDGE.md`. That's Ahana's sequencing, not a decision you need to make,
-but it's why the fake exists.
+**On the test double** (renamed from `fakeReaderTextProvider.ts`/`FakeReaderTextProvider` on
+2026-09-09 — "fake" read as a mocking-library fake, which this never was): the real provider landed
+(step 5, 2026-08-23) and Reader's copy is deleted (2026-09-09, per `CLAUDE.md`'s deletion table).
+Your fork at `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` is not
+scaffolding waiting to be substituted — it's permanent test infrastructure for
+`useTtsSession.test.ts`/`.android.test.ts`, which use it to drive the session hook's own state
+machine (prefetch, generation counters, teardown) without needing a real book or WebView,
+independent of whether the real provider exists. While diffing before deleting Reader's copy, 4
+cases it had (`setSpokenWordRange`/`spokenWordRanges`: call-order, independence from the sentence
+log, teardown, silent-accept of an unresolvable range) were found missing from your fork's test
+file and ported in rather than dropped — worth a look since it's your file now. The test-only
+handles still live on `TestReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so
+production code typed against the interface can't reach them.
 
 ---
 

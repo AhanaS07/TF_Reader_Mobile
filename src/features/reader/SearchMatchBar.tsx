@@ -14,6 +14,7 @@
 // So the rule for anything search adds to the screen: it overlays, it does not reflow.
 // A find bar floating above the page is also what every other reader does.
 
+import { forwardRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { hasNavigableFrom } from '@/features/reader/useBookSearch';
@@ -29,14 +30,23 @@ export interface SearchMatchBarProps {
   onDismiss: () => void;
 }
 
-export function SearchMatchBar({
-  hits,
-  activeIndex,
-  submittedTerm,
-  onStep,
-  onOpenResults,
-  onDismiss,
-}: SearchMatchBarProps): React.JSX.Element {
+/**
+ * Forwards a ref to the counter button — the entry point `ReaderScreen` moves screen-reader focus
+ * to once a result is chosen (item 6 of `READER_FOCUS_ORDER_HANDOFF.md`). That focus call lives in
+ * `ReaderScreen`, not here, and deliberately as an effect rather than inline in the press handler
+ * that selects a hit: this bar is not mounted yet at the moment a result is tapped from the list
+ * (its own render condition is `!showSearch`, which only flips true after that same event finishes
+ * closing the panel), so `focusOn` needs to run after the commit that mounts it — the same
+ * ordering `firstTocRowRef`'s entry effect relies on. Putting the effect in `ReaderScreen` also
+ * sidesteps a real trap this bar's own remounts create: it unmounts and remounts independently of
+ * a fresh selection (e.g. reopening the results list via the counter, then an explicit Close with
+ * nothing newly chosen), and `ReaderScreen` never remounts across that — a bump-counter comparison
+ * only works cleanly in a component whose lifetime outlasts the transition being compared.
+ */
+export const SearchMatchBar = forwardRef<View, SearchMatchBarProps>(function SearchMatchBar(
+  { hits, activeIndex, submittedTerm, onStep, onOpenResults, onDismiss }: SearchMatchBarProps,
+  counterRef,
+): React.JSX.Element {
   const canStepBack = hasNavigableFrom(hits, activeIndex, -1);
   const canStepForward = hasNavigableFrom(hits, activeIndex, 1);
 
@@ -63,6 +73,7 @@ export function SearchMatchBar({
         one, and nothing in this app announces unconditionally.
       */}
       <Pressable
+        ref={counterRef}
         accessibilityRole="button"
         accessibilityLabel={`${position} for ${submittedTerm}. Show all results.`}
         onPress={onOpenResults}
@@ -107,7 +118,7 @@ export function SearchMatchBar({
       </Pressable>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   // Absolute, anchored to the bottom of `viewer` — floating, so the book's layout is

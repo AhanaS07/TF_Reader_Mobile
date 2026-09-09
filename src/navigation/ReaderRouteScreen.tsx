@@ -68,12 +68,11 @@
 // rightmost" a layout guarantee instead of two files' pixel math staying in sync by luck.
 
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
 
-import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import type { ReaderScreenHandle } from '@/features/reader/ReaderScreen';
@@ -377,14 +376,8 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         bookId={bookId}
         initialTarget={resolved.target}
         onRelocated={handleRelocated}
-        toolbarExtra={
-          <Fragment>
-            <DevPreferencesMenu format={format} />
-            <AccessibilityInfoButton
-              onPress={() => navigation.navigate('BookInfo', { bookId })}
-            />
-          </Fragment>
-        }
+        toolbarExtra={<DevPreferencesMenu format={format} />}
+        onOpenAccessibilityInfo={() => navigation.navigate('BookInfo', { bookId })}
       />
     </View>
   );
