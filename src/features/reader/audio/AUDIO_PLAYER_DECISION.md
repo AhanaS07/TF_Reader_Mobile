@@ -1,7 +1,7 @@
 # Audio decisions: the player, and how the player gets its bytes
 
-**Status: both decided.** This file exists for the questions anyone reviewing the audio work will
-reasonably ask, so they get answered once instead of re-argued. There are two:
+**Status: decided.** This file exists for the questions anyone reviewing the audio work will
+reasonably ask, so they get answered once instead of re-argued:
 
 1. **Why not react-native-track-player?** — the obvious, most-featureful choice for background
    audio in RN, and what AUDIO_PHASE0_FINDINGS.md's own Phase 2 plan originally called for.
@@ -9,6 +9,7 @@ reasonably ask, so they get answered once instead of re-argued. There are two:
    has?** — the copy looks redundant, and a contracts change to remove it was drafted, reviewed,
    and withdrawn. That is Part 2.
 3. **How does an audiobook get from a tap to sound, online and offline?** — Part 3.
+4. **How does audio playback interact with TTS (@iternio/react-native-tts) and audio sessions?** — Part 4.
 
 > ## ⚠️ AUDIO IS ENCRYPTED. Read this before anything else here.
 >
@@ -592,3 +593,85 @@ that window. Every other copy of the content on the device is ciphertext.
 Nothing here defends against a compromised device — the sandbox is the boundary, and on a rooted
 device there is no sandbox. What the current layers do defend against is the file **outliving** the
 session it was created for, which was the actual finding: it used to persist indefinitely.
+
+---
+
+# Part 4 — Audio Session concurrency & TTS interaction
+
+**Status: verified 2026-09-08.** Audio playback (`expo-audio`) and Text-to-Speech (`@iternio/react-native-tts`) are two distinct native subsystems coexisting within the application. This section records how they interact at the OS audio-session level, how preferences are isolated, and how lock-screen controls behave across them.
+
+## 1. Global Audio Session & Concurrency Behavior (Mutual Exclusion)
+
+**Requirement: Only one audio source runs at a time.** Neither users nor assistive technology benefit from audiobook speech and TTS speech playing simultaneously.
+
+### Native Subsystem Reality
+- **iOS (`AVAudioSession`):**
+  - Audio player (`useAudioPlayerSetup.ts`): `category = .playback`, `interruptionMode = 'doNotMix'`.
+  - TTS (`TextToSpeech.m`): Configures `AVAudioSessionCategoryPlayback` with mode `AVAudioSessionModeVoicePrompt` and `AVAudioSessionCategoryOptionInterruptSpokenAudioAndMixWithOthers`.
+  - Without application coordination, iOS allows both to mix concurrently.
+- **Android (`AudioManager` / Audio Focus):**
+  - `expo-audio` uses Media3 (`ExoPlayer`) with `USAGE_MEDIA`.
+  - `@iternio/react-native-tts` uses `android.speech.tts.TextToSpeech` with `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE` and `CONTENT_TYPE_SPEECH`.
+  - Without application coordination, Android does not preempt playback.
+
+### Concurrency Solution: `audioTtsCoordinator.ts`
+Mutual exclusion is coordinated deterministically at the application layer via `src/features/reader/audio/audioTtsCoordinator.ts`, ensuring that whenever one source activates, the other yields:
+
+1. **Direction 1: Audiobook playing → TTS activated:**
+   - When the user presses Play (or resumes) in TTS (`useTtsSession.ts`'s `play()`, `speakSentence()`, `handleTtsStart`):
+   - `pauseActiveAudio()` calls `pauseCurrentAudioPlayer()` (`audioPlayerInstance.ts`).
+   - If an audiobook is currently loaded and producing sound, it immediately calls `player.pause()` and commits its live reading position to SQLite (`progressStore.savePosition()`).
+   - Sound from the audiobook ceases before TTS speech begins.
+   - Result: Only TTS runs. Audiobook progress is safely saved and ready to resume later.
+
+2. **Direction 2: TTS speaking → Audiobook begins playback:**
+   - **UI Play button (`AudioPlayerScreen.tsx`):**
+     Inside `beginPlayback()`, before `player.play()` is invoked, `stopActiveTts()` is called.
+   - **External / Lock-Screen / Bluetooth Play (`audioPlayerInstance.ts`):**
+     A listener on the player's `playbackStatusUpdate` watches for `status.playing` rising edges (`status.playing && !wasPlaying`). The moment playback commences from anywhere (including lock-screen Now Playing controls or headset tap), `stopActiveTts()` is called.
+   - `stopActiveTts()` triggers `stopInternal()` on the active TTS session:
+     - The native speech synthesizer stops immediately (`Tts.stop()`).
+     - The reader highlight on the spoken sentence is cleared (`source.setSpokenRange(null)`).
+     - In-flight sentence fetches are invalidated (`generation += 1`).
+     - TTS session status resets to `'idle'` so reader controls display the Play button.
+   - Result: Only the Audiobook runs. TTS speech halts cleanly with no lingering highlights or orphaned audio.
+
+## 2. Preference Isolation (Rate, Pitch, Voice)
+
+- **TTS Preferences:**
+  Stored in `sharedPrefs.accessibility.tts` (`rate: 0.5..2.0`, `pitch: 0.5..2.0`, `voiceId: string | null`). Applied strictly via native TTS methods (`Tts.setDefaultRate`, `Tts.setDefaultPitch`, `Tts.setDefaultVoice`).
+- **Audiobook Player:**
+  `AudioPlayerScreen.tsx` provides playback speed presets (`0.75x`, `1x`, `1.25x`, `1.5x`, `2x`) applied directly to the player instance via `player.setPlaybackRate(rate)`.
+- **Verification:**
+  - `AudioPlayerScreen` and `audioPlayerInstance` contain **no subscriptions or references** to `accessibility.tts` or `sharedPrefs`.
+  - The `AudioPlayer` object has no concept of voice selection or pitch adjustment.
+  - Native `Tts.setDefaultRate` modifies only `AVSpeechUtterance.rate` / Android TTS rate, completely independent of `AVPlayer` / Media3 playback rate.
+  - **Confirmed:** TTS rate, pitch, and voice preferences never reach or affect the audiobook player.
+
+## 3. Lock-Screen Now Playing Card Survival
+
+- **The hazard:**
+  On iOS, `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` are intrinsically tied to an active `AVAudioSession`. If any module calls `AVAudioSession.sharedInstance().setActive(false)`, iOS immediately tears down the lock-screen Now Playing card and disconnects remote command handlers.
+- **Protection in place:**
+  1. **`keepAudioSessionActive: true`** (`audioPlayerInstance.ts`):
+     Passed to `createAudioPlayer(null, { updateInterval: 250, keepAudioSessionActive: true })`.
+     In `AudioModule.swift`:
+     ```swift
+     Function("pause") { player in
+       player.ref.pause()
+       if !player.keepAudioSessionActive {
+         deactivateSession() // calls setActive(false)
+       }
+     }
+     ```
+     Setting `keepAudioSessionActive: true` bypasses `deactivateSession()` during pause (including coordinator-initiated pauses when TTS takes over) and on track completion.
+  2. **Lock-Screen State in `MediaController.swift`:**
+     When paused, `MediaController.updateNowPlayingInfoOnMain` updates `MPNowPlayingInfoPropertyPlaybackRate = 0.0`. The metadata (`MPMediaItemPropertyTitle`, `MPMediaItemPropertyArtist`, `MPMediaItemPropertyPlaybackDuration`, and `MPNowPlayingInfoPropertyElapsedPlaybackTime`) is preserved in `nowPlayingInfoCenter.nowPlayingInfo`.
+  3. **TTS does not deactivate the session:**
+     In `TextToSpeech.m`, `setActive:false` is guarded by `if(_ducking)` inside `didFinishSpeechUtterance`, `didPauseSpeechUtterance`, and `didCancelSpeechUtterance`. Because our application never invokes `setDucking(true)`, `_ducking` remains `false`, and TTS **never deactivates the audio session**.
+  4. **Lock-Screen Resume Handshake:**
+     If the user taps Play on the surviving lock-screen card while TTS is active, `player.play()` causes a status transition. The `playbackStatusUpdate` listener in `audioPlayerInstance.ts` detects `status.playing && !wasPlaying` and triggers `stopActiveTts()`, seamlessly yielding speech back to the audiobook.
+- **Confirmed:**
+  The lock-screen Now Playing card and lock-screen playback controls survive TTS utterances uninterrupted.
+
+
