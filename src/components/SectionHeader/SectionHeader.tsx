@@ -22,9 +22,19 @@
 // that wants its section headings to read as editorial content rather than
 // UI chrome — CatalogueScreen's shelves are the first caller. Defaults to
 // the existing Open Sans treatment, so every other screen is unaffected.
+//
+// `icon` IS OPTIONAL AND UNDRAWN BY DEFAULT, on the same reasoning as
+// `actionLabel`/`onAction`: every existing caller (Catalogue's shelves,
+// Search's own sections, screen 06) omits it and renders exactly as before.
+// The light rounded-square container is the same `rowIcon()` language
+// ProfileScreen's own redesign established, promoted here once a THIRD
+// caller (Accessibility/Reading Preferences' section family, several
+// headings each) needed the identical treatment — CONVENTIONS §10's own
+// threshold for a shared, not screen-local, home.
+import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { color, space, type } from '@theme/tokens';
+import { color, radius, space, type } from '@theme/tokens';
 
 export type SectionHeaderEmphasis = 'default' | 'editorial';
 
@@ -38,6 +48,8 @@ export interface SectionHeaderProps {
   actionLabel?: string;
   onAction?: () => void;
   emphasis?: SectionHeaderEmphasis;
+  /** A small glyph or short text (e.g. "Aa") in a light rounded-square box, leading the title. */
+  icon?: ReactNode;
 }
 
 export default function SectionHeader({
@@ -45,12 +57,14 @@ export default function SectionHeader({
   actionLabel,
   onAction,
   emphasis = 'default',
+  icon,
 }: SectionHeaderProps) {
   // Both, or neither — see the header.
   const showAction = actionLabel !== undefined && onAction !== undefined;
 
   return (
     <View testID="section-header" style={styles.header}>
+      {icon !== undefined && <View style={styles.iconBox}>{icon}</View>}
       <Text
         testID="section-header-title"
         style={[styles.title, emphasis === 'editorial' && styles.titleEditorial]}
@@ -88,6 +102,17 @@ const styles = StyleSheet.create({
     // rather than the baseline: the action centres against the title block.
     alignItems: 'center',
     gap: space.md,
+  },
+  // Same size/radius/tint as ProfileScreen's own `rowIconContainer` — one
+  // "icon in a light box" language across the app rather than a second one
+  // invented here.
+  iconBox: {
+    width: space.xl,
+    height: space.xl,
+    borderRadius: radius.tile,
+    backgroundColor: color.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     // Takes the spare width, which both pushes the action to the far edge and

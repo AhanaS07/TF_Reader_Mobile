@@ -40,14 +40,14 @@
 //            `updatedAt` at edit time, offline, before any sync, and LWW settles
 //            it later. So the banner is informational and every control stays
 //            live behind it. Disabling them would contradict the contract.
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
-import { ListRow } from '@components/ListRow';
 import { ErrorState } from '@components/ErrorState';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
-import { color, space, type as typeScale } from '@theme/tokens';
+import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 import { useReaderPrefs, type PrefsSource } from '@/features/personalization/useReaderPrefs';
 
@@ -55,6 +55,10 @@ import FontSection from './ReaderPreferencesScreen.FontSection';
 import LayoutSection from './ReaderPreferencesScreen.LayoutSection';
 import ThemeSection from './ReaderPreferencesScreen.ThemeSection';
 import TypographySection from './ReaderPreferencesScreen.TypographySection';
+
+// Composed from the spacing scale (CONVENTIONS §5) — the Restore-defaults
+// row's own leading icon.
+const RESTORE_ICON_SIZE = space.md + space.xs;
 
 const READ_FAILED_MESSAGE = "We couldn't load your reading preferences.";
 const SAVE_FAILED_MESSAGE = "That change didn't save. Try again.";
@@ -96,31 +100,55 @@ export default function ReaderPreferencesScreen({
 
   const isOnline = useNetworkStatus();
 
+  // Shown in every state — same reasoning as ProfileScreen's own
+  // `pageTitle`/`pageSubtitle`. The subtitle is accurate for every control
+  // on this screen (unlike a blanket claim would be on Accessibility, whose
+  // controls are a mix of EPUB-only and app-wide ones): Theme, Font, Layout
+  // and Typography are all confirmed EPUB-only in each section's own header
+  // comment, so this is the one screen where the mockup's exact line holds.
+  const pageHeader = (
+    <View style={styles.pageHeader}>
+      <Text style={styles.pageTitle}>Reading Preferences</Text>
+      <Text style={styles.pageSubtitle}>
+        Customise your reading experience. These settings apply to EPUB content only. PDFs use
+        their own embedded settings.
+      </Text>
+    </View>
+  );
+
   let body;
 
   if (state === 'loading') {
     body = (
-      <View style={styles.content} testID="reader-prefs-skeleton">
-        {SKELETON_SECTIONS.map((section) => (
-          <View key={section} style={styles.skeletonSection}>
-            <Skeleton variant="text" width="40%" height={typeScale.sectionHeader.lineHeight} />
-            <Skeleton variant="block" height={space.xl + space.sm} />
-          </View>
-        ))}
-      </View>
+      <>
+        <View style={styles.pageHeaderStandalone}>{pageHeader}</View>
+        <View style={styles.content} testID="reader-prefs-skeleton">
+          {SKELETON_SECTIONS.map((section) => (
+            <View key={section} style={styles.skeletonSection}>
+              <Skeleton variant="text" width="40%" height={typeScale.sectionHeader.lineHeight} />
+              <Skeleton variant="block" height={space.xl + space.sm} />
+            </View>
+          ))}
+        </View>
+      </>
     );
   } else if (state === 'error' || prefs === null) {
     // `prefs === null` is unreachable at `state: 'ready'` — the hook sets them
     // together. Kept so the compiler can narrow below, and so a future change
     // that breaks that pairing shows a retry rather than a blank screen.
     body = (
-      <View style={styles.centre}>
-        <ErrorState variant="not_ready" message={READ_FAILED_MESSAGE} onRetry={onRetry} />
-      </View>
+      <>
+        <View style={styles.pageHeaderStandalone}>{pageHeader}</View>
+        <View style={styles.centre}>
+          <ErrorState variant="not_ready" message={READ_FAILED_MESSAGE} onRetry={onRetry} />
+        </View>
+      </>
     );
   } else {
     body = (
       <ScrollView contentContainerStyle={styles.content}>
+        {pageHeader}
+
         {/* Reported inline rather than as a full-screen error: the values on
             screen are still correct — the hook rolled the failed one back — so
             replacing the whole page would throw away a working surface over one
@@ -158,22 +186,32 @@ export default function ReaderPreferencesScreen({
             controls, so it belongs after the things it resets rather than at the
             top where it can be hit while reaching for Theme.
 
-            `destructive`, matching the Sign out row on screen 10 — the same
-            "this discards something you chose" weight, drawn the same way, so a
-            reader meets one affordance rather than two.
+            A light-red CARD, not `ListRow` — same reasoning and same
+            `errorTint`/`error` pairing as ProfileScreen's own Sign-out
+            treatment: this is a destructive action, so it reads as its own
+            distinct block rather than a sixth control. Left-aligned (icon,
+            then title+subtitle stacked), not centred like Profile's — a
+            reset with a real consequence line beneath it needs the same
+            reading order as any other settings row, not a single-line button.
 
             NO CONFIRMATION SHEET. Not an oversight: the reset is one write that
-            the reader can immediately undo by re-picking, and `BottomSheet`
+            the reader can immediately undo by re-picking. `BottomSheet`
             would put a modal in front of a reversible action. If the team wants
             one, it is a sheet around this callback and nothing else changes. */}
-        <View style={styles.restore}>
-          <ListRow
-            title="Restore defaults"
-            subtitle="Resets theme, font, layout, typography and accessibility"
-            variant="destructive"
-            onPress={onRestoreDefaults}
-          />
-        </View>
+        <Pressable
+          style={styles.restore}
+          onPress={onRestoreDefaults}
+          accessibilityRole="button"
+          accessibilityLabel="Restore defaults"
+        >
+          <Ionicons name="refresh-outline" size={RESTORE_ICON_SIZE} color={color.error} />
+          <View style={styles.restoreText}>
+            <Text style={styles.restoreTitle}>Restore defaults</Text>
+            <Text style={styles.restoreSubtitle}>
+              Resets theme, font, layout, typography and accessibility
+            </Text>
+          </View>
+        </Pressable>
       </ScrollView>
     );
   }
@@ -218,8 +256,50 @@ const styles = StyleSheet.create({
   // Cancels the content padding so the row runs edge to edge like every other
   // `ListRow` in the app — the row draws its own horizontal padding and its own
   // divider, both of which stop looking right when inset.
+  // No longer cancels the content padding — this is now its own card, not an
+  // edge-to-edge `ListRow`, so it keeps the same horizontal inset every
+  // other section on this screen has.
   restore: {
-    marginHorizontal: -space.md,
-    marginTop: space.sm,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.errorTint,
+    borderRadius: radius.sheet,
+  },
+  restoreText: {
+    flex: 1,
+    gap: space.xs / 2,
+  },
+  restoreTitle: {
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.error,
+  },
+  restoreSubtitle: {
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.textSecondary,
+  },
+  pageHeader: {
+    gap: space.xs,
+  },
+  pageHeaderStandalone: {
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+  },
+  pageTitle: {
+    fontFamily: typeScale.editorialTitle.fontFamily,
+    fontSize: typeScale.editorialTitle.size,
+    lineHeight: typeScale.editorialTitle.lineHeight,
+    color: color.textPrimary,
+  },
+  pageSubtitle: {
+    fontFamily: typeScale.editorialMeta.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textSecondary,
   },
 });
