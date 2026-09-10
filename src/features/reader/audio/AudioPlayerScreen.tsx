@@ -542,11 +542,13 @@ function AudioPlayerScreenComponent(
               void beginPlayback();
             }
           }}
-          style={[styles.transportButton, styles.playButton]}
+          style={[
+            styles.transportButton,
+            styles.playButton,
+            playCheckPending && styles.playButtonPending,
+          ]}
         >
-          <Text style={styles.playButtonLabel}>
-            {status.playing ? 'Pause' : playCheckPending ? 'Checking…' : 'Play'}
-          </Text>
+          <Text style={styles.playButtonLabel}>{status.playing ? 'Pause' : 'Play'}</Text>
         </Pressable>
 
         <Pressable
@@ -686,6 +688,9 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
   },
   playButton: { backgroundColor: '#111111', minWidth: 96, alignItems: 'center' },
+  // Distinct from transportButtonDisabled's opacity dip: this button isn't disabled-looking,
+  // it's mid-action — a grey fill reads as "pressed and working" rather than "unavailable".
+  playButtonPending: { backgroundColor: '#9ca3af' },
   playButtonLabel: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
   rateRow: { flexDirection: 'row', justifyContent: 'center', gap: 8 },
   rateButton: {
