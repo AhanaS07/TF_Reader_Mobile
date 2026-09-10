@@ -44,10 +44,17 @@ export default function InstitutionRow({
       <View style={styles.inner}>
         {institution.branding !== undefined ? (
           <Image
-            source={{ uri: institution.branding.logoUrl }}
+            // See ContentCard.tsx's note — if this backend re-signs logo URLs
+            // the same way it does covers, the querystring must be stripped
+            // for the cache key so the same logo isn't treated as a new image.
+            source={{
+              uri: institution.branding.logoUrl,
+              cacheKey: institution.branding.logoUrl.split('?')[0],
+            }}
             style={styles.crest}
             contentFit="contain"
             cachePolicy="memory-disk"
+            transition={200}
             accessibilityLabel={`${institution.name} logo`}
           />
         ) : (

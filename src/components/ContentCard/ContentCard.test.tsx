@@ -54,7 +54,7 @@ describe('ContentCard content', () => {
     // on the rendered host node — unlike RN's Image, which passes it through
     // unchanged.
     expect(screen.getByTestId('content-card-image').props.source).toEqual([
-      { uri: 'https://cdn.tf/a.jpg' },
+      { uri: 'https://cdn.tf/a.jpg', cacheKey: 'https://cdn.tf/a.jpg' },
     ]);
   });
 

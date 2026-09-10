@@ -112,11 +112,18 @@ export default function ContentCard({
           ) : (
             <Image
               testID="content-card-image"
-              source={{ uri: imageUrl }}
+              // The backend hands out a freshly-signed S3 URL (new date/signature
+              // query params) on every fetch, even for the same cover — so the
+              // querystring must be stripped for the cache key, or every screen's
+              // signed link looks like a brand-new image to expo-image's cache.
+              source={{ uri: imageUrl, cacheKey: imageUrl.split('?')[0] }}
               style={styles.thumb}
               // `contain` would letterbox a portrait cover inside a square thumb.
               contentFit="cover"
               cachePolicy="memory-disk"
+              transition={200}
+              // TEMP diagnostic — remove once cross-screen caching is confirmed.
+              onLoad={(e) => console.log('[image-cache] ContentCard', e.cacheType, imageUrl)}
             />
           )}
 
