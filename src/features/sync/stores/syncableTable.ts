@@ -484,7 +484,10 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
     }
   }
 
-  if (!changed) return { row: existing, changed: false };
+  // If nothing changed AND the incoming record matches on all fields, no action needed.
+  // But if incoming differs on any field (divergesFromIncoming), mark for re-push even if
+  // remote won on all fields - local values still need to reach the server.
+  if (!changed && !divergesFromIncoming) return { row: existing, changed: false };
 
   merged.field_updated_at = stringifyFieldTimestamps(mergedTimes);
   merged.updated_at = isAfter(incoming.updated_at, existing.updated_at)
