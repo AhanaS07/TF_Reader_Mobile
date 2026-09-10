@@ -42,6 +42,11 @@ export enum CatalogueError {
   // different copy and different retry behaviour.
   TIMEOUT = 'TIMEOUT',
 
+  // The request reached the server (a real response came back) but the access
+  // token was missing or rejected (401). Distinct from NETWORK_UNAVAILABLE: the
+  // connection is fine, the reader just needs to sign in again.
+  UNAUTHENTICATED = 'UNAUTHENTICATED',
+
   // getItemsBatch was asked for more than 100 ids in one call — checked
   // client-side before the request goes out, and mapped from the server's
   // own 400 TOO_MANY_IDS if it ever disagrees with our cap.
