@@ -261,9 +261,10 @@ describe('RootNavigator — institution pill', () => {
     expect(screen.queryByText('Imperial College London')).toBeNull();
   });
 
-  // Every other tab is unrelated to an institution's catalogue — the pill is
-  // Catalogue-tab-root-only chrome, not a global "current institution" badge.
-  it('shows no pill on another tab, even with an institution selected', async () => {
+  // The pill shows on every tab root, not just Catalogue's — Library/Search/
+  // Profile all act on behalf of the same signed-in institution even though
+  // they don't browse its feed directly (see AppHeader's own comment).
+  it('shows the pill on the Search tab root too', async () => {
     await act(async () => {
       useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
       useSessionStore.setState({ _authReady: true });
@@ -274,7 +275,35 @@ describe('RootNavigator — institution pill', () => {
       fireEvent.press(screen.getByText('Search'));
     });
 
-    expect(screen.queryByText('Imperial College London')).toBeNull();
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('shows the pill on the Library tab root too', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Library'));
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('shows the pill on the Profile tab root too', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Profile'));
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
   });
 
   it('navigates to InstitutionList when pressed', async () => {

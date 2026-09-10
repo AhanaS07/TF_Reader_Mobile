@@ -100,7 +100,7 @@ function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
 }
 
 /** Every heading, in the order the screen renders them on the overview. */
-const SECTIONS = ['Offered to you', 'Borrowed Books', 'Downloads', 'Bookmarks', 'Waiting'];
+const SECTIONS = ['Offered to you', 'Borrowed', 'Downloads', 'Bookmarks', 'Waiting'];
 
 /**
  * The section headings on screen, in render order.
@@ -301,7 +301,7 @@ describe('LibraryScreen — the tab bar', () => {
     await waitFor(() => expect(renderedSections()).toEqual(['Bookmarks']));
 
     fireEvent.press(screen.getByTestId('tabs-tab-loans'));
-    await waitFor(() => expect(renderedSections()).toEqual(['Borrowed Books']));
+    await waitFor(() => expect(renderedSections()).toEqual(['Borrowed']));
 
     expect(mockGetLibrary).toHaveBeenCalledTimes(1);
   });
@@ -510,7 +510,7 @@ describe('LibraryScreen — downloads', () => {
   // A SUBSCRIPTION title a student downloads is both a loan and a download: the
   // loan is what expires, the download is what opens in a tunnel. Two facts, so
   // two rows — dropping either loses the answer the other cannot give.
-  it('shows a subscription download under both Borrowed Books and Downloads', async () => {
+  it('shows a subscription download under both Borrowed and Downloads', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
@@ -662,7 +662,7 @@ describe('LibraryScreen — first load', () => {
 
     await render(<LibraryScreen />);
 
-    // One per server-sourced section: Offered, Borrowed Books, Waiting.
+    // One per server-sourced section: Offered, Borrowed, Waiting.
     await waitFor(() => expect(screen.getAllByTestId('library-loading')).toHaveLength(3));
     expect(renderedSections()).toEqual(SECTIONS);
     // The skeleton stands in for rows, so it replaces the empty copy.
@@ -697,12 +697,12 @@ describe('LibraryScreen — the shelf is the launch screen', () => {
 // by data the app actually has; the mockup's invented fields (reading %, offline
 // "Ready", wait estimate) are deliberately absent.
 describe('LibraryScreen — the mockup components', () => {
-  it('labels the loans tab "Borrowed Books" and the holds tab "Premium books"', async () => {
+  it('labels the loans tab "Borrowed" and the holds tab "Premium"', async () => {
     await render(<LibraryScreen />);
 
     await waitFor(() => expect(screen.getByTestId('tabs-label-loans')).toBeTruthy());
-    expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed Books');
-    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium books');
+    expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed');
+    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium');
   });
 
   it('summarises the Downloads section as a count and total size', async () => {

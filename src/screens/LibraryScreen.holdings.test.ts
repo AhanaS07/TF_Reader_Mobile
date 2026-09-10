@@ -7,7 +7,7 @@
 // assertable because no function here reads `Date.now()`.
 import type { Bookmark } from '@/shared/contracts';
 import { MAX_BATCH_IDS } from '@model/batchItems';
-import type { Hold, Loan } from '@model/types';
+import type { AccessTier, Hold, Loan } from '@model/types';
 import type { DownloadRecord } from '@store/downloadStore';
 
 import {
@@ -17,9 +17,11 @@ import {
   downloadedLabel,
   downloadsSummaryLabel,
   dueLabel,
+  groupBookmarksByTitle,
   offerMinutesRemaining,
   ordinal,
   partitionHolds,
+  partitionLoansByTier,
   queueLabel,
   queueProgressFraction,
   type ShelfSections,
@@ -102,6 +104,68 @@ describe('activeLoans', () => {
     ]);
 
     expect(kept.map((l) => l.loanId)).toEqual(['a']);
+  });
+});
+
+describe('partitionLoansByTier', () => {
+  it('puts an ELITE-tier loan in eliteLoans and everything else in subscriptionLoans', () => {
+    const tiers: Record<string, AccessTier> = { elite_item: 'ELITE', sub_item: 'SUBSCRIPTION' };
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'elite_item' }), aLoan({ loanId: 'b', itemId: 'sub_item' })],
+      (itemId) => tiers[itemId],
+    );
+
+    expect(eliteLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['b']);
+  });
+
+  it('keeps an unhydrated loan (unknown tier) as subscription until proven Elite', () => {
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'not_yet_hydrated' })],
+      () => undefined,
+    );
+
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(eliteLoans).toHaveLength(0);
+  });
+
+  it('treats OPEN_ACCESS the same as SUBSCRIPTION — neither is Elite', () => {
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'oa_item' })],
+      () => 'OPEN_ACCESS',
+    );
+
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(eliteLoans).toHaveLength(0);
+  });
+});
+
+describe('groupBookmarksByTitle', () => {
+  it('groups bookmarks for the same book into one entry', () => {
+    const groups = groupBookmarksByTitle([
+      aBookmark({ id: 'bm_1', bookId: 'item_42' }),
+      aBookmark({ id: 'bm_2', bookId: 'item_42' }),
+      aBookmark({ id: 'bm_3', bookId: 'item_99' }),
+    ]);
+
+    expect(groups.map((g) => g.bookId)).toEqual(['item_42', 'item_99']);
+    expect(groups[0].bookmarks.map((b) => b.id)).toEqual(['bm_1', 'bm_2']);
+    expect(groups[1].bookmarks.map((b) => b.id)).toEqual(['bm_3']);
+  });
+
+  it('orders groups by their own newest bookmark, given an already newest-first list', () => {
+    const groups = groupBookmarksByTitle(
+      sortedBookmarks([
+        aBookmark({ id: 'old', bookId: 'item_A', updatedAt: SERVER_NOW_MS - 60_000 }),
+        aBookmark({ id: 'new', bookId: 'item_B', updatedAt: SERVER_NOW_MS }),
+      ]),
+    );
+
+    expect(groups.map((g) => g.bookId)).toEqual(['item_B', 'item_A']);
+  });
+
+  it('returns nothing for an empty list', () => {
+    expect(groupBookmarksByTitle([])).toEqual([]);
   });
 });
 

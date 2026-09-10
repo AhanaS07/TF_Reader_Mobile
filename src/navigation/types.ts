@@ -85,8 +85,13 @@ export type SearchStackParamList = {
   BookInfo: { bookId: BookId };
 };
 
-/** Single-screen stack — no pushed screens in Week 1. */
-export type LibraryStackParamList = { LibraryHome: undefined };
+/**
+ * Library nested stack. `InstitutionList` is registered here for the same
+ * reason it is in Search/Profile: the institution pill in `AppHeader` shows
+ * on every tab-root screen now (Catalogue, Search, Library, Profile), so
+ * each of their stacks needs the destination it pushes to.
+ */
+export type LibraryStackParamList = { LibraryHome: undefined; InstitutionList: undefined };
 
 /** Profile stack — screen 10, plus the settings screens it pushes. */
 export type ProfileStackParamList = {

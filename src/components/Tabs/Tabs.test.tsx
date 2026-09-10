@@ -252,6 +252,60 @@ describe('Tabs variants', () => {
 
     expect(styleOf(`tabs-tab-${THREE_TABS[1].id}`).backgroundColor).toBe(color.primary);
   });
+
+  // Library's own rail — each tab its own standalone pill, not one shared
+  // grey track (see the file header).
+  it('draws no shared track background in the pills variant', async () => {
+    await render(
+      <Tabs tabs={THREE_TABS} activeId={THREE_TABS[1].id} variant="pills" onChange={() => {}} />,
+    );
+
+    expect(trackStyle().backgroundColor).toBeUndefined();
+  });
+
+  it('fills the active pill with the brand colour in the pills variant', async () => {
+    await render(
+      <Tabs tabs={THREE_TABS} activeId={THREE_TABS[1].id} variant="pills" onChange={() => {}} />,
+    );
+
+    expect(styleOf(`tabs-tab-${THREE_TABS[1].id}`).backgroundColor).toBe(color.primary);
+  });
+
+  it('leaves inactive pills on a neutral background, not the brand colour', async () => {
+    await render(
+      <Tabs tabs={THREE_TABS} activeId={THREE_TABS[1].id} variant="pills" onChange={() => {}} />,
+    );
+
+    expect(styleOf(`tabs-tab-${THREE_TABS[0].id}`).backgroundColor).not.toBe(color.primary);
+  });
+
+  it('draws no underline in the pills variant', async () => {
+    await render(
+      <Tabs tabs={THREE_TABS} activeId={THREE_TABS[1].id} variant="pills" onChange={() => {}} />,
+    );
+
+    expect(screen.queryAllByTestId(/^tabs-underline-/)).toHaveLength(0);
+  });
+});
+
+describe('Tabs count badge', () => {
+  const TABS_WITH_COUNTS = [
+    { id: 'downloads', label: 'Downloads', count: 3 },
+    { id: 'bookmarks', label: 'Bookmarks' },
+  ];
+
+  it('renders a badge only for a tab that carries a count', async () => {
+    await render(<Tabs tabs={TABS_WITH_COUNTS} activeId="downloads" onChange={() => {}} />);
+
+    expect(screen.getByTestId('tabs-count-downloads')).toBeTruthy();
+    expect(screen.queryByTestId('tabs-count-bookmarks')).toBeNull();
+  });
+
+  it('shows the exact count handed to it, inventing nothing', async () => {
+    await render(<Tabs tabs={TABS_WITH_COUNTS} activeId="downloads" onChange={() => {}} />);
+
+    expect(screen.getByText('3')).toBeTruthy();
+  });
 });
 
 describe('Tabs tokens', () => {

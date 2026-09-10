@@ -12,7 +12,7 @@
 // where a test can reach it without a renderer.
 import type { Bookmark } from '@/shared/contracts';
 import { MAX_BATCH_IDS } from '@model/batchItems';
-import type { Hold, Loan } from '@model/types';
+import type { AccessTier, Hold, Loan } from '@model/types';
 import type { DownloadRecord } from '@store/downloadStore';
 
 // ─── the five sections ───────────────────────────────────────────────────────
@@ -72,6 +72,33 @@ export function activeLoans(loans: Loan[]): Loan[] {
 }
 
 /**
+ * Active loans split by tier — Library's own "Borrowed means subscription
+ * loans only" rule (product spec, Sept 2026). `Loan` itself is silent on
+ * tier (`Loan`'s own comment: "written for SUBSCRIPTION and ELITE"), so the
+ * only source is the hydrated `BookSummary.accessTier` the batch call
+ * already carries — `tierFor` reads that, never a second network call.
+ *
+ * AN UNHYDRATED LOAN IS SUBSCRIPTION, NOT ELITE, UNTIL PROVEN OTHERWISE. The
+ * same under-show bias the rest of this file applies to a countdown or a due
+ * date: Elite is the narrower, exceptional case, so a loan whose tier has not
+ * arrived yet defaults to the larger, ordinary bucket rather than briefly
+ * claiming an Elite state it cannot support. It moves to `eliteLoans` the
+ * moment `tierFor` resolves.
+ */
+export function partitionLoansByTier(
+  loans: Loan[],
+  tierFor: (itemId: string) => AccessTier | undefined,
+): { subscriptionLoans: Loan[]; eliteLoans: Loan[] } {
+  const subscriptionLoans: Loan[] = [];
+  const eliteLoans: Loan[] = [];
+  for (const loan of loans) {
+    if (tierFor(loan.itemId) === 'ELITE') eliteLoans.push(loan);
+    else subscriptionLoans.push(loan);
+  }
+  return { subscriptionLoans, eliteLoans };
+}
+
+/**
  * The downloads a shelf may show, newest first.
  *
  * NO TIER FILTER HERE, AND THAT IS THE RULE RATHER THAN AN OMISSION. Download
@@ -120,6 +147,47 @@ export function sortedBookmarks(bookmarks: Bookmark[]): Bookmark[] {
   return bookmarks
     .filter((bookmark) => !bookmark.isDeleted)
     .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** One book's worth of bookmarks, most recently edited first within the group. */
+export interface BookmarkGroup {
+  bookId: string;
+  bookmarks: Bookmark[];
+}
+
+/**
+ * Bookmarks grouped by the book they belong to — product spec, Sept 2026:
+ * "Bookmarks are created while the user is reading… group bookmarks BY
+ * TITLE", replacing the one-row-per-bookmark shelf this file's own older
+ * comment on `sortedBookmarks` argued for. That reasoning is not wrong, it
+ * is answering a different question: it is still true that a bookmark is a
+ * PLACE and the position belongs on its own row, which is exactly what the
+ * per-title expansion (rendered by the screen, not this function) still
+ * shows — this just adds the one level of grouping above it the shelf
+ * needed once the Library redesign asked for it directly.
+ *
+ * GROUPS ORDER BY THEIR OWN NEWEST BOOKMARK, so a title the reader just
+ * marked rises to the top the same way a single flat list would have — the
+ * grouping changes the shape, not the recency rule.
+ *
+ * TAKES THE ALREADY-FILTERED, ALREADY-SORTED LIST. `sortedBookmarks` still
+ * owns dropping tombstones; this only folds an already-ordered list into
+ * groups, so a group's own bookmarks stay newest-first too.
+ */
+export function groupBookmarksByTitle(bookmarks: Bookmark[]): BookmarkGroup[] {
+  const groups: BookmarkGroup[] = [];
+  const byId = new Map<string, BookmarkGroup>();
+  for (const bookmark of bookmarks) {
+    const existing = byId.get(bookmark.bookId);
+    if (existing === undefined) {
+      const group: BookmarkGroup = { bookId: bookmark.bookId, bookmarks: [bookmark] };
+      byId.set(bookmark.bookId, group);
+      groups.push(group);
+    } else {
+      existing.bookmarks.push(bookmark);
+    }
+  }
+  return groups;
 }
 
 // ─── hydration ───────────────────────────────────────────────────────────────

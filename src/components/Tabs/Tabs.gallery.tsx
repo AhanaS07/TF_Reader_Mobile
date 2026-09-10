@@ -64,6 +64,32 @@ export default function TabsGallery() {
         <Tabs tabs={FEED_TABS} activeId="audiobooks" variant="underline" onChange={() => {}} />
       </View>
 
+      <Text style={styles.label}>pills — Library&apos;s own filter rail, first tab active</Text>
+      <View style={styles.row}>
+        <Tabs tabs={FEED_TABS} activeId="ebooks" variant="pills" onChange={() => {}} />
+      </View>
+
+      <Text style={styles.label}>pills — middle tab active</Text>
+      <View style={styles.row}>
+        <Tabs tabs={FEED_TABS} activeId="audiobooks" variant="pills" onChange={() => {}} />
+      </View>
+
+      <Text style={styles.label}>pills with count badges — real counts only, per tab</Text>
+      <View style={styles.row}>
+        <Tabs
+          tabs={[
+            { id: 'all', label: 'All' },
+            { id: 'downloads', label: 'Downloads', count: 3 },
+            { id: 'bookmarks', label: 'Bookmarks', count: 12 },
+            { id: 'premium', label: 'Premium' },
+          ]}
+          activeId="downloads"
+          variant="pills"
+          fill
+          onChange={() => {}}
+        />
+      </View>
+
       <Text style={styles.label}>two tabs — screen 04&apos;s detail sections</Text>
       <View style={styles.row}>
         <Tabs tabs={TWO_TABS} activeId="about" variant="underline" onChange={() => {}} />
@@ -133,7 +159,6 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: color.white },
   content: { paddingBottom: space.xl },
   heading: {
-    fontWeight: type.pageTitle.weight,
     fontFamily: type.pageTitle.fontFamily,
     fontSize: type.pageTitle.size,
     lineHeight: type.pageTitle.lineHeight,
@@ -141,7 +166,6 @@ const styles = StyleSheet.create({
     margin: space.md,
   },
   label: {
-    fontWeight: type.meta.weight,
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
@@ -161,7 +185,6 @@ const styles = StyleSheet.create({
     borderColor: color.border,
   },
   readout: {
-    fontWeight: type.meta.weight,
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,

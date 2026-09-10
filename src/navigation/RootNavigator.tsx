@@ -75,7 +75,6 @@ const headerStyles = StyleSheet.create({
   },
   institutionPillLabel: {
     flexShrink: 1,
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
@@ -104,10 +103,17 @@ const TAB_CONFIG: TabItem[] = [
 // ─── Header wrapper — reads safe-area inset and passes it to TopAppBar ───────
 
 // The institution pill replaces CatalogueScreen's own in-body picker row —
-// it names the scope the Catalogue tab is reading from, which belongs beside
-// the brand mark, not repeated as a full-width row under it. Tab-root-only
-// (no `back`) and Catalogue-only: a pushed screen already has its own title
-// in that slot, and no other tab reads from an institution's catalogue.
+// it names the scope the reader is signed in under, which belongs beside the
+// brand mark, not repeated as a full-width row under it. Tab-root-only (no
+// `back`): a pushed screen already has its own title in that slot.
+//
+// SHOWN ON ALL FOUR TAB ROOTS, ON EXPLICIT INSTRUCTION — an earlier version
+// of this comment restricted it to Catalogue ("no other tab reads from an
+// institution's catalogue"), but Library/Search/Profile all still act on
+// behalf of the SAME signed-in institution even though they don't browse its
+// feed directly, and the reader is expected to see which one they are in
+// from any of the four. `InstitutionList` is registered in every stack below
+// for exactly this reason.
 function InstitutionPill({ name, onPress }: { name: string; onPress: () => void }) {
   return (
     <Pressable
@@ -125,12 +131,21 @@ function InstitutionPill({ name, onPress }: { name: string; onPress: () => void 
   );
 }
 
+// The four tab-root route names the pill shows on — every stack's own
+// `Home` screen, and nothing pushed under it (see `showInstitutionPill`).
+const TAB_ROOT_ROUTE_NAMES = new Set([
+  'CatalogueHome',
+  'SearchHome',
+  'LibraryHome',
+  'ProfileHome',
+]);
+
 function AppHeader({ route, options, back, navigation }: NativeStackHeaderProps) {
   const insets = useSafeAreaInsets();
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
 
   const showInstitutionPill =
-    back === undefined && route.name === 'CatalogueHome' && selectedInstitution !== null;
+    back === undefined && TAB_ROOT_ROUTE_NAMES.has(route.name) && selectedInstitution !== null;
 
   return (
     <TopAppBar
@@ -142,12 +157,14 @@ function AppHeader({ route, options, back, navigation }: NativeStackHeaderProps)
           <InstitutionPill
             name={selectedInstitution.name}
             // `AppHeader` serves all four tab stacks, so `navigation` here is
-            // typed against the generic base param list. `showInstitutionPill`
-            // above already restricts this branch to `CatalogueHome`, so the
-            // cast below only ever runs inside `CatalogueStack`, where
-            // `InstitutionList` is a real, registered route.
+            // typed against the generic base param list. Each of the four
+            // stacks registers its own `InstitutionList` screen with the
+            // identical `undefined` param shape (see `types.ts`), so a cast
+            // against that one shared shape is valid for whichever stack this
+            // instance actually renders inside — `showInstitutionPill` above
+            // already restricts this branch to a tab root.
             onPress={() =>
-              (navigation as NativeStackNavigationProp<CatalogueStackParamList>).navigate(
+              (navigation as NativeStackNavigationProp<{ InstitutionList: undefined }>).navigate(
                 'InstitutionList',
               )
             }
@@ -323,6 +340,11 @@ function LibraryNavigator() {
         name="LibraryHome"
         component={LibraryScreen}
         options={{ title: 'Library' }}
+      />
+      <LibraryStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Select Institution' }}
       />
     </LibraryStack.Navigator>
   );
