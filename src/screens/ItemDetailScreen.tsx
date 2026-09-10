@@ -63,6 +63,7 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@m
 import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { ERROR_CODES } from '@model/types';
 import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
+import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
@@ -866,10 +867,26 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   useEffect(() => {
     if (downloadProgress.status === 'completed') {
       Alert.alert('Download complete', 'Book saved for offline reading.');
+      // `useDownloadProgress`/`downloadManager` persist the bytes to SQLite
+      // (`contentStore`/`downloadTable`), but `LibraryScreen`'s Downloads tab
+      // still reads the older, unrelated `downloadStore` (see that file's own
+      // "THE SEAM IS THIS STORE, AND IT IS MEANT TO BE REPLACED" header) — a
+      // merge dropped this screen's old `markDownloaded` call without adding
+      // a replacement, so a real, successful download never showed up there.
+      // Keeping this write-through here (rather than inside
+      // `useDownloadProgress`/`downloadManager`, which are Download's own
+      // files) is the fix "the download layer keep this list in step" that
+      // store's header names, made from the one place that already knows a
+      // download for THIS itemId just completed.
+      useDownloadStore.getState().markDownloaded({
+        itemId,
+        downloadedAt: Date.now(),
+        sizeBytes: downloadProgress.bytesReceived,
+      });
     } else if (downloadProgress.status === 'error') {
       Alert.alert('Download failed', downloadProgress.errorMessage ?? 'Something went wrong.');
     }
-  }, [downloadProgress.status, downloadProgress.errorMessage]);
+  }, [downloadProgress.status, downloadProgress.errorMessage, downloadProgress.bytesReceived, itemId]);
 
   const retry = useCallback(() => {
     setLoading(true);

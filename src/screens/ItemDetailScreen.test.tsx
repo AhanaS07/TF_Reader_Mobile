@@ -24,6 +24,7 @@ import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { Institution } from '@model/institution';
 import type { Acquisition, Publication } from '@model/types';
 import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
+import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
@@ -282,6 +283,7 @@ afterEach(() => {
   };
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useDownloadStore.setState({ downloads: [] });
   useRecentlyViewedStore.getState().clear();
   useSessionStore.setState({
     isAuthenticated: false,
@@ -593,6 +595,34 @@ describe('ItemDetailScreen with a book', () => {
     fireEvent.press(screen.getByText('Download'));
 
     expect(mockDownloadStart).not.toHaveBeenCalled();
+  });
+
+  // Regression test: `useDownloadProgress`/`downloadManager` persist a
+  // completed download to SQLite, but `LibraryScreen`'s Downloads tab still
+  // reads the older `downloadStore` (see that file's own header on why it's
+  // not yet retired). A merge dropped this screen's write-through to that
+  // store without adding a replacement, so a real successful download never
+  // showed up in Library — this pins the fix in the completion effect.
+  it('records the download in downloadStore once it completes, so it shows up in Library', async () => {
+    mockDownloadProgressState = {
+      status: 'completed',
+      bytesReceived: 4096,
+      expectedLength: 4096,
+      errorMessage: null,
+    };
+    setCatalogueSource(
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() =>
+      expect(useDownloadStore.getState().downloads).toEqual([
+        expect.objectContaining({ itemId: 'item_42', sizeBytes: 4096 }),
+      ]),
+    );
   });
 
   // The fixture this screen will meet in the real app is an Elite title, and
