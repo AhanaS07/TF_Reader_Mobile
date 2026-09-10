@@ -68,6 +68,11 @@ type Nav = CompositeNavigationProp<
 
 const SKELETON_COUNT = 3;
 
+// The store itself remembers more (MAX_RECENTLY_VIEWED, recentlyViewedStore.ts)
+// so a future second consumer isn't capped by this screen's own display
+// choice — this is purely how many of those Search shows, on explicit request.
+const RECENTLY_VIEWED_DISPLAY_LIMIT = 3;
+
 // The leading/trailing glyphs on a recent-search row and the no-results
 // panel's own icon — sized against `type.body`'s own line height so an icon
 // sits on the same visual baseline as the text beside it, composed rather
@@ -168,7 +173,10 @@ export default function SearchScreen() {
 
   // Client-side only, same footing as recent searches — see
   // recentlyViewedStore.ts's own header.
-  const recentlyViewed = useRecentlyViewedStore((s) => s.items);
+  const recentlyViewed = useRecentlyViewedStore((s) => s.items).slice(
+    0,
+    RECENTLY_VIEWED_DISPLAY_LIMIT,
+  );
 
   // Screen 11. The overlay stays a pure view — the recogniser and the microphone
   // permission live in this hook, and it knows nothing about searching.

@@ -312,6 +312,32 @@ describe('recently viewed', () => {
     expect(screen.getByText('Open Access')).toBeTruthy();
   });
 
+  // The store itself remembers more (MAX_RECENTLY_VIEWED in
+  // recentlyViewedStore.ts) — this pins Search's own display cap, on
+  // explicit request, at a number below that store cap so the two are
+  // provably different limits rather than one accidentally matching the
+  // other.
+  it('shows at most 3 recently viewed items, most recent first', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      useRecentlyViewedStore.getState().recordView({
+        id: `item_${i}`,
+        title: `Title ${i}`,
+        authors: [],
+        subjects: [],
+        acquisition: { actionId: 'openAccess', href: 'https://x', licenceModel: 'OPEN_ACCESS', encryption: null },
+      });
+    }
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await waitFor(() => expect(screen.getAllByTestId('content-card')).toHaveLength(3));
+    expect(screen.getByText('Title 4')).toBeTruthy();
+    expect(screen.getByText('Title 3')).toBeTruthy();
+    expect(screen.getByText('Title 2')).toBeTruthy();
+    expect(screen.queryByText('Title 1')).toBeNull();
+    expect(screen.queryByText('Title 0')).toBeNull();
+  });
+
   it('goes straight to the item’s detail page when tapped, not through a search', async () => {
     const pipeline = stub(() => Promise.resolve(feed()));
     setSearchPipeline(pipeline);

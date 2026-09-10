@@ -257,14 +257,32 @@ export function renderBookContent(
   return (
     <>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-        {detail.coverUrl !== undefined && (
-          <Image
-            source={{ uri: detail.coverUrl }}
-            style={styles.cover}
-            resizeMode="contain"
-            accessibilityLabel={`${detail.title} cover`}
-          />
-        )}
+        {/* Centred and always renders a well — a missing cover and a failed
+            fetch used to leave nothing at all where the jacket goes, which
+            reads as a layout bug rather than "this title has no cover on
+            file". The icon marks it as a deliberate stand-in, same device
+            ContentCard's own placeholder uses for exactly this pair of
+            cases. */}
+        <View style={styles.coverWrap}>
+          {showCoverPlaceholder ? (
+            <View testID="item-detail-cover-placeholder" style={[styles.cover, styles.coverPlaceholder]}>
+              <MaterialCommunityIcons name="book-outline" size={COVER_WIDTH / 2} color={color.textSecondary} />
+            </View>
+          ) : (
+            <Image
+              testID="item-detail-cover"
+              // See ContentCard.tsx's note — the backend re-signs this URL's
+              // querystring on every fetch, so the cache key must ignore it.
+              source={{ uri: detail.coverUrl, cacheKey: detail.coverUrl?.split('?')[0] }}
+              style={styles.cover}
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              transition={200}
+              accessibilityLabel={`${detail.title} cover`}
+              onError={onCoverError}
+            />
+          )}
+        </View>
 
         <Text style={styles.title}>{detail.title}</Text>
 
