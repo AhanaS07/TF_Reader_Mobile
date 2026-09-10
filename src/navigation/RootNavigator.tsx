@@ -37,6 +37,7 @@ import PersonalAccountScreen from '../screens/PersonalAccountScreen';
 // screens, mounted directly into the Catalogue/Search stacks rather than a separate flat shell.
 import { ReaderRouteScreen } from './ReaderRouteScreen';
 import { BookInfoRouteScreen } from './BookInfoRouteScreen';
+import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 
 import type {
   RootStackParamList,
@@ -279,6 +280,19 @@ function CatalogueNavigator() {
         component={BookInfoRouteScreen}
         options={{ headerShown: false, presentation: 'modal' }}
       />
+      {/* AUDIO's own destination — see ItemDetailScreen's 'read'/'play' branch
+          and AudioPlayerRouteScreen.tsx's own header for why this is a
+          separate route from 'Reader' rather than a format branch inside it.
+          Title comes from the route param (the book's own title), the same
+          pattern `Shelf`/`PersonalAccount` already use for a per-push title
+          the stack registration cannot know ahead of time. No gesture/WebView
+          conflict here (a native player, not a WebView), so this keeps
+          native-stack's default swipe-back unlike 'Reader'. */}
+      <CatalogueStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -329,6 +343,12 @@ function SearchNavigator() {
         component={BookInfoRouteScreen}
         options={{ headerShown: false, presentation: 'modal' }}
       />
+      {/* Same reader engine seam as CatalogueNavigator.AudioPlayer — see its own comment there. */}
+      <SearchStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
     </SearchStack.Navigator>
   );
 }
@@ -352,6 +372,42 @@ function LibraryNavigator() {
         name="ItemDetail"
         component={ItemDetailScreen}
         options={{ title: 'Book Details' }}
+      />
+      {/* AccessGate/SignIn/PersonalAccount/Reader/BookInfo — same reason as
+          SearchNavigator's identical set: `ItemDetail`'s access check and its
+          "read"/"play" action push these directly, so whichever stack pushed
+          `ItemDetail` needs its own copies rather than reaching across tabs. */}
+      <LibraryStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <LibraryStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <LibraryStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.Reader — see its own comment there. */}
+      <LibraryStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      <LibraryStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.AudioPlayer — see its own comment there. */}
+      <LibraryStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
       />
     </LibraryStack.Navigator>
   );

@@ -85,6 +85,9 @@ interface ItemDetailRouteProps {
   navigation: {
     navigate(screen: 'AccessGate', params: { itemId: string; title: string; authors: string }): void;
     navigate(screen: 'Reader', params: { bookId: BookId; format: ContentFormat }): void;
+    // AUDIO's own destination — see `handleAction`'s 'read'/'play' branch for
+    // why this is a second overload rather than folding into 'Reader' above.
+    navigate(screen: 'AudioPlayer', params: { bookId: BookId; title: string }): void;
     setOptions: (options: { title: string }) => void;
     getParent: () =>
       | { setOptions: (options: { tabBarStyle?: { display: 'none' } }) => void }
@@ -958,13 +961,24 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         // and stages the content locally; only once that resolves does this
         // navigate to the real reader/player, so a refused or failed open
         // never lands the reader on a screen with nothing to show.
-        const format = detail?.format;
+        if (detail === null) return;
+        const { format } = detail;
         if (format === undefined) return;
         setLicenceMessage(undefined);
         setPendingAction(action);
         openBook(itemId as BookId, format)
           .then(() => {
-            navigation.navigate('Reader', { bookId: itemId as BookId, format });
+            // AUDIO opens the audio player, not the EPUB/PDF reader — the two
+            // are separate screens (AudioPlayerRouteScreen vs
+            // ReaderRouteScreen) with unrelated implementations underneath
+            // (expo-audio vs the epub.js/pdf.js WebView bridge), and pushing
+            // an audiobook into 'Reader' fed it content the WebView bridge
+            // cannot parse.
+            if (format === 'AUDIO') {
+              navigation.navigate('AudioPlayer', { bookId: itemId as BookId, title: detail.title });
+            } else {
+              navigation.navigate('Reader', { bookId: itemId as BookId, format });
+            }
           })
           .catch((err: unknown) => {
             console.error('[read] openBook failed:', err);

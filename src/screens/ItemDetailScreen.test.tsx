@@ -527,7 +527,7 @@ describe('ItemDetailScreen with a book', () => {
       expect(screen.queryByText('Play')).toBeNull();
     });
 
-    it('opens the book and navigates to the Reader the same way Read does', async () => {
+    it('opens the book and navigates to the AudioPlayer, not the Reader', async () => {
       setCatalogueSource(
         fakeSource(async () =>
           aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
@@ -540,9 +540,17 @@ describe('ItemDetailScreen with a book', () => {
       fireEvent.press(screen.getByText('Play'));
 
       await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'AUDIO'));
+      // AUDIO opens the audio player, not the EPUB/PDF reader — the two are
+      // separate screens with unrelated implementations underneath (expo-audio
+      // vs. the epub.js/pdf.js WebView bridge). See ItemDetailScreen.tsx's
+      // 'read'/'play' branch.
       await waitFor(() =>
-        expect(mockNavigate).toHaveBeenCalledWith('Reader', { bookId: 'item_42', format: 'AUDIO' }),
+        expect(mockNavigate).toHaveBeenCalledWith('AudioPlayer', {
+          bookId: 'item_42',
+          title: 'Rights for Robots',
+        }),
       );
+      expect(mockNavigate).not.toHaveBeenCalledWith('Reader', expect.anything());
     });
   });
 

@@ -93,14 +93,16 @@ import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlaye
 import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
-import type { BookId, Locator } from '@/shared/contracts';
+import type { Locator } from '@/shared/contracts';
+import type { CatalogueStackParamList } from './types';
 
-// Not yet registered in RootNavigator (Phase 4.4 of integration_ref.md — the AudioPlayer route into
-// the tab-based Catalogue/Search stacks is still pending), so this types itself against its own
-// param shape rather than a live navigator's param list. Update this if/when the route is wired.
-type AudioPlayerRouteParamList = { AudioPlayer: { bookId: BookId; title: string } };
-
-type Props = NativeStackScreenProps<AudioPlayerRouteParamList, 'AudioPlayer'>;
+// Registered in RootNavigator's Catalogue/Search/Library stacks (Phase 4.4 of
+// integration_ref.md — landed) — see ItemDetailScreen's 'read'/'play' branch,
+// which pushes this instead of 'Reader' for an AUDIO item. Typed against
+// `CatalogueStackParamList`, the same convention `ReaderRouteScreen.tsx` uses
+// for its own 'Reader' registration, even though both routes are registered
+// identically in all three stacks — the param shape is the same everywhere.
+type Props = NativeStackScreenProps<CatalogueStackParamList, 'AudioPlayer'>;
 
 // Ticks arrive every 250ms (audioPlayerInstance.ts's updateInterval). Writing to SQLite (and
 // enqueueing an outbox row) on each one would be ~4 writes a second for a value nobody reads until
