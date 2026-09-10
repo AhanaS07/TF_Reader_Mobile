@@ -354,7 +354,7 @@ describe('AudioPlayerScreen', () => {
     const gate = new Promise<boolean>((resolve) => {
       resolveGate = resolve;
     });
-    const { findByLabelText, getByText } = await render(
+    const { findByLabelText } = await render(
       <AudioPlayerScreen
         bookId="dev-sample-audio"
         title="My Audiobook"
@@ -364,7 +364,7 @@ describe('AudioPlayerScreen', () => {
 
     const playButton = await findByLabelText('Play');
     void fireEvent.press(playButton); // not awaited — the gate has not resolved yet
-    await waitFor(() => expect(getByText('Checking…')).toBeTruthy());
+    await waitFor(() => expect(findByLabelText('Checking progress')).resolves.toBeTruthy());
     expect(fakePlayer.play).not.toHaveBeenCalled();
 
     await act(async () => {
