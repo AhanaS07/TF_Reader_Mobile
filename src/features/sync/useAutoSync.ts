@@ -28,7 +28,7 @@ export function useAutoSync(): void {
   useEffect(() => {
     // Trigger on connectivity change
     if (online && !wasOnline.current) {
-      syncEngine.run().catch(() => {
+      syncEngine.run()?.catch(() => {
         // Transient failures are expected; log and continue
       });
     }
@@ -39,7 +39,7 @@ export function useAutoSync(): void {
     // Trigger on app foreground
     const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
       if (appState.current !== 'active' && nextAppState === 'active') {
-        syncEngine.run().catch(() => {
+        syncEngine.run()?.catch(() => {
           // Transient failures are expected; log and continue
         });
       }
