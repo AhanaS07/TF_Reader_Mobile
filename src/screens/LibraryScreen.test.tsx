@@ -1,13 +1,19 @@
 // src/screens/LibraryScreen.test.tsx
-// The personal library — CAP-4 Module E.
+// The personal library — CAP-4 Module E, rebuilt around the product model
+// (Sept 2026, refined against a reference mockup the same month). See
+// LibraryScreen.tsx's own header for the full model.
 //
-// Same seam as the other screen tests: a fake `DataSource` injected through
-// `setCatalogueSource`, and `@config/licence` mocked so `libraryStore.refresh()`
-// resolves whatever a test needs. The store's state is set directly as well as
-// mocked, because the screen refreshes on mount and would otherwise overwrite
-// the fixture with the mock's answer.
+// `navigation` IS HAND-TYPED, LIKE ItemDetailScreen.test.tsx's OWN ROUTE
+// PROPS — this screen's real prop is `LibraryStackParamList`'s navigation,
+// but the screen only ever calls `navigate('ItemDetail', …)`, so a plain
+// `{ navigate: jest.fn() }` is enough and no `NavigationContainer` is needed.
 //
-// `await render(...)` is required — RTL 14's render is async.
+// Same seam as the other screen tests otherwise: a fake `DataSource`
+// injected through `setCatalogueSource`, and `@config/licence` mocked so
+// `libraryStore.refresh()` resolves whatever a test needs.
+//
+// `await render(...)` and `await fireEvent(...)` are required — RTL 14's
+// render and event helpers are async.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import type { Bookmark } from '@/shared/contracts';
@@ -23,24 +29,25 @@ import { useLibraryStore } from '@store/libraryStore';
 import LibraryScreen from './LibraryScreen';
 
 const SERVER_NOW = new Date().toISOString();
+const SERVER_NOW_MS = Date.parse(SERVER_NOW);
 
-// `useNetworkStatus` talks to NetInfo, which has no meaningful answer under Jest.
-// Mocked the same way ItemDetailScreen.test.tsx does it, so the offline case can
-// be driven directly.
 const mockUseNetworkStatus = jest.fn(() => true);
 jest.mock('@hooks/useNetworkStatus', () => ({
   useNetworkStatus: () => mockUseNetworkStatus(),
 }));
 
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
+const mockAcceptOffer = jest.fn().mockResolvedValue({ loanId: 'loan_new', itemId: 'item_99', state: 'active' });
+const mockCancelHold = jest.fn().mockResolvedValue(undefined);
+const mockBorrow = jest.fn().mockResolvedValue({ loanId: 'loan_new', itemId: 'item_42', state: 'active' });
 
 jest.mock('@config/licence', () => ({
   getLicenceSource: () => ({
-    borrow: jest.fn(),
+    borrow: (...args: unknown[]) => mockBorrow(...args),
     returnLoan: jest.fn(),
     placeHold: jest.fn(),
-    acceptOffer: jest.fn(),
-    cancelHold: jest.fn(),
+    acceptOffer: (...args: unknown[]) => mockAcceptOffer(...args),
+    cancelHold: (...args: unknown[]) => mockCancelHold(...args),
     getLibrary: () => mockGetLibrary(),
   }),
 }));
@@ -58,7 +65,7 @@ function aSummary(over: Partial<BookSummary> = {}): BookSummary {
     id: 'item_42',
     title: 'Applied Thermodynamics',
     format: 'EPUB',
-    accessTier: 'ELITE',
+    accessTier: 'SUBSCRIPTION',
     hasSearchIndex: false,
     ...over,
   };
@@ -91,32 +98,30 @@ function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
     userId: 'user_1',
     bookId: 'item_42',
     locator: { type: 'PDF', page: 12 },
-    createdAt: Date.parse(SERVER_NOW),
-    updatedAt: Date.parse(SERVER_NOW),
+    createdAt: SERVER_NOW_MS,
+    updatedAt: SERVER_NOW_MS,
     isDeleted: false,
     synced: false,
     ...over,
   };
 }
 
-/** Every heading, in the order the screen renders them on the overview. */
-const SECTIONS = ['Offered to you', 'Borrowed', 'Downloads', 'Bookmarks', 'Waiting'];
+const mockNavigate = jest.fn();
 
-/**
- * The section headings on screen, in render order.
- *
- * READ OFF THE HEADERS RATHER THAN BY TEXT, because "Downloads" and "Bookmarks"
- * are now each on screen twice — once as a tab label, once as a heading — and
- * `getByText` would fail on the ambiguity rather than on anything real.
- */
-function renderedSections(): string[] {
-  return screen.getAllByTestId('section-header-title').map((node) => node.props.children);
+/** `LibraryScreen`'s own minimal hand-typed navigation prop. */
+function renderScreen(provider?: LibraryProvider) {
+  const element = <LibraryScreen navigation={{ navigate: mockNavigate }} />;
+  if (provider === undefined) return render(element);
+  return render(<LibraryProviderContext.Provider value={provider}>{element}</LibraryProviderContext.Provider>);
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseNetworkStatus.mockReturnValue(true);
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  mockAcceptOffer.mockResolvedValue({ loanId: 'loan_new', itemId: 'item_99', state: 'active' });
+  mockCancelHold.mockResolvedValue(undefined);
+  mockBorrow.mockResolvedValue({ loanId: 'loan_new', itemId: 'item_42', state: 'active' });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
   // Device-local and persisted, so unlike libraryStore these survive a test and
   // would leak a download into the next one's "empty shelf".
@@ -129,189 +134,622 @@ afterEach(() => {
   setCatalogueSource(undefined);
 });
 
-describe('LibraryScreen — the empty shelf', () => {
-  // A blank page with one "Nothing to show here yet" answers "is this broken?"
-  // and nothing else. The headings are the shelf's table of contents: they tell
-  // a reader who has borrowed nothing that this is where a loan will appear.
-  it('names every section even with nothing in any of them', async () => {
-    await render(<LibraryScreen />);
+describe('LibraryScreen — header', () => {
+  it('shows a compact editorial heading and its supporting line', async () => {
+    await renderScreen();
 
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    expect(renderedSections()).toEqual(SECTIONS);
+    expect(screen.getByText('Library')).toBeTruthy();
+    expect(screen.getByText('Your scholarly content and access in one place.')).toBeTruthy();
   });
 
-  it('says what would go in each empty section rather than apologising', async () => {
-    await render(<LibraryScreen />);
+  it('shows the offline-sync disclaimer, so a reader knows access can lapse without a connection', async () => {
+    await renderScreen();
 
-    await waitFor(() =>
-      expect(screen.getByText('Books you borrow will appear here until they’re due.')).toBeTruthy(),
-    );
     expect(
-      screen.getByText('A copy reserved for you will appear here, with a countdown.'),
+      screen.getByText('Access is checked automatically and can expire even while you’re offline.'),
     ).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Open access and subscription books you download will be readable here offline.',
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText('Pages you bookmark while reading will appear here.')).toBeTruthy();
-    expect(
-      screen.getByText('When every copy is out, join the queue and your place will show here.'),
-    ).toBeTruthy();
-  });
-
-  it('asks the catalogue for nothing when there are no ids to hydrate', async () => {
-    const getItemsBatch = jest.fn();
-    setCatalogueSource(fakeSource(getItemsBatch));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    expect(getItemsBatch).not.toHaveBeenCalled();
   });
 });
 
-describe('LibraryScreen — section order', () => {
-  // The order is the decision this screen exists to encode: an offer is the only
-  // row that dies, so it is rendered first and loudest, and the queue — where
-  // nothing expires — is last.
-  it('renders the five sections in order, top to bottom', async () => {
-    givenHoldings(
-      [aLoan({ itemId: 'item_42' })],
-      [
-        aHold({ holdId: 'h_wait', itemId: 'item_77', state: 'queued', position: 3, queueLength: 7 }),
-        aHold({
-          holdId: 'h_offer',
-          itemId: 'item_99',
-          state: 'offered',
-          offerExpiresAt: new Date(Date.parse(SERVER_NOW) + 15 * 60_000).toISOString(),
-        }),
-      ],
-    );
+describe('LibraryScreen — tab bar', () => {
+  it('names exactly five tabs: All, Borrowed, Downloads, Bookmarks, Premium', async () => {
+    await renderScreen();
 
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    // Asserted on the rendered order of the heading nodes, not just that each
-    // one exists — the order is the decision, so a reshuffle has to fail.
-    expect(renderedSections()).toEqual(SECTIONS);
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-all')).toBeTruthy());
+    expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed');
+    expect(screen.getByTestId('tabs-label-downloads').props.children).toBe('Downloads');
+    expect(screen.getByTestId('tabs-label-bookmarks').props.children).toBe('Bookmarks');
+    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium');
   });
-});
 
-describe('LibraryScreen — the tab bar', () => {
-  /** Enough loans that the overview has to cap them. */
-  function manyLoans(count: number): Loan[] {
-    return Array.from({ length: count }, (_, i) =>
-      aLoan({ loanId: `loan_${i}`, itemId: `item_${i}` }),
-    );
-  }
-
-  it('opens on the overview, which is the only view that shows an offer', async () => {
-    await render(<LibraryScreen />);
+  it('opens on the All tab by default', async () => {
+    await renderScreen();
 
     await waitFor(() => expect(screen.getByTestId('tabs-tab-all')).toBeTruthy());
     expect(screen.getByTestId('tabs-tab-all').props.accessibilityState.selected).toBe(true);
-    expect(renderedSections()).toEqual(SECTIONS);
   });
 
-  it('caps a long section on the overview and says how many there are', async () => {
-    givenHoldings(manyLoans(12), []);
+  it('carries no count badge on the pill itself — the count lives in the tab’s own content', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a', downloadedAt: 1 });
 
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('See all (12)')).toBeTruthy());
-    // Three rows, not twelve — the cap is what bounds the page.
-    expect(screen.getAllByTestId('content-card')).toHaveLength(3);
-  });
-
-  it('draws no "See all" on a section that already fits', async () => {
-    givenHoldings(manyLoans(3), []);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getAllByTestId('content-card')).toHaveLength(3));
-    expect(screen.queryByText('See all (3)')).toBeNull();
-  });
-
-  // "See all" switches tab rather than pushing a screen: the full list already
-  // exists one tab over, so a second screen rendering a loan row would be the
-  // duplication CONVENTIONS §7 is about.
-  it('shows the whole list when "See all" switches to the section’s own tab', async () => {
-    givenHoldings(manyLoans(12), []);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('See all (12)')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('section-header-action'));
-
-    await waitFor(() => expect(screen.getAllByTestId('content-card')).toHaveLength(12));
-    expect(screen.getByTestId('tabs-tab-loans').props.accessibilityState.selected).toBe(true);
-  });
-
-  it('shows one section on its own tab and hides the other four', async () => {
-    givenHoldings(manyLoans(2), [aHold({ state: 'queued', position: 1 })]);
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_dl', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('tabs-tab-downloads'));
-
-    await waitFor(() => expect(renderedSections()).toEqual(['Downloads']));
+    expect(screen.queryByTestId('tabs-count-downloads')).toBeNull();
   });
 
-  // A reader thinks of a queue and a copy reserved out of it as one thing they
-  // asked for; the app splits them only because one of the two dies.
-  it('keeps both hold sections together on the Holds tab', async () => {
-    await render(<LibraryScreen />);
+  it('shows a different view per tab, not the same content everywhere', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_dl', downloadedAt: 1 });
+    givenHoldings([aLoan({ itemId: 'item_loan' })], []);
 
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('tabs-tab-holds'));
+    await renderScreen();
 
-    await waitFor(() => expect(renderedSections()).toEqual(['Offered to you', 'Waiting']));
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-downloads'));
+
+    await waitFor(() => expect(screen.getByText('item_dl')).toBeTruthy());
+    // The Borrowed loan is a different view — not shown on the Downloads tab.
+    expect(screen.queryByText('item_loan')).toBeNull();
   });
 
-  // Nowhere further to go, so an action there would lead back to the list the
-  // reader is already reading.
-  it('draws no "See all" once the reader is on the section’s own tab', async () => {
-    givenHoldings(manyLoans(12), []);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('See all (12)')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('tabs-tab-loans'));
-
-    await waitFor(() => expect(screen.queryByText('See all (12)')).toBeNull());
-    expect(screen.queryByTestId('section-header-action')).toBeNull();
-  });
-
-  // The bar is a filter, not a route: it must not put anything on the back
-  // stack, and it must not refetch a shelf that is already in hand.
-  //
-  // EACH PRESS IS AWAITED. A press whose state update is never flushed lands
-  // after the test ends and outside `act`, which leaves the renderer in a state
-  // where every LATER test in the file mounts nothing — the failure shows up as
-  // twenty unrelated timeouts rather than here.
   it('does not refetch the library when the reader changes tab', async () => {
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(mockGetLibrary).toHaveBeenCalledTimes(1));
 
-    fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
-    await waitFor(() => expect(renderedSections()).toEqual(['Bookmarks']));
-
-    fireEvent.press(screen.getByTestId('tabs-tab-loans'));
-    await waitFor(() => expect(renderedSections()).toEqual(['Borrowed']));
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+    await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
 
     expect(mockGetLibrary).toHaveBeenCalledTimes(1);
   });
 });
 
+describe('LibraryScreen — All tab', () => {
+  it('shows a compact line when the library is entirely empty', async () => {
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Your library is empty right now.')).toBeTruthy());
+  });
+
+  it('shows a pending Elite offer first, with no heading reserved for an empty one', async () => {
+    givenHoldings(
+      [],
+      [
+        aHold({
+          holdId: 'h_offer',
+          itemId: 'item_99',
+          state: 'offered',
+          offerExpiresAt: new Date(SERVER_NOW_MS + 15 * 60_000).toISOString(),
+        }),
+      ],
+    );
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('elite-pending-access-card')).toBeTruthy());
+    expect(screen.getByText('Access available')).toBeTruthy();
+    expect(screen.getByText('Expires in 15:00')).toBeTruthy();
+  });
+
+  it('composes real holdings under one "Your content" heading rather than five sections', async () => {
+    givenHoldings([aLoan({ itemId: 'item_loan' })], []);
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_dl', downloadedAt: 1 });
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Your content')).toBeTruthy());
+    expect(screen.queryByText('Offered to you')).toBeNull();
+    expect(screen.queryByText('Waiting')).toBeNull();
+    expect(screen.queryByText('Your library')).toBeNull();
+  });
+
+  it('merges a loan and a download of the SAME book into ONE row, not two', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Playful Identities', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42', expiresAt: SERVER_NOW_MS + 86_400_000 })], []);
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getAllByText('Playful Identities')).toHaveLength(1));
+    expect(screen.getByText('1 item')).toBeTruthy();
+    // Both facts about the one book still show, merged onto the same row.
+    expect(screen.getByText('Due in 1 day')).toBeTruthy();
+    expect(screen.getByText('Downloaded')).toBeTruthy();
+  });
+
+  it('surfaces an Elite loan as active access, not as a Borrowed row', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('elite-active-access-card')).toBeTruthy());
+  });
+
+  it('lists a waiting hold under its own "Premium waiting" heading, separate from "Your content"', async () => {
+    givenHoldings([], [aHold({ state: 'queued', position: 1 })]);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Premium waiting')).toBeTruthy());
+    expect(screen.queryByText('Your content')).toBeNull();
+  });
+
+  it('goes to the item’s detail page when a merged content row is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+describe('LibraryScreen — Borrowed tab', () => {
+  async function openBorrowed() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
+  }
+
+  it('always shows the "Borrowed" heading and a compact hint, even when empty', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+
+    await openBorrowed();
+
+    expect(screen.getByTestId('tab-heading-borrowed')).toBeTruthy();
+    expect(screen.getByText('No items currently borrowed.')).toBeTruthy();
+    expect(screen.getByText('Items you borrow will appear here until they’re due.')).toBeTruthy();
+  });
+
+  it('lists a subscription loan with its due date and a real count', async () => {
+    givenHoldings([aLoan({ itemId: 'item_42', expiresAt: SERVER_NOW_MS + 14 * 86_400_000 })], []);
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
+
+    await waitFor(() => expect(screen.getByText('Due in 14 days')).toBeTruthy());
+    expect(screen.getByText('1 item')).toBeTruthy();
+    // The hint's plain caption stays, under the real row — it never
+    // disappears just because the tab now has something in it.
+    expect(screen.getByText('Items you borrow will appear here until they’re due.')).toBeTruthy();
+  });
+
+  it('excludes an Elite loan — Elite is Premium’s, not Borrowed’s', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
+
+    await waitFor(() => expect(screen.getByText('No items currently borrowed.')).toBeTruthy());
+  });
+
+  it('keeps an unhydrated loan here until its tier is known', async () => {
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
+
+    await waitFor(() => expect(screen.getByText('item_42')).toBeTruthy());
+  });
+
+  it('says "No due date" for an open-access loan rather than inventing one', async () => {
+    givenHoldings([aLoan()], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
+
+    await waitFor(() => expect(screen.getByText('No due date')).toBeTruthy());
+  });
+
+  it('goes to the item’s detail page when a Borrowed row is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+describe('LibraryScreen — Downloads tab', () => {
+  async function openDownloads() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-downloads'));
+  }
+
+  it('always shows the "Downloads" heading and a compact hint, even when empty', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+
+    await openDownloads();
+
+    expect(screen.getByTestId('tab-heading-downloads')).toBeTruthy();
+    expect(screen.getByText('No downloads yet.')).toBeTruthy();
+    expect(screen.getByText('Only items you’ve downloaded will appear here.')).toBeTruthy();
+  });
+
+  it('lists a downloaded book with a real count', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    expect(screen.getByText('Downloaded')).toBeTruthy();
+    expect(screen.getByText('1 item')).toBeTruthy();
+  });
+
+  it('summarises the tab as a count and total size', async () => {
+    useDownloadStore
+      .getState()
+      .markDownloaded({ itemId: 'item_a', downloadedAt: 2, sizeBytes: 14.2 * 1_048_576 });
+    useDownloadStore
+      .getState()
+      .markDownloaded({ itemId: 'item_b', downloadedAt: 1, sizeBytes: 8.6 * 1_048_576 });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+
+    await waitFor(() => expect(screen.getByText('2 items · 22.8 MB')).toBeTruthy());
+  });
+
+  it('goes to the item’s detail page when a Downloads row is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+});
+
+describe('LibraryScreen — Bookmarks tab', () => {
+  async function openBookmarks() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+  }
+
+  it('always shows the "Bookmarks" heading and a compact hint, even when empty', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+
+    await openBookmarks();
+
+    expect(screen.getByTestId('tab-heading-bookmarks')).toBeTruthy();
+    expect(screen.getByText('No bookmarked pages yet.')).toBeTruthy();
+    expect(screen.getByText('Pages you bookmark while reading will appear here.')).toBeTruthy();
+  });
+
+  it('groups every bookmark in one book under its title, with a real count', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42' }));
+    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42' }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+
+    await waitFor(() => expect(screen.getByText('2 bookmarks')).toBeTruthy());
+  });
+
+  it('shows a real count of bookmarked TITLES for the tab, not of bookmarks', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42' }));
+    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42' }));
+    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_3', bookId: 'item_99' }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+
+    // Two TITLES (item_42, item_99), even though there are three bookmarks.
+    await waitFor(() => expect(screen.getByText('2 items')).toBeTruthy());
+  });
+
+  it('expands a title in place to show its real bookmarks, rather than navigating', async () => {
+    useBookmarkStore
+      .getState()
+      .addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42', locator: { type: 'PDF', page: 12 } }));
+    useBookmarkStore
+      .getState()
+      .addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42', locator: { type: 'PDF', page: 88 } }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+
+    await waitFor(() => expect(screen.getByText('2 bookmarks')).toBeTruthy());
+    expect(screen.queryByText(/Page 12/)).toBeNull();
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.getByText(/Page 12/)).toBeTruthy());
+    expect(screen.getByText(/Page 88/)).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('collapses an expanded title on a second tap', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ locator: { type: 'PDF', page: 12 } }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+    await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByText(/Page 12/)).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.queryByText(/Page 12/)).toBeNull());
+  });
+
+  it('renders a reader-typed name ahead of a raw position, inventing neither', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ name: 'The proof', locator: { type: 'PDF', page: 12 } }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.getByText(/The proof/)).toBeTruthy());
+  });
+
+  it('offers Download for a title not yet on this device', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.getByTestId('action-button-download')).toBeTruthy());
+  });
+
+  it('omits Download once the title is already on this device', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.getByText(/Page 12/)).toBeTruthy());
+    expect(screen.queryByTestId('action-button-download')).toBeNull();
+  });
+
+  it('downloads the title through the same borrow-then-record call ItemDetailScreen uses', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await openBookmarks();
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByTestId('action-button-download')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('action-button-download'));
+
+    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
+  });
+});
+
+describe('LibraryScreen — Premium tab', () => {
+  async function openPremium() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-holds'));
+  }
+
+  it('always shows "Your Elite access" and "Waiting for access", each with its own compact hint when empty', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+
+    await openPremium();
+
+    expect(screen.getByText('Your Elite access')).toBeTruthy();
+    expect(screen.getByText('No active Elite access.')).toBeTruthy();
+    expect(screen.getByText('Waiting for access')).toBeTruthy();
+    expect(screen.getByText('No items currently waiting.')).toBeTruthy();
+  });
+
+  it('reserves no heading or hint for a pending offer when there is none', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+
+    await openPremium();
+
+    expect(screen.queryByText('Access available')).toBeNull();
+  });
+
+  it('shows a pending offer, active access and the waiting queue together, each under its own heading', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_active', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings(
+      [aLoan({ loanId: 'loan_active', itemId: 'item_active' })],
+      [
+        aHold({ holdId: 'h_offer', itemId: 'item_offer', state: 'offered' }),
+        aHold({ holdId: 'h_wait', itemId: 'item_wait', state: 'queued', position: 3, queueLength: 7 }),
+      ],
+    );
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+    await openPremium();
+
+    await waitFor(() => expect(screen.getByTestId('elite-pending-access-card')).toBeTruthy());
+    expect(screen.getByTestId('tab-heading-access-available')).toBeTruthy();
+    expect(screen.getByTestId('elite-active-access-card')).toBeTruthy();
+    expect(screen.getByTestId('elite-queue-card')).toBeTruthy();
+    expect(screen.getByText('#3 of 7')).toBeTruthy();
+  });
+
+  it('does not show a subscription loan here — Premium is Elite-only', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+    await openPremium();
+
+    await waitFor(() => expect(screen.getByText('No active Elite access.')).toBeTruthy());
+  });
+
+  it('goes to the item’s detail page when an active-access or waiting card is tapped', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_active', title: 'Digital Media Cultures', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ loanId: 'loan_active', itemId: 'item_active' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+    await openPremium();
+    await waitFor(() => expect(screen.getByTestId('elite-active-access-card')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('elite-active-access-card'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_active' });
+  });
+});
+
+describe('LibraryScreen — accepting and declining an Elite offer', () => {
+  function offerHolding() {
+    givenHoldings(
+      [],
+      [aHold({ holdId: 'h_offer', itemId: 'item_99', state: 'offered', offerExpiresAt: SERVER_NOW })],
+    );
+  }
+
+  it('accepts an offer through the same acceptOffer call ItemDetailScreen makes', async () => {
+    offerHolding();
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('action-button-acceptOffer')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('action-button-acceptOffer'));
+
+    await waitFor(() => expect(mockAcceptOffer).toHaveBeenCalledWith('h_offer'));
+  });
+
+  it('declines an offer through the same cancelHold call', async () => {
+    offerHolding();
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('action-button-rejectOffer')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('action-button-rejectOffer'));
+
+    await waitFor(() => expect(mockCancelHold).toHaveBeenCalledWith('h_offer'));
+  });
+
+  it('refreshes the library after a successful accept', async () => {
+    offerHolding();
+
+    await renderScreen();
+    await waitFor(() => expect(mockGetLibrary).toHaveBeenCalledTimes(1));
+
+    await fireEvent.press(screen.getByTestId('action-button-acceptOffer'));
+
+    await waitFor(() => expect(mockGetLibrary).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows a notice and keeps the offer when the call is refused', async () => {
+    offerHolding();
+    mockAcceptOffer.mockRejectedValue(new Error('refused'));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('action-button-acceptOffer')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('action-button-acceptOffer'));
+
+    await waitFor(() =>
+      expect(screen.getByText('Couldn’t accept that offer. Pull to refresh and try again.')).toBeTruthy(),
+    );
+  });
+});
+
 describe('LibraryScreen — hydration', () => {
-  it('asks for every id across all five sections in ONE batch call', async () => {
-    const getItemsBatch = jest
-      .fn()
-      .mockResolvedValue({ items: [], notFound: [], denied: [] });
+  it('asks for every id across offers, loans, downloads, bookmarks and waiting in ONE batch call', async () => {
+    const getItemsBatch = jest.fn().mockResolvedValue({ items: [], notFound: [], denied: [] });
     setCatalogueSource(fakeSource(getItemsBatch));
     givenHoldings(
       [aLoan({ itemId: 'item_42' })],
@@ -323,7 +761,7 @@ describe('LibraryScreen — hydration', () => {
     useDownloadStore.getState().markDownloaded({ itemId: 'item_11', downloadedAt: 1 });
     useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_22' }));
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(getItemsBatch).toHaveBeenCalledTimes(1));
     expect(getItemsBatch.mock.calls[0][0].sort()).toEqual([
@@ -333,21 +771,6 @@ describe('LibraryScreen — hydration', () => {
       'item_77',
       'item_99',
     ]);
-  });
-
-  // The subscription path: one book that is a loan, a download and bookmarked is
-  // one id to hydrate, not three of the 100 the batch call allows.
-  it('asks once for a book that is on loan, downloaded and bookmarked', async () => {
-    const getItemsBatch = jest.fn().mockResolvedValue({ items: [], notFound: [], denied: [] });
-    setCatalogueSource(fakeSource(getItemsBatch));
-    givenHoldings([aLoan({ itemId: 'item_42' })], []);
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(getItemsBatch).toHaveBeenCalledTimes(1));
-    expect(getItemsBatch.mock.calls[0][0]).toEqual(['item_42']);
   });
 
   it('renders the hydrated title rather than the item id', async () => {
@@ -360,271 +783,42 @@ describe('LibraryScreen — hydration', () => {
     );
     givenHoldings([aLoan({ itemId: 'item_42' })], []);
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
     expect(screen.queryByText('item_42')).toBeNull();
   });
 
   it('keeps the row against its id when the catalogue cannot resolve it', async () => {
-    // A title is decoration; possession is not. One unresolvable id must not
-    // blank a shelf the reader's books are on.
-    setCatalogueSource(
-      fakeSource(async () => ({ items: [], notFound: ['item_42'], denied: [] })),
-    );
+    setCatalogueSource(fakeSource(async () => ({ items: [], notFound: ['item_42'], denied: [] })));
     givenHoldings([aLoan({ itemId: 'item_42' })], []);
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    expect(screen.getByText('item_42')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('item_42')).toBeTruthy());
   });
 
   it('keeps the shelf and offers a retry when the batch call fails outright', async () => {
     setCatalogueSource(fakeSource(async () => Promise.reject(new Error('offline'))));
     givenHoldings([aLoan({ itemId: 'item_42' })], []);
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() =>
       expect(
         screen.getByText('Titles couldn’t be loaded. Pull to try again — your books are still here.'),
       ).toBeTruthy(),
     );
-    // The book is still on the shelf, named by its id.
     expect(screen.getByText('item_42')).toBeTruthy();
-  });
-});
-
-describe('LibraryScreen — what each row shows', () => {
-  it('shows a waiting reader their place as "3rd of 7"', async () => {
-    givenHoldings([], [aHold({ state: 'queued', position: 3, queueLength: 7 })]);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('3rd of 7')).toBeTruthy());
-  });
-
-  it('shows a loan its due date', async () => {
-    givenHoldings(
-      [aLoan({ expiresAt: Date.parse(SERVER_NOW) + 14 * 86_400_000 })],
-      [aHold({ state: 'queued', position: 1 })],
-    );
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Due in 14 days')).toBeTruthy());
-  });
-
-  it('says "No due date" for an open-access loan rather than inventing one', async () => {
-    givenHoldings([aLoan()], [aHold({ state: 'queued', position: 1 })]);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('No due date')).toBeTruthy());
-  });
-
-  it('lists an offer with its countdown', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_77', title: 'A Reassigned Copy' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    givenHoldings(
-      [],
-      [
-        aHold({
-          state: 'offered',
-          offerExpiresAt: new Date(Date.parse(SERVER_NOW) + 15 * 60_000).toISOString(),
-        }),
-      ],
-    );
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('A Reassigned Copy')).toBeTruthy());
-    expect(screen.getByText('Expires in 15 minutes')).toBeTruthy();
-  });
-
-  // `QueueNotificationHost` mounts the actionable banner globally, so rendering
-  // it here too put it on screen twice. This section lists; the host acts.
-  it('does not render a second offer banner — the global host owns that', async () => {
-    givenHoldings(
-      [],
-      [
-        aHold({
-          state: 'offered',
-          offerExpiresAt: new Date(Date.parse(SERVER_NOW) + 15 * 60_000).toISOString(),
-        }),
-      ],
-    );
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    expect(screen.queryByTestId('queue-notification')).toBeNull();
-  });
-
-  it('still lists an offer whose expiry is unreadable, just without a countdown', async () => {
-    // Hiding it would lose the reader a copy that is genuinely theirs.
-    givenHoldings([], [aHold({ state: 'offered' })]);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
-    expect(screen.getByText('item_77')).toBeTruthy();
-    expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(screen.queryByText('Expiring now')).toBeNull();
-  });
-});
-
-describe('LibraryScreen — downloads', () => {
-  it('lists a downloaded book under Downloads', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
-    expect(screen.getByText('Downloaded')).toBeTruthy();
-  });
-
-  it('shows the size when the download layer reported one', async () => {
-    useDownloadStore
-      .getState()
-      .markDownloaded({ itemId: 'item_42', downloadedAt: 1, sizeBytes: 3 * 1_048_576 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Downloaded · 3.0 MB')).toBeTruthy());
-  });
-
-  // A SUBSCRIPTION title a student downloads is both a loan and a download: the
-  // loan is what expires, the download is what opens in a tunnel. Two facts, so
-  // two rows — dropping either loses the answer the other cannot give.
-  it('shows a subscription download under both Borrowed and Downloads', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    givenHoldings([aLoan({ itemId: 'item_42', expiresAt: Date.parse(SERVER_NOW) + 86_400_000 })], []);
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getAllByText('Applied Thermodynamics')).toHaveLength(2));
-    // The loan row carries the due date, the download row carries the download.
-    expect(screen.getByText('Due in 1 day')).toBeTruthy();
-    expect(screen.getByText('Downloaded')).toBeTruthy();
-  });
-
-  // Open access has no loan behind it, so Downloads is the only place it can
-  // appear — which is why this cannot be a badge on the loan rows instead.
-  it('shows an open access download with no loan behind it', async () => {
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_oa', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('item_oa')).toBeTruthy());
-    expect(screen.getByText('Books you borrow will appear here until they’re due.')).toBeTruthy();
-  });
-
-  it('survives a refresh failure — a book on this device is not the server’s to take away', async () => {
-    mockGetLibrary.mockRejectedValue(new Error('offline'));
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Downloaded')).toBeTruthy());
-  });
-});
-
-describe('LibraryScreen — bookmarks', () => {
-  it('shows a PDF bookmark by its page number', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    useBookmarkStore.getState().addBookmark(aBookmark({ locator: { type: 'PDF', page: 42 } }));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Page 42')).toBeTruthy());
-    expect(screen.getByText('Applied Thermodynamics')).toBeTruthy();
-  });
-
-  it('shows the reader’s own name for a bookmark under the title', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ name: 'The proof' }));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('The proof')).toBeTruthy());
-  });
-
-  // A CFI addresses a spine position and means nothing on a shelf. The row still
-  // renders — the reader keeps the bookmark — it just claims no page.
-  it('lists an EPUB bookmark without a CFI on screen', async () => {
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ locator: { type: 'EPUB', cfi: 'epubcfi(/6/14!/4/2/1:0)' } }));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('item_42')).toBeTruthy());
-    expect(screen.queryByText(/epubcfi/)).toBeNull();
-  });
-
-  // Three places in one monograph are three things the reader saved, and the
-  // page number is the whole content of the row.
-  it('gives every bookmark in one book its own row', async () => {
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ id: 'bm_1', locator: { type: 'PDF', page: 12 } }));
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ id: 'bm_2', locator: { type: 'PDF', page: 88 } }));
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Page 12')).toBeTruthy());
-    expect(screen.getByText('Page 88')).toBeTruthy();
-  });
-
-  it('leaves a deleted bookmark off the shelf', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark());
-    useBookmarkStore.getState().removeBookmark('bm_1', 2);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() =>
-      expect(screen.getByText('Pages you bookmark while reading will appear here.')).toBeTruthy(),
-    );
-    expect(screen.queryByText('Page 12')).toBeNull();
   });
 });
 
 describe('LibraryScreen — the batch cap', () => {
   it('says how many rows it could not show rather than truncating silently', async () => {
-    const loans = Array.from({ length: 107 }, (_, i) =>
-      aLoan({ loanId: `loan_${i}`, itemId: `item_${i}` }),
-    );
+    const loans = Array.from({ length: 107 }, (_, i) => aLoan({ loanId: `loan_${i}`, itemId: `item_${i}` }));
     givenHoldings(loans, []);
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() =>
       expect(
@@ -635,135 +829,74 @@ describe('LibraryScreen — the batch cap', () => {
 });
 
 describe('LibraryScreen — offline', () => {
-  // Matched on the banner's own words rather than on /offline/i: the Downloads
-  // empty copy says "readable here offline", and a loose regex would find it and
-  // report a banner on a connected device.
   it('shows the offline banner when the device has no connection', async () => {
     mockUseNetworkStatus.mockReturnValue(false);
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(screen.getByText("You're offline")).toBeTruthy());
   });
 
   it('shows no offline banner when connected', async () => {
-    await render(<LibraryScreen />);
+    await renderScreen();
 
-    await waitFor(() => expect(screen.getByText('Offered to you')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Library')).toBeTruthy());
     expect(screen.queryByText("You're offline")).toBeNull();
   });
 });
 
 describe('LibraryScreen — first load', () => {
-  it('skeletons the sections that are still arriving, under their real headings', async () => {
+  it('skeletons the All tab while holdings are still arriving', async () => {
     // A refresh that never answers. Seeding `loading: true` is not enough — the
     // mount-time refresh resolves and clears it before an assertion can run.
     mockGetLibrary.mockReturnValue(new Promise(() => {}));
 
-    await render(<LibraryScreen />);
+    await renderScreen();
 
-    // One per server-sourced section: Offered, Borrowed, Waiting.
-    await waitFor(() => expect(screen.getAllByTestId('library-loading')).toHaveLength(3));
-    expect(renderedSections()).toEqual(SECTIONS);
-    // The skeleton stands in for rows, so it replaces the empty copy.
-    expect(screen.queryByText('Books you borrow will appear here until they’re due.')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('library-loading')).toBeTruthy());
+  });
+
+  it('skeletons the Borrowed and Premium tabs the same way', async () => {
+    mockGetLibrary.mockReturnValue(new Promise(() => {}));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
+    expect(screen.getByTestId('library-loading')).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId('tabs-tab-holds'));
+    expect(screen.getByTestId('library-loading')).toBeTruthy();
   });
 
   // Nothing is pending behind them — they came off this device — so a
-  // whole-screen skeleton would hide rows that are ready.
-  it('does not skeleton downloads or bookmarks, which cannot be loading', async () => {
-    // A refresh that never answers. Seeding `loading: true` is not enough — the
-    // mount-time refresh resolves and clears it before an assertion can run.
+  // skeleton would hide rows that are already ready.
+  it('never skeletons Downloads or Bookmarks, which cannot be loading', async () => {
     mockGetLibrary.mockReturnValue(new Promise(() => {}));
     useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
 
-    await render(<LibraryScreen />);
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-downloads'));
 
     await waitFor(() => expect(screen.getByText('Downloaded')).toBeTruthy());
-    expect(screen.getByText('Pages you bookmark while reading will appear here.')).toBeTruthy();
+    expect(screen.queryByTestId('library-loading')).toBeNull();
   });
 });
 
 describe('LibraryScreen — the shelf is the launch screen', () => {
   it('refreshes on mount rather than waiting for a pull', async () => {
-    await render(<LibraryScreen />);
+    await renderScreen();
 
     await waitFor(() => expect(mockGetLibrary).toHaveBeenCalled());
   });
 });
 
-// The small components lifted from the design mockup — a borrowed-books card, a
-// downloads summary line, a tier pill and a queue-progress bar. Every one is fed
-// by data the app actually has; the mockup's invented fields (reading %, offline
-// "Ready", wait estimate) are deliberately absent.
-describe('LibraryScreen — the mockup components', () => {
-  it('labels the loans tab "Borrowed" and the holds tab "Premium"', async () => {
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByTestId('tabs-label-loans')).toBeTruthy());
-    expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed');
-    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium');
-  });
-
-  it('summarises the Downloads section as a count and total size', async () => {
-    useDownloadStore
-      .getState()
-      .markDownloaded({ itemId: 'item_a', downloadedAt: 2, sizeBytes: 14.2 * 1_048_576 });
-    useDownloadStore
-      .getState()
-      .markDownloaded({ itemId: 'item_b', downloadedAt: 1, sizeBytes: 8.6 * 1_048_576 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('2 items · 22.8 MB')).toBeTruthy());
-  });
-
-  it('counts downloads that reported no size, omitting the megabytes', async () => {
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_a', downloadedAt: 1 });
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('1 item')).toBeTruthy());
-  });
-
-  it('shows the access tier on a borrowed book once its title hydrates', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', accessTier: 'SUBSCRIPTION' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    givenHoldings([aLoan({ itemId: 'item_42' })], []);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('Subscription')).toBeTruthy());
-  });
-
-  it('draws a queue-progress bar when a hold carries a position and a length', async () => {
-    givenHoldings([], [aHold({ state: 'queued', position: 3, queueLength: 7 })]);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('3rd of 7')).toBeTruthy());
-    expect(screen.getByTestId('queue-progress')).toBeTruthy();
-  });
-
-  it('draws no queue-progress bar for a position with no queue length', async () => {
-    givenHoldings([], [aHold({ state: 'queued', position: 3 })]);
-
-    await render(<LibraryScreen />);
-
-    await waitFor(() => expect(screen.getByText('3rd in the queue')).toBeTruthy());
-    expect(screen.queryByTestId('queue-progress')).toBeNull();
-  });
-});
-
-// The provider seam (src/features/library): download/bookmark rows tap through
-// `LibraryProvider.openBook` → `openReader`. A fake provider is injected via
-// context; with none injected the default stand-in refuses and the screen says so.
-describe('LibraryScreen — opening a book through the provider', () => {
+// The provider seam (src/features/library) is now used ONLY by a bookmark
+// group's own "Read" action — it resumes at the exact saved position, which
+// `ItemDetail` cannot reproduce. Every other row navigates instead (see the
+// per-tab describe blocks above).
+describe('LibraryScreen — resuming a bookmark through the provider', () => {
   function makeProvider(over: Partial<LibraryProvider> = {}): LibraryProvider {
     return {
       listDownloads: async () => [],
@@ -774,15 +907,7 @@ describe('LibraryScreen — opening a book through the provider', () => {
     };
   }
 
-  function renderWith(provider: LibraryProvider) {
-    return render(
-      <LibraryProviderContext.Provider value={provider}>
-        <LibraryScreen />
-      </LibraryProviderContext.Provider>,
-    );
-  }
-
-  it('opens a downloaded book — gate then reader — when its row is tapped', async () => {
+  it('opens a bookmarked title at its most recent bookmark through the group’s Read action', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
@@ -790,35 +915,27 @@ describe('LibraryScreen — opening a book through the provider', () => {
         denied: [],
       })),
     );
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-    const provider = makeProvider();
-
-    await renderWith(provider);
-
-    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('content-card'));
-
-    await waitFor(() => expect(provider.openBook).toHaveBeenCalledWith('item_42', 'PDF'));
-    expect(provider.openReader).toHaveBeenCalledWith({ itemId: 'item_42', format: 'PDF' });
-  });
-
-  it('opens a bookmark at its saved position', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
-        notFound: [],
-        denied: [],
-      })),
+    useBookmarkStore.getState().addBookmark(
+      aBookmark({
+        id: 'bm_old',
+        bookId: 'item_42',
+        locator: { type: 'PDF', page: 12 },
+        updatedAt: SERVER_NOW_MS - 60_000,
+      }),
     );
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ bookId: 'item_42', locator: { type: 'PDF', page: 42 } }));
+    useBookmarkStore.getState().addBookmark(
+      aBookmark({ id: 'bm_new', bookId: 'item_42', locator: { type: 'PDF', page: 42 }, updatedAt: SERVER_NOW_MS }),
+    );
     const provider = makeProvider();
 
-    await renderWith(provider);
+    await renderScreen(provider);
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+    await waitFor(() => expect(screen.getByText('2 bookmarks')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
 
-    await waitFor(() => expect(screen.getByText('Page 42')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('content-card'));
+    await fireEvent.press(screen.getByTestId('action-button-read'));
 
     await waitFor(() => expect(provider.openBook).toHaveBeenCalledWith('item_42', 'PDF'));
     expect(provider.openReader).toHaveBeenCalledWith({
@@ -828,9 +945,8 @@ describe('LibraryScreen — opening a book through the provider', () => {
     });
   });
 
-  // With no provider mounted, the default stand-in refuses — the screen must say
-  // so honestly rather than appear to open nothing.
-  it('shows an honest notice when the reader is not in this build', async () => {
+  it('shows an honest, user-appropriate notice when the reader is not in this build — never the internal implementation note', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
@@ -838,44 +954,22 @@ describe('LibraryScreen — opening a book through the provider', () => {
         denied: [],
       })),
     );
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
 
-    await render(<LibraryScreen />);
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+    await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
 
-    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('content-card'));
+    await fireEvent.press(screen.getByTestId('action-button-read'));
 
-    await waitFor(() =>
-      expect(
-        screen.getByText('Reading opens here once the reader ships in the merged app.'),
-      ).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText('This title isn’t available to read yet.')).toBeTruthy());
+    expect(screen.queryByText(/merged app/)).toBeNull();
   });
 
-  // A row whose title never hydrated has no format to open against — the screen
-  // must say so and NOT call the gate with an undefined format.
-  it('does not open and explains when the format is still unknown', async () => {
-    setCatalogueSource(fakeSource(async () => ({ items: [], notFound: ['item_42'], denied: [] })));
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-    const provider = makeProvider();
-
-    await renderWith(provider);
-
-    // Rendered against its id, since the title could not resolve.
-    await waitFor(() => expect(screen.getByText('item_42')).toBeTruthy());
-    fireEvent.press(screen.getByTestId('content-card'));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText('This one isn’t ready to open yet — still loading its details.'),
-      ).toBeTruthy(),
-    );
-    expect(provider.openBook).not.toHaveBeenCalled();
-  });
-
-  // With the real provider a second tap would race a licence session, so a tap
-  // while one open is in flight is ignored.
-  it('ignores a second tap while the first open is still in flight', async () => {
+  it('ignores a second tap while the first resume is still in flight', async () => {
+    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
@@ -883,23 +977,23 @@ describe('LibraryScreen — opening a book through the provider', () => {
         denied: [],
       })),
     );
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-    // The first tap holds the in-flight guard until we release it, so the second
-    // tap lands while the first open is still pending.
     let releaseOpen: () => void = () => {};
     const openBook = jest.fn(() => new Promise<void>((resolve) => (releaseOpen = resolve)));
     const provider = makeProvider({ openBook });
 
-    await renderWith(provider);
+    await renderScreen(provider);
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+    await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
 
-    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
-    const card = screen.getByTestId('content-card');
-    fireEvent.press(card);
-    fireEvent.press(card);
+    const readButton = screen.getByTestId('action-button-read');
+    await fireEvent.press(readButton);
+    await fireEvent.press(readButton);
 
     await waitFor(() => expect(openBook).toHaveBeenCalledTimes(1));
 
-    // Let the first open finish so nothing is left pending at teardown.
     releaseOpen();
     await waitFor(() => expect(provider.openReader).toHaveBeenCalledTimes(1));
   });

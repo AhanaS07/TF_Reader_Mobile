@@ -9,13 +9,15 @@
 // endpoint carries neither.
 //
 // REBUILT AROUND A PRODUCT MODEL, NOT FIVE BACKEND SECTIONS (product spec,
-// Sept 2026). The tab rail is now real navigation — each tab renders a
-// DIFFERENT view of the same underlying data, not a filtered slice of one
-// long scroll with a "See all". Five tabs:
+// Sept 2026, refined against a reference mockup the same month). The tab
+// rail is real navigation — each tab renders a DIFFERENT view of the same
+// underlying data. Five tabs:
 //
 //   All       — a genuine overview: a pending Elite offer first if one
-//               exists, then the reader's actual holdings composed together
-//               ("Your library"), never as five headed sub-sections.
+//               exists (never a reserved empty slot for it), then "Your
+//               content" (loans/downloads/bookmarks merged, one heading not
+//               five) and, separately, "Premium waiting" if the reader is
+//               queued for anything.
 //   Borrowed  — SUBSCRIPTION LOANS ONLY. Elite is a different tier with a
 //               different lifecycle (temporary, re-requested on expiry) and
 //               does not belong here — see `partitionLoansByTier`.
@@ -27,39 +29,52 @@
 //               needing Accept/Decline, active Elite access already granted,
 //               and a place in a waiting queue. Nothing else belongs here.
 //
+// EVERY TAB RESTATES ITS OWN NAME AS A HEADING, WITH A REAL COUNT BESIDE IT
+// WHEN NON-ZERO ("Downloads   2 items"). Tapping a pill already tells the
+// reader where they are; the heading is not decoration — the SAME row also
+// carries the count, on explicit instruction against a badge on the pill
+// itself ("a number beside every filter read as noise"). `All` gets no
+// single count of its own (one number cannot honestly describe five kinds
+// of row), but its two sub-headings ("Your content", "Premium waiting")
+// follow the identical pattern.
+//
+// A QUIET HINT, NOT A GIANT EMPTY STATE, closes every single-purpose tab —
+// `TabHint`. It always renders (an icon plus one line saying what belongs
+// here), and gains a bold headline ONLY when the tab is genuinely empty.
+// This is deliberately the return of the original screen's own "every
+// section teaches itself" idea, at a size a later product pass asked to
+// shrink: compact enough to sit under real content without reading as
+// leftover space, not a full-page "nothing here" card.
+//
 // THE THREE ELITE-STATE CARDS ARE SHARED BETWEEN `All` AND `Premium` —
 // `ElitePendingAccessCard`, `EliteActiveAccessCard`, `EliteQueueCard` — one
-// implementation of each business state, composed into both views, per the
-// product spec's own instruction not to build the Elite logic twice.
+// implementation of each business state, composed into both views.
 //
-// ACCEPT/DECLINE NOW LIVE ON THE CARD ITSELF, via the same
+// EVERY ROW TAPS THROUGH TO THE ITEM'S OWN DETAIL PAGE, THE SAME AS
+// CATALOGUE/SEARCH/SHELF. Reading itself happens from that page's own
+// ActionBar, not from a direct open on the shelf — `LibraryStackParamList`
+// registers `ItemDetail` for exactly this. The one exception is a bookmark
+// GROUP's own "Read" action (see `BookmarkGroupRow`), which still resumes at
+// the exact saved position through the provider seam below, because that is
+// a real capability only this screen's own bookmark data can offer and
+// `ItemDetail` cannot reproduce it.
+//
+// ACCEPT/DECLINE LIVE ON THE OFFER CARD ITSELF, via the same
 // `getLicenceSource().acceptOffer`/`.cancelHold` calls `ItemDetailScreen`
-// already makes for the identical actions on its own ActionBar. This is not
-// a new implementation of the two buttons — `ActionButton` still owns their
-// label/icon/emphasis — and it deliberately does not silence
-// `QueueNotificationHost`'s floating banner for the same offer:
-// `ItemDetailScreen` already shows Accept/Decline inline WHILE that banner
-// can also be on screen, and there is no suppression mechanism for that
-// today. This screen now follows the identical, already-precedented shape.
-//
-// TAB COUNTS ARE REAL, NEVER INVENTED. Where a badge appears on a tab
-// (Borrowed/Downloads/Bookmarks/Premium — never `All`, where one number
-// could not honestly describe five different kinds of row), it is the exact
-// length of the array that tab renders, computed the same render as the
-// content it counts.
+// already makes for the identical actions on its own ActionBar — not a new
+// implementation of the two buttons, and it deliberately does not silence
+// `QueueNotificationHost`'s floating banner for the same offer, mirroring
+// `ItemDetailScreen`'s own already-precedented coexistence with it.
 //
 // NO COMPONENT ON THIS SCREEN READS A CLOCK. Every countdown or due date is a
 // difference against the `serverTime` that arrived with the holdings.
 // `Date.now()` is called only inside `@hooks/useServerClock`, and only ever
 // to measure an ELAPSED interval between two readings of the same clock —
-// safe even when that clock is wrong. A device five minutes fast must not
-// show an offer dying five minutes early, because the reader then abandons a
-// copy that is still theirs.
+// safe even when that clock is wrong.
 //
 // UNDER-SHOW, NEVER OVER-SHOW. An unhydrated loan is bucketed as subscription
 // rather than briefly claiming Elite (see `partitionLoansByTier`), and an
-// offer whose expiry cannot be read still renders rather than being hidden —
-// the same rule this screen has always applied.
+// offer whose expiry cannot be read still renders rather than being hidden.
 //
 // TITLES ARE HYDRATED, NOT STORED. `getLibrary` carries item ids; titles,
 // covers, formats and access tiers come from ONE `getItemsBatch` call. A
@@ -69,20 +84,23 @@
 //
 // ─── WHAT IS DELIBERATELY NOT HERE ──────────────────────────────────────────
 //
-// A NEW ROUTE FOR A TITLE'S BOOKMARKS. The product spec's own mockup calls it
-// "the bookmark view for that title", but the shape it actually needs — a
-// short, real list under the title that was just tapped — is exactly what an
-// in-place expansion already shows, at the cost of zero new navigation. A
-// pushed screen that rendered the same rows would be CONVENTIONS §7's "second
-// place that renders a bookmark row".
+// A NEW ROUTE FOR A TITLE'S BOOKMARKS. An in-place expansion under the title
+// that was just tapped shows the same real rows a pushed screen would, at
+// the cost of zero new navigation — a second place that rendered a bookmark
+// row would be CONVENTIONS §7's duplication.
 //
 // A DOWNLOAD SIZE, A DOWNLOAD DATE, A READING-PROGRESS PERCENT, A LOAN
-// DURATION, AN ESTIMATED WAIT. None of these are in the data this screen can
-// see — seen `downloadedLabel`, `dueLabel` and `queueProgressFraction`'s own
-// comments in `LibraryScreen.holdings.ts` for exactly which fields the
-// contract drops and why guessing one would be worse than omitting it.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+// DURATION, AN ESTIMATED WAIT, A FABRICATED ROW OF ANY KIND. None of these
+// are in the data this screen can see — see `downloadedLabel`, `dueLabel`
+// and `queueProgressFraction`'s own comments in `LibraryScreen.holdings.ts`
+// for exactly which fields the contract drops and why guessing one would be
+// worse than omitting it. Sparse real data (today, often exactly one item)
+// is rendered exactly as sparse — `TabHint` is what keeps that from looking
+// broken rather than a reason to invent more rows.
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import type { Bookmark } from '@/shared/contracts';
 import { useLibraryProvider } from '@/features/library/context';
@@ -95,7 +113,6 @@ import { EliteActiveAccessCard } from '@components/EliteActiveAccessCard';
 import { ElitePendingAccessCard } from '@components/ElitePendingAccessCard';
 import { EliteQueueCard } from '@components/EliteQueueCard';
 import { OfflineBanner } from '@components/OfflineBanner';
-import { SectionHeader } from '@components/SectionHeader';
 import { Skeleton } from '@components/Skeleton';
 import { type TabItem, Tabs } from '@components/Tabs';
 import { getCatalogueSource } from '@config/catalogue';
@@ -117,8 +134,9 @@ import {
   downloadsSummaryLabel,
   dueLabel,
   groupBookmarksByTitle,
-  offerExpiryLabel,
-  offerMinutesRemaining,
+  mergeContentItems,
+  type MergedLibraryItem,
+  offerCountdownLabel,
   partitionHolds,
   partitionLoansByTier,
   queueLabel,
@@ -127,10 +145,10 @@ import {
   sortedDownloads,
 } from './LibraryScreen.holdings';
 
-// How often the offer/queue countdowns re-render. A minute is the resolution
-// `QueueNotification` displays, so ticking faster would re-render the tree for
-// a label that cannot change. Ticking slower would let "Expiring now" arrive up
-// to a minute late, and the last minute is the one that matters.
+// How often the offer/queue countdowns re-render. `QueueNotification` also
+// re-renders on this cadence; ticking faster would redraw the tree for a
+// label that cannot change yet, and slower would let "Expiring now" arrive
+// late in the one window that matters most.
 const TICK_MS = 30_000;
 
 // The holdings skeleton's row count — a plausible shape for a shelf whose
@@ -144,7 +162,37 @@ const EMPTY_TITLES: Map<string, BookSummary> = new Map();
 
 type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'holds';
 
-export default function LibraryScreen() {
+// Plain text, no count badge on the pill itself — on explicit instruction: a
+// number beside every filter label ("Downloads 1", "Borrowed 0") read as
+// noise before the reader had chosen anything. The identical count instead
+// appears inside each tab's own content, beside its restated heading — see
+// `TabHeading`.
+const LIBRARY_TABS: TabItem[] = [
+  { id: 'all', label: 'All' },
+  // Shown as "Borrowed"; the id stays `loans` because that is the partition
+  // it selects. Not "Borrowed Books" — the shelf holds books, journals and
+  // audiobooks alike, and the label must not name just one of them.
+  { id: 'loans', label: 'Borrowed' },
+  { id: 'downloads', label: 'Downloads' },
+  { id: 'bookmarks', label: 'Bookmarks' },
+  // Shown as "Premium"; the id stays `holds` because that is the partition
+  // it selects (Offered + Elite loans + Waiting).
+  { id: 'holds', label: 'Premium' },
+];
+
+// Hand-typed to the one real call this screen makes, the same reason
+// `ItemDetailScreen`'s own `navigation` prop is hand-typed rather than one
+// stack's generated `NativeStackScreenProps` — this screen's `navigation`
+// prop is really `LibraryStackParamList`'s, but writing only the shape used
+// means a test can hand it a plain `{ navigate: jest.fn() }` rather than
+// standing up a real `NavigationContainer`.
+interface LibraryScreenProps {
+  navigation: {
+    navigate: (screen: 'ItemDetail', params: { itemId: string }) => void;
+  };
+}
+
+export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const loans = useLibraryStore((s) => s.loans);
   const holds = useLibraryStore((s) => s.holds);
   const loading = useLibraryStore((s) => s.loading);
@@ -156,8 +204,8 @@ export default function LibraryScreen() {
   const bookmarkRecords = useBookmarkStore((s) => s.bookmarks);
   const isOnline = useNetworkStatus();
   // The seam to the reader/download stack (Team 4's, merged later). Defaults to a
-  // stand-in whose `openBook` politely refuses — so a tapped row shows an honest
-  // "not yet" rather than opening nothing. See `@/features/library`.
+  // stand-in whose `openBook` politely refuses. Only `BookmarkGroupRow`'s own
+  // "Read" action still calls through this — see the file header.
   const provider = useLibraryProvider();
 
   // Titles for the ids the holdings carry. Empty until a batch call lands; a
@@ -165,11 +213,12 @@ export default function LibraryScreen() {
   // rather than a missing state.
   const [titles, setTitles] = useState<Map<string, BookSummary>>(EMPTY_TITLES);
   const [hydrationFailed, setHydrationFailed] = useState(false);
-  // LOCAL, NOT ROUTE STATE — same reasoning as before: a filter is not worth a
-  // back-stack entry, and it resets to the overview when the reader returns.
+  // LOCAL, NOT ROUTE STATE — a filter is not worth a back-stack entry, and it
+  // resets to the overview when the reader returns to the tab.
   const [activeTab, setActiveTab] = useState<LibraryTabId>('all');
-  // A transient line shown when a tap can't open a book yet — the reader isn't in
-  // this build. Cleared on a successful open once the real provider is mounted.
+  // A transient line shown when a bookmark's own "Read" can't resume yet —
+  // the reader isn't in this build. Cleared on a successful open once the
+  // real provider is mounted.
   const [openNotice, setOpenNotice] = useState<string | undefined>(undefined);
   // Which offer/hold is mid-Accept-or-Decline, and which. One at a time: two
   // concurrent licence calls on the same reader's holds would race each
@@ -183,9 +232,9 @@ export default function LibraryScreen() {
   // already uses) is the smaller thing to build than one for every card.
   const [actionNotice, setActionNotice] = useState<string | undefined>(undefined);
   // Which bookmark GROUP (by book id) is expanded in place. One at a time —
-  // the product spec's own mockup shows one title's bookmarks at a time, and
-  // a reader flicking between several would otherwise stack every group's
-  // rows into one very long screen.
+  // the reference mockup shows one title's bookmarks at a time, and a reader
+  // flicking between several would otherwise stack every group's rows into
+  // one very long screen.
   const [expandedBookId, setExpandedBookId] = useState<string | undefined>(undefined);
   // Which book is mid-download from the Bookmarks tab's own group action.
   const [downloadingBookId, setDownloadingBookId] = useState<string | undefined>(undefined);
@@ -247,22 +296,34 @@ export default function LibraryScreen() {
     titles.get(itemId)?.authors?.join(', ');
   const summaryFor = (itemId: string): BookSummary | undefined => titles.get(itemId);
 
+  // Every row taps through to the item's own detail page — see the file
+  // header. `goToDetail` is the one place that navigation happens, so every
+  // row/card below hands this the same itemId rather than building its own
+  // `navigation.navigate` call.
+  const goToDetail = useCallback(
+    (itemId: string) => navigation.navigate('ItemDetail', { itemId }),
+    [navigation],
+  );
+
   // Borrowed means subscription loans only — Elite is a different tier with a
   // different lifecycle. See `partitionLoansByTier`'s own comment.
   const { subscriptionLoans, eliteLoans } = partitionLoansByTier(live, (itemId) => summaryFor(itemId)?.accessTier);
   const bookmarkGroups = groupBookmarksByTitle(bookmarks);
 
-  // Guards against a second tap while an open is in flight — with the real
-  // provider two concurrent `openBook` calls would race a licence session. A ref
-  // rather than state so it takes effect synchronously and never re-renders; read
-  // only inside this callback, never during render.
+  // Guards against a second tap while a bookmark's own resume-open is in
+  // flight — with the real provider two concurrent `openBook` calls would
+  // race a licence session. A ref rather than state so it takes effect
+  // synchronously and never re-renders; read only inside this callback.
   const openingRef = useRef(false);
 
-  // Open a book through the provider: the licence gate (`openBook`) THEN the
-  // reader (`openReader`) — never one without the other, and the screen decides
-  // no access itself. Today the stand-in's `openBook` throws `ReaderUnavailableError`,
-  // so this lands on the honest notice; at merge the same path opens for real.
-  const openItem = useCallback(
+  // Resume a bookmark at its exact saved position through the provider seam:
+  // the licence gate (`openBook`) THEN the reader (`openReader`) — never one
+  // without the other. Today the stand-in's `openBook` throws
+  // `ReaderUnavailableError`, so this lands on the honest notice; at merge
+  // the same path opens for real. `ItemDetail` cannot reproduce this exact
+  // capability (it has no bookmark position to resume from), which is why
+  // this is the one row that does not simply navigate there instead.
+  const openBookmark = useCallback(
     async (itemId: string, format: ContentFormat | undefined, target?: ReaderTargetLike) => {
       if (format === undefined) {
         // A title still hydrating has no known format to open against.
@@ -278,11 +339,9 @@ export default function LibraryScreen() {
       } catch (err) {
         // ONLY the "no reader in this build" case gets the placeholder line. Every
         // other error — a real network or licence failure once the reader is wired
-        // — must propagate rather than be disguised as "coming soon". At merge,
-        // that branch becomes the `DownloadFailure.code` → copy mapping (see
-        // INTEGRATION.md), not a rethrow.
+        // — must propagate rather than be disguised as "coming soon".
         if (err instanceof ReaderUnavailableError) {
-          setOpenNotice('Reading opens here once the reader ships in the merged app.');
+          setOpenNotice('This title isn’t available to read yet.');
         } else {
           throw err;
         }
@@ -353,36 +412,18 @@ export default function LibraryScreen() {
   // would hide rows that are ready in order to wait for rows that are not.
   const holdingsLoading = loading && live.length === 0 && holds.length === 0;
 
-  const libraryTabs: TabItem[] = [
-    { id: 'all', label: 'All' },
-    // Shown as "Borrowed"; the id stays `loans` because that is the partition
-    // it selects. Not "Borrowed Books" — the shelf holds books, journals and
-    // audiobooks alike, and the label must not name just one of them. The
-    // count is subscription loans only, matching what the tab itself shows.
-    { id: 'loans', label: 'Borrowed', count: subscriptionLoans.length },
-    { id: 'downloads', label: 'Downloads', count: downloads.length },
-    { id: 'bookmarks', label: 'Bookmarks', count: bookmarkGroups.length },
-    // Shown as "Premium"; the id stays `holds` because that is the partition
-    // it selects (Offered + Elite loans + Waiting). The count spans all three
-    // Elite states this tab shows, in the same order it shows them.
-    { id: 'holds', label: 'Premium', count: offered.length + eliteLoans.length + waiting.length },
-  ];
-
   function renderPendingOffers(): ReactNode {
-    // Nothing is wrong when this is empty — most readers are never mid-offer
-    // — so nothing renders at all rather than reserving an empty area for it
-    // (product spec §4: "do NOT reserve an empty area for it").
     return offered.map((hold) => {
       const holdId = hold.holdId;
       if (holdId === undefined) return null;
-      const minutes = clock.ready ? offerMinutesRemaining(hold, clock.offsetMs, clock.nowMs) : undefined;
+      const expiryLabel = clock.ready ? offerCountdownLabel(hold, clock.offsetMs, clock.nowMs) : undefined;
       const pending = pendingHoldAction?.holdId === holdId ? pendingHoldAction.action : undefined;
       return (
         <View key={holdId} style={styles.row}>
           <ElitePendingAccessCard
             title={titleFor(hold.itemId)}
-            expiryLabel={offerExpiryLabel(minutes)}
-            pending={pending}
+            {...(expiryLabel === undefined ? {} : { expiryLabel })}
+            {...(pending === undefined ? {} : { pending })}
             onAccept={() => handleAcceptOffer(holdId)}
             onReject={() => handleRejectOffer(holdId)}
           />
@@ -403,7 +444,7 @@ export default function LibraryScreen() {
             {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
             {...(summary?.format === undefined ? {} : { format: summary.format })}
             {...(expiresLabel === undefined ? {} : { expiresLabel })}
-            onRead={() => void openItem(loan.itemId, summary?.format)}
+            onPress={() => goToDetail(loan.itemId)}
           />
         </View>
       );
@@ -419,7 +460,7 @@ export default function LibraryScreen() {
           publisher={publisherFor(loan.itemId)}
           summary={summaryFor(loan.itemId)}
           clock={clock}
-          onRead={() => void openItem(loan.itemId, summaryFor(loan.itemId)?.format)}
+          onPress={() => goToDetail(loan.itemId)}
         />
       </View>
     ));
@@ -433,7 +474,7 @@ export default function LibraryScreen() {
           title={titleFor(record.itemId)}
           publisher={publisherFor(record.itemId)}
           summary={summaryFor(record.itemId)}
-          onOpen={() => void openItem(record.itemId, summaryFor(record.itemId)?.format)}
+          onPress={() => goToDetail(record.itemId)}
         />
       </View>
     ));
@@ -453,7 +494,7 @@ export default function LibraryScreen() {
           }
           onRead={() => {
             const mostRecent = group.bookmarks[0];
-            void openItem(group.bookId, mostRecent.locator.type, bookmarkTarget(mostRecent.locator));
+            void openBookmark(group.bookId, mostRecent.locator.type, bookmarkTarget(mostRecent.locator));
           }}
           onDownload={() => handleDownloadBookmarkedTitle(group.bookId)}
         />
@@ -462,31 +503,98 @@ export default function LibraryScreen() {
   }
 
   function renderWaitingQueue(): ReactNode {
-    return waiting.map((hold) => (
-      <View key={hold.holdId ?? hold.itemId} style={styles.row}>
-        <EliteQueueCard
-          title={titleFor(hold.itemId)}
-          {...(summaryFor(hold.itemId)?.coverUrl === undefined
+    return waiting.map((hold) => {
+      const summary = summaryFor(hold.itemId);
+      return (
+        <View key={hold.holdId ?? hold.itemId} style={styles.row}>
+          <EliteQueueCard
+            title={titleFor(hold.itemId)}
+            {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+            {...(summary?.format === undefined ? {} : { format: summary.format })}
+            {...(queueLabel(hold) === undefined ? {} : { queueLabel: queueLabel(hold) })}
+            {...(queueProgressFraction(hold) === undefined
+              ? {}
+              : { progressFraction: queueProgressFraction(hold) })}
+            onPress={() => goToDetail(hold.itemId)}
+          />
+        </View>
+      );
+    });
+  }
+
+  // One row per BOOK, not per fact about it — see `mergeContentItems`'s own
+  // comment. Replaces calling `renderEliteActiveLoans`/`renderSubscription-
+  // Loans`/`renderDownloadRows`/`renderBookmarkGroups` back to back in
+  // `All`, which is what put "Playful Identities" on screen twice (once for
+  // its loan, once for its download) — a real reader-visible defect this
+  // function exists to fix, not four separate lists this tab happens to
+  // concatenate.
+  function renderMergedContentRow(item: MergedLibraryItem): ReactNode {
+    const summary = summaryFor(item.itemId);
+
+    // An Elite loan still renders through its own shared card, whether or
+    // not it happens to also be bookmarked — Elite can never also be a
+    // download (see `mergeContentItems`'s own comment), and the product
+    // spec's §11 "reusable Elite components" rule is what this branch keeps.
+    if (item.isElite && item.loan !== undefined) {
+      const loan = item.loan;
+      const expiresLabel =
+        clock.ready && loan.expiresAt !== undefined ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
+      return (
+        <View key={item.itemId} style={styles.row}>
+          <EliteActiveAccessCard
+            title={titleFor(item.itemId)}
+            {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+            {...(summary?.format === undefined ? {} : { format: summary.format })}
+            {...(expiresLabel === undefined ? {} : { expiresLabel })}
+            onPress={() => goToDetail(item.itemId)}
+          />
+        </View>
+      );
+    }
+
+    const badges: ReactNode[] = [];
+
+    if (item.loan !== undefined) {
+      const due = clock.ready ? dueLabel(item.loan, clock.offsetMs, clock.nowMs) : undefined;
+      if (due !== undefined) badges.push(<Text key="due" style={styles.badgeLabel}>{due}</Text>);
+    }
+    if (summary !== undefined && item.loan !== undefined) {
+      badges.push(<AccessTierBadge key="tier" tier={summary.accessTier} />);
+    }
+    if (item.download !== undefined) {
+      badges.push(
+        <Text key="download" style={styles.badgeLabel}>
+          {downloadedLabel(item.download)}
+        </Text>,
+      );
+    }
+    if (item.bookmarkGroup !== undefined) {
+      const count = item.bookmarkGroup.bookmarks.length;
+      badges.push(
+        <Text key="bookmarks" style={styles.badgeLabel}>
+          {count === 1 ? '1 bookmark' : `${count} bookmarks`}
+        </Text>,
+      );
+    }
+
+    return (
+      <View key={item.itemId} style={styles.row}>
+        <ContentCard
+          title={titleFor(item.itemId)}
+          onPress={() => goToDetail(item.itemId)}
+          {...(publisherFor(item.itemId) === undefined ? {} : { publisher: publisherFor(item.itemId) })}
+          {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+          {...(summary?.format === undefined ? {} : { format: summary.format })}
+          {...(badges.length === 0
             ? {}
-            : { imageUrl: summaryFor(hold.itemId)?.coverUrl })}
-          {...(summaryFor(hold.itemId)?.format === undefined ? {} : { format: summaryFor(hold.itemId)?.format })}
-          {...(queueLabel(hold) === undefined ? {} : { queueLabel: queueLabel(hold) })}
-          {...(queueProgressFraction(hold) === undefined
-            ? {}
-            : { progressFraction: queueProgressFraction(hold) })}
+            : { badge: <View style={styles.badgeStack}>{badges}</View> })}
         />
       </View>
-    ));
+    );
   }
 
   function renderAllTab(): ReactNode {
-    const hasHoldings =
-      eliteLoans.length > 0 ||
-      subscriptionLoans.length > 0 ||
-      downloads.length > 0 ||
-      bookmarkGroups.length > 0 ||
-      waiting.length > 0;
-
     if (holdingsLoading) {
       return (
         <>
@@ -496,20 +604,26 @@ export default function LibraryScreen() {
       );
     }
 
-    if (!hasHoldings && offered.length === 0) {
+    const mergedContent = mergeContentItems(eliteLoans, subscriptionLoans, downloads, bookmarkGroups);
+    const hasContent = mergedContent.length > 0;
+    const hasWaiting = waiting.length > 0;
+
+    if (!hasContent && !hasWaiting && offered.length === 0) {
       return <Text style={styles.sectionEmpty}>Your library is empty right now.</Text>;
     }
 
     return (
       <>
         {renderPendingOffers()}
-        {hasHoldings && (
+        {hasContent && (
           <View style={styles.section}>
-            <SectionHeader title="Your library" emphasis="editorial" />
-            {renderEliteActiveLoans()}
-            {renderSubscriptionLoans()}
-            {renderDownloadRows()}
-            {renderBookmarkGroups()}
+            <TabHeading title="Your content" count={mergedContent.length} />
+            {mergedContent.map(renderMergedContentRow)}
+          </View>
+        )}
+        {hasWaiting && (
+          <View style={styles.section}>
+            <TabHeading title="Premium waiting" count={waiting.length} />
             {renderWaitingQueue()}
           </View>
         )}
@@ -519,46 +633,101 @@ export default function LibraryScreen() {
 
   function renderBorrowedTab(): ReactNode {
     if (holdingsLoading) return <HoldingsSkeleton />;
-    if (subscriptionLoans.length === 0) {
-      return <Text style={styles.sectionEmpty}>No items currently borrowed.</Text>;
-    }
-    return <>{renderSubscriptionLoans()}</>;
+    const count = subscriptionLoans.length;
+    return (
+      <>
+        <TabHeading title="Borrowed" count={count} />
+        {count > 0 && renderSubscriptionLoans()}
+        <TabHint
+          icon="library-outline"
+          headline={count === 0 ? 'No items currently borrowed.' : undefined}
+          caption="Items you borrow will appear here until they’re due."
+        />
+      </>
+    );
   }
 
   function renderDownloadsTab(): ReactNode {
-    if (downloads.length === 0) {
-      return (
-        <Text style={styles.sectionEmpty}>
-          Open access and subscription books you download will be readable here offline.
-        </Text>
-      );
-    }
+    const count = downloads.length;
+    // `downloadsSummaryLabel` restates the same count on its own ("1 item")
+    // when no download reported a size — `TabHeading`'s count already says
+    // that, so the caption only earns its own line when it adds the size
+    // ("· 22.8 MB") on top.
+    const sizeLabel = downloadsSummaryLabel(downloads);
+    const showSizeCaption = sizeLabel !== undefined && sizeLabel.includes('·');
     return (
       <>
-        <Text style={styles.sectionCaption}>{downloadsSummaryLabel(downloads)}</Text>
-        {renderDownloadRows()}
+        <TabHeading title="Downloads" count={count} />
+        {count > 0 && (
+          <>
+            {showSizeCaption && <Text style={styles.sizeCaption}>{sizeLabel}</Text>}
+            {renderDownloadRows()}
+          </>
+        )}
+        <TabHint
+          icon="download-outline"
+          headline={count === 0 ? 'No downloads yet.' : undefined}
+          caption="Only items you’ve downloaded will appear here."
+        />
       </>
     );
   }
 
   function renderBookmarksTab(): ReactNode {
-    if (bookmarkGroups.length === 0) {
-      return <Text style={styles.sectionEmpty}>No bookmarked pages yet.</Text>;
-    }
-    return <>{renderBookmarkGroups()}</>;
+    const count = bookmarkGroups.length;
+    return (
+      <>
+        <TabHeading title="Bookmarks" count={count} />
+        {count > 0 && renderBookmarkGroups()}
+        <TabHint
+          icon="bookmark-outline"
+          headline={count === 0 ? 'No bookmarked pages yet.' : undefined}
+          caption="Pages you bookmark while reading will appear here."
+        />
+      </>
+    );
   }
 
   function renderPremiumTab(): ReactNode {
     if (holdingsLoading) return <HoldingsSkeleton />;
-    const total = offered.length + eliteLoans.length + waiting.length;
-    if (total === 0) {
-      return <Text style={styles.sectionEmpty}>No Elite content currently available.</Text>;
-    }
     return (
       <>
-        {renderPendingOffers()}
-        {renderEliteActiveLoans()}
-        {renderWaitingQueue()}
+        {/* Never a reserved empty slot — product spec §4: "If there is no
+            pending access notification/action... do NOT reserve an empty
+            area for it." */}
+        {offered.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Access available" count={offered.length} />
+            {renderPendingOffers()}
+          </View>
+        )}
+
+        <View style={styles.section}>
+          <TabHeading title="Your Elite access" count={eliteLoans.length} />
+          {eliteLoans.length > 0 ? (
+            renderEliteActiveLoans()
+          ) : (
+            <TabHint
+              icon="crown-outline"
+              headline="No active Elite access."
+              caption="When you have access, your titles will appear here."
+              iconSet="material"
+            />
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <TabHeading title="Waiting for access" count={waiting.length} />
+          {waiting.length > 0 ? (
+            renderWaitingQueue()
+          ) : (
+            <TabHint
+              icon="hourglass-outline"
+              headline="No items currently waiting."
+              caption="Titles waiting for Elite access will appear here."
+            />
+          )}
+        </View>
       </>
     );
   }
@@ -573,11 +742,26 @@ export default function LibraryScreen() {
       <View style={styles.headerBlock}>
         <Text style={styles.libraryHeading}>Library</Text>
         <Text style={styles.librarySubtitle}>Your scholarly content and access in one place.</Text>
+        {/* A real, accurate caveat, not a hedge — a downloaded title's bytes
+            stay on this phone, but the LICENCE behind them is checked and
+            can lapse automatically the next time the app syncs, even if
+            that sync happens while the device is offline (a queued check
+            resolving the moment connectivity returns). Telling the reader
+            this in advance is cheaper than them discovering a "still
+            downloaded" book that no longer opens — see `DownloadRow`'s own
+            comment on why this screen cannot promise a download stays
+            readable. */}
+        <View style={styles.disclaimer}>
+          <Ionicons name="information-circle-outline" size={type.smallLabel.size} color={color.textSecondary} />
+          <Text style={styles.disclaimerText}>
+            Access is checked automatically and can expire even while you’re offline.
+          </Text>
+        </View>
       </View>
 
       <View style={styles.tabBar}>
         <Tabs
-          tabs={libraryTabs}
+          tabs={LIBRARY_TABS}
           activeId={activeTab}
           variant="pills"
           // The five partitions are fixed, so the bar is a control with a known
@@ -641,6 +825,73 @@ function HoldingsSkeleton() {
   );
 }
 
+// ─── heading + hint ──────────────────────────────────────────────────────────
+
+// A tab's own name, restated as a page heading, with a real count beside it
+// when non-zero — see the file header for why this replaced a badge on the
+// tab pill itself. `count === undefined` and `count === 0` both draw no
+// number: a heading with "0 items" reads as an apology, where the hint
+// block below already says the same thing at greater length.
+function TabHeading({ title, count }: { title: string; count?: number }) {
+  // A stable, title-derived testID — the tab pill and an Elite card can both
+  // carry the exact same words ("Bookmarks", "Access available"), and a test
+  // asserting on this specific heading needs a way to say which one it means.
+  const testId = `tab-heading-${title.toLowerCase().replace(/\s+/g, '-')}`;
+  return (
+    <View style={styles.tabHeadingRow}>
+      <Text testID={testId} style={styles.tabHeadingTitle}>
+        {title}
+      </Text>
+      {count !== undefined && count > 0 && (
+        <Text testID={`${testId}-count`} style={styles.tabHeadingCount}>
+          {count === 1 ? '1 item' : `${count} items`}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+// The compact, permanent footer under a single-purpose tab — see the file
+// header's "A QUIET HINT" note. `headline` is optional and appears ONLY for
+// the genuinely-empty case; a non-empty tab still gets the plain `caption`
+// underneath its real rows, unchanged, so the explanation of what this tab
+// is for never disappears just because it now has something in it.
+function TabHint({
+  icon,
+  headline,
+  caption,
+  iconSet = 'ionicons',
+}: {
+  icon: string;
+  headline?: string;
+  caption: string;
+  iconSet?: 'ionicons' | 'material';
+}) {
+  return (
+    <View style={styles.hint}>
+      <View style={styles.hintIconWrap}>
+        {iconSet === 'material' ? (
+          // Only `crown-outline` (Elite) needs MaterialCommunityIcons — every
+          // other hint icon is a plain Ionicon, same as the rest of this file.
+          <MaterialCommunityIcons
+            name={icon as ComponentProps<typeof MaterialCommunityIcons>['name']}
+            size={type.pageTitle.size}
+            color={color.primary}
+          />
+        ) : (
+          <Ionicons
+            name={icon as ComponentProps<typeof Ionicons>['name']}
+            size={type.pageTitle.size}
+            color={color.primary}
+          />
+        )}
+      </View>
+      {headline !== undefined && <Text style={styles.hintHeadline}>{headline}</Text>}
+      <Text style={styles.hintCaption}>{caption}</Text>
+    </View>
+  );
+}
+
 // ─── rows ────────────────────────────────────────────────────────────────────
 
 // The mockup's "Reading Now" card, minus the one thing this app cannot know:
@@ -658,17 +909,18 @@ function BorrowedBookRow({
   publisher,
   summary,
   clock,
-  onRead,
+  onPress,
 }: {
   loan: Loan;
   title: string;
   publisher?: string;
   summary?: BookSummary;
   clock: ServerClock;
-  onRead: () => void;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
 }) {
-  // Held back until the clock has a sample, for the same reason the offer
-  // countdown is. A due date is far less urgent than an offer, but a row that
+  // Held back until the clock has a sample, for the same reason as the offer
+  // countdown. A due date is far less urgent than an offer, but a row that
   // said "Due in 19710 days" for one frame is worse than one that says nothing.
   const due = clock.ready ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
   // The due date and the tier pill share one badge slot, stacked. Both are
@@ -684,11 +936,11 @@ function BorrowedBookRow({
   return (
     <ContentCard
       title={title}
+      onPress={onPress}
       {...(publisher === undefined ? {} : { publisher })}
       {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
       {...(summary?.format === undefined ? {} : { format: summary.format })}
       {...(badge === undefined ? {} : { badge })}
-      action={<ActionButton action="read" onPress={onRead} />}
     />
   );
 }
@@ -709,24 +961,23 @@ function DownloadRow({
   title,
   publisher,
   summary,
-  onOpen,
+  onPress,
 }: {
   record: DownloadRecord;
   title: string;
   publisher?: string;
   summary?: BookSummary;
-  /** Tap → open through the provider seam (see `openItem`). */
-  onOpen: () => void;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
 }) {
   return (
     <ContentCard
       title={title}
-      onPress={onOpen}
+      onPress={onPress}
       {...(publisher === undefined ? {} : { publisher })}
       {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
-      // The "PDF · Downloaded" split from the mockup: the format is the book's
-      // real type from the batch call, and the size stays on the "Downloaded"
-      // badge where `downloadedLabel` owns the honest wording.
+      // The format is the book's real type from the batch call; the
+      // "Downloaded" badge stays on `downloadedLabel`'s own honest wording.
       {...(summary?.format === undefined ? {} : { format: summary.format })}
       badge={<Text style={styles.badgeLabel}>{downloadedLabel(record)}</Text>}
     />
@@ -735,8 +986,8 @@ function DownloadRow({
 
 // One book's worth of bookmarks, collapsed to a title row until tapped.
 //
-// GROUPED, NOT ONE ROW PER BOOKMARK — product spec, Sept 2026. The count badge
-// is `group.bookmarks.length`, the same array the expansion below renders, so
+// GROUPED, NOT ONE ROW PER BOOKMARK. The count badge is
+// `group.bookmarks.length`, the same array the expansion below renders, so
 // the two cannot disagree.
 function BookmarkGroupRow({
   group,
@@ -754,7 +1005,7 @@ function BookmarkGroupRow({
   alreadyDownloaded: boolean;
   downloading: boolean;
   onToggle: () => void;
-  /** Tap → open at the group's most recent bookmark. */
+  /** Tap → resume at the group's most recent bookmark. */
   onRead: () => void;
   onDownload: () => void;
 }) {
@@ -802,8 +1053,8 @@ function BookmarkGroupRow({
 // A bookmark's stored `Locator` → the reader target that reaches it, mirroring
 // Team 4's `toTarget` (readerBookmarks.ts). EPUB anchors by CFI, PDF by page —
 // the two schemes `ReaderTargetLike` carries. AUDIO has neither (matches the real
-// `toTarget`, which also returns null for AUDIO locators) — `openItem`'s `target`
-// param is optional, so callers fall back to the stored reading position.
+// `toTarget`, which also returns null for AUDIO locators) — `openBookmark`'s
+// `target` param is optional, so callers fall back to the stored reading position.
 function bookmarkTarget(locator: Bookmark['locator']): ReaderTargetLike | undefined {
   if (locator.type === 'EPUB') {
     return { kind: 'href', href: locator.cfi };
@@ -838,12 +1089,30 @@ const styles = StyleSheet.create({
     lineHeight: type.body.lineHeight,
     color: color.textSecondary,
   },
+  // A small, permanent caveat — not a coloured banner like `OfflineBanner`,
+  // which is transient chrome for a real connectivity change. This is a
+  // standing fact about how licences work, so it stays quiet and always
+  // there rather than appearing/disappearing with the network.
+  disclaimer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.xs,
+    marginTop: space.xs / 2,
+  },
+  disclaimerText: {
+    flex: 1,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+  },
   // The bar owns its own inset because `Tabs` sets no outer margin, by its own
-  // rule — the screen places the control.
+  // rule — the screen places the control. A touch of trailing room keeps the
+  // last pill ("Premium") from sitting flush against the scroll edge.
   tabBar: { paddingHorizontal: space.md, paddingTop: space.sm },
   scroll: { flex: 1 },
   content: { padding: space.md },
-  section: { gap: space.sm },
+  section: { gap: space.sm, marginBottom: space.md },
   row: { marginBottom: space.sm },
   skeletonRow: {
     flexDirection: 'row',
@@ -867,9 +1136,6 @@ const styles = StyleSheet.create({
     marginHorizontal: space.md,
     marginTop: space.sm,
   },
-  // A line of explanation, not an error: compact and quiet — product spec
-  // §12's own rule against a large empty area. Indented to the row inset so
-  // the copy hangs at the same margin a card's own text would.
   sectionEmpty: {
     paddingHorizontal: space.xs,
     paddingTop: space.xs,
@@ -878,16 +1144,35 @@ const styles = StyleSheet.create({
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
   },
-  // The count/summary line under a heading — same secondary grey and inset as
-  // the empty copy, sitting just above the rows it describes.
-  sectionCaption: {
-    paddingHorizontal: space.xs,
-    paddingTop: space.xs,
-    paddingBottom: space.sm,
-    color: color.textSecondary,
+  // A tab's own restated name, Aleo, with its real count on the same line —
+  // see `TabHeading`'s own comment.
+  tabHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+  },
+  tabHeadingTitle: {
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  tabHeadingCount: {
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+  },
+  // The download total ("2 items · 22.8 MB") — a plain caption line under
+  // the heading, not a pill: `TabHeading`'s own count already carries the
+  // pill-shaped emphasis for "how many"; this line only adds the size.
+  sizeCaption: {
+    marginTop: -space.xs,
+    marginBottom: space.xs,
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
   },
   // The due date and the tier pill on a Borrowed row, side by side and
   // wrapping to a second line on a narrow phone rather than pushing either off.
@@ -929,5 +1214,37 @@ const styles = StyleSheet.create({
   },
   actionSlot: {
     flex: 1,
+  },
+  // The permanent, compact footer under every single-purpose tab — see
+  // `TabHint`'s own comment. Centred and quiet: this is a caption, not a
+  // second empty-state card competing with real content above it.
+  hint: {
+    alignItems: 'center',
+    paddingVertical: space.lg,
+    gap: space.xs,
+  },
+  hintIconWrap: {
+    width: space.xl * 1.5,
+    height: space.xl * 1.5,
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.xs,
+  },
+  hintHeadline: {
+    fontFamily: type.sectionHeader.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textPrimary,
+    textAlign: 'center',
+  },
+  hintCaption: {
+    fontFamily: type.body.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+    textAlign: 'center',
+    maxWidth: '80%',
   },
 });

@@ -90,8 +90,17 @@ export type SearchStackParamList = {
  * reason it is in Search/Profile: the institution pill in `AppHeader` shows
  * on every tab-root screen now (Catalogue, Search, Library, Profile), so
  * each of their stacks needs the destination it pushes to.
+ *
+ * `ItemDetail` is registered for the same reason it is in Catalogue/Search:
+ * tapping an item ROW anywhere in the app goes to its detail page first —
+ * Library's own cards are no different, and reading itself happens from
+ * that page's own ActionBar, not from a direct open on the shelf.
  */
-export type LibraryStackParamList = { LibraryHome: undefined; InstitutionList: undefined };
+export type LibraryStackParamList = {
+  LibraryHome: undefined;
+  InstitutionList: undefined;
+  ItemDetail: { itemId: string };
+};
 
 /** Profile stack — screen 10, plus the settings screens it pushes. */
 export type ProfileStackParamList = {

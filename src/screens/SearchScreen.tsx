@@ -26,14 +26,12 @@
 // CONVENTIONS §3. Only the load-more failure stays inline: it is a row beneath
 // results already on screen, not a screen-level takeover either component models.
 import { useCallback, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
-import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
-import { AccessTierBadge } from '@components/AccessTierBadge';
 import { useCurrentSession } from '@access/currentSession';
 import type { CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
@@ -41,12 +39,15 @@ import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
 import { SearchInput } from '@components/SearchInput';
 import { SectionHeader } from '@components/SectionHeader';
+import { SubjectChip } from '@components/SubjectChip';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
+import type { Publication, WorkType } from '@model/types';
 import type { SearchFilters, SearchStatus, VoiceStatus } from '@/search';
 import { useCatalogueSearch, useVoiceSearch, VOICE_ERROR_COPY } from '@/search';
 import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
+import { useRecentlyViewedStore, type RecentlyViewedEntry } from '@store/recentlyViewedStore';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, elevation, radius, space, type, weight } from '@theme/tokens';
 

@@ -63,6 +63,7 @@ import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
 import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
+import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
 
 interface ItemDetailRouteProps {
@@ -793,6 +794,11 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         setFailed(false);
         setErrorCode(undefined);
         setCoverFailed(false);
+        // Search's own idle-state "Recently viewed" row (screen 09) — recorded
+        // here, not in Search, because this is the one place in the app that
+        // actually resolves a full `Publication` for an item id. See
+        // recentlyViewedStore.ts's own note on why this stores a snapshot.
+        useRecentlyViewedStore.getState().recordView(pub);
       })
       .catch((err: unknown) => {
         setErrorCode(isCatalogueFailure(err) ? err.code : undefined);

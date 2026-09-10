@@ -4,13 +4,13 @@ import EliteActiveAccessCard from './EliteActiveAccessCard';
 
 describe('EliteActiveAccessCard', () => {
   it('renders the title verbatim', async () => {
-    await render(<EliteActiveAccessCard title="A Title" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" onPress={() => {}} />);
 
     expect(screen.getByTestId('elite-active-access-title').props.children).toBe('A Title');
   });
 
   it('shows a placeholder well when no cover is supplied', async () => {
-    await render(<EliteActiveAccessCard title="A Title" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" onPress={() => {}} />);
 
     expect(screen.getByTestId('elite-active-access-placeholder')).toBeTruthy();
     expect(screen.queryByTestId('elite-active-access-image')).toBeNull();
@@ -18,7 +18,7 @@ describe('EliteActiveAccessCard', () => {
 
   it('renders the cover image when a URL is supplied', async () => {
     await render(
-      <EliteActiveAccessCard title="A Title" imageUrl="https://example.com/cover.jpg" onRead={() => {}} />,
+      <EliteActiveAccessCard title="A Title" imageUrl="https://example.com/cover.jpg" onPress={() => {}} />,
     );
 
     expect(screen.getByTestId('elite-active-access-image').props.source.uri).toBe(
@@ -27,26 +27,26 @@ describe('EliteActiveAccessCard', () => {
   });
 
   it('shows the format chip only when a format is supplied', async () => {
-    await render(<EliteActiveAccessCard title="A Title" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" onPress={() => {}} />);
 
     expect(screen.queryByText('PDF')).toBeNull();
   });
 
   it('renders the supplied format verbatim', async () => {
-    await render(<EliteActiveAccessCard title="A Title" format="PDF" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" format="PDF" onPress={() => {}} />);
 
     expect(screen.getByText('PDF')).toBeTruthy();
   });
 
   it('shows the expiry line only when one is supplied', async () => {
-    await render(<EliteActiveAccessCard title="A Title" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" onPress={() => {}} />);
 
     expect(screen.queryByTestId('elite-active-access-expiry')).toBeNull();
   });
 
   it('renders the expiry label verbatim when supplied, inventing no duration', async () => {
     await render(
-      <EliteActiveAccessCard title="A Title" expiresLabel="Due in 3 days" onRead={() => {}} />,
+      <EliteActiveAccessCard title="A Title" expiresLabel="Due in 3 days" onPress={() => {}} />,
     );
 
     expect(screen.getByTestId('elite-active-access-expiry').props.children).toEqual([
@@ -56,17 +56,17 @@ describe('EliteActiveAccessCard', () => {
   });
 
   it('always shows the Elite tier badge', async () => {
-    await render(<EliteActiveAccessCard title="A Title" onRead={() => {}} />);
+    await render(<EliteActiveAccessCard title="A Title" onPress={() => {}} />);
 
     expect(screen.getByText('Elite')).toBeTruthy();
   });
 
-  it('reports Read through the handed callback', async () => {
-    const onRead = jest.fn();
-    await render(<EliteActiveAccessCard title="A Title" onRead={onRead} />);
+  it('goes to the item’s detail page when tapped', async () => {
+    const onPress = jest.fn();
+    await render(<EliteActiveAccessCard title="A Title" onPress={onPress} />);
 
-    fireEvent.press(screen.getByTestId('action-button-read'));
+    fireEvent.press(screen.getByTestId('elite-active-access-card'));
 
-    expect(onRead).toHaveBeenCalledTimes(1);
+    expect(onPress).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,19 +1,21 @@
 // src/components/EliteQueueCard/EliteQueueCard.tsx
 // An Elite title the reader is waiting for — a real place in a real queue,
-// and nothing to do yet. Product spec (Sept 2026), Library redesign, Premium
-// §"STATE 3 — WAITING QUEUE": "The user is WAITING, not currently allowed to
-// read." Shared by `All` and `Premium`, same reason as its two sibling cards.
+// and nothing to DO about it yet. Product spec (Sept 2026), Library
+// redesign, Premium §"STATE 3 — WAITING QUEUE": "The user is WAITING, not
+// currently allowed to read." Shared by `All` and `Premium`, same reason as
+// its two sibling cards.
 //
-// REASSURANCE, NOT ACTION — no button, no chevron, not tappable. Mirrors the
-// original Library shelf's own `WaitingRow`: cancelling a hold is a real
-// action a reader may want, but it is not on this screen's spec, so this
-// card does not invent one.
+// TAPPING GOES TO THE ITEM'S DETAIL PAGE — that is browsing, not the ACTION
+// this card deliberately still refuses to invent (cancelling a hold is a
+// real thing a reader may want, but it is not on this screen's spec, so no
+// button appears here for it). Mirrors every other row in the app: viewing
+// detail is always available; acting on a hold is not this card's job.
 //
 // `queueLabel` AND `progressFraction` ARE ALREADY-DERIVED. Both come from
 // `LibraryScreen.holdings.ts` (`queueLabel`, `queueProgressFraction`), which
 // already read `Hold.position`/`Hold.queueLength` and refuse to draw a bar
 // with no denominator — this file adds no arithmetic and no fallback number.
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { AccessTierBadge } from '@components/AccessTierBadge';
@@ -28,10 +30,12 @@ export interface EliteQueueCardProps {
   queueLabel?: string;
   /** 0–1 fill toward the front — see `queueProgressFraction`. Absent draws no bar. */
   progressFraction?: number;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
 }
 
-const THUMB = space.xl * 3;
-const ICON_SIZE = space.xl;
+const THUMB = space.xl * 2.5;
+const ICON_SIZE = space.lg;
 
 export default function EliteQueueCard({
   title,
@@ -39,9 +43,16 @@ export default function EliteQueueCard({
   format,
   queueLabel,
   progressFraction,
+  onPress,
 }: EliteQueueCardProps) {
   return (
-    <View testID="elite-queue-card" style={styles.card}>
+    <Pressable
+      testID="elite-queue-card"
+      style={styles.card}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+    >
       <View style={styles.thumbWrap}>
         {imageUrl === undefined ? (
           <View testID="elite-queue-placeholder" style={[styles.thumb, styles.placeholder]}>
@@ -53,16 +64,19 @@ export default function EliteQueueCard({
       </View>
 
       <View style={styles.body}>
-        <View style={styles.tag}>
-          <Text style={styles.tagLabel}>Waiting for access</Text>
-        </View>
-
         <Text testID="elite-queue-title" style={styles.title} numberOfLines={2}>
           {title}
         </Text>
 
+        {/* "Elite" + "In queue" side by side — the page-level heading above
+            this card already says "Waiting for access"; repeating that as a
+            second banner on the card itself was the redundancy this pass
+            removed. */}
         <View style={styles.metaRow}>
-          <AccessTierBadge tier="ELITE" />
+          <AccessTierBadge tier="ELITE" size="sm" />
+          <View style={styles.queueChip}>
+            <Text style={styles.queueChipText}>In queue</Text>
+          </View>
           {format !== undefined && (
             <View style={styles.formatChip}>
               <Text style={styles.formatChipText}>{format}</Text>
@@ -85,19 +99,22 @@ export default function EliteQueueCard({
           </View>
         )}
       </View>
-    </View>
+
+      <View style={styles.chevron} />
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
-    gap: space.md,
+    alignItems: 'center',
+    gap: space.sm,
     backgroundColor: color.white,
     borderRadius: radius.card,
     borderWidth: 1,
     borderColor: color.border,
-    padding: space.sm,
+    padding: space.xs,
   },
   thumbWrap: {
     alignSelf: 'flex-start',
@@ -114,19 +131,21 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
-    gap: space.xs,
+    gap: space.xs / 2,
   },
-  tag: {
-    alignSelf: 'flex-start',
+  // The second pill beside "Elite" — a light, calm tint rather than the
+  // saturated amber `wait` token: this card states a fact ("you are in
+  // queue"), it does not warn.
+  queueChip: {
     paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
+    paddingVertical: space.xs / 2,
     borderRadius: radius.pill,
-    backgroundColor: color.wait,
+    backgroundColor: color.subscriptionTint,
   },
-  tagLabel: {
-    fontFamily: type.cardLabel.fontFamily,
-    fontSize: type.cardLabel.size,
-    lineHeight: type.cardLabel.lineHeight,
+  queueChipText: {
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
     color: color.navy,
   },
   title: {
@@ -143,7 +162,7 @@ const styles = StyleSheet.create({
   },
   formatChip: {
     paddingHorizontal: space.xs,
-    paddingVertical: space.xs,
+    paddingVertical: space.xs / 2,
     backgroundColor: color.border,
     borderRadius: radius.card,
   },
@@ -163,7 +182,7 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: space.xs,
-    marginTop: space.xs,
+    marginTop: space.xs / 2,
     borderRadius: radius.pill,
     backgroundColor: color.border,
     overflow: 'hidden',
@@ -172,5 +191,14 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: radius.pill,
     backgroundColor: color.wait,
+  },
+  chevron: {
+    width: space.sm,
+    height: space.sm,
+    borderTopWidth: 1,
+    borderRightWidth: 1,
+    borderColor: color.textSecondary,
+    transform: [{ rotate: '45deg' }],
+    marginRight: space.xs,
   },
 });

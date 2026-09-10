@@ -288,26 +288,6 @@ describe('Tabs variants', () => {
   });
 });
 
-describe('Tabs count badge', () => {
-  const TABS_WITH_COUNTS = [
-    { id: 'downloads', label: 'Downloads', count: 3 },
-    { id: 'bookmarks', label: 'Bookmarks' },
-  ];
-
-  it('renders a badge only for a tab that carries a count', async () => {
-    await render(<Tabs tabs={TABS_WITH_COUNTS} activeId="downloads" onChange={() => {}} />);
-
-    expect(screen.getByTestId('tabs-count-downloads')).toBeTruthy();
-    expect(screen.queryByTestId('tabs-count-bookmarks')).toBeNull();
-  });
-
-  it('shows the exact count handed to it, inventing nothing', async () => {
-    await render(<Tabs tabs={TABS_WITH_COUNTS} activeId="downloads" onChange={() => {}} />);
-
-    expect(screen.getByText('3')).toBeTruthy();
-  });
-});
-
 describe('Tabs tokens', () => {
   it('tints the active label with the brand colour in the underline variant', async () => {
     await render(

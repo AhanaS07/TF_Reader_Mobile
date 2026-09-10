@@ -13,14 +13,17 @@
 // its own and no clock. Absent renders no expiry line, never an invented
 // duration (the spec's own "Do NOT invent an expiration duration").
 //
-// USES ActionButton FOR READ, the same component ContentCard's own action
-// slot and ItemDetailScreen's ActionBar already draw it with — CONVENTIONS
-// §7 again: one label/icon for `read` everywhere it appears.
-import { Image, StyleSheet, Text, View } from 'react-native';
+// TAPS THROUGH TO THE ITEM'S DETAIL PAGE, LIKE EVERY OTHER ROW IN THIS APP.
+// Catalogue/Search/Shelf never open a reader straight from a list row either
+// — they push `ItemDetail` and reading happens from that page's own
+// ActionBar. `onPress` is required rather than optional for the same reason
+// ContentCard treats a missing `onPress` as "not a navigation target": a
+// card with nothing to do on tap would draw no chevron and be misleading if
+// it looked pressable anyway.
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { ActionButton } from '@components/ActionButton';
 import { color, radius, space, type } from '@theme/tokens';
 
 export interface EliteActiveAccessCardProps {
@@ -30,21 +33,28 @@ export interface EliteActiveAccessCardProps {
   format?: string;
   /** Already-formatted ("Due in 3 days", "Due now"). Absent renders no line. */
   expiresLabel?: string;
-  onRead: () => void;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
 }
 
-const THUMB = space.xl * 3;
-const ICON_SIZE = space.xl;
+const THUMB = space.xl * 2.5;
+const ICON_SIZE = space.lg;
 
 export default function EliteActiveAccessCard({
   title,
   imageUrl,
   format,
   expiresLabel,
-  onRead,
+  onPress,
 }: EliteActiveAccessCardProps) {
   return (
-    <View testID="elite-active-access-card" style={styles.card}>
+    <Pressable
+      testID="elite-active-access-card"
+      style={styles.card}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+    >
       <View style={styles.thumbWrap}>
         {imageUrl === undefined ? (
           <View testID="elite-active-access-placeholder" style={[styles.thumb, styles.placeholder]}>
@@ -56,16 +66,16 @@ export default function EliteActiveAccessCard({
       </View>
 
       <View style={styles.body}>
-        <View style={styles.tag}>
-          <Text style={styles.tagLabel}>Elite access</Text>
-        </View>
-
+        {/* No colour banner here — the page-level heading above this card
+            ("Your content" / "Your Elite access") already says what group
+            it belongs to; the Elite pill below is the card's own fact about
+            itself and does not need a second, redundant label restating it. */}
         <Text testID="elite-active-access-title" style={styles.title} numberOfLines={2}>
           {title}
         </Text>
 
         <View style={styles.metaRow}>
-          <AccessTierBadge tier="ELITE" />
+          <AccessTierBadge tier="ELITE" size="sm" />
           {format !== undefined && (
             <View style={styles.formatChip}>
               <Text style={styles.formatChipText}>{format}</Text>
@@ -78,24 +88,23 @@ export default function EliteActiveAccessCard({
             Access expires: {expiresLabel}
           </Text>
         )}
-
-        <View style={styles.actionSlot}>
-          <ActionButton action="read" onPress={onRead} />
-        </View>
       </View>
-    </View>
+
+      <View style={styles.chevron} />
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
-    gap: space.md,
+    alignItems: 'center',
+    gap: space.sm,
     backgroundColor: color.white,
     borderRadius: radius.card,
     borderWidth: 1,
     borderColor: color.border,
-    padding: space.sm,
+    padding: space.xs,
   },
   thumbWrap: {
     alignSelf: 'flex-start',
@@ -112,20 +121,7 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
-    gap: space.xs,
-  },
-  tag: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
-    borderRadius: radius.pill,
-    backgroundColor: color.elite,
-  },
-  tagLabel: {
-    fontFamily: type.cardLabel.fontFamily,
-    fontSize: type.cardLabel.size,
-    lineHeight: type.cardLabel.lineHeight,
-    color: color.white,
+    gap: space.xs / 2,
   },
   title: {
     fontFamily: type.cardTitle.fontFamily,
@@ -141,7 +137,7 @@ const styles = StyleSheet.create({
   },
   formatChip: {
     paddingHorizontal: space.xs,
-    paddingVertical: space.xs,
+    paddingVertical: space.xs / 2,
     backgroundColor: color.border,
     borderRadius: radius.card,
   },
@@ -157,8 +153,15 @@ const styles = StyleSheet.create({
     lineHeight: type.smallLabel.lineHeight,
     color: color.textSecondary,
   },
-  actionSlot: {
-    marginTop: space.xs,
-    alignSelf: 'flex-start',
+  // Two borders on a rotated square: a chevron without an icon font, the
+  // same device ContentCard's own row chevron uses.
+  chevron: {
+    width: space.sm,
+    height: space.sm,
+    borderTopWidth: 1,
+    borderRightWidth: 1,
+    borderColor: color.textSecondary,
+    transform: [{ rotate: '45deg' }],
+    marginRight: space.xs,
   },
 });

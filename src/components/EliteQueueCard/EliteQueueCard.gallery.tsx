@@ -16,19 +16,31 @@ export default function EliteQueueCardGallery() {
           title="Law and Ecology: New Environmental Foundations"
           imageUrl="https://images.example.com/law-and-ecology.jpg"
           format="EPUB"
-          queueLabel="3rd of 7"
+          queueLabel="#3 of 7"
           progressFraction={5 / 7}
+          onPress={() => {}}
         />
       </View>
 
       <Text style={styles.label}>a position with no known queue length — no bar to draw</Text>
       <View style={styles.row}>
-        <EliteQueueCard title="The Politics of Coalition in Korea" format="EPUB" queueLabel="3rd in the queue" />
+        <EliteQueueCard
+          title="The Politics of Coalition in Korea"
+          format="EPUB"
+          queueLabel="#3 in queue"
+          onPress={() => {}}
+        />
       </View>
 
       <Text style={styles.label}>no cover — placeholder well</Text>
       <View style={styles.row}>
-        <EliteQueueCard title="Playful Identities" format="PDF" queueLabel="1st of 2" progressFraction={1} />
+        <EliteQueueCard
+          title="Playful Identities"
+          format="PDF"
+          queueLabel="#1 of 2"
+          progressFraction={1}
+          onPress={() => {}}
+        />
       </View>
 
       <View style={styles.spacer} />

@@ -27,6 +27,7 @@ import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
 import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
+import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { useSessionStore } from '@store/sessionStore';
 
 import ItemDetailScreen, {
@@ -214,6 +215,7 @@ afterEach(() => {
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useRecentlyViewedStore.getState().clear();
   useSessionStore.setState({
     isAuthenticated: false,
     accessToken: null,
@@ -296,6 +298,35 @@ describe('ItemDetailScreen endpoint choice', () => {
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() => expect(calls).toEqual([`institution:${INSTITUTION.id}`]));
+  });
+});
+
+// Search's own idle-state "Recently viewed" row (screen 09) is fed by this
+// screen recording the view once a publication actually resolves — see
+// recentlyViewedStore.ts's own note on why the snapshot is taken here.
+describe('ItemDetailScreen — recording a recently-viewed item', () => {
+  it('records the view once the publication resolves', async () => {
+    setCatalogueSource(fakeSource(async () => aBook({ id: 'item_42', title: 'Rights for Robots' })));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() =>
+      expect(useRecentlyViewedStore.getState().items.map((i) => i.itemId)).toEqual(['item_42']),
+    );
+    expect(useRecentlyViewedStore.getState().items[0].title).toBe('Rights for Robots');
+  });
+
+  it('does not record anything when the fetch fails', async () => {
+    setCatalogueSource(
+      fakeSource(async () => {
+        throw new CatalogueFailure(CatalogueError.NOT_FOUND, 'item_42');
+      }),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('This could not be found.')).toBeTruthy());
+    expect(useRecentlyViewedStore.getState().items).toEqual([]);
   });
 });
 

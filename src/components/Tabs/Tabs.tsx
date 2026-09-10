@@ -6,11 +6,6 @@
 // background) — added for Library, whose spec explicitly rejected being
 // "trapped inside one giant grey container" the way `segmented` reads.
 //
-// `count` IS OPTIONAL AND REAL DATA ONLY. It renders a small badge on the tab
-// — Library's "how many are in Downloads" at a glance — and is plain
-// caller-supplied data, same as `label`: this file does not compute it and
-// has no opinion on what it means for a tab with no count to omit one.
-//
 // ⚠ TABS ARE DATA, NOT CODE — and this is the whole reason the component exists
 // in this shape. Settled 16 Aug 2026 (AGENTS.md L-5): an administrator configures
 // the shelves for their institution and names them, so the count, the titles and
@@ -36,14 +31,13 @@ import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-n
 
 import { color, elevation, radius, space, type } from '@theme/tokens';
 
-// One tab. `id` for identity, `label` for display, `count` for an optional
-// small badge — see the file header on why that is real-data-only.
+// One tab. Deliberately minimal — id for identity, label for display, and
+// nothing else. A count or a badge would be a second component's job.
 export interface TabItem {
   // Stable identity. On screen 01 this is `NavLink.shelfId`, so a tab change
   // maps straight to getShelf() without re-parsing a URL.
   id: string;
   label: string;
-  count?: number;
 }
 
 export type TabsVariant = 'segmented' | 'underline' | 'pills';
@@ -153,17 +147,6 @@ export default function Tabs({
               {tab.label}
             </Text>
 
-            {tab.count !== undefined && (
-              <View
-                testID={`tabs-count-${tab.id}`}
-                style={[styles.count, active && onFill && styles.countActive]}
-              >
-                <Text style={[styles.countLabel, active && onFill && styles.countLabelActive]}>
-                  {tab.count}
-                </Text>
-              </View>
-            )}
-
             {/* The underline is its own element rather than a bottom border on
                 the tab, so it can sit inside the horizontal padding and match
                 the label's width instead of the tab's. */}
@@ -266,29 +249,6 @@ const styles = StyleSheet.create({
   // !active`, so the other two variants keep their existing grey untouched.
   labelPillsInactive: {
     color: color.textPrimary,
-  },
-  // Small count badge — real data only, see the file header. Tinted against
-  // its own tab's current fill rather than one fixed colour, so it reads on
-  // both the neutral (unselected) and primary (selected) pill backgrounds.
-  count: {
-    minWidth: space.md,
-    paddingHorizontal: space.xs,
-    borderRadius: radius.pill,
-    backgroundColor: color.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  countActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.24)',
-  },
-  countLabel: {
-    fontFamily: type.smallLabel.fontFamily,
-    fontSize: type.smallLabel.size,
-    lineHeight: type.smallLabel.lineHeight,
-    color: color.textSecondary,
-  },
-  countLabelActive: {
-    color: color.white,
   },
   underline: {
     // Full width of the label above it, which is what makes it read as a rule

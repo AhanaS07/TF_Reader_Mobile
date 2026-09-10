@@ -74,13 +74,13 @@ export default function TabsGallery() {
         <Tabs tabs={FEED_TABS} activeId="audiobooks" variant="pills" onChange={() => {}} />
       </View>
 
-      <Text style={styles.label}>pills with count badges — real counts only, per tab</Text>
+      <Text style={styles.label}>pills, fill — Library&apos;s own five-tab rail</Text>
       <View style={styles.row}>
         <Tabs
           tabs={[
             { id: 'all', label: 'All' },
-            { id: 'downloads', label: 'Downloads', count: 3 },
-            { id: 'bookmarks', label: 'Bookmarks', count: 12 },
+            { id: 'downloads', label: 'Downloads' },
+            { id: 'bookmarks', label: 'Bookmarks' },
             { id: 'premium', label: 'Premium' },
           ]}
           activeId="downloads"

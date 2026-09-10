@@ -190,6 +190,79 @@ export function groupBookmarksByTitle(bookmarks: Bookmark[]): BookmarkGroup[] {
   return groups;
 }
 
+/**
+ * One book, carrying whichever of the four `All`-tab facts actually apply to
+ * it — a loan, whether that loan is Elite, a download, and/or a bookmark
+ * group. Product spec's reference mockup flagged the alternative directly:
+ * showing the SAME book as two separate rows ("Playful Identities" once for
+ * its loan, once for its download) "looks really awkward… same book
+ * multiple times". The facts were never wrong — a subscription download
+ * really is both a loan and a download — the row count was.
+ */
+export interface MergedLibraryItem {
+  itemId: string;
+  loan?: Loan;
+  isElite: boolean;
+  download?: DownloadRecord;
+  bookmarkGroup?: BookmarkGroup;
+}
+
+/**
+ * Folds the `All` tab's four already-partitioned lists into one row per
+ * BOOK, merging every fact this reader has about it rather than repeating
+ * the row. `Borrowed`, `Downloads`, `Bookmarks` and `Premium` are each
+ * scoped to one category already — seeing the same book once per tab there
+ * is not the awkwardness this function exists to remove, and none of their
+ * own render paths call this.
+ *
+ * ORDER IS FIRST-SEEN, ACROSS THE FOUR ARGUMENTS IN PRIORITY ORDER (Elite
+ * loans, then subscription loans, then downloads, then bookmarks) — the
+ * same priority `LibraryScreen.tsx`'s own render order already used before
+ * this function existed, just applied once instead of four times.
+ *
+ * AT MOST ONE `loan` PER BOOK IN PRACTICE, because a book cannot be both an
+ * Elite loan and a subscription loan at once — `partitionLoansByTier`
+ * already guarantees the two loan arrays this reads are disjoint by item.
+ */
+export function mergeContentItems(
+  eliteLoans: Loan[],
+  subscriptionLoans: Loan[],
+  downloads: DownloadRecord[],
+  bookmarkGroups: BookmarkGroup[],
+): MergedLibraryItem[] {
+  const order: string[] = [];
+  const byId = new Map<string, MergedLibraryItem>();
+  const entryFor = (itemId: string): MergedLibraryItem => {
+    const existing = byId.get(itemId);
+    if (existing !== undefined) return existing;
+    const created: MergedLibraryItem = { itemId, isElite: false };
+    byId.set(itemId, created);
+    order.push(itemId);
+    return created;
+  };
+
+  for (const loan of eliteLoans) {
+    const entry = entryFor(loan.itemId);
+    entry.loan = loan;
+    entry.isElite = true;
+  }
+  for (const loan of subscriptionLoans) {
+    entryFor(loan.itemId).loan = loan;
+  }
+  for (const record of downloads) {
+    entryFor(record.itemId).download = record;
+  }
+  for (const group of bookmarkGroups) {
+    entryFor(group.bookId).bookmarkGroup = group;
+  }
+
+  return order.map((itemId) => {
+    const entry = byId.get(itemId);
+    if (entry === undefined) throw new Error(`mergeContentItems: missing entry for ${itemId}`);
+    return entry;
+  });
+}
+
 // ─── hydration ───────────────────────────────────────────────────────────────
 
 /** Every section that puts an id on screen, in hydration priority order. */
@@ -249,49 +322,37 @@ export function collectItemIds(sections: ShelfSections): { ids: string[]; trunca
 // drifted into disagreeing in the first place.
 
 /**
- * Whole minutes left on an offer, floored, or `undefined` when there is nothing
- * to count.
+ * The live "Expires in 23:41" countdown on `ElitePendingAccessCard` —
+ * product spec (Sept 2026)'s reference mockup shows minutes:seconds, so this
+ * computes both directly from the hold's own `offerExpiresAt`/`serverTime`
+ * rather than composing a separate minutes-only step and a label step.
  *
- * FLOORED, SO THE LAST LIVE MINUTE READS AS `0` rather than skipping to
- * `undefined`. `QueueNotification` renders 0 as "Expiring now", which is the
- * honest thing to say in the final sixty seconds — and it is the caller's job to
- * do this arithmetic, because that component deliberately reads no clock.
+ * FLOORED AND CLAMPED, so the last live second reads as "0:00" for one frame
+ * rather than skipping to `undefined`, and a negative remainder (an offer
+ * the device believes has already lapsed) clamps to zero rather than
+ * counting backwards — the server decides an offer is dead, never this
+ * screen, and hitting zero here is a prompt to re-fetch, not a conclusion.
  *
- * HITTING ZERO IS A PROMPT TO RE-FETCH, NEVER A CONCLUSION. The server decides
- * an offer is dead. A negative remainder clamps to 0 rather than going negative
- * so the row stays on screen, still answerable, until a refresh replaces it.
+ * SECONDS ARE REAL, NOT FABRICATED, even though `TICK_MS` only re-renders
+ * this every 30s — the value is still computed fresh from the actual
+ * expiry/offset/now on every render that does happen, so it is never more
+ * than 30 seconds stale, the same bound every other countdown on this screen
+ * already accepts.
  */
-export function offerMinutesRemaining(
+export function offerCountdownLabel(
   hold: Hold,
   offsetMs: number,
   deviceNowMs: number,
-): number | undefined {
+): string | undefined {
   if (hold.offerExpiresAt === undefined) return undefined;
   const expiresAt = Date.parse(hold.offerExpiresAt);
   if (Number.isNaN(expiresAt)) return undefined;
-  const remaining = expiresAt - (deviceNowMs + offsetMs);
-  return Math.max(0, Math.floor(remaining / 60_000));
-}
-
-/**
- * The countdown line on an offered row.
- *
- * A SECOND COPY OF `QueueNotification`'s OWN `expiryLabel`, AND THAT IS A
- * DUPLICATION WORTH NAMING RATHER THAN HIDING. That component computes the same
- * three sentences from the same number, but does not export the function — so
- * the Library screen either restates them here or renders a second banner
- * beside the global one (see the header of `LibraryScreen.tsx`). Restating five
- * words is the smaller of the two wrongs.
- *
- * THE FIX IS TO EXPORT IT FROM `QueueNotification`, not to keep both. Raised
- * with that component's author; the day it lands, this function is deleted and
- * the import replaces it. Kept adjacent to `offerMinutesRemaining` so the two
- * are found together when that happens.
- */
-export function offerExpiryLabel(minutes: number | undefined): string | undefined {
-  if (minutes === undefined) return undefined;
-  if (minutes <= 0) return 'Expiring now';
-  return minutes === 1 ? 'Expires in 1 minute' : `Expires in ${minutes} minutes`;
+  const remainingMs = Math.max(0, expiresAt - (deviceNowMs + offsetMs));
+  if (remainingMs === 0) return 'Expiring now';
+  const totalSeconds = Math.floor(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `Expires in ${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -398,34 +459,21 @@ export function bookmarkLocationLabel(bookmark: Bookmark): string | undefined {
 
 // ─── queue copy ──────────────────────────────────────────────────────────────
 
-/** 1st, 2nd, 3rd, 4th … 11th, 12th, 13th, 21st. */
-export function ordinal(n: number): string {
-  const value = Math.abs(Math.trunc(n));
-  const lastTwo = value % 100;
-  if (lastTwo >= 11 && lastTwo <= 13) return `${value}th`;
-  switch (value % 10) {
-    case 1:
-      return `${value}st`;
-    case 2:
-      return `${value}nd`;
-    case 3:
-      return `${value}rd`;
-    default:
-      return `${value}th`;
-  }
-}
-
 /**
- * What a waiting reader is shown: "3rd of 7".
+ * What a waiting reader is shown: "#3 of 7".
  *
  * `position` IS THE WHOLE OF IT AND `queueLength` IS CONTEXT. Without a
  * position there is nothing to say — a bare "7 people waiting" is a fact about
  * a queue, not about this reader, so it is omitted rather than padded out.
+ *
+ * "#N", NOT AN ORDINAL ("3rd") — product spec (Sept 2026)'s own reference
+ * mockup shows the queue position this way, and a bare position number reads
+ * faster at a glance than spelling out "3rd".
  */
 export function queueLabel(hold: Hold): string | undefined {
   if (hold.position === undefined) return undefined;
-  const place = ordinal(hold.position);
-  return hold.queueLength === undefined ? `${place} in the queue` : `${place} of ${hold.queueLength}`;
+  const place = `#${hold.position}`;
+  return hold.queueLength === undefined ? `${place} in queue` : `${place} of ${hold.queueLength}`;
 }
 
 /**

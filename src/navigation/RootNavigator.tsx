@@ -346,6 +346,13 @@ function LibraryNavigator() {
         component={InstitutionListScreen}
         options={{ title: 'Select Institution' }}
       />
+      {/* See CatalogueNavigator's identical registration for why the title
+          here is only the default. */}
+      <LibraryStack.Screen
+        name="ItemDetail"
+        component={ItemDetailScreen}
+        options={{ title: 'Book Details' }}
+      />
     </LibraryStack.Navigator>
   );
 }

@@ -17,18 +17,18 @@ export default function EliteActiveAccessCardGallery() {
           imageUrl="https://images.example.com/playful-identities.jpg"
           format="PDF"
           expiresLabel="Due in 3 days"
-          onRead={() => {}}
+          onPress={() => {}}
         />
       </View>
 
       <Text style={styles.label}>no cover — placeholder well</Text>
       <View style={styles.row}>
-        <EliteActiveAccessCard title="The Politics of Coalition in Korea" format="EPUB" onRead={() => {}} />
+        <EliteActiveAccessCard title="The Politics of Coalition in Korea" format="EPUB" onPress={() => {}} />
       </View>
 
       <Text style={styles.label}>no expiry supplied — line omitted, not invented</Text>
       <View style={styles.row}>
-        <EliteActiveAccessCard title="Law and Ecology" format="EPUB" onRead={() => {}} />
+        <EliteActiveAccessCard title="Law and Ecology" format="EPUB" onPress={() => {}} />
       </View>
 
       <View style={styles.spacer} />
