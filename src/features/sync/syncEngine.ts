@@ -10,6 +10,8 @@ import { SYNC_KEYS } from './localDb/schema';
 import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
 import { locatorsEqual } from '@/features/reader/readerProgressStore';
+import { eventBus } from '@/shared/eventBus';
+import { EVENT_CHANNELS } from '@/shared/contracts/event-bus';
 import { accessibilityTable } from './stores/accessibilityStore';
 import { bookmarkTable } from './stores/bookmarkStore';
 import { downloadStore, downloadTable } from './stores/downloadStore';
@@ -98,6 +100,22 @@ export const syncEngine = {
               return report;
             });
           }
+          return report;
+        })
+        .then((report) => {
+          // Emit SYNC_COMPLETED for every run that finishes (success or failure).
+          // UI components use this to update "last synced" timestamps and refresh
+          // stale views. Delivery is synchronous, so a failed handler cannot block
+          // the caller.
+          eventBus.emit(EVENT_CHANNELS.SYNC_COMPLETED, {
+            pushed: report.pushed,
+            pulled: report.pulled,
+            applied: report.applied,
+            conflicts: report.conflicts,
+            failed: report.failed,
+            error: report.error,
+            at: Date.now(),
+          });
           return report;
         });
     } else {
@@ -389,7 +407,7 @@ async function push(report: SyncReport): Promise<void> {
 
 /** Dispatches one outbox operation and returns the record the server stored. */
 function send(op: OutboxRow, entityPath: string, payload: any): Promise<any> {
-  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id, payload, op.entity_type);
+  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id);
   if (op.operation === 'CREATE') return sendCreate(entityPath, op.entity_id, payload, op.entity_type);
   return sendUpdate(entityPath, op.entity_id, payload, op.entity_type);
 }
@@ -630,12 +648,7 @@ async function sendUpdate(
  * A soft delete, which is the tombstone the design needs - the document stays
  * so the delete can reach other devices.
  */
-async function sendDelete(
-  entityPath: string,
-  id: string,
-  payload: any,
-  entityType: EntityType,
-): Promise<any> {
+async function sendDelete(entityPath: string, id: string): Promise<any> {
   try {
     return (await api.remove<any>(entityPath, id)).data;
   } catch (error) {
@@ -736,7 +749,12 @@ async function pull(report: SyncReport): Promise<void> {
 
   for (const entityType of Object.keys(TABLES) as EntityType[]) {
     const table = TABLES[entityType];
-    const targets: (string | undefined)[] = SCOPE[entityType] === 'userBook' ? bookIds : [undefined];
+    // On a fresh install, bookIds is empty, so userBook-scoped collections would skip sweep entirely.
+    // downloads is special: sweep it at account level (undefined bookId) on first run to discover
+    // downloads from other devices. Other userBook collections (progress, bookmarks, etc.) naturally
+    // have nothing to discover until a book is downloaded locally, so they remain gated.
+    const targets: (string | undefined)[] =
+      SCOPE[entityType] === 'userBook' ? (bookIds.length === 0 && entityType === 'downloads' ? [undefined] : bookIds) : [undefined];
 
     for (const bookId of targets) {
       const response = await api.list<any>(ENTITY_PATHS[entityType], {
@@ -750,6 +768,7 @@ async function pull(report: SyncReport): Promise<void> {
       // than being skipped.
       if (checkpoint === null) checkpoint = response.serverTime;
 
+      let appliedCount = 0;
       for (const record of response.data ?? []) {
         report.pulled += 1;
         // Last-Write-Wins, and device-local columns (local_path) are preserved. `downloads` goes
@@ -759,7 +778,10 @@ async function pull(report: SyncReport): Promise<void> {
           entityType === 'downloads'
             ? await applyDownloadRecord(record)
             : await table.applyServerRecord(record);
-        if (applied) report.applied += 1;
+        if (applied) {
+          report.applied += 1;
+          appliedCount += 1;
+        }
 
         // Field-merge tables (personalization, accessibility) only: a pending local edit
         // (synced: 0) survives this merge unchanged - see mergeFieldLevel - but the OUTBOX
@@ -774,6 +796,17 @@ async function pull(report: SyncReport): Promise<void> {
             await outboxStore.enqueue(entityType, record.id, 'UPDATE', table.toServerPayload(fresh));
           }
         }
+      }
+
+      // Emit SYNC_ENTITY_APPLIED for this entity type / book combination
+      // (or null bookId for user-scoped entities) if any records were applied.
+      if (appliedCount > 0) {
+        eventBus.emit(EVENT_CHANNELS.SYNC_ENTITY_APPLIED, {
+          entityType: entityType as any,
+          count: appliedCount,
+          bookId: bookId ?? null,
+          at: Date.now(),
+        });
       }
 
       if (entityType === 'downloads') await recordEntitlementCheck();
