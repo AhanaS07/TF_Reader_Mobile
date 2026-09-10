@@ -24,6 +24,7 @@
 // `personalizationStore.fieldMerge.test.ts` / `accessibilityStore.fieldMerge.test.ts`.
 
 import { prefsStore } from '@/features/personalization/prefsStore';
+import { DEFAULT_PREFS } from '@/shared/contracts';
 
 // Known baseline via the public seam only — resetPrefs writes defaults to storage.
 beforeEach(async () => {
@@ -77,6 +78,92 @@ describe('prefsStore (settings-facing wrapper over the persisted store)', () => 
 
     // Persisted, not just returned.
     expect((await prefsStore.getPrefs()).theme).toBe('system');
+  });
+});
+
+// The AccessibilityScreen boundary, through the real SQLite-backed store — not the fake
+// `PrefsSource` the hook/screen tests inject. Those prove the hook builds the right patch;
+// these prove the patch actually lands on, and survives, the persisted accessibility row.
+describe('prefsStore accessibility persistence', () => {
+  it('persists a nested accessibility field and survives a fresh read', async () => {
+    const A11Y = DEFAULT_PREFS.accessibility;
+
+    await prefsStore.savePrefs({
+      accessibility: { ...A11Y, display: { ...A11Y.display, boldText: true } },
+    });
+
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.accessibility.display.boldText).toBe(true);
+  });
+
+  it('a partial accessibility write does not disturb sibling fields or TTS', async () => {
+    const A11Y = DEFAULT_PREFS.accessibility;
+    await prefsStore.savePrefs({
+      accessibility: {
+        ...A11Y,
+        tts: { ...A11Y.tts, enabled: true, rate: 1.75 },
+      },
+    });
+
+    await prefsStore.savePrefs({
+      accessibility: { ...A11Y, tts: { ...A11Y.tts, enabled: true, rate: 1.75 }, display: { ...A11Y.display, highContrast: true } },
+    });
+
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.accessibility.display.highContrast).toBe(true);
+    expect(reloaded.accessibility.tts.enabled).toBe(true);
+    expect(reloaded.accessibility.tts.rate).toBe(1.75);
+    expect(reloaded.accessibility.display.boldText).toBe(false);
+  });
+
+  it('does not disturb personalization fields', async () => {
+    await prefsStore.savePrefs({ theme: 'sepia' });
+    const A11Y = DEFAULT_PREFS.accessibility;
+
+    await prefsStore.savePrefs({
+      accessibility: { ...A11Y, screenReaderHints: true },
+    });
+
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.theme).toBe('sepia');
+    expect(reloaded.accessibility.screenReaderHints).toBe(true);
+  });
+
+  it.each(['system', 'on', 'off'] as const)(
+    "persists reduceMotion %p as the raw tri-state string",
+    async (reduceMotion) => {
+      const A11Y = DEFAULT_PREFS.accessibility;
+      await prefsStore.savePrefs({
+        accessibility: { ...A11Y, display: { ...A11Y.display, reduceMotion } },
+      });
+
+      const reloaded = await prefsStore.getPrefs();
+      expect(reloaded.accessibility.display.reduceMotion).toBe(reduceMotion);
+    },
+  );
+
+  it('persists fontScaleMultiplier at any value within its contract range', async () => {
+    const A11Y = DEFAULT_PREFS.accessibility;
+    await prefsStore.savePrefs({
+      accessibility: { ...A11Y, text: { ...A11Y.text, fontScaleMultiplier: 1.3 } },
+    });
+
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.accessibility.text.fontScaleMultiplier).toBe(1.3);
+  });
+
+  it('restoring accessibility defaults leaves personalization untouched', async () => {
+    await prefsStore.savePrefs({ theme: 'dark' });
+    const A11Y = DEFAULT_PREFS.accessibility;
+    await prefsStore.savePrefs({
+      accessibility: { ...A11Y, display: { ...A11Y.display, boldText: true } },
+    });
+
+    await prefsStore.savePrefs({ accessibility: DEFAULT_PREFS.accessibility });
+
+    const reloaded = await prefsStore.getPrefs();
+    expect(reloaded.accessibility).toEqual(DEFAULT_PREFS.accessibility);
+    expect(reloaded.theme).toBe('dark');
   });
 });
 

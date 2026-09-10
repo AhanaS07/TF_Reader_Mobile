@@ -24,7 +24,6 @@ import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { Institution } from '@model/institution';
 import type { Acquisition, Publication } from '@model/types';
 import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
-import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
@@ -47,9 +46,25 @@ jest.mock('@hooks/useNetworkStatus', () => ({
 
 // Controls what the licence source does inside handleAction and refresh().
 // All calls default to resolved so existing tests are unaffected.
-const mockBorrow = jest.fn().mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
+const mockBorrow = jest
+  .fn()
+  .mockResolvedValue({
+    loanId: 'loan_1',
+    itemId: 'item_42',
+    state: 'active',
+    expiresAt: 9_999_999_999,
+  });
 const mockReturnLoan = jest.fn().mockResolvedValue(undefined);
-const mockPlaceHold = jest.fn().mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
+const mockPlaceHold = jest
+  .fn()
+  .mockResolvedValue({
+    holdId: 'hold_1',
+    itemId: 'item_42',
+    state: 'queued',
+    position: 1,
+    queueLength: 1,
+    serverTime: '',
+  });
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
 
 jest.mock('@config/licence', () => ({
@@ -61,10 +76,32 @@ jest.mock('@config/licence', () => ({
     borrow: (...args: [string]) => mockBorrow(...args),
     returnLoan: (...args: [string]) => mockReturnLoan(...args),
     placeHold: (...args: [string]) => mockPlaceHold(...args),
-    acceptOffer: jest.fn().mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 }),
+    acceptOffer: jest
+      .fn()
+      .mockResolvedValue({
+        loanId: 'loan_1',
+        itemId: 'item_42',
+        state: 'active',
+        expiresAt: 9_999_999_999,
+      }),
     cancelHold: jest.fn().mockResolvedValue(undefined),
     getLibrary: () => mockGetLibrary(),
   }),
+}));
+
+// Download no longer borrows — it hands off to useDownloadProgress's start(),
+// which drives downloadManager.ts. Mocked at the hook boundary, same level the
+// screen itself talks to, rather than pulling downloadManager's real network
+// stack into these tests.
+const mockDownloadStart = jest.fn();
+let mockDownloadProgressState = {
+  status: 'idle' as 'idle' | 'downloading' | 'completed' | 'error',
+  bytesReceived: 0,
+  expectedLength: null as number | null,
+  errorMessage: null as string | null,
+};
+jest.mock('@/features/download/useDownloadProgress', () => ({
+  useDownloadProgress: () => ({ ...mockDownloadProgressState, start: mockDownloadStart }),
 }));
 
 function anAcquisition(over: Partial<Acquisition> = {}): Acquisition {
@@ -209,10 +246,29 @@ afterEach(() => {
   mockReturnLoan.mockClear();
   mockPlaceHold.mockClear();
   mockGetLibrary.mockClear();
-  mockBorrow.mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
+  mockDownloadStart.mockClear();
+  mockBorrow.mockResolvedValue({
+    loanId: 'loan_1',
+    itemId: 'item_42',
+    state: 'active',
+    expiresAt: 9_999_999_999,
+  });
   mockReturnLoan.mockResolvedValue(undefined);
-  mockPlaceHold.mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
+  mockPlaceHold.mockResolvedValue({
+    holdId: 'hold_1',
+    itemId: 'item_42',
+    state: 'queued',
+    position: 1,
+    queueLength: 1,
+    serverTime: '',
+  });
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  mockDownloadProgressState = {
+    status: 'idle',
+    bytesReceived: 0,
+    expectedLength: null,
+    errorMessage: null,
+  };
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
   useRecentlyViewedStore.getState().clear();
@@ -306,7 +362,9 @@ describe('ItemDetailScreen endpoint choice', () => {
 // recentlyViewedStore.ts's own note on why the snapshot is taken here.
 describe('ItemDetailScreen — recording a recently-viewed item', () => {
   it('records the view once the publication resolves', async () => {
-    setCatalogueSource(fakeSource(async () => aBook({ id: 'item_42', title: 'Rights for Robots' })));
+    setCatalogueSource(
+      fakeSource(async () => aBook({ id: 'item_42', title: 'Rights for Robots' })),
+    );
 
     await render(<ItemDetailScreen {...routeProps} />);
 
@@ -364,9 +422,7 @@ describe('ItemDetailScreen with a book', () => {
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() =>
-      expect(screen.getByLabelText('Rights for Robots cover')).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Rights for Robots cover')).toBeTruthy());
   });
 
   it('renders the ISBN when present', async () => {
@@ -416,7 +472,9 @@ describe('ItemDetailScreen with a book', () => {
     // Open Access resolves the same signed in or out, so this is a stable case
     // to pin the action bar against without a session.
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -474,14 +532,14 @@ describe('ItemDetailScreen with a book', () => {
     });
   });
 
-  // Added at the Library owner's request: a download must show up in the
-  // Library's Downloads section, which is fed by `downloadStore`. So Download
-  // borrows AND records itself on this device — but only after the borrow
-  // resolves, so a refused download leaves no phantom row.
-  it('records a download in downloadStore after the borrow succeeds', async () => {
-    useDownloadStore.getState().clear();
+  // Download no longer goes through the borrow-based licence flow — it hands
+  // the tapped item straight to useDownloadProgress's start(), which drives
+  // downloadManager.ts (and, from there, downloadTable — not this screen).
+  it('starts the download via useDownloadProgress when Download is tapped', async () => {
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -489,22 +547,22 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText('Download')).toBeTruthy());
     fireEvent.press(screen.getByText('Download'));
 
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
-    await waitFor(() =>
-      expect(useDownloadStore.getState().downloads.map((d) => d.itemId)).toContain('item_42'),
-    );
+    await waitFor(() => expect(mockDownloadStart).toHaveBeenCalledWith('item_42', 'PDF'));
+    // The borrow-based licence call this used to make is gone entirely.
+    expect(mockBorrow).not.toHaveBeenCalled();
   });
 
-  it('records nothing when the download borrow is refused', async () => {
-    useDownloadStore.getState().clear();
-    mockBorrow.mockRejectedValue(
-      new LicenceFailure(LicenceError.REFUSED, {
-        errorCode: 'DOWNLOAD_NOT_PERMITTED',
-        target: 'item_42',
-      }),
-    );
+  it('does not start a second download while one is already in flight', async () => {
+    mockDownloadProgressState = {
+      status: 'downloading',
+      bytesReceived: 0,
+      expectedLength: null,
+      errorMessage: null,
+    };
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -512,8 +570,7 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText('Download')).toBeTruthy());
     fireEvent.press(screen.getByText('Download'));
 
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
-    expect(useDownloadStore.getState().downloads).toHaveLength(0);
+    expect(mockDownloadStart).not.toHaveBeenCalled();
   });
 
   // The fixture this screen will meet in the real app is an Elite title, and
@@ -538,7 +595,9 @@ describe('ItemDetailScreen with a book', () => {
   it('resolves a Subscription title to Read once an institution is selected, instead of Sign in', async () => {
     selectAndSignIn(INSTITUTION);
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -586,7 +645,9 @@ describe('ItemDetailScreen with a book', () => {
   // QueueNotification.test.tsx).
   it('still no-ops for actions other than signIn', async () => {
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -666,7 +727,9 @@ describe('ItemDetailScreen format, price and table of contents', () => {
   // rather than withheld.
   describe('the "About this book" section', () => {
     it('shows a real, non-fixture description under "About this book"', async () => {
-      setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
+      setCatalogueSource(
+        fakeSource(async () => aBook({ description: 'A study of legal personhood.' })),
+      );
 
       await render(<ItemDetailScreen {...routeProps} />);
 
@@ -683,15 +746,18 @@ describe('ItemDetailScreen format, price and table of contents', () => {
       'Real EPUB fixture (ELITE), ingested from a real file.',
       'Real PDF fixture, ingested from a real file.',
       'Real audio fixture, ingested from a real file.',
-    ])('shows the feed\'s own description verbatim, dev-fixture note included: %s', async (description) => {
-      setCatalogueSource(fakeSource(async () => aBook({ description })));
+    ])(
+      "shows the feed's own description verbatim, dev-fixture note included: %s",
+      async (description) => {
+        setCatalogueSource(fakeSource(async () => aBook({ description })));
 
-      await render(<ItemDetailScreen {...routeProps} />);
+        await render(<ItemDetailScreen {...routeProps} />);
 
-      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
-      expect(screen.getByText(description)).toBeTruthy();
-      expect(screen.queryByText('Description not available yet.')).toBeNull();
-    });
+        await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+        expect(screen.getByText(description)).toBeTruthy();
+        expect(screen.queryByText('Description not available yet.')).toBeNull();
+      },
+    );
 
     it('shows the honest fallback when the feed sent no description at all', async () => {
       setCatalogueSource(fakeSource(async () => aBook({ description: undefined })));
@@ -703,7 +769,9 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     });
 
     it('offers no "Read more" for a short description', async () => {
-      setCatalogueSource(fakeSource(async () => aBook({ description: 'A study of legal personhood.' })));
+      setCatalogueSource(
+        fakeSource(async () => aBook({ description: 'A study of legal personhood.' })),
+      );
 
       await render(<ItemDetailScreen {...routeProps} />);
 
@@ -789,7 +857,11 @@ describe('ItemDetailScreen errors', () => {
       <ItemDetailScreen
         {...{
           route: { params: { itemId: 'item_missing' } },
-          navigation: { navigate: mockNavigate, setOptions: mockSetOptions, getParent: mockGetParent },
+          navigation: {
+            navigate: mockNavigate,
+            setOptions: mockSetOptions,
+            getParent: mockGetParent,
+          },
         }}
       />,
     );
@@ -803,7 +875,8 @@ describe('ItemDetailScreen errors', () => {
     setCatalogueSource(
       fakeSource(async () => {
         attempt += 1;
-        if (attempt === 1) throw new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE, 'item_42');
+        if (attempt === 1)
+          throw new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE, 'item_42');
         return aBook();
       }),
     );
@@ -925,7 +998,9 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
   });
 
   it('renders the access tier badge for the resolved tier', async () => {
-    const detail = anArticleDetail({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) });
+    const detail = anArticleDetail({
+      acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }),
+    });
 
     await render(renderArticleContent(detail, jest.fn()));
 
@@ -1120,7 +1195,12 @@ describe('ItemDetailScreen selects presentation by workType', () => {
 describe('ItemDetailScreen — holdings joined from library store', () => {
   it('shows Revoke licence when the reader already holds an active loan for the item', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     // Pre-populate the store so the first resolved detail already sees the loan.
     // mockGetLibrary returns the same data so refresh() on mount does not overwrite it.
     useLibraryStore.setState({ loans: [loan], holds: [] });
@@ -1211,7 +1291,12 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
     selectAndSignIn(INSTITUTION);
-    const otherLoan = { loanId: 'loan_x', itemId: 'item_OTHER', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const otherLoan = {
+      loanId: 'loan_x',
+      itemId: 'item_OTHER',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     // Loan for a different itemId — must not affect this screen's item_42.
     useLibraryStore.setState({ loans: [otherLoan], holds: [] });
     mockGetLibrary.mockResolvedValue({ loans: [otherLoan], holds: [] });
@@ -1231,7 +1316,12 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 describe('ItemDetailScreen — invalidate cache after action', () => {
   it('calls borrow and refreshes the library when Grant access is tapped', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     mockBorrow.mockResolvedValue(loan);
     // First call on mount returns empty → Grant access shown.
     // Second call after borrow returns the new loan → Revoke licence shown.
@@ -1253,7 +1343,12 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
 
   it('calls returnLoan and refreshes when Revoke licence is tapped', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     useLibraryStore.setState({ loans: [loan], holds: [] });
     mockReturnLoan.mockResolvedValue(undefined);
     // First call on mount preserves the pre-set loan → Revoke licence shown.
@@ -1277,9 +1372,19 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
   it('falls through to placeHold when borrow is refused with NO_COPIES_AVAILABLE', async () => {
     selectAndSignIn(INSTITUTION);
     mockBorrow.mockRejectedValue(
-      new LicenceFailure(LicenceError.REFUSED, { errorCode: 'NO_COPIES_AVAILABLE', target: 'item_42' }),
+      new LicenceFailure(LicenceError.REFUSED, {
+        errorCode: 'NO_COPIES_AVAILABLE',
+        target: 'item_42',
+      }),
     );
-    const hold = { holdId: 'hold_1', itemId: 'item_42', state: 'queued' as const, position: 3, queueLength: 7, serverTime: new Date().toISOString() };
+    const hold = {
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued' as const,
+      position: 3,
+      queueLength: 7,
+      serverTime: new Date().toISOString(),
+    };
     mockPlaceHold.mockResolvedValue(hold);
     // First call on mount returns empty → Grant access shown.
     // Second call after placeHold returns hold → no actions (queued state).

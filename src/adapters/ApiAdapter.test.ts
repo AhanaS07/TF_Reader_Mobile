@@ -631,6 +631,17 @@ describe('ApiAdapter failure mapping', () => {
     });
   });
 
+  it('maps 401 to UNAUTHENTICATED, not NETWORK_UNAVAILABLE — the connection is fine, the token is not', async () => {
+    const adapter = new ApiAdapter({
+      baseUrl: BASE_URL,
+      fetch: async () => ({ ok: false, status: 401, json: async () => ({}) }),
+    });
+
+    await expect(adapter.getHomeCatalogue(KNOWN_INSTITUTION)).rejects.toMatchObject({
+      code: CatalogueError.UNAUTHENTICATED,
+    });
+  });
+
   it('maps a server error to NETWORK_UNAVAILABLE, since retrying may succeed', async () => {
     const adapter = new ApiAdapter({
       baseUrl: BASE_URL,

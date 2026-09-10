@@ -67,6 +67,15 @@ jest.mock('@config/licence', () => ({
   }),
 }));
 
+// Read no longer borrows — it calls openBook() directly (see ItemDetailScreen.tsx's
+// `handleAction`'s 'read' branch), bypassing runLicenceCall/mockBorrow entirely.
+// Mocked at that boundary so these tests exercise the screen's own pending wiring
+// without pulling openBook's real network/decrypt stack into a render test.
+const mockOpenBook = jest.fn();
+jest.mock('@/features/download/openBook', () => ({
+  openBook: (...args: [string, string]) => mockOpenBook(...args),
+}));
+
 const LOAN = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999 };
 
 function anAcquisition(over: Partial<Acquisition> = {}): Acquisition {
@@ -130,6 +139,7 @@ const routeProps = {
 beforeEach(() => {
   mockBorrow.mockResolvedValue(LOAN);
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  mockOpenBook.mockResolvedValue(new Uint8Array());
   setCatalogueSource(fakeSource(async () => anOpenAccessBook()));
 });
 
@@ -154,16 +164,16 @@ describe('ItemDetailScreen — the bar before anything is tapped', () => {
 });
 
 describe('ItemDetailScreen — the licence call still happens', () => {
-  // The pending wiring must not have changed WHAT the tap does. These two are the
-  // regression guard for the refactor that moved the four calls through
-  // `runLicenceCall`.
-  it('borrows the item when Read is tapped', async () => {
+  // The pending wiring must not have changed WHAT the tap does. Read itself no
+  // longer borrows — it calls openBook() directly (see ItemDetailScreen.tsx's
+  // 'read' branch) — so this pins that call instead of the old borrow one.
+  it('opens the book when Read is tapped', async () => {
     await render(<ItemDetailScreen {...routeProps} />);
     await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
 
     fireEvent.press(screen.getByTestId('action-button-read'));
 
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
+    await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'PDF'));
   });
 
   it('invalidates the holdings cache afterwards', async () => {
@@ -459,12 +469,12 @@ describe('ItemDetailScreen — D12 grant and offered', () => {
   });
 });
 
-// LAST IN THE FILE, DELIBERATELY. This is the only test that holds the borrow
+// LAST IN THE FILE, DELIBERATELY. This is the only test that holds the call
 // open — the only way to render the busy state — and an unresolved promise at
 // teardown is what corrupts a following render. Nothing follows it.
 describe('ItemDetailScreen — busy while the call is in flight', () => {
-  it('shows Read busy and inert, and takes only one borrow', async () => {
-    mockBorrow.mockReturnValue(new Promise(() => {}));
+  it('shows Read busy and inert, and takes only one openBook call', async () => {
+    mockOpenBook.mockReturnValue(new Promise(() => {}));
 
     await render(<ItemDetailScreen {...routeProps} />);
     await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
@@ -483,6 +493,6 @@ describe('ItemDetailScreen — busy while the call is in flight', () => {
     fireEvent.press(screen.getByTestId('action-button-read'));
     fireEvent.press(screen.getByTestId('action-button-read'));
 
-    expect(mockBorrow).toHaveBeenCalledTimes(1);
+    expect(mockOpenBook).toHaveBeenCalledTimes(1);
   });
 });

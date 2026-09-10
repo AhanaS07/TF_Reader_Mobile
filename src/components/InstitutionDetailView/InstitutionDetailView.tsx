@@ -8,7 +8,8 @@
 //
 // It also means authType cannot be rendered, because it never arrives — sign-in
 // is always SAML, so there is nothing to display and nothing to choose.
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
 import { color, radius, space, type } from '@theme/tokens';
 import { getInitials } from '@utils/initials';
@@ -36,9 +37,13 @@ export default function InstitutionDetailView({
     <View style={styles.container}>
       {logoUrl !== undefined ? (
         <Image
-          source={{ uri: logoUrl }}
+          // See ContentCard.tsx's note — strip the querystring for the cache
+          // key in case this backend re-signs logo URLs the same way covers.
+          source={{ uri: logoUrl, cacheKey: logoUrl.split('?')[0] }}
           style={styles.logo}
-          resizeMode="contain"
+          contentFit="contain"
+          cachePolicy="memory-disk"
+          transition={200}
           accessibilityLabel={`${name} logo`}
         />
       ) : (

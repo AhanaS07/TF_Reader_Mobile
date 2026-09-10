@@ -39,9 +39,10 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 
-import type { ContentFormat } from '@/shared/types/primitives';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
@@ -53,6 +54,8 @@ import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
 import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
+import { openBook } from '@/features/download/openBook';
+import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -60,7 +63,6 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@m
 import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { ERROR_CODES } from '@model/types';
 import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
-import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
@@ -81,10 +83,8 @@ interface ItemDetailRouteProps {
   // header comment in RootNavigator.tsx for why this is the reliable trigger
   // (a plain nested push is not).
   navigation: {
-    navigate: (
-      screen: 'AccessGate',
-      params: { itemId: string; title: string; authors: string },
-    ) => void;
+    navigate(screen: 'AccessGate', params: { itemId: string; title: string; authors: string }): void;
+    navigate(screen: 'Reader', params: { bookId: BookId; format: ContentFormat }): void;
     setOptions: (options: { title: string }) => void;
     getParent: () =>
       | { setOptions: (options: { tabBarStyle?: { display: 'none' } }) => void }
@@ -114,8 +114,18 @@ const GENERIC_MESSAGE = "We couldn't load this title.";
 const LICENCE_GENERIC_MESSAGE = "That action couldn't be completed. Please try again.";
 
 const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ] as const;
 
 // `detail.published` is whatever date string the feed sent — normalize.ts
@@ -174,7 +184,10 @@ function DescriptionSection({ description }: { description?: string }): ReactEle
       <SectionHeader title="About this book" />
       {description !== undefined ? (
         <>
-          <Text style={styles.description} numberOfLines={!expanded && long ? DESCRIPTION_CLAMP_LINES : undefined}>
+          <Text
+            style={styles.description}
+            numberOfLines={!expanded && long ? DESCRIPTION_CLAMP_LINES : undefined}
+          >
             {description}
           </Text>
           {long && (
@@ -244,27 +257,14 @@ export function renderBookContent(
   return (
     <>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-        {/* Always renders a well — a missing cover and a failed fetch used to
-            leave nothing at all where the jacket goes, which reads as a
-            layout bug rather than "this title has no cover on file". The
-            icon marks it as a deliberate stand-in, same device ContentCard's
-            own placeholder uses for exactly this pair of cases. */}
-        <View style={styles.coverWrap}>
-          {showCoverPlaceholder ? (
-            <View testID="item-detail-cover-placeholder" style={[styles.cover, styles.coverPlaceholder]}>
-              <MaterialCommunityIcons name="book-outline" size={COVER_WIDTH / 2} color={color.textSecondary} />
-            </View>
-          ) : (
-            <Image
-              testID="item-detail-cover"
-              source={{ uri: detail.coverUrl }}
-              style={styles.cover}
-              resizeMode="cover"
-              accessibilityLabel={`${detail.title} cover`}
-              onError={onCoverError}
-            />
-          )}
-        </View>
+        {detail.coverUrl !== undefined && (
+          <Image
+            source={{ uri: detail.coverUrl }}
+            style={styles.cover}
+            resizeMode="contain"
+            accessibilityLabel={`${detail.title} cover`}
+          />
+        )}
 
         <Text style={styles.title}>{detail.title}</Text>
 
@@ -333,7 +333,10 @@ export function renderBookContent(
             />
           )}
           {detail.published !== undefined && detail.publisher === undefined && (
-            <MetaRow icon="calendar-blank-outline" text={`Published ${formatPublishedDate(detail.published)}`} />
+            <MetaRow
+              icon="calendar-blank-outline"
+              text={`Published ${formatPublishedDate(detail.published)}`}
+            />
           )}
           {detail.published === undefined && detail.publisher !== undefined && (
             <MetaRow icon="domain" text={`Publisher ${detail.publisher}`} />
@@ -497,7 +500,11 @@ function UnavailableTag({
       accessibilityLabel={accessibilityLabel ?? label}
     >
       {icon !== undefined && (
-        <MaterialCommunityIcons name={icon} size={typeScale.smallLabel.size} color={color.textSecondary} />
+        <MaterialCommunityIcons
+          name={icon}
+          size={typeScale.smallLabel.size}
+          color={color.textSecondary}
+        />
       )}
       <Text style={styles.unavailableInlineLabel} numberOfLines={1}>
         {label}
@@ -684,6 +691,7 @@ export function renderArticleContent(
 
 export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteProps) {
   const { itemId } = route.params;
+  const downloadProgress = useDownloadProgress();
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
 
@@ -758,7 +766,11 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // Falls back to BOOK_WORK_TYPE until wokay answers Q-1b (journal/article
     // @type values). Once they do, the normalizer fills publication.workType and
     // nothing else here changes.
-    return buildItemDetail({ publication, workType: publication.workType ?? BOOK_WORK_TYPE, access });
+    return buildItemDetail({
+      publication,
+      workType: publication.workType ?? BOOK_WORK_TYPE,
+      access,
+    });
   }, [publication, institutionId, session, loan, hold]);
 
   // The header title narrows from both stacks' shared 'Book Details' default
@@ -830,6 +842,14 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     void refresh();
   }, [fetchItem, refresh]);
 
+  useEffect(() => {
+    if (downloadProgress.status === 'completed') {
+      Alert.alert('Download complete', 'Book saved for offline reading.');
+    } else if (downloadProgress.status === 'error') {
+      Alert.alert('Download failed', downloadProgress.errorMessage ?? 'Something went wrong.');
+    }
+  }, [downloadProgress.status, downloadProgress.errorMessage]);
+
   const retry = useCallback(() => {
     setLoading(true);
     setFailed(false);
@@ -867,7 +887,9 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
               (ERROR_CODES as readonly string[]).includes(err.errorCode)
                 ? (err.errorCode as ErrorCode)
                 : undefined;
-            setLicenceMessage(knownCode !== undefined ? WIRE_ERROR_COPY[knownCode] : LICENCE_GENERIC_MESSAGE);
+            setLicenceMessage(
+              knownCode !== undefined ? WIRE_ERROR_COPY[knownCode] : LICENCE_GENERIC_MESSAGE,
+            );
           }
         })
         .then(() => refresh())
@@ -901,24 +923,39 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       // through `runLicenceCall`, which owns the pending state and the guard.
       const source = getLicenceSource();
       if (action === 'download') {
-        // Download and Read are the same licence call — a borrow — but a download
-        // ALSO records itself on this device so it appears in the Library's
-        // Downloads section. Recorded only after the borrow RESOLVES, so a refused
-        // download leaves no phantom row; the store keeps the record, not the bytes
-        // (CAP-7's ContentStore owns those). The caller stamps the time because
-        // downloadStore deliberately never reads a clock. (Added at Library owner's
-        // request; see downloadStore.ts.)
-        runLicenceCall(action, () =>
-          source.borrow(itemId).then((result) => {
-            useDownloadStore.getState().markDownloaded({ itemId, downloadedAt: Date.now() });
-            return result;
-          }),
-        );
+        // Download no longer borrows directly — it hands off to
+        // `useDownloadProgress`'s `start()`, which drives `downloadManager.ts`
+        // and reports real byte progress; the `Alert`s in the effect above
+        // fire on its `completed`/`error` status. Guarded on both a known
+        // format and an already-running download, same reason `handleAction`
+        // itself guards on `pendingAction`.
+        const format = detail?.format;
+        if (format === undefined) return;
+        if (downloadProgress.status === 'downloading') return;
+        downloadProgress.start(itemId as BookId, format);
       } else if (action === 'read' || action === 'play') {
-        // Same licence call either way — `play` is `read` relabelled for an
-        // AUDIO item, not a second entitlement. See renderBookContent's own
-        // remap and ACTION_IDS's note.
-        runLicenceCall(action, () => source.borrow(itemId));
+        // `play` is `read` relabelled for an AUDIO item, not a second
+        // entitlement (see `ACTION_IDS`'s own note and this file's remap in
+        // `renderBookContent`) — both open the same way. `openBook` decrypts
+        // and stages the content locally; only once that resolves does this
+        // navigate to the real reader/player, so a refused or failed open
+        // never lands the reader on a screen with nothing to show.
+        const format = detail?.format;
+        if (format === undefined) return;
+        setLicenceMessage(undefined);
+        setPendingAction(action);
+        openBook(itemId as BookId, format)
+          .then(() => {
+            navigation.navigate('Reader', { bookId: itemId as BookId, format });
+          })
+          .catch((err: unknown) => {
+            console.error('[read] openBook failed:', err);
+            setLicenceMessage(LICENCE_GENERIC_MESSAGE);
+          })
+          .finally(() => {
+            void refresh();
+            setPendingAction(undefined);
+          });
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
         const loanId = loan.loanId;
         runLicenceCall(action, () => source.returnLoan(loanId));
@@ -936,7 +973,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         runLicenceCall(action, () => source.cancelHold(holdId));
       }
     },
-    [navigation, detail, itemId, loan, hold, pendingAction, runLicenceCall],
+    [navigation, detail, itemId, loan, hold, pendingAction, runLicenceCall, downloadProgress, refresh],
   );
 
   let body: ReactNode;
@@ -974,13 +1011,15 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // The only place workType is read for presentation. Today this is always
     // 'book' — see the header comment — but the branch is real and the article
     // side is exercised directly in tests rather than left unwritten.
+    const effectivePending: ActionId | undefined =
+      pendingAction ?? (downloadProgress.status === 'downloading' ? 'download' : undefined);
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction, pendingAction, licenceMessage)
+        ? renderArticleContent(detail, handleAction, effectivePending, licenceMessage)
         : renderBookContent(
             detail,
             handleAction,
-            pendingAction,
+            effectivePending,
             licenceMessage,
             coverFailed,
             () => setCoverFailed(true),

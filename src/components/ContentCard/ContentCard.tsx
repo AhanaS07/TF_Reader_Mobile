@@ -24,7 +24,8 @@
 // It sets no outer width, margin or position (CONVENTIONS §8) — the list that
 // lays the rows out owns that.
 import { useState, type ReactNode } from 'react';
-import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { color, elevation, radius, space, type } from '@theme/tokens';
@@ -218,9 +219,20 @@ export default function ContentCard({
           ) : (
             <Image
               testID="content-card-image"
-              source={{ uri: imageUrl }}
+              // The backend hands out a freshly-signed S3 URL (new date/signature
+              // query params) on every fetch, even for the same cover — so the
+              // querystring must be stripped for the cache key, or every screen's
+              // signed link looks like a brand-new image to expo-image's cache.
+              // Assumes the querystring carries only the signature, never a real
+              // variant/version — unconfirmed by any contract doc. If the backend
+              // ever encodes a genuine image variant there, two different images
+              // would silently collapse onto one cache key.
+              source={{ uri: imageUrl, cacheKey: imageUrl.split('?')[0] }}
               style={styles.coverThumb}
-              resizeMode="cover"
+              // `contain` would letterbox a portrait cover inside a square thumb.
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={200}
               onError={() => setImageFailed(true)}
             />
           )}
@@ -271,10 +283,20 @@ export default function ContentCard({
           ) : (
             <Image
               testID="content-card-image"
-              source={{ uri: imageUrl }}
+              // The backend hands out a freshly-signed S3 URL (new date/signature
+              // query params) on every fetch, even for the same cover — so the
+              // querystring must be stripped for the cache key, or every screen's
+              // signed link looks like a brand-new image to expo-image's cache.
+              // Assumes the querystring carries only the signature, never a real
+              // variant/version — unconfirmed by any contract doc. If the backend
+              // ever encodes a genuine image variant there, two different images
+              // would silently collapse onto one cache key.
+              source={{ uri: imageUrl, cacheKey: imageUrl.split('?')[0] }}
               style={styles.thumb}
               // `contain` would letterbox a portrait cover inside a square thumb.
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={200}
               onError={() => setImageFailed(true)}
             />
           )}

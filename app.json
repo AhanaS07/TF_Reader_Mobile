@@ -54,7 +54,8 @@
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": true
         }
-      ]
+      ],
+      "expo-image"
     ],
     "extra": {
       "eas": {
