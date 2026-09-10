@@ -774,18 +774,18 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     expect(screen.queryByText(/table of contents/i)).toBeNull();
   });
 
-  // §9 (revised again): "About this book" is now a real, always-present
+  // §9 (revised again): "About this title" is now a real, always-present
   // section — a genuine description (today's one-liners included) is shown
   // rather than withheld.
-  describe('the "About this book" section', () => {
-    it('shows a real, non-fixture description under "About this book"', async () => {
+  describe('the "About this title" section', () => {
+    it('shows a real, non-fixture description under "About this title"', async () => {
       setCatalogueSource(
         fakeSource(async () => aBook({ description: 'A study of legal personhood.' })),
       );
 
       await render(<ItemDetailScreen {...routeProps} />);
 
-      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
       expect(screen.getByText('A study of legal personhood.')).toBeTruthy();
     });
 
@@ -805,7 +805,7 @@ describe('ItemDetailScreen format, price and table of contents', () => {
 
         await render(<ItemDetailScreen {...routeProps} />);
 
-        await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+        await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
         expect(screen.getByText(description)).toBeTruthy();
         expect(screen.queryByText('Description not available yet.')).toBeNull();
       },
@@ -816,7 +816,7 @@ describe('ItemDetailScreen format, price and table of contents', () => {
 
       await render(<ItemDetailScreen {...routeProps} />);
 
-      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
       expect(screen.getByText('Description not available yet.')).toBeTruthy();
     });
 
@@ -827,7 +827,7 @@ describe('ItemDetailScreen format, price and table of contents', () => {
 
       await render(<ItemDetailScreen {...routeProps} />);
 
-      await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
       expect(screen.queryByRole('button', { name: 'Read more' })).toBeNull();
     });
 
@@ -911,7 +911,6 @@ describe('ItemDetailScreen errors', () => {
           route: { params: { itemId: 'item_missing' } },
           navigation: {
             navigate: mockNavigate,
-            setOptions: mockSetOptions,
             getParent: mockGetParent,
           },
         }}

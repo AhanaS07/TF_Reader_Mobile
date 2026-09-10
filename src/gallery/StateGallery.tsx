@@ -11,8 +11,6 @@ import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import CategoryCardGallery from '@/components/CategoryCard/CategoryCard.gallery';
 import ContentCardGallery from '@/components/ContentCard/ContentCard.gallery';
-import EliteActiveAccessCardGallery from '@/components/EliteActiveAccessCard/EliteActiveAccessCard.gallery';
-import EliteQueueCardGallery from '@/components/EliteQueueCard/EliteQueueCard.gallery';
 import ElitePendingAccessCardGallery from '@/components/ElitePendingAccessCard/ElitePendingAccessCard.gallery';
 import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
 import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
@@ -54,9 +52,11 @@ const SECTIONS = [
   'InstitutionDetailView',
   'ActionButton',
   'ActionBar',
+  // Elite's other two states (active access, queue) render through
+  // `ContentCard` now — see LibraryScreen.tsx's header comment — so
+  // `ContentCard`'s own gallery entry below covers them; only the
+  // action-prompt state still has a dedicated component.
   'ElitePendingAccessCard',
-  'EliteActiveAccessCard',
-  'EliteQueueCard',
   // Not a component. It is here because the access RULES are the thing most worth
   // reviewing by eye, and the only surface that shows them resolving.
   'resolveAccess',
@@ -122,8 +122,6 @@ export default function StateGallery() {
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
       {section === 'ElitePendingAccessCard' && <ElitePendingAccessCardGallery />}
-      {section === 'EliteActiveAccessCard' && <EliteActiveAccessCardGallery />}
-      {section === 'EliteQueueCard' && <EliteQueueCardGallery />}
       {section === 'resolveAccess' && <ResolveAccessGallery />}
       {section === 'HeroBanner' && <HeroBannerGallery />}
       {section === 'CategoryCard' && <CategoryCardGallery />}

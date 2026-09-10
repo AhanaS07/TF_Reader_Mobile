@@ -226,13 +226,15 @@ function CatalogueNavigator() {
         component={InstitutionDetailScreen}
         options={{ title: 'Institution' }}
       />
-      {/* Title is 'Book Details' by default and overridden to 'Article
-          Details' by the screen itself via navigation.setOptions once it
-          knows the item's workType — see ItemDetailScreen.tsx. */}
+      {/* ONE TITLE FOR EVERY WORK TYPE AND FORMAT — a book, a journal article
+          and an audiobook all push this same route, and 'Book Details' used
+          to stay on screen for an audiobook (only 'article' ever narrowed
+          it, to 'Article Details') even though nothing here is a book. See
+          ItemDetailScreen.tsx's own header for the shared route reasoning. */}
       <CatalogueStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Book Details' }}
+        options={{ title: 'Item Details' }}
       />
       <CatalogueStack.Screen
         name="InstitutionList"
@@ -310,7 +312,7 @@ function SearchNavigator() {
       <SearchStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Book Details' }}
+        options={{ title: 'Item Details' }}
       />
       <SearchStack.Screen
         name="AccessGate"
@@ -371,7 +373,7 @@ function LibraryNavigator() {
       <LibraryStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Book Details' }}
+        options={{ title: 'Item Details' }}
       />
       {/* AccessGate/SignIn/PersonalAccount/Reader/BookInfo — same reason as
           SearchNavigator's identical set: `ItemDetail`'s access check and its

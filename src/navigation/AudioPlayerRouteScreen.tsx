@@ -274,7 +274,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
     return new Promise<boolean>((resolve) => {
       Alert.alert(
         'Playback progress updated',
-        'Your progress in this audiobook was updated on another device. Resume from there, or continue playing here?',
+        'Your progress in this title was updated on another device. Resume from there, or continue playing here?',
         [
           {
             text: 'Continue here',
@@ -370,7 +370,7 @@ export function AudioPlayerRouteScreen({ route }: Props): React.JSX.Element {
         const pausedAtSeconds = handle.currentPositionSeconds();
         Alert.alert(
           'Playback progress updated',
-          'Playback has been paused — your progress in this audiobook was updated on another ' +
+          'Playback has been paused — your progress in this title was updated on another ' +
             'device. Resume from there, or continue playing here?',
           [
             {

@@ -408,3 +408,18 @@ describe('ContentCard action slot', () => {
     expect(onPress).not.toHaveBeenCalled();
   });
 });
+
+describe('ContentCard progress bar', () => {
+  it('draws no bar when no fraction is supplied', async () => {
+    await render(<ContentCard title="Rights for Robots" />);
+
+    expect(screen.queryByTestId('content-card-progress-track')).toBeNull();
+  });
+
+  it('draws the fill at the given fraction, never a guessed one', async () => {
+    await render(<ContentCard title="Rights for Robots" progress={3 / 7} />);
+
+    expect(screen.getByTestId('content-card-progress-track')).toBeTruthy();
+    expect(screen.getByTestId('content-card-progress-fill').props.style[1].width).toBe('43%');
+  });
+});

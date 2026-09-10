@@ -46,9 +46,23 @@
 // shrink: compact enough to sit under real content without reading as
 // leftover space, not a full-page "nothing here" card.
 //
-// THE THREE ELITE-STATE CARDS ARE SHARED BETWEEN `All` AND `Premium` —
-// `ElitePendingAccessCard`, `EliteActiveAccessCard`, `EliteQueueCard` — one
-// implementation of each business state, composed into both views.
+// EVERY ROW ON THIS SCREEN IS ONE `ContentCard`, REGARDLESS OF TAB OR
+// SOURCE. `EliteLoanRow`/`EliteQueueRow` (below, beside `BorrowedBookRow`/
+// `DownloadRow`/`BookmarkGroupRow`) render Elite's two navigable states
+// through it too — only the badge composition (an "Access expires" line, a
+// queue position, a progress fraction) tells one row kind from another, the
+// same device `BorrowedBookRow`'s due-date badge already used. The two
+// bespoke Elite card components this replaced (`EliteActiveAccessCard`,
+// `EliteQueueCard`) are gone — they had drifted from `ContentCard`'s own
+// image-loading fix (a plain RN `Image` with no `onError` fallback), which
+// is exactly the class of inconsistency one shared row shape stops from
+// recurring. `ElitePendingAccessCard` is the one exception, and stays a
+// dedicated component: it is an ACTION PROMPT (Accept/Reject buttons, no
+// tap-through, no chevron), not a navigable content row, so forcing it
+// through the same card would mean either losing its two buttons or
+// misusing `ContentCard`'s single `action` slot for a two-button decision
+// it was never shaped for. Shared between `All` and `Premium` regardless —
+// one implementation of that state, composed into both views.
 //
 // EVERY ROW TAPS THROUGH TO THE ITEM'S OWN DETAIL PAGE, THE SAME AS
 // CATALOGUE/SEARCH/SHELF. Reading itself happens from that page's own
@@ -109,9 +123,7 @@ import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '@components/ContentCard';
-import { EliteActiveAccessCard } from '@components/EliteActiveAccessCard';
 import { ElitePendingAccessCard } from '@components/ElitePendingAccessCard';
-import { EliteQueueCard } from '@components/EliteQueueCard';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { type TabItem, Tabs } from '@components/Tabs';
@@ -433,22 +445,18 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   }
 
   function renderEliteActiveLoans(): ReactNode {
-    return eliteLoans.map((loan) => {
-      const summary = summaryFor(loan.itemId);
-      const expiresLabel =
-        clock.ready && loan.expiresAt !== undefined ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
-      return (
-        <View key={loan.loanId ?? loan.itemId} style={styles.row}>
-          <EliteActiveAccessCard
-            title={titleFor(loan.itemId)}
-            {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
-            {...(summary?.format === undefined ? {} : { format: summary.format })}
-            {...(expiresLabel === undefined ? {} : { expiresLabel })}
-            onPress={() => goToDetail(loan.itemId)}
-          />
-        </View>
-      );
-    });
+    return eliteLoans.map((loan) => (
+      <View key={loan.loanId ?? loan.itemId} style={styles.row}>
+        <EliteLoanRow
+          loan={loan}
+          title={titleFor(loan.itemId)}
+          publisher={publisherFor(loan.itemId)}
+          summary={summaryFor(loan.itemId)}
+          clock={clock}
+          onPress={() => goToDetail(loan.itemId)}
+        />
+      </View>
+    ));
   }
 
   function renderSubscriptionLoans(): ReactNode {
@@ -507,7 +515,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
       const summary = summaryFor(hold.itemId);
       return (
         <View key={hold.holdId ?? hold.itemId} style={styles.row}>
-          <EliteQueueCard
+          <EliteQueueRow
             title={titleFor(hold.itemId)}
             {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
             {...(summary?.format === undefined ? {} : { format: summary.format })}
@@ -532,21 +540,22 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   function renderMergedContentRow(item: MergedLibraryItem): ReactNode {
     const summary = summaryFor(item.itemId);
 
-    // An Elite loan still renders through its own shared card, whether or
-    // not it happens to also be bookmarked — Elite can never also be a
-    // download (see `mergeContentItems`'s own comment), and the product
-    // spec's §11 "reusable Elite components" rule is what this branch keeps.
+    // An Elite loan still gets its own branch, whether or not it happens to
+    // also be bookmarked — Elite can never also be a download (see
+    // `mergeContentItems`'s own comment) and always shows the fixed "Access
+    // expires" + ELITE-tier badge pair rather than the tier-from-summary
+    // badge every other row below computes. It renders through the SAME
+    // `EliteLoanRow` (→ `ContentCard`) as every other row on this screen —
+    // only the badge composition differs, not the card.
     if (item.isElite && item.loan !== undefined) {
-      const loan = item.loan;
-      const expiresLabel =
-        clock.ready && loan.expiresAt !== undefined ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
       return (
         <View key={item.itemId} style={styles.row}>
-          <EliteActiveAccessCard
+          <EliteLoanRow
+            loan={item.loan}
             title={titleFor(item.itemId)}
-            {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
-            {...(summary?.format === undefined ? {} : { format: summary.format })}
-            {...(expiresLabel === undefined ? {} : { expiresLabel })}
+            publisher={publisherFor(item.itemId)}
+            summary={summary}
+            clock={clock}
             onPress={() => goToDetail(item.itemId)}
           />
         </View>
@@ -901,8 +910,10 @@ function TabHint({
 // — the cover, the file format, the access tier, and the due date — so it
 // carries those and stops there.
 //
-// SUBSCRIPTION LOANS ONLY reach this row now — an Elite loan is
-// `EliteActiveAccessCard`'s, drawn by its own caller in `LibraryScreen.tsx`.
+// SUBSCRIPTION LOANS ONLY reach this row now — an Elite loan uses
+// `EliteLoanRow` instead, for its own Elite-flavoured badge (a fixed
+// "Access expires" + ELITE-tier pair rather than the tier-from-summary
+// badge below).
 function BorrowedBookRow({
   loan,
   title,
@@ -941,6 +952,95 @@ function BorrowedBookRow({
       {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
       {...(summary?.format === undefined ? {} : { format: summary.format })}
       {...(badge === undefined ? {} : { badge })}
+    />
+  );
+}
+
+// An Elite title the reader currently holds — access already granted, not
+// queued. Same card as every other row on this screen (CONVENTIONS §7: one
+// row shape, not a component per business state) — only the badge differs.
+//
+// FORMERLY ITS OWN COMPONENT (`EliteActiveAccessCard`), NOW RETIRED. That
+// version drew its cover with plain RN `Image` and no `onError` fallback, so
+// a signed URL that failed to load (this app's known cloud-storage rate-limit
+// issue) rendered a blank box instead of `ContentCard`'s placeholder icon —
+// a real, visible inconsistency between an Elite row and every other row on
+// this same screen. Routing through `ContentCard` fixes that for free, since
+// there is now only one image-loading path to keep correct.
+function EliteLoanRow({
+  loan,
+  title,
+  publisher,
+  summary,
+  clock,
+  onPress,
+}: {
+  loan: Loan;
+  title: string;
+  publisher?: string;
+  summary?: BookSummary;
+  clock: ServerClock;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
+}) {
+  const expiresLabel =
+    clock.ready && loan.expiresAt !== undefined ? dueLabel(loan, clock.offsetMs, clock.nowMs) : undefined;
+  return (
+    <ContentCard
+      title={title}
+      onPress={onPress}
+      {...(publisher === undefined ? {} : { publisher })}
+      {...(summary?.coverUrl === undefined ? {} : { imageUrl: summary.coverUrl })}
+      {...(summary?.format === undefined ? {} : { format: summary.format })}
+      badge={
+        <View style={styles.badgeStack}>
+          {expiresLabel !== undefined && (
+            <Text style={styles.badgeLabel}>{`Access expires: ${expiresLabel}`}</Text>
+          )}
+          <AccessTierBadge tier="ELITE" size="sm" />
+        </View>
+      }
+    />
+  );
+}
+
+// An Elite title the reader is waiting for — a real place in a real queue,
+// same card and same "formerly its own component" reasoning as
+// `EliteLoanRow` above (the retired `EliteQueueCard` had the identical
+// blank-cover-on-load-failure bug). `progress` is `ContentCard`'s own slot
+// for exactly this fraction — see that file's header comment on why it takes
+// an already-derived number rather than computing one itself.
+function EliteQueueRow({
+  title,
+  imageUrl,
+  format,
+  queueLabel: label,
+  progressFraction,
+  onPress,
+}: {
+  title: string;
+  imageUrl?: string;
+  format?: string;
+  /** "#3 of 7" — see `queueLabel`. Absent renders no line. */
+  queueLabel?: string;
+  /** 0–1 fill toward the front — see `queueProgressFraction`. Absent draws no bar. */
+  progressFraction?: number;
+  /** Tap → this item's detail page. */
+  onPress: () => void;
+}) {
+  return (
+    <ContentCard
+      title={title}
+      onPress={onPress}
+      {...(imageUrl === undefined ? {} : { imageUrl })}
+      {...(format === undefined ? {} : { format })}
+      badge={
+        <View style={styles.badgeStack}>
+          {label !== undefined && <Text style={styles.badgeLabel}>{label}</Text>}
+          <AccessTierBadge tier="ELITE" size="sm" />
+        </View>
+      }
+      {...(progressFraction === undefined ? {} : { progress: progressFraction })}
     />
   );
 }

@@ -72,24 +72,30 @@ import { color, elevation, radius, space, type as typeScale } from '@theme/token
 interface ItemDetailRouteProps {
   route: { params: { itemId: string } };
   // Hand-typed rather than one stack's generated props, same reason as
-  // `route` above — this screen is shared by both stacks, and `navigate` is
-  // typed for exactly the one real call it makes: opening the access gate
-  // when `resolveAccess` resolves to `requires_signin`. `setOptions` is the
-  // second real call — the header title is 'Book Details' by default (both
-  // stacks' own registration) and this screen narrows it to 'Article
-  // Details' once it knows the item is one, since the same route serves both
-  // work types and the stack registration cannot know which ahead of time.
-  // `getParent` is the third — hiding the shared four-tab bar for this one
-  // detail screen, see the effect that calls it below and AppTabBar's own
-  // header comment in RootNavigator.tsx for why this is the reliable trigger
-  // (a plain nested push is not).
+  // `route` above — this screen is shared by three stacks, and `navigate` is
+  // typed for exactly the real calls it makes: opening the access gate when
+  // `resolveAccess` resolves to `requires_signin`, and opening the reader or
+  // the audio player once `openBook()` resolves. `getParent` is the other
+  // one — hiding the shared four-tab bar for this one detail screen, see the
+  // effect that calls it below and AppTabBar's own header comment in
+  // RootNavigator.tsx for why this is the reliable trigger (a plain nested
+  // push is not).
+  //
+  // ONE TITLE FOR EVERY WORK TYPE AND FORMAT, SET ONCE AT REGISTRATION
+  // ('Item Details' — RootNavigator.tsx), NOT NARROWED HERE. An earlier
+  // version of this screen called `navigation.setOptions({ title: ... })` to
+  // relabel an article as 'Article Details' — which left a real gap the
+  // other direction, since nothing ever relabelled an AUDIO-format item and
+  // it stayed 'Book Details' regardless. Reader, publisher and journal
+  // content share one shelf, one detail page and one route; a single,
+  // format-agnostic title is the fix that cannot drift per work type again,
+  // not a third label to keep in sync.
   navigation: {
     navigate(screen: 'AccessGate', params: { itemId: string; title: string; authors: string }): void;
     navigate(screen: 'Reader', params: { bookId: BookId; format: ContentFormat }): void;
     // AUDIO's own destination — see `handleAction`'s 'read'/'play' branch for
     // why this is a second overload rather than folding into 'Reader' above.
     navigate(screen: 'AudioPlayer', params: { bookId: BookId; title: string }): void;
-    setOptions: (options: { title: string }) => void;
     getParent: () =>
       | { setOptions: (options: { tabBarStyle?: { display: 'none' } }) => void }
       | undefined;
@@ -185,7 +191,11 @@ function DescriptionSection({ description }: { description?: string }): ReactEle
 
   return (
     <View style={styles.sectionBlock}>
-      <SectionHeader title="About this book" />
+      {/* "About this title", not "About this book" — this section renders
+          inside `renderBookContent`, which covers every AUDIO-format
+          audiobook too (workType 'book' spans both), and an audiobook is
+          not a book. */}
+      <SectionHeader title="About this title" />
       {description !== undefined ? (
         <>
           <Text
@@ -795,16 +805,6 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     });
   }, [publication, institutionId, session, loan, hold]);
 
-  // The header title narrows from both stacks' shared 'Book Details' default
-  // (RootNavigator.tsx) to 'Article Details' for the one work type this
-  // screen also renders — the registration itself cannot know which ahead of
-  // fetching. Left at the default while `detail` is null (loading/failed).
-  useEffect(() => {
-    if (detail !== null && detail.workType === 'article') {
-      navigation.setOptions({ title: 'Article Details' });
-    }
-  }, [detail, navigation]);
-
   // Hides the shared four-tab bar for exactly this screen — a detail page,
   // not one of Catalogue/Search/Library/Profile. `getParent()` reaches the
   // Tab.Navigator; `setOptions` on it sets `tabBarStyle` for the CURRENTLY
@@ -866,7 +866,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
 
   useEffect(() => {
     if (downloadProgress.status === 'completed') {
-      Alert.alert('Download complete', 'Book saved for offline reading.');
+      // Format-agnostic wording — this fires for a journal article and an
+      // audiobook too, neither of which the reader "reads" in the literal
+      // sense "for offline reading" implies.
+      Alert.alert('Download complete', 'Saved for offline access.');
       // `useDownloadProgress`/`downloadManager` persist the bytes to SQLite
       // (`contentStore`/`downloadTable`), but `LibraryScreen`'s Downloads tab
       // still reads the older, unrelated `downloadStore` (see that file's own
@@ -1251,7 +1254,7 @@ const styles = StyleSheet.create({
   metaRowText: {
     flex: 1,
   },
-  // "About this book" — a `SectionHeader` plus whichever body follows it,
+  // "About this title" — a `SectionHeader` plus whichever body follows it,
   // spaced as one unit against the `content` gap separating it from the
   // metadata block above and whatever real section follows it.
   sectionBlock: {

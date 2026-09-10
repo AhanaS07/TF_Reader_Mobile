@@ -21,7 +21,7 @@ describe('EmptyState no_query_results', () => {
   it('renders the no-results message', async () => {
     await render(<EmptyState variant="no_query_results" />);
 
-    expect(screen.getByText('No articles or books match your search.')).toBeTruthy();
+    expect(screen.getByText('No titles match your search.')).toBeTruthy();
   });
 
   it('echoes the query back when one is given', async () => {

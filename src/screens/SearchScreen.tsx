@@ -86,7 +86,7 @@ const ROW_ICON_SIZE = type.body.lineHeight;
 // one explicitly, because "searches titles" does not by itself tell anybody that
 // it does not also search inside the book.
 const PLACEHOLDER = 'Search titles, authors, subjects, and descriptions';
-const HELPER = 'Catalogue metadata only — this does not search inside books.';
+const HELPER = 'Catalogue metadata only — this does not search inside titles.';
 
 // Browse-instead cards cycle the accents so three targets do not read as one
 // block of colour. Cycled by INDEX, never chosen from the title — types.ts is

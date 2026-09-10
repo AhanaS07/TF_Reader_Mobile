@@ -165,7 +165,7 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
           />
           <ListRow
             title="Dyslexia-friendly font"
-            subtitle="Use OpenDyslexic for book content."
+            subtitle="Use OpenDyslexic for title content."
             variant="toggle"
             toggleValue={text.dyslexiaFont}
             onToggleChange={onToggleDyslexiaFont}
@@ -304,13 +304,13 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
               a promise the setting cannot keep. */}
           <ListRow
             title="Extra screen reader hints"
-            subtitle="Adds labels to app controls. Does not change book content."
+            subtitle="Adds labels to app controls. Does not change title content."
             variant="toggle"
             toggleValue={prefs.accessibility.screenReaderHints}
             onToggleChange={onToggleScreenReaderHints}
           />
           <Text style={styles.note}>
-            Applies to this app&rsquo;s own buttons and menus only. Text inside a book is provided
+            Applies to this app&rsquo;s own buttons and menus only. Text inside a title is provided
             by the publisher and is not affected.
           </Text>
         </View>

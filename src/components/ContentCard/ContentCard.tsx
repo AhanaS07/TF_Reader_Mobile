@@ -82,6 +82,18 @@ export interface ContentCardProps {
    * this button. It does not here. Row variant only — see the file header.
    */
   action?: ReactNode;
+  /**
+   * A 0–1 fill toward some real denominator ("3rd of 7 in a queue"), drawn as
+   * a thin track/fill bar beneath `meta`/`action`. Row variant only.
+   *
+   * ALREADY-DERIVED, LIKE `badge`/`action` — this card computes no fraction
+   * itself (CONVENTIONS §3: it must not reach for a queue position or any
+   * other business fact on its own). Absent draws no bar at all, never a
+   * bar at a guessed or default fraction — LibraryScreen's own
+   * `queueProgressFraction` refuses to invent a denominator for exactly
+   * this reason.
+   */
+  progress?: number;
   state?: ContentCardState;
   variant?: ContentCardVariant;
   // Absent means the row is not a navigation target, so it is not announced as a
@@ -149,6 +161,7 @@ export default function ContentCard({
   meta,
   badge,
   action,
+  progress,
   state = 'idle',
   variant = 'row',
   onPress,
@@ -352,6 +365,14 @@ export default function ContentCard({
                   {action}
                 </View>
               )}
+            </View>
+          )}
+          {progress !== undefined && (
+            <View testID="content-card-progress-track" style={styles.progressTrack}>
+              <View
+                testID="content-card-progress-fill"
+                style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` }]}
+              />
             </View>
           )}
         </View>
@@ -591,6 +612,23 @@ const styles = StyleSheet.create({
     fontSize: type.cardMeta.size,
     lineHeight: type.cardMeta.lineHeight,
     color: color.textSecondary,
+  },
+  // A queue's own colour (`wait` — Saffron, "no seats, waitlist"), not
+  // `primary` — this bar exists for exactly one real caller today
+  // (LibraryScreen's Elite queue row) and that caller's own fraction is a
+  // wait, not a download/read-progress fill, which is what `primary` reads
+  // as elsewhere in this app.
+  progressTrack: {
+    height: space.xs,
+    marginTop: space.xs / 2,
+    borderRadius: radius.pill,
+    backgroundColor: color.border,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: radius.pill,
+    backgroundColor: color.wait,
   },
   // Aleo (serif) in both variants — a book's own title, not a UI label, so it
   // reads as printed rather than borrowed from the app's chrome font.

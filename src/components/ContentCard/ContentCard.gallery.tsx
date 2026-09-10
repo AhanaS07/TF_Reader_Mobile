@@ -101,6 +101,19 @@ export default function ContentCardGallery() {
         <ContentCard title="" state="loading" onPress={() => {}} />
       </View>
 
+      <Text style={styles.label}>{"with meta and progress — LibraryScreen's Elite queue row"}</Text>
+      <View style={styles.row}>
+        <ContentCard
+          title="Listening to Cities"
+          publisher="Routledge"
+          imageUrl="https://picsum.photos/209"
+          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          meta="#3 of 7"
+          progress={3 / 7}
+          onPress={() => {}}
+        />
+      </View>
+
       <Text style={styles.label}>long title — wraps to two lines, chevron holds position</Text>
       <View style={styles.row}>
         <ContentCard

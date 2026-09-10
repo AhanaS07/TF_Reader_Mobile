@@ -162,12 +162,12 @@ describe('the surface says what it searches', () => {
     );
   });
 
-  it('says outright that it does not search inside books', async () => {
+  it('says outright that it does not search inside titles', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
     expect(screen.getByTestId('search-helper').props.children).toBe(
-      'Catalogue metadata only — this does not search inside books.',
+      'Catalogue metadata only — this does not search inside titles.',
     );
   });
 });

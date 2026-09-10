@@ -275,7 +275,13 @@ describe('LibraryScreen — All tab', () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getByTestId('elite-active-access-card')).toBeTruthy());
+    // Same `ContentCard` as every other row now — see LibraryScreen.tsx's
+    // header comment — so "active access, not Borrowed" is asserted by the
+    // fixed ELITE badge `EliteLoanRow` always draws, not by a separate
+    // component's own testID. `BorrowedBookRow`'s own tier badge (which a
+    // subscription loan draws instead) reads from `summary.accessTier`, so
+    // this also confirms the row did NOT take that branch.
+    await waitFor(() => expect(screen.getByText('Elite')).toBeTruthy());
   });
 
   it('lists a waiting hold under its own "Premium waiting" heading, separate from "Your content"', async () => {
@@ -648,8 +654,13 @@ describe('LibraryScreen — Premium tab', () => {
 
     await waitFor(() => expect(screen.getByTestId('elite-pending-access-card')).toBeTruthy());
     expect(screen.getByTestId('tab-heading-access-available')).toBeTruthy();
-    expect(screen.getByTestId('elite-active-access-card')).toBeTruthy();
-    expect(screen.getByTestId('elite-queue-card')).toBeTruthy();
+    // `EliteLoanRow`/`EliteQueueRow` — both `ContentCard` now, so each row is
+    // found by its own accessible name rather than a bespoke component's
+    // testID. `item_active` has a summary (`aSummary`'s own default title,
+    // "Applied Thermodynamics"); `item_wait` does not, so `titleFor` falls
+    // back to its raw id.
+    expect(screen.getByRole('button', { name: 'Applied Thermodynamics' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'item_wait' })).toBeTruthy();
     expect(screen.getByText('#3 of 7')).toBeTruthy();
   });
 
@@ -683,9 +694,11 @@ describe('LibraryScreen — Premium tab', () => {
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
     await openPremium();
-    await waitFor(() => expect(screen.getByTestId('elite-active-access-card')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Digital Media Cultures' })).toBeTruthy(),
+    );
 
-    await fireEvent.press(screen.getByTestId('elite-active-access-card'));
+    await fireEvent.press(screen.getByRole('button', { name: 'Digital Media Cultures' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_active' });
   });

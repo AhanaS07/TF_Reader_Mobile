@@ -102,12 +102,12 @@ export function SearchPanel({
           testID="reader-search-input"
           // A placeholder is not a reliable accessible name on Android, so the label
           // is explicit even though the field looks self-evident.
-          accessibilityLabel="Search in this book"
+          accessibilityLabel="Search in this title"
           style={styles.input}
           value={query}
           onChangeText={onQueryChange}
           onSubmitEditing={onSubmit}
-          placeholder="Search in this book"
+          placeholder="Search in this title"
           placeholderTextColor="#8a8a8a"
           returnKeyType="search"
           autoFocus
@@ -158,7 +158,7 @@ export function SearchPanel({
         <View style={styles.busyRow} accessibilityLiveRegion="polite">
           <ActivityIndicator />
           <Text style={styles.hint} testID="reader-search-awaiting-seek">
-            Still opening this book — this result will open as soon as it&apos;s ready.
+            Still opening this title — this result will open as soon as it&apos;s ready.
           </Text>
         </View>
       )}
@@ -171,7 +171,7 @@ export function SearchPanel({
       )}
 
       {status === 'idle' && (
-        <Text style={styles.hint}>Type a word and press Search to find it in this book.</Text>
+        <Text style={styles.hint}>Type a word and press Search to find it in this title.</Text>
       )}
 
       {/*
@@ -201,8 +201,8 @@ export function SearchPanel({
         // one is about the word, the other is about the book, and only the second is actionable.
         <Text style={styles.hint}>
           {indexMissing
-            ? 'No text was indexed for this book, so no word can match. Searching needs an index ' +
-              'built when the book is downloaded.'
+            ? 'No text was indexed for this title, so no word can match. Searching needs an index ' +
+              'built when the title is downloaded.'
             : tokens.length > 1
               ? 'Whole words only, and every word has to appear in the same chapter.'
               : 'Whole words only — “bio” will not match “biology”.'}
@@ -211,7 +211,7 @@ export function SearchPanel({
 
       {status === 'failed' && (
         <View style={styles.failure}>
-          <Text style={styles.failureTitle}>Search is unavailable for this book.</Text>
+          <Text style={styles.failureTitle}>Search is unavailable for this title.</Text>
           <Text style={styles.failureMessage}>{failure}</Text>
         </View>
       )}
@@ -318,8 +318,8 @@ function statusLine(
   if (status !== 'done') return '';
   // Before the term, not after it: an unindexed book gives the same answer for every word, so
   // naming the word would imply a search happened that never could have.
-  if (count === 0 && indexMissing) return 'This book has no search index.';
-  if (count === 0) return `No matches for “${term}” in this book.`;
+  if (count === 0 && indexMissing) return 'This title has no search index.';
+  if (count === 0) return `No matches for “${term}” in this title.`;
   return `${count} ${count === 1 ? 'match' : 'matches'} for “${term}”.`;
 }
 

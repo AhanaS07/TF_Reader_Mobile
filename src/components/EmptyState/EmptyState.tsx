@@ -45,7 +45,9 @@ export interface EmptyStateProps {
 }
 
 const MESSAGES: Record<EmptyStateVariant, string> = {
-  no_query_results: 'No articles or books match your search.',
+  // One word for every content type this catalogue holds (books, journal
+  // articles, audiobooks) — "articles or books" left audiobooks unnamed.
+  no_query_results: 'No titles match your search.',
   no_filter_results: 'Try adjusting your filters.',
   no_content: 'Nothing to show here yet.',
   browse_instead: 'No results for this search.',

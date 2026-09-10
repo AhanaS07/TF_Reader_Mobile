@@ -15,8 +15,9 @@
 // treatment: an Elite grant is good news for the reader, not a fault
 // condition, and `surface`'s own light tint plus a bell icon says "something
 // arrived for you" rather than "something is wrong". `AccessTierBadge` draws
-// the "Elite" pill rather than a bespoke tag, for the same one-Elite-pill
-// reason `EliteActiveAccessCard`/`EliteQueueCard` use it too.
+// the "Elite" pill rather than a bespoke tag — the same one-Elite-pill
+// `LibraryScreen.tsx`'s `EliteLoanRow`/`EliteQueueRow` compose into
+// `ContentCard`'s own badge slot for Elite's other two states.
 //
 // USES ActionButton RATHER THAN DRAWING ITS OWN BUTTONS, for the identical
 // reason `QueueNotification`'s own header gives: `acceptOffer`/`rejectOffer`
