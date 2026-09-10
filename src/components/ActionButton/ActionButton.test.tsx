@@ -11,6 +11,7 @@ import ActionButton from './ActionButton';
 // label fails the test instead of agreeing with itself.
 const LABELS: Record<ActionId, string> = {
   read: 'Read',
+  play: 'Play',
   download: 'Download',
   grantAccess: 'Grant access',
   acceptOffer: 'Accept',

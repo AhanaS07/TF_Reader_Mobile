@@ -278,10 +278,10 @@ describe('InstitutionListScreen select and navigate', () => {
   });
 });
 
-// ─── Recently used ────────────────────────────────────────────────────────────
+// ─── Recent institutions ────────────────────────────────────────────────────────────
 
 describe('InstitutionListScreen recently used', () => {
-  it('shows a "Recently used" section when a loaded institution is in recentlyUsedIds', async () => {
+  it('shows a "Recent institutions" section when a loaded institution is in recentlyUsedIds', async () => {
     mockIsOnline.mockReturnValue(true);
     useInstitutionStore.setState({ recentlyUsedIds: ['inst_7f3'] });
     setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
@@ -290,7 +290,7 @@ describe('InstitutionListScreen recently used', () => {
 
     // Both section headers appear once the data lands.
     // Note: RNTL renders ListHeaderComponent twice in FlatList — getAllByText avoids the ambiguity.
-    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Recent institutions').length).toBeGreaterThan(0));
     expect(screen.getAllByText('All Institutions').length).toBeGreaterThan(0);
   });
 
@@ -301,7 +301,7 @@ describe('InstitutionListScreen recently used', () => {
 
     await render(<InstitutionListScreen />);
 
-    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Recent institutions').length).toBeGreaterThan(0));
 
     // mainInstitutions filters out recentlyUsedIds — IMPERIAL must appear exactly
     // once (pinned), not a second time in the main list.
@@ -324,7 +324,7 @@ describe('InstitutionListScreen recently used', () => {
 
     await render(<InstitutionListScreen />);
 
-    await waitFor(() => expect(screen.getAllByText('Recently used').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Recent institutions').length).toBeGreaterThan(0));
     expect(screen.getByText('Imperial College London')).toBeTruthy();
   });
 });

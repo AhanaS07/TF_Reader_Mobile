@@ -311,7 +311,7 @@ describe('ItemDetailScreen — recording a recently-viewed item', () => {
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() =>
-      expect(useRecentlyViewedStore.getState().items.map((i) => i.itemId)).toEqual(['item_42']),
+      expect(useRecentlyViewedStore.getState().items.map((i) => i.id)).toEqual(['item_42']),
     );
     expect(useRecentlyViewedStore.getState().items[0].title).toBe('Rights for Robots');
   });
@@ -423,6 +423,55 @@ describe('ItemDetailScreen with a book', () => {
 
     await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
     expect(screen.getByText('Download')).toBeTruthy();
+  });
+
+  // `resolveAccess` itself still only ever returns `read` — it has no
+  // business reading `format` (see ACTION_IDS's own note). The relabel to
+  // `play` for an AUDIO item is this screen's own presentational remap, so
+  // it is pinned here rather than in resolveAccess's own test suite.
+  describe('an audiobook says Play, not Read', () => {
+    it('shows Play instead of Read for an AUDIO item', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Play')).toBeTruthy());
+      expect(screen.queryByText('Read')).toBeNull();
+      // Download is a separate action and keeps its own label regardless.
+      expect(screen.getByText('Download')).toBeTruthy();
+    });
+
+    it('still says Read for every non-AUDIO format', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'EPUB', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+      expect(screen.queryByText('Play')).toBeNull();
+    });
+
+    it('runs the same borrow licence call when Play is pressed', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Play')).toBeTruthy());
+      fireEvent.press(screen.getByText('Play'));
+
+      await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
+    });
   });
 
   // Added at the Library owner's request: a download must show up in the

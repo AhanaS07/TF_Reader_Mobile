@@ -11,6 +11,7 @@
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { color, radius, space, type } from '@theme/tokens';
+import { getInitials } from '@utils/initials';
 
 export interface InstitutionDetailViewProps {
   name: string;
@@ -18,18 +19,6 @@ export interface InstitutionDetailViewProps {
   logoUrl?: string;
   onSelect: () => void;
   onBack: () => void;
-}
-
-// Mirrors InstitutionRow's private helper. Duplicated rather than exported from
-// there, since that file has another author — promote to a shared util if a third
-// caller appears.
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter((word) => word.length > 0)
-    .slice(0, 2)
-    .map((word) => word[0].toUpperCase())
-    .join('');
 }
 
 // Larger than InstitutionRow's crest, composed from the spacing scale so no bare

@@ -78,6 +78,11 @@ const ACTIONS: Record<
   }
 > = {
   read: { label: 'Read', icon: 'book-open-variant', emphasis: 'filled' },
+  // Same emphasis and the same licence call as `read` (ItemDetailScreen
+  // treats the two identically) — only the label and icon differ, because an
+  // audiobook is pressed, not opened to a page. See `ACTION_IDS`'s own note
+  // on why this is a wording choice and not a second access decision.
+  play: { label: 'Play', icon: 'play-circle-outline', emphasis: 'filled' },
   download: { label: 'Download', icon: 'download', emphasis: 'outlined' },
   // The Elite entry point, and the only button a reader holding nothing sees. It
   // says nothing about the queue — see index.html §Access for why a queue length

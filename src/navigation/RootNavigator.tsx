@@ -236,7 +236,7 @@ function CatalogueNavigator() {
       <CatalogueStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <CatalogueStack.Screen
         name="Shelf"
@@ -311,7 +311,7 @@ function SearchNavigator() {
       <SearchStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <SearchStack.Screen
         name="PersonalAccount"
@@ -344,7 +344,7 @@ function LibraryNavigator() {
       <LibraryStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       {/* See CatalogueNavigator's identical registration for why the title
           here is only the default. */}
@@ -398,7 +398,7 @@ function ProfileNavigator() {
       <ProfileStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <ProfileStack.Screen
         name="SignIn"

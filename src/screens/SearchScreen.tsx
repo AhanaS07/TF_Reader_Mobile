@@ -15,23 +15,31 @@
 // they remember from chapter nine, get nothing, and reasonably decide the app is
 // broken.
 //
-// THE BADGE IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place
-// access logic may live (Design Spec §5.1) — this screen calls it per row and
-// passes only the resolved `.tier` into `ContentCard`'s `badge` slot. It never
-// reads `publication.acquisition.licenceModel` itself.
-//
 // EMPTY AND ERROR RENDER THROUGH THE SHARED COMPONENTS. Khushi's `EmptyState`
 // (K1) and `ErrorState` own this copy and this layout now that both exist —
 // this screen supplies only the variant and the already-resolved message, per
 // CONVENTIONS §3. Only the load-more failure stays inline: it is a row beneath
 // results already on screen, not a screen-level takeover either component models.
+//
+// THE BADGE IS RESOLVED HERE, NOT COMPUTED. `resolveAccess` is the only place
+// access logic may live (Design Spec §5.1) — this screen calls it per row and
+// passes only the resolved `.tier` into `ContentCard`'s `badge` slot. It never
+// reads `publication.acquisition.licenceModel` itself.
+//
+// A RESULT ROW AND A RECENTLY-VIEWED ROW ARE THE SAME `ContentCard` ROW
+// CATALOGUE ITSELF USES — on explicit instruction not to invent a second
+// display for the same kind of data. `renderPublicationRow` is the one place
+// that builds one, so a result and a "recently viewed" item cannot drift
+// into looking like two different things.
 import { useCallback, useMemo, useState } from 'react';
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
+import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
+import { AccessTierBadge } from '@components/AccessTierBadge';
 import { useCurrentSession } from '@access/currentSession';
 import type { CategoryAccent } from '@components/CategoryCard';
 import { ContentCard } from '@components/ContentCard';
@@ -39,15 +47,14 @@ import { ErrorState } from '@components/ErrorState';
 import { FilterSortSheet } from '@components/FilterSortSheet';
 import { SearchInput } from '@components/SearchInput';
 import { SectionHeader } from '@components/SectionHeader';
-import { SubjectChip } from '@components/SubjectChip';
 import { VoiceOverlay, type VoiceOverlayState } from '@components/VoiceOverlay';
 import { getSearchPipeline } from '@config/search';
 import { CATALOGUE_ERROR_COPY, catalogueErrorVariant } from '@model/errorCopy';
-import type { Publication, WorkType } from '@model/types';
+import type { Publication } from '@model/types';
 import type { SearchFilters, SearchStatus, VoiceStatus } from '@/search';
 import { useCatalogueSearch, useVoiceSearch, VOICE_ERROR_COPY } from '@/search';
 import type { RootTabParamList, SearchStackParamList } from '@navigation/types';
-import { useRecentlyViewedStore, type RecentlyViewedEntry } from '@store/recentlyViewedStore';
+import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { color, elevation, radius, space, type, weight } from '@theme/tokens';
 
@@ -159,6 +166,10 @@ export default function SearchScreen() {
     [search],
   );
 
+  // Client-side only, same footing as recent searches — see
+  // recentlyViewedStore.ts's own header.
+  const recentlyViewed = useRecentlyViewedStore((s) => s.items);
+
   // Screen 11. The overlay stays a pure view — the recogniser and the microphone
   // permission live in this hook, and it knows nothing about searching.
   const voice = useVoiceSearch();
@@ -213,11 +224,64 @@ export default function SearchScreen() {
 
   const state: SearchStatus = search.state;
   const hasResults = search.publications.length > 0;
-  const hasActiveFilter =
-    search.filters.contentType !== undefined || search.filters.accessTier !== undefined;
+  // Counted, not just a boolean — the "Filter & Sort (1)" badge on the
+  // button needs the real number, and a boolean derived from it below costs
+  // nothing extra.
+  const activeFilterCount =
+    (search.filters.contentType !== undefined ? 1 : 0) +
+    (search.filters.accessTier !== undefined ? 1 : 0);
+  const hasActiveFilter = activeFilterCount > 0;
   // A failure with results already on screen is a failed NEXT PAGE — the reader
   // keeps what they were reading and gets a retry where the page would have been.
   const pageFailed = state === 'error' && hasResults;
+
+  // ONE ROW BUILDER FOR EVERY `Publication` THIS SCREEN DRAWS — a result and
+  // a "recently viewed" item are the same kind of thing, so this is the one
+  // place that turns either into `ContentCard`'s own row, the same shape
+  // Catalogue uses. Closes over `institutionId`/`session` rather than taking
+  // them as parameters, since every caller in this file already has them in
+  // scope and passing them through would just be ceremony.
+  //
+  // SESSION PASSED, NOT NULL — corrected for D12. This used to pass
+  // `session: null` and say it matched CatalogueScreen and ItemDetailScreen;
+  // both actually pass `handToggledSession`, so this row was the outlier. It
+  // mattered: `resolveAccess` §4 answers `requires_signin` for ANY licensed
+  // tier when the session is null, so the Elite branch was unreachable here
+  // and a search result could never offer the queue. resolveAccess's own §5
+  // states the goal this restores — "an Elite row resolving identically on a
+  // list and on a detail screen".
+  //
+  // No loan/hold: neither a search result nor a recently-viewed item carries
+  // holdings. The session IS passed — that half is not part of the D12
+  // revert, and it is what makes an Elite result resolve consistently with
+  // the detail screen.
+  function renderPublicationRow(publication: Publication, onPress: () => void) {
+    const access = resolveAccess({ item: publication, institutionId, session });
+    const authors =
+      publication.authors.length > 0 ? publication.authors.join(', ') : undefined;
+    // Real page count, not an invented edition — `numberOfPages` is the one
+    // printed-extent field the feed actually carries. Same reasoning as
+    // CatalogueScreen's own `meta` line.
+    const meta =
+      publication.numberOfPages === undefined ? undefined : `${publication.numberOfPages} pp.`;
+
+    return (
+      <ContentCard
+        key={publication.id}
+        title={publication.title}
+        publisher={publication.publisher}
+        imageUrl={publication.coverUrl}
+        format={publication.format}
+        {...(authors === undefined ? {} : { authors })}
+        {...(meta === undefined ? {} : { meta })}
+        // D8 — `not_entitled` renders nothing at all, badge included.
+        badge={isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />}
+        // NO `action` PROP. D12's Elite queue affordance is ItemDetailScreen
+        // only — confirmed team decision, 26 Aug.
+        onPress={onPress}
+      />
+    );
+  }
 
   return (
     <View style={styles.screen}>
@@ -251,11 +315,17 @@ export default function SearchScreen() {
         accessibilityRole="button"
         accessibilityLabel="Filter and sort"
       >
-        <Text style={styles.filterButtonLabel}>Filter & Sort</Text>
+        <Text style={styles.filterButtonLabel}>
+          {hasActiveFilter ? `Filter & Sort (${activeFilterCount})` : 'Filter & Sort'}
+        </Text>
       </Pressable>
 
       <ScrollView contentContainerStyle={styles.results}>
-        {state === 'idle' && (
+        {/* The plain instructional line only earns its place once a reader
+            has actually started typing — with an empty draft, Popular
+            searches and Recently viewed below are the more useful "here is
+            what you can do" than a sentence restating the placeholder. */}
+        {state === 'idle' && search.draft.trim().length > 0 && (
           <View style={styles.compactCard}>
             <Text testID="search-idle" style={styles.message}>
               Search this catalogue by title, author, subject or description.
@@ -298,6 +368,22 @@ export default function SearchScreen() {
                 />
               </Pressable>
             ))}
+          </View>
+        )}
+
+        {/* Client-side only (recentlyViewedStore.ts) — the reader's own last
+            few opened items. Same "before a fresh query" gating as Recent
+            searches; a reader mid-typing does not need a reminder of what
+            they already looked at. Drawn with the exact same row Catalogue
+            itself uses — see `renderPublicationRow`. */}
+        {state === 'idle' && search.draft.trim().length === 0 && recentlyViewed.length > 0 && (
+          <View testID="search-recently-viewed" style={styles.recentlyViewed}>
+            <SectionHeader title="Recently viewed" emphasis="editorial" />
+            {recentlyViewed.map((publication) =>
+              renderPublicationRow(publication, () =>
+                navigation.navigate('ItemDetail', { itemId: publication.id }),
+              ),
+            )}
           </View>
         )}
 
@@ -348,6 +434,21 @@ export default function SearchScreen() {
                   ? 'Try adjusting your filters.'
                   : `No articles or books match “${search.query}”.`}
               </Text>
+
+              <View testID="search-empty-tips" style={styles.tips}>
+                {[
+                  'Checking your spelling',
+                  'Using different keywords',
+                  'Searching for a broader topic',
+                  ...(hasActiveFilter ? ['Removing some filters'] : []),
+                ].map((tip) => (
+                  <View key={tip} style={styles.tipRow}>
+                    <Text style={styles.tipBullet}>•</Text>
+                    <Text style={styles.tipLabel}>{tip}</Text>
+                  </View>
+                ))}
+              </View>
+
               <Pressable
                 // Screen 17 — "Clear search" beside the no-results message. The
                 // same `onClear` the input's own clear button uses when there is
@@ -415,42 +516,22 @@ export default function SearchScreen() {
           </View>
         )}
 
-        {search.publications.map((publication) => {
-          // SESSION PASSED, NOT NULL — corrected for D12. This used to pass
-          // `session: null` and say it matched CatalogueScreen and
-          // ItemDetailScreen; both actually pass `handToggledSession`, so this
-          // row was the outlier. It mattered: `resolveAccess` §4 answers
-          // `requires_signin` for ANY licensed tier when the session is null, so
-          // the Elite branch was unreachable here and a search result could
-          // never offer the queue. resolveAccess's own §5 states the goal this
-          // restores — "an Elite row resolving identically on a list and on a
-          // detail screen".
-          //
-          // No loan/hold: a search result carries no holdings. The session IS
-          // passed — that half is not part of the D12 revert, and it is what
-          // makes an Elite result resolve consistently with the detail screen.
-          const access = resolveAccess({
-            item: publication,
-            institutionId,
-            session,
-          });
+        {/* The reference mockup's "1,245 results" line — server-reported,
+            same source the bottom "Showing X of Y" note already trusts.
+            Shown once, above the list, rather than only after it. */}
+        {hasResults && search.totalItems !== undefined && (
+          <View style={styles.resultsHeader}>
+            <Text testID="search-results-count" style={styles.resultsCount}>
+              {search.totalItems === 1 ? '1 result' : `${search.totalItems} results`}
+            </Text>
+          </View>
+        )}
 
-          return (
-            <ContentCard
-              key={publication.id}
-              title={publication.title}
-              publisher={publication.publisher}
-              imageUrl={publication.coverUrl}
-              // D8 — `not_entitled` renders nothing at all, badge included.
-              badge={
-                isNotEntitled(access) ? undefined : <AccessTierBadge tier={access.tier} />
-              }
-              // NO `action` PROP. D12's Elite queue affordance is
-              // ItemDetailScreen only — confirmed team decision, 26 Aug.
-              onPress={() => navigation.navigate('ItemDetail', { itemId: publication.id })}
-            />
-          );
-        })}
+        {search.publications.map((publication) =>
+          renderPublicationRow(publication, () =>
+            navigation.navigate('ItemDetail', { itemId: publication.id }),
+          ),
+        )}
 
         {/* PAGINATION IS THE RESPONSE'S `next`, FOLLOWED. No page numbers: the
             server said where the next page is, and there is nothing else to
@@ -718,5 +799,45 @@ const styles = StyleSheet.create({
     fontSize: type.button.size,
     lineHeight: type.button.lineHeight,
     color: color.primary,
+  },
+  // ─── recently viewed ────────────────────────────────────────────────────────
+  recentlyViewed: {
+    gap: space.xs,
+  },
+  // ─── results header ────────────────────────────────────────────────────────
+  resultsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.sm,
+  },
+  resultsCount: {
+    fontFamily: type.meta.fontFamily,
+    fontSize: type.meta.size,
+    lineHeight: type.meta.lineHeight,
+    color: color.textSecondary,
+  },
+  // ─── no-results tips ───────────────────────────────────────────────────────
+  tips: {
+    alignSelf: 'stretch',
+    gap: space.xs,
+    marginTop: space.xs,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    gap: space.xs,
+  },
+  tipBullet: {
+    fontFamily: type.body.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textSecondary,
+  },
+  tipLabel: {
+    flex: 1,
+    fontFamily: type.body.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textSecondary,
   },
 });

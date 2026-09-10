@@ -33,24 +33,12 @@ describe('recentlyViewedStore', () => {
     expect(useRecentlyViewedStore.getState().items.map((i) => i.title)).toEqual(['Second', 'First']);
   });
 
-  it('carries only the real fields a row needs, inventing nothing', () => {
-    useRecentlyViewedStore.getState().recordView(
-      aPublication({ id: 'item_1', title: 'Climate Change', authors: ['R. Wilson'], published: '2024-01-01' }),
-    );
+  it('stores the real publication verbatim, inventing nothing', () => {
+    const publication = aPublication({ id: 'item_1', publisher: 'Routledge', numberOfPages: 212 });
 
-    expect(useRecentlyViewedStore.getState().items[0]).toEqual({
-      itemId: 'item_1',
-      title: 'Climate Change',
-      authors: ['R. Wilson'],
-      published: '2024-01-01',
-    });
-  });
+    useRecentlyViewedStore.getState().recordView(publication);
 
-  it('omits a field the publication did not carry, rather than storing undefined', () => {
-    useRecentlyViewedStore.getState().recordView(aPublication({ id: 'item_1' }));
-
-    expect(useRecentlyViewedStore.getState().items[0]).not.toHaveProperty('coverUrl');
-    expect(useRecentlyViewedStore.getState().items[0]).not.toHaveProperty('workType');
+    expect(useRecentlyViewedStore.getState().items[0]).toEqual(publication);
   });
 
   it('re-viewing something already there moves it to the front rather than duplicating it', () => {
@@ -59,7 +47,7 @@ describe('recentlyViewedStore', () => {
     useRecentlyViewedStore.getState().recordView(aPublication({ id: 'item_1', title: 'First' }));
 
     const { items } = useRecentlyViewedStore.getState();
-    expect(items.map((i) => i.itemId)).toEqual(['item_1', 'item_2']);
+    expect(items.map((i) => i.id)).toEqual(['item_1', 'item_2']);
   });
 
   it(`caps the list at ${MAX_RECENTLY_VIEWED}`, () => {
@@ -70,7 +58,7 @@ describe('recentlyViewedStore', () => {
     const { items } = useRecentlyViewedStore.getState();
     expect(items).toHaveLength(MAX_RECENTLY_VIEWED);
     // The oldest two fell off the end, not the newest.
-    expect(items[0].itemId).toBe(`item_${MAX_RECENTLY_VIEWED + 1}`);
+    expect(items[0].id).toBe(`item_${MAX_RECENTLY_VIEWED + 1}`);
   });
 
   it('clears every remembered view', () => {

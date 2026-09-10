@@ -229,6 +229,18 @@ export function renderBookContent(
 ): ReactElement {
   const showCoverPlaceholder = detail.coverUrl === undefined || coverFailed;
 
+  // The one presentational remap this screen does: `resolveAccess` only ever
+  // returns `read` (see `ACTION_IDS`'s own note on why the swap does not
+  // belong there), so an AUDIO item's bar is relabelled to `play` here,
+  // before it reaches `ActionBar`. `pending` needs no equivalent remap — it
+  // is only ever set from whatever `ActionBar` handed back to `onAction`,
+  // which already reads this same remapped array. `handleAction` treats
+  // `read` and `play` identically once pressed.
+  const actions: ActionId[] =
+    detail.format === 'AUDIO'
+      ? detail.access.actions.map((action) => (action === 'read' ? 'play' : action))
+      : detail.access.actions;
+
   return (
     <>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
@@ -353,7 +365,7 @@ export function renderBookContent(
           {licenceMessage}
         </Text>
       )}
-      <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
+      <ActionBar actions={actions} onAction={onAction} pending={pending} />
     </>
   );
 }
@@ -902,7 +914,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
             return result;
           }),
         );
-      } else if (action === 'read') {
+      } else if (action === 'read' || action === 'play') {
+        // Same licence call either way — `play` is `read` relabelled for an
+        // AUDIO item, not a second entitlement. See renderBookContent's own
+        // remap and ACTION_IDS's note.
         runLicenceCall(action, () => source.borrow(itemId));
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
         const loanId = loan.loanId;

@@ -2,6 +2,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { Institution } from '@model/institution';
 import { color, radius, space, type } from '@theme/tokens';
+import { getInitials } from '@utils/initials';
 
 export interface InstitutionRowProps {
   institution: Institution;
@@ -9,17 +10,6 @@ export interface InstitutionRowProps {
   // Renders a "Recently used" label above the row content.
   isPinned?: boolean;
   onPress?: () => void;
-}
-
-// Takes the first letter of each of the first two words.
-// "Imperial College London" → "IC", "Kwame Nkrumah Uni..." → "KN"
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter((word) => word.length > 0)
-    .slice(0, 2)
-    .map((word) => word[0].toUpperCase())
-    .join('');
 }
 
 export default function InstitutionRow({

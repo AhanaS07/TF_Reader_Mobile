@@ -320,7 +320,7 @@ describe('RootNavigator — institution pill', () => {
     // InstitutionListScreen itself is stubbed to null (see the mocks above) —
     // the pushed screen's own header title is what confirms the navigation,
     // and the pill itself disappears (this route pushes, so `back` is now set).
-    expect(screen.getByText('Select Institution')).toBeTruthy();
+    expect(screen.getByText('Change institution')).toBeTruthy();
     expect(screen.queryByText('Imperial College London')).toBeNull();
   });
 });

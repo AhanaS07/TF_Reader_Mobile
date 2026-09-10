@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
+  Image,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -14,6 +16,7 @@ import { ErrorState } from '@components/ErrorState';
 import { InstitutionRow } from '@components/InstitutionRow';
 import OfflineBanner from '@components/OfflineBanner';
 import { SearchInput } from '@components/SearchInput';
+import { SectionHeader } from '@components/SectionHeader';
 import { Skeleton } from '@components/Skeleton';
 import type { Institution } from '@model/institution';
 import { CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -23,7 +26,8 @@ import { searchInstitutions } from '../search/searchInstitutions';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import type { CatalogueStackParamList } from '../navigation/types';
-import { color, space, type } from '@theme/tokens';
+import { color, radius, space, type } from '@theme/tokens';
+import { getInitials } from '@utils/initials';
 
 // Matches InstitutionRow's CREST_SIZE — skeleton circle must fill the same space.
 const CREST_SIZE = space.xl + space.md;
@@ -247,6 +251,19 @@ export default function InstitutionListScreen() {
     [institutions, recentlyUsedIds],
   );
 
+  // Sept 2026 redesign — the page's own heading, shown above every state
+  // (loading, error and loaded alike) rather than only once data resolves,
+  // matching how ProfileScreen's identical `pageTitle`/`pageSubtitle` pair
+  // renders unconditionally too.
+  const pageHeader = (
+    <View style={styles.pageHeader}>
+      <Text style={styles.pageTitle}>Change institution</Text>
+      <Text style={styles.pageSubtitle}>
+        Search for your institution to access its subscribed content.
+      </Text>
+    </View>
+  );
+
   const searchBar = (
     <View style={styles.searchWrapper}>
       <SearchInput
@@ -258,10 +275,50 @@ export default function InstitutionListScreen() {
     </View>
   );
 
+  // The reader's CURRENT institution, not a row in either list below — real
+  // data already held by the store (this screen fetches nothing to draw it),
+  // styled the same way ProfileScreen's own identity card is: light-blue
+  // surface, crest-or-initials, an "Active access" status line. No chevron
+  // here — unlike Profile's card, there is nothing to navigate to from this
+  // one; it is the reader's own orientation cue while they change it.
+  const currentInstitutionCard =
+    selectedInstitution !== null ? (
+      <View style={styles.section}>
+        <SectionHeader title="Current institution" emphasis="editorial" />
+        <View style={styles.currentInstitutionCard}>
+          {selectedInstitution.branding !== undefined ? (
+            <Image
+              source={{ uri: selectedInstitution.branding.logoUrl }}
+              style={styles.currentInstitutionCrest}
+              resizeMode="contain"
+              accessibilityLabel={`${selectedInstitution.name} logo`}
+            />
+          ) : (
+            <View style={styles.currentInstitutionCrest}>
+              <Text style={styles.currentInstitutionInitials}>
+                {getInitials(selectedInstitution.name)}
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.currentInstitutionText}>
+            <Text style={styles.currentInstitutionName}>{selectedInstitution.name}</Text>
+            <Text style={styles.currentInstitutionCountry}>{selectedInstitution.country}</Text>
+            <View style={styles.currentInstitutionStatus}>
+              <Ionicons name="checkmark-circle" size={type.smallLabel.size} color={color.success} />
+              <Text style={styles.currentInstitutionActive}>Active access</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+    ) : null;
+
   if (loading && institutions.length === 0) {
     return (
       <View style={styles.screen}>
+        {pageHeader}
         {searchBar}
+        {currentInstitutionCard}
         {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
           <SkeletonRow key={i} />
         ))}
@@ -280,7 +337,9 @@ export default function InstitutionListScreen() {
     const message = errorCode === undefined ? GENERIC_MESSAGE : CATALOGUE_ERROR_COPY[errorCode];
     return (
       <View style={styles.screen}>
+        {pageHeader}
         {searchBar}
+        {currentInstitutionCard}
         <ErrorState variant={variant} message={message} onRetry={handleRetry} />
         <OfflineBanner visible={!isOnline} />
       </View>
@@ -289,23 +348,34 @@ export default function InstitutionListScreen() {
 
   const listHeader = (
     <View>
+      {pageHeader}
       {searchBar}
+      {currentInstitutionCard}
       {pinnedInstitutions.length > 0 && (
-        <View>
-          <Text style={styles.sectionHeader}>Recently used</Text>
-          {pinnedInstitutions.map((institution) => (
-            <InstitutionRow
-              key={institution.id}
-              institution={institution}
-              isSelected={institution.id === selectedInstitution?.id}
-              isPinned
-              onPress={() => handleSelect(institution)}
-            />
-          ))}
+        <View style={styles.section}>
+          <SectionHeader title="Recent institutions" emphasis="editorial" />
+          {/* Clubbed into one rounded, bordered card — same technique
+              ProfileScreen's own settings groups use (`overflow: 'hidden'`
+              clips each `InstitutionRow`'s corners to this wrapper's
+              radius). `isPinned` is dropped here: its own "Recently used"
+              label would just repeat the section heading immediately
+              above it. */}
+          <View style={styles.groupCard}>
+            {pinnedInstitutions.map((institution) => (
+              <InstitutionRow
+                key={institution.id}
+                institution={institution}
+                isSelected={institution.id === selectedInstitution?.id}
+                onPress={() => handleSelect(institution)}
+              />
+            ))}
+          </View>
         </View>
       )}
       {mainInstitutions.length > 0 && (
-        <Text style={styles.sectionHeader}>All Institutions</Text>
+        <View style={styles.section}>
+          <SectionHeader title="All Institutions" emphasis="editorial" />
+        </View>
       )}
     </View>
   );
@@ -357,6 +427,11 @@ export default function InstitutionListScreen() {
   );
 }
 
+// Crest size for the "Current institution" card — bigger than InstitutionRow's
+// own CREST_SIZE, same reasoning as ProfileScreen's INSTITUTION_LOGO_SIZE: this
+// card is the screen's own visual anchor, not one row among several.
+const CURRENT_INSTITUTION_CREST_SIZE = space.xl * 2;
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -366,19 +441,98 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
   },
-  sectionHeader: {
-    paddingHorizontal: space.md,
-    paddingTop: space.md,
-    paddingBottom: space.sm,
-    fontWeight: type.sectionHeader.weight,
-    fontFamily: type.sectionHeader.fontFamily,
-    fontSize: type.sectionHeader.size,
-    lineHeight: type.sectionHeader.lineHeight,
-    color: color.textPrimary,
-    backgroundColor: color.white,
-  },
   footer: {
     paddingVertical: space.md,
     alignItems: 'center',
+  },
+  // Same shape as ProfileScreen's own `pageHeader`/`pageTitle`/`pageSubtitle` —
+  // Aleo Bold headline, Aleo Light supporting line — reused rather than
+  // reinvented so this screen reads as the same redesign pass.
+  pageHeader: {
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+    paddingBottom: space.sm,
+    gap: space.xs,
+  },
+  pageTitle: {
+    fontFamily: type.editorialTitle.fontFamily,
+    fontSize: type.editorialTitle.size,
+    lineHeight: type.editorialTitle.lineHeight,
+    color: color.textPrimary,
+  },
+  pageSubtitle: {
+    fontFamily: type.editorialMeta.fontFamily,
+    fontSize: type.body.size,
+    lineHeight: type.body.lineHeight,
+    color: color.textSecondary,
+  },
+  section: {
+    marginTop: space.lg,
+  },
+  // Same technique as ProfileScreen's own `groupCard`: a bordered, rounded
+  // wrapper with `overflow: 'hidden'` to clip each child row's square
+  // corners, rather than a new prop on `InstitutionRow` itself.
+  groupCard: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+    overflow: 'hidden',
+  },
+  // Same tint/radius/border language as ProfileScreen's own `identityCard`.
+  currentInstitutionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    padding: space.md,
+    backgroundColor: color.surface,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  currentInstitutionCrest: {
+    width: CURRENT_INSTITUTION_CREST_SIZE,
+    height: CURRENT_INSTITUTION_CREST_SIZE,
+    borderRadius: radius.pill,
+    backgroundColor: color.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  currentInstitutionInitials: {
+    fontFamily: type.editorialTitle.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textSecondary,
+  },
+  currentInstitutionText: {
+    flex: 1,
+    gap: space.xs / 2,
+  },
+  currentInstitutionName: {
+    fontFamily: type.cardTitle.fontFamily,
+    fontSize: type.sectionHeader.size,
+    lineHeight: type.sectionHeader.lineHeight,
+    color: color.textPrimary,
+  },
+  currentInstitutionCountry: {
+    fontFamily: type.editorialMeta.fontFamily,
+    fontSize: type.editorialMeta.size,
+    lineHeight: type.editorialMeta.lineHeight,
+    color: color.textSecondary,
+  },
+  currentInstitutionStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    marginTop: space.xs,
+  },
+  currentInstitutionActive: {
+    fontFamily: type.editorialMeta.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+    color: color.success,
   },
 });

@@ -192,7 +192,7 @@ describe('ProfileScreen account header, signed in', () => {
     await render(<ProfileScreen />);
 
     expect(screen.getByText('reader@tf.com')).toBeTruthy();
-    expect(screen.getByText('Personal account')).toBeTruthy();
+    expect(screen.getByText('Individual account')).toBeTruthy();
   });
 
   it('shows the institution for an institutional session', async () => {
@@ -202,6 +202,97 @@ describe('ProfileScreen account header, signed in', () => {
 
     expect(screen.getByText('Institutional access')).toBeTruthy();
     expect(screen.queryByText('Not signed in')).toBeNull();
+  });
+});
+
+// The identity card merges what used to be two separate blocks (a plain
+// header plus a separate InstitutionRow) into one, and — per product
+// decision — takes no press: `Change institution` is the only real, working
+// destination, and it stays its own row below the card rather than becoming
+// the card's own tap target. The trailing chevron the Sept 2026 mockup draws
+// on the card is visual only — see ProfileScreen.tsx's own file header note.
+describe('ProfileScreen institutional identity card', () => {
+  it('shows the institution, an active-access line and the address', async () => {
+    selectInstitution(OXFORD);
+    signInInstitutionally(OXFORD);
+    await render(<ProfileScreen />);
+
+    // The name renders twice by design — once as the headline, once again in
+    // the address line beside the country, mirroring the name-then-country
+    // pairing InstitutionRow and InstitutionDetailView already show.
+    expect(screen.getAllByText('University of Oxford')).toHaveLength(2);
+    expect(screen.getByText('Active access')).toBeTruthy();
+    expect(screen.getByText('United Kingdom')).toBeTruthy();
+  });
+
+  it('is not itself pressable — only the separate Change institution row is', async () => {
+    selectInstitution(OXFORD);
+    signInInstitutionally(OXFORD);
+    await render(<ProfileScreen />);
+
+    expect(screen.queryAllByRole('button', { name: 'University of Oxford' })).toHaveLength(0);
+  });
+
+  it('does not also render the old, separate InstitutionRow section', async () => {
+    selectInstitution(OXFORD);
+    signInInstitutionally(OXFORD);
+    await render(<ProfileScreen />);
+
+    // The old section rendered the crest-and-name pair as its own pressable
+    // row (accessibilityRole="button", labelled by the institution's name) —
+    // gone now that the merged card draws the same pair non-interactively.
+    expect(screen.queryAllByRole('button', { name: 'University of Oxford' })).toHaveLength(0);
+    expect(screen.getAllByText('University of Oxford')).toHaveLength(2);
+  });
+
+  it('still lets the reader change institution from the row beneath the card', async () => {
+    selectInstitution(OXFORD);
+    signInInstitutionally(OXFORD);
+    await render(<ProfileScreen />);
+
+    fireEvent.press(screen.getByRole('button', { name: 'Change institution' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'InstitutionList' });
+  });
+
+  it('falls back to initials when the institution has no crest', async () => {
+    selectInstitution(NO_CREST);
+    signInInstitutionally(NO_CREST);
+    await render(<ProfileScreen />);
+
+    expect(screen.queryByLabelText('Deakin University logo')).toBeNull();
+    expect(screen.getByText('DU')).toBeTruthy();
+  });
+});
+
+// No account-details screen exists (and no name/email to show one — see the
+// file header note), so this card is display only, the same as the
+// institutional one above.
+describe('ProfileScreen personal identity card', () => {
+  it('is not itself pressable', async () => {
+    selectInstitution(null);
+    signInPersonally();
+    await render(<ProfileScreen />);
+
+    expect(screen.queryByRole('button', { name: 'reader@tf.com' })).toBeNull();
+  });
+
+  it('names the account type in a sub-row, not a fabricated email', async () => {
+    selectInstitution(null);
+    signInPersonally();
+    await render(<ProfileScreen />);
+
+    expect(screen.getByText('reader@tf.com')).toBeTruthy();
+    expect(screen.getByText('Individual account')).toBeTruthy();
+  });
+
+  it('drops the Institution section entirely — a personal session has none to scope', async () => {
+    selectInstitution(OXFORD);
+    signInPersonally();
+    await render(<ProfileScreen />);
+
+    expect(screen.queryByText('Institution')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change institution' })).toBeNull();
   });
 });
 
@@ -292,33 +383,30 @@ describe('ProfileScreen sign out', () => {
 });
 
 describe('ProfileScreen rows with nothing behind them', () => {
-  // Drawn, not dropped — the screen 12 rule. Each is announced as disabled so a
-  // screen reader gets the same answer the greying gives a sighted reader.
+  // Drawn, not dropped — the screen 12 rule, still true, but the redesign
+  // changed HOW it holds: these are `variant="static"` now, not a disabled
+  // `variant="chevron"`/`variant="toggle"`. A static row is not Pressable at
+  // all, so it never announces a button or switch role — there is no press
+  // affordance to grey out or refuse. Full text and icon opacity is the
+  // point of the redesign, so nothing here checks for dimming.
   //
-  // 'Reading Preferences' HAS LEFT THIS LIST. It was here only because there was
-  // no screen to push; `ReaderPreferences` now exists on the Profile stack, so
-  // the row is live and its own test sits in the describe below. The remaining
-  // four still have no destination.
-  const UNAVAILABLE = ['Download Settings', 'Privacy & Security', 'About T&F Reader'];
+  // 'Reading Preferences' and 'Accessibility' HAVE LEFT THIS LIST — both push
+  // real, already-working screens and stay `variant="chevron"`; their own
+  // tests sit in the describes below.
+  const UNAVAILABLE = ['Download & Offline', 'Notifications', 'Privacy & Security', 'About T&F Reader'];
 
-  it.each(UNAVAILABLE)('renders %s and announces it as disabled', async (title) => {
+  it.each(UNAVAILABLE)('renders %s with no button or switch role', async (title) => {
     await render(<ProfileScreen />);
-    const row = screen.getByRole('button', { name: title });
-    expect(row.props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByText(title)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: title })).toBeNull();
+    expect(screen.queryByRole('switch', { name: title })).toBeNull();
   });
 
-  it('renders Notifications as a disabled toggle', async () => {
-    await render(<ProfileScreen />);
-    const row = screen.getByRole('switch', { name: 'Notifications' });
-    expect(row.props.accessibilityState).toEqual({ checked: false, disabled: true });
-  });
-
-  it('navigates nowhere when a disabled row is tapped', async () => {
+  it('navigates nowhere when a static row is tapped', async () => {
     await render(<ProfileScreen />);
     for (const title of UNAVAILABLE) {
-      fireEvent.press(screen.getByRole('button', { name: title }));
+      fireEvent.press(screen.getByText(title));
     }
-    fireEvent.press(screen.getByRole('switch', { name: 'Notifications' }));
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

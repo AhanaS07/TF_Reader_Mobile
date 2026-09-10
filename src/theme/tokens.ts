@@ -58,6 +58,13 @@ export const color = {
   // the team confirms an actual brand value — brand reference §6.5.
   elite: '#2852C7',
 
+  // Light-tint background for a destructive row (ProfileScreen's Sign out),
+  // paired with `error` foreground text/icon — same "light background,
+  // saturated foreground" shape as `subscriptionTint`, and the same caveat:
+  // reference-matched, not brand-guide-sourced (the guide names `error` for
+  // "access restricted, destructive" text but publishes no tint for it).
+  errorTint: '#FBE9EE',
+
   // Foreground for text and icons sitting on a dark or saturated fill.
   //
   // `surface` was carrying this job as well as being a background colour, which
@@ -169,6 +176,17 @@ export const type = {
     size: 13,
     lineHeight: 19,
     fontFamily: resolveFont('primary', weight.light),
+  },
+  // Aleo Light at `meta`'s own size — added for ProfileScreen's Sept 2026
+  // redesign, on explicit instruction that the whole screen (not just
+  // `cardTitle`'s book titles and `keyStat`'s hero pill) should read in Aleo
+  // rather than Open Sans. Same size/lineHeight as `meta` so swapping this in
+  // for `meta` moves only the family, not the row height.
+  editorialMeta: {
+    weight: weight.light,
+    size: 13,
+    lineHeight: 18,
+    fontFamily: resolveFont('secondary', weight.light),
   },
   // Open Sans — the format chip and the overlay tag on a cover tile's image.
   // Not Aleo: a file-type tag is UI chrome, not editorial content, the same
