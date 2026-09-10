@@ -39,10 +39,10 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 
-import type { ContentFormat } from '@/shared/types/primitives';
+import type { BookId, ContentFormat } from '@/shared/contracts';
 import { useCurrentSession, useIsSignedIn } from '@access/currentSession';
 import { isNotEntitled, resolveAccess } from '@access/resolveAccess';
 import { ActionBar } from '@components/ActionBar';
@@ -54,6 +54,8 @@ import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
 import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
+import { openBook } from '@/features/download/openBook';
+import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { buildItemDetail, type ItemDetail } from '@model/detail';
 import { type CatalogueError, isCatalogueFailure } from '@model/errors';
@@ -61,7 +63,6 @@ import { CATALOGUE_ERROR_COPY, catalogueErrorVariant, WIRE_ERROR_COPY } from '@m
 import { isLicenceFailure, LicenceError } from '@/licence/LicenceSource';
 import { ERROR_CODES } from '@model/types';
 import type { ActionId, ErrorCode, Publication, WorkType } from '@model/types';
-import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
@@ -73,10 +74,8 @@ interface ItemDetailRouteProps {
   // typed for exactly the one real call it makes: opening the access gate
   // when `resolveAccess` resolves to `requires_signin`.
   navigation: {
-    navigate: (
-      screen: 'AccessGate',
-      params: { itemId: string; title: string; authors: string },
-    ) => void;
+    navigate(screen: 'AccessGate', params: { itemId: string; title: string; authors: string }): void;
+    navigate(screen: 'Reader', params: { bookId: BookId; format: ContentFormat }): void;
   };
 }
 
@@ -577,6 +576,7 @@ export function renderArticleContent(
 
 export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteProps) {
   const { itemId } = route.params;
+  const downloadProgress = useDownloadProgress();
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
 
@@ -686,6 +686,14 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     void refresh();
   }, [fetchItem, refresh]);
 
+  useEffect(() => {
+    if (downloadProgress.status === 'completed') {
+      Alert.alert('Download complete', 'Book saved for offline reading.');
+    } else if (downloadProgress.status === 'error') {
+      Alert.alert('Download failed', downloadProgress.errorMessage ?? 'Something went wrong.');
+    }
+  }, [downloadProgress.status, downloadProgress.errorMessage]);
+
   const retry = useCallback(() => {
     setLoading(true);
     setFailed(false);
@@ -757,21 +765,27 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       // through `runLicenceCall`, which owns the pending state and the guard.
       const source = getLicenceSource();
       if (action === 'download') {
-        // Download and Read are the same licence call — a borrow — but a download
-        // ALSO records itself on this device so it appears in the Library's
-        // Downloads section. Recorded only after the borrow RESOLVES, so a refused
-        // download leaves no phantom row; the store keeps the record, not the bytes
-        // (CAP-7's ContentStore owns those). The caller stamps the time because
-        // downloadStore deliberately never reads a clock. (Added at Library owner's
-        // request; see downloadStore.ts.)
-        runLicenceCall(action, () =>
-          source.borrow(itemId).then((result) => {
-            useDownloadStore.getState().markDownloaded({ itemId, downloadedAt: Date.now() });
-            return result;
-          }),
-        );
+        const format = detail?.format;
+        if (format === undefined) return;
+        if (downloadProgress.status === 'downloading') return;
+        downloadProgress.start(itemId as BookId, format);
       } else if (action === 'read') {
-        runLicenceCall(action, () => source.borrow(itemId));
+        const format = detail?.format;
+        if (format === undefined) return;
+        setLicenceMessage(undefined);
+        setPendingAction('read');
+        openBook(itemId as BookId, format)
+          .then(() => {
+            navigation.navigate('Reader', { bookId: itemId as BookId, format });
+          })
+          .catch((err: unknown) => {
+            console.error('[read] openBook failed:', err);
+            setLicenceMessage(LICENCE_GENERIC_MESSAGE);
+          })
+          .finally(() => {
+            void refresh();
+            setPendingAction(undefined);
+          });
       } else if (action === 'revokeLicence' && loan?.loanId !== undefined) {
         const loanId = loan.loanId;
         runLicenceCall(action, () => source.returnLoan(loanId));
@@ -789,7 +803,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         runLicenceCall(action, () => source.cancelHold(holdId));
       }
     },
-    [navigation, detail, itemId, loan, hold, pendingAction, runLicenceCall],
+    [navigation, detail, itemId, loan, hold, pendingAction, runLicenceCall, downloadProgress],
   );
 
   let body: ReactNode;
@@ -827,10 +841,12 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
     // The only place workType is read for presentation. Today this is always
     // 'book' — see the header comment — but the branch is real and the article
     // side is exercised directly in tests rather than left unwritten.
+    const effectivePending: ActionId | undefined =
+      pendingAction ?? (downloadProgress.status === 'downloading' ? 'download' : undefined);
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction, pendingAction, licenceMessage)
-        : renderBookContent(detail, handleAction, pendingAction, licenceMessage);
+        ? renderArticleContent(detail, handleAction, effectivePending, licenceMessage)
+        : renderBookContent(detail, handleAction, effectivePending, licenceMessage);
   }
 
   return (
