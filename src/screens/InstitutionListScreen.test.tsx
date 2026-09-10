@@ -327,6 +327,26 @@ describe('InstitutionListScreen recently used', () => {
     await waitFor(() => expect(screen.getAllByText('Recent institutions').length).toBeGreaterThan(0));
     expect(screen.getByText('Imperial College London')).toBeTruthy();
   });
+
+  // The current institution already has its own "Current institution" card
+  // above — showing it again here read as a duplicate row rather than a
+  // genuinely different recent one, on explicit request.
+  it('excludes the CURRENT institution from Recent institutions, even though it is recently used', async () => {
+    mockIsOnline.mockReturnValue(true);
+    useInstitutionStore.setState({
+      selectedInstitution: IMPERIAL,
+      recentlyUsedIds: ['inst_7f3', 'inst_a21'],
+    });
+    setCatalogueSource(fakeSource(async () => [IMPERIAL, MANCHESTER]));
+
+    await render(<InstitutionListScreen />);
+
+    await waitFor(() => expect(screen.getAllByText('Recent institutions').length).toBeGreaterThan(0));
+    // Imperial appears once — in "Current institution" — not a second time
+    // pinned in "Recent institutions".
+    expect(screen.getAllByText('Imperial College London')).toHaveLength(1);
+    expect(screen.getByText('University of Manchester')).toBeTruthy();
+  });
 });
 
 // ─── Search ───────────────────────────────────────────────────────────────────

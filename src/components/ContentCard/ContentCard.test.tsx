@@ -227,9 +227,14 @@ describe('ContentCard cover variant', () => {
     expect(screen.getByText('Rights for Robots')).toBeTruthy();
     expect(screen.getByText('Routledge')).toBeTruthy();
     expect(screen.getByText('Open Access')).toBeTruthy();
-    expect(screen.getByTestId('content-card-image').props.source).toEqual({
-      uri: 'https://cdn.tf/a.jpg',
-    });
+    // expo-image normalizes a single `{ uri }` source into a one-element array
+    // on the rendered host node — unlike RN's Image, which passes it through
+    // unchanged. `cacheKey` strips the querystring so a re-signed URL for the
+    // same cover keeps hitting the same cache entry — see the component's
+    // own note.
+    expect(screen.getByTestId('content-card-image').props.source).toEqual([
+      { uri: 'https://cdn.tf/a.jpg', cacheKey: 'https://cdn.tf/a.jpg' },
+    ]);
   });
 
   it('renders a placeholder instead of an image when no image url is given', async () => {

@@ -104,6 +104,17 @@ jest.mock('@/features/download/useDownloadProgress', () => ({
   useDownloadProgress: () => ({ ...mockDownloadProgressState, start: mockDownloadStart }),
 }));
 
+// Read/Play no longer borrow — they call openBook() directly (see
+// ItemDetailScreen.tsx's 'read' || 'play' branch) and only navigate to the
+// Reader once it resolves. Mocked at that boundary, same as
+// ItemDetailScreen.loading.test.tsx's own note, so these tests exercise the
+// screen's own wiring without pulling openBook's real network/decrypt stack
+// into a render test.
+const mockOpenBook = jest.fn().mockResolvedValue(new Uint8Array());
+jest.mock('@/features/download/openBook', () => ({
+  openBook: (...args: [string, string]) => mockOpenBook(...args),
+}));
+
 function anAcquisition(over: Partial<Acquisition> = {}): Acquisition {
   return {
     actionId: 'borrow',
@@ -516,7 +527,7 @@ describe('ItemDetailScreen with a book', () => {
       expect(screen.queryByText('Play')).toBeNull();
     });
 
-    it('runs the same borrow licence call when Play is pressed', async () => {
+    it('opens the book and navigates to the Reader the same way Read does', async () => {
       setCatalogueSource(
         fakeSource(async () =>
           aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
@@ -528,7 +539,10 @@ describe('ItemDetailScreen with a book', () => {
       await waitFor(() => expect(screen.getByText('Play')).toBeTruthy());
       fireEvent.press(screen.getByText('Play'));
 
-      await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
+      await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'AUDIO'));
+      await waitFor(() =>
+        expect(mockNavigate).toHaveBeenCalledWith('Reader', { bookId: 'item_42', format: 'AUDIO' }),
+      );
     });
   });
 

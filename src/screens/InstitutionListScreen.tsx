@@ -76,6 +76,11 @@ const GENERIC_MESSAGE = "Couldn't load institutions. Check your connection and t
 export default function InstitutionListScreen() {
   const navigation = useNavigation<Nav>();
 
+  // Same "a failed fetch is not the same as no crest" device InstitutionRow's
+  // own state uses — this card draws the SAME institution InstitutionRow
+  // would if it appeared in a list, so a failed logo load falls back to
+  // initials here too rather than a blank box.
+  const [currentCrestFailed, setCurrentCrestFailed] = useState(false);
   const [query, setQuery] = useState('');
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [loading, setLoading] = useState(true);
@@ -238,12 +243,16 @@ export default function InstitutionListScreen() {
     [setSelectedInstitution, navigation],
   );
 
+  // Excludes the CURRENT institution, on explicit request — it already has
+  // its own card above ("Current institution"), and showing it a second
+  // time here read as a redundant duplicate rather than a genuinely
+  // different recent one.
   const pinnedInstitutions = useMemo(
     () =>
       recentlyUsedIds
         .map((id) => resolvedRecents.find((r) => r.id === id))
-        .filter((i): i is Institution => i !== undefined),
-    [recentlyUsedIds, resolvedRecents],
+        .filter((i): i is Institution => i !== undefined && i.id !== selectedInstitution?.id),
+    [recentlyUsedIds, resolvedRecents, selectedInstitution],
   );
 
   const mainInstitutions = useMemo(
@@ -268,7 +277,7 @@ export default function InstitutionListScreen() {
     <View style={styles.searchWrapper}>
       <SearchInput
         value={query}
-        placeholder="Search institutions..."
+        placeholder="Search for your institution"
         onChangeText={setQuery}
         onClear={() => setQuery('')}
       />
@@ -284,14 +293,17 @@ export default function InstitutionListScreen() {
   const currentInstitutionCard =
     selectedInstitution !== null ? (
       <View style={styles.section}>
-        <SectionHeader title="Current institution" emphasis="editorial" />
+        <View style={styles.sectionHeaderWrap}>
+          <SectionHeader title="Current institution" emphasis="editorial" />
+        </View>
         <View style={styles.currentInstitutionCard}>
-          {selectedInstitution.branding !== undefined ? (
+          {selectedInstitution.branding !== undefined && !currentCrestFailed ? (
             <Image
               source={{ uri: selectedInstitution.branding.logoUrl }}
               style={styles.currentInstitutionCrest}
               resizeMode="contain"
               accessibilityLabel={`${selectedInstitution.name} logo`}
+              onError={() => setCurrentCrestFailed(true)}
             />
           ) : (
             <View style={styles.currentInstitutionCrest}>
@@ -353,19 +365,24 @@ export default function InstitutionListScreen() {
       {currentInstitutionCard}
       {pinnedInstitutions.length > 0 && (
         <View style={styles.section}>
-          <SectionHeader title="Recent institutions" emphasis="editorial" />
+          <View style={styles.sectionHeaderWrap}>
+            <SectionHeader title="Recent institutions" emphasis="editorial" />
+          </View>
           {/* Clubbed into one rounded, bordered card — same technique
               ProfileScreen's own settings groups use (`overflow: 'hidden'`
               clips each `InstitutionRow`'s corners to this wrapper's
               radius). `isPinned` is dropped here: its own "Recently used"
               label would just repeat the section heading immediately
-              above it. */}
+              above it. Every row here is guaranteed NOT the current
+              institution (see `pinnedInstitutions`'s own filter), so none
+              of them ever renders `isSelected` — the whole group reads as
+              one consistent shape rather than one row looking different
+              from its siblings. */}
           <View style={styles.groupCard}>
             {pinnedInstitutions.map((institution) => (
               <InstitutionRow
                 key={institution.id}
                 institution={institution}
-                isSelected={institution.id === selectedInstitution?.id}
                 onPress={() => handleSelect(institution)}
               />
             ))}
@@ -374,7 +391,9 @@ export default function InstitutionListScreen() {
       )}
       {mainInstitutions.length > 0 && (
         <View style={styles.section}>
-          <SectionHeader title="All Institutions" emphasis="editorial" />
+          <View style={styles.sectionHeaderWrap}>
+            <SectionHeader title="All Institutions" emphasis="editorial" />
+          </View>
         </View>
       )}
     </View>
@@ -468,6 +487,13 @@ const styles = StyleSheet.create({
   },
   section: {
     marginTop: space.lg,
+  },
+  // `SectionHeader` sets no horizontal padding of its own (the caller owns
+  // placement) — this is that placement, kept separate from `section` itself
+  // so it does not stack with `groupCard`'s/`currentInstitutionCard`'s own
+  // `marginHorizontal` on the card sitting right below the header.
+  sectionHeaderWrap: {
+    paddingHorizontal: space.md,
   },
   // Same technique as ProfileScreen's own `groupCard`: a bordered, rounded
   // wrapper with `overflow: 'hidden'` to clip each child row's square
