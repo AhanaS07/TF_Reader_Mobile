@@ -116,14 +116,16 @@ export default function ContentCard({
               // query params) on every fetch, even for the same cover — so the
               // querystring must be stripped for the cache key, or every screen's
               // signed link looks like a brand-new image to expo-image's cache.
+              // Assumes the querystring carries only the signature, never a real
+              // variant/version — unconfirmed by any contract doc. If the backend
+              // ever encodes a genuine image variant there, two different images
+              // would silently collapse onto one cache key.
               source={{ uri: imageUrl, cacheKey: imageUrl.split('?')[0] }}
               style={styles.thumb}
               // `contain` would letterbox a portrait cover inside a square thumb.
               contentFit="cover"
               cachePolicy="memory-disk"
               transition={200}
-              // TEMP diagnostic — remove once cross-screen caching is confirmed.
-              onLoad={(e) => console.log('[image-cache] ContentCard', e.cacheType, imageUrl)}
             />
           )}
 
