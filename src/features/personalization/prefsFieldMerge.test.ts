@@ -11,6 +11,7 @@
 
 import { getDatabase } from '@/features/sync/localDb/database';
 import { parseFieldTimestamps } from '@/features/sync/stores/fieldTimestamps';
+import { accessibilityStore } from '@/features/sync/stores/accessibilityStore';
 import {
   personalizationId,
   personalizationStore,
@@ -118,4 +119,18 @@ it('an accessibility-only edit does not stamp any personalization field', async 
   const row = await personalizationStore.current();
   // Personalization row untouched: no field stamped, so a concurrent theme edit elsewhere is safe.
   expect(Object.keys(parseFieldTimestamps(row?.field_updated_at))).toEqual([]);
+});
+
+it('a personalization-only edit does not touch the accessibility row', async () => {
+  await personalizationTable.applyServerRecord(serverRecord());
+  // Seed an accessibility row with a non-default value, so a spurious touch would be visible.
+  await accessibilityStore.update({ screen_reader_hints: 1 });
+  const before = await accessibilityStore.current();
+
+  await prefsStore.savePrefs({ theme: 'dark' });
+
+  const after = await accessibilityStore.current();
+  expect(after?.updated_at).toBe(before?.updated_at);
+  expect(after?.field_updated_at).toBe(before?.field_updated_at);
+  expect(after?.screen_reader_hints).toBe(1);
 });
