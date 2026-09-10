@@ -24,11 +24,15 @@
 // text on it at 4.94:1, which clears AA at the button label's normal
 // (non-reduced) size.
 //
-// `statLabel` IS THE ONE LINE ON ALEO (`keyStat`), NOT THE HEADLINE. The
-// brand guide's own typography page names "Aleo light key stat" as an
-// example, and reserves Open Sans Regular for titles — `title` below is
-// this screen's own title, so it stays Open Sans (`editorialTitle`) even
-// though an earlier pass had routed it through Aleo.
+// STAT PILL, TITLE AND SUBTITLE ARE ALL ALEO NOW; THE BUTTON AND "UPDATED"
+// NOTE ARE NOT. The brand guide's own "Open Sans Regular for titles" was the
+// first pass here, and a later, explicit round moved the headline
+// (`editorialTitle`, tokens.ts) and this file's own `subtitle` to Aleo on
+// the reader's own visual call — the stat pill (`keyStat`) already was.
+// `footer`'s two children stay Open Sans deliberately: a button label and a
+// small status note are UI chrome, the same "editorial content vs chrome"
+// line the rest of this app already draws (`cardLabel`'s own note in
+// tokens.ts).
 //
 // THE BLOB IS CATEGORYCARD'S, REUSED. One translucent circle bleeding off the
 // corner, filling space a bottom-aligned text block leaves empty — the same
@@ -228,10 +232,21 @@ const styles = StyleSheet.create({
     fontFamily: type.editorialTitle.fontFamily,
     fontSize: type.editorialTitle.size,
     lineHeight: type.editorialTitle.lineHeight,
+    // Tight tracking — Aleo's own metrics read as loosely tracked at this
+    // size otherwise, the same reason a book's own title (`cardTitle`
+    // callers) and Item Detail's take a negative value rather than 0.
+    letterSpacing: -0.3,
     color: color.white,
   },
+  // `cardTitle`'s own family (Aleo Bold), not `type.body`'s — see the file
+  // header. Kept at `body`'s size/line-height: this is still the SECONDARY
+  // line under the headline, and Aleo's own weight stays constant here on
+  // purpose (this file has no lighter Aleo size token to reach for instead;
+  // see tokens.ts's own note on `cardTitle` and `keyStat` being the only two
+  // Aleo entries) — hierarchy comes from the size step alone.
   subtitle: {
-    fontFamily: type.body.fontFamily,
+    fontFamily: type.cardTitle.fontFamily,
+    letterSpacing: -0.2,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.white,

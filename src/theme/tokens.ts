@@ -131,15 +131,17 @@ export const type = {
     lineHeight: 16,
     fontFamily: resolveFont('primary', weight.regular),
   },
-  // The hero's own headline ("The Scholarly Archive") is this screen's main
-  // title, not a secondary one — Open Sans, same as `pageTitle`, per the
-  // guide's "Open Sans Regular is used for all titles". Bold stays for the
-  // same PENDING reason `pageTitle` does.
+  // The hero's own headline ("The Scholarly Archive") — Aleo, on later
+  // explicit instruction: the brand guide's own "Open Sans for all titles"
+  // was tried here first, but the reader's own reaction favoured the richer
+  // serif treatment, the same call already made for a book's own title
+  // (`cardTitle`) and Item Detail's. Only this screen's headline moves;
+  // `pageTitle` (used elsewhere) is untouched.
   editorialTitle: {
     weight: weight.bold,
     size: 26,
     lineHeight: 32,
-    fontFamily: resolveFont('primary', weight.bold),
+    fontFamily: resolveFont('secondary', weight.bold),
   },
   // Aleo — a book's own title is secondary to the screen's own headline, the
   // exact case the guide names ("smaller/secondary titles or headings").

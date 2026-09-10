@@ -594,9 +594,13 @@ function Section({
   return (
     <View style={styles.section}>
       {/* `SectionHeader` draws an action only when it has BOTH a label and a
-          handler, so spreading an absent action is enough to withhold it. */}
+          handler, so spreading an absent action is enough to withhold it.
+          `emphasis="editorial"` (Aleo) — the same treatment Catalogue's own
+          shelf headings ("New this month", "Law essentials") already use,
+          since these five headings are the same kind of section title. */}
       <SectionHeader
         title={title}
+        emphasis="editorial"
         {...(action === undefined ? {} : { actionLabel: action.label, onAction: action.onPress })}
       />
       {caption !== undefined && (
@@ -870,7 +874,6 @@ const styles = StyleSheet.create({
     padding: space.sm,
     marginBottom: space.md,
     color: color.textSecondary,
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
@@ -886,7 +889,6 @@ const styles = StyleSheet.create({
   // something away from the reader if they do nothing.
   expiry: {
     color: color.error,
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
@@ -898,7 +900,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xs,
     paddingTop: space.xs,
     color: color.textSecondary,
-    fontWeight: type.meta.weight,
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
@@ -910,7 +911,6 @@ const styles = StyleSheet.create({
     paddingTop: space.xs,
     paddingBottom: space.sm,
     color: color.textSecondary,
-    fontWeight: type.meta.weight,
     fontFamily: type.meta.fontFamily,
     fontSize: type.meta.size,
     lineHeight: type.meta.lineHeight,
@@ -943,7 +943,6 @@ const styles = StyleSheet.create({
   // secondary line. Three byte-identical copies invited one of them drifting.
   badgeLabel: {
     color: color.textSecondary,
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,

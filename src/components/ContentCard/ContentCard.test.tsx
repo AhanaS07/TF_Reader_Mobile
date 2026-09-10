@@ -147,6 +147,7 @@ describe('ContentCard content', () => {
 
     expect(screen.getByTestId('content-card-title').props.numberOfLines).toBeGreaterThan(0);
   });
+
 });
 
 describe('ContentCard access badge', () => {

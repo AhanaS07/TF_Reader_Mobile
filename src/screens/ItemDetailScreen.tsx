@@ -131,21 +131,6 @@ function formatPublishedDate(iso: string): string {
   return `${Number(day)} ${monthName} ${year}`;
 }
 
-// The exact known ingestion note the catalogue source currently returns in
-// `description` for at least one real title ("Politics of Coalition in
-// Korea") — "Real EPUB fixture (ELITE), ingested from a real file." and its
-// PDF sibling. A named, literal pattern rather than a general "does this
-// look real" guess: the latter is exactly the kind of inference this
-// codebase's own conventions rule out (CONVENTIONS §3's spirit, applied to
-// content rather than access logic) — this matches only the specific
-// dev-fixture wording, so a genuine short abstract that happens to mention
-// "PDF" or "EPUB" in passing is not caught by it.
-const FIXTURE_DESCRIPTION_PATTERN = /real (epub|pdf) fixture.*ingested from a real file/i;
-
-function isFixtureDescription(text: string): boolean {
-  return FIXTURE_DESCRIPTION_PATTERN.test(text);
-}
-
 // Lines shown before "Read more" appears — a real book-detail refinement
 // requirement (§9): today's descriptions are one-liners with nothing to
 // clamp, but the section has to already behave correctly the day a genuine,
@@ -159,14 +144,17 @@ const DESCRIPTION_CLAMP_LINES = 4;
 // pretending to be an exact line count.
 const DESCRIPTION_LONG_THRESHOLD = 220;
 
-// A real, structural section — always rendered, per §9, in one of three
-// states: a genuine description (today's short one-liners and tomorrow's
-// full abstracts alike), the honest "not available yet" line, or (silently,
-// same visual slot as "not available") the fixture note filtered out. Never
-// omitted outright: the earlier pass that hid the whole section when
-// `description` was absent read as the page quietly deciding for itself
-// what to show rather than a stable place a reader can expect this
-// information to live.
+// A real, structural section — always rendered, in one of two states: the
+// feed's own `description`, verbatim (whatever it currently is — the
+// catalogue source's real dev-fixture placeholder text included, on
+// explicit instruction: rendering exactly what the field carries, same
+// "render what came back" rule the rest of this app already follows for
+// every other field, rather than this screen quietly deciding on the
+// content's behalf which values count as real), or the honest "not
+// available yet" line when the field is genuinely absent. Never omitted
+// outright: an earlier pass hid the whole section when `description` was
+// absent, which read as the page quietly deciding for itself what to show
+// rather than a stable place a reader can expect this information to live.
 //
 // A REAL COMPONENT, NOT A PLAIN FUNCTION LIKE `MetaRow`/`FormatStrip` BELOW.
 // It owns `expanded` state, and hooks follow whichever component is
@@ -178,16 +166,15 @@ const DESCRIPTION_LONG_THRESHOLD = 220;
 function DescriptionSection({ description }: { description?: string }): ReactElement {
   const [expanded, setExpanded] = useState(false);
 
-  const real = description !== undefined && !isFixtureDescription(description) ? description : undefined;
-  const long = real !== undefined && real.length > DESCRIPTION_LONG_THRESHOLD;
+  const long = description !== undefined && description.length > DESCRIPTION_LONG_THRESHOLD;
 
   return (
     <View style={styles.sectionBlock}>
       <SectionHeader title="About this book" />
-      {real !== undefined ? (
+      {description !== undefined ? (
         <>
           <Text style={styles.description} numberOfLines={!expanded && long ? DESCRIPTION_CLAMP_LINES : undefined}>
-            {real}
+            {description}
           </Text>
           {long && (
             <Pressable
@@ -341,15 +328,15 @@ export function renderBookContent(
         </View>
 
         {/* ALWAYS RENDERED — a structural section, not conditional on
-            `detail.description` being present, per the book-detail
-            refinement's own instruction: show real short descriptions today,
-            support a genuinely long one later, and fall back to an honest
-            "not available yet" rather than omitting the section outright.
-            `DescriptionSection` itself is the one place that filters out the
-            known dev-fixture note ("Real EPUB/PDF fixture… ingested from a
-            real file") — confirmed present on a real catalog title
-            ("Politics of Coalition in Korea"), not assumed — so it never
-            renders as if it were a genuine abstract. */}
+            `detail.description` being present: show whatever the feed
+            currently sends verbatim, and fall back to an honest "not
+            available yet" only when the field is genuinely absent. This
+            screen used to filter out the catalogue source's own dev-fixture
+            placeholder text ("Real EPUB/PDF/audio fixture… ingested from a
+            real file", confirmed present on every current title, "Politics
+            of Coalition in Korea" included) — reversed on explicit
+            instruction: show the actual field value, not this screen's own
+            judgement about which values count as real. */}
         <DescriptionSection description={detail.description} />
 
         {/* TABLE OF CONTENTS IS OMITTED ENTIRELY. No endpoint, no model

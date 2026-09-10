@@ -594,21 +594,23 @@ describe('ItemDetailScreen format, price and table of contents', () => {
       expect(screen.getByText('A study of legal personhood.')).toBeTruthy();
     });
 
-    // The one thing this section must never show, whatever else changes —
-    // confirmed present on a real catalog title ("Politics of Coalition in
-    // Korea"), not a hypothetical.
-    it('filters out the known dev-fixture ingestion note, for either format', async () => {
-      setCatalogueSource(
-        fakeSource(async () =>
-          aBook({ description: 'Real EPUB fixture (ELITE), ingested from a real file.' }),
-        ),
-      );
+    // This screen used to filter out the catalogue source's own dev-fixture
+    // placeholder text here — reversed on explicit instruction, since every
+    // current title's real `description` value happens to be exactly this
+    // note, and hiding it left the section looking permanently empty. Shown
+    // verbatim now, same as any other field.
+    it.each([
+      'Real EPUB fixture (ELITE), ingested from a real file.',
+      'Real PDF fixture, ingested from a real file.',
+      'Real audio fixture, ingested from a real file.',
+    ])('shows the feed\'s own description verbatim, dev-fixture note included: %s', async (description) => {
+      setCatalogueSource(fakeSource(async () => aBook({ description })));
 
       await render(<ItemDetailScreen {...routeProps} />);
 
       await waitFor(() => expect(screen.getByText('About this book')).toBeTruthy());
-      expect(screen.queryByText(/ingested from a real file/i)).toBeNull();
-      expect(screen.getByText('Description not available yet.')).toBeTruthy();
+      expect(screen.getByText(description)).toBeTruthy();
+      expect(screen.queryByText('Description not available yet.')).toBeNull();
     });
 
     it('shows the honest fallback when the feed sent no description at all', async () => {

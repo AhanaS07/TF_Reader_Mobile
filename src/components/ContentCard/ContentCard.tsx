@@ -292,6 +292,18 @@ export default function ContentCard({
 
         <View style={styles.text}>
           <MetaRow publisher={publisher} format={format} badge={badge} />
+          {/* NOT a fixed-height slot, deliberately — that was tried and
+              reverted. Reserving two lines' worth of height for a one-line
+              title left dead space inside the box, which pushed the author
+              line down by a visibly DIFFERENT amount than a two-line title
+              did — an inconsistent GAP, and a more noticeable one than the
+              inconsistent absolute position it replaced. The cover variant's
+              own fixed slots are right for THAT shape because its tiles sit
+              side by side in a horizontal carousel, where mismatched heights
+              read as broken alignment between neighbours; these rows are
+              stacked vertically, one at a time, the same as any feed or
+              list whose items vary with their own content — `text`'s own
+              `gap` below already keeps that spacing uniform. */}
           <Text testID="content-card-title" style={styles.title} numberOfLines={2}>
             {title}
           </Text>
@@ -472,17 +484,17 @@ const styles = StyleSheet.create({
   coverImageWrap: {
     position: 'relative',
   },
-  // The cover tile's own image well: full tile width. `4/5`, not the row
-  // thumb's true book ratio (`2/3`) — a literal 2:3 cover at this tile's
-  // (wider, per `COVER_CARD_WIDTH`) width made the box read as a tall column
-  // with a caption stapled to the bottom rather than a balanced card;
-  // `resizeMode="cover"` already crops a real cover to fill whatever box it
-  // is given, so this trades a little top/bottom crop for a card that isn't
-  // mostly cover with a sliver of caption beneath it. `aspectRatio` is a
+  // The cover tile's own image well: full tile width, the row thumb's own
+  // true book ratio (`2/3`) — a shorter `4/5` crop was tried here for a
+  // denser card, but once real cover art was actually loading (rather than
+  // the grey placeholder that had masked this) it visibly clipped real
+  // covers' own top/bottom content (a publisher logo, an edition line).
+  // `resizeMode="cover"` fills the box either way; this is the ratio that
+  // does it with nothing cropped off a real jacket. `aspectRatio` is a
   // layout primitive, not a token value (CONVENTIONS §5's stated exceptions).
   coverThumb: {
     width: '100%',
-    aspectRatio: 4 / 5,
+    aspectRatio: 2 / 3,
     borderRadius: radius.card,
     backgroundColor: color.border,
   },
