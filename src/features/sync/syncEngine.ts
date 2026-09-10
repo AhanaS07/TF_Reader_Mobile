@@ -5,10 +5,11 @@ import {
   SUPPORTS_UPDATED_AFTER,
   USER_ID,
 } from './syncConfig';
-import { downloadMapper, progressMapper, ENTITY_PATHS } from './localDb/mappers';
+import { downloadMapper, progressMapper, ENTITY_PATHS, parseLocator } from './localDb/mappers';
 import { SYNC_KEYS } from './localDb/schema';
 import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
+import { locatorsEqual } from '@/features/reader/readerProgressStore';
 import { accessibilityTable } from './stores/accessibilityStore';
 import { bookmarkTable } from './stores/bookmarkStore';
 import { downloadStore, downloadTable } from './stores/downloadStore';
@@ -60,6 +61,7 @@ export interface SyncReport {
 }
 
 let inFlight: Promise<SyncReport> | null = null;
+let queuedRun = false;
 
 /**
  * The Sync Manager, talking to the Mongo backend's per-entity CRUD endpoints.
@@ -79,9 +81,27 @@ export const syncEngine = {
   /** Concurrent calls share one run rather than racing each other. */
   run(): Promise<SyncReport> {
     if (!inFlight) {
-      inFlight = execute().finally(() => {
-        inFlight = null;
-      });
+      inFlight = execute()
+        .finally(() => {
+          inFlight = null;
+        })
+        .then((report) => {
+          // If a new edit arrived while this run was in flight, check if the outbox
+          // has pending items. If so, run again immediately. This guard prevents false
+          // reruns from concurrent callers arriving at the same time.
+          if (queuedRun) {
+            queuedRun = false;
+            return outboxStore.countPending().then((pendingCount) => {
+              if (pendingCount > 0) {
+                return syncEngine.run();
+              }
+              return report;
+            });
+          }
+          return report;
+        });
+    } else {
+      queuedRun = true;
     }
     return inFlight;
   },
@@ -146,10 +166,12 @@ async function push(report: SyncReport): Promise<void> {
   for (const op of pending) {
     const entityPath = ENTITY_PATHS[op.entity_type];
     const table = TABLES[op.entity_type];
-    let payload = JSON.parse(op.payload);
+    let payload: any = null;
     let saved: any = null;
 
     try {
+      payload = JSON.parse(op.payload);
+
       if (!SERVER_RESOLVES_CONFLICTS) {
         const serverWins = await serverHasDiverged(op, entityPath);
 
@@ -174,6 +196,12 @@ async function push(report: SyncReport): Promise<void> {
 
       saved = await send(op, entityPath, payload);
     } catch (error) {
+      if (error instanceof SyntaxError) {
+        report.failed += 1;
+        await outboxStore.markFailed(op, `Corrupted outbox JSON: ${error.message}`);
+        continue;
+      }
+
       // A different device's document already occupies this (userId, bookId, locator) slot,
       // under an id we never generated. Not retried under our own id (that would 404) - resolved
       // by adopting theirs and discarding ours entirely: this device's row never existed
@@ -206,6 +234,7 @@ async function push(report: SyncReport): Promise<void> {
             // echoes the body's id back, writeRow below writes the "restored" record under the
             // WRONG (stale) id - which hardDeleteLocal then immediately deletes, erasing what
             // was just written. Override it before it goes anywhere near the id.
+            const localRow = await TABLES.downloads.findById(op.entity_id);
             const updated = await api.update<any>('downloads', existing.id, {
               ...error.payload,
               id: existing.id,
@@ -219,7 +248,11 @@ async function push(report: SyncReport): Promise<void> {
             // it was ever deleted server-side (e.g. from an earlier clearAllDownloads()) -
             // applyServerRecord silently returned false, and the code below deleted the stale
             // attempt's row anyway, leaving nothing active locally at all.
-            await TABLES.downloads.writeRow(downloadMapper.toRow(updated.data));
+            const rowToWrite = downloadMapper.toRow(updated.data);
+            if (localRow?.local_path) {
+              rowToWrite.local_path = localRow.local_path;
+            }
+            await TABLES.downloads.writeRow(rowToWrite);
             await TABLES[op.entity_type].hardDeleteLocal(op.entity_id);
             report.conflicts += 1;
             await outboxStore.remove([op.id]);
@@ -427,11 +460,32 @@ async function findDuplicateRecord(
   });
 
   return (
-    (response.data ?? []).find(
-      (record: any) =>
-        !record.isDeleted &&
-        fields.every((field) => JSON.stringify(record[field]) === JSON.stringify(payload[field])),
-    ) ?? null
+    (response.data ?? []).find((record: any) => {
+      if (record.isDeleted) return false;
+
+      for (const field of fields) {
+        if (field === 'locator') {
+          const incomingLocator = parseLocator(
+            typeof payload[field] === 'string'
+              ? (payload[field] as string)
+              : JSON.stringify(payload[field])
+          );
+          const recordLocator = parseLocator(
+            typeof record[field] === 'string'
+              ? record[field]
+              : JSON.stringify(record[field])
+          );
+          if (!locatorsEqual(incomingLocator, recordLocator)) {
+            return false;
+          }
+        } else {
+          if (JSON.stringify(record[field]) !== JSON.stringify(payload[field])) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }) ?? null
   );
 }
 
@@ -587,11 +641,12 @@ async function sendDelete(
   } catch (error) {
     if (!(error instanceof ApiError) || !error.isNotFound) throw error;
 
-    // Created and deleted in the same offline session, and the outbox coalesced
-    // both into this one DELETE. The record still has to exist before it can be
-    // tombstoned, and a create ignores `isDeleted`, so it takes both calls.
-    await sendCreate(entityPath, id, payload, entityType);
-    return (await api.remove<any>(entityPath, id)).data;
+    // A 404 on DELETE means the resource never existed on the server, which is the
+    // intended outcome of deletion. If this device created and deleted a record in
+    // the same offline session and never reconnected between them, the server has
+    // no knowledge of it. Tombstoning requires the record to exist; a non-existent
+    // record is already absent. Return success.
+    return { id, isDeleted: true };
   }
 }
 
