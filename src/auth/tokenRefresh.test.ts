@@ -14,10 +14,20 @@
 //      both callers get the same result (the refresh token rotates, so a
 //      second independent refresh would burn the first call's new token)
 import { useSessionStore, type SessionData } from '@store/sessionStore';
+import { useInstitutionStore } from '@store/institutionStore';
 import { getRefreshToken, saveRefreshToken } from '@store/secureStorage';
 import { ensureFreshToken, bootstrapAuth } from './tokenRefresh';
 import { AuthError, AuthFailure } from './AuthFailure';
 import type { ApiAuthClient } from './ApiAuthClient';
+import type { Institution } from '@model/institution';
+
+const FAKE_INSTITUTION: Institution = {
+  id: 'inst_7f3',
+  name: 'Imperial College',
+  country: 'GB',
+  code: 'ICL',
+  city: 'London',
+};
 
 jest.mock('@store/secureStorage', () => ({
   getRefreshToken: jest.fn(),
@@ -47,6 +57,7 @@ function fakeAuthClient(overrides: Partial<ApiAuthClient> = {}): ApiAuthClient {
 afterEach(() => {
   useSessionStore.getState().clearSession();
   useSessionStore.getState().setAuthReady(false);
+  useInstitutionStore.getState().clearSelectedInstitution();
   jest.clearAllMocks();
 });
 
@@ -71,6 +82,16 @@ describe('ensureFreshToken — no refresh token stored', () => {
     expect(token).toBeUndefined();
     expect(useSessionStore.getState().isAuthenticated).toBe(false);
     expect(authClient.refreshSession).not.toHaveBeenCalled();
+  });
+
+  it('leaves a pre-existing institution selection alone — this is the pre-auth browsing case, not a forced sign-out', async () => {
+    useInstitutionStore.getState().setSelectedInstitution(FAKE_INSTITUTION);
+    mockGetRefreshToken.mockResolvedValue(null);
+    const authClient = fakeAuthClient();
+
+    await ensureFreshToken({ authClient });
+
+    expect(useInstitutionStore.getState().selectedInstitution).toEqual(FAKE_INSTITUTION);
   });
 });
 
@@ -183,6 +204,36 @@ describe('ensureFreshToken — transient refresh failure', () => {
     expect(token).toBeUndefined();
     expect(useSessionStore.getState().isAuthenticated).toBe(false);
   });
+
+  it('also clears the selected institution on a genuine REFUSED, but ONLY when the caller opts in (bootstrapAuth\'s boot check)', async () => {
+    useSessionStore.getState().setSession(SIGNED_IN_SESSION);
+    useSessionStore.setState({ expiresAt: Date.now() - 1000 }); // force expired
+    useInstitutionStore.getState().setSelectedInstitution(FAKE_INSTITUTION);
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.REFUSED)),
+    });
+
+    await ensureFreshToken({ authClient, clearInstitutionOnRefusal: true });
+
+    expect(useInstitutionStore.getState().selectedInstitution).toBeNull();
+  });
+
+  it('leaves the selected institution alone on an ordinary on-demand REFUSED — a reader mid-sign-in to a NEW institution must not be bounced back to the method chooser because a stale dead refresh token from a previous session is still being retried', async () => {
+    useSessionStore.getState().setSession(SIGNED_IN_SESSION);
+    useSessionStore.setState({ expiresAt: Date.now() - 1000 }); // force expired
+    useInstitutionStore.getState().setSelectedInstitution(FAKE_INSTITUTION);
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.REFUSED)),
+    });
+
+    // No clearInstitutionOnRefusal here — this is how every ordinary
+    // authenticated call (catalogue fetch, licence check) invokes it.
+    await ensureFreshToken({ authClient });
+
+    expect(useInstitutionStore.getState().selectedInstitution).toEqual(FAKE_INSTITUTION);
+  });
 });
 
 describe('ensureFreshToken — concurrent calls', () => {
@@ -232,5 +283,17 @@ describe('bootstrapAuth', () => {
     await bootstrapAuth({ authClient });
 
     expect(useSessionStore.getState()._authReady).toBe(true);
+  });
+
+  it('clears a stale selected institution when the boot-time refresh is genuinely refused', async () => {
+    useInstitutionStore.getState().setSelectedInstitution(FAKE_INSTITUTION);
+    mockGetRefreshToken.mockResolvedValue('stored_refresh_token');
+    const authClient = fakeAuthClient({
+      refreshSession: jest.fn().mockRejectedValue(new AuthFailure(AuthError.REFUSED)),
+    });
+
+    await bootstrapAuth({ authClient });
+
+    expect(useInstitutionStore.getState().selectedInstitution).toBeNull();
   });
 });

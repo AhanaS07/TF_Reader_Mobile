@@ -24,7 +24,6 @@ import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { Institution } from '@model/institution';
 import type { Acquisition, Publication } from '@model/types';
 import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
-import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { useSessionStore } from '@store/sessionStore';
@@ -64,6 +63,21 @@ jest.mock('@config/licence', () => ({
     cancelHold: jest.fn().mockResolvedValue(undefined),
     getLibrary: () => mockGetLibrary(),
   }),
+}));
+
+// Download no longer borrows — it hands off to useDownloadProgress's start(),
+// which drives downloadManager.ts. Mocked at the hook boundary, same level the
+// screen itself talks to, rather than pulling downloadManager's real network
+// stack into these tests.
+const mockDownloadStart = jest.fn();
+let mockDownloadProgressState = {
+  status: 'idle' as 'idle' | 'downloading' | 'completed' | 'error',
+  bytesReceived: 0,
+  expectedLength: null as number | null,
+  errorMessage: null as string | null,
+};
+jest.mock('@/features/download/useDownloadProgress', () => ({
+  useDownloadProgress: () => ({ ...mockDownloadProgressState, start: mockDownloadStart }),
 }));
 
 function anAcquisition(over: Partial<Acquisition> = {}): Acquisition {
@@ -197,10 +211,12 @@ afterEach(() => {
   mockReturnLoan.mockClear();
   mockPlaceHold.mockClear();
   mockGetLibrary.mockClear();
+  mockDownloadStart.mockClear();
   mockBorrow.mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
   mockReturnLoan.mockResolvedValue(undefined);
   mockPlaceHold.mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+  mockDownloadProgressState = { status: 'idle', bytesReceived: 0, expectedLength: null, errorMessage: null };
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
   useSessionStore.setState({
@@ -382,12 +398,10 @@ describe('ItemDetailScreen with a book', () => {
     expect(screen.getByText('Download')).toBeTruthy();
   });
 
-  // Added at the Library owner's request: a download must show up in the
-  // Library's Downloads section, which is fed by `downloadStore`. So Download
-  // borrows AND records itself on this device — but only after the borrow
-  // resolves, so a refused download leaves no phantom row.
-  it('records a download in downloadStore after the borrow succeeds', async () => {
-    useDownloadStore.getState().clear();
+  // Download no longer goes through the borrow-based licence flow — it hands
+  // the tapped item straight to useDownloadProgress's start(), which drives
+  // downloadManager.ts (and, from there, downloadTable — not this screen).
+  it('starts the download via useDownloadProgress when Download is tapped', async () => {
     setCatalogueSource(
       fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
     );
@@ -397,20 +411,18 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText('Download')).toBeTruthy());
     fireEvent.press(screen.getByText('Download'));
 
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
-    await waitFor(() =>
-      expect(useDownloadStore.getState().downloads.map((d) => d.itemId)).toContain('item_42'),
-    );
+    await waitFor(() => expect(mockDownloadStart).toHaveBeenCalledWith('item_42', 'PDF'));
+    // The borrow-based licence call this used to make is gone entirely.
+    expect(mockBorrow).not.toHaveBeenCalled();
   });
 
-  it('records nothing when the download borrow is refused', async () => {
-    useDownloadStore.getState().clear();
-    mockBorrow.mockRejectedValue(
-      new LicenceFailure(LicenceError.REFUSED, {
-        errorCode: 'DOWNLOAD_NOT_PERMITTED',
-        target: 'item_42',
-      }),
-    );
+  it('does not start a second download while one is already in flight', async () => {
+    mockDownloadProgressState = {
+      status: 'downloading',
+      bytesReceived: 0,
+      expectedLength: null,
+      errorMessage: null,
+    };
     setCatalogueSource(
       fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
     );
@@ -420,8 +432,7 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText('Download')).toBeTruthy());
     fireEvent.press(screen.getByText('Download'));
 
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
-    expect(useDownloadStore.getState().downloads).toHaveLength(0);
+    expect(mockDownloadStart).not.toHaveBeenCalled();
   });
 
   // The fixture this screen will meet in the real app is an Elite title, and

@@ -190,10 +190,15 @@ export class ApiAdapter implements DataSource {
     }
 
     if (!response.ok) {
-      // 404 is a normal empty-state; anything else non-ok is the server having
-      // a bad time, which a retry may well fix.
+      // 404 is a normal empty-state; 401 means the token was missing/rejected,
+      // not that the connection is down; anything else non-ok is the server
+      // having a bad time, which a retry may well fix.
       throw new CatalogueFailure(
-        response.status === 404 ? CatalogueError.NOT_FOUND : CatalogueError.NETWORK_UNAVAILABLE,
+        response.status === 404
+          ? CatalogueError.NOT_FOUND
+          : response.status === 401
+            ? CatalogueError.UNAUTHENTICATED
+            : CatalogueError.NETWORK_UNAVAILABLE,
         institutionId,
       );
     }
@@ -387,7 +392,11 @@ export class ApiAdapter implements DataSource {
           throw new CatalogueFailure(CatalogueError.TOO_MANY_IDS, target);
         }
         throw new CatalogueFailure(
-          response.status === 404 ? CatalogueError.NOT_FOUND : CatalogueError.NETWORK_UNAVAILABLE,
+          response.status === 404
+            ? CatalogueError.NOT_FOUND
+            : response.status === 401
+              ? CatalogueError.UNAUTHENTICATED
+              : CatalogueError.NETWORK_UNAVAILABLE,
           target,
         );
       }
@@ -450,10 +459,15 @@ export class ApiAdapter implements DataSource {
       const response = await this.fetchWithTimeout(url, target, headers);
 
       if (!response.ok) {
-        // 404 is a normal empty-state; anything else non-ok is the server having
-        // a bad time, which a retry may well fix.
+        // 404 is a normal empty-state; 401 means the token was missing/rejected,
+        // not that the connection is down; anything else non-ok is the server
+        // having a bad time, which a retry may well fix.
         throw new CatalogueFailure(
-          response.status === 404 ? CatalogueError.NOT_FOUND : CatalogueError.NETWORK_UNAVAILABLE,
+          response.status === 404
+            ? CatalogueError.NOT_FOUND
+            : response.status === 401
+              ? CatalogueError.UNAUTHENTICATED
+              : CatalogueError.NETWORK_UNAVAILABLE,
           target,
         );
       }

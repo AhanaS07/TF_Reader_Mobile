@@ -127,10 +127,15 @@ export function renderBookContent(
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         {detail.coverUrl !== undefined && (
           <Image
-            source={{ uri: detail.coverUrl }}
+            // See ContentCard.tsx's note — the backend re-signs this URL's
+            // querystring on every fetch, so the cache key must ignore it.
+            // Same unconfirmed assumption as there: the querystring is assumed
+            // to carry only the signature, never a real image variant.
+            source={{ uri: detail.coverUrl, cacheKey: detail.coverUrl.split('?')[0] }}
             style={styles.cover}
             contentFit="contain"
             cachePolicy="memory-disk"
+            transition={200}
             accessibilityLabel={`${detail.title} cover`}
           />
         )}
