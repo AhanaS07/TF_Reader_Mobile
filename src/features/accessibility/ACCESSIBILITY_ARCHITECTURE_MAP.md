@@ -104,12 +104,17 @@ Accessibility fix.
   teleprompter auto-scroll between `'instant'`/`'smooth'`; see `WEBVIEW_BRIDGE.md`'s "reduceMotion
   — consumed by epub.entry.ts only" section, Ahana's, for the full account). `pdf.entry.ts`
   deliberately still consumes nothing — PDF has no scrolled-doc/TTS concept to gate, so that's not
-  a gap. **A separate, genuine gap surfaced instead**: our own `useReduceMotion.ts` hook — headed
-  "Consumed by Reader (Ahana)" — had no actual consumer; `src/features/reader/useAppearanceEnv.ts`
-  independently re-implements the same OS-subscribe + `resolveReduceMotion` logic rather than
-  calling it. `useReduceMotion.ts` now has a real consumer inside our own lane instead: the
-  "Currently: On/Off" caption in `AccessibilitySettingsPanel.tsx`'s "System" row. The Reader-side
-  duplication is unresolved and flagged to Ahana — see `REDUCE_MOTION_HOOK_HANDOFF.md`.
+  a gap. **A separate gap surfaced instead, now closed**: our own `useReduceMotion.ts` hook —
+  headed "Consumed by Reader (Ahana)" — had no actual consumer. It now does, inside our own lane:
+  the "Currently: On/Off" caption in `AccessibilitySettingsPanel.tsx`'s "System" row.
+  **`useAppearanceEnv.ts` is NOT a duplicate of it, correcting an earlier version of this
+  entry** — `useAppearanceEnv.ts` only ever exposes the *raw* OS signal as part of `AppearanceEnv`
+  and never calls `resolveReduceMotion`; the one resolve against the stored tri-state preference
+  happens once, downstream, in `readerAppearance.ts:266`. The two hooks share ~10 lines of
+  `AccessibilityInfo` seed/listener boilerplate and nothing else — a coincidental overlap between
+  two hooks that intentionally return different things, not a duplication bug. Considered and
+  **declined**: extracting that boilerplate into a shared `useOsReduceMotionEnabled()` primitive.
+  Full reasoning in `REDUCE_MOTION_HOOK_HANDOFF.md`, which records the decision as closed.
 - **Live-apply channel:** `prefsStore.savePrefs()` → in-memory `notify()` → `ReaderScreen.tsx`'s
   `prefsStore.subscribe()` → `toReaderAppearance()` re-resolve → `applyAppearance` bridge command,
   with no reopen required. This is the one true write path the rest of the app relies on for "save
