@@ -4909,6 +4909,30 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeUserAction);
   });
 
+  // Mirrors the test above, but through TalkBack's native page-turn action
+  // (TALKBACK_GESTURE_FIX_PROPOSAL.md) instead of the toolbar Prev/Next Pressables — pinning that
+  // ReaderScreen's onPageTurnRequested wiring clears pendingInitialVerifyRef exactly like the
+  // toolbar buttons do, not a partial copy that skips the race-guard half of the effect.
+  it('a TalkBack page-turn action also stops the resend loop, same as the toolbar buttons', async () => {
+    await render(
+      <ReaderScreen bookId="test-book-verify-talkback-pageturn" initialTarget={{ kind: 'page', page: 5 }} />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+    await deliver({ type: 'rendered' });
+
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    const sendsBeforeTalkBackAction = goToCallCount({ kind: 'page', page: 5 });
+
+    const pageTurn = screen.getByTestId('reader-webview-a11y-pageturn');
+    await act(async () => {
+      pageTurn.props.onAccessibilityAction({ nativeEvent: { actionName: 'increment' } });
+    });
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 2, pageCount: 20 } });
+
+    expect(goToCallCount({ kind: 'page', page: 5 })).toBe(sendsBeforeTalkBackAction);
+  });
+
   // Regression pin, found live on-device 2026-09-03: `onRelocated` (ReaderRouteScreen.tsx's save
   // path, which pushes to Sync unthrottled on its very first call) used to fire for EVERY
   // `relocated`, including a wrong intermediate one still being corrected by the resend logic

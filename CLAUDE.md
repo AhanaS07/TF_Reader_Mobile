@@ -77,10 +77,10 @@ let the payload split into a second `applyA11y` sibling — one command carries 
 renders with, for all three claimants (Personalization's typography/theme, Reader's `reduceMotion`,
 Accessibility's `announce.pageChanges`).
 
-## Reader accessibility — four rules that are easy to undo by accident
+## Reader accessibility — five rules that are easy to undo by accident
 
 `src/features/reader/READER_ANNOUNCEMENTS.md` is the source of truth for the announcement seam;
-`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Four things in the code
+`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Five things in the code
 look like tidy-ups and are not:
 
 **1. `ReaderWebView`'s container must NOT carry an `accessibilityLabel`.** On Android RN maps it to
@@ -124,7 +124,21 @@ PDF's payload, and pdf.js has no text CSS layer to override.
 try/catch: an escaping reject would abort `buildAppearanceWithFont` inside `applyAppearanceWith`'s
 single catch and send the WebView NO appearance at all — losing theme, text size, margins, flow and
 both announce gates for the sake of a font. `WEBVIEW_BRIDGE.md` has the full account, including why
-`reduceMotion` stays unconsumed by both shells.
+`reduceMotion` is now consumed by `epub.entry.ts` only (wired in 2026-09-08, for TTS's teleprompter
+repositioning) and stays unconsumed, deliberately, by `pdf.entry.ts`.
+
+**5. `ReaderWebView`'s container must not carry `accessibilityActions`/`accessibilityRole` either —
+same mechanism as rule #1, a different prop.** RN's Android accessibility delegate synthesizes a
+`contentDescription` on any view that has `accessibilityActions`, `accessibilityState`,
+`accessibilityLabelledBy`, or `accessibilityRole` set and no existing text/description, by
+concatenating descendant text/descriptions. A ViewGroup with a synthesized `contentDescription` is
+the identical screen-reader focus LEAF rule #1 already fixed for a literal `accessibilityLabel`
+prop — TalkBack announces it and never descends into the WebView's tree. This surfaced when
+`TALKBACK_GESTURE_FIX_PROPOSAL.md`'s page-turn action (a native `accessibilityActions`/
+`onAccessibilityAction` pair, so TalkBack can turn pages without needing the still-open WebView
+accessibility-bridge defect fixed) was originally sketched onto the container. The action pair lives
+on `reader-webview-a11y-pageturn`, a dedicated 1x1 sibling — parallel to the existing
+`reader-webview-a11y-stop` named stop, not layered onto it (that node serves a different purpose).
 
 **A painted highlight's RECTS live for one layout, and epub.js will not re-measure them for you.**
 marks-pane re-measures only inside `View.reframe()`, which a stylesheet change never reaches — the
