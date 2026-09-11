@@ -99,7 +99,17 @@ Accessibility fix.
   an `aria-live` region inside the WebView would announce from a document a screen reader may not be
   able to reach at all — which is F4. `announce.chapterChanges` was added to `ReaderAppearance` in
   the same change and is consumed the same way. See `src/features/reader/READER_ANNOUNCEMENTS.md`.
-  **`reduceMotion` is still unconsumed** — that half of the original finding stands.
+  **`reduceMotion` is no longer unconsumed at the WebView-payload level — that half of the
+  original finding is closed.** `epub.entry.ts` started consuming it 2026-09-08 (gates the TTS
+  teleprompter auto-scroll between `'instant'`/`'smooth'`; see `WEBVIEW_BRIDGE.md`'s "reduceMotion
+  — consumed by epub.entry.ts only" section, Ahana's, for the full account). `pdf.entry.ts`
+  deliberately still consumes nothing — PDF has no scrolled-doc/TTS concept to gate, so that's not
+  a gap. **A separate, genuine gap surfaced instead**: our own `useReduceMotion.ts` hook — headed
+  "Consumed by Reader (Ahana)" — had no actual consumer; `src/features/reader/useAppearanceEnv.ts`
+  independently re-implements the same OS-subscribe + `resolveReduceMotion` logic rather than
+  calling it. `useReduceMotion.ts` now has a real consumer inside our own lane instead: the
+  "Currently: On/Off" caption in `AccessibilitySettingsPanel.tsx`'s "System" row. The Reader-side
+  duplication is unresolved and flagged to Ahana — see `REDUCE_MOTION_HOOK_HANDOFF.md`.
 - **Live-apply channel:** `prefsStore.savePrefs()` → in-memory `notify()` → `ReaderScreen.tsx`'s
   `prefsStore.subscribe()` → `toReaderAppearance()` re-resolve → `applyAppearance` bridge command,
   with no reopen required. This is the one true write path the rest of the app relies on for "save
@@ -254,7 +264,7 @@ Native/WebView concept mapping, for anyone implementing against this seam:
 | EPUB DOM not semantically accessible (headings/paragraphs survive `epub.js`?) | High | Open, unconfirmed | Only settled by the spike's DOM-inspection checklist |
 | `epub.js` iframe/content-document focus behavior | High | Open, unconfirmed | Device test required, both platforms |
 | Page-transition accessibility (over/under-announcement) | High | Open, unconfirmed | Test with `announce.pageChanges` on and off once the consumer exists |
-| ~~`announcePageChanges`~~ / `reduceMotion` unconsumed | Medium | **Half closed 2026-08-28** | `announcePageChanges` and the new `announceChapterChanges` are consumed natively by `ReaderScreen` (see §3 and READER_ANNOUNCEMENTS.md). `reduceMotion` is still read by nothing in either entry |
+| ~~`announcePageChanges`~~ / ~~`reduceMotion`~~ unconsumed | Medium | **Closed — 2026-08-28 for announcements, 2026-09-08/09-11 for reduceMotion** | `announcePageChanges` and `announceChapterChanges` are consumed natively by `ReaderScreen` (see §3 and READER_ANNOUNCEMENTS.md). `reduceMotion` is consumed by `epub.entry.ts`'s teleprompter scroll (`pdf.entry.ts` deliberately not — nothing to gate) and, separately, `useReduceMotion.ts` now has its own real consumer in `AccessibilitySettingsPanel.tsx`'s "System" caption, closing the gap between that hook's header claim and its actual use |
 | On-device confirmation of the F4 fixes | **Critical/Blocking (re-confirmed 2026-08-31)** | **Partially run — still open** | Configuration A run against Sample A on-device (`WEBVIEW_A11Y_SPIKE.md` §12): cause (b)'s bounds fix confirmed working for on-screen content, but F4's core symptom — TalkBack cannot reach book content via touch exploration — is UNCHANGED, tested at 3 independent points all with correct bounds. Bounds were necessary but not sufficient. Configurations B/C/D (needed to isolate cause (a)) and Sample B / the real book are not run. |
 | Reader overrides `layout.flow` when a screen reader is running | Low | **Deliberate, 2026-08-28** | Paginated flow makes book content unreachable (F4/F6). The override is announced with an `Alert` and a session-only opt-out, and `DevPreferencesMenu` disables and annotates its Flow rows while it is in effect — a stored preference is never silently changed. See `src/features/reader/readerA11yLayout.ts` |
 | ~~No focus trap / restoration on TOC, Search, TTS, VoicePicker panels~~ | Medium | **Largely closed 2026-08-26 (§5); post-search-hit destination closed 2026-09-09** | Restoration and background-hiding landed on both sides, and the post-search-hit destination shipped without waiting on the device spike (§5 above). What remains is focus ENTRY into TOC/Search, still gated on the spike. Full control-by-control status: `READER_FOCUS_ORDER_HANDOFF.md` (same directory) |

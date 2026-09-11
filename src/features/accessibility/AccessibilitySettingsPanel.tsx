@@ -34,6 +34,8 @@ import {
 import type { AccessibilityPrefs, ContentFormat, ReduceMotion } from '@/shared/contracts';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 
+import { useReduceMotion } from './useReduceMotion';
+
 export interface AccessibilitySettingsPanelProps {
   /**
    * The open book's format, so the Dyslexia Font control can hide itself for formats with no text
@@ -101,6 +103,10 @@ export function AccessibilitySettingsPanel({
 }: AccessibilitySettingsPanelProps): React.JSX.Element {
   const prefs = useAccessibilityPrefs();
   const showDyslexiaFont = format === undefined || format === 'EPUB';
+  // 'system' is the only selection this panel can't already show the effect of from the stored
+  // preference alone — it defers to a live OS signal the chip row itself never reads. `useReduceMotion`
+  // is that resolve; see the caption below.
+  const reduceMotionResolved = useReduceMotion();
 
   const toggleDyslexiaFont = (): void => {
     void prefsStore
@@ -243,6 +249,11 @@ export function AccessibilitySettingsPanel({
           );
         })}
       </View>
+      {prefs.display.reduceMotion === 'system' && (
+        <Text style={styles.helperText} testID="reduce-motion-resolved">
+          Currently: {reduceMotionResolved ? 'On' : 'Off'}
+        </Text>
+      )}
 
       <View style={styles.divider} />
       {/* NOT format-gated, unlike Dyslexia Font above: TTS is a device-wide accessibility
@@ -328,6 +339,14 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#e2e2e2',
     marginTop: 8,
+  },
+  // Same weight/colour as sectionLabel but not uppercase or bold — this is a live status readout,
+  // not a section heading, and shouldn't compete with one visually.
+  helperText: {
+    fontSize: 12,
+    color: '#777777',
+    marginTop: 4,
+    textAlign: 'center',
   },
   chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center' },
   chip: {
