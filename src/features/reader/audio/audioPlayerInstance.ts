@@ -31,8 +31,9 @@ import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audi
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
 
-import { registerAudioPauseHandler, stopActiveTts } from './audioTtsCoordinator';
+import { registerAudioPauseHandler, registerAudioPlaybackBridge, stopActiveTts } from './audioTtsCoordinator';
 import { audioQueueStore } from './audioQueueStore';
+import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 let current: { bookId: BookId; player: AudioPlayer } | null = null;
 let pendingResumePosition: number | null = null;
@@ -55,6 +56,20 @@ export function _resetTrackCompletionHandlerForTests(): void {
 // Registers the module singleton's pause action with the coordinator so TTS playback
 // automatically pauses active audiobook sound.
 registerAudioPauseHandler(pauseCurrentAudioPlayer);
+
+// Registers the singleton's playback query + resume action for audioTtsCoordinator.ts's TTS-side
+// callers (the sleep timer's guardTtsEnableForSleepTimer/resumeAudioIfPausedForSleepTimerTts, and
+// pauseActiveAudioForTtsPlay's own-audio-alert check) — see that file's header for why this is a
+// registration rather than a direct import back into it. `ensureAudioModeConfigured(true)`
+// re-asserts the audio session before resuming, since TTS may have touched AVAudioSession in
+// between; `true` forces a fresh call rather than reusing a possibly-stale memoized one, same as
+// AudioPlayerScreen.tsx's own beginPlayback() does.
+registerAudioPlaybackBridge({
+  isAudioPlaying,
+  resumeAudioAfterTts: () => {
+    void ensureAudioModeConfigured(true).then(() => resumeCurrentAudioPlayer());
+  },
+});
 
 /**
  * AUDIO PHASE 4, TASK B. Records the LIVE player's position for whichever book it is holding.
@@ -138,6 +153,20 @@ export function pauseCurrentAudioPlayer(): void {
     current.player.pause();
     commitCurrentPlayerPosition();
     audioQueueStore.getState().setIsPlaying(false);
+  }
+}
+
+/**
+ * Resumes the live player if one is loaded and not already playing. Mirrors
+ * `pauseCurrentAudioPlayer()`'s own shape exactly. The one caller today is
+ * `audioTtsCoordinator.ts`'s `resumeAudioIfPausedForSleepTimerTts()`, undoing a pause THAT SAME
+ * module made when TTS switched on while a sleep timer was running (SLEEP_TIMER_PLAN.md §7).
+ * Idempotent, and a safe no-op when nothing is loaded or already playing.
+ */
+export function resumeCurrentAudioPlayer(): void {
+  if (current && current.player.isLoaded && !current.player.playing) {
+    current.player.play();
+    audioQueueStore.getState().setIsPlaying(true);
   }
 }
 
