@@ -1,8 +1,8 @@
 # Reader → TTS seam (`ReaderTextProvider`)
 
 **Owner:** Reader (Ahana) · **Consumer:** Accessibility (Hruthik) · **Status:** real EPUB provider
-implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23) —
-`fakeReaderTextProvider.ts` itself stays for now, see "The fake, and deleting it" below
+implemented (step 5, 2026-08-23); Accessibility's demo-tab call site retired (step 6, 2026-08-23);
+`fakeReaderTextProvider.ts` itself deleted (2026-09-09), see "The test double, and its deletion" below
 **Agreed:** 2026-08-16
 
 The interface is `src/features/reader/tts/readerTextProvider.ts` and it is the whole of what
@@ -92,18 +92,19 @@ neither passes nor sees it — pushing that across the seam would be exporting R
 
 ## Sequencing
 
-Steps 3 and 4–5 run in parallel. That is the point of the fake: Accessibility is not blocked on the
-WebView conversion.
+Steps 3 and 4–5 run in parallel. That is the point of the test double: Accessibility is not blocked
+on the WebView conversion.
 
 ```
 1. Agree the interface                      ✅ 2026-08-16
-2. Ship types + FakeReaderTextProvider       ✅ 2026-08-16
-3. Accessibility builds the TTS session      ← unblocked, against the fake
+2. Ship types + TestReaderTextProvider       ✅ 2026-08-16 (named FakeReaderTextProvider until the
+                                                            2026-09-09 rename, see below)
+3. Accessibility builds the TTS session      ← unblocked, against the test double
 4. Reader: typechecked WebView conversion    ✅ 2026-08-18
 5. Reader: sentence/highlight bridge + real provider   ✅ 2026-08-23
-6. Swap fake → real; integration and device testing    ← Accessibility's demo call site done,
-                                                            2026-08-23; fake file itself not yet
-                                                            deleted, see below
+6. Swap test double → real; integration and device testing   ← Accessibility's demo call site done,
+                                                            2026-08-23; test-double file itself
+                                                            deleted 2026-09-09, see below
 ```
 
 **Step 4 is done** — prefs-application called the conversion in and it landed the same day, so the
@@ -173,14 +174,22 @@ sentences whose synthetic CFIs resolve against no book. Anyone testing TTS from 
 plausible speech unrelated to any book. Recorded rather than quietly corrected, because a doc that
 declares work done is how the second surface went unnoticed.
 
-**What did NOT happen: `fakeReaderTextProvider.ts` itself was not deleted.** The deletion table below
-assumed the demo was the only call site outside `reader/tts/` — it wasn't. `useTtsSession.test.ts`
-(~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) use `createFakeReaderTextProvider`
-as a session-logic test double — prefetch, generation counters, teardown — independent of whether a
-real book exists. Deleting the fake would break those tests today. Whether Accessibility should fork
-its own private test double instead (so this file can eventually close) or whether the fake keeps
-double-duty as shared test infra permanently is an open call between Hruthik and Ahana, not decided by
-this change.
+**What did NOT happen at the time: `fakeReaderTextProvider.ts` itself was not deleted.** The
+deletion table below assumed the demo was the only call site outside `reader/tts/` — it wasn't.
+`useTtsSession.test.ts` (~20 call sites) and `useTtsSession.android.test.ts` (2 call sites) used
+`createFakeReaderTextProvider` as a session-logic test double — prefetch, generation counters,
+teardown — independent of whether a real book exists. Deleting it would have broken those tests
+then.
+
+**That open call is decided, and closed: Accessibility forked its own private copy, 2026-08-28,
+renamed `testReaderTextProvider.ts` on 2026-09-09.** The fork (same content,
+`Owner: Accessibility (Hruthik)`, now at
+`src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` — "Fake" dropped from the
+filename and every exported identifier in the same change, since it was confusable with a
+mocking-library fake rather than what this is) is the permanent test double for `useTtsSession`'s
+tests; both files above now import from it instead of from `reader/tts/`. Reader's original — this
+file's own copy — is DELETED as of 2026-09-09, with its test cases ported into the fork's test file
+rather than dropped (see the table below).
 
 **What the conversion did NOT do for this seam, so nobody plans around a saving that is not there.**
 It removed the hand-sync risk; it did not build request/reply. `requestSentence` still needs a
@@ -190,71 +199,172 @@ injects a call, and nothing correlates a response back to its caller. That corre
 cheaper now is that the reply's seven-field payload is a shared type rather than a shape to
 hand-copy, and that a mismatch is a compile error.
 
-## The fake, and deleting it
+## The test double, and its deletion — DONE, 2026-09-09
 
-`fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs that resolve against no
-book**. It exercises the shape of the seam — ordering, section boundaries, the character cap,
-cancellation, teardown — and nothing about rendering.
+`fakeReaderTextProvider.ts` served canned sentences with **synthetic CFIs that resolved against no
+book**. It exercised the shape of the seam — ordering, section boundaries, the character cap,
+cancellation, teardown — and nothing about rendering. Read the rest of this section as a record of
+what happened, not a to-do list.
 
-It exports from the same folder the real provider will live in, so the swap on the Accessibility
-side is one import changing. That only holds while nothing depends on the test-only handles
-(`sentences`, `spokenRanges`, `setPosition`, `navigate`, `interrupt`), which exist on
-`FakeReaderTextProvider` and **not** on `ReaderTextProvider`. Production code typed as
-`ReaderTextProvider` cannot reach them; that is the intended pressure.
+| # | Delete | Status |
+| - | ------ | ------ |
+| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` | **Done** |
+| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` | **Done** |
+| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` | **Already satisfied before this change** — both remaining call sites (`useTtsSession.test.ts`, `useTtsSession.android.test.ts`) had already moved to Accessibility's fork on 2026-08-28 |
+| 4 | this section | **Done** — struck above |
 
-The production call site that used to exist — `src/features/accessibility/tts/TtsReadingScreen.tsx`,
-the "TTS Demo" route, standing in for a real mount point until step 5 landed — is gone as of
-2026-08-26. **The remaining call sites outside `reader/tts/` are test-only:**
-`src/features/accessibility/tts/useTtsSession.test.ts` and `useTtsSession.android.test.ts`, which use
-`createFakeReaderTextProvider` to drive `useTtsSession`'s own state machine (prefetch, generation
-counters, teardown) without a real book or WebView. That is a different kind of dependency than "no
-real provider exists yet" — it would still be useful even after every production caller is real,
-which is why item 3 below is not auto-satisfied by the demo's removal.
+`readerTextProvider.ts` stays — it is the permanent contract, never was on this list.
 
-Delete together, once items 1-3 are actually all gone:
-
-| #   | Delete                                                                            |
-| --- | --------------------------------------------------------------------------------- |
-| 1   | `src/features/reader/tts/fakeReaderTextProvider.ts`                               |
-| 2   | `src/features/reader/tts/fakeReaderTextProvider.test.ts`                          |
-| 3   | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` — as of 2026-08-23 that's just `useTtsSession.test.ts` / `.android.test.ts`; see the note above before assuming this is done |
-| 4   | this section                                                                      |
-
-`readerTextProvider.ts` is **not** on that list — it is the permanent contract. Neither is
-`TTS_PROVIDER.md`; strike the table above and leave the rest.
-
-Before deleting, port `fakeReaderTextProvider.test.ts` rather than dropping it. Every case in it
-pins a property of the seam, not a property of the fake, so it is the checklist the real provider
-has to satisfy — most sharply the two that carry the data-minimisation guarantee: an in-flight
-request must resolve `unavailable` when teardown arrives, and every call after teardown must too.
+Every case in the deleted test file pinned a property of the seam, not a property of the test
+double, so rather than drop them they were ported into
+`src/features/accessibility/tts/testSupport/testReaderTextProvider.test.ts` (Accessibility's fork,
+renamed from `fakeReaderTextProvider.test.ts` the same day — which already carried the test
+double's other cases but was missing the four covering `setSpokenWordRange`/`spokenWordRanges` —
+call-order, independence from the sentence log, teardown, and silent-accept of an unresolvable
+range). That fork is now the sole surviving copy of this test double, and future changes to it are
+Accessibility's (Hruthik's) call.
 
 ## Open items
 
-1. **`onInterrupted('revoked')` has no source yet.** There is no `onAccessRevoked` anywhere in this
-   repo. `offline-lock.ts` defines a `revoked` signal and `event-bus.ts` defines a carrier for it,
-   but that file is marked "PROPOSAL — NOT FINALISED, NOT WIRED", is not exported from the barrel,
-   and nothing imports it. The nearest real thing today is `verifyReadingAccess` rejecting in
-   `readerAssets.ts`, which is per-open rather than live. The reason is wired when a source exists;
-   consumers should build against the reason, not the source. **Karthik + Abhinav.**
-2. **Does the reader scroll to follow the spoken range?** Undecided, and still open. Today
-   `setSpokenRange` paints and nothing else, so speech can run past the visible page. The fake does
-   not scroll either. Reader's call, but it changes what `current(null)` means after a long read, so
-   it should be settled before step 6.
+1. ~~**`onInterrupted('revoked')` has no source yet.**~~ **The safety property holds, and has since
+   before this line was last true — only the `'revoked'` LABEL is still unused.** This was stale the
+   moment it was last edited (2026-09-08): a live, mid-read revocation path already exists and
+   already stops TTS from an already-mounted `ReaderScreen`, through two independent sources —
+   Sync's `content.lock` bus event (`useContentLock`, pushed) and `startAccessMonitor`'s 5-minute
+   re-verification poll (pulled) — both converging on `ReaderScreen.tsx`'s `tearDownAndLock`, which
+   calls `ttsSessionRef.current.stop()` AND `ttsProviderRef.current?.notifyClosed()` (redundantly,
+   deliberately) before `closeBook(bookId)` ever runs. `event-bus.ts`'s "PROPOSAL — NOT FINALISED,
+   NOT WIRED" header is itself stale in the same way — `src/shared/contracts/index.ts` already
+   exports it, and `offline-lock.ts` and `contentStore.ts` both consume it for real.
+   What genuinely does not exist is the LABEL: every one of these paths fires `onInterrupted('closed')`
+   — `terminate('revoked')` is reachable in `realReaderTextProvider.ts` but nothing calls it, since
+   `EpubReaderTextProvider` has no `notifyRevoked()` method, only `notifyClosed()`.
+   `useTtsSession.ts` needs no change either way — its handler already treats `'closed'`/`'revoked'`
+   identically. Landing the distinct label, if it's ever wanted (e.g. to report a revocation
+   differently from a normal close), is a small, localized addition: a `notifyRevoked()` mirroring
+   `notifyClosed()`, called from `tearDownAndLock` instead when the teardown reason is a revocation
+   specifically. **Karthik + Abhinav's call on whether the label is worth the distinction.**
+2. ~~**Does the reader scroll to follow the spoken range?**~~ **SOLVED, 2026-09-07 — word-precise,
+   not just the sentence-level version originally proposed.** `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md`
+   was Accessibility's sentence-level proposal (a visibility check plus `rendition.display(cfi)`
+   inside `setSpokenRange`'s own handler, no new bridge command). Landed as designed, PLUS a
+   word-level refinement on top: `followSpokenRange(cfi)`
+   (`webview/src/epub.entry.ts`, next to `contentsForCfi`) is called from BOTH `setSpokenRange`
+   (coarse — a whole new sentence starting off-screen) and `setSpokenWordRange` (precise — this
+   specific word has crossed off-screen), sharing one `lastAutoFollowedCfi` dedupe so neither
+   double-navigates for the same target. The word-level call is what actually delivers "turn on the
+   first word of the next page, not before the last word of this one": each `tts-progress` tick
+   checks that word's own geometry, so a sentence straddling a page break gets checked word-by-word
+   as speech crosses it, where the sentence-level call alone could only check the sentence as a whole
+   at its start.
 
-   Accessibility has since written a proposal —
-   `../accessibility/TTS_AUTOFOLLOW_HANDOFF.md` (`origin/feature/accessibility`, `8cb54d8`): a
-   visibility check plus `rendition.display(cfi)` inside `setSpokenRange`'s own handler, needing no
-   new bridge command. **Word-level highlighting landing does not block it and does not change it** —
-   its own recommendation is to build against sentence-level `setSpokenRange` first and extend
-   afterwards, which still holds. Two things the word layer leaves for whoever picks it up:
+   The geometry both flows build on (`spokenRangeGeometry`, same file) treats PARTIAL overlap as
+   relevant, not full containment — a sentence painted where it starts, that also runs onto the next
+   page, is not "off-screen" the instant it paints. **Neither `contents.window`'s own dimensions nor
+   the outer `#viewer` `viewportSize()` measures is the right viewport for this** — epub.js resizes
+   each section's `<iframe>` to its own full content size on whichever axis `IframeView.size()`
+   leaves free (width in paginated flow, height in scrolled-doc), so the iframe's own
+   `innerWidth`/`innerHeight` reports the whole chapter's size, not what's on screen, on the one axis
+   that matters. The actual viewport is the manager's `bounds()` (the fixed stage container —
+   `rendition.manager`, reached through a cast since `epubjs`'s types don't expose it), compared
+   against each rect after shifting it by the view's own `position()` (`element
+   .getBoundingClientRect()`, which correctly reflects scroll position) — the same geometry epub.js's
+   own `isVisible()`/`paginatedLocation()`/`scrolledLocation()` use internally.
 
-   - The word wash is cleared at the TOP of `setSpokenRange`, before anything paints. That is a
-     precondition auto-follow would otherwise have to add for itself: a `display()` that re-renders
-     the view while a stale mark is still attached can carry it into the new one. Do not move it
-     below the paint.
-   - Extending follow to word level must keep the proposal's step-5 dedupe. Word ranges arrive per
-     `tts-progress` event rather than per sentence, and a `display()` at that cadence fights the
-     reader instead of following them.
+   **2026-09-08 — the two flows stopped sharing one DECISION on that geometry, on purpose, though
+   they still share the MEASUREMENT.** Paginated kept the original mechanism exactly as it shipped: a
+   boolean `spokenRangeVisible` (`anyRectOnScreen`), a discrete `rendition.display(cfi)` page turn on
+   a miss. Scrolled-doc now gets a teleprompter-style continuous reposition instead
+   (`repositionForReadingZone`) — as the spoken position drifts toward the bottom quarter of the
+   viewport (`READING_ZONE_TRIGGER_FRACTION = 0.75`), it smoothly scrolls (`manager.container
+   .scrollBy`) to land it back at the upper-middle (`READING_ZONE_TARGET_FRACTION = 0.35`), rather
+   than waiting for it to go fully off-screen and jumping. `readingZoneScrollDelta`
+   (`highlightGeometry.ts`, pure, unit-tested) is the arithmetic; it never fires for a target ABOVE
+   the zone, so it only ever catches up with forward reading, never fights a reader who scrolled back
+   manually. Reserved for a section that IS currently rendered — a different, not-yet-mounted section
+   still falls through to the same discrete `display()` jump paginated uses, since only epub.js's own
+   `display()` can load and render a new section at all. The scroll is `behavior: 'smooth'` unless
+   `currentAppearance?.reduceMotion` is true (read fresh on every call, no cached flag) — the first
+   animation either shell has added; see `WEBVIEW_BRIDGE.md`'s decision #2.
+
+   "Off-screen, jump" and "continuous, smooth" are different products, not two spellings of the same
+   behaviour — this is the one place in the whole feature with an explicit flow branch, and it is
+   deliberate precisely because `rendition.display()` itself stays flow-agnostic everywhere else.
+
+   Word-precision is gated on `highlightMode === 'word'`, same as the word paint itself —
+   `useTtsSession.ts`'s `handleTtsProgress` only forwards `tts-progress` ticks in that mode (see
+   `ACCESSIBILITY_ARCHITECTURE_MAP.md`'s `tts.highlightMode` row for why that RN-side wiring needed
+   re-landing). `'sentence'`-mode readers still get the coarse, once-per-sentence follow — no page
+   ever fails to turn — just not the exact-word boundary.
+
+   The word wash being cleared at the TOP of `setSpokenRange`, before anything paints, remains the
+   load-bearing precondition it always was: a `display()` that re-renders the view while a stale mark
+   is still attached would carry it into the new one.
+
+   **Auto-follow also re-checks itself after any font-size/typography/margin change and after a
+   paginated<->scrolled flow toggle**, not just at the next spoken sentence or word.
+   `scheduleGeometryRefresh`'s `finish()` and `rebuildForFlowIfNeeded`'s post-rebuild callback both
+   re-run `followSpokenRange` against whichever of `currentSpokenWordCfi`/`currentSpokenCfi` is set,
+   with `lastAutoFollowedCfi` explicitly cleared first. This matters because both of those paths
+   re-anchor the reader at `lastCfi` (wherever they were last relocated) rather than at the spoken
+   position specifically — the two usually coincide, since auto-follow's own `display()` calls are
+   what move `lastCfi` in the first place, but not when several sentences have played on the same
+   page since the last one. A font-size increase can push a mid-page sentence off the bottom of the
+   reflowed page even though the page's own reanchor "succeeds"; this catches that case rather than
+   leaving the reader on a page that no longer shows what is being spoken.
+
+   **Second on-device defect, found and fixed the same week: auto-follow worked in paginated flow
+   and went permanently inert in scrolled-doc flow, silently.** The dedupe guard against overlapping
+   `display()` calls was originally a flag cleared in `rendition.display()`'s own `.finally()`. In
+   scrolled-doc flow, `display()` resolves through epub.js's `ContinuousViewManager`, which chains an
+   UNBOUNDED virtualization pass onto every display — `.then(() => this.fill())`, recursing through
+   `check()` via a queue gated on `requestAnimationFrame` (`managers/continuous/index.js`) —
+   `DefaultViewManager` (paginated) has no such tail. On a real device that tail's `requestAnimationFrame`
+   can stall (backgrounded, throttled, GPU-starved) and never resolve, which left the promise-settled
+   flag stuck `true` FOREVER — every later auto-follow call silently no-opped on the guard check ahead
+   of it, for the rest of the reading session, in scrolled-doc flow only. Paginated kept working
+   because it has no such tail to hang on. Fixed by replacing the promise-gated flag with a fixed
+   500ms cooldown timestamp (`followCooldownUntil`, `FOLLOW_COOLDOWN_MS`) — it serves the same
+   purpose (absorb the gap between rapid word ticks and a slower transition) without depending on
+   epub.js's internal promise ever settling.
+
+   **Third on-device defect, and the most severe: auto-follow's own jump/scroll made TTS stop
+   entirely, deterministically, on the very first one.** `ReaderScreen.tsx`'s `relocated` handler
+   forwarded every relocation to `ttsProviderRef.current?.notifyRelocated()` unconditionally, on a
+   premise that was true right up until auto-follow existed: "epub.js never fires `relocated` for
+   `setSpokenRange`, which only touches annotations." Auto-follow's `rendition.display()`/`scrollBy()`
+   calls are now INSIDE `setSpokenRange`'s/`setSpokenWordRange`'s own handlers, so that premise broke
+   — auto-follow's own reposition fired the same `relocated` a manual page turn would, and
+   `notifyRelocated()` treated it as the reader navigating away: it cleared the very highlight
+   auto-follow had just centered on screen (`notifyRelocated()` calls `setSpokenRange(null)`) AND
+   invalidated the session's prefetched next sentence, so the moment the current, auto-follow-
+   triggered sentence finished, `handleTtsFinish()` found no prefetch and mistook it for end-of-book.
+   The same premise-break also applies to `scheduleGeometryRefresh`'s reflow reanchor and
+   `rebuildForFlowIfNeeded`'s post-rebuild redisplay — both redisplay the reader at a position they
+   were already at, not somewhere new, and both fire a `display()` too.
+
+   Fixed with a new, optional `ReaderMessage['relocated'].internalReposition` field
+   (`WEBVIEW_BRIDGE.md` has the full account): `epub.entry.ts` marks the NEXT `relocated` as internal
+   immediately before each of the four call sites that redisplay-without-navigating, and
+   `ReaderScreen.tsx` skips `notifyRelocated()` specifically when the field is true.
+   Progress-tracking (`ReaderRouteScreen.tsx`) is unaffected either way — it already reads every
+   `relocated` cause-agnostically, which is correct and intentional (persisted "resume position" is
+   supposed to be wherever the view/voice currently is).
+
+   **Narrowed, not solved, by `setTtsSpeaking` (landed 2026-09-08):** the reader can no longer
+   trigger a manual swipe (paginated) or drag-scroll (scrolled-doc) at all while `ttsSession.status`
+   is `'speaking'` — `ReaderScreen.tsx` sends `{type: 'setTtsSpeaking', speaking}` on every status
+   transition, and `epub.entry.ts` sets `touch-action: none` on the manager's container while true,
+   plus an explicit `if (ttsSpeaking) return;` guard in `watchTouches`'s swipe handler
+   (`WEBVIEW_BRIDGE.md` has the full surface entry). This closes the gesture path entirely, so it no
+   longer fights auto-follow.
+
+   **Genuinely still open, not solved by this:** a manual navigation reached WITHOUT a gesture — a
+   TOC tap, a search-result tap, a bookmark tap — is deliberately NOT blocked while speaking (out of
+   scope for `setTtsSpeaking`, by design: those are intentional host-driven jumps). Auto-follow still
+   has no "recently navigated" signal for that path, so the next tick pulls the view back to wherever
+   speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented no-ops
+   (`pdf.entry.ts`) — nothing to follow there yet.
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

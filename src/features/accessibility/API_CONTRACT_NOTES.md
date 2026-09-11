@@ -29,24 +29,29 @@ You have more of a contract than the directory suggests:
   **detached copy** rather than a shared reference to the defaults. That property is load-bearing —
   if it broke, resetting one reader's prefs would mutate the defaults for everyone.
 - **`sync/stores/accessibilityStore.ts`** — the persistence and sync path, Karthik's.
-- **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract,
-  plus `fakeReaderTextProvider.ts`, which serves canned sentences with **synthetic CFIs that resolve
-  against no book** so you can build a TTS session before the real provider exists.
+- **`src/features/reader/tts/readerTextProvider.ts`** — the permanent, agreed text-provider contract.
+  Reader's own `fakeReaderTextProvider.ts`, which used to sit next to it, is deleted (2026-09-09);
+  your own forked copy — renamed the same day to
+  `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` — is now the sole
+  surviving copy — see "On the test double" below.
 - **`WEBVIEW_A11Y_FINDINGS.md`** (this directory) — consolidated desk research on WebView/epub.js
   screen-reader accessibility (VoiceOver/TalkBack), including the architecture split between native
   RN and the Reader WebView and the risk register that governs it. **`WEBVIEW_A11Y_SPIKE.md`** is
   the on-device spike instrument it depends on — not yet run.
 
-**On the fake:** it is scaffolding and it is meant to be substituted, not extended. Its test file
-pins properties of the *seam*, not of the fake, so it's the checklist the real provider must satisfy
-— port it rather than dropping it. The test-only handles live on `FakeReaderTextProvider` and
-deliberately **not** on `ReaderTextProvider`, so production code typed against the interface can't
-reach them. If something outside `reader/tts/` breaks when the fake is deleted, the boundary leaked
-and that's the bug. `CLAUDE.md` has the four-item deletion table.
-
-The real provider is blocked behind converting the WebView JS to a typechecked build — see
-`src/features/reader/WEBVIEW_BRIDGE.md`. That's Ahana's sequencing, not a decision you need to make,
-but it's why the fake exists.
+**On the test double** (renamed from `fakeReaderTextProvider.ts`/`FakeReaderTextProvider` on
+2026-09-09 — "fake" read as a mocking-library fake, which this never was): the real provider landed
+(step 5, 2026-08-23) and Reader's copy is deleted (2026-09-09, per `CLAUDE.md`'s deletion table).
+Your fork at `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts` is not
+scaffolding waiting to be substituted — it's permanent test infrastructure for
+`useTtsSession.test.ts`/`.android.test.ts`, which use it to drive the session hook's own state
+machine (prefetch, generation counters, teardown) without needing a real book or WebView,
+independent of whether the real provider exists. While diffing before deleting Reader's copy, 4
+cases it had (`setSpokenWordRange`/`spokenWordRanges`: call-order, independence from the sentence
+log, teardown, silent-accept of an unresolvable range) were found missing from your fork's test
+file and ported in rather than dropped — worth a look since it's your file now. The test-only
+handles still live on `TestReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so
+production code typed against the interface can't reach them.
 
 ---
 
@@ -117,7 +122,7 @@ a TTS session needs to handle the book's key being destroyed underneath it.
 
 ---
 
-## 6. `accessibility.tts.highlightMode === 'word'` — engine-half attempt reverted; still deferred
+## 6. `accessibility.tts.highlightMode === 'word'` — landed 2026-09-07, both halves together
 
 **2026-09-02** landed an engine-side attempt at this: native `tts-progress` subscribed
 (`ttsEngine.ts:TTS_EVENTS`), normalized per-platform in `ttsProgress.ts`, and dispatched from
@@ -138,32 +143,39 @@ subscription/gating (`handleTtsProgress`, and the gated calls in `handleTtsStart
 `ttsProgress.ts`'s `normalizeTtsProgressEvent` itself was left in place (pure, still unit-tested,
 independent of the bridge) since a future attempt will likely still need it.
 
-**Net effect:** `'word'` mode currently behaves identically to `'sentence'` mode — no word-level
-highlight is painted, no bridge command is sent. `TTS_PROVIDER.md`'s "Not done as part of step 5,
-on purpose" framing for word-level highlighting is accurate again.
+**Net effect of the revert, while it lasted:** `'word'` mode behaved identically to `'sentence'`
+mode — no word-level highlight painted, no bridge command sent.
 
-**For whoever lands this properly next, landing BOTH halves together in one change:**
-- `webview/src/bridge.ts`'s `CommandArgs` needs a `setSpokenWordRange` entry.
-- `epub.entry.ts` needs a `setSpokenWordRange` handler — `TFReaderApi<'openEpub'>` will not compile
-  without it. Painting should reuse `highlightSeam.ts`'s `add`/`remove` with the existing
-  `TTS_OWNER` and a new variant (e.g. `'spoken-word'`) so it doesn't collide with the sentence wash
-  `setSpokenRange` already paints — same pattern `setSpokenRange` uses with `currentSpokenCfi`.
-  Resolving `(sentenceCfi, start, end)` into a word-range CFI is NOT a pure reuse of
-  `epubCfiRange.ts`'s existing exports: `expandPointCfi(startCfi, length)` only extends a GIVEN
-  start point forward into a range — it has no way to produce a NEW point CFI offset from an
-  existing one, which is exactly what the leading `start` offset needs (the word's own beginning
-  within the sentence, not the sentence's own start). The offset arithmetic that would do this lives
-  inline and unexported inside `expandPointCfi`. This needs new code — either exporting a
-  point-advance step from `epubCfiRange.ts` (a natural, testable addition next to its siblings) or
-  writing the equivalent in `epub.entry.ts` itself. Confirmed by reading `expandPointCfi`'s source,
-  not inferred.
-- `pdf.entry.ts` needs the same no-op row `setSpokenRange` already has.
-- `WEBVIEW_BRIDGE.md`'s "Host → WebView" table needs the new row.
-- `npm run reader:build-html` needs a run once the above lands, both HTML artifacts committed.
-- On the RN side, this section's 2026-09-02 description above (the `ReaderTextProvider` method,
-  `realReaderTextProvider.ts`'s implementation, `useTtsSession.ts`'s gated `tts-progress` wiring,
-  the fakes' `spokenWordRanges` handles) is the shape to re-add — same design, just needs to land
-  together with the WebView half this time rather than ahead of it.
+**Landed for real, 2026-09-07, both halves together this time.** The WebView-facing
+half (`webview/src/bridge.ts`'s `CommandArgs`, `epub.entry.ts`'s `setSpokenWordRange` handler,
+`pdf.entry.ts`'s no-op, `ReaderTextProvider`/`realReaderTextProvider.ts`, both HTML artifacts
+rebuilt) landed 2026-09-07 (`559c47ba`/`ce7a6769`/`2a59f298`) — with one shape change from the reverted
+2026-09-02 attempt: `setSpokenWordRange` now takes one object argument
+(`{ cfi, start, end } | null`), not three positional ones, per `bridge.ts`'s
+`CommandArgsMatchPayloads` proof. The offset-arithmetic gap this section originally flagged
+(`expandPointCfi` cannot produce a new point CFI offset from an existing one) was resolved by writing
+fresh resolution logic in `epubTtsResolver.ts`'s `resolveSpokenWordCfi`, not by extending
+`epubCfiRange.ts` — see that function's own doc comment for why.
+
+The RN side — `useTtsSession.ts`'s `tts-progress` subscription and gated `handleTtsProgress`, and
+both fakes' `spokenWordRanges` recording handles — was re-landed the same day, same design as the
+2026-09-02 attempt, updated for the object-shaped call. One deliberate deviation: the reverted
+attempt also sent a second, explicit `setSpokenWordRange(null, 0, 0)` clear from `clearHighlight()`
+and `handleTtsStart()`; that's redundant now; `setSpokenRange`'s WebView handler already clears the
+word wash unconditionally at its own top (`clearSpokenWord()`), a consolidation that landed with the
+2026-09-05/07 work, after the original attempt was written.
+
+**`'word'` mode now does more than paint.** `setSpokenWordRange` also drives the word-precise half of
+TTS auto-follow (`TTS_PROVIDER.md` open item 2) — the reason the RN-side wiring was worth re-landing
+now rather than leaving deferred.
+
+**2026-09-07 addendum, resolved:** this section originally flagged `webview/src/epubTtsResolver.ts`'s
+`resolveSpokenWordCfi(rendition, sentenceCfi, start, end)` (backed by `ttsWordOffsets.ts`) as an
+unreached head start on the CFI-resolution problem above — built by Ahana, unit-tested
+(`epubTtsResolver.test.ts`, `ttsWordOffsets.test.ts`), but not yet imported by `epub.entry.ts`.
+That's what the "Landed for real" paragraph above did: `epub.entry.ts`'s `setSpokenWordRange`
+handler now imports and calls `resolveSpokenWordCfi` directly — the orphan is wired in, not
+rewritten.
 
 ---
 

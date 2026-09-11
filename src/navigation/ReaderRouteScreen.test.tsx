@@ -99,7 +99,12 @@ jest.mock('@/features/reader/ReaderScreen', () => {
   const { forwardRef, useImperativeHandle } = require('react');
   return {
     ReaderScreen: forwardRef(function MockReaderScreen(
-      props: { bookId: string; initialTarget?: unknown; onRelocated?: (p: unknown) => void },
+      props: {
+        bookId: string;
+        initialTarget?: unknown;
+        onRelocated?: (p: unknown) => void;
+        onOpenAccessibilityInfo?: () => void;
+      },
       ref: unknown,
     ) {
       mockReceivedProps.push({ bookId: props.bookId, initialTarget: props.initialTarget });
@@ -111,6 +116,9 @@ jest.mock('@/features/reader/ReaderScreen', () => {
           <RNText>{`reading ${props.bookId}`}</RNText>
           <RNText onPress={() => props.onRelocated?.({ kind: 'page', page: 7, pageCount: 20 })}>
             relocate
+          </RNText>
+          <RNText onPress={() => props.onOpenAccessibilityInfo?.()}>
+            open accessibility info
           </RNText>
         </View>
       );
@@ -169,6 +177,29 @@ describe('ReaderRouteScreen', () => {
     mockCurrentForBook.mockResolvedValue(null);
     mockPullBook.mockResolvedValue(undefined);
     mockPauseTtsIfSpeaking.mockReturnValue(false);
+  });
+
+  describe('onOpenAccessibilityInfo', () => {
+    it('wires ReaderScreen straight to navigation.navigate("BookInfo", { bookId })', async () => {
+      const mockNavigate = jest.fn();
+      const { getByText } = await render(
+        <ReaderRouteScreen
+          navigation={{ setOptions: jest.fn(), navigate: mockNavigate } as never}
+          route={
+            {
+              key: 'Reader',
+              name: 'Reader',
+              params: { bookId: 'test-book', format: 'EPUB' },
+            } as never
+          }
+        />,
+      );
+
+      await waitFor(() => expect(getByText('open accessibility info')).toBeTruthy());
+      await fireEvent.press(getByText('open accessibility info'));
+
+      expect(mockNavigate).toHaveBeenCalledWith('BookInfo', { bookId: 'test-book' });
+    });
   });
 
   describe('a book read online without ever being downloaded', () => {
@@ -569,4 +600,5 @@ describe('ReaderRouteScreen', () => {
       });
     });
   });
+
 });

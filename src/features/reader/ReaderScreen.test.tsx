@@ -414,8 +414,8 @@ async function reportReady(): Promise<void> {
   await deliver({ type: 'ready' });
 }
 
-async function mountReader(): Promise<void> {
-  await render(<ReaderScreen bookId="test-book" />);
+async function mountReader(props?: { onOpenAccessibilityInfo?: () => void }): Promise<void> {
+  await render(<ReaderScreen bookId="test-book" {...props} />);
   // The WebView only mounts once getReaderHtmlUri() resolves.
   await screen.findByTestId('reader-webview');
 }
@@ -546,6 +546,24 @@ describe('an EPUB grouping heading with no href', () => {
     expect(screen.getByText('Chapter 1').parent?.props.accessibilityState).not.toMatchObject({
       disabled: true,
     });
+  });
+
+  it('gets no accessibilityHint, unlike a navigable row', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({
+      type: 'toc',
+      items: [
+        { label: 'Grouping heading', target: { kind: 'href', href: '' }, depth: 0 },
+        { label: 'Chapter 1', target: { kind: 'href', href: 'ch1.xhtml' }, depth: 1 },
+      ],
+    });
+    await openContents();
+
+    expect(screen.getByText('Grouping heading').parent?.props.accessibilityHint).toBeUndefined();
+    expect(screen.getByText('Chapter 1').parent?.props.accessibilityHint).toBe(
+      'Navigates to this chapter',
+    );
   });
 });
 
@@ -1396,25 +1414,30 @@ describe('applyAppearance — the accessibility overrides', () => {
   });
 });
 
-describe('the accessibility settings panel', () => {
-  it('opens from the toolbar and closes back to the button that opened it', async () => {
+describe('the merged accessibility dropdown', () => {
+  it('opens from one ♿ toolbar button, with no title or named close row', async () => {
     await mountReader();
 
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
-    expect(screen.getByText('Accessibility')).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
-    await fireEvent.press(screen.getByLabelText('Close accessibility'));
+    // No header any more — matches DevPreferencesMenu's own headerless dropdown. Dismiss is
+    // tap-outside/back/re-press only, not a named "Close accessibility" control.
+    expect(screen.queryByText('Accessibility')).toBeNull();
     expect(screen.queryByLabelText('Close accessibility')).toBeNull();
-    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
-    expect(focusOn).toHaveBeenCalled();
   });
 
-  it('names its own close, so a screen reader can tell which panel it is in', async () => {
+  it('dismisses on a backdrop tap and restores focus to the toolbar button', async () => {
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
-    // Not a bare "Close" — three panels can be open one at a time and each names itself.
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    await fireEvent.press(
+      screen.getByTestId('accessibility-dropdown-backdrop', { includeHiddenElements: true }),
+    );
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
+    // Focus goes back where the user was — same restore rule as SearchPanel's own close.
+    expect(focusOn).toHaveBeenCalled();
   });
 
   it('is mutually exclusive with Search and Bookmarks, both ways round', async () => {
@@ -1427,24 +1450,24 @@ describe('the accessibility settings panel', () => {
 
     await mountReader();
 
-    await toolbar('Accessibility settings');
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    await toolbar('Accessibility');
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
     await toolbar('Search this title');
-    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
 
-    await toolbar('Accessibility settings');
+    await toolbar('Accessibility');
     expect(screen.queryByLabelText('Close search')).toBeNull();
-    expect(screen.getByLabelText('Close accessibility')).toBeTruthy();
+    expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
     await toolbar('Bookmarks');
-    expect(screen.queryByLabelText('Close accessibility')).toBeNull();
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
     expect(screen.getByLabelText('Close bookmarks')).toBeTruthy();
   });
 
   it('shows the Dyslexia Font row for an EPUB', async () => {
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
 
     expect(screen.getByLabelText('Dyslexia font: Off')).toBeTruthy();
   });
@@ -1452,11 +1475,30 @@ describe('the accessibility settings panel', () => {
   it('passes the format through, so a PDF loses the row it cannot honour', async () => {
     jest.mocked(prepareBook).mockResolvedValue('PDF' as ContentFormat);
     await mountReader();
-    await fireEvent.press(screen.getByLabelText('Accessibility settings'));
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
 
     expect(screen.queryByLabelText(/Dyslexia font/)).toBeNull();
     // The other two apply to every format, which is why the ENTRY POINT is not format-gated.
     expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
+  });
+
+  it('renders "Accessibility information" as a plain button, not a toggle, inside the dropdown', async () => {
+    await mountReader();
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+
+    const infoButton = screen.getByLabelText('Accessibility information');
+    expect(infoButton.props.accessibilityState?.selected).toBeUndefined();
+  });
+
+  it('pressing "Accessibility information" closes the dropdown and calls onOpenAccessibilityInfo', async () => {
+    const onOpenAccessibilityInfo = jest.fn();
+    await mountReader({ onOpenAccessibilityInfo });
+
+    await fireEvent.press(screen.getByLabelText('Accessibility'));
+    await fireEvent.press(screen.getByLabelText('Accessibility information'));
+
+    expect(onOpenAccessibilityInfo).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
   });
 });
 
@@ -3361,6 +3403,7 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       await reportReady();
       await setTtsPref(true);
       await startSpeaking();
+      __injectJavaScript.mockClear();
 
       await deliver({
         type: 'relocated',
@@ -3370,6 +3413,77 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       });
 
       expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      // notifyRelocated() really did fire for this genuine page turn — confirmed by its own visible
+      // effect (setSpokenRange(null) clearing the highlight), not just inferred from the cue.
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(true);
+    });
+
+    it('does NOT clear the highlight or interrupt TTS for an internal reposition (auto-follow, a reflow reanchor, a flow rebuild)', async () => {
+      // The bug this guards against, found on-device: TTS auto-follow's own rendition.display()/
+      // scrollBy() calls fire a genuine `relocated` event too. Before `internalReposition` existed,
+      // ReaderScreen.tsx could not tell that apart from a real page turn — notifyRelocated() ran
+      // unconditionally, clearing the highlight it had just centered on screen and wiping the
+      // session's prefetched next sentence, which silently stopped TTS the moment the current
+      // (auto-follow-triggered) sentence finished speaking. A relocated message the WebView marks
+      // `internalReposition: true` must not reach notifyRelocated() at all.
+      await mountReader();
+      await reportReady();
+      await setTtsPref(true);
+      await startSpeaking();
+      __injectJavaScript.mockClear();
+
+      await deliver({
+        type: 'relocated',
+        position: { kind: 'cfi', cfi: 'epubcfi(/6/4[chap01]!/4/8/2)' },
+        atStart: false,
+        atEnd: false,
+        internalReposition: true,
+      });
+
+      expect(screen.getByTestId('reader-tts-cue')).toBeTruthy();
+      const scripts = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(scripts.some((script) => script.includes('setSpokenRange'))).toBe(false);
+    });
+
+    it('tells the WebView to lock manual scroll the moment speech starts, and unlock it when it stops', async () => {
+      // The reader must not be able to fight auto-follow with a raw swipe/drag while TTS speaks —
+      // see setTtsSpeaking's own doc comment in readerBridge.ts for scope (gestures only).
+      await mountReader();
+      await reportReady();
+      await deliver({ type: 'rendered' });
+      await setTtsPref(true);
+      __injectJavaScript.mockClear();
+
+      await startSpeaking();
+
+      const scriptsWhileSpeaking = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsWhileSpeaking.some((script) => script.includes('setTtsSpeaking(true)')),
+      ).toBe(true);
+      __injectJavaScript.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Pause' }));
+      // pause() is event-driven, same as startSpeaking()'s tts-start above — status only actually
+      // moves to 'paused' once the native (or Android stop-and-remember) tts-pause event arrives.
+      const ttsEngine = (
+        jest.requireMock('@/features/accessibility/tts/ttsEngine') as {
+          default: { addListener: jest.Mock };
+        }
+      ).default;
+      const pauseHandler = ttsEngine.addListener.mock.calls
+        .filter((call: unknown[]) => call[0] === 'tts-pause')
+        .at(-1)?.[1] as (() => void) | undefined;
+      if (pauseHandler) {
+        await act(async () => {
+          pauseHandler();
+        });
+      }
+
+      const scriptsAfterPause = __injectJavaScript.mock.calls.map((call) => String(call[0]));
+      expect(
+        scriptsAfterPause.some((script) => script.includes('setTtsSpeaking(false)')),
+      ).toBe(true);
     });
   });
 
@@ -3439,6 +3553,18 @@ describe('screen-reader focus order', () => {
       locator: { type: 'EPUB', cfi: 'epubcfi(/6/2[ch1]!/4/4/1:1)' },
       snippet: '…the grey wolf moved…',
     };
+  }
+
+  function twoHits(): SearchHit[] {
+    return [
+      oneHit(),
+      {
+        bookId: 'test-book',
+        chapterId: 'ch1',
+        locator: { type: 'EPUB', cfi: 'epubcfi(/6/2[ch1]!/4/4/2:1)' },
+        snippet: '…a second wolf appeared…',
+      },
+    ];
   }
 
   describe('toggle buttons report expanded state', () => {
@@ -3695,10 +3821,9 @@ describe('screen-reader focus order', () => {
       expect(focusOnMock).toHaveBeenCalledTimes(1);
     });
 
-    it('does NOT restore to Search when a result is selected', async () => {
+    it('moves focus to the match bar, not back to Search, when a result is selected', async () => {
       // Selecting a result closes the panel too, but the user's journey ends at the book, not back
-      // at the toolbar. Where focus SHOULD land is a separate open question — this pins only that
-      // it is not silently sent backwards.
+      // at the toolbar — item 6 of READER_FOCUS_ORDER_HANDOFF.md.
       jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
       await mountReader();
       await reportReady();
@@ -3709,7 +3834,68 @@ describe('screen-reader focus order', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
 
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+      const matchBarRef = focusOnMock.mock.calls[0][0];
+
+      // Not the same ref Search's own explicit-close restores to.
+      focusOnMock.mockClear();
+      await fireEvent.press(screen.getByRole('button', { name: 'Search this title' }));
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+      expect(focusOnMock.mock.calls[0][0]).not.toBe(matchBarRef);
+    });
+
+    it('does NOT move focus again when stepping via the match bar arrows', async () => {
+      // `stepHit` reaches the same `selectHit` a results-list tap does, but the match bar is
+      // already mounted and the user is already focused on the arrow they just pressed —
+      // re-focusing the counter on every step would yank them off it.
+      jest.mocked(queryBookIndex).mockResolvedValue(twoHits());
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 2:/ }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Next match' }));
+
       expect(focusOnMock).not.toHaveBeenCalled();
+    });
+
+    it('moves focus to the match bar once a queued selection finally resolves', async () => {
+      // Tapped before `send` exists — the queued-seek flush effect closes search on the book's
+      // behalf, later, and needs the same signal the direct path bumps.
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      // No reportReady() yet — send is still null.
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+
+      expect(focusOnMock).not.toHaveBeenCalled();
+
+      await reportReady();
+
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not signal the match bar when Search is closed explicitly with stale hits present', async () => {
+      jest.mocked(queryBookIndex).mockResolvedValue([oneHit()]);
+      await mountReader();
+      await reportReady();
+      await openSearchPanel();
+      await fireEvent.changeText(screen.getByTestId('reader-search-input'), 'wolf');
+      await fireEvent.press(screen.getByRole('button', { name: 'Search' }));
+      await fireEvent.press(screen.getByRole('button', { name: /^Result 1 of 1:/ }));
+      // Reopen the list from the match bar's own counter, without selecting anything new.
+      await fireEvent.press(screen.getByRole('button', { name: /^Match 1 of 1/ }));
+      focusOnMock.mockClear();
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
+
+      // Only the toolbar-restore call — not a second one to the match bar.
+      expect(focusOnMock).toHaveBeenCalledTimes(1);
     });
   });
 });
@@ -4748,6 +4934,37 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     expect(onRelocated).not.toHaveBeenCalled();
 
     // The resend lands correctly - THIS one must reach onRelocated, with the real target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
+    expect(onRelocated).toHaveBeenCalledTimes(1);
+    expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });
+  });
+
+  // Regression pin: both pdf.entry.ts (renderCurrent(1) inside openPdf) and epub.entry.ts
+  // (display() inside openEpub) post `relocated` BEFORE they post `rendered`. The effect that
+  // sets pendingInitialVerifyRef waits for isRendered, so when the pre-rendered `relocated`
+  // arrives, pendingInitialVerifyRef is null and the existing post-rendered guard cannot fire.
+  // Without the fix, that pre-rendered `relocated` (page 1 / beginning CFI) reached
+  // onRelocated unthrottled — durably overwriting a correct synced resume position with the
+  // book's default landing on every open.
+  it('does not report a relocate outward for a pre-rendered relocated (before rendered fires)', async () => {
+    const onRelocated = jest.fn();
+    await render(
+      <ReaderScreen
+        bookId="test-book-pre-rendered-relocated"
+        initialTarget={{ kind: 'page', page: 5 }}
+        onRelocated={onRelocated}
+      />,
+    );
+    await screen.findByTestId('reader-webview');
+    await reportReady();
+
+    // Pre-rendered relocated: arrives before `rendered`, the real-WebView order for both shells.
+    // This is the book's natural default landing (page 1), not the resume target.
+    await deliver({ type: 'relocated', position: { kind: 'page', page: 1, pageCount: 20 } });
+    expect(onRelocated).not.toHaveBeenCalled();
+
+    // Now rendered fires, the goTo effect runs, and the target lands.
+    await deliver({ type: 'rendered' });
     await deliver({ type: 'relocated', position: { kind: 'page', page: 5, pageCount: 20 } });
     expect(onRelocated).toHaveBeenCalledTimes(1);
     expect(onRelocated).toHaveBeenCalledWith({ kind: 'page', page: 5, pageCount: 20 });

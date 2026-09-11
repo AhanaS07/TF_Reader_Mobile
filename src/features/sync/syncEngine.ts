@@ -5,10 +5,13 @@ import {
   SUPPORTS_UPDATED_AFTER,
   USER_ID,
 } from './syncConfig';
-import { downloadMapper, progressMapper, ENTITY_PATHS } from './localDb/mappers';
+import { downloadMapper, progressMapper, ENTITY_PATHS, parseLocator } from './localDb/mappers';
 import { SYNC_KEYS } from './localDb/schema';
 import type { EntityType, OutboxRow } from './localDb/types';
 import { nowIso } from './localDb/database';
+import { locatorsEqual } from '@/features/reader/readerProgressStore';
+import { eventBus } from '@/shared/eventBus';
+import { EVENT_CHANNELS } from '@/shared/contracts/event-bus';
 import { accessibilityTable } from './stores/accessibilityStore';
 import { bookmarkTable } from './stores/bookmarkStore';
 import { downloadStore, downloadTable } from './stores/downloadStore';
@@ -60,6 +63,7 @@ export interface SyncReport {
 }
 
 let inFlight: Promise<SyncReport> | null = null;
+let queuedRun = false;
 
 /**
  * The Sync Manager, talking to the Mongo backend's per-entity CRUD endpoints.
@@ -79,9 +83,43 @@ export const syncEngine = {
   /** Concurrent calls share one run rather than racing each other. */
   run(): Promise<SyncReport> {
     if (!inFlight) {
-      inFlight = execute().finally(() => {
-        inFlight = null;
-      });
+      inFlight = execute()
+        .finally(() => {
+          inFlight = null;
+        })
+        .then((report) => {
+          // If a new edit arrived while this run was in flight, check if the outbox
+          // has pending items. If so, run again immediately. This guard prevents false
+          // reruns from concurrent callers arriving at the same time.
+          if (queuedRun) {
+            queuedRun = false;
+            return outboxStore.countPending().then((pendingCount) => {
+              if (pendingCount > 0) {
+                return syncEngine.run();
+              }
+              return report;
+            });
+          }
+          return report;
+        })
+        .then((report) => {
+          // Emit SYNC_COMPLETED for every run that finishes (success or failure).
+          // UI components use this to update "last synced" timestamps and refresh
+          // stale views. Delivery is synchronous, so a failed handler cannot block
+          // the caller.
+          eventBus.emit(EVENT_CHANNELS.SYNC_COMPLETED, {
+            pushed: report.pushed,
+            pulled: report.pulled,
+            applied: report.applied,
+            conflicts: report.conflicts,
+            failed: report.failed,
+            error: report.error,
+            at: Date.now(),
+          });
+          return report;
+        });
+    } else {
+      queuedRun = true;
     }
     return inFlight;
   },
@@ -146,10 +184,12 @@ async function push(report: SyncReport): Promise<void> {
   for (const op of pending) {
     const entityPath = ENTITY_PATHS[op.entity_type];
     const table = TABLES[op.entity_type];
-    let payload = JSON.parse(op.payload);
+    let payload: any = null;
     let saved: any = null;
 
     try {
+      payload = JSON.parse(op.payload);
+
       if (!SERVER_RESOLVES_CONFLICTS) {
         const serverWins = await serverHasDiverged(op, entityPath);
 
@@ -174,6 +214,12 @@ async function push(report: SyncReport): Promise<void> {
 
       saved = await send(op, entityPath, payload);
     } catch (error) {
+      if (error instanceof SyntaxError) {
+        report.failed += 1;
+        await outboxStore.markFailed(op, `Corrupted outbox JSON: ${error.message}`);
+        continue;
+      }
+
       // A different device's document already occupies this (userId, bookId, locator) slot,
       // under an id we never generated. Not retried under our own id (that would 404) - resolved
       // by adopting theirs and discarding ours entirely: this device's row never existed
@@ -206,6 +252,7 @@ async function push(report: SyncReport): Promise<void> {
             // echoes the body's id back, writeRow below writes the "restored" record under the
             // WRONG (stale) id - which hardDeleteLocal then immediately deletes, erasing what
             // was just written. Override it before it goes anywhere near the id.
+            const localRow = await TABLES.downloads.findById(op.entity_id);
             const updated = await api.update<any>('downloads', existing.id, {
               ...error.payload,
               id: existing.id,
@@ -219,7 +266,11 @@ async function push(report: SyncReport): Promise<void> {
             // it was ever deleted server-side (e.g. from an earlier clearAllDownloads()) -
             // applyServerRecord silently returned false, and the code below deleted the stale
             // attempt's row anyway, leaving nothing active locally at all.
-            await TABLES.downloads.writeRow(downloadMapper.toRow(updated.data));
+            const rowToWrite = downloadMapper.toRow(updated.data);
+            if (localRow?.local_path) {
+              rowToWrite.local_path = localRow.local_path;
+            }
+            await TABLES.downloads.writeRow(rowToWrite);
             await TABLES[op.entity_type].hardDeleteLocal(op.entity_id);
             report.conflicts += 1;
             await outboxStore.remove([op.id]);
@@ -356,7 +407,7 @@ async function push(report: SyncReport): Promise<void> {
 
 /** Dispatches one outbox operation and returns the record the server stored. */
 function send(op: OutboxRow, entityPath: string, payload: any): Promise<any> {
-  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id, payload, op.entity_type);
+  if (op.operation === 'DELETE') return sendDelete(entityPath, op.entity_id);
   if (op.operation === 'CREATE') return sendCreate(entityPath, op.entity_id, payload, op.entity_type);
   return sendUpdate(entityPath, op.entity_id, payload, op.entity_type);
 }
@@ -417,23 +468,42 @@ async function findDuplicateRecord(
   const fields = DUPLICATE_LOOKUP_FIELDS[entityType];
   if (!fields) return null;
 
-  // The OP'S OWN book, not the hardcoded BOOK_ID constant - a collision on, say,
-  // `dev-fixture-pdf` must list that book's bookmarks, not `book-001`'s. Latent since
-  // pull() went multi-book (§7, API_CONTRACT_NOTES.md): a duplicate on any book other than
-  // the prototype's original hardcoded one would never find its match here and would fall
-  // through to the plain PUT-under-own-id path, which 404s the same way DownloadRestoreCollision
-  // exists to avoid below.
+  // The OP'S OWN user and book, not the hardcoded constants - a collision on a different
+  // user or book must list that scope's collection, not the prototype's. Same latent bug
+  // as the bookId fix above (§7, API_CONTRACT_NOTES.md): a duplicate under any userId other
+  // than the hardcoded one would never find its match and fall through to a 404 on PUT.
   const response = await api.list<any>(ENTITY_PATHS[entityType], {
-    userId: USER_ID,
+    userId: String(payload.userId ?? USER_ID),
     bookId: String(payload.bookId ?? BOOK_ID),
   });
 
   return (
-    (response.data ?? []).find(
-      (record: any) =>
-        !record.isDeleted &&
-        fields.every((field) => JSON.stringify(record[field]) === JSON.stringify(payload[field])),
-    ) ?? null
+    (response.data ?? []).find((record: any) => {
+      if (record.isDeleted) return false;
+
+      for (const field of fields) {
+        if (field === 'locator') {
+          const incomingLocator = parseLocator(
+            typeof payload[field] === 'string'
+              ? (payload[field] as string)
+              : JSON.stringify(payload[field])
+          );
+          const recordLocator = parseLocator(
+            typeof record[field] === 'string'
+              ? record[field]
+              : JSON.stringify(record[field])
+          );
+          if (!locatorsEqual(incomingLocator, recordLocator)) {
+            return false;
+          }
+        } else {
+          if (JSON.stringify(record[field]) !== JSON.stringify(payload[field])) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }) ?? null
   );
 }
 
@@ -578,22 +648,18 @@ async function sendUpdate(
  * A soft delete, which is the tombstone the design needs - the document stays
  * so the delete can reach other devices.
  */
-async function sendDelete(
-  entityPath: string,
-  id: string,
-  payload: any,
-  entityType: EntityType,
-): Promise<any> {
+async function sendDelete(entityPath: string, id: string): Promise<any> {
   try {
     return (await api.remove<any>(entityPath, id)).data;
   } catch (error) {
     if (!(error instanceof ApiError) || !error.isNotFound) throw error;
 
-    // Created and deleted in the same offline session, and the outbox coalesced
-    // both into this one DELETE. The record still has to exist before it can be
-    // tombstoned, and a create ignores `isDeleted`, so it takes both calls.
-    await sendCreate(entityPath, id, payload, entityType);
-    return (await api.remove<any>(entityPath, id)).data;
+    // A 404 on DELETE means the resource never existed on the server, which is the
+    // intended outcome of deletion. If this device created and deleted a record in
+    // the same offline session and never reconnected between them, the server has
+    // no knowledge of it. Tombstoning requires the record to exist; a non-existent
+    // record is already absent. Return success.
+    return { id, isDeleted: true };
   }
 }
 
@@ -683,7 +749,12 @@ async function pull(report: SyncReport): Promise<void> {
 
   for (const entityType of Object.keys(TABLES) as EntityType[]) {
     const table = TABLES[entityType];
-    const targets: (string | undefined)[] = SCOPE[entityType] === 'userBook' ? bookIds : [undefined];
+    // On a fresh install, bookIds is empty, so userBook-scoped collections would skip sweep entirely.
+    // downloads is special: sweep it at account level (undefined bookId) on first run to discover
+    // downloads from other devices. Other userBook collections (progress, bookmarks, etc.) naturally
+    // have nothing to discover until a book is downloaded locally, so they remain gated.
+    const targets: (string | undefined)[] =
+      SCOPE[entityType] === 'userBook' ? (bookIds.length === 0 && entityType === 'downloads' ? [undefined] : bookIds) : [undefined];
 
     for (const bookId of targets) {
       const response = await api.list<any>(ENTITY_PATHS[entityType], {
@@ -697,6 +768,7 @@ async function pull(report: SyncReport): Promise<void> {
       // than being skipped.
       if (checkpoint === null) checkpoint = response.serverTime;
 
+      let appliedCount = 0;
       for (const record of response.data ?? []) {
         report.pulled += 1;
         // Last-Write-Wins, and device-local columns (local_path) are preserved. `downloads` goes
@@ -706,7 +778,10 @@ async function pull(report: SyncReport): Promise<void> {
           entityType === 'downloads'
             ? await applyDownloadRecord(record)
             : await table.applyServerRecord(record);
-        if (applied) report.applied += 1;
+        if (applied) {
+          report.applied += 1;
+          appliedCount += 1;
+        }
 
         // Field-merge tables (personalization, accessibility) only: a pending local edit
         // (synced: 0) survives this merge unchanged - see mergeFieldLevel - but the OUTBOX
@@ -721,6 +796,17 @@ async function pull(report: SyncReport): Promise<void> {
             await outboxStore.enqueue(entityType, record.id, 'UPDATE', table.toServerPayload(fresh));
           }
         }
+      }
+
+      // Emit SYNC_ENTITY_APPLIED for this entity type / book combination
+      // (or null bookId for user-scoped entities) if any records were applied.
+      if (appliedCount > 0) {
+        eventBus.emit(EVENT_CHANNELS.SYNC_ENTITY_APPLIED, {
+          entityType: entityType as any,
+          count: appliedCount,
+          bookId: bookId ?? null,
+          at: Date.now(),
+        });
       }
 
       if (entityType === 'downloads') await recordEntitlementCheck();

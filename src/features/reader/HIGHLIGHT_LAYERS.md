@@ -123,13 +123,14 @@ regression, not a simplification. So each owner claims a different visual channe
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
 `fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
 ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
-nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode':
-<theme-adjusted> }` — the same intended translucent yellow, expressed in the vocabulary that reaches
-the element (opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep
-the two channels in the ordering this section's table intends). It goes through the same
-`highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
-the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
-for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+nothing at all; it is now `{ fill: '#90ee90', 'fill-opacity': '0.2', 'mix-blend-mode':
+<theme-adjusted> }` — a translucent light green (`#ffd500` yellow before a 2026-09-08 colour change;
+opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep the two
+channels in the ordering this section's table intends), expressed in the vocabulary that reaches the
+element. It goes through the same `highlightFill` as `user` for the same reason: a fixed `multiply`
+made the spoken word invisible on the dark theme, which is the theme where knowing where the voice is
+matters most. The interim rule for Hruthik is unchanged: **keep TTS translucent** so it layers rather
+than masks.
 
 **THE `tts` CHANNEL HAS TWO INTENSITIES, AND THEY ARE NOT A FOURTH OWNER.** Word-level highlighting
 (`tts.highlightMode === 'word'`) paints the spoken WORD inside the spoken SENTENCE — same owner, same
@@ -161,8 +162,10 @@ wrong on two of the three shipped themes: it nearly disappears against dark's ne
 barely shifts a warm fill like the default yellow against sepia's similarly warm, pale page.
 `webview/src/selectionTheme.ts`'s `highlightFill(color, bg)` (pure, unit-tested) picks fill and
 blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
-sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
-from `tts`" is still the intent; how to render it now depends on the page behind it.
+sepia (a transform aimed at a warm hue like the default yellow — `warm()`'s `r > b && g > b` test —
+which is why `tts`'s light green was chosen with `r === b`, to sidestep it entirely rather than
+re-argue it for a cool hue), and the stored colour with `multiply` unchanged on a neutral light page.
+"Solid, distinct from `tts`" is still the intent; how to render it now depends on the page behind it.
 
 **THE SHADE IS A FUNCTION OF THE PAGE, SO IT IS RE-DERIVED WHEN THE PAGE CHANGES COLOUR.** Both
 shells re-tint the `user` and `tts` layers from `applyAppearance` whenever `bg` moves, rather than
@@ -303,6 +306,38 @@ refinement drawn on top of it, and adding them the other way round hides the thi
 > boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`,
 > `rebuildForFlowIfNeeded`). It is a paint-order change in paths no unit test can see, so it wants a
 > device pass, which is why it was not bundled into a change that lands without one.
+
+**2026-09-08 — `user` deliberately goes ABOVE `tts` too, but ONLY for the range they overlap.** This
+is a second, intentional exception to `tts > search > user`, not a third bug to fold into the one
+above: the reader's own saved highlight should not visually recede under a wash that will move on in
+a few seconds once TTS reads over it. `liftOverlappingUserHighlights(contents, spokenCfi)`
+(`epub.entry.ts`) finds every painted `user` highlight that overlaps the CURRENTLY SPOKEN SENTENCE
+(`rangesOverlap`, the same overlap test `highlightIdForRange` already uses for "does a selection
+meet an existing highlight") and re-lifts each one — remove-then-add through the SAME
+owner-namespaced seam `liftSearchMatch` uses, just for `USER_OWNER`.
+
+**Why this does not contradict §4's own z-order table above.** DOM/paint order only has a visual
+effect where two marks occupy the *same* screen space — everywhere the sentence wash and a user
+highlight do NOT overlap, this changes nothing, because there is nothing for the two owners' relative
+order to affect there. The table's `tts > search > user` priority still holds as the default
+everywhere else; this is a targeted, per-pair override for exactly the overlapping range, checked at
+SENTENCE granularity ("the tts whole highlight") rather than per-word, so a highlight lifts the
+moment the sentence wash reaches it rather than only once the exact word being spoken happens to fall
+inside it.
+
+**Called from three places, matching the same batch boundaries `liftSearchMatch` already uses**:
+`setSpokenRange` (the primary trigger, once per sentence), `repaintLiveAnnotations` (a theme/font-size
+repaint re-adds every `user` highlight BEFORE re-adding `tts`, which would otherwise silently undo
+whatever `setSpokenRange` had lifted, until the next sentence), and `rebuildForFlowIfNeeded` (a fresh
+`Rendition` is a fresh DOM order). The rebuild call site is currently a no-op in practice — the
+§4 deviation recorded above already leaves `user` on top of both `tts` layers there by accident — but
+it is explicit anyway, so this keeps working the day that deviation is fixed rather than silently
+relying on it.
+
+**No interaction with `search`.** A three-way overlap (a search match landing inside both a user
+highlight and the currently spoken sentence) is not specifically handled — `liftOverlappingUserHighlights`
+only re-lifts `user`, which as a side effect also puts it above `search` (whatever was last-added
+becomes topmost), but nothing here reasons about that case beyond "reachable, not designed for."
 
 ## PDF — IN scope as of 2026-08-26, with its own seam
 

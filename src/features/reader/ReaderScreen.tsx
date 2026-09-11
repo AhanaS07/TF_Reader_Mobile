@@ -19,16 +19,20 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Dimensions,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import { AccessibilitySettingsPanel } from '@/features/accessibility/AccessibilitySettingsPanel';
 import { loadDyslexiaFontFaceSrc } from '@/features/accessibility/dyslexiaFontLoader';
 import { getHighContrastReaderColors } from '@/features/accessibility/highContrastColors';
@@ -434,10 +438,26 @@ interface ReaderScreenProps {
    * other's width.
    */
   toolbarExtra?: React.ReactNode;
+
+  /**
+   * Opens the publisher accessibility-metadata screen (`BookInfo`). Navigation-agnostic on the
+   * same grounds as `onRelocated`: this file has no idea a route named "BookInfo" exists, only that
+   * pressing "Accessibility information" inside the merged Accessibility dropdown should do
+   * something. `ReaderRouteScreen.tsx` supplies `() => navigation.navigate('BookInfo', { bookId })`.
+   * Omit it and that row still renders but does nothing — there is no standalone screen for it to
+   * fall back to.
+   */
+  onOpenAccessibilityInfo?: () => void;
 }
 
 function ReaderScreenComponent(
-  { bookId, initialTarget, onRelocated, toolbarExtra }: ReaderScreenProps,
+  {
+    bookId,
+    initialTarget,
+    onRelocated,
+    toolbarExtra,
+    onOpenAccessibilityInfo,
+  }: ReaderScreenProps,
   ref: React.ForwardedRef<ReaderScreenHandle>,
 ): React.JSX.Element {
   /**
@@ -505,6 +525,11 @@ function ReaderScreenComponent(
   const [showSearch, setShowSearch] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showAccessibility, setShowAccessibility] = useState(false);
+
+  // Live (updates across a rotation while the dropdown is open, unlike a one-off `Dimensions.get`)
+  // — bounds the Accessibility dropdown's ScrollView so it stays scrollable rather than growing
+  // past the screen, which the panel's own toggle rows can do on a small phone in landscape.
+  const { height: windowHeight } = useWindowDimensions();
 
   /**
    * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
@@ -718,6 +743,53 @@ function ReaderScreenComponent(
   const contentsButtonRef = useRef<View | null>(null);
   const searchButtonRef = useRef<View | null>(null);
   const accessibilityButtonRef = useRef<View | null>(null);
+
+  /**
+   * Where the merged Accessibility dropdown paints, in SCREEN coordinates — the same reason, and
+   * the same shape, as `DevPreferencesMenu.tsx`'s own `anchor`: this panel now renders inside a
+   * `Modal` rather than as an absolutely-positioned sibling of the ♿ button (see the Modal itself,
+   * below, for why), and a `Modal`'s content positions against the whole screen, not against this
+   * component's own toolbar row. MEASURED, NOT HARDCODED, via `measureInWindow` on open, so it
+   * stays correct across phone/tablet widths and portrait/landscape. `null` until the first open —
+   * `styles.accessibilityDropdown`'s own fallback position is fine either way, since no test
+   * asserts on-screen pixel position.
+   */
+  const [accessibilityAnchor, setAccessibilityAnchor] = useState<{
+    top: number;
+    right: number;
+    maxWidth: number;
+  } | null>(null);
+
+  /**
+   * The MATCH BAR's counter button — where focus lands once a result is actually chosen. Item 6 of
+   * `READER_FOCUS_ORDER_HANDOFF.md`. A ref into `SearchMatchBar`, not a prop it manages itself:
+   * `SearchMatchBar` unmounts and remounts independently of a fresh selection (e.g. reopening the
+   * results list from its own counter, then an explicit Close with nothing newly chosen), and a
+   * component that outlives all of that is what lets `matchBarFocusSignal`'s effect (below) tell
+   * "a genuine new bump" apart from "a stale value seen again on a fresh mount" — a comparison that
+   * cannot be made correctly from inside the remounting component itself.
+   */
+  const matchBarCounterRef = useRef<View | null>(null);
+
+  /**
+   * A COUNTER, not a boolean or `showSearch` itself, because `selectHit` is also the target of
+   * `stepHit` (the match bar's own Previous/Next arrows), which runs while the panel is ALREADY
+   * closed and must NOT steal focus back to the counter on every step — that would yank a
+   * screen-reader user off the arrow they are actively pressing. Bumped only at the two places
+   * search genuinely CLOSES because of a selection (`selectHit`'s direct success path, and the
+   * queued-seek flush effect below it).
+   */
+  const [matchBarFocusSignal, setMatchBarFocusSignal] = useState(0);
+
+  // Fires only on a genuine bump — `ReaderScreen` itself never remounts, so comparing against the
+  // previous render's value (React's default effect-dependency behavior) is reliable here in a way
+  // it would not be inside `SearchMatchBar`. Deferred to an effect, not called inline in `selectHit`,
+  // because the match bar is not mounted yet at the moment a result is tapped from the list — its
+  // own render condition is `!showSearch`, which only flips true after that same event finishes
+  // closing the panel. Same ordering `firstTocRowRef`'s entry effect relies on.
+  useEffect(() => {
+    if (matchBarFocusSignal > 0) focusOn(matchBarCounterRef);
+  }, [matchBarFocusSignal]);
 
   /**
    * Where focus ENTERS the Contents panel — the first chapter row, and the counterpart to
@@ -1606,12 +1678,33 @@ function ReaderScreenComponent(
             pendingInitialVerifyRef.current = { target, attempts: attempts + 1 };
             sendRef.current?.({ type: 'goTo', target });
           }
+        } else if (initialTargetRef.current !== null) {
+          // `relocated` arrived before `rendered`: both pdf.entry.ts (renderCurrent(1) inside
+          // openPdf) and epub.entry.ts (display() inside openEpub) post `relocated` before they
+          // post `rendered`. `pendingInitialVerifyRef` is set by the effect that waits for
+          // `isRendered`, so it is null here — the existing guard above cannot fire. But
+          // `initialTargetRef` still holds the resume target, meaning the goTo has not been sent
+          // yet and this `relocated` is the book's own default landing (page 1 / start CFI), not
+          // the position the user should resume at. Suppress it exactly as the post-rendered case
+          // does for a mid-resend wrong landing.
+          isUnverifiedInitialRelocate = true;
         }
 
-        // Every real `relocated` is a navigation signal — epub.js never fires it for
-        // setSpokenRange, which only touches annotations — so this is the one call site needed,
-        // not one at every next/prev/goTo send. A no-op while TTS isn't active (ref is null).
-        ttsProviderRef.current?.notifyRelocated();
+        // Every real `relocated` USED TO BE a navigation signal unconditionally — epub.js never
+        // fired it for `setSpokenRange`, which only touched annotations — so this was the one call
+        // site needed, not one at every next/prev/goTo send. TTS auto-follow's `rendition.display()`/
+        // `scrollBy()` calls (and a font-size reflow's reanchor, and a flow rebuild's redisplay) now
+        // live INSIDE handlers that used to only paint, so a `relocated` can originate from Reader's
+        // own internal repositioning too — `message.internalReposition` is how the WebView says so.
+        // Skipping `notifyRelocated()` for one is not skipping the relocation itself: `onRelocatedRef`
+        // below (progress tracking) still runs unconditionally, cause-agnostic, exactly as before —
+        // this gate is specifically about not telling the TTS session "the reader navigated away"
+        // when they did not, which used to wipe the session's prefetched next sentence and clear the
+        // highlight it had just centered on screen, silently stopping speech on the very first
+        // auto-follow action every time. A no-op while TTS isn't active either way (ref is null).
+        if (!message.internalReposition) {
+          ttsProviderRef.current?.notifyRelocated();
+        }
         if (!isUnverifiedInitialRelocate) {
           onRelocatedRef.current?.(message.position);
         }
@@ -1709,6 +1802,10 @@ function ReaderScreenComponent(
     setShowSearch(false);
     pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
     send({ type: 'goTo', target });
+    // This flush only ever runs after `selectHit`'s queuing branch reopened search to show the
+    // wait — so, same as that branch's own success path, this IS a selection closing the panel,
+    // unconditionally. See `matchBarFocusSignal`'s own note.
+    setMatchBarFocusSignal((n) => n + 1);
   }, [send]);
 
   /**
@@ -2062,6 +2159,20 @@ function ReaderScreenComponent(
   }, [isRendered, send, format, search.hits, search.activeIndex, search.submittedTerm]);
 
   /**
+   * Gate manual swipe/drag in the WebView the instant TTS starts or stops speaking — see
+   * `setTtsSpeaking`'s own doc comment in readerBridge.ts for scope (gestures only, not
+   * `goTo`/TOC/search).
+   *
+   * DEPENDS ON `ttsSession.status`, A PRIMITIVE, NOT `ttsSession` ITSELF — `useTtsSession` returns a
+   * fresh object every render (no `useMemo`, see `ttsStatusRef`'s own note above), so depending on
+   * the object would resend this command on every render instead of only on an actual transition.
+   */
+  useEffect(() => {
+    if (!isRendered || send === null || format === null) return;
+    send({ type: 'setTtsSpeaking', speaking: ttsSession.status === 'speaking' });
+  }, [isRendered, send, format, ttsSession.status]);
+
+  /**
    * Jump to a typed page, or refuse without navigating.
    *
    * >>> VALIDATED HERE RATHER THAN IN THE SHELL, AND THAT IS THE WHOLE POINT OF CARRYING pageCount. <<<
@@ -2126,12 +2237,17 @@ function ReaderScreenComponent(
         return;
       }
 
+      // CAPTURED BEFORE THE CLOSE, not after: this is what tells a genuine results-list
+      // selection (panel was open) apart from `stepHit` calling back in here (panel is already
+      // closed) — see `matchBarFocusSignal`'s own note for why that distinction matters.
+      const wasOpen = showSearch;
       setShowSearch(false);
       setShowBookmarks(false);
       pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
       send({ type: 'goTo', target });
+      if (wasOpen) setMatchBarFocusSignal((n) => n + 1);
     },
-    [closeToc, search, send],
+    [closeToc, search, send, showSearch],
   );
 
   const stepHit = useCallback(
@@ -2325,15 +2441,35 @@ function ReaderScreenComponent(
         <Pressable
           accessibilityRole="button"
           // Explicit for the same reason as Search and Bookmarks: the glyph gives a screen reader
-          // nothing to say, and every test finds these buttons by accessible name.
-          accessibilityLabel="Accessibility settings"
+          // nothing to say, and every test finds these buttons by accessible name. One merged
+          // entry point now — this button opens both the settings toggles below AND, via a row
+          // inside that same dropdown, the accessibility-information screen — so the label speaks
+          // to the whole panel rather than just the toggles.
+          accessibilityLabel="Accessibility"
           accessibilityState={{ expanded: showAccessibility }}
           ref={accessibilityButtonRef}
           onPress={() => {
             closeToc(false); // this panel is taking over — see closeToc's own note.
             setShowSearch(false);
             setShowBookmarks(false);
-            setShowAccessibility((open) => !open);
+            setShowAccessibility((open) => {
+              const next = !open;
+              if (next) {
+                // Same measure-on-open shape as DevPreferencesMenu.tsx's `toggleOpen` — see
+                // `accessibilityAnchor`'s own doc for why this has to be measured rather than laid
+                // out relatively, now that the dropdown renders inside a `Modal`.
+                accessibilityButtonRef.current?.measureInWindow((x, y, width, height) => {
+                  const windowWidth = Dimensions.get('window').width;
+                  const right = Math.max(0, windowWidth - (x + width));
+                  setAccessibilityAnchor({
+                    top: y + height,
+                    right,
+                    maxWidth: Math.max(0, windowWidth - right - ACCESSIBILITY_DROPDOWN_EDGE_MARGIN),
+                  });
+                });
+              }
+              return next;
+            });
           }}
           style={styles.toolbarButton}
         >
@@ -2614,6 +2750,9 @@ function ReaderScreenComponent(
                         ref={index === 0 ? firstTocRowRef : null}
                         disabled={!isNavigable}
                         accessibilityState={{ disabled: !isNavigable }}
+                        // NO HINT ON A DISABLED ROW. `disabled` already tells TalkBack/VoiceOver
+                        // the row is non-interactive; a hint repeating that is noise, not signal.
+                        accessibilityHint={isNavigable ? 'Navigates to this chapter' : undefined}
                         onPress={() => {
                           goTo(item.target);
                           // THE ONE "restore focus" CASE. `goTo` deliberately does not do this
@@ -2756,6 +2895,7 @@ function ReaderScreenComponent(
             and only while the panel is closed, since the panel covers it anyway. */}
         {!showSearch && search.hits.length > 0 && (
           <SearchMatchBar
+            ref={matchBarCounterRef}
             hits={search.hits}
             activeIndex={search.activeIndex}
             submittedTerm={search.submittedTerm}
@@ -2792,48 +2932,82 @@ function ReaderScreenComponent(
         )}
 
         {/*
-          AN OVERLAY, not a strip docked under the viewer, even though the panel inside styles
-          itself like `TtsControls` (a border-top and a capped width). Docking it would change the
-          viewer's height, and that re-paginates epub.js — which is the one thing every panel in
-          this file overlays to avoid, because a CFI resolved under one pagination addresses a
-          different page under another. See the note above SearchPanel.
+          A MODAL, not an absolute-fill sibling of the viewer like TOC/Search/Bookmarks — the one
+          merged ♿ entry point is now a content-sized dropdown, not a full-bleed panel, and a
+          content-sized box that merely SITS OVER a WebView doesn't actually hide it: `hidden` on
+          `ReaderWebView` (driven by `anyPanelOpen` below) only removes it from the accessibility
+          tree, not from the screen, and Android's WebView ignores sibling `elevation`/`zIndex`
+          entirely — the exact bug `DevPreferencesMenu.tsx`'s own `Modal` exists to dodge (see that
+          file's comment on `anchor`). A `Modal` paints in its own native window, above the WebView
+          unconditionally, on both platforms.
 
-          THE CHROME IS HERE RATHER THAN IN THE PANEL because the panel is Accessibility's file and
-          serves two surfaces: in a standalone Settings screen it needs no title and no close, and
-          it has neither. Supplying them at the mount point is what lets one component serve both
-          without this screen editing another capability's code.
+          NO TITLE, NO NAMED CLOSE BUTTON, deliberately — matches `DevPreferencesMenu`'s dropdown
+          exactly: dismiss by tapping outside, by pressing the ♿ toggle again, or (Android) the back
+          button. `focusOn(accessibilityButtonRef)` still runs on every dismiss path below, so
+          screen-reader focus still lands back on the button that opened this, same restore rule as
+          every other panel here — only the visible "Close" affordance is gone, not the behaviour.
         */}
         {showAccessibility && (
-          <View style={styles.accessibilityPanel}>
-            <View style={styles.accessibilityHeaderRow}>
-              <Text style={styles.accessibilityTitle}>Accessibility</Text>
-              {/* NAMES ITS OWN CLOSE, like every other panel here ("Close search", "Close
-                  bookmarks", "Close contents") — a bare "Close" is ambiguous to a screen-reader
-                  user who cannot see which panel is open. */}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close accessibility"
-                onPress={() => {
-                  setShowAccessibility(false);
-                  // The explicit-close path, so the button they opened it from is where they were —
-                  // same restore rule as SearchPanel's `onClose`.
-                  focusOn(accessibilityButtonRef);
-                }}
-                style={styles.accessibilityAction}
+          <Modal
+            transparent
+            visible={showAccessibility}
+            onRequestClose={() => {
+              setShowAccessibility(false);
+              focusOn(accessibilityButtonRef);
+            }}
+          >
+            <Pressable
+              testID="accessibility-dropdown-backdrop"
+              style={StyleSheet.absoluteFill}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              onPress={() => {
+                setShowAccessibility(false);
+                focusOn(accessibilityButtonRef);
+              }}
+            />
+            <View
+              style={[
+                styles.accessibilityDropdown,
+                accessibilityAnchor && {
+                  top: accessibilityAnchor.top,
+                  right: accessibilityAnchor.right,
+                  maxWidth: accessibilityAnchor.maxWidth,
+                },
+              ]}
+            >
+              {/* BOUNDED, not flex: 1 — a `Modal`'s content sizes against the whole screen, so
+                  without an explicit cap this box would grow as tall as its content on a small
+                  phone in landscape, the exact overflow case the old full-bleed panel's own
+                  ScrollView already had to cover. `windowHeight` (from `useWindowDimensions`, not a
+                  one-off `Dimensions.get`) keeps that cap correct across a rotation while the
+                  dropdown is open. */}
+              <ScrollView
+                style={{ maxHeight: windowHeight * 0.7 }}
+                contentContainerStyle={styles.accessibilityContent}
               >
-                <Text style={styles.accessibilityActionText}>Close</Text>
-              </Pressable>
-            </View>
+                {/* `undefined` rather than a guess while the book is still resolving: the prop's own
+                    doc says omitting it means "not scoped to one open book", which shows every
+                    control. That is the honest state — High Contrast and Reduce Motion are already
+                    usable, and the Dyslexia Font row becomes accurate the moment `prepareBook`
+                    lands. The dyslexia override itself is gated separately, host-side, in
+                    `withDyslexiaFont`. */}
+                <AccessibilitySettingsPanel format={format ?? undefined} />
 
-            {/* `undefined` rather than a guess while the book is still resolving: the prop's own
-                doc says omitting it means "not scoped to one open book", which shows every control.
-                That is the honest state — High Contrast and Reduce Motion are already usable, and
-                the Dyslexia Font row becomes accurate the moment `prepareBook` lands. The dyslexia
-                override itself is gated separately, host-side, in `withDyslexiaFont`. */}
-            <ScrollView contentContainerStyle={styles.accessibilityContent}>
-              <AccessibilitySettingsPanel format={format ?? undefined} />
-            </ScrollView>
-          </View>
+                {/* The merged-in second entry point: was its own toolbar icon
+                    ("Accessibility information"), now a row in this same dropdown. Closes the
+                    dropdown and hands off to whatever `ReaderRouteScreen.tsx` wired up
+                    (`navigation.navigate('BookInfo', ...)`) — no focus restore here, unlike the
+                    dismiss paths above, since the screen is about to change entirely. */}
+                <AccessibilityInfoButton
+                  onPress={() => {
+                    setShowAccessibility(false);
+                    onOpenAccessibilityInfo?.();
+                  }}
+                />
+              </ScrollView>
+            </View>
+          </Modal>
         )}
 
         {/* LAST child of `viewer`, deliberately: it must paint over the WebView, the busy overlay
@@ -3013,6 +3187,10 @@ const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
 /** Overlay fill. See the note on `busy` below for why this is not absoluteFillObject. */
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
 
+// Matches DevPreferencesMenu.tsx's own DROPDOWN_EDGE_MARGIN — same shape of anchor maths, same
+// margin, so the two dropdowns feel like one family even though they're two components.
+const ACCESSIBILITY_DROPDOWN_EDGE_MARGIN = 12;
+
 const styles = StyleSheet.create({
   // Reads as a status line rather than a control: no border, no press affordance. Tabular figures so
   // the row does not shift width as the page number gains a digit.
@@ -3172,36 +3350,29 @@ const styles = StyleSheet.create({
   },
   tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
 
-  // The accessibility panel's chrome. Same opaque full-bleed overlay as `tocPanel` and
-  // BookmarksPanel's `panel` — book text showing faintly through a settings list is as unreadable
-  // here as it is there — and the header row copies BookmarksPanel's so the two close buttons are
-  // the same control in the same place.
-  //
-  // SCROLLS, unlike the TOC's own fixed header: the panel's three control groups already overflow a
-  // small phone in landscape once the Dyslexia row is present, and a control the user cannot reach
-  // is worse in this panel than in any other.
-  accessibilityPanel: {
-    ...FILL,
+  // The merged Accessibility dropdown's chrome — content-sized, not the opaque full-bleed overlay
+  // TOC/Bookmarks use, since (unlike those) this panel holds no book-derived content that needs
+  // hiding, only settings UI. `position: 'absolute'` + the anchored `top`/`right` (set inline, once
+  // measured) is what lets it float near the ♿ button instead of centring on the Modal's own
+  // full-screen layout. `alignSelf: 'flex-start'` mirrors DevPreferencesMenu.tsx's own dropdown
+  // style for the same reason that file's comment gives: without it, Android's Modal-window flex
+  // container stretches this box edge-to-edge, while iOS's Yoga resolution shrink-wraps it from the
+  // same style object — so the two platforms would render two different widths from one style.
+  accessibilityDropdown: {
+    position: 'absolute',
+    top: 48,
+    right: 0,
+    alignSelf: 'flex-start',
+    minWidth: 220,
     backgroundColor: '#ffffff',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e2e2',
+    padding: 12,
+    boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.12)',
+    elevation: 6,
   },
-  accessibilityHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  accessibilityTitle: { fontSize: 18, fontWeight: '600', color: '#111111' },
-  accessibilityAction: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f2f2f2',
-  },
-  accessibilityActionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
-  accessibilityContent: { paddingBottom: 48 },
+  accessibilityContent: { paddingBottom: 4 },
 
   // Only a TOP hairline, to close the header off. There is deliberately no bottom
   // border any more: a hairline and a fade at the same edge fight each other — the

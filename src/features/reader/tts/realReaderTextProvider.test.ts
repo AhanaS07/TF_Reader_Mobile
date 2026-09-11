@@ -1,9 +1,9 @@
 // Owner: Reader (Ahana).
 //
 // PORTED, per TTS_PROVIDER.md's own instruction: every applicable case from
-// fakeReaderTextProvider.test.ts pins a property of the SEAM (never-reject, abort resolves rather
+// testReaderTextProvider.test.ts pins a property of the SEAM (never-reject, abort resolves rather
 // than rejects, teardown starves in-flight requests, onInterrupted's subscriber semantics), not of
-// the fake, so they survive the swap to the real provider unchanged in intent — only "how a sentence
+// the test double, so they survive the swap to the real provider unchanged in intent — only "how a sentence
 // gets served" (Content-shape/segmentation cases) is gone, because that lives in `epubTtsResolver.ts`/
 // `ttsSegmentation.ts` now (DOM-touching, exercised on-device per WEBVIEW_BRIDGE.md's own checklist,
 // not here).

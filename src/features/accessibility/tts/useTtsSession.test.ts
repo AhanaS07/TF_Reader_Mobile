@@ -1,8 +1,8 @@
 // Owner: Accessibility (Hruthik).
 //
-// Drives useTtsSession against the real FakeReaderTextProvider (Reader's own fake — see
-// TTS_PROVIDER.md) and a hand-rolled mock of the native TTS module, firing native events the
-// way the real engine would. The native module is mocked at `./ttsEngine`, not
+// Drives useTtsSession against TestReaderTextProvider (this directory's own test double, forked
+// from Reader's original — see TTS_PROVIDER.md) and a hand-rolled mock of the native TTS module,
+// firing native events the way the real engine would. The native module is mocked at `./ttsEngine`, not
 // `@iternio/react-native-tts` directly, so this test exercises exactly the surface
 // useTtsSession actually imports.
 //
@@ -13,12 +13,20 @@
 // the next assertion reads stale state.
 
 import { act, renderHook, waitFor } from '@testing-library/react-native';
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
-import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
+import { createFakePdfReaderTextProvider } from './testSupport/fakePdfReaderTextProvider';
+import { createTestReaderTextProvider } from './testSupport/testReaderTextProvider';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS, DEFAULT_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs, SharedPrefs } from '@/shared/contracts';
+import {
+  _resetAudioPlaybackBridgeForTests,
+  _resetAudioTtsCoordinatorForTests,
+  registerAudioPauseHandler,
+  registerAudioPlaybackBridge,
+  stopActiveTts,
+} from '@/features/reader/audio/audioTtsCoordinator';
 
 import { useTtsSession } from './useTtsSession';
 
@@ -115,14 +123,18 @@ function fireAppStateChange(next: 'active' | 'background' | 'inactive'): Promise
   return act(() => handler?.(next));
 }
 
+const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+
 beforeEach(() => {
   jest.clearAllMocks();
+  _resetAudioTtsCoordinatorForTests();
+  _resetAudioPlaybackBridgeForTests();
   readSharedPrefsMock.mockResolvedValue(makeSharedPrefs());
 });
 
 describe('useTtsSession', () => {
   it('speaks sentences in order, painting the highlight only once the utterance starts', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -141,10 +153,56 @@ describe('useTtsSession', () => {
     expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
   });
 
+  it("ignores tts-progress when highlightMode is 'sentence' (the default)", async () => {
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    await act(() => fireTtsEvent('tts-progress', { location: 0, length: 5 }));
+
+    // 'sentence' mode never consumes tts-progress — Reader's own setSpokenRange handler
+    // auto-follows on its coarser, once-per-sentence cadence instead (TTS_PROVIDER.md item 2).
+    expect(provider.spokenWordRanges).toHaveLength(0);
+  });
+
+  it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word'", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    // iOS-shaped payload (location/length) — the default test environment here is iOS, per the
+    // PAUSE_RESUME_SUPPORTED note above.
+    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
+
+    expect(provider.spokenWordRanges.at(-1)).toEqual({
+      cfi: provider.sentences[0].cfi,
+      start: 4,
+      end: 7,
+    });
+  });
+
+  it('ignores tts-progress while idle — nothing has ever been spoken', async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createTestReaderTextProvider();
+    await renderHook(() => useTtsSession(provider));
+
+    // No play() at all — awaitingUtterance is false, the same guard handleTtsStart itself uses.
+    await act(() => fireTtsEvent('tts-progress', { location: 0, length: 3 }));
+
+    expect(provider.spokenWordRanges).toHaveLength(0);
+  });
+
   it('stops at the end of a section when autoContinueChapter is off, and clears the highlight', async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
-    // DEFAULT_FAKE_BOOK's spine item 0 has 3 sentences; sentence index 2 is lastInSection.
-    const provider = createFakeReaderTextProvider({ startIndex: 2 });
+    // DEFAULT_TEST_BOOK's spine item 0 has 3 sentences; sentence index 2 is lastInSection.
+    const provider = createTestReaderTextProvider({ startIndex: 2 });
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.autoContinueChapter).toBe(false));
@@ -160,7 +218,7 @@ describe('useTtsSession', () => {
   it('crosses an empty spine item when autoContinueChapter is on', async () => {
     // Sentence index 2 (0-based across the flattened book) is spine item 0's last sentence;
     // spine item 1 is empty, so the next real sentence is spine item 2's first.
-    const provider = createFakeReaderTextProvider({ startIndex: 2 });
+    const provider = createTestReaderTextProvider({ startIndex: 2 });
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -173,7 +231,7 @@ describe('useTtsSession', () => {
   });
 
   it('stops on a closed interruption and tries to clear the highlight', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -192,7 +250,7 @@ describe('useTtsSession', () => {
   });
 
   it('does not stop on a navigated interruption', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -212,7 +270,7 @@ describe('useTtsSession', () => {
   // useTtsSession.ts is first imported, which a same-file mutation can't reach; see
   // useTtsSession.android.test.ts for that case instead.
   it("pause() calls Tts.pause() on iOS, and status only flips to 'paused' on the native event", async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -230,7 +288,7 @@ describe('useTtsSession', () => {
   });
 
   it('play() while paused on iOS resumes the native engine rather than issuing a fresh fetch', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -247,8 +305,59 @@ describe('useTtsSession', () => {
     expect(mockTts.speak).not.toHaveBeenCalled(); // resumed, not re-fetched.
   });
 
+  it('play() after the reader navigates away WHILE PAUSED re-resolves fresh, not the native resume', async () => {
+    // The bug this guards against: Tts.resume() on iOS is a genuine native resume of the SUSPENDED
+    // utterance — calling it blindly continues content from wherever the reader WAS, ignoring that
+    // they scrolled/swiped somewhere else while paused. Reported on-device: pause, scroll to a new
+    // area, press play — TTS picked back up the OLD content instead of the new page.
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    await act(() => fireTtsEvent('tts-pause'));
+    expect(result.current.status).toBe('paused');
+
+    // The reader scrolls/swipes to a different part of the book while still paused.
+    await act(() => provider.navigate(2));
+
+    mockTts.speak.mockClear();
+    mockTts.resume.mockClear();
+    mockTts.stop.mockClear();
+    await act(() => result.current.play());
+
+    // The suspended native utterance is stopped, not resumed — it is holding the wrong content.
+    expect(mockTts.resume).not.toHaveBeenCalled();
+    expect(mockTts.stop).toHaveBeenCalled();
+    // And a fresh sentence is fetched from wherever the reader actually is now, same as a first
+    // play() from idle would — not the sentence that was paused.
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[2].text);
+  });
+
+  it('play() after pausing with NO navigation still resumes normally — the fix is scoped to the navigated case', async () => {
+    // A regression check on the sibling test above: pausing and pressing play with nothing else
+    // happening in between must be completely unaffected by pausedPositionInvalidated.
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    await act(() => fireTtsEvent('tts-pause'));
+
+    mockTts.speak.mockClear();
+    mockTts.resume.mockClear();
+    await act(() => result.current.play());
+
+    expect(mockTts.resume).toHaveBeenCalled();
+    expect(mockTts.speak).not.toHaveBeenCalled();
+  });
+
   it('backgrounding while speaking stops speech, clears the highlight, and resets to idle', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -264,7 +373,7 @@ describe('useTtsSession', () => {
   });
 
   it('backgrounding while paused resets to idle rather than preserving the paused state', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -280,7 +389,7 @@ describe('useTtsSession', () => {
   });
 
   it('backgrounding while idle is a harmless no-op', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -292,7 +401,7 @@ describe('useTtsSession', () => {
   });
 
   it('a stale tts-pause/tts-resume arriving after a background-triggered reset does not resurrect status', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -313,7 +422,7 @@ describe('useTtsSession', () => {
   });
 
   it('going inactive (without backgrounding) does not interrupt speech', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -327,7 +436,7 @@ describe('useTtsSession', () => {
   });
 
   it('setRate applies the mapped native rate and persists the multiplier', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -342,7 +451,7 @@ describe('useTtsSession', () => {
   });
 
   it('setPitch applies the native pitch and persists it', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -357,7 +466,7 @@ describe('useTtsSession', () => {
   });
 
   it('setVoice applies the native voice and persists it', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -372,7 +481,7 @@ describe('useTtsSession', () => {
   });
 
   it('setVoice(null) persists the platform default without calling the native engine', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -391,7 +500,7 @@ describe('useTtsSession', () => {
     // read-modify-write per press, so a second press's readSharedPrefs() could complete before
     // the first press's writeSharedPrefs() did, and the second write would silently drop the
     // first change. Debouncing coalesces both presses into one write carrying both fields.
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -406,7 +515,7 @@ describe('useTtsSession', () => {
   });
 
   it('flushes a pending patch immediately on teardown, before the debounce would have fired', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result, unmount } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -426,7 +535,7 @@ describe('useTtsSession', () => {
     readSharedPrefsMock.mockResolvedValue(
       makeSharedPrefs({ pitch: 1.5, voiceId: 'com.test.voice' }),
     );
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.pitch).toBe(1.5));
@@ -443,10 +552,117 @@ describe('useTtsSession', () => {
   // useTtsSession.android.test.ts pins the other side: Android still subscribes and still
   // reaches handleTtsError.
   it('never subscribes to tts-error on iOS, so it cannot throw against the real native module', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     await renderHook(() => useTtsSession(provider));
 
     expect(mockTts.addListener).not.toHaveBeenCalledWith('tts-error', expect.any(Function));
+  });
+});
+
+// PDF_TTS_HANDOFF.md's central claim is that this session needs no code change to speak a PDF
+// once Reader ships a conforming provider, because `sentence.cfi` is opaque here — never parsed,
+// only ever passed back to the provider. This block pins that empirically: the same classes of
+// scenario the EPUB fake exercises above (ordering, a section-boundary stop, crossing an empty
+// section, an interruption), run instead against `createFakePdfReaderTextProvider`, whose anchors
+// are deliberately NOT CFI-shaped. If this session ever starts assuming CFI structure, these fail
+// exactly like the EPUB versions do, and say so before a real PDF provider ships.
+describe('a PDF-shaped provider (non-CFI opaque anchor)', () => {
+  it('speaks sentences in order, painting the highlight only once the utterance starts', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[0].text);
+    expect(provider.spokenRanges).toHaveLength(0);
+
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+    expect(provider.sentences[0].cfi).not.toMatch(/^epubcfi\(/);
+
+    await act(() => fireTtsEvent('tts-finish'));
+    expect(mockTts.speak).toHaveBeenLastCalledWith(provider.sentences[1].text);
+  });
+
+  it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word', with a non-CFI cfi field", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
+
+    expect(provider.spokenWordRanges.at(-1)).toEqual({
+      cfi: provider.sentences[0].cfi,
+      start: 4,
+      end: 7,
+    });
+    expect(provider.spokenWordRanges.at(-1)?.cfi).not.toMatch(/^epubcfi\(/);
+  });
+
+  it('stops at the end of a page when autoContinueChapter is off, and clears the highlight', async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ autoContinueChapter: false }));
+    // DEFAULT_FAKE_PDF_BOOK's page 0 has 2 sentences; sentence index 1 is lastInSection.
+    const provider = createFakePdfReaderTextProvider({ startIndex: 1 });
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.autoContinueChapter).toBe(false));
+
+    await act(() => result.current.play());
+    await finishCurrentUtterance();
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.speak).toHaveBeenCalledTimes(1);
+    expect(provider.spokenRanges.at(-1)).toBeNull();
+  });
+
+  it('crosses an empty page when autoContinueChapter is on', async () => {
+    // Sentence index 1 (flattened) is page 0's last sentence; page 1 is empty, so the next real
+    // sentence is page 2's first.
+    const provider = createFakePdfReaderTextProvider({ startIndex: 1 });
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await finishCurrentUtterance();
+
+    const spoken = provider.sentences[2];
+    expect(spoken.spineIndex).toBe(2); // confirms the jump from page 0 to page 2.
+    expect(mockTts.speak).toHaveBeenLastCalledWith(spoken.text);
+  });
+
+  it('stops on a closed interruption and tries to clear the highlight', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+
+    await act(() => provider.interrupt('closed'));
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.stop).toHaveBeenCalled();
+  });
+
+  it('does not stop on a navigated interruption', async () => {
+    const provider = createFakePdfReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+
+    await act(() => provider.navigate(2));
+
+    expect(result.current.status).toBe('speaking');
   });
 });
 
@@ -465,10 +681,10 @@ describe('a null provider — there is no book to read yet', () => {
   });
 
   it('subscribes exactly once when the provider arrives, not twice', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { rerender } = await renderHook(
-      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
-      { initialProps: { p: null as ReturnType<typeof createFakeReaderTextProvider> | null } },
+      ({ p }: { p: ReturnType<typeof createTestReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: null as ReturnType<typeof createTestReaderTextProvider> | null } },
     );
 
     await act(async () => {
@@ -485,10 +701,10 @@ describe('a null provider — there is no book to read yet', () => {
     // THE BUG THIS PINS: the cleanup stopped the engine but left `status` at 'speaking'. Anything
     // rendering a "reading aloud" indicator off this hook — ReaderScreen paints one on the page —
     // would keep showing it over a book that had been cut off mid-sentence.
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result, rerender } = await renderHook(
-      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
-      { initialProps: { p: provider as ReturnType<typeof createFakeReaderTextProvider> | null } },
+      ({ p }: { p: ReturnType<typeof createTestReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: provider as ReturnType<typeof createTestReaderTextProvider> | null } },
     );
 
     await act(() => result.current.play());
@@ -505,10 +721,10 @@ describe('a null provider — there is no book to read yet', () => {
   });
 
   it('ignores a play() that arrives after the provider went away', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result, rerender } = await renderHook(
-      ({ p }: { p: ReturnType<typeof createFakeReaderTextProvider> | null }) => useTtsSession(p),
-      { initialProps: { p: provider as ReturnType<typeof createFakeReaderTextProvider> | null } },
+      ({ p }: { p: ReturnType<typeof createTestReaderTextProvider> | null }) => useTtsSession(p),
+      { initialProps: { p: provider as ReturnType<typeof createTestReaderTextProvider> | null } },
     );
 
     await act(async () => {
@@ -521,5 +737,71 @@ describe('a null provider — there is no book to read yet', () => {
 
     expect(mockTts.speak).not.toHaveBeenCalled();
     expect(result.current.status).toBe('idle');
+  });
+});
+
+describe('useTtsSession — concurrency with audio playback', () => {
+  it('does not pause audio merely when TTS is enabled or mounted; pauses only when play() is pressed', async () => {
+    const pauseAudioMock = jest.fn();
+    registerAudioPauseHandler(pauseAudioMock);
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    // TTS is ON and idle — audiobook must NOT be paused
+    expect(result.current.status).toBe('idle');
+    expect(pauseAudioMock).not.toHaveBeenCalled();
+
+    // Only when TTS actually begins playing does it pause the audiobook
+    await act(() => result.current.play());
+    expect(pauseAudioMock).toHaveBeenCalled();
+  });
+
+  it('tells the user audio was paused when play() genuinely interrupted it', async () => {
+    registerAudioPauseHandler(jest.fn());
+    registerAudioPlaybackBridge({ isAudioPlaying: () => true, resumeAudioAfterTts: jest.fn() });
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+
+    expect(mockAlert).toHaveBeenCalledTimes(1);
+    expect(mockAlert.mock.calls[0][0]).toBe('Audio Paused');
+  });
+
+  it('stays silent on play() when no audio was actually playing to interrupt', async () => {
+    registerAudioPauseHandler(jest.fn());
+    registerAudioPlaybackBridge({ isAudioPlaying: () => false, resumeAudioAfterTts: jest.fn() });
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+
+    expect(mockAlert).not.toHaveBeenCalled();
+  });
+
+  it('stops active TTS speech when stopActiveTts is invoked by the coordinator', async () => {
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(result.current.status).toBe('speaking');
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+
+    // An audiobook begins playback and calls stopActiveTts()
+    await act(() => {
+      stopActiveTts();
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(mockTts.stop).toHaveBeenCalled();
+    expect(provider.spokenRanges.at(-1)).toBeNull();
   });
 });

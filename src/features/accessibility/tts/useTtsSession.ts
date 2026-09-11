@@ -31,7 +31,7 @@
 // ALL SESSION STATE LIVES INSIDE ONE EFFECT, deliberately. `provider` is the only thing this
 // hook depends on (its lifetime belongs to whoever owns the book, per TTS_PROVIDER.md, so it is
 // expected to be referentially stable for the life of this hook — create it once per book at
-// the call site, e.g. via useState(() => createFakeReaderTextProvider())). Every other piece of
+// the call site, e.g. via useState(() => createTestReaderTextProvider())). Every other piece of
 // bookkeeping (the in-flight prefetch, whether an utterance is outstanding, a generation counter
 // that invalidates stale async continuations after stop/interruption) is a plain closure
 // variable inside that effect rather than a separate useRef — there is only ever one "session"
@@ -50,6 +50,11 @@ import type {
   TtsSentence,
 } from '@/features/reader/tts/readerTextProvider';
 import { logSpan, now } from '@/features/reader/readerTiming';
+import {
+  pauseActiveAudio,
+  pauseActiveAudioForTtsPlay,
+  registerActiveTtsSession,
+} from '@/features/reader/audio/audioTtsCoordinator';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs } from '@/shared/contracts';
@@ -57,6 +62,7 @@ import type { A11yTtsPrefs } from '@/shared/contracts';
 import Tts from './ttsEngine';
 import type { Voice } from './ttsEngine';
 import { mapRate } from './ttsRate';
+import { normalizeTtsProgressEvent } from './ttsProgress';
 import { ttsStatusAnnouncement } from './ttsAnnouncements';
 
 export type TtsSessionStatus = 'idle' | 'speaking' | 'paused' | 'error';
@@ -145,6 +151,14 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     // re-resolving the reader's live position. In-memory only — never persisted. Cleared on
     // resume, on a real stop, and when the reader navigates away while paused.
     let pausedSentence: TtsSentence | null = null;
+    // BOTH platforms: true when the reader navigated away WHILE paused, so the position a paused
+    // engine is holding (natively, on iOS) or `pausedSentence` (Android) no longer matches where
+    // they actually are. Set only by the `'navigated'` interruption while `liveStatus === 'paused'`
+    // — a navigation that happens while genuinely SPEAKING is a different, already-handled case
+    // (`pendingNext`/`pausedSentence` are cleared there too, but there is nothing paused to resume
+    // stale content FROM). Consumed once, by the very next `play()`; see its own note for why iOS
+    // needed this and Android's own fallback already worked without it.
+    let pausedPositionInvalidated = false;
     let awaitingUtterance = false;
     let pendingNext: Promise<TtsFetchResult> | null = null;
     // Opt-in diagnostic only (readerTiming.ts's EXPO_PUBLIC_READER_TIMING flag) — set when a fresh
@@ -186,6 +200,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       pendingNext = null;
       currentlySpeaking = null;
       pausedSentence = null;
+      pausedPositionInvalidated = false;
       playPressedAt = null;
       setCurrentSentence(null);
       updateStatus(opts?.status ?? 'idle');
@@ -200,6 +215,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
     }
 
     function speakSentence(sentence: TtsSentence, myGeneration: number): void {
+      pauseActiveAudio();
       currentlySpeaking = sentence;
       setCurrentSentence(sentence);
       // Prefetch now, while this sentence is still speaking — see the file header.
@@ -245,6 +261,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
 
     function handleTtsStart(): void {
       if (!awaitingUtterance) return;
+      pauseActiveAudio();
       if (playPressedAt !== null) {
         logSpan('tts play-to-start', playPressedAt);
         playPressedAt = null;
@@ -254,6 +271,30 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (currentlySpeaking) {
         source.setSpokenRange(currentlySpeaking.cfi);
       }
+    }
+
+    /**
+     * Forwards the native per-word boundary to Reader's word-level highlight/auto-follow seam.
+     * Gated on `highlightMode === 'word'` — the same gate this used before the whole feature was
+     * reverted 2026-09-07 (`API_CONTRACT_NOTES.md` §6) for landing ahead of the WebView half, which
+     * has since landed for real (`WEBVIEW_BRIDGE.md`'s "The spoken word"). `'sentence'` mode gets no
+     * word-level ticks at all — Reader's `setSpokenRange` handler still auto-follows on its own,
+     * coarser cadence for that mode; see `TTS_PROVIDER.md` open item 2.
+     *
+     * `currentlySpeaking` guards the same race `handleTtsStart` does: a progress event can arrive
+     * for an utterance this session no longer considers current.
+     */
+    function handleTtsProgress(event: {
+      location?: number;
+      length?: number;
+      start?: number;
+      end?: number;
+    }): void {
+      if (!awaitingUtterance) return;
+      if (livePrefs.highlightMode !== 'word') return;
+      if (!currentlySpeaking) return;
+      const range = normalizeTtsProgressEvent(event);
+      source.setSpokenWordRange({ cfi: currentlySpeaking.cfi, start: range.start, end: range.end });
     }
 
     async function handleTtsFinish(): Promise<void> {
@@ -376,7 +417,40 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       // status change and no error would leave a caller unable to tell a real press from one
       // this session declined to honour.
       if (liveStatus === 'speaking') return;
+
+      // AUDIO SESSION CONCURRENCY: Only one audio stream runs at a time.
+      // If an audiobook is currently playing, pause it before TTS begins. THIS is the actual
+      // "press Play" moment — pauseActiveAudioForTtsPlay() (not the plain pauseActiveAudio() used
+      // at this file's other two call sites, speakSentence/handleTtsStart) additionally tells the
+      // user audio was paused for this reason, but only when it genuinely was: it reads
+      // isAudioPlaying() before pausing, so a resume-from-pause or a later sentence — where audio
+      // is already stopped — stays silent.
+      pauseActiveAudioForTtsPlay();
+
       if (liveStatus === 'paused') {
+        // >>> THE READER MOVED WHILE PAUSED — RESUME IS WRONG HERE, NOT JUST STALE. <<< Both
+        // `Tts.resume()` (iOS, a genuine native resume of the SUSPENDED utterance) and re-speaking
+        // `pausedSentence` (Android) continue content tied to wherever the reader WAS, not where
+        // they are now — correct for "paused to think for a second," wrong for "paused, then
+        // scrolled/swiped somewhere else." `pausedPositionInvalidated` is the signal a navigation
+        // already fired while paused; discard the stale position entirely and re-resolve fresh, the
+        // same way a first play() from idle does. `Tts.stop()` first on iOS specifically: the native
+        // engine is genuinely holding the OLD utterance suspended, and it must be told to drop it —
+        // not resumed — before a new one can start.
+        if (pausedPositionInvalidated) {
+          pausedPositionInvalidated = false;
+          pausedSentence = null;
+          if (PAUSE_RESUME_SUPPORTED) {
+            try {
+              void Tts.stop().catch(noop);
+            } catch {
+              // Best-effort — the engine may already be stopped.
+            }
+          }
+          playPressedAt = now();
+          void beginFrom(null, generation);
+          return;
+        }
         if (PAUSE_RESUME_SUPPORTED) {
           void Tts.resume().catch(noop);
           return;
@@ -450,6 +524,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       Tts.addListener('tts-cancel', handleTtsCancel),
       Tts.addListener('tts-pause', handleTtsPause),
       Tts.addListener('tts-resume', handleTtsResume),
+      Tts.addListener('tts-progress', handleTtsProgress),
       // 'tts-error' is absent from @iternio/react-native-tts's iOS `supportedEvents`
       // (TextToSpeech.m declares only start/finish/pause/resume/progress/cancel, and never calls
       // sendEventWithName:@"tts-error" — AVSpeechSynthesizerDelegate has no error callback for the
@@ -472,6 +547,11 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
         generation += 1;
         pendingNext = null;
         pausedSentence = null;
+        // Only meaningful while paused — there is a stale PAUSED position to protect the next
+        // play() from resuming. A navigation while genuinely speaking doesn't set this: nothing is
+        // paused yet for a later play() to wrongly resume, and TTS_PROVIDER.md's own open item
+        // already covers what a manual navigation does to an ACTIVE session.
+        if (liveStatus === 'paused') pausedPositionInvalidated = true;
         return;
       }
       // closed / revoked are terminal.
@@ -495,8 +575,18 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (livePrefs.voiceId) void Tts.setDefaultVoice(livePrefs.voiceId).catch(noop);
     });
 
+    // AUDIO SESSION CONCURRENCY: Registers this active session with the coordinator so that
+    // when an audiobook begins playback (from the player screen or lock screen / bluetooth),
+    // this TTS speech is cleanly stopped, highlights cleared, and status set to idle.
+    const unregisterTtsSession = registerActiveTtsSession({
+      stop: () => stopInternal(),
+      isSpeaking: () => liveStatus === 'speaking',
+      isActive: () => liveStatus !== 'idle',
+    });
+
     return () => {
       torn = true;
+      unregisterTtsSession();
       // Before anything else: a pending debounced patch must not be lost just because the
       // session is going away (provider changed, TTS toggled off, the reader closed) before its
       // timer fired.

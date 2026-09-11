@@ -113,15 +113,6 @@ const FLOW_OPTIONS: readonly { label: string; flow: LayoutPrefs['flow'] }[] = [
   { label: 'Scrolled', flow: 'scrolled-doc' },
 ];
 
-/** Labels kept short — these two sit side by side in one row, like every other pair in this menu. */
-const ANNOUNCE_OPTIONS: readonly {
-  label: string;
-  field: 'pageChanges' | 'chapterChanges';
-}[] = [
-  { label: 'Pages', field: 'pageChanges' },
-  { label: 'Chapters', field: 'chapterChanges' },
-];
-
 const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[] = [
   { label: 'Single', spread: 'single' },
   { label: 'Double', spread: 'double' },
@@ -170,47 +161,6 @@ function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): Pref
   }
 
   return { layout: { ...current.layout, spread: nextSpread } };
-}
-
-/**
- * `accessibility.tts.enabled` is `useTtsEnabled()`'s one source of truth (TTS_PROVIDER.md's "one
- * boolean that crosses the seam") — until Personalization/Accessibility ships a real settings
- * screen, this is the only way to flip it on a device, replacing the force-enable effect that used
- * to live in the now-retired `TtsReadingScreen.tsx` demo tab. `PrefsPatch` already covers
- * `accessibility` as a top-level group (same "whole group, not deep-merged" contract as `layout`
- * above), so this is a plain flip rather than a revert-to-default toggle — there is no third state.
- */
-function toggleTtsEnabled(current: SharedPrefs): PrefsPatch {
-  return {
-    accessibility: {
-      ...current.accessibility,
-      tts: { ...current.accessibility.tts, enabled: !current.accessibility.tts.enabled },
-    },
-  };
-}
-
-/**
- * The two `announce.*` gates, flipped the same way `toggleTtsEnabled` flips its one.
- *
- * A PLAIN FLIP, not this file's usual revert-to-default toggle, and the difference is worth stating
- * because it looks like an inconsistency: both of these DEFAULT TO TRUE (they are two of the four
- * defaults `DEFAULT_ACCESSIBILITY_PREFS` calls out as not being "off"), so "press the active option
- * again to revert to the default" would mean the Off button could never stay pressed.
- *
- * TWO CONTROLS BECAUSE THEY ARE TWO PREFERENCES. A page turn announces constantly and a chapter
- * change a handful of times a book; a reader who silenced pages has not asked to stop being told
- * which chapter they are in. `AccessibilityPrefs` already separates them.
- */
-function toggleAnnounce(current: SharedPrefs, field: 'pageChanges' | 'chapterChanges'): PrefsPatch {
-  return {
-    accessibility: {
-      ...current.accessibility,
-      announce: {
-        ...current.accessibility.announce,
-        [field]: !current.accessibility.announce[field],
-      },
-    },
-  };
 }
 
 /**
@@ -700,68 +650,6 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                 >
                   <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
                     {label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Not format-gated, unlike Typography/Zoom below: this is a device-wide accessibility
-              preference, not a per-document layout one. ReaderScreen's own toolbar button
-              (`ttsEnabled && format === 'EPUB'`) is where the EPUB-only gate actually lives.
-
-              THE ONLY TTS CONTROL IN THIS MENU. There used to be a second one — a separate "TTS"
-              section further down with an On/Off pair writing the same field, plus a hint saying
-              to re-enter the book for the change to take. Two controls for one boolean is one too
-              many, and the hint stopped being true when `useTtsEnabled` started subscribing to
-              `prefsStore` (see that file): the toggle now takes effect in an open book. */}
-          <Text style={styles.sectionLabel}>Accessibility</Text>
-          <View style={styles.row}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: prefs.accessibility.tts.enabled }}
-              accessibilityLabel={`TTS: ${prefs.accessibility.tts.enabled ? 'On' : 'Off'}`}
-              onPress={() => {
-                void prefsStore.savePrefs(toggleTtsEnabled(prefs));
-              }}
-              style={[styles.toggle, prefs.accessibility.tts.enabled && styles.toggleActive]}
-            >
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  prefs.accessibility.tts.enabled && styles.toggleLabelActive,
-                ]}
-              >
-                TTS: {prefs.accessibility.tts.enabled ? 'On' : 'Off'}
-              </Text>
-            </Pressable>
-          </View>
-
-          {/*
-            THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a
-            device — nothing else in the app writes `accessibility.announce.*`, so the announcements
-            they gate could only ever be tested by hand-editing SQLite. Same standing as the TTS
-            toggle above: temporary, and it goes with this file when a real settings screen lands.
-
-            SEPARATE ROWS BECAUSE THEY ARE SEPARATE PREFERENCES — see `toggleAnnounce`. Both default
-            ON, which is why they are plain flips and not this file's revert-to-default toggles.
-          */}
-          <View style={styles.row}>
-            {ANNOUNCE_OPTIONS.map(({ label, field }) => {
-              const on = prefs.accessibility.announce[field];
-              return (
-                <Pressable
-                  key={field}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
-                  accessibilityLabel={`${label} announcements: ${on ? 'On' : 'Off'}`}
-                  onPress={() => {
-                    void prefsStore.savePrefs(toggleAnnounce(prefs, field));
-                  }}
-                  style={[styles.toggle, on && styles.toggleActive]}
-                >
-                  <Text style={[styles.toggleLabel, on && styles.toggleLabelActive]}>
-                    {label}: {on ? 'On' : 'Off'}
                   </Text>
                 </Pressable>
               );

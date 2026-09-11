@@ -97,3 +97,81 @@ export function rangesOverlap(a: Range, b: Range): boolean {
     a.compareBoundaryPoints(Range.END_TO_START, b) < 0
   );
 }
+
+/** A viewport as a real bounding box, in whatever coordinate space the caller's rects are already
+ * in — NOT anchored at (0,0). `epub.entry.ts`'s caller needs this: its rects and its viewport are
+ * both already in the OUTER document's coordinate space (a `getBoundingClientRect()` each), and
+ * that viewport does not start at the document's origin. */
+export interface ViewportBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Does any of these rects intersect this viewport?
+ *
+ * PARTIAL OVERLAP COUNTS, NOT FULL CONTAINMENT — the caller this was built for
+ * (`epub.entry.ts`'s TTS auto-follow, `spokenRangeVisible`) tests a target that can legitimately
+ * straddle a page or column break. Requiring every rect fully inside would call a sentence
+ * "off-screen" the instant it starts painting if it also runs onto the next page, even though the
+ * reader can plainly see where it starts — and would turn the page out from under text most of
+ * which is still visible.
+ */
+export function anyRectOnScreen(
+  rects: readonly { left: number; top: number; width: number; height: number }[],
+  viewport: ViewportBounds,
+): boolean {
+  return rects.some(
+    (rect) =>
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.left < viewport.right &&
+      rect.left + rect.width > viewport.left &&
+      rect.top < viewport.bottom &&
+      rect.top + rect.height > viewport.top,
+  );
+}
+
+/** Where a teleprompter-style reposition should trigger, and where it should land, as fractions of
+ * viewport height. */
+export interface ReadingZoneOptions {
+  /** Fraction of viewport height past which a target triggers a reposition — BEFORE it reaches the
+   * bottom edge, not after, so text never arrives already cut off mid-line. */
+  triggerFraction: number;
+  /** Fraction of viewport height a reposition puts the target's deepest point at afterward — an
+   * upper-middle position, so a reposition reveals a full screen of upcoming text, not the bare
+   * minimum needed to be visible. */
+  targetFraction: number;
+}
+
+/**
+ * How far to scroll (positive = down) to bring a target back into the reading zone, or null if it
+ * is already comfortably inside it.
+ *
+ * USES THE DEEPEST RECT (max `top + height`), NOT THE FIRST — the point that would be cut off first
+ * as the reader scrolls forward, so a multi-line sentence is judged by its lowest line, not where it
+ * starts.
+ *
+ * NEVER TRIGGERS FOR A TARGET ABOVE THE ZONE. A target near or above the top of the viewport has a
+ * small or negative `positionFraction`, which is always `< triggerFraction` — this only ever catches
+ * up with content drifting toward the bottom, matching forward reading. It does not fight a reader
+ * who paged back or scrolled up manually; there is no code path here that would scroll UP.
+ */
+export function readingZoneScrollDelta(
+  rects: readonly { left: number; top: number; width: number; height: number }[],
+  viewport: ViewportBounds,
+  options: ReadingZoneOptions,
+): number | null {
+  if (rects.length === 0) return null;
+  const viewportHeight = viewport.bottom - viewport.top;
+  if (viewportHeight <= 0) return null;
+
+  const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+  const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
+  if (positionFraction < options.triggerFraction) return null;
+
+  const targetBottom = viewport.top + options.targetFraction * viewportHeight;
+  return deepestBottom - targetBottom;
+}

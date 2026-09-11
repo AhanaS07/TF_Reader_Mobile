@@ -45,3 +45,13 @@ export async function getAuthToken(): Promise<string> {
   cached = await fetchDevToken();
   return cached.token;
 }
+
+/**
+ * Clears the cached token immediately. Called when the server rejects the current token with 401,
+ * indicating it has been invalidated server-side (e.g., password changed on another device). Without
+ * this, the app would continue using the rejected token until expiresAtMs elapses, blocking all sync
+ * traffic silently.
+ */
+export function invalidateAuthToken(): void {
+  cached = null;
+}

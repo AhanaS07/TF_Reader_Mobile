@@ -544,6 +544,17 @@ after an initial screen-scaling error, and a "double tap" needed *specific* timi
 nor 1-second-spaced to register as an activation rather than two independent explorations) — flagged
 here as a **tooling limitation of this session**, not a finding about the app.
 
+**Confirmed again, independently, 2026-09-09** (`02_a11y_root_cause_RESULT.md`'s H1/H2 pass,
+different swipe parameters and start points): still unreliable, and there is no clean adb-only
+workaround on a production (non-userdebug/rooted) emulator image — TalkBack's keyboard shortcuts
+live in its own app-private prefs, not a global `settings` key. **Use tap-exact-bounds instead**
+for any "can focus reach this specific node" question going forward: read the target's exact
+`bounds` via `uiautomator dump`, `adb shell input tap` its center, screenshot to check whether
+TalkBack's focus rectangle moved there. Reliable every time it was used this session (see that
+file's H1/H2 write-up). Reserve swipe for when the question is genuinely about gesture behavior
+end-to-end, not node reachability — and expect to need a real device/finger or a rooted AVD even
+then.
+
 ### 12.6 Risk register update
 
 | Risk (from §9) | 2026-08-24/25 rating | 2026-08-31 Configuration A observation |

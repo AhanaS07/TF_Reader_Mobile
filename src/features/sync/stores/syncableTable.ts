@@ -484,6 +484,7 @@ function mergeFieldLevel<TRow extends FieldMergeRowShape>(
     }
   }
 
+  // If nothing changed (remote won no fields), reject the stale incoming record.
   if (!changed) return { row: existing, changed: false };
 
   merged.field_updated_at = stringifyFieldTimestamps(mergedTimes);

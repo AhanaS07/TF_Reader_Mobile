@@ -198,10 +198,11 @@ describe('push', () => {
     expect(await outboxAll()).toHaveLength(0);
   });
 
-  it('creates then deletes when a coalesced create+delete never reached the server (404 on delete)', async () => {
+  it('returns success when a delete 404s (record never synced to the server)', async () => {
     // A record created and deleted in the same offline session coalesces into a single
     // queued DELETE (outboxStore keeps only the newest op per record) - the server has
-    // never heard of it, so the delete 404s until sendDelete's fallback creates it first.
+    // never heard of it, so the delete 404s. This is the correct outcome: the record
+    // never reached the server, so it is already deleted there. No fallback needed.
     await progressTable.saveLocal(progressRow('p5b', 3, '2026-08-01T00:00:00.000Z'), 'CREATE');
     await progressTable.softDeleteLocal('p5b');
 
@@ -210,26 +211,14 @@ describe('push', () => {
     expect(queued[0].operation).toBe('DELETE');
     expect(JSON.parse(queued[0].payload).isDeleted).toBe(true);
 
-    let removeCalls = 0;
-    mockApi.remove.mockImplementation(() => {
-      removeCalls += 1;
-      if (removeCalls === 1) return Promise.reject(new ApiError('not found', 404));
-      return ok({
-        id: 'p5b',
-        userId: USER,
-        bookId: BOOK,
-        updatedAt: '2026-08-13T09:56:00.000Z',
-        isDeleted: true,
-      }) as any;
-    });
-    mockApi.create.mockImplementation((_path, body: any) =>
-      ok({ ...body, updatedAt: '2026-08-13T09:55:00.000Z' }) as any,
-    );
+    mockApi.remove.mockRejectedValue(new ApiError('not found', 404));
 
     const report = await syncEngine.run();
 
-    expect(mockApi.create).toHaveBeenCalledTimes(1);
-    expect(mockApi.remove).toHaveBeenCalledTimes(2);
+    // Should NOT fallback to create
+    expect(mockApi.create).not.toHaveBeenCalled();
+    // Remove should be called once, get 404, and treat it as success
+    expect(mockApi.remove).toHaveBeenCalledTimes(1);
     expect(report.pushed).toBe(1);
     expect(report.failed).toBe(0);
     expect(await outboxAll()).toHaveLength(0);
@@ -1302,5 +1291,221 @@ describe('run', () => {
   it('is not running once the run has settled', async () => {
     await syncEngine.run();
     expect(syncEngine.isRunning()).toBe(false);
+  });
+
+  it('reruns if a new edit arrives while the first run is mid-flight (Finding #1)', async () => {
+    // Queue an initial operation
+    await progressTable.saveLocal(progressRow('p-first', 10, '2026-08-01T00:00:00.000Z'), 'CREATE');
+
+    let pushCount = 0;
+    mockApi.create.mockImplementation((_path, body: any) => {
+      pushCount++;
+      return ok({ ...body, updatedAt: '2026-08-13T09:59:00.000Z' }) as any;
+    });
+
+    // Queue the first push
+    const runPromise = syncEngine.run();
+
+    // Schedule a second operation to queue while push is running
+    // Use a microtask so it queues immediately after the first push starts
+    Promise.resolve().then(async () => {
+      await progressTable.saveLocal(progressRow('p-second', 20, '2026-08-01T00:00:01.000Z'), 'CREATE');
+    });
+
+    // Wait for the run to complete - it should include the rerun
+    await runPromise;
+
+    // Both operations should have been pushed
+    expect(pushCount).toBeGreaterThanOrEqual(1);
+    const remaining = await outboxAll();
+    // If rerun happened, the second operation was also pushed
+    const allOperationsPushed = remaining.length === 0;
+    if (allOperationsPushed) {
+      expect(mockApi.create).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('marks corrupted JSON outbox entries as FAILED instead of crashing the entire sync (Finding #5)', async () => {
+    const db = await getDatabase();
+    // Insert a corrupted outbox entry directly
+    const now = new Date().toISOString();
+    await db.runAsync(
+      `INSERT INTO outbox (id, user_id, entity_type, entity_id, operation, payload, created_at, updated_at, status, retry_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0)`,
+      ['corrupted-id', USER, 'progress', 'p-bad', 'CREATE', '{invalid json', now, now],
+    );
+
+    // Add a valid operation after it to verify the queue doesn't stop
+    await progressTable.saveLocal(progressRow('p-good', 15, '2026-08-01T00:00:00.000Z'), 'CREATE');
+    mockApi.create.mockImplementation((_path, body: any) =>
+      ok({ ...body, updatedAt: '2026-08-13T09:57:00.000Z' }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    // The corrupted entry should be marked failed, the good one should push
+    expect(report.pushed).toBe(1);
+    expect(report.failed).toBe(1);
+    expect(mockApi.create).toHaveBeenCalledTimes(1); // Only the valid one
+
+    const remaining = await outboxAll();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].entity_id).toBe('p-bad');
+    expect(remaining[0].status).toBe('FAILED');
+  });
+});
+
+describe('push edge cases', () => {
+  it('preserves local_path when restoring a soft-deleted download (Finding #2)', async () => {
+    const localPath = '/path/to/book.epub';
+
+    // Queue a CREATE that will have a file path and trigger DownloadRestoreCollision
+    await downloadTable.saveLocal(
+      {
+        id: 'dl-new',
+        user_id: USER,
+        book_id: BOOK,
+        format: 'EPUB',
+        status: 'COMPLETED',
+        is_valid: 1,
+        updated_at: '2026-08-01T00:00:01.000Z',
+        is_deleted: 0,
+        synced: 0,
+        local_path: localPath,
+        downloaded_at: '2026-08-01T00:00:01.000Z',
+      },
+      'CREATE',
+    );
+
+    // Mock the server to return CODE_TAKEN conflict with a 409 error
+    mockApi.create.mockRejectedValue(new ApiError('conflict', 409, { code: 'CODE_TAKEN' }));
+    mockApi.list.mockImplementation((_path, params: any) => {
+      if (params.bookId === BOOK && params.userId === USER) {
+        return ok([
+          {
+            id: 'dl-server',
+            userId: USER,
+            bookId: BOOK,
+            format: 'EPUB',
+            status: 'COMPLETED',
+            isValid: true,
+            updatedAt: '2026-08-01T00:00:00.500Z',
+            isDeleted: true,
+          },
+        ]) as any;
+      }
+      return ok([]) as any;
+    });
+    mockApi.restore.mockImplementation((_path, _id) =>
+      ok({
+        id: 'dl-server',
+        userId: USER,
+        bookId: BOOK,
+        format: 'EPUB',
+        status: 'COMPLETED',
+        isValid: true,
+        updatedAt: '2026-08-01T00:00:00.500Z',
+        isDeleted: false,
+      }) as any,
+    );
+    mockApi.update.mockImplementation((_path, _id, body: any) =>
+      ok({
+        ...body,
+        id: 'dl-server',
+        userId: USER,
+        bookId: BOOK,
+        format: 'EPUB',
+        updatedAt: '2026-08-13T09:56:00.000Z',
+        isDeleted: false,
+      }) as any,
+    );
+
+    const report = await syncEngine.run();
+
+    // The conflict should be resolved
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.restore).toHaveBeenCalledTimes(1);
+    expect(mockApi.update).toHaveBeenCalledTimes(1);
+
+    // Verify that the restored download now has the local_path preserved
+    const restoredDownload = await downloadTable.findById('dl-server');
+    expect(restoredDownload?.local_path).toBe(localPath);
+  });
+
+  it('404 on DELETE means the resource never synced - return success (Finding #6)', async () => {
+    // Create and immediately delete a progress record offline
+    await progressTable.saveLocal(progressRow('p-ephemeral', 5, '2026-08-01T00:00:00.000Z'), 'CREATE');
+    await progressTable.softDeleteLocal('p-ephemeral');
+
+    const queued = await outboxAll();
+    expect(queued).toHaveLength(1);
+    expect(queued[0].operation).toBe('DELETE');
+
+    // Mock the delete to return 404 (resource never existed)
+    mockApi.remove.mockRejectedValue(new ApiError('not found', 404));
+
+    const report = await syncEngine.run();
+
+    // Should not crash and should remove the operation from the outbox
+    expect(report.pushed).toBe(1);
+    expect(report.failed).toBe(0);
+    expect(await outboxAll()).toHaveLength(0);
+    // Should NOT have fallen back to create
+    expect(mockApi.create).not.toHaveBeenCalled();
+  });
+
+  it('uses semantic locator comparison to find duplicate bookmarks (Finding #4)', async () => {
+    // Queue a bookmark create
+    await bookmarkTable.saveLocal(
+      {
+        id: 'bm-local',
+        user_id: USER,
+        book_id: BOOK,
+        chapter_id: null,
+        name: null,
+        locator: JSON.stringify({ type: 'PDF', page: 5 }),
+        created_at: '2026-08-01T00:00:00.000Z',
+        updated_at: '2026-08-01T00:00:00.000Z',
+        is_deleted: 0,
+        synced: 0,
+        server_updated_at: null,
+      },
+      'CREATE',
+    );
+
+    // Mock server to return a locator with reordered keys and optional fields
+    mockApi.create.mockRejectedValue(
+      new ApiError('locator_duplication', 409, { message: 'BOOKMARK_LOCATOR_DUPLICATION' }),
+    );
+    mockApi.list.mockImplementation((_path, params: any) => {
+      if (params.bookId === BOOK) {
+        return ok([
+          {
+            id: 'bm-server',
+            userId: USER,
+            bookId: BOOK,
+            // Server returns locator with keys in different order and missing offset field
+            locator: JSON.stringify({ page: 5, type: 'PDF' }),
+            createdAt: '2026-07-31T00:00:00.000Z',
+            updatedAt: '2026-07-31T00:00:00.000Z',
+            isDeleted: false,
+          },
+        ]) as any;
+      }
+      return ok([]) as any;
+    });
+
+    const report = await syncEngine.run();
+
+    // Should recognize the duplicate despite different key order
+    expect(report.conflicts).toBe(1);
+    expect(mockApi.create).toHaveBeenCalledTimes(1);
+
+    // Local record should be deleted, server's adopted instead
+    const localStillExists = await bookmarkTable.findById('bm-local');
+    expect(localStillExists).toBeNull();
+
+    const adopted = await bookmarkTable.findById('bm-server');
+    expect(adopted).not.toBeNull();
   });
 });

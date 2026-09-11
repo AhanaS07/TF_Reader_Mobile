@@ -15,7 +15,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 
-import { createFakeReaderTextProvider } from './testSupport/fakeReaderTextProvider';
+import { createTestReaderTextProvider } from './testSupport/testReaderTextProvider';
 
 import { useTtsSession } from './useTtsSession';
 
@@ -96,7 +96,7 @@ function fireAppStateChange(next: 'active' | 'background' | 'inactive'): Promise
 
 describe('useTtsSession on Android', () => {
   it("pause() never calls the native pause — it stops the engine and flips to 'paused' directly, since no tts-pause event will ever arrive", async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -114,7 +114,7 @@ describe('useTtsSession on Android', () => {
   });
 
   it('play() while paused re-speaks the paused sentence instead of re-resolving the reader position', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -134,8 +134,29 @@ describe('useTtsSession on Android', () => {
     expect(result.current.status).toBe('speaking');
   });
 
+  it('play() after the reader navigates away while paused re-resolves fresh, not the stale pausedSentence snapshot', async () => {
+    // Android's own 'navigated' handler already nulls pausedSentence, and playRef's fallback
+    // already re-resolves when it's null — this pins that the shared pausedPositionInvalidated
+    // fix (added for iOS) does not fight or duplicate that, and the end result is still correct.
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    await act(() => result.current.pause());
+    expect(result.current.status).toBe('paused');
+
+    await act(() => provider.navigate(2));
+
+    mockTts.speak.mockClear();
+    await act(() => result.current.play());
+
+    expect(mockTts.speak).toHaveBeenCalledWith(provider.sentences[2].text);
+  });
+
   it('backgrounding while speaking resets to idle — the reset itself is not platform-gated', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
@@ -154,7 +175,7 @@ describe('useTtsSession on Android', () => {
   // from UtteranceProgressListener.onError), so useTtsSession.ts's iOS-only guard must not
   // suppress it here — this was previously untested on either platform.
   it('subscribes to tts-error and surfaces it as status "error"', async () => {
-    const provider = createFakeReaderTextProvider();
+    const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
 
     await waitFor(() => expect(result.current.prefs.enabled).toBe(true));

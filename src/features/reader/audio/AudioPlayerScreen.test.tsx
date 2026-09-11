@@ -31,9 +31,15 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { OFFLINE_LOCK_EVENTS } from '@/shared/contracts';
+import type { BookId } from '@/shared/contracts';
 import { eventBus, resetEventBusForTests } from '@/shared/eventBus';
 
 import { AudioPlayerScreen } from './AudioPlayerScreen';
+import { useAudioQueueStore } from './audioQueueStore';
+import {
+  _resetAudioTtsCoordinatorForTests,
+  registerActiveTtsSession,
+} from './audioTtsCoordinator';
 
 // `mock`-prefixed, per babel-plugin-jest-hoist's naming exception — see ReaderRouteScreen.test.tsx
 // for the same convention.
@@ -79,6 +85,19 @@ jest.mock('./audioAssetResolver', () => ({
 
 jest.mock('./audioPlayerInstance', () => ({
   getAudioPlayerFor: () => ({ player: mockFakePlayer, isNew: mockIsNewAudioPlayer }),
+  getCurrentAudioPlayer: () => mockFakePlayer,
+  registerTrackCompletionHandler: jest.fn(),
+  switchActiveAudioTrack: jest.fn(),
+}));
+
+const mockSkipToNextTrack = jest.fn();
+const mockSkipToPreviousTrack = jest.fn();
+const mockJumpToQueueIndex = jest.fn();
+
+jest.mock('./audioQueueCoordinator', () => ({
+  skipToNextTrack: (...args: unknown[]) => mockSkipToNextTrack(...args),
+  skipToPreviousTrack: (...args: unknown[]) => mockSkipToPreviousTrack(...args),
+  jumpToQueueIndex: (...args: unknown[]) => mockJumpToQueueIndex(...args),
 }));
 
 // setAudioModeAsync is here because AudioPlayerScreen now imports ensureAudioModeConfigured
@@ -113,6 +132,9 @@ describe('AudioPlayerScreen', () => {
     // It is a module singleton, so every test starts from zero subscribers regardless of whether
     // it touches locking at all.
     resetEventBusForTests();
+    _resetAudioTtsCoordinatorForTests();
+    useAudioQueueStore.getState().clearQueue();
+    useAudioQueueStore.getState().setRepeatMode('off');
   });
 
   it('renders a distinct "access ended" state on a content.lock signal, not the generic load-error heading', async () => {
@@ -269,6 +291,24 @@ describe('AudioPlayerScreen', () => {
     expect(fakePlayer.play).toHaveBeenCalled();
   });
 
+  it('stops active TTS when Play is pressed', async () => {
+    const ttsStopMock = jest.fn();
+    registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => true,
+      isActive: () => true,
+    });
+
+    const fakePlayer = getFakePlayer();
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+    expect(ttsStopMock).toHaveBeenCalledTimes(1);
+    expect(fakePlayer.play).toHaveBeenCalled();
+  });
+
   it('shows a Pause button once playing, and pressing it calls pause()', async () => {
     const fakePlayer = getFakePlayer();
     fakePlayer.playing = true;
@@ -314,7 +354,7 @@ describe('AudioPlayerScreen', () => {
     const gate = new Promise<boolean>((resolve) => {
       resolveGate = resolve;
     });
-    const { findByLabelText, getByText } = await render(
+    const { findByLabelText } = await render(
       <AudioPlayerScreen
         bookId="dev-sample-audio"
         title="My Audiobook"
@@ -324,7 +364,7 @@ describe('AudioPlayerScreen', () => {
 
     const playButton = await findByLabelText('Play');
     void fireEvent.press(playButton); // not awaited — the gate has not resolved yet
-    await waitFor(() => expect(getByText('Checking…')).toBeTruthy());
+    await waitFor(() => expect(findByLabelText('Checking progress')).resolves.toBeTruthy());
     expect(fakePlayer.play).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -381,6 +421,49 @@ describe('AudioPlayerScreen', () => {
     expect(fakePlayer.play).toHaveBeenCalled();
   });
 
+  it('plays unhindered when TTS is registered but idle (TTS is ON, but not playing)', async () => {
+    const fakePlayer = getFakePlayer();
+    const ttsStopMock = jest.fn();
+    const unregister = registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => false,
+      isActive: () => false, // idle
+    });
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    // stop() not called because TTS is not playing
+    expect(ttsStopMock).not.toHaveBeenCalled();
+    expect(fakePlayer.play).toHaveBeenCalled();
+
+    unregister();
+  });
+
+  it('stops active TTS when playing audiobook while TTS is actively speaking', async () => {
+    const fakePlayer = getFakePlayer();
+    const ttsStopMock = jest.fn();
+    const unregister = registerActiveTtsSession({
+      stop: ttsStopMock,
+      isSpeaking: () => true,
+      isActive: () => true, // speaking
+    });
+
+    const { findByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    await fireEvent.press(await findByLabelText('Play'));
+
+    expect(ttsStopMock).toHaveBeenCalledTimes(1);
+    expect(fakePlayer.play).toHaveBeenCalled();
+
+    unregister();
+  });
+
   it('skip back calls seekTo clamped to 0, not negative', async () => {
     const fakePlayer = getFakePlayer();
     fakePlayer.currentTime = 5;
@@ -418,6 +501,11 @@ describe('AudioPlayerScreen', () => {
 
   it('sets this player active for lock screen controls with seek forward/backward, not next/prev', async () => {
     const fakePlayer = getFakePlayer();
+    // Lock screen registration only fires once status.playing is true (see AudioPlayerScreen.tsx
+    // comment on why: iOS ignores MPNowPlayingInfoCenter registrations that arrive with rate=0).
+    // Set before render() so the component's first re-render after resolver resolves already sees
+    // playing:true — same "set fields before render" pattern the file header mandates.
+    fakePlayer.playing = true;
     await render(<AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />);
 
     await waitFor(() =>
@@ -452,6 +540,44 @@ describe('AudioPlayerScreen', () => {
     );
 
     await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(7));
+  });
+
+  // Regression pin: when a new player loads at currentTime=0 and a seekTo(initialPosition) is
+  // about to run, both the seek effect and the onPositionChange effect fire on the same
+  // status.isLoaded transition. The seek is async — currentTime is still 0 at this point — so
+  // without the guard, handlePositionChange writes positionMs=0 unthrottled and pushes it to
+  // the server before the correct position lands, triggering false conflict alerts on Device 1.
+  it('does not report position 0 via onPositionChange when a new player has not yet seeked to initialPosition', async () => {
+    // currentTime starts at 0 (default) — the player just loaded, seek hasn't run yet.
+    const onPositionChange = jest.fn();
+    await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        initialPosition={60}
+        onPositionChange={onPositionChange}
+      />,
+    );
+
+    // Position 0 must not reach onPositionChange — it is the player's default load state,
+    // not the real starting position. The post-seek position (60) is the correct first report.
+    expect(onPositionChange).not.toHaveBeenCalledWith(0);
+    await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(60));
+  });
+
+  it('does report position 0 via onPositionChange for a fresh book with no saved position', async () => {
+    // No initialPosition — there is no seek pending, so position 0 IS the correct starting
+    // point and must be reported.
+    const onPositionChange = jest.fn();
+    await render(
+      <AudioPlayerScreen
+        bookId="dev-sample-audio"
+        title="My Audiobook"
+        onPositionChange={onPositionChange}
+      />,
+    );
+
+    await waitFor(() => expect(onPositionChange).toHaveBeenCalledWith(0));
   });
 
   // AUDIO PHASE 4. onPositionCommit marks the edges where the next tick may never arrive. These
@@ -543,5 +669,59 @@ describe('AudioPlayerScreen', () => {
     // currentTime on an unloaded player is 0; persisting it would overwrite a real stored position
     // with the top of the book just because the user opened and immediately left.
     expect(onPositionCommit).not.toHaveBeenCalled();
+  });
+
+  it('calls skipToNextTrack when Next track button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [
+        { bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' },
+        { bookId: 'book-next' as BookId, title: 'Next Book' },
+      ],
+      0,
+    );
+
+    const { getByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const nextBtn = getByLabelText('Next track');
+    await fireEvent.press(nextBtn);
+
+    expect(mockSkipToNextTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls skipToPreviousTrack when Previous track button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [
+        { bookId: 'book-prev' as BookId, title: 'Prev Book' },
+        { bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' },
+      ],
+      1,
+    );
+
+    const { getByLabelText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const prevBtn = getByLabelText('Previous track');
+    await fireEvent.press(prevBtn);
+
+    expect(mockSkipToPreviousTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens queue modal when Queue button is pressed', async () => {
+    useAudioQueueStore.getState().setQueue(
+      [{ bookId: 'dev-sample-audio' as BookId, title: 'My Audiobook' }],
+      0,
+    );
+
+    const { getByLabelText, getByText } = await render(
+      <AudioPlayerScreen bookId="dev-sample-audio" title="My Audiobook" />,
+    );
+
+    const queueBtn = getByLabelText('Open queue, 1 track');
+    await fireEvent.press(queueBtn);
+
+    await waitFor(() => expect(getByText('Clear Queue')).toBeTruthy());
   });
 });
