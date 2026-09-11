@@ -27,6 +27,10 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { prefsStore } from '@/features/personalization/prefsStore';
+import {
+  guardTtsEnableForSleepTimer,
+  resumeAudioIfPausedForSleepTimerTts,
+} from '@/features/reader/audio/audioTtsCoordinator';
 import type { AccessibilityPrefs, ContentFormat, ReduceMotion } from '@/shared/contracts';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 
@@ -139,13 +143,20 @@ export function AccessibilitySettingsPanel({
    * there is no third state.
    */
   const toggleTts = (): void => {
-    void prefsStore
-      .savePrefs({
-        accessibility: { ...prefs, tts: { ...prefs.tts, enabled: !prefs.tts.enabled } },
-      })
-      .catch((error: unknown) => {
-        console.warn('AccessibilitySettingsPanel: failed to save tts.enabled', error);
-      });
+    const nextEnabled = !prefs.tts.enabled;
+    const apply = (): void => {
+      void prefsStore
+        .savePrefs({ accessibility: { ...prefs, tts: { ...prefs.tts, enabled: nextEnabled } } })
+        .catch((error: unknown) => {
+          console.warn('AccessibilitySettingsPanel: failed to save tts.enabled', error);
+        });
+    };
+    if (nextEnabled) {
+      guardTtsEnableForSleepTimer(apply);
+    } else {
+      resumeAudioIfPausedForSleepTimerTts();
+      apply();
+    }
   };
 
   /**

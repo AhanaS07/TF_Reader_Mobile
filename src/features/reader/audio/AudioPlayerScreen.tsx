@@ -59,6 +59,8 @@ import {
 } from './audioQueueCoordinator';
 import { useAudioQueueStore } from './audioQueueStore';
 import { stopActiveTts } from './audioTtsCoordinator';
+import { SleepTimerModal } from './SleepTimerModal';
+import { useSleepTimerStore } from './sleepTimerStore';
 import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 const SKIP_SECONDS = 15;
@@ -182,10 +184,14 @@ function AudioPlayerScreenComponent(
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
   const [queueModalVisible, setQueueModalVisible] = useState(false);
+  const [sleepTimerModalVisible, setSleepTimerModalVisible] = useState(false);
 
   const hasNext = useAudioQueueStore((s) => s.hasNext());
   const hasPrevious = useAudioQueueStore((s) => s.hasPrevious());
   const queueLength = useAudioQueueStore((s) => s.items.length);
+
+  const sleepTimerPhase = useSleepTimerStore((s) => s.phase);
+  const sleepTimerRemainingSeconds = useSleepTimerStore((s) => s.remainingSeconds);
 
   /**
    * Sync's `content.lock` bus signal for THIS book, rendered — the visible half of the
@@ -475,6 +481,22 @@ function AudioPlayerScreenComponent(
         </Text>
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={
+            sleepTimerPhase === 'running'
+              ? `Sleep timer, ${formatTime(sleepTimerRemainingSeconds)} remaining`
+              : 'Sleep timer'
+          }
+          onPress={() => setSleepTimerModalVisible(true)}
+          style={styles.queueButton}
+        >
+          <Text style={styles.queueButtonLabel}>
+            {sleepTimerPhase === 'running'
+              ? formatTime(sleepTimerRemainingSeconds)
+              : 'Sleep Timer'}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
           accessibilityLabel={`Open queue, ${queueLength} track${queueLength === 1 ? '' : 's'}`}
           onPress={() => setQueueModalVisible(true)}
           style={styles.queueButton}
@@ -604,6 +626,11 @@ function AudioPlayerScreenComponent(
         onClose={() => setQueueModalVisible(false)}
         onSelectTrack={(idx) => void jumpToQueueIndex(idx)}
       />
+
+      <SleepTimerModal
+        visible={sleepTimerModalVisible}
+        onClose={() => setSleepTimerModalVisible(false)}
+      />
     </View>
   );
 }
@@ -624,6 +651,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: 12,
+    gap: 8,
   },
   title: { fontSize: 20, fontWeight: '700', color: '#111111', flex: 1, marginRight: 12 },
   queueButton: {
