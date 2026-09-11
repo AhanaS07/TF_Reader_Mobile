@@ -1037,6 +1037,7 @@ ${text}`;
     (wrapper?.querySelector(".pdf-page") ?? wrapper)?.replaceChildren();
   }
   var scrollRaf = 0;
+  var lastReportedScrollPage = 0;
   function scheduleVirtualize() {
     if (scrollRaf) return;
     scrollRaf = window.requestAnimationFrame(() => {
@@ -1060,6 +1061,8 @@ ${text}`;
       if (page < lo || page > hi) disposeScrollPage(page);
     }
     currentPage = current;
+    if (current === lastReportedScrollPage) return;
+    lastReportedScrollPage = current;
     post({
       type: "relocated",
       position: { kind: "page", page: current, pageCount },
@@ -1098,6 +1101,7 @@ ${text}`;
     if (!scrollMode) return;
     scrollMode = false;
     detachScrollListener();
+    lastReportedScrollPage = 0;
     for (const page of [...renderedPages]) disposeScrollPage(page);
     pageSurfaces.clear();
     pageWrappers.clear();
