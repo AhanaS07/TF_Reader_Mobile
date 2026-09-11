@@ -136,7 +136,7 @@ anti-rollback high-water-mark.
 **This still needs a joint decision, not just a Sync-side change.** `src/shared/contracts/
 offline-lock.ts` — jointly owned by Sync and Encryption — documents a *previous* withdrawn attempt
 at offline entitlement that had this exact shape: an externally-written, synced `is_valid` column
-as a second, independent source of entitlement truth that could disagree with the `SignedLicence`
+as a second, independent source of entitlement truth that could disagree with the `LocalLicenceRecord`
 Encryption already verifies, and that propagated one device's verdict to every other device. That
 file's own open question 3 says the column "must not be a synced column: one device's verdict must
 not propagate as another device's truth" — which this design is. Whether that concern still
