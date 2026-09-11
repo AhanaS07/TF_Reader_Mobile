@@ -152,10 +152,10 @@ describe('AudioPlayerScreen', () => {
       });
     });
 
-    expect(getByText('Access to this book ended')).toBeTruthy();
+    expect(getByText('Access to this title ended')).toBeTruthy();
     expect(getByText('CONTENT_LOCKED: Your access to this book has ended.')).toBeTruthy();
     // NOT the generic load-error heading — this is the whole point of N3's fix.
-    expect(queryByText("Couldn't load this audiobook")).toBeNull();
+    expect(queryByText("Couldn't load this title")).toBeNull();
   });
 
   it('ignores a lock for a different bookId', async () => {
@@ -173,7 +173,7 @@ describe('AudioPlayerScreen', () => {
       });
     });
 
-    expect(queryByText('Access to this book ended')).toBeNull();
+    expect(queryByText('Access to this title ended')).toBeNull();
     expect(getByText('My Audiobook')).toBeTruthy();
   });
 
@@ -201,7 +201,7 @@ describe('AudioPlayerScreen', () => {
       <AudioPlayerScreen bookId="dev-sample-audio-encrypted" title="My Audiobook" />,
     );
 
-    await waitFor(() => expect(getByText("Couldn't load this audiobook")).toBeTruthy());
+    await waitFor(() => expect(getByText("Couldn't load this title")).toBeTruthy());
     expect(getByText('LICENSE_DENIED for dev-sample-audio-encrypted')).toBeTruthy();
   });
 

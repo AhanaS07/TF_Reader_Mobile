@@ -930,7 +930,7 @@ describe('the bounded wait on the byte path', () => {
     // A byte path that never settles is exactly what a reachable-but-unresponsive
     // backend produces: verifyReadingAccess's fetch has no AbortSignal, so it hangs
     // on the socket rather than rejecting. Before the bound, this presented as
-    // "Opening book…" forever with no error at all.
+    // "Opening title…" forever with no error at all.
     jest.mocked(getBookBase64).mockReturnValue(new Promise<string>(() => {}));
 
     await mountReader();
@@ -1092,20 +1092,20 @@ describe('the offline-lock gating hook', () => {
     expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
   });
 
-  it('never shows "Opening book…" for a lock that lands before the shell ever resolved (N1)', async () => {
+  it('never shows "Opening title…" for a lock that lands before the shell ever resolved (N1)', async () => {
     // Held open, deliberately — `prepareBook` never resolves, so `htmlUri` never leaves `null`
     // and `isBusy`'s OLD formula would stay stuck at `true` forever once the lock arrives.
     jest.mocked(prepareBook).mockReturnValue(new Promise<ContentFormat>(() => {}));
 
     await render(<ReaderScreen bookId="test-book" />);
-    expect(screen.getByText('Opening book…')).toBeTruthy();
+    expect(screen.getByText('Opening title…')).toBeTruthy();
 
     await act(async () => {
       eventBus.emit(OFFLINE_LOCK_EVENTS.LOCK, lockSignal());
     });
 
     expectCodeShownTwice('CONTENT_LOCKED');
-    expect(screen.queryByText('Opening book…')).toBeNull();
+    expect(screen.queryByText('Opening title…')).toBeNull();
   });
 
   it('routes ACCESS_REVOKED through the SAME teardown a content.lock gets', async () => {
@@ -1453,7 +1453,7 @@ describe('the merged accessibility dropdown', () => {
     await toolbar('Accessibility');
     expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
 
-    await toolbar('Search this book');
+    await toolbar('Search this title');
     expect(screen.queryByLabelText('High contrast: Off')).toBeNull();
 
     await toolbar('Accessibility');
@@ -1785,7 +1785,7 @@ describe('ReaderScreen in-book search', () => {
     // toolbar is hidden from assistive tech but remains visible and tappable, and a press is a
     // touch. The hidden state itself is asserted separately.
     await fireEvent.press(
-      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+      screen.getByRole('button', { name: 'Search this title', includeHiddenElements: true }),
     );
   }
 
@@ -1915,7 +1915,7 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('wolf');
 
-    expect(screen.getByText('No matches for “wolf” in this book.')).toBeTruthy();
+    expect(screen.getByText('No matches for “wolf” in this title.')).toBeTruthy();
     // The top banner is for ReaderErrorCodes and means the BOOK failed. Search finding
     // nothing must never light it up.
     expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
@@ -1936,7 +1936,7 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('wolf');
 
-    expect(screen.getByText('Search is unavailable for this book.')).toBeTruthy();
+    expect(screen.getByText('Search is unavailable for this title.')).toBeTruthy();
     expect(screen.getByText(/failed to decode search index/)).toBeTruthy();
     expect(screen.queryByText('CONTENT_LOAD_FAILED')).toBeNull();
 
@@ -2282,11 +2282,11 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('chapter');
 
-    expect(screen.getByText('This book has no search index.')).toBeTruthy();
+    expect(screen.getByText('This title has no search index.')).toBeTruthy();
     expect(screen.queryByText(/No matches for/)).toBeNull();
     // And the hint underneath stops explaining whole-word matching, which is not why this is empty.
     expect(screen.queryByText(/Whole words only/)).toBeNull();
-    expect(screen.getByText(/No text was indexed for this book/)).toBeTruthy();
+    expect(screen.getByText(/No text was indexed for this title/)).toBeTruthy();
   });
 
   it('still blames the word when the book DOES have an index', async () => {
@@ -2297,8 +2297,8 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('chapter');
 
-    expect(screen.getByText('No matches for “chapter” in this book.')).toBeTruthy();
-    expect(screen.queryByText('This book has no search index.')).toBeNull();
+    expect(screen.getByText('No matches for “chapter” in this title.')).toBeTruthy();
+    expect(screen.queryByText('This title has no search index.')).toBeNull();
   });
 
   it('does not ask about the index when the search found something', async () => {
@@ -2324,8 +2324,8 @@ describe('ReaderScreen in-book search', () => {
     await openSearch();
     await runSearch('chapter');
 
-    expect(screen.getByText('Search is unavailable for this book.')).toBeTruthy();
-    expect(screen.queryByText('This book has no search index.')).toBeNull();
+    expect(screen.getByText('Search is unavailable for this title.')).toBeTruthy();
+    expect(screen.queryByText('This title has no search index.')).toBeNull();
   });
 
   it('dismisses the match bar and forgets the results', async () => {
@@ -2729,7 +2729,7 @@ describe('ReaderScreen bookmarks panel', () => {
     expect(screen.queryByRole('button', { name: 'Bookmark this page' })).toBeNull();
 
     await fireEvent.press(
-      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+      screen.getByRole('button', { name: 'Search this title', includeHiddenElements: true }),
     );
     expect(screen.queryByTestId('reader-toc-list')).toBeNull();
   });
@@ -3542,7 +3542,7 @@ describe('screen-reader focus order', () => {
   // describe. Kept minimal — this block cares about focus and reachability, not about search.
   async function openSearchPanel(): Promise<void> {
     await fireEvent.press(
-      screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true }),
+      screen.getByRole('button', { name: 'Search this title', includeHiddenElements: true }),
     );
   }
 
@@ -3571,7 +3571,7 @@ describe('screen-reader focus order', () => {
     it('Search reports collapsed, then expanded, then collapsed again', async () => {
       await mountReader();
       const search = (): ReturnType<typeof screen.getByRole> =>
-        screen.getByRole('button', { name: 'Search this book', includeHiddenElements: true });
+        screen.getByRole('button', { name: 'Search this title', includeHiddenElements: true });
 
       expect(search().props.accessibilityState).toMatchObject({ expanded: false });
       await openSearchPanel();
@@ -3839,7 +3839,7 @@ describe('screen-reader focus order', () => {
 
       // Not the same ref Search's own explicit-close restores to.
       focusOnMock.mockClear();
-      await fireEvent.press(screen.getByRole('button', { name: 'Search this book' }));
+      await fireEvent.press(screen.getByRole('button', { name: 'Search this title' }));
       await fireEvent.press(screen.getByRole('button', { name: 'Close search' }));
       expect(focusOnMock.mock.calls[0][0]).not.toBe(matchBarRef);
     });

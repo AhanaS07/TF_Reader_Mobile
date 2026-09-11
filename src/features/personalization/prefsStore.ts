@@ -137,3 +137,30 @@ export const prefsStore: PrefsStore = {
     };
   },
 };
+
+// ─── Compatibility seam for useReaderPrefs.ts's PrefsSource ──────────────────────────
+//
+// useReaderPrefs.ts does `import * as prefsStore from './prefsStore'` and calls
+// `prefsStore.getPrefs()` / `.savePrefs(patch)` / `.resetPrefs()` / `.subscribe(listener)` as
+// free module functions matching its own `PrefsSource` interface (PrefsValues = SharedPrefs
+// minus sync bookkeeping fields; savePrefs/resetPrefs resolve `Promise<void>`, not the fresh
+// record). Rather than touch that file (owned by the app-team screens, not Personalization) or
+// its call sites, these wrappers give the module BOTH shapes: the real `PrefsStore` object above
+// for anything that wants the fresh SharedPrefs back, and these free functions for the existing
+// seam. SharedPrefs is a strict superset of PrefsValues, so passing it through Promise/listener
+// positions typed against PrefsValues is structurally sound — no field stripping needed.
+export function getPrefs(): Promise<SharedPrefs> {
+  return prefsStore.getPrefs();
+}
+
+export function savePrefs(patch: PrefsPatch): Promise<void> {
+  return prefsStore.savePrefs(patch).then(() => undefined);
+}
+
+export function resetPrefs(): Promise<void> {
+  return prefsStore.resetPrefs().then(() => undefined);
+}
+
+export function subscribe(listener: PrefsListener): () => void {
+  return prefsStore.subscribe(listener);
+}

@@ -36,7 +36,15 @@ import { audioQueueStore, useAudioQueueStore } from '@/features/reader/audio/aud
 import { formatDiagnosticErrorMessage } from '@/shared/contracts/errors';
 import type { BookId, ContentFormat } from '@/shared/contracts';
 
-import type { RootStackParamList } from './RootNavigator';
+// Not registered in RootNavigator (integration_ref.md's "Scaffolding to NOT copy" names this
+// screen's flat-shell entry point directly) — types itself against its own param shape rather
+// than a live navigator's param list.
+type BookListRouteParamList = {
+  BookList: undefined;
+  Reader: { bookId: BookId; format: ContentFormat };
+  AudioPlayer: { bookId: BookId; title: string };
+  MockLibrary: undefined;
+};
 
 const DEV_SAMPLE_EPUB_BOOK_ID = 'dev-sample-epub' as BookId;
 const DEV_SAMPLE_PDF_BOOK_ID = 'dev-sample-pdf' as BookId;
@@ -111,7 +119,7 @@ const BOOK_FIXTURES: readonly DevFixture[] = DEV_FIXTURES.filter((f) => f.format
 
 type TabType = 'all' | 'audio' | 'books';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'BookList'>;
+type Props = NativeStackScreenProps<BookListRouteParamList, 'BookList'>;
 
 function FixtureRow({
   fixture,

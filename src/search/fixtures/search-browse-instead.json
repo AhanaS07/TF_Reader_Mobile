@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "title": "No publications found",
+    "numberOfItems": 0
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search",
+      "type": "application/opds+json"
+    }
+  ],
+  "navigation": [
+    {
+      "title": "Browse the full catalogue",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/all",
+      "type": "application/opds+json",
+      "rel": "subsection"
+    }
+  ]
+}

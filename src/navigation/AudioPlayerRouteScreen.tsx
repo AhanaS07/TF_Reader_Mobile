@@ -95,10 +95,15 @@ import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { Locator } from '@/shared/contracts';
+import type { CatalogueStackParamList } from './types';
 
-import type { RootStackParamList } from './RootNavigator';
-
-type Props = NativeStackScreenProps<RootStackParamList, 'AudioPlayer'>;
+// Registered in RootNavigator's Catalogue/Search/Library stacks (Phase 4.4 of
+// integration_ref.md — landed) — see ItemDetailScreen's 'read'/'play' branch,
+// which pushes this instead of 'Reader' for an AUDIO item. Typed against
+// `CatalogueStackParamList`, the same convention `ReaderRouteScreen.tsx` uses
+// for its own 'Reader' registration, even though both routes are registered
+// identically in all three stacks — the param shape is the same everywhere.
+type Props = NativeStackScreenProps<CatalogueStackParamList, 'AudioPlayer'>;
 
 // Ticks arrive every 250ms (audioPlayerInstance.ts's updateInterval). Writing to SQLite (and
 // enqueueing an outbox row) on each one would be ~4 writes a second for a value nobody reads until
@@ -300,7 +305,7 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
     return new Promise<boolean>((resolve) => {
       Alert.alert(
         'Playback progress updated',
-        'Your progress in this audiobook was updated on another device. Resume from there, or continue playing here?',
+        'Your progress in this title was updated on another device. Resume from there, or continue playing here?',
         [
           {
             text: 'Continue here',
@@ -396,7 +401,7 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
         const pausedAtSeconds = handle.currentPositionSeconds();
         Alert.alert(
           'Playback progress updated',
-          'Playback has been paused — your progress in this audiobook was updated on another ' +
+          'Playback has been paused — your progress in this title was updated on another ' +
             'device. Resume from there, or continue playing here?',
           [
             {
