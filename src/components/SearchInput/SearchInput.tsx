@@ -188,7 +188,12 @@ const styles = StyleSheet.create({
     // read as a raised search card rather than a boxed form field.
     borderRadius: radius.sheet,
     paddingHorizontal: space.md,
-    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
+    // `elevation.raised`, not `.card` — this field is Search's own equivalent
+    // of the Catalogue hero: the one surface on the screen meant to look
+    // lifted off the page, not merely separated from it (see that token's own
+    // header comment in tokens.ts). `.card`'s subtle shadow read as barely
+    // there against a white page, which was the actual "basic" complaint.
+    ...(Platform.OS === 'ios' ? elevation.raised.ios : elevation.raised.android),
   },
   fieldFocused: {
     borderColor: color.primary,

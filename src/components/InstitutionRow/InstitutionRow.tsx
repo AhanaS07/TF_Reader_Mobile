@@ -1,7 +1,10 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { Institution } from '@model/institution';
 import { color, radius, space, type } from '@theme/tokens';
+import { getInitials } from '@utils/initials';
 
 export interface InstitutionRowProps {
   institution: Institution;
@@ -11,23 +14,21 @@ export interface InstitutionRowProps {
   onPress?: () => void;
 }
 
-// Takes the first letter of each of the first two words.
-// "Imperial College London" → "IC", "Kwame Nkrumah Uni..." → "KN"
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter((word) => word.length > 0)
-    .slice(0, 2)
-    .map((word) => word[0].toUpperCase())
-    .join('');
-}
-
 export default function InstitutionRow({
   institution,
   isSelected = false,
   isPinned = false,
   onPress,
 }: InstitutionRowProps) {
+  // A load failure and "no crest on file" used to render differently — a
+  // failed fetch left a blank, backgroundColor-only box (the image simply
+  // never painted), where a genuinely crest-less institution correctly fell
+  // back to initials. Same device as ContentCard's own `imageFailed`: one
+  // flag, keyed to this mounted instance, so a failed fetch reads exactly
+  // like "no crest" instead of an empty tile.
+  const [imageFailed, setImageFailed] = useState(false);
+  const showInitials = institution.branding === undefined || imageFailed;
+
   return (
     <Pressable
       style={styles.row}
@@ -41,12 +42,21 @@ export default function InstitutionRow({
       )}
 
       <View style={styles.inner}>
-        {institution.branding !== undefined ? (
+        {!showInitials && institution.branding !== undefined ? (
           <Image
-            source={{ uri: institution.branding.logoUrl }}
+            // See ContentCard.tsx's note — if this backend re-signs logo URLs
+            // the same way it does covers, the querystring must be stripped
+            // for the cache key so the same logo isn't treated as a new image.
+            source={{
+              uri: institution.branding.logoUrl,
+              cacheKey: institution.branding.logoUrl.split('?')[0],
+            }}
             style={styles.crest}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            transition={200}
             accessibilityLabel={`${institution.name} logo`}
+            onError={() => setImageFailed(true)}
           />
         ) : (
           // W-17: wokay may have no crest URL — initials monogram is the

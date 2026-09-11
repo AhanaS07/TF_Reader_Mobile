@@ -26,14 +26,22 @@
 // the note above them in useReaderPrefs.ts — so this file only forwards what
 // the control reports.
 import { StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { SectionHeader } from '@components/SectionHeader';
 import { Slider } from '@components/Slider';
 import { Tabs } from '@components/Tabs';
 import type { TypographyPrefs } from '@/shared/contracts';
-import { color, space, type as typeScale } from '@theme/tokens';
+import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 import { TEXT_SIZE_OPTIONS } from '@/features/personalization/prefsOptions';
+
+const SECTION_ICON_SIZE = space.md + space.xs;
+// Letterform glyphs, not Ionicons — "Tt" (text size) and "VA" (letter
+// spacing, the classic kerning-pair glyph) name the setting more directly
+// than a generic type icon would, the same call FontSection's own "Aa" makes.
+const TEXT_SIZE_ICON_LABEL = 'Tt';
+const LETTER_SPACING_ICON_LABEL = 'VA';
 
 export interface TypographySectionProps {
   typography: TypographyPrefs;
@@ -65,7 +73,10 @@ export default function TypographySection({
       <Text style={styles.hint}>EPUB only. PDFs use a fixed layout and ignore these.</Text>
 
       <View style={styles.group}>
-        <SectionHeader title="Text size" />
+        <SectionHeader
+          title="Text size"
+          icon={<Text style={styles.iconLabel}>{TEXT_SIZE_ICON_LABEL}</Text>}
+        />
         <Tabs
           tabs={[...TEXT_SIZE_OPTIONS]}
           activeId={String(typography.size)}
@@ -80,7 +91,10 @@ export default function TypographySection({
       </View>
 
       <View style={styles.group}>
-        <SectionHeader title="Line height" />
+        <SectionHeader
+          title="Line height"
+          icon={<Ionicons name="reorder-four-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+        />
         <Slider
           testID="typography-line-height-slider"
           value={typography.lineHeight}
@@ -93,7 +107,10 @@ export default function TypographySection({
       </View>
 
       <View style={styles.group}>
-        <SectionHeader title="Letter spacing" />
+        <SectionHeader
+          title="Letter spacing"
+          icon={<Text style={styles.iconLabel}>{LETTER_SPACING_ICON_LABEL}</Text>}
+        />
         <Slider
           testID="typography-letter-spacing-slider"
           value={typography.spacing}
@@ -106,7 +123,10 @@ export default function TypographySection({
       </View>
 
       <View style={styles.group}>
-        <SectionHeader title="Page margins" />
+        <SectionHeader
+          title="Page margins"
+          icon={<Ionicons name="square-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+        />
         <Slider
           testID="typography-margins-slider"
           value={typography.margins}
@@ -122,12 +142,24 @@ export default function TypographySection({
 }
 
 const styles = StyleSheet.create({
-  // No outer margin — the screen owns where the section sits (§8). `md`, not
-  // `sm`: text size, line height, letter spacing and page margins are four
-  // distinct controls, not one control split in four, so they need real
-  // separation between them.
+  // No outer margin — the screen owns where the section sits (§8). Bordered,
+  // rounded card — see ThemeSection's own note. `md`, not `sm`: text size,
+  // line height, letter spacing and page margins are four distinct
+  // controls, not one control split in four, so they need real separation
+  // between them even inside one shared card.
   section: {
     gap: space.md,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  iconLabel: {
+    fontFamily: typeScale.button.fontFamily,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
   },
   hint: {
     fontWeight: typeScale.smallLabel.weight,

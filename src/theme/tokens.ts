@@ -44,10 +44,26 @@ export const color = {
   wait: '#EEAF00', // Saffron — no seats, waitlist
   subscription: '#505AFF', // Cornflower — Subscription badges
 
-  // PENDING. The T&F palette contains no purple, and Cornflower is already
-  // spoken for by `subscription`. Held at the pre-brand value until the team
-  // picks a replacement — brand reference §6.5.
-  elite: '#7C3AED',
+  // Light-tint background for the Subscription badge, paired with `navy`
+  // foreground text/icon rather than white. Matched against a reference
+  // design, not the T&F brand guide (no brand source names this exact
+  // pairing) — the only two `color.*` values in this file with that
+  // caveat; see `elite`'s own note just below for the other.
+  subscriptionTint: '#D4E3FF',
+
+  // PENDING, and reference-matched rather than brand-guide-sourced, same
+  // caveat as `subscriptionTint` above. The T&F palette contains no purple,
+  // and Cornflower is already spoken for by `subscription` — this solid blue
+  // is what a reference design showed for the Elite badge; held here until
+  // the team confirms an actual brand value — brand reference §6.5.
+  elite: '#2852C7',
+
+  // Light-tint background for a destructive row (ProfileScreen's Sign out),
+  // paired with `error` foreground text/icon — same "light background,
+  // saturated foreground" shape as `subscriptionTint`, and the same caveat:
+  // reference-matched, not brand-guide-sourced (the guide names `error` for
+  // "access restricted, destructive" text but publishes no tint for it).
+  errorTint: '#FBE9EE',
 
   // Foreground for text and icons sitting on a dark or saturated fill.
   //
@@ -63,28 +79,136 @@ export const color = {
 } as const;
 
 // Font families for the loader to register. Components never set fontFamily.
-// Inter is not a T&F brand font and must not be used. Open Sans is the primary
-// face; Aleo is the secondary, for subheadings and key statistics.
+// Inter is not a T&F brand font and must not be used.
 //
-// No type style names Aleo yet: TextStyle has no `family` field, and the brand
-// guide publishes no size or line height for the Aleo roles. Both are needed
-// before a subheading/keyStat style can be written.
+// PER THE ACTUAL BRAND GUIDE (their Typography page, not a reference design):
+// Open Sans is primary and carries "most applications" — titles (Regular),
+// body copy (Regular), emphasis (Bold), extra info like a date (Light).
+// Aleo is explicitly secondary and "should be present... but used sparingly"
+// — smaller/secondary titles or headings, supplementary info, and key stats
+// (Aleo Light "works well" for those, by the guide's own example). An
+// earlier pass read an unrelated reference design's "editorial" framing as
+// license to route every style through Aleo instead — that inverted the
+// guide's own primary/secondary split. Only `cardTitle` (a book title,
+// genuinely secondary to the screen's own title) and `keyStat` (the hero's
+// stat pill, the guide's own named example) still resolve through Aleo.
 export const font = {
   primary: 'OpenSans',
   secondary: 'Aleo',
   fallback: 'System',
 } as const;
 
-// The six text styles. Map weight/size/fontFamily onto the RN Text style at the call site.
+// The eleven text styles. Map weight/size/fontFamily onto the RN Text style at the call site.
 export const type = {
   // PENDING. The brand guide specifies Regular (400) for titles; this stays Bold
   // until the team confirms — brand reference §6.5.
-  pageTitle: { weight: weight.bold, size: 24, lineHeight: 32, fontFamily: resolveFont('primary', weight.bold) },
-  sectionHeader: { weight: weight.bold, size: 18, lineHeight: 24, fontFamily: resolveFont('primary', weight.bold) },
-  body: { weight: weight.regular, size: 15, lineHeight: 22, fontFamily: resolveFont('primary', weight.regular) },
-  meta: { weight: weight.light, size: 13, lineHeight: 18, fontFamily: resolveFont('primary', weight.light) },
-  button: { weight: weight.bold, size: 15, lineHeight: 20, fontFamily: resolveFont('primary', weight.bold) },
-  smallLabel: { weight: weight.regular, size: 12, lineHeight: 16, fontFamily: resolveFont('primary', weight.regular) },
+  pageTitle: {
+    weight: weight.bold,
+    size: 24,
+    lineHeight: 32,
+    fontFamily: resolveFont('primary', weight.bold),
+  },
+  sectionHeader: {
+    weight: weight.bold,
+    size: 18,
+    lineHeight: 24,
+    fontFamily: resolveFont('primary', weight.bold),
+  },
+  body: {
+    weight: weight.regular,
+    size: 15,
+    lineHeight: 22,
+    fontFamily: resolveFont('primary', weight.regular),
+  },
+  meta: {
+    weight: weight.light,
+    size: 13,
+    lineHeight: 18,
+    fontFamily: resolveFont('primary', weight.light),
+  },
+  button: {
+    weight: weight.bold,
+    size: 15,
+    lineHeight: 20,
+    fontFamily: resolveFont('primary', weight.bold),
+  },
+  smallLabel: {
+    weight: weight.regular,
+    size: 12,
+    lineHeight: 16,
+    fontFamily: resolveFont('primary', weight.regular),
+  },
+  // The hero's own headline ("The Scholarly Archive") — Aleo, on later
+  // explicit instruction: the brand guide's own "Open Sans for all titles"
+  // was tried here first, but the reader's own reaction favoured the richer
+  // serif treatment, the same call already made for a book's own title
+  // (`cardTitle`) and Item Detail's. Only this screen's headline moves;
+  // `pageTitle` (used elsewhere) is untouched.
+  editorialTitle: {
+    weight: weight.bold,
+    size: 26,
+    lineHeight: 32,
+    fontFamily: resolveFont('secondary', weight.bold),
+  },
+  // Aleo — a book's own title is secondary to the screen's own headline, the
+  // exact case the guide names ("smaller/secondary titles or headings").
+  // Size is a reference design's scale (its `headline-sm`), the one thing
+  // still matched against that design rather than the guide, which publishes
+  // no size of its own. `lineHeight` (22, not the size-matched 24) and the
+  // negative `letterSpacing` callers apply alongside this token (see
+  // ContentCard's and SectionHeader's own titles) are a later, deliberate
+  // tightening pass — Aleo's own metrics read as loosely tracked next to
+  // Open Sans at the same nominal spacing, and a book cover carousel with
+  // that at full leading read as tall and airy rather than editorial.
+  cardTitle: {
+    weight: weight.bold,
+    size: 18,
+    lineHeight: 22,
+    fontFamily: resolveFont('secondary', weight.bold),
+  },
+  // Open Sans Light — "for extra information, e.g. the year" is the guide's
+  // own example, and a publisher name or an author credit is exactly that
+  // category: supplementary, not a title. ContentCard's publisher/author
+  // line; sized against a reference design (13/19) since the guide
+  // publishes no size of its own.
+  cardMeta: {
+    weight: weight.light,
+    size: 13,
+    lineHeight: 19,
+    fontFamily: resolveFont('primary', weight.light),
+  },
+  // Aleo Light at `meta`'s own size — added for ProfileScreen's Sept 2026
+  // redesign, on explicit instruction that the whole screen (not just
+  // `cardTitle`'s book titles and `keyStat`'s hero pill) should read in Aleo
+  // rather than Open Sans. Same size/lineHeight as `meta` so swapping this in
+  // for `meta` moves only the family, not the row height.
+  editorialMeta: {
+    weight: weight.light,
+    size: 13,
+    lineHeight: 18,
+    fontFamily: resolveFont('secondary', weight.light),
+  },
+  // Open Sans — the format chip and the overlay tag on a cover tile's image.
+  // Not Aleo: a file-type tag is UI chrome, not editorial content, the same
+  // reason `AccessTierBadge` (a separate, shared component) keeps
+  // `smallLabel`. Sized against a reference design (10/14) since the guide
+  // publishes no size of its own for a chip this small.
+  cardLabel: {
+    weight: weight.bold,
+    size: 10,
+    lineHeight: 14,
+    fontFamily: resolveFont('primary', weight.bold),
+  },
+  // Aleo Light — the guide's own named example ("Aleo light key stat") for
+  // exactly this: the hero's "Over 140,000 peer-reviewed titles" pill. The
+  // one other place this file still reaches for Aleo, and by the guide's
+  // own description rather than a reference design's.
+  keyStat: {
+    weight: weight.light,
+    size: 12,
+    lineHeight: 16,
+    fontFamily: resolveFont('secondary', weight.light),
+  },
 } as const satisfies Record<string, TextStyle>;
 
 // Spacing scale for every gap, padding and inset. Not brand-specified.
@@ -99,6 +223,9 @@ export const space = {
 // Corner radii. Not brand-specified.
 export const radius = {
   card: 8,
+  // The reference design's `rounded-xl` (12px) — a book-cover carousel tile's
+  // own corner, between `card`'s list-row radius and `sheet`'s.
+  tile: 12,
   sheet: 16,
   pill: 999,
 } as const;
@@ -114,6 +241,21 @@ export const elevation = {
     },
     android: {
       elevation: 2,
+    },
+  },
+  // A deeper shadow than `card`, for surfaces meant to read as lifted off the
+  // page rather than merely separated from it — the hero banner and a book
+  // cover tile, not a plain list row. Same shadow colour as `card` so the two
+  // read as one family at different depths, not two unrelated effects.
+  raised: {
+    ios: {
+      shadowColor: '#002244', // Indigo
+      shadowOpacity: 0.18,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 8 },
+    },
+    android: {
+      elevation: 8,
     },
   },
 } as const;

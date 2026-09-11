@@ -31,7 +31,8 @@
 //   (no 'empty' or 'offline' — prefs are a per-user singleton with
 //   DEFAULT_PREFS as a floor, and writes are local-first; see
 //   ReaderPreferencesScreen.tsx's header for the full argument.)
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { ListRow } from '@components/ListRow';
 import { ErrorState } from '@components/ErrorState';
@@ -42,10 +43,19 @@ import { Slider } from '@components/Slider';
 import { Tabs } from '@components/Tabs';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import type { ReduceMotion } from '@/shared/contracts';
-import { color, space, type as typeScale } from '@theme/tokens';
+import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 import { useReaderPrefs, type PrefsSource } from '@/features/personalization/useReaderPrefs';
 import { FONT_SCALE_MULTIPLIER, REDUCE_MOTION_OPTIONS } from '@/features/personalization/prefsOptions';
+
+// Composed from the spacing scale (CONVENTIONS §5) — every group icon and
+// the Restore-defaults row's own icon on this screen.
+const SECTION_ICON_SIZE = space.md + space.xs;
+// Letterform glyphs, not Ionicons — same call ReaderPreferencesScreen's own
+// Font ("Aa") and Typography ("Tt") sections make: these name the setting
+// (a text/scale choice) more directly than a generic icon would.
+const TEXT_ICON_LABEL = 'Aa';
+const TEXT_SCALE_ICON_LABEL = 'Tt';
 
 const READ_FAILED_MESSAGE = "We couldn't load your accessibility settings.";
 const SAVE_FAILED_MESSAGE = "That change didn't save. Try again.";
@@ -88,33 +98,55 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
 
   const isOnline = useNetworkStatus();
 
+  // Shown in every state — same reasoning as ProfileScreen's own
+  // `pageTitle`/`pageSubtitle`. "Make reading comfortable for everyone" is
+  // the accurate scope: several controls here (Bold text, High contrast,
+  // Large touch/audio controls, Reduce motion) are app-wide, not EPUB-only,
+  // so this deliberately drops the mockup's blanket "EPUB only" second
+  // sentence — ReaderPreferencesScreen's own subtitle is the one screen
+  // where every control really is EPUB-only.
+  const pageHeader = (
+    <View style={styles.pageHeader}>
+      <Text style={styles.pageTitle}>Accessibility</Text>
+      <Text style={styles.pageSubtitle}>Make reading comfortable for everyone.</Text>
+    </View>
+  );
+
   let body;
 
   if (state === 'loading') {
     body = (
-      <View style={styles.content} testID="accessibility-skeleton">
-        {SKELETON_GROUPS.map((group) => (
-          <View key={group} style={styles.skeletonGroup}>
-            <Skeleton variant="text" width="40%" height={typeScale.sectionHeader.lineHeight} />
-            <Skeleton variant="block" height={space.xl + space.sm} />
-          </View>
-        ))}
-      </View>
+      <>
+        <View style={styles.pageHeaderStandalone}>{pageHeader}</View>
+        <View style={styles.content} testID="accessibility-skeleton">
+          {SKELETON_GROUPS.map((group) => (
+            <View key={group} style={styles.skeletonGroup}>
+              <Skeleton variant="text" width="40%" height={typeScale.sectionHeader.lineHeight} />
+              <Skeleton variant="block" height={space.xl + space.sm} />
+            </View>
+          ))}
+        </View>
+      </>
     );
   } else if (state === 'error' || prefs === null) {
     // `prefs === null` is unreachable at `state: 'ready'` — the hook sets them
     // together. Kept so the compiler can narrow below, and so a future change
     // that breaks that pairing shows a retry rather than a blank screen.
     body = (
-      <View style={styles.centre}>
-        <ErrorState variant="not_ready" message={READ_FAILED_MESSAGE} onRetry={onRetry} />
-      </View>
+      <>
+        <View style={styles.pageHeaderStandalone}>{pageHeader}</View>
+        <View style={styles.centre}>
+          <ErrorState variant="not_ready" message={READ_FAILED_MESSAGE} onRetry={onRetry} />
+        </View>
+      </>
     );
   } else {
     const { text, display, announce } = prefs.accessibility;
 
     body = (
       <ScrollView contentContainerStyle={styles.content} testID="accessibility-section">
+        {pageHeader}
+
         {/* Reported inline rather than as a full-screen error: the values on
             screen are still correct — the hook rolled the failed one back — so
             replacing the whole page would throw away a working surface over one
@@ -127,10 +159,13 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
 
         {/* ── Text ────────────────────────────────────────────────────────── */}
         <View style={styles.group} testID="accessibility-text-group">
-          <SectionHeader title="Text" />
+          <SectionHeader
+            title="Text"
+            icon={<Text style={styles.iconLabel}>{TEXT_ICON_LABEL}</Text>}
+          />
           <ListRow
             title="Dyslexia-friendly font"
-            subtitle="Use OpenDyslexic for book content."
+            subtitle="Use OpenDyslexic for title content."
             variant="toggle"
             toggleValue={text.dyslexiaFont}
             onToggleChange={onToggleDyslexiaFont}
@@ -149,28 +184,40 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
             toggleValue={text.readableSpacing}
             onToggleChange={onToggleReadableSpacing}
           />
+        </View>
 
-          <View style={styles.control}>
-            <SectionHeader title="Text scale" />
-            {/* "On top of", not "instead of" — the contract is explicit that this
-                multiplies the OS scale rather than replacing it, and a reader who
-                has both on should be able to predict the result. */}
-            <Text style={styles.hint}>Applied on top of your device text size.</Text>
-            <Slider
-              testID="accessibility-font-scale-slider"
-              value={text.fontScaleMultiplier}
-              minimumValue={FONT_SCALE_MULTIPLIER.min}
-              maximumValue={FONT_SCALE_MULTIPLIER.max}
-              step={FONT_SCALE_MULTIPLIER.step}
-              onSlidingComplete={onChangeFontScaleMultiplier}
-            />
-            <Text style={styles.readout}>{text.fontScaleMultiplier.toFixed(1)}×</Text>
-          </View>
+        {/* Own card, on explicit request — a slider reads as a distinct
+            control from three toggles above it, the same separation
+            ReaderPreferencesScreen's own sections already keep between
+            single-control and multi-control cards. Still inside
+            `accessibility-text-group`'s own describe block's reach: no
+            testID moved, so existing tests still find it. */}
+        <View style={styles.standaloneControl} testID="accessibility-text-scale-group">
+          <SectionHeader
+            title="Text scale"
+            icon={<Text style={styles.iconLabel}>{TEXT_SCALE_ICON_LABEL}</Text>}
+          />
+          {/* "On top of", not "instead of" — the contract is explicit that this
+              multiplies the OS scale rather than replacing it, and a reader who
+              has both on should be able to predict the result. */}
+          <Text style={styles.hint}>Applied on top of your device text size.</Text>
+          <Slider
+            testID="accessibility-font-scale-slider"
+            value={text.fontScaleMultiplier}
+            minimumValue={FONT_SCALE_MULTIPLIER.min}
+            maximumValue={FONT_SCALE_MULTIPLIER.max}
+            step={FONT_SCALE_MULTIPLIER.step}
+            onSlidingComplete={onChangeFontScaleMultiplier}
+          />
+          <Text style={styles.readout}>{text.fontScaleMultiplier.toFixed(1)}×</Text>
         </View>
 
         {/* ── Display ─────────────────────────────────────────────────────── */}
         <View style={styles.group} testID="accessibility-display-group">
-          <SectionHeader title="Display" />
+          <SectionHeader
+            title="Display"
+            icon={<Ionicons name="eye-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+          />
           <ListRow
             title="Bold text"
             subtitle="Heavier weight throughout."
@@ -205,8 +252,15 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
             onToggleChange={onToggleLargeAudioControls}
           />
 
+          {/* Stays NESTED inside `accessibility-display-group`, not its own
+              card — `displayGroup()` in the test file scopes to this exact
+              testID to reach these tabs, so moving it out would strand
+              those assertions even though the mockup draws it separately. */}
           <View style={styles.control}>
-            <SectionHeader title="Reduce motion" />
+            <SectionHeader
+              title="Reduce motion"
+              icon={<Ionicons name="sync-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+            />
             <Text style={styles.hint}>
               System follows your device setting. On and Off override it.
             </Text>
@@ -221,7 +275,10 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
 
         {/* ── Announce ────────────────────────────────────────────────────── */}
         <View style={styles.group} testID="accessibility-announce-group">
-          <SectionHeader title="Screen reader announcements" />
+          <SectionHeader
+            title="Screen reader announcements"
+            icon={<Ionicons name="volume-high-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+          />
           <ListRow
             title="Page changes"
             subtitle="Announce each page turn."
@@ -247,13 +304,13 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
               a promise the setting cannot keep. */}
           <ListRow
             title="Extra screen reader hints"
-            subtitle="Adds labels to app controls. Does not change book content."
+            subtitle="Adds labels to app controls. Does not change title content."
             variant="toggle"
             toggleValue={prefs.accessibility.screenReaderHints}
             onToggleChange={onToggleScreenReaderHints}
           />
           <Text style={styles.note}>
-            Applies to this app&rsquo;s own buttons and menus only. Text inside a book is provided
+            Applies to this app&rsquo;s own buttons and menus only. Text inside a title is provided
             by the publisher and is not affected.
           </Text>
         </View>
@@ -263,18 +320,26 @@ export default function AccessibilityScreen({ prefsSource }: AccessibilityScreen
             on `useReaderPrefs`. Resetting theme/font/layout/typography from a
             screen that shows none of them would be surprising.
 
-            `destructive`, matching Reading Preferences' own Restore defaults —
-            the same "this discards something you chose" weight. No confirmation
-            sheet, for the same reason as there: the reset is one write the
-            reader can immediately undo by re-picking. */}
-        <View style={styles.restore}>
-          <ListRow
-            title="Restore defaults"
-            subtitle="Resets text, display and announcement settings"
-            variant="destructive"
-            onPress={onRestoreAccessibilityDefaults}
-          />
-        </View>
+            A light-red CARD, matching ReaderPreferencesScreen's own Restore
+            defaults exactly — same `errorTint`/`error` pairing, same
+            left-aligned icon+title+subtitle shape, so a reader meets one
+            affordance rather than two across the two screens. No
+            confirmation sheet, for the same reason as there: the reset is
+            one write the reader can immediately undo by re-picking. */}
+        <Pressable
+          style={styles.restore}
+          onPress={onRestoreAccessibilityDefaults}
+          accessibilityRole="button"
+          accessibilityLabel="Restore defaults"
+        >
+          <Ionicons name="refresh-outline" size={SECTION_ICON_SIZE} color={color.error} />
+          <View style={styles.restoreText}>
+            <Text style={styles.restoreTitle}>Restore defaults</Text>
+            <Text style={styles.restoreSubtitle}>
+              Resets text, display and announcement settings
+            </Text>
+          </View>
+        </Pressable>
       </ScrollView>
     );
   }
@@ -313,12 +378,37 @@ const styles = StyleSheet.create({
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.error,
   },
+  // Bordered, rounded card — same treatment as ReaderPreferencesScreen's own
+  // section files. `ListRow`'s own hairline separators inside still divide
+  // the rows within it; this just gives the group itself an outer edge.
   group: {
     gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
   },
-  // A single control that needs its own header and readout inside a group.
+  // A single control that needs its own header and readout — used two ways:
+  // NESTED (no border of its own) inside an already-carded `group` (Reduce
+  // motion inside Display), or promoted to `standaloneControl` below when it
+  // is its own top-level card (Text scale) — see each call site's own note.
   control: {
     gap: space.sm,
+  },
+  standaloneControl: {
+    gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  iconLabel: {
+    fontFamily: typeScale.button.fontFamily,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
   },
   hint: {
     fontWeight: typeScale.smallLabel.weight,
@@ -338,11 +428,50 @@ const styles = StyleSheet.create({
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
   },
-  // Cancels the content padding so the row runs edge to edge like every other
-  // `ListRow` in the app — the row draws its own horizontal padding and its own
-  // divider, both of which stop looking right when inset.
+  // No longer cancels the content padding — this is now its own card, not an
+  // edge-to-edge `ListRow`, matching ReaderPreferencesScreen's own Restore
+  // defaults exactly.
   restore: {
-    marginHorizontal: -space.md,
-    marginTop: space.sm,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.errorTint,
+    borderRadius: radius.sheet,
+  },
+  restoreText: {
+    flex: 1,
+    gap: space.xs / 2,
+  },
+  restoreTitle: {
+    fontFamily: typeScale.body.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.error,
+  },
+  restoreSubtitle: {
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.textSecondary,
+  },
+  pageHeader: {
+    gap: space.xs,
+  },
+  pageHeaderStandalone: {
+    paddingHorizontal: space.md,
+    paddingTop: space.md,
+  },
+  pageTitle: {
+    fontFamily: typeScale.editorialTitle.fontFamily,
+    fontSize: typeScale.editorialTitle.size,
+    lineHeight: typeScale.editorialTitle.lineHeight,
+    color: color.textPrimary,
+  },
+  pageSubtitle: {
+    fontFamily: typeScale.editorialMeta.fontFamily,
+    fontSize: typeScale.body.size,
+    lineHeight: typeScale.body.lineHeight,
+    color: color.textSecondary,
   },
 });

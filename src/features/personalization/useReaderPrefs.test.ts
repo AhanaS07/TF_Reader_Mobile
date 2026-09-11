@@ -203,6 +203,35 @@ describe('useReaderPrefs font', () => {
   });
 });
 
+describe('useReaderPrefs layout', () => {
+  // Same load-bearing rule as the font group above: `layout` carries two
+  // fields (`flow` and `spread`), and a patch built from only the one that
+  // changed would drop the other — `savePrefs` replaces the group wholesale.
+  it('spreads the existing layout group when flow changes', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onSelectFlow('scrolled-doc');
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'scrolled-doc', spread: 'single' },
+    });
+  });
+
+  it('spreads the existing layout group when spread changes', async () => {
+    const { result, source } = await renderReady();
+
+    await act(async () => {
+      result.current.onSelectSpread('double');
+    });
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'paginated', spread: 'double' },
+    });
+  });
+});
+
 describe('useReaderPrefs typography', () => {
   // Same load-bearing rule as the font group above: `typography` carries four
   // fields, and a patch built from only the one that changed would drop the

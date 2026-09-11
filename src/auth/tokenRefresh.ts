@@ -5,6 +5,7 @@
 // exactly one place that decides whether a refresh is worth making and
 // exactly one place that calls the refresh endpoint.
 import { getToken, useSessionStore } from '@store/sessionStore';
+import { useInstitutionStore } from '@store/institutionStore';
 import { getRefreshToken, saveRefreshToken } from '@store/secureStorage';
 import { setLicenceToken } from '@/config/licence';
 import { AuthError, AuthFailure } from './AuthFailure';
@@ -13,6 +14,10 @@ import type { ApiAuthClient, TokenPair } from './ApiAuthClient';
 
 export interface EnsureFreshTokenDeps {
   authClient?: ApiAuthClient;
+  // Set only by bootstrapAuth's one-shot boot-time check — see the note on
+  // the REFUSED branch below for why this must not default on for every
+  // on-demand call.
+  clearInstitutionOnRefusal?: boolean;
 }
 
 // Concurrent callers (an auth-dependent call and a licence call landing in
@@ -78,6 +83,23 @@ async function refreshFromStoredToken(
     }
     console.log('ensureFreshToken: refresh was refused, clearing session', error);
     useSessionStore.getState().clearSession();
+    // Only bootstrapAuth's one-shot boot check sets this. ensureFreshToken is
+    // also called on demand by every authenticated request (catalogue fetches,
+    // licence checks) for as long as the same dead refresh token sits in
+    // secure storage — which is exactly the case while a reader is picking a
+    // NEW institution to sign in to (institutionSignIn.ts hasn't overwritten
+    // the old refresh token yet). Clearing selectedInstitution on every one of
+    // those calls wiped out the institution the reader had just picked mid
+    // sign-in, and SignInScreen's `if (!institution) navigation.goBack()`
+    // guard bounced them straight back to the method chooser with no browser
+    // ever opening. Restricted to the boot check, this still fixes the
+    // original bug it was added for (Profile showing "Not signed in" next to a
+    // stale institution and a still-visible Sign out row after a session died
+    // silently while the app was closed) without touching institution
+    // selection made during the app's normal, later lifetime.
+    if (deps.clearInstitutionOnRefusal === true) {
+      useInstitutionStore.getState().clearSelectedInstitution();
+    }
     return undefined;
   }
 }
@@ -139,7 +161,7 @@ export async function bootstrapAuth(deps: BootstrapAuthDeps = {}): Promise<void>
   setLicenceToken(ensureFreshToken);
 
   console.log('bootstrapAuth: starting boot-time token check');
-  await ensureFreshToken(deps);
+  await ensureFreshToken({ ...deps, clearInstitutionOnRefusal: true });
   console.log('bootstrapAuth: done, isAuthenticated =', useSessionStore.getState().isAuthenticated);
   useSessionStore.getState().setAuthReady(true);
 }

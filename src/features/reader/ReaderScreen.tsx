@@ -122,7 +122,7 @@ interface ReaderError {
  * and blocks on iOS URLSession's ~60s default. Nothing else covers that window:
  * `READY_TIMEOUT` in ReaderWebView is cleared the moment the bridge reports `ready`,
  * which happens BEFORE this runs. So without this, a book whose bytes are already on
- * the device sits behind "Opening book…" for a minute with no error and no way to
+ * the device sits behind "Opening title…" for a minute with no error and no way to
  * tell it from a slow decrypt.
  *
  * 20s: comfortably above the worst measured warm open (~5s for a 20 MB book, ~93% of
@@ -2165,7 +2165,7 @@ function ReaderScreenComponent(
   // GATED ON `locked` FIRST. Without it, a lock landing before `htmlUri` was ever set (the
   // mid-open case) leaves `htmlUri === null` true forever — `setResolved` never runs once
   // `lockedRef` has flipped (see the `prepareBook` effect's own guard) — so the rest of this
-  // expression would stay stuck at `true` and "Opening book…" would show indefinitely over a
+  // expression would stay stuck at `true` and "Opening title…" would show indefinitely over a
   // book that in fact failed CLOSED. A lock always has an answer to render (the locked-state
   // block below), so it is never "busy".
   const isBusy = !locked && (htmlUri === null || (!isRendered && error === null));
@@ -2284,7 +2284,7 @@ function ReaderScreenComponent(
           accessibilityRole="button"
           // Required rather than stylistic: a glyph child gives a screen reader nothing to say,
           // and every existing test finds buttons by accessible name.
-          accessibilityLabel="Search this book"
+          accessibilityLabel="Search this title"
           accessibilityState={{ expanded: showSearch }}
           ref={searchButtonRef}
           onPress={() => {
@@ -2506,7 +2506,7 @@ function ReaderScreenComponent(
         {isBusy && (
           <View style={styles.busy} pointerEvents="none">
             <ActivityIndicator />
-            <Text style={styles.busyText}>Opening book…</Text>
+            <Text style={styles.busyText}>Opening title…</Text>
           </View>
         )}
 
@@ -2584,7 +2584,7 @@ function ReaderScreenComponent(
                 }}
               >
                 {toc.length === 0 ? (
-                  <Text style={styles.tocEmpty}>No table of contents in this book.</Text>
+                  <Text style={styles.tocEmpty}>No table of contents in this title.</Text>
                 ) : (
                   // Index-composed key, NOT the target alone. A real book's TOC repeats targets: the
                   // 20 MB fixture's NCX has src="Accessed%2024" five times (malformed nav points the

@@ -11,10 +11,12 @@ import BottomSheetGallery from '@/components/BottomSheet/BottomSheet.gallery';
 import BottomTabBarGallery from '@/components/BottomTabBar/BottomTabBar.gallery';
 import CategoryCardGallery from '@/components/CategoryCard/CategoryCard.gallery';
 import ContentCardGallery from '@/components/ContentCard/ContentCard.gallery';
+import ElitePendingAccessCardGallery from '@/components/ElitePendingAccessCard/ElitePendingAccessCard.gallery';
 import EmptyStateGallery from '@/components/EmptyState/EmptyState.gallery';
 import ErrorStateGallery from '@/components/ErrorState/ErrorState.gallery';
 import FilterChipGallery from '@/components/FilterChip/FilterChip.gallery';
 import FilterSortSheetGallery from '@/components/FilterSortSheet/FilterSortSheet.gallery';
+import HeroBannerGallery from '@/components/HeroBanner/HeroBanner.gallery';
 import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
@@ -50,9 +52,15 @@ const SECTIONS = [
   'InstitutionDetailView',
   'ActionButton',
   'ActionBar',
+  // Elite's other two states (active access, queue) render through
+  // `ContentCard` now — see LibraryScreen.tsx's header comment — so
+  // `ContentCard`'s own gallery entry below covers them; only the
+  // action-prompt state still has a dedicated component.
+  'ElitePendingAccessCard',
   // Not a component. It is here because the access RULES are the thing most worth
   // reviewing by eye, and the only surface that shows them resolving.
   'resolveAccess',
+  'HeroBanner',
   'CategoryCard',
   'ContentCard',
   'SubjectChip',
@@ -113,7 +121,9 @@ export default function StateGallery() {
       {section === 'InstitutionDetailView' && <InstitutionDetailViewGallery />}
       {section === 'ActionButton' && <ActionButtonGallery />}
       {section === 'ActionBar' && <ActionBarGallery />}
+      {section === 'ElitePendingAccessCard' && <ElitePendingAccessCardGallery />}
       {section === 'resolveAccess' && <ResolveAccessGallery />}
+      {section === 'HeroBanner' && <HeroBannerGallery />}
       {section === 'CategoryCard' && <CategoryCardGallery />}
       {section === 'ContentCard' && <ContentCardGallery />}
       {section === 'SubjectChip' && <SubjectChipGallery />}

@@ -1,14 +1,15 @@
 // P0-6 — App shell and navigation (Keshav, paired with Khushi on BottomTabBar)
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
+import type { NativeStackHeaderProps, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { BottomTabBarProps as RNBottomTabBarProps } from '@react-navigation/bottom-tabs';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { useInstitutionStore } from '@store/institutionStore';
 import { useSessionStore } from '@store/sessionStore';
-import { color } from '@theme/tokens';
+import { color, radius, space, type } from '@theme/tokens';
 import QueueNotificationHost from '../features/queue/QueueNotificationHost';
 
 import { TopAppBar } from '../components/TopAppBar';
@@ -36,6 +37,7 @@ import PersonalAccountScreen from '../screens/PersonalAccountScreen';
 // screens, mounted directly into the Catalogue/Search stacks rather than a separate flat shell.
 import { ReaderRouteScreen } from './ReaderRouteScreen';
 import { BookInfoRouteScreen } from './BookInfoRouteScreen';
+import { AudioPlayerRouteScreen } from './AudioPlayerRouteScreen';
 
 import type {
   RootStackParamList,
@@ -59,6 +61,28 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
 });
 
+// A translucent fill on the header's own navy rather than a flat white pill —
+// reads as part of the bar's chrome instead of a card floating on top of it.
+const headerStyles = StyleSheet.create({
+  institutionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    maxWidth: space.xl * 5,
+  },
+  institutionPillLabel: {
+    flexShrink: 1,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+    color: color.white,
+  },
+});
+
 // ─── Navigator instances ──────────────────────────────────────────────────────
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
@@ -79,21 +103,104 @@ const TAB_CONFIG: TabItem[] = [
 
 // ─── Header wrapper — reads safe-area inset and passes it to TopAppBar ───────
 
+// The institution pill replaces CatalogueScreen's own in-body picker row —
+// it names the scope the reader is signed in under, which belongs beside the
+// brand mark, not repeated as a full-width row under it. Tab-root-only (no
+// `back`): a pushed screen already has its own title in that slot.
+//
+// SHOWN ON ALL FOUR TAB ROOTS, ON EXPLICIT INSTRUCTION — an earlier version
+// of this comment restricted it to Catalogue ("no other tab reads from an
+// institution's catalogue"), but Library/Search/Profile all still act on
+// behalf of the SAME signed-in institution even though they don't browse its
+// feed directly, and the reader is expected to see which one they are in
+// from any of the four. `InstitutionList` is registered in every stack below
+// for exactly this reason.
+function InstitutionPill({ name, onPress }: { name: string; onPress: () => void }) {
+  return (
+    <Pressable
+      style={headerStyles.institutionPill}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Change institution, currently ${name}`}
+    >
+      <Ionicons name="business" size={14} color={color.white} />
+      <Text style={headerStyles.institutionPillLabel} numberOfLines={1}>
+        {name}
+      </Text>
+      <Ionicons name="checkmark-circle" size={14} color={color.white} />
+    </Pressable>
+  );
+}
+
+// The four tab-root route names the pill shows on — every stack's own
+// `Home` screen, and nothing pushed under it (see `showInstitutionPill`).
+const TAB_ROOT_ROUTE_NAMES = new Set([
+  'CatalogueHome',
+  'SearchHome',
+  'LibraryHome',
+  'ProfileHome',
+]);
+
 function AppHeader({ route, options, back, navigation }: NativeStackHeaderProps) {
   const insets = useSafeAreaInsets();
+  const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
+
+  const showInstitutionPill =
+    back === undefined && TAB_ROOT_ROUTE_NAMES.has(route.name) && selectedInstitution !== null;
+
   return (
     <TopAppBar
       title={options.title ?? route.name}
       onBack={back ? navigation.goBack : undefined}
       topInset={insets.top}
+      action={
+        showInstitutionPill ? (
+          <InstitutionPill
+            name={selectedInstitution.name}
+            // `AppHeader` serves all four tab stacks, so `navigation` here is
+            // typed against the generic base param list. Each of the four
+            // stacks registers its own `InstitutionList` screen with the
+            // identical `undefined` param shape (see `types.ts`), so a cast
+            // against that one shared shape is valid for whichever stack this
+            // instance actually renders inside — `showInstitutionPill` above
+            // already restricts this branch to a tab root.
+            onPress={() =>
+              (navigation as NativeStackNavigationProp<{ InstitutionList: undefined }>).navigate(
+                'InstitutionList',
+              )
+            }
+          />
+        ) : undefined
+      }
     />
   );
 }
 
 // ─── Tab bar wrapper — bridges React Navigation props to BottomTabBar ─────────
 
-function AppTabBar({ state, navigation, insets }: RNBottomTabBarProps) {
-  const activeKey = state.routes[state.index]?.name ?? 'Catalogue';
+// Screens that own their own navigation/action chrome rather than the shared
+// four-tab shell — a detail page, not one of Catalogue/Search/Library/Profile
+// — hide it by calling `navigation.getParent()?.setOptions({ tabBarStyle:
+// { display: 'none' } })` on mount and restoring it on unmount (see
+// ItemDetailScreen.tsx). That is the ONLY reliable trigger: `state` (a plain
+// nested-navigation push, no `setOptions` call) does NOT re-render this
+// custom tabBar — confirmed by instrumenting it directly, not assumed —
+// whereas a screen's own `setOptions` call always does, because it is a real
+// navigation action dispatched through context rather than a state field the
+// tabBar happens to read. `descriptors[route.key].options` is where that
+// per-screen option lands; `getFocusedRouteNameFromRoute` was the wrong tool
+// for this specific job even though it is the right one for setting a STATIC
+// `tabBarStyle` in a `Tab.Screen`'s own `options` — this app's `AppTabBar` is
+// fully custom and does not consult that option at all on its own.
+function AppTabBar({ state, navigation, insets, descriptors }: RNBottomTabBarProps) {
+  const activeRoute = state.routes[state.index];
+  const activeKey = activeRoute?.name ?? 'Catalogue';
+  const hidden = activeRoute !== undefined && descriptors[activeRoute.key]?.options.tabBarStyle !== undefined;
+
+  if (hidden) {
+    return null;
+  }
+
   return (
     <BottomTabBar
       tabs={TAB_CONFIG}
@@ -119,15 +226,20 @@ function CatalogueNavigator() {
         component={InstitutionDetailScreen}
         options={{ title: 'Institution' }}
       />
+      {/* ONE TITLE FOR EVERY WORK TYPE AND FORMAT — a book, a journal article
+          and an audiobook all push this same route, and 'Book Details' used
+          to stay on screen for an audiobook (only 'article' ever narrowed
+          it, to 'Article Details') even though nothing here is a book. See
+          ItemDetailScreen.tsx's own header for the shared route reasoning. */}
       <CatalogueStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Item Detail' }}
+        options={{ title: 'Item Details' }}
       />
       <CatalogueStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <CatalogueStack.Screen
         name="Shelf"
@@ -170,6 +282,19 @@ function CatalogueNavigator() {
         component={BookInfoRouteScreen}
         options={{ headerShown: false, presentation: 'modal' }}
       />
+      {/* AUDIO's own destination — see ItemDetailScreen's 'read'/'play' branch
+          and AudioPlayerRouteScreen.tsx's own header for why this is a
+          separate route from 'Reader' rather than a format branch inside it.
+          Title comes from the route param (the book's own title), the same
+          pattern `Shelf`/`PersonalAccount` already use for a per-push title
+          the stack registration cannot know ahead of time. No gesture/WebView
+          conflict here (a native player, not a WebView), so this keeps
+          native-stack's default swipe-back unlike 'Reader'. */}
+      <CatalogueStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
     </CatalogueStack.Navigator>
   );
 }
@@ -182,10 +307,12 @@ function SearchNavigator() {
         component={SearchScreen}
         options={{ title: 'Search' }}
       />
+      {/* See CatalogueNavigator's identical registration for why the title
+          here is only the default. */}
       <SearchStack.Screen
         name="ItemDetail"
         component={ItemDetailScreen}
-        options={{ title: 'Item Detail' }}
+        options={{ title: 'Item Details' }}
       />
       <SearchStack.Screen
         name="AccessGate"
@@ -200,7 +327,7 @@ function SearchNavigator() {
       <SearchStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <SearchStack.Screen
         name="PersonalAccount"
@@ -218,6 +345,12 @@ function SearchNavigator() {
         component={BookInfoRouteScreen}
         options={{ headerShown: false, presentation: 'modal' }}
       />
+      {/* Same reader engine seam as CatalogueNavigator.AudioPlayer — see its own comment there. */}
+      <SearchStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
+      />
     </SearchStack.Navigator>
   );
 }
@@ -229,6 +362,54 @@ function LibraryNavigator() {
         name="LibraryHome"
         component={LibraryScreen}
         options={{ title: 'Library' }}
+      />
+      <LibraryStack.Screen
+        name="InstitutionList"
+        component={InstitutionListScreen}
+        options={{ title: 'Change institution' }}
+      />
+      {/* See CatalogueNavigator's identical registration for why the title
+          here is only the default. */}
+      <LibraryStack.Screen
+        name="ItemDetail"
+        component={ItemDetailScreen}
+        options={{ title: 'Item Details' }}
+      />
+      {/* AccessGate/SignIn/PersonalAccount/Reader/BookInfo — same reason as
+          SearchNavigator's identical set: `ItemDetail`'s access check and its
+          "read"/"play" action push these directly, so whichever stack pushed
+          `ItemDetail` needs its own copies rather than reaching across tabs. */}
+      <LibraryStack.Screen
+        name="AccessGate"
+        component={AccessGateScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <LibraryStack.Screen
+        name="SignIn"
+        component={SignInScreen}
+        options={{ presentation: 'transparentModal', animation: 'fade', headerShown: false }}
+      />
+      <LibraryStack.Screen
+        name="PersonalAccount"
+        component={PersonalAccountScreen}
+        options={({ route }) => ({ title: personalAccountTitle(route.params.mode) })}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.Reader — see its own comment there. */}
+      <LibraryStack.Screen
+        name="Reader"
+        component={ReaderRouteScreen}
+        options={{ gestureEnabled: false }}
+      />
+      <LibraryStack.Screen
+        name="BookInfo"
+        component={BookInfoRouteScreen}
+        options={{ headerShown: false, presentation: 'modal' }}
+      />
+      {/* Same reader engine seam as CatalogueNavigator.AudioPlayer — see its own comment there. */}
+      <LibraryStack.Screen
+        name="AudioPlayer"
+        component={AudioPlayerRouteScreen}
+        options={({ route }) => ({ title: route.params.title })}
       />
     </LibraryStack.Navigator>
   );
@@ -275,7 +456,7 @@ function ProfileNavigator() {
       <ProfileStack.Screen
         name="InstitutionList"
         component={InstitutionListScreen}
-        options={{ title: 'Select Institution' }}
+        options={{ title: 'Change institution' }}
       />
       <ProfileStack.Screen
         name="SignIn"

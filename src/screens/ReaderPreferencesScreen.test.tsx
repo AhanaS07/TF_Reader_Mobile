@@ -60,6 +60,7 @@ async function renderReady(source: PrefsSource) {
 // at screen level. Every option assertion below scopes to its own section.
 const themeSection = () => within(screen.getByTestId('theme-section'));
 const fontSection = () => within(screen.getByTestId('font-section'));
+const layoutSection = () => within(screen.getByTestId('layout-section'));
 const typographySection = () => within(screen.getByTestId('typography-section'));
 
 afterEach(() => {
@@ -142,6 +143,55 @@ describe('ReaderPreferencesScreen theme section', () => {
       ).toBe(false);
     }
     expect(screen.getByText(/set elsewhere/i)).toBeTruthy();
+  });
+});
+
+describe('ReaderPreferencesScreen layout section', () => {
+  it('offers exactly the flow and spread options', async () => {
+    await renderReady(fakeSource());
+
+    for (const id of ['paginated', 'scrolled-doc']) {
+      expect(layoutSection().getByTestId(`tabs-tab-${id}`)).toBeTruthy();
+    }
+    for (const id of ['single', 'double']) {
+      expect(layoutSection().getByTestId(`tabs-tab-${id}`)).toBeTruthy();
+    }
+  });
+
+  it('marks the stored flow and spread as the selected options', async () => {
+    await renderReady(fakeSource());
+
+    // STORED carries DEFAULT_PREFS.layout: paginated + single.
+    expect(
+      layoutSection().getByTestId('tabs-tab-paginated').props.accessibilityState.selected,
+    ).toBe(true);
+    expect(layoutSection().getByTestId('tabs-tab-single').props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
+  // Same load-bearing rule as the font section: `layout` carries two fields, and
+  // a patch built from only the one that changed would drop the other.
+  it('writes the picked flow through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent.press(layoutSection().getByTestId('tabs-tab-scrolled-doc'));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'scrolled-doc', spread: 'single' },
+    });
+  });
+
+  it('writes the picked spread through the seam, spreading the group', async () => {
+    const source = fakeSource();
+    await renderReady(source);
+
+    fireEvent.press(layoutSection().getByTestId('tabs-tab-double'));
+
+    expect(source.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'paginated', spread: 'double' },
+    });
   });
 });
 
