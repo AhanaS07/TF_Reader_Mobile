@@ -688,3 +688,13 @@ lives), not a code change made here. It proposes reusing that exact `send({type:
 from a native `accessibilityActions`/`onAccessibilityAction` pair, so page navigation becomes
 reachable through a native View already proven to work with TalkBack, sidestepping all three defects
 above rather than fixing any of them.
+
+**A second, already-shipped candidate exists on the accessibility side and needs on-device
+verification, not new code.** TTS auto-follow (`TTS_AUTOFOLLOW_HANDOFF.md`, implemented 2026-09-07)
+calls `rendition.display(cfi)` directly from `epub.entry.ts`'s `followSpokenRange` whenever the
+spoken sentence goes off-screen — a JS-internal epub.js call, not a touch event and not a TalkBack
+focus request, so it depends on neither of the two defects above. If it works under TalkBack in the
+screen-reader-forced `scrolled-doc` flow, turning on "Read aloud" is a real, working-today
+alternative to swipe/scroll for a TalkBack user. That doc's own checklist marks on-device
+verification for exactly this flow as **pending** — worth running before relying on it, and worth
+recording here either way once run.
