@@ -555,12 +555,31 @@ file's H1/H2 write-up). Reserve swipe for when the question is genuinely about g
 end-to-end, not node reachability — and expect to need a real device/finger or a rooted AVD even
 then.
 
+**CORRECTION, 2026-09-10 (`02_a11y_root_cause_RESULT.md`'s dated addendum) — the sentence above is
+no longer safe to rely on as written.** Tap-exact-bounds's "reliable every time" verdict was only
+ever demonstrated against **clickable** targets (book-list rows, dialog buttons) — where a raw tap
+that bypasses touch-exploration and lands as a plain pass-through click is indistinguishable from a
+tap that correctly drove focus and found nothing to activate. A control test run against
+definitively **non-clickable native Chrome UI text** (nothing to do with any WebView) found the
+identical "silent, focus never moves" signature across four separate methods: a plain
+exact-bounds tap, a simulated 600ms hold at the same point, `adb shell input keycombination
+ALT_LEFT DPAD_RIGHT` (TalkBack's own documented linear-next shortcut), and a real dragged swipe.
+TalkBack was confirmed bound and alive throughout (`dumpsys accessibility`). **This means
+tap-exact-bounds cannot currently distinguish "TalkBack failed to route touch-exploration here"
+from "synthetic input on this emulator doesn't drive touch exploration for non-clickable content at
+all, regardless of what it's aimed at."** Every "confirmed silent" result in §12.3 and this
+section's own H2 write-up used a non-clickable target, so every one of them needs this caveat
+attached — it does not mean F4 is wrong, it means the method used to gather this evidence has an
+unresolved confound that a real device/finger or a rooted AVD is needed to rule out. See the
+plan/status notes tracked outside this repo for the full control-test table; the finding itself is
+recorded here so it isn't only in an untracked file.
+
 ### 12.6 Risk register update
 
 | Risk (from §9) | 2026-08-24/25 rating | 2026-08-31 Configuration A observation |
 |---|---|---|
 | WebView content nodes have degenerate zero-size bounds | Critical/Blocking | **Downgraded for on-screen content** — bounds are correct when visible (§12.2). Off-screen degenerate bounds are normal virtualization, not this bug. |
-| `epub.js` iframe/content focus (TalkBack cannot reach content) | Critical/Blocking | **Unchanged — still Critical/Blocking.** Confirmed via 3 independent touch points on content with correct bounds (§12.3). Bounds were necessary but not sufficient. |
+| `epub.js` iframe/content focus (TalkBack cannot reach content) | Critical/Blocking | **Unchanged — still Critical/Blocking, but see the 2026-09-10 correction above §12.6.** Confirmed via 3 independent touch points on content with correct bounds (§12.3). Bounds were necessary but not sufficient. **Caveat added 2026-09-10**: the same tap-exact-bounds method is also silent on plain non-clickable *native* content with nothing to do with WebView/epub.js — so this rating reflects "the tooling used so far can't rule out F4," not a confirmed WebView-specific defect independent of that tooling gap. **2026-09-11, decisive and independent of that confound**: an in-process instrumentation test calling `AccessibilityNodeInfo.performAction(ACTION_ACCESSIBILITY_FOCUS)` directly on the WebView content node — no synthetic touch/gesture at all, so the tap-exact-bounds confound doesn't apply — got `true` back from the action call, but a fresh re-query of the live tree 500ms later showed `isAccessibilityFocused() == false`. The action is accepted, not rejected, but never durably lands. This is new evidence, not a repeat of the tooling gap: it rules out "the node structurally refuses focus" as the explanation and narrows the search to something between action-dispatch and focus-persistence in the WebView's accessibility bridge specifically. Full account: `02_a11y_root_cause_RESULT.md`'s 2026-09-11 section. |
 | TOC panel leaves elements in a11y tree after chapter-selection dismissal (F5) | Medium | **Downgraded — not observed in this pass** (§12.4), consistent with the doc's own re-diagnosis. |
 | Confusing "Contents quantity 22" announcement (F1) | Low | **Closed** — button now reads "Contents"/"Close contents" cleanly (not independently re-verified by touch/label read this pass, but the source change is confirmed present and no regression seen). |
 
