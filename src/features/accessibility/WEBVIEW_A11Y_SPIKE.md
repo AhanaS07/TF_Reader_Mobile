@@ -645,3 +645,46 @@ crossing the WebView/iframe boundary at all — it's a native `AccessibilityInfo
 **not blocked by 12.3's finding**. Native-side accessibility features (announcements, toolbar
 controls, TOC panel) continue to work correctly throughout; the confirmed-open defect is specifically
 WebView content reachability.
+
+## 13. 2026-09-11 — user-reproduced on emulator; gesture-level mechanism now understood
+
+F4 reproduced again, independently of any of the sessions above: manual use (not synthetic input) on
+the Android Studio emulator, TalkBack on, confirmed that neither page-turn (swipe) nor scrolling the
+book content is possible. This matches §12.3's finding exactly, just via ordinary use instead of
+`adb`-driven testing, so it is not subject to that section's synthetic-input confound (§12.5–12.6).
+
+**New mechanism-level detail, from reading the gesture code directly rather than probing behaviour
+from outside.** `src/features/reader/webview/src/touchGesture.ts` and its caller,
+`watchTouches` in `src/features/reader/webview/src/epub.entry.ts` (lines 865-936), only turn a page
+in response to a raw `touchstart` → `touchmove` → `touchend` sequence dispatched to the chapter
+document itself. Android's touch-exploration layer is what consumes a single-finger touch when
+TalkBack is on — by design, that's how "explore by touch" works everywhere in the OS — and it does
+this *before* the event would otherwise reach a page's own DOM listeners. So this class of listener
+is structurally unreachable while touch exploration is on, **independent of** both the bounds/label
+bugs this doc already tracks (§8's causes (a)/(b)) and the still-open WebView-accessibility-bridge
+defect in §12.6 (the `ACTION_ACCESSIBILITY_FOCUS` accepted-but-non-persisting behaviour). Three
+separate things are broken at three separate layers, and fixing any one does not touch the others.
+
+One clarification this adds to F4's scope: in the a11y-forced `scrolled-doc` flow
+(`readerA11yLayout.ts`), `epub.entry.ts`'s swipe handler already deliberately no-ops for page-turn
+(`if (!isPaginated(currentFlow())) return;`) — so swipe-to-*turn* was never expected to work in that
+mode by design, screen reader or not. What *is* expected to work there, and doesn't, is native
+*scrolling* of the WebView's content — blocked by the same touch-exploration consumption described
+above (for a single-finger drag) and, per §12.3/§12.6, by the WebView accessibility-bridge gap for
+any TalkBack-mediated approach.
+
+**What already works, confirmed again this session**: the native toolbar Prev/Next buttons
+(`ReaderScreen.tsx:3042-3144`, plain RN `Pressable`s, `accessibilityLabel="Previous page"`/`"Next
+page"`) and the TOC panel are all reachable and activatable by TalkBack — they sit outside the
+WebView entirely, so none of the three defects above apply to them. Both buttons call
+`send({type:'next'})` / `send({type:'prev'})`, which resolves to
+`webViewRef.current?.injectJavaScript(buildCommandScript(command))` in `ReaderWebView.tsx:150-152` —
+a payload-free, already-proven-reliable bridge command (`readerBridge.ts:520-524`). That reliability
+is the basis for the fix proposal below.
+
+**Proposal, not yet implemented**: see `TALKBACK_GESTURE_FIX_PROPOSAL.md` in this directory — a
+handoff document for Ahana (owner of `src/features/reader/`, where every file this proposes touching
+lives), not a code change made here. It proposes reusing that exact `send({type:'next'|'prev'})` call
+from a native `accessibilityActions`/`onAccessibilityAction` pair, so page navigation becomes
+reachable through a native View already proven to work with TalkBack, sidestepping all three defects
+above rather than fixing any of them.
