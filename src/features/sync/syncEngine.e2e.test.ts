@@ -11,14 +11,12 @@
  */
 
 import { getDatabase } from './localDb/database';
-import type { OutboxRow, ProgressRow, BookmarkRow, HighlightRow } from './localDb/types';
+import type { ProgressRow, BookmarkRow, HighlightRow } from './localDb/types';
 import { progressTable } from './stores/progressStore';
 import { bookmarkTable } from './stores/bookmarkStore';
 import { highlightTable } from './stores/highlightStore';
 import { outboxStore } from './stores/outboxStore';
 import { downloadTable } from './stores/downloadStore';
-import { syncMetadataStore } from './stores/syncMetadataStore';
-import { syncEngine } from './syncEngine';
 
 const USER = 'test-user-e2e';
 const BOOK_EPUB = 'dev-sample-epub';

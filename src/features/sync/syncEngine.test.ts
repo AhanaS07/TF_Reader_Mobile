@@ -1313,7 +1313,7 @@ describe('run', () => {
     });
 
     // Wait for the run to complete - it should include the rerun
-    const report = await runPromise;
+    await runPromise;
 
     // Both operations should have been pushed
     expect(pushCount).toBeGreaterThanOrEqual(1);
