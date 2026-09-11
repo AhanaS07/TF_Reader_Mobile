@@ -31,7 +31,12 @@ import {
   guardTtsEnableForSleepTimer,
   resumeAudioIfPausedForSleepTimerTts,
 } from '@/features/reader/audio/audioTtsCoordinator';
-import type { AccessibilityPrefs, ContentFormat, ReduceMotion } from '@/shared/contracts';
+import type {
+  AccessibilityPrefs,
+  ContentFormat,
+  ReduceMotion,
+  TtsHighlightMode,
+} from '@/shared/contracts';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 
 import { useReduceMotion } from './useReduceMotion';
@@ -49,6 +54,19 @@ const REDUCE_MOTION_OPTIONS: readonly { value: ReduceMotion; label: string }[] =
   { value: 'system', label: 'System' },
   { value: 'on', label: 'On' },
   { value: 'off', label: 'Off' },
+];
+
+/**
+ * Was previously unreachable from any UI — `accessibility.tts.highlightMode` had a persisted
+ * column and full read-side support (`epub.entry.ts`'s `setSpokenWordRange`,
+ * `selectionTheme.ts`'s `spokenWordOpacity`) but no control anywhere set it to `'word'`, which is
+ * exactly what blocked the on-device contrast verification `selectionTheme.ts` names as
+ * Accessibility's own pass. Same three-chip shape as Reduce Motion above.
+ */
+const HIGHLIGHT_MODE_OPTIONS: readonly { value: TtsHighlightMode; label: string }[] = [
+  { value: 'sentence', label: 'Sentence' },
+  { value: 'word', label: 'Word' },
+  { value: 'none', label: 'Off' },
 ];
 
 /** Labels kept short — these two sit side by side in one row, like every other chip pair here. */
@@ -165,6 +183,14 @@ export function AccessibilitySettingsPanel({
     }
   };
 
+  const setHighlightMode = (value: TtsHighlightMode): void => {
+    void prefsStore
+      .savePrefs({ accessibility: { ...prefs, tts: { ...prefs.tts, highlightMode: value } } })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save tts.highlightMode', error);
+      });
+  };
+
   /**
    * The two `announce.*` gates, flipped the same way `toggleTts` flips its one.
    *
@@ -273,6 +299,25 @@ export function AccessibilitySettingsPanel({
             TTS: {prefs.tts.enabled ? 'On' : 'Off'}
           </Text>
         </Pressable>
+      </View>
+
+      <Text style={styles.sectionLabel}>TTS Highlight</Text>
+      <View style={styles.chipRow} testID="tts-highlight-mode-row">
+        {HIGHLIGHT_MODE_OPTIONS.map(({ value, label }) => {
+          const selected = prefs.tts.highlightMode === value;
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`TTS highlight: ${label}`}
+              accessibilityState={{ selected }}
+              key={value}
+              onPress={() => setHighlightMode(value)}
+              style={[styles.chip, selected && styles.chipSelected]}
+            >
+              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       <View style={styles.divider} />
