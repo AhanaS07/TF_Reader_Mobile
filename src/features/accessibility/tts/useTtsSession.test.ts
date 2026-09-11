@@ -13,7 +13,7 @@
 // the next assertion reads stale state.
 
 import { act, renderHook, waitFor } from '@testing-library/react-native';
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import { createFakePdfReaderTextProvider } from './testSupport/fakePdfReaderTextProvider';
 import { createTestReaderTextProvider } from './testSupport/testReaderTextProvider';
@@ -21,8 +21,10 @@ import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
 import { DEFAULT_ACCESSIBILITY_PREFS, DEFAULT_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs, SharedPrefs } from '@/shared/contracts';
 import {
+  _resetAudioPlaybackBridgeForTests,
   _resetAudioTtsCoordinatorForTests,
   registerAudioPauseHandler,
+  registerAudioPlaybackBridge,
   stopActiveTts,
 } from '@/features/reader/audio/audioTtsCoordinator';
 
@@ -121,9 +123,12 @@ function fireAppStateChange(next: 'active' | 'background' | 'inactive'): Promise
   return act(() => handler?.(next));
 }
 
+const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+
 beforeEach(() => {
   jest.clearAllMocks();
   _resetAudioTtsCoordinatorForTests();
+  _resetAudioPlaybackBridgeForTests();
   readSharedPrefsMock.mockResolvedValue(makeSharedPrefs());
 });
 
@@ -751,6 +756,33 @@ describe('useTtsSession — concurrency with audio playback', () => {
     // Only when TTS actually begins playing does it pause the audiobook
     await act(() => result.current.play());
     expect(pauseAudioMock).toHaveBeenCalled();
+  });
+
+  it('tells the user audio was paused when play() genuinely interrupted it', async () => {
+    registerAudioPauseHandler(jest.fn());
+    registerAudioPlaybackBridge({ isAudioPlaying: () => true, resumeAudioAfterTts: jest.fn() });
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+
+    expect(mockAlert).toHaveBeenCalledTimes(1);
+    expect(mockAlert.mock.calls[0][0]).toBe('Audio Paused');
+  });
+
+  it('stays silent on play() when no audio was actually playing to interrupt', async () => {
+    registerAudioPauseHandler(jest.fn());
+    registerAudioPlaybackBridge({ isAudioPlaying: () => false, resumeAudioAfterTts: jest.fn() });
+
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+    await waitFor(() => expect(result.current.prefs.enabled).toBe(true));
+
+    await act(() => result.current.play());
+
+    expect(mockAlert).not.toHaveBeenCalled();
   });
 
   it('stops active TTS speech when stopActiveTts is invoked by the coordinator', async () => {

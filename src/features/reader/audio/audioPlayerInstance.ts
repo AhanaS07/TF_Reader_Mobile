@@ -31,7 +31,7 @@ import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audi
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId } from '@/shared/contracts';
 
-import { registerAudioPauseHandler, registerSleepTimerAudioBridge, stopActiveTts } from './audioTtsCoordinator';
+import { registerAudioPauseHandler, registerAudioPlaybackBridge, stopActiveTts } from './audioTtsCoordinator';
 import { audioQueueStore } from './audioQueueStore';
 import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
@@ -57,13 +57,14 @@ export function _resetTrackCompletionHandlerForTests(): void {
 // automatically pauses active audiobook sound.
 registerAudioPauseHandler(pauseCurrentAudioPlayer);
 
-// Registers the singleton's playback query + resume action for the sleep timer's TTS guard
-// (audioTtsCoordinator.ts's guardTtsEnableForSleepTimer/resumeAudioIfPausedForSleepTimerTts) — see
-// that file's header for why this is a registration rather than a direct import back into it.
-// `ensureAudioModeConfigured(true)` re-asserts the audio session before resuming, since TTS may
-// have touched AVAudioSession in between; `true` forces a fresh call rather than reusing a
-// possibly-stale memoized one, same as AudioPlayerScreen.tsx's own beginPlayback() does.
-registerSleepTimerAudioBridge({
+// Registers the singleton's playback query + resume action for audioTtsCoordinator.ts's TTS-side
+// callers (the sleep timer's guardTtsEnableForSleepTimer/resumeAudioIfPausedForSleepTimerTts, and
+// pauseActiveAudioForTtsPlay's own-audio-alert check) — see that file's header for why this is a
+// registration rather than a direct import back into it. `ensureAudioModeConfigured(true)`
+// re-asserts the audio session before resuming, since TTS may have touched AVAudioSession in
+// between; `true` forces a fresh call rather than reusing a possibly-stale memoized one, same as
+// AudioPlayerScreen.tsx's own beginPlayback() does.
+registerAudioPlaybackBridge({
   isAudioPlaying,
   resumeAudioAfterTts: () => {
     void ensureAudioModeConfigured(true).then(() => resumeCurrentAudioPlayer());

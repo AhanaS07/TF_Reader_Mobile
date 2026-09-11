@@ -52,6 +52,7 @@ import type {
 import { logSpan, now } from '@/features/reader/readerTiming';
 import {
   pauseActiveAudio,
+  pauseActiveAudioForTtsPlay,
   registerActiveTtsSession,
 } from '@/features/reader/audio/audioTtsCoordinator';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
@@ -418,8 +419,13 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (liveStatus === 'speaking') return;
 
       // AUDIO SESSION CONCURRENCY: Only one audio stream runs at a time.
-      // If an audiobook is currently playing, pause it before TTS begins.
-      pauseActiveAudio();
+      // If an audiobook is currently playing, pause it before TTS begins. THIS is the actual
+      // "press Play" moment — pauseActiveAudioForTtsPlay() (not the plain pauseActiveAudio() used
+      // at this file's other two call sites, speakSentence/handleTtsStart) additionally tells the
+      // user audio was paused for this reason, but only when it genuinely was: it reads
+      // isAudioPlaying() before pausing, so a resume-from-pause or a later sentence — where audio
+      // is already stopped — stays silent.
+      pauseActiveAudioForTtsPlay();
 
       if (liveStatus === 'paused') {
         // >>> THE READER MOVED WHILE PAUSED — RESUME IS WRONG HERE, NOT JUST STALE. <<< Both
