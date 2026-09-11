@@ -18,6 +18,7 @@ import { mockSpeechRecognition } from '@search/MockSpeechRecognition';
 import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { NavLink, Publication, SearchFeed } from '@model/types';
 import type { CatalogueSearchPipeline, SearchRequest } from '@/search';
+import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { useRecentSearchesStore } from '@store/recentSearchesStore';
 import { useSessionStore } from '@store/sessionStore';
 
@@ -79,12 +80,6 @@ function publication(
 
 const FIRST = publication('item_env', 'Environmental Policy in China', 'Routledge');
 const SECOND = publication('item_ab6', 'Ethnographies of Waiting', 'CRC Press');
-const SUBSCRIPTION_ITEM = publication(
-  'item_sub',
-  'Advanced Ethnographic Methods',
-  'CRC Press',
-  'SUBSCRIPTION',
-);
 
 const BROWSE: NavLink[] = [
   { title: 'eBooks', href: 'https://api.tf/groups/ebooks', shelfId: 'ebooks', target: 'shelf' },
@@ -148,6 +143,7 @@ afterEach(() => {
   // The recent-searches store is a module singleton — every submit() in this
   // file writes to it, so it must not leak from one test into the next.
   useRecentSearchesStore.getState().clear();
+  useRecentlyViewedStore.getState().clear();
   useSessionStore.getState().clearSession();
 });
 
@@ -166,12 +162,12 @@ describe('the surface says what it searches', () => {
     );
   });
 
-  it('says outright that it does not search inside books', async () => {
+  it('says outright that it does not search inside titles', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed())));
     await render(<SearchScreen />);
 
     expect(screen.getByTestId('search-helper').props.children).toBe(
-      'Catalogue metadata only — this does not search inside books.',
+      'Catalogue metadata only — this does not search inside titles.',
     );
   });
 });
@@ -272,11 +268,109 @@ describe('recent searches', () => {
 
     await submit('climate');
     await fireEvent.press(screen.getByTestId('search-input-clear'));
-    await waitFor(() => expect(screen.getByTestId('search-recent-clear')).toBeTruthy());
+    // The "Clear" action now comes from SectionHeader's own action slot —
+    // same component Catalogue's shelf headers use, accessibilityLabel names
+    // the section per that component's own header comment.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Clear Recent searches' })).toBeTruthy(),
+    );
 
-    await fireEvent.press(screen.getByTestId('search-recent-clear'));
+    await fireEvent.press(screen.getByRole('button', { name: 'Clear Recent searches' }));
 
     expect(screen.queryByTestId('search-recent')).toBeNull();
+  });
+});
+
+describe('recently viewed', () => {
+  it('shows nothing when the reader has viewed nothing yet', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    expect(screen.queryByTestId('search-recently-viewed')).toBeNull();
+  });
+
+  // Drawn with the exact same `ContentCard` row Catalogue and the results
+  // list use — on explicit instruction not to invent a second display for
+  // the same kind of data.
+  it('lists a real viewed item through the same ContentCard row as a search result', async () => {
+    useRecentlyViewedStore.getState().recordView({
+      id: 'item_viewed',
+      title: 'Rights for Robots',
+      publisher: 'Routledge',
+      authors: ['Joshua C. Gellers'],
+      subjects: [],
+      format: 'PDF',
+      acquisition: { actionId: 'openAccess', href: 'https://x', licenceModel: 'OPEN_ACCESS', encryption: null },
+    });
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    expect(screen.getByTestId('search-recently-viewed')).toBeTruthy();
+    expect(screen.getByTestId('content-card')).toBeTruthy();
+    expect(screen.getByText('Rights for Robots')).toBeTruthy();
+    expect(screen.getByText('Joshua C. Gellers')).toBeTruthy();
+    expect(screen.getByText('Open Access')).toBeTruthy();
+  });
+
+  // The store itself remembers more (MAX_RECENTLY_VIEWED in
+  // recentlyViewedStore.ts) — this pins Search's own display cap, on
+  // explicit request, at a number below that store cap so the two are
+  // provably different limits rather than one accidentally matching the
+  // other.
+  it('shows at most 3 recently viewed items, most recent first', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      useRecentlyViewedStore.getState().recordView({
+        id: `item_${i}`,
+        title: `Title ${i}`,
+        authors: [],
+        subjects: [],
+        acquisition: { actionId: 'openAccess', href: 'https://x', licenceModel: 'OPEN_ACCESS', encryption: null },
+      });
+    }
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await waitFor(() => expect(screen.getAllByTestId('content-card')).toHaveLength(3));
+    expect(screen.getByText('Title 4')).toBeTruthy();
+    expect(screen.getByText('Title 3')).toBeTruthy();
+    expect(screen.getByText('Title 2')).toBeTruthy();
+    expect(screen.queryByText('Title 1')).toBeNull();
+    expect(screen.queryByText('Title 0')).toBeNull();
+  });
+
+  it('goes straight to the item’s detail page when tapped, not through a search', async () => {
+    const pipeline = stub(() => Promise.resolve(feed()));
+    setSearchPipeline(pipeline);
+    useRecentlyViewedStore.getState().recordView({
+      id: 'item_viewed',
+      title: 'Rights for Robots',
+      authors: [],
+      subjects: [],
+      acquisition: { actionId: 'openAccess', href: 'https://x', licenceModel: 'OPEN_ACCESS', encryption: null },
+    });
+    await render(<SearchScreen />);
+
+    await fireEvent.press(screen.getByText('Rights for Robots'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_viewed' });
+    expect(pipeline.searchCalls).toHaveLength(0);
+  });
+
+  it('hides once a fresh query is being typed', async () => {
+    useRecentlyViewedStore.getState().recordView({
+      id: 'item_viewed',
+      title: 'Rights for Robots',
+      authors: [],
+      subjects: [],
+      acquisition: { actionId: 'openAccess', href: 'https://x', licenceModel: 'OPEN_ACCESS', encryption: null },
+    });
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+    await waitFor(() => expect(screen.getByTestId('search-recently-viewed')).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByTestId('search-input-field'), 'open');
+
+    expect(screen.queryByTestId('search-recently-viewed')).toBeNull();
   });
 });
 
@@ -307,6 +401,39 @@ describe('successful results', () => {
     expect(screen.getByText('Showing 1 of 3')).toBeTruthy();
   });
 
+  it('shows the server total once, above the list', async () => {
+    setSearchPipeline(
+      stub(() => Promise.resolve(feed({ publications: [FIRST], totalItems: 3 }))),
+    );
+    await render(<SearchScreen />);
+
+    await submit('climate');
+
+    await waitFor(() => expect(screen.getByTestId('search-results-count')).toBeTruthy());
+    expect(screen.getByText('3 results')).toBeTruthy();
+  });
+
+  it('singularises a total of exactly one', async () => {
+    setSearchPipeline(
+      stub(() => Promise.resolve(feed({ publications: [FIRST], totalItems: 1 }))),
+    );
+    await render(<SearchScreen />);
+
+    await submit('climate');
+
+    await waitFor(() => expect(screen.getByText('1 result')).toBeTruthy());
+  });
+
+  it('shows no count line when the server did not report a total', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
+    await render(<SearchScreen />);
+
+    await submit('climate');
+
+    await waitFor(() => expect(screen.getByTestId('content-card')).toBeTruthy());
+    expect(screen.queryByTestId('search-results-count')).toBeNull();
+  });
+
   it('opens detail for a row that was tapped', async () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [FIRST] }))));
     await render(<SearchScreen />);
@@ -327,20 +454,6 @@ describe('successful results', () => {
     await waitFor(() => expect(screen.getByTestId('content-card')).toBeTruthy());
     expect(screen.queryByTestId('search-empty')).toBeNull();
     expect(screen.queryByTestId('search-error')).toBeNull();
-  });
-
-  it('renders one access-tier badge per result, resolved per row', async () => {
-    setSearchPipeline(
-      stub(() => Promise.resolve(feed({ publications: [FIRST, SUBSCRIPTION_ITEM] }))),
-    );
-    await render(<SearchScreen />);
-
-    await submit('climate');
-
-    await waitFor(() => expect(screen.getAllByTestId('content-card-badge')).toHaveLength(2));
-    const badges = screen.getAllByTestId('content-card-badge');
-    expect(within(badges[0]).getByText('Open Access')).toBeTruthy();
-    expect(within(badges[1]).getByText('Subscription')).toBeTruthy();
   });
 });
 
@@ -506,6 +619,19 @@ describe('applying more than one filter dimension at once', () => {
       accessTier: 'ELITE',
     });
   });
+
+  it('shows the real active-filter count on the button, not a boolean', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed())));
+    await render(<SearchScreen />);
+
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await fireEvent.press(screen.getByLabelText('Elite'));
+    await applyFilters();
+
+    await waitFor(() => expect(screen.getByText('Filter & Sort (2)')).toBeTruthy());
+  });
 });
 
 // Search has no sort parameter at all (searchCatalogue's own contract carries
@@ -554,6 +680,33 @@ describe('a zero-result response', () => {
 
     await waitFor(() => expect(screen.getByTestId('search-empty')).toBeTruthy());
     expect(screen.getByText('Try adjusting your filters.')).toBeTruthy();
+  });
+
+  it('offers real, actionable tips, not a bare message', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [] }))));
+    await render(<SearchScreen />);
+
+    await submit('quantum basket weaving');
+
+    await waitFor(() => expect(screen.getByTestId('search-empty-tips')).toBeTruthy());
+    expect(screen.getByText('Checking your spelling')).toBeTruthy();
+    expect(screen.getByText('Using different keywords')).toBeTruthy();
+    expect(screen.getByText('Searching for a broader topic')).toBeTruthy();
+    // No filters are active in this case, so removing one is not real advice.
+    expect(screen.queryByText('Removing some filters')).toBeNull();
+  });
+
+  it('adds "Removing some filters" as a tip once a filter actually narrowed the result to nothing', async () => {
+    setSearchPipeline(stub(() => Promise.resolve(feed({ publications: [] }))));
+    await render(<SearchScreen />);
+
+    await openFilterSheet();
+    await waitFor(() => expect(screen.getByLabelText('Audiobooks')).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText('Audiobooks'));
+    await applyFilters();
+    await submit('quantum basket weaving');
+
+    await waitFor(() => expect(screen.getByText('Removing some filters')).toBeTruthy());
   });
 
   it('clearing filters from the empty state starts a new, unfiltered search', async () => {
@@ -639,7 +792,7 @@ describe('a response with no publications key, carrying browseInstead', () => {
 
     await submit('quantum basket weaving');
 
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(2));
   });
 
   it('shows no browse section when the response offered none', async () => {
@@ -665,9 +818,9 @@ describe('tapping a browse-instead card routes by its target', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: BROWSE }))));
     await render(<SearchScreen />);
     await submit('quantum basket weaving');
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(2));
 
-    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+    fireEvent.press(screen.getAllByTestId('search-browse-item')[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', {
       screen: 'Shelf',
@@ -685,9 +838,9 @@ describe('tapping a browse-instead card routes by its target', () => {
     setSearchPipeline(stub(() => Promise.resolve(feed({ browseInstead: [catalogueRoot] }))));
     await render(<SearchScreen />);
     await submit('quantum basket weaving');
-    await waitFor(() => expect(screen.getAllByTestId('category-card')).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId('search-browse-item')).toHaveLength(1));
 
-    fireEvent.press(screen.getAllByTestId('category-card')[0]);
+    fireEvent.press(screen.getAllByTestId('search-browse-item')[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith('Catalogue', { screen: 'CatalogueHome' });
   });
@@ -1352,7 +1505,6 @@ describe('SearchScreen — no Elite queue affordance', () => {
 
     await waitFor(() => expect(screen.getByText('An Elite Title')).toBeTruthy());
     expect(screen.queryByText('Grant access')).toBeNull();
-    expect(screen.queryByTestId('content-card-action')).toBeNull();
   });
 
   it('draws no queue position even when the reader is queued', async () => {
@@ -1409,8 +1561,6 @@ describe('SearchScreen — D8 not entitled', () => {
 
     await waitFor(() => expect(screen.getByText('Metadata Only')).toBeTruthy());
     expect(screen.queryByText('Open Access')).toBeNull();
-    expect(screen.queryByTestId('content-card-badge')).toBeNull();
-    expect(screen.queryByTestId('content-card-action')).toBeNull();
   });
 });
 

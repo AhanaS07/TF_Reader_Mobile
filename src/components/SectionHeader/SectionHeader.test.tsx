@@ -133,7 +133,10 @@ describe('SectionHeader tokens', () => {
 
     expect(title.fontSize).toBe(type.sectionHeader.size);
     expect(title.lineHeight).toBe(type.sectionHeader.lineHeight);
-    expect(title.fontWeight).toBe(type.sectionHeader.weight);
+    // No fontWeight assertion: the style sets none. On Android, pairing a
+    // custom per-weight fontFamily with an explicit fontWeight makes the
+    // renderer substitute the system typeface for the loaded one — the
+    // weight already lives in which font file resolveFont picked.
     expect(title.color).toBe(color.textPrimary);
   });
 
@@ -141,5 +144,36 @@ describe('SectionHeader tokens', () => {
     await render(<SectionHeader title="Featured" actionLabel="See all" onAction={() => {}} />);
 
     expect(StyleSheet.flatten(screen.getByText('See all').props.style).color).toBe(color.primary);
+  });
+
+  it('defaults to the sectionHeader (Open Sans) family', async () => {
+    await render(<SectionHeader title="Featured" />);
+
+    expect(styleOf('section-header-title').fontFamily).toBe(type.sectionHeader.fontFamily);
+  });
+});
+
+// CatalogueScreen's shelf titles opt into this; every other screen keeps the
+// default above unless it opts in too.
+describe('SectionHeader emphasis="editorial"', () => {
+  it('switches the title to the editorial (Aleo) family', async () => {
+    await render(<SectionHeader title="New this month" emphasis="editorial" />);
+
+    // `cardTitle`, not `editorialTitle` — see `titleEditorial`'s own comment
+    // in SectionHeader.tsx for why: the hero's headline is this screen's
+    // primary title and correctly stays Open Sans, so it would make this a
+    // no-op.
+    expect(styleOf('section-header-title').fontFamily).toBe(type.cardTitle.fontFamily);
+  });
+
+  // Only the family changes — size, line height and colour, and the layout
+  // rules in the describe block above, all stay exactly as `default`.
+  it('keeps the sectionHeader size, line height and colour', async () => {
+    await render(<SectionHeader title="New this month" emphasis="editorial" />);
+    const title = styleOf('section-header-title');
+
+    expect(title.fontSize).toBe(type.sectionHeader.size);
+    expect(title.lineHeight).toBe(type.sectionHeader.lineHeight);
+    expect(title.color).toBe(color.textPrimary);
   });
 });

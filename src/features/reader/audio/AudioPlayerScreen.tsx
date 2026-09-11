@@ -396,14 +396,17 @@ function AudioPlayerScreenComponent(
   );
 
   // CHECKED BEFORE `loadError`, and with its OWN heading — not the generic one below. "Couldn't
-  // load this audiobook" is the right words for a corrupt file or a network failure; it is the
-  // wrong words for "your access to this book ended", the same distinction Contract ask 4 (to
+  // load this title" is the right words for a corrupt file or a network failure; it is the
+  // wrong words for "your access to this title ended", the same distinction Contract ask 4 (to
   // Abhinav) names for the cold-open case. `formatDiagnosticErrorMessage(lock)` still renders the
   // CODE (`CONTENT_LOCKED: …`) — only the heading above it needs to say something different.
+  // "This title", not "this book"/"this audiobook" — one wording across
+  // every format, the same reasoning ItemDetailScreen's "About this title"
+  // section header gives.
   if (lock !== null) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorTitle}>Access to this book ended</Text>
+        <Text style={styles.errorTitle}>Access to this title ended</Text>
         <Text style={styles.errorDetail}>{formatDiagnosticErrorMessage(lock)}</Text>
       </View>
     );
@@ -412,7 +415,7 @@ function AudioPlayerScreenComponent(
   if (loadError) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorTitle}>Couldn&apos;t load this audiobook</Text>
+        <Text style={styles.errorTitle}>Couldn&apos;t load this title</Text>
         <Text style={styles.errorDetail}>
           {formatDiagnosticErrorMessage(loadError)}
         </Text>

@@ -30,9 +30,13 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { BottomSheet } from '@components/BottomSheet';
 import { SectionHeader } from '@components/SectionHeader';
-import { color, space, type as typeScale } from '@theme/tokens';
+import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 import { FONT_FAMILY_OPTIONS } from '@/features/personalization/prefsOptions';
+
+// A letterform glyph, not an Ionicon — "Aa" names the setting (a font choice)
+// more directly than any generic type/text icon would.
+const FONT_ICON_LABEL = 'Aa';
 
 // Seven short rows plus the sheet's own handle and title fit comfortably below
 // half the screen — no need for Design Spec §2.3's fuller 60–70% band, which
@@ -70,7 +74,10 @@ export default function FontSection({ family, onSelectFontFamily }: FontSectionP
 
   return (
     <View style={styles.section} testID="font-section">
-      <SectionHeader title="Font" />
+      <SectionHeader
+        title="Font"
+        icon={<Text style={styles.iconLabel}>{FONT_ICON_LABEL}</Text>}
+      />
       <Text style={styles.hint}>EPUB only. PDFs use their own embedded fonts.</Text>
 
       <Pressable
@@ -128,9 +135,21 @@ export default function FontSection({ family, onSelectFontFamily }: FontSectionP
 }
 
 const styles = StyleSheet.create({
-  // No outer margin — the screen owns placement (§8).
+  // No outer margin — the screen owns placement (§8). Bordered, rounded card
+  // — see ThemeSection's own note on this same treatment.
   section: {
     gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
+  },
+  iconLabel: {
+    fontFamily: typeScale.button.fontFamily,
+    fontSize: typeScale.button.size,
+    lineHeight: typeScale.button.lineHeight,
+    color: color.primary,
   },
   hint: {
     fontWeight: typeScale.smallLabel.weight,
@@ -147,7 +166,7 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
     paddingHorizontal: space.md,
     backgroundColor: color.white,
-    borderRadius: space.xs,
+    borderRadius: radius.card,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: color.border,
   },

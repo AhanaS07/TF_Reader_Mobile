@@ -114,7 +114,7 @@
     "expo-secure-store": "~57.0.1",
     "expo-speech-recognition": "^56.0.1",
     "expo-splash-screen": "~57.0.8",
-    "expo-sqlite": "~57.0.1",
+    "expo-sqlite": "~57.0.2",
     "expo-system-ui": "~57.0.2",
     "expo-web-browser": "~57.0.2",
     "jszip": "^3.10.1",

@@ -7,7 +7,7 @@
 // assertable because no function here reads `Date.now()`.
 import type { Bookmark } from '@/shared/contracts';
 import { MAX_BATCH_IDS } from '@model/batchItems';
-import type { Hold, Loan } from '@model/types';
+import type { AccessTier, Hold, Loan } from '@model/types';
 import type { DownloadRecord } from '@store/downloadStore';
 
 import {
@@ -17,9 +17,11 @@ import {
   downloadedLabel,
   downloadsSummaryLabel,
   dueLabel,
-  offerMinutesRemaining,
-  ordinal,
+  groupBookmarksByTitle,
+  mergeContentItems,
+  offerCountdownLabel,
   partitionHolds,
+  partitionLoansByTier,
   queueLabel,
   queueProgressFraction,
   type ShelfSections,
@@ -102,6 +104,119 @@ describe('activeLoans', () => {
     ]);
 
     expect(kept.map((l) => l.loanId)).toEqual(['a']);
+  });
+});
+
+describe('partitionLoansByTier', () => {
+  it('puts an ELITE-tier loan in eliteLoans and everything else in subscriptionLoans', () => {
+    const tiers: Record<string, AccessTier> = { elite_item: 'ELITE', sub_item: 'SUBSCRIPTION' };
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'elite_item' }), aLoan({ loanId: 'b', itemId: 'sub_item' })],
+      (itemId) => tiers[itemId],
+    );
+
+    expect(eliteLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['b']);
+  });
+
+  it('keeps an unhydrated loan (unknown tier) as subscription until proven Elite', () => {
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'not_yet_hydrated' })],
+      () => undefined,
+    );
+
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(eliteLoans).toHaveLength(0);
+  });
+
+  it('treats OPEN_ACCESS the same as SUBSCRIPTION — neither is Elite', () => {
+    const { subscriptionLoans, eliteLoans } = partitionLoansByTier(
+      [aLoan({ loanId: 'a', itemId: 'oa_item' })],
+      () => 'OPEN_ACCESS',
+    );
+
+    expect(subscriptionLoans.map((l) => l.loanId)).toEqual(['a']);
+    expect(eliteLoans).toHaveLength(0);
+  });
+});
+
+describe('groupBookmarksByTitle', () => {
+  it('groups bookmarks for the same book into one entry', () => {
+    const groups = groupBookmarksByTitle([
+      aBookmark({ id: 'bm_1', bookId: 'item_42' }),
+      aBookmark({ id: 'bm_2', bookId: 'item_42' }),
+      aBookmark({ id: 'bm_3', bookId: 'item_99' }),
+    ]);
+
+    expect(groups.map((g) => g.bookId)).toEqual(['item_42', 'item_99']);
+    expect(groups[0].bookmarks.map((b) => b.id)).toEqual(['bm_1', 'bm_2']);
+    expect(groups[1].bookmarks.map((b) => b.id)).toEqual(['bm_3']);
+  });
+
+  it('orders groups by their own newest bookmark, given an already newest-first list', () => {
+    const groups = groupBookmarksByTitle(
+      sortedBookmarks([
+        aBookmark({ id: 'old', bookId: 'item_A', updatedAt: SERVER_NOW_MS - 60_000 }),
+        aBookmark({ id: 'new', bookId: 'item_B', updatedAt: SERVER_NOW_MS }),
+      ]),
+    );
+
+    expect(groups.map((g) => g.bookId)).toEqual(['item_B', 'item_A']);
+  });
+
+  it('returns nothing for an empty list', () => {
+    expect(groupBookmarksByTitle([])).toEqual([]);
+  });
+});
+
+describe('mergeContentItems', () => {
+  it('merges a loan, a download and a bookmark group for the SAME book into one entry', () => {
+    const loan = aLoan({ itemId: 'item_42' });
+    const download = aDownload({ itemId: 'item_42' });
+    const group = { bookId: 'item_42', bookmarks: [aBookmark({ bookId: 'item_42' })] };
+
+    const merged = mergeContentItems([], [loan], [download], [group]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({
+      itemId: 'item_42',
+      isElite: false,
+      loan,
+      download,
+      bookmarkGroup: group,
+    });
+  });
+
+  it('keeps unrelated books as separate entries', () => {
+    const merged = mergeContentItems(
+      [],
+      [aLoan({ itemId: 'item_a' })],
+      [aDownload({ itemId: 'item_b' })],
+      [],
+    );
+
+    expect(merged.map((m) => m.itemId)).toEqual(['item_a', 'item_b']);
+  });
+
+  it('marks an Elite loan distinctly from a subscription one', () => {
+    const merged = mergeContentItems([aLoan({ itemId: 'item_42' })], [], [], []);
+
+    expect(merged[0].isElite).toBe(true);
+  });
+
+  it('orders first-seen, Elite loans then subscription loans then downloads then bookmarks', () => {
+    const merged = mergeContentItems(
+      [aLoan({ itemId: 'elite_item' })],
+      [aLoan({ itemId: 'sub_item' })],
+      [aDownload({ itemId: 'dl_item' })],
+      [{ bookId: 'bm_item', bookmarks: [aBookmark({ bookId: 'bm_item' })] }],
+    );
+
+    expect(merged.map((m) => m.itemId)).toEqual(['elite_item', 'sub_item', 'dl_item', 'bm_item']);
+  });
+
+  it('returns nothing when every list is empty', () => {
+    expect(mergeContentItems([], [], [], [])).toEqual([]);
   });
 });
 
@@ -340,7 +455,7 @@ describe('bookmarkLocationLabel', () => {
   });
 });
 
-describe('offerMinutesRemaining', () => {
+describe('offerCountdownLabel', () => {
   // The device is five minutes FAST: its clock reads later than the server's, so
   // the offset is negative. A countdown that ignored the offset would report
   // five minutes less than the reader actually has, and they would abandon a
@@ -355,34 +470,49 @@ describe('offerMinutesRemaining', () => {
       offerExpiresAt: new Date(SERVER_NOW_MS + 15 * 60_000).toISOString(),
     });
 
-    expect(offerMinutesRemaining(hold, offsetMs, deviceNowMs)).toBe(15);
+    expect(offerCountdownLabel(hold, offsetMs, deviceNowMs)).toBe('Expires in 15:00');
     // Without the offset the same hold reads five minutes short.
-    expect(offerMinutesRemaining(hold, 0, deviceNowMs)).toBe(10);
+    expect(offerCountdownLabel(hold, 0, deviceNowMs)).toBe('Expires in 10:00');
   });
 
-  it('floors, so the last live minute reads as 0 rather than disappearing', () => {
-    const hold = aHold({
-      state: 'offered',
-      offerExpiresAt: new Date(SERVER_NOW_MS + 30_000).toISOString(),
-    });
-
-    expect(offerMinutesRemaining(hold, offsetMs, deviceNowMs)).toBe(0);
-  });
-
-  it('clamps a lapsed offer to 0 rather than going negative', () => {
+  it('clamps a lapsed offer to zero rather than going negative', () => {
     const hold = aHold({
       state: 'offered',
       offerExpiresAt: new Date(SERVER_NOW_MS - 60 * 60_000).toISOString(),
     });
 
-    expect(offerMinutesRemaining(hold, offsetMs, deviceNowMs)).toBe(0);
+    expect(offerCountdownLabel(hold, offsetMs, deviceNowMs)).toBe('Expiring now');
+  });
+
+  it('formats as minutes:seconds, padding a single-digit second', () => {
+    const hold = aHold({
+      state: 'offered',
+      offerExpiresAt: new Date(SERVER_NOW_MS + 23 * 60_000 + 41_000).toISOString(),
+    });
+
+    expect(offerCountdownLabel(hold, 0, SERVER_NOW_MS)).toBe('Expires in 23:41');
+  });
+
+  it('pads a five-second remainder to two digits', () => {
+    const hold = aHold({
+      state: 'offered',
+      offerExpiresAt: new Date(SERVER_NOW_MS + 5_000).toISOString(),
+    });
+
+    expect(offerCountdownLabel(hold, 0, SERVER_NOW_MS)).toBe('Expires in 0:05');
+  });
+
+  it('reads "Expiring now" once the remainder hits zero, never a negative countdown', () => {
+    const hold = aHold({
+      state: 'offered',
+      offerExpiresAt: new Date(SERVER_NOW_MS - 60_000).toISOString(),
+    });
+
+    expect(offerCountdownLabel(hold, 0, SERVER_NOW_MS)).toBe('Expiring now');
   });
 
   it('answers undefined when there is nothing to count', () => {
-    expect(offerMinutesRemaining(aHold({ state: 'offered' }), 0, SERVER_NOW_MS)).toBeUndefined();
-    expect(
-      offerMinutesRemaining(aHold({ state: 'offered', offerExpiresAt: 'soon' }), 0, SERVER_NOW_MS),
-    ).toBeUndefined();
+    expect(offerCountdownLabel(aHold({ state: 'offered' }), 0, SERVER_NOW_MS)).toBeUndefined();
   });
 });
 
@@ -418,31 +548,13 @@ describe('dueLabel', () => {
   });
 });
 
-describe('ordinal', () => {
-  it('handles the teens, which are the ones a naive suffix gets wrong', () => {
-    expect([11, 12, 13].map(ordinal)).toEqual(['11th', '12th', '13th']);
-  });
-
-  it('handles 1, 2, 3 and the twenties', () => {
-    expect([1, 2, 3, 4, 21, 22, 23].map(ordinal)).toEqual([
-      '1st',
-      '2nd',
-      '3rd',
-      '4th',
-      '21st',
-      '22nd',
-      '23rd',
-    ]);
-  });
-});
-
 describe('queueLabel', () => {
-  it('reads "3rd of 7" when both the place and the length are known', () => {
-    expect(queueLabel(aHold({ position: 3, queueLength: 7 }))).toBe('3rd of 7');
+  it('reads "#3 of 7" when both the place and the length are known', () => {
+    expect(queueLabel(aHold({ position: 3, queueLength: 7 }))).toBe('#3 of 7');
   });
 
   it('drops the length rather than inventing one', () => {
-    expect(queueLabel(aHold({ position: 3 }))).toBe('3rd in the queue');
+    expect(queueLabel(aHold({ position: 3 }))).toBe('#3 in queue');
   });
 
   it('says nothing without a position — a bare queue length is not a fact about this reader', () => {

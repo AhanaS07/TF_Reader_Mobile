@@ -24,8 +24,10 @@ import { CatalogueError, CatalogueFailure } from '@model/errors';
 import type { Institution } from '@model/institution';
 import type { Acquisition, Publication } from '@model/types';
 import { LicenceError, LicenceFailure } from '@/licence/LicenceSource';
+import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
+import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { useSessionStore } from '@store/sessionStore';
 
 import ItemDetailScreen, {
@@ -45,9 +47,25 @@ jest.mock('@hooks/useNetworkStatus', () => ({
 
 // Controls what the licence source does inside handleAction and refresh().
 // All calls default to resolved so existing tests are unaffected.
-const mockBorrow = jest.fn().mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
+const mockBorrow = jest
+  .fn()
+  .mockResolvedValue({
+    loanId: 'loan_1',
+    itemId: 'item_42',
+    state: 'active',
+    expiresAt: 9_999_999_999,
+  });
 const mockReturnLoan = jest.fn().mockResolvedValue(undefined);
-const mockPlaceHold = jest.fn().mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
+const mockPlaceHold = jest
+  .fn()
+  .mockResolvedValue({
+    holdId: 'hold_1',
+    itemId: 'item_42',
+    state: 'queued',
+    position: 1,
+    queueLength: 1,
+    serverTime: '',
+  });
 const mockGetLibrary = jest.fn().mockResolvedValue({ loans: [], holds: [] });
 
 jest.mock('@config/licence', () => ({
@@ -59,7 +77,14 @@ jest.mock('@config/licence', () => ({
     borrow: (...args: [string]) => mockBorrow(...args),
     returnLoan: (...args: [string]) => mockReturnLoan(...args),
     placeHold: (...args: [string]) => mockPlaceHold(...args),
-    acceptOffer: jest.fn().mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 }),
+    acceptOffer: jest
+      .fn()
+      .mockResolvedValue({
+        loanId: 'loan_1',
+        itemId: 'item_42',
+        state: 'active',
+        expiresAt: 9_999_999_999,
+      }),
     cancelHold: jest.fn().mockResolvedValue(undefined),
     getLibrary: () => mockGetLibrary(),
   }),
@@ -78,6 +103,17 @@ let mockDownloadProgressState = {
 };
 jest.mock('@/features/download/useDownloadProgress', () => ({
   useDownloadProgress: () => ({ ...mockDownloadProgressState, start: mockDownloadStart }),
+}));
+
+// Read/Play no longer borrow — they call openBook() directly (see
+// ItemDetailScreen.tsx's 'read' || 'play' branch) and only navigate to the
+// Reader once it resolves. Mocked at that boundary, same as
+// ItemDetailScreen.loading.test.tsx's own note, so these tests exercise the
+// screen's own wiring without pulling openBook's real network/decrypt stack
+// into a render test.
+const mockOpenBook = jest.fn().mockResolvedValue(new Uint8Array());
+jest.mock('@/features/download/openBook', () => ({
+  openBook: (...args: [string, string]) => mockOpenBook(...args),
 }));
 
 function anAcquisition(over: Partial<Acquisition> = {}): Acquisition {
@@ -167,9 +203,18 @@ function fakeSource(getPublication: DataSource['getPublication']): DataSource {
 // navigation — those read `mockNavigate` directly rather than needing their
 // own `navigation` object.
 const mockNavigate = jest.fn();
+// The header title call — see ItemDetailRouteProps's own comment for why the
+// screen calls this itself rather than the stack registration knowing the
+// title ahead of time. No test asserts on it directly; it exists so the
+// mocked navigation prop satisfies the real type.
+const mockSetOptions = jest.fn();
+// Same reason: satisfies the real type for the tab-bar-hiding effect (see
+// ItemDetailRouteProps's own comment), returning a fresh mock `setOptions`
+// each call — no test asserts on it directly either.
+const mockGetParent = jest.fn(() => ({ setOptions: jest.fn() }));
 const routeProps = {
   route: { params: { itemId: 'item_42' } },
-  navigation: { navigate: mockNavigate },
+  navigation: { navigate: mockNavigate, setOptions: mockSetOptions, getParent: mockGetParent },
 };
 
 const INSTITUTION: Institution = {
@@ -202,6 +247,8 @@ afterEach(() => {
   setCatalogueSource(undefined);
   mockUseNetworkStatus.mockReturnValue(true);
   mockNavigate.mockClear();
+  mockSetOptions.mockClear();
+  mockGetParent.mockClear();
   // CALL HISTORY, NOT JUST RETURN VALUES. These four had their resolved values
   // reset but never their call lists, so a `not.toHaveBeenCalled()` assertion
   // saw the PREVIOUS test's calls — which is why "does NOT fall through to
@@ -212,13 +259,32 @@ afterEach(() => {
   mockPlaceHold.mockClear();
   mockGetLibrary.mockClear();
   mockDownloadStart.mockClear();
-  mockBorrow.mockResolvedValue({ loanId: 'loan_1', itemId: 'item_42', state: 'active', expiresAt: 9_999_999_999 });
+  mockBorrow.mockResolvedValue({
+    loanId: 'loan_1',
+    itemId: 'item_42',
+    state: 'active',
+    expiresAt: 9_999_999_999,
+  });
   mockReturnLoan.mockResolvedValue(undefined);
-  mockPlaceHold.mockResolvedValue({ holdId: 'hold_1', itemId: 'item_42', state: 'queued', position: 1, queueLength: 1, serverTime: '' });
+  mockPlaceHold.mockResolvedValue({
+    holdId: 'hold_1',
+    itemId: 'item_42',
+    state: 'queued',
+    position: 1,
+    queueLength: 1,
+    serverTime: '',
+  });
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
-  mockDownloadProgressState = { status: 'idle', bytesReceived: 0, expectedLength: null, errorMessage: null };
+  mockDownloadProgressState = {
+    status: 'idle',
+    bytesReceived: 0,
+    expectedLength: null,
+    errorMessage: null,
+  };
   useInstitutionStore.setState({ selectedInstitution: null });
   useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useDownloadStore.setState({ downloads: [] });
+  useRecentlyViewedStore.getState().clear();
   useSessionStore.setState({
     isAuthenticated: false,
     accessToken: null,
@@ -304,6 +370,37 @@ describe('ItemDetailScreen endpoint choice', () => {
   });
 });
 
+// Search's own idle-state "Recently viewed" row (screen 09) is fed by this
+// screen recording the view once a publication actually resolves — see
+// recentlyViewedStore.ts's own note on why the snapshot is taken here.
+describe('ItemDetailScreen — recording a recently-viewed item', () => {
+  it('records the view once the publication resolves', async () => {
+    setCatalogueSource(
+      fakeSource(async () => aBook({ id: 'item_42', title: 'Rights for Robots' })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() =>
+      expect(useRecentlyViewedStore.getState().items.map((i) => i.id)).toEqual(['item_42']),
+    );
+    expect(useRecentlyViewedStore.getState().items[0].title).toBe('Rights for Robots');
+  });
+
+  it('does not record anything when the fetch fails', async () => {
+    setCatalogueSource(
+      fakeSource(async () => {
+        throw new CatalogueFailure(CatalogueError.NOT_FOUND, 'item_42');
+      }),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('This could not be found.')).toBeTruthy());
+    expect(useRecentlyViewedStore.getState().items).toEqual([]);
+  });
+});
+
 describe('ItemDetailScreen loading', () => {
   it('shows a skeleton, and no title, before the book arrives', async () => {
     // Never resolves within the test, so the screen is caught mid-load.
@@ -338,9 +435,7 @@ describe('ItemDetailScreen with a book', () => {
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() =>
-      expect(screen.getByLabelText('Rights for Robots cover')).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Rights for Robots cover')).toBeTruthy());
   });
 
   it('renders the ISBN when present', async () => {
@@ -367,12 +462,13 @@ describe('ItemDetailScreen with a book', () => {
     await waitFor(() => expect(screen.getByText(/Routledge/)).toBeTruthy());
   });
 
-  it('renders the published date when present', async () => {
+  it('renders the published date when present, as a human date rather than the feed’s raw ISO string', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText(/2020-09-30/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/30 September 2020/)).toBeTruthy());
+    expect(screen.queryByText(/2020-09-30/)).toBeNull();
   });
 
   it('renders the access tier badge for the resolved tier', async () => {
@@ -389,7 +485,9 @@ describe('ItemDetailScreen with a book', () => {
     // Open Access resolves the same signed in or out, so this is a stable case
     // to pin the action bar against without a session.
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -398,12 +496,74 @@ describe('ItemDetailScreen with a book', () => {
     expect(screen.getByText('Download')).toBeTruthy();
   });
 
+  // `resolveAccess` itself still only ever returns `read` — it has no
+  // business reading `format` (see ACTION_IDS's own note). The relabel to
+  // `play` for an AUDIO item is this screen's own presentational remap, so
+  // it is pinned here rather than in resolveAccess's own test suite.
+  describe('an audiobook says Play, not Read', () => {
+    it('shows Play instead of Read for an AUDIO item', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Play')).toBeTruthy());
+      expect(screen.queryByText('Read')).toBeNull();
+      // Download is a separate action and keeps its own label regardless.
+      expect(screen.getByText('Download')).toBeTruthy();
+    });
+
+    it('still says Read for every non-AUDIO format', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'EPUB', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+      expect(screen.queryByText('Play')).toBeNull();
+    });
+
+    it('opens the book and navigates to the AudioPlayer, not the Reader', async () => {
+      setCatalogueSource(
+        fakeSource(async () =>
+          aBook({ format: 'AUDIO', acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+        ),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('Play')).toBeTruthy());
+      fireEvent.press(screen.getByText('Play'));
+
+      await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'AUDIO'));
+      // AUDIO opens the audio player, not the EPUB/PDF reader — the two are
+      // separate screens with unrelated implementations underneath (expo-audio
+      // vs. the epub.js/pdf.js WebView bridge). See ItemDetailScreen.tsx's
+      // 'read'/'play' branch.
+      await waitFor(() =>
+        expect(mockNavigate).toHaveBeenCalledWith('AudioPlayer', {
+          bookId: 'item_42',
+          title: 'Rights for Robots',
+        }),
+      );
+      expect(mockNavigate).not.toHaveBeenCalledWith('Reader', expect.anything());
+    });
+  });
+
   // Download no longer goes through the borrow-based licence flow — it hands
   // the tapped item straight to useDownloadProgress's start(), which drives
   // downloadManager.ts (and, from there, downloadTable — not this screen).
   it('starts the download via useDownloadProgress when Download is tapped', async () => {
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -424,7 +584,9 @@ describe('ItemDetailScreen with a book', () => {
       errorMessage: null,
     };
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -433,6 +595,34 @@ describe('ItemDetailScreen with a book', () => {
     fireEvent.press(screen.getByText('Download'));
 
     expect(mockDownloadStart).not.toHaveBeenCalled();
+  });
+
+  // Regression test: `useDownloadProgress`/`downloadManager` persist a
+  // completed download to SQLite, but `LibraryScreen`'s Downloads tab still
+  // reads the older `downloadStore` (see that file's own header on why it's
+  // not yet retired). A merge dropped this screen's write-through to that
+  // store without adding a replacement, so a real successful download never
+  // showed up in Library — this pins the fix in the completion effect.
+  it('records the download in downloadStore once it completes, so it shows up in Library', async () => {
+    mockDownloadProgressState = {
+      status: 'completed',
+      bytesReceived: 4096,
+      expectedLength: 4096,
+      errorMessage: null,
+    };
+    setCatalogueSource(
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() =>
+      expect(useDownloadStore.getState().downloads).toEqual([
+        expect.objectContaining({ itemId: 'item_42', sizeBytes: 4096 }),
+      ]),
+    );
   });
 
   // The fixture this screen will meet in the real app is an Elite title, and
@@ -457,7 +647,9 @@ describe('ItemDetailScreen with a book', () => {
   it('resolves a Subscription title to Read once an institution is selected, instead of Sign in', async () => {
     selectAndSignIn(INSTITUTION);
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -505,7 +697,9 @@ describe('ItemDetailScreen with a book', () => {
   // QueueNotification.test.tsx).
   it('still no-ops for actions other than signIn', async () => {
     setCatalogueSource(
-      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) })),
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
     );
 
     await render(<ItemDetailScreen {...routeProps} />);
@@ -551,40 +745,118 @@ describe('ItemDetailScreen format, price and table of contents', () => {
     expect(screen.queryByTestId('format-strip')).toBeNull();
   });
 
-  it('shows the price area as unavailable, with no invented amount', async () => {
+  // Book-detail refinement §10: a meaningless "Price unavailable" pill is
+  // worse than no price section at all — there is no price field in either
+  // contract, so this omits the row entirely rather than naming the gap.
+  it('never shows a price row, invented or otherwise', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Price unavailable')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText(/price/i)).toBeNull();
     // Nothing that looks like an actual price (a currency symbol and digits)
     // is ever built — there is no price field in either contract.
     expect(screen.queryByText(/[$£€]\s?\d/)).toBeNull();
   });
 
-  it('shows Table of Contents as unavailable, with no expand/collapse behaviour', async () => {
+  // Book-detail refinement §11 (revised): no TOC field exists on the model at
+  // all, so the section is omitted entirely rather than shown with an
+  // honest-but-empty body — the earlier "not currently available" text read
+  // as the page announcing its own unfinished-ness.
+  it('renders no Table of Contents section at all, there being no TOC field on the model', async () => {
     setCatalogueSource(fakeSource(async () => aBook()));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Table of Contents')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: /table of contents/i })).toBeNull();
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByText('Table of Contents')).toBeNull();
+    expect(screen.queryByText(/table of contents/i)).toBeNull();
   });
 
-  // Price and Table of Contents are this screen's two unavailable elements, and
-  // the format strip is deliberately NOT one of them — see `FormatStrip`'s
-  // header comment. What this counts is the marker, not the shape: `variant`
-  // gives the three call sites across both screens the shape their own mockup
-  // draws (price a chip, Table of Contents a ruled row, screen 04's pair plain
-  // inline text), so the boxing is no longer what they have in common. Being
-  // muted and untappable is.
-  it('marks price and table of contents unavailable, but not the format strip', async () => {
+  // §9 (revised again): "About this title" is now a real, always-present
+  // section — a genuine description (today's one-liners included) is shown
+  // rather than withheld.
+  describe('the "About this title" section', () => {
+    it('shows a real, non-fixture description under "About this title"', async () => {
+      setCatalogueSource(
+        fakeSource(async () => aBook({ description: 'A study of legal personhood.' })),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
+      expect(screen.getByText('A study of legal personhood.')).toBeTruthy();
+    });
+
+    // This screen used to filter out the catalogue source's own dev-fixture
+    // placeholder text here — reversed on explicit instruction, since every
+    // current title's real `description` value happens to be exactly this
+    // note, and hiding it left the section looking permanently empty. Shown
+    // verbatim now, same as any other field.
+    it.each([
+      'Real EPUB fixture (ELITE), ingested from a real file.',
+      'Real PDF fixture, ingested from a real file.',
+      'Real audio fixture, ingested from a real file.',
+    ])(
+      "shows the feed's own description verbatim, dev-fixture note included: %s",
+      async (description) => {
+        setCatalogueSource(fakeSource(async () => aBook({ description })));
+
+        await render(<ItemDetailScreen {...routeProps} />);
+
+        await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
+        expect(screen.getByText(description)).toBeTruthy();
+        expect(screen.queryByText('Description not available yet.')).toBeNull();
+      },
+    );
+
+    it('shows the honest fallback when the feed sent no description at all', async () => {
+      setCatalogueSource(fakeSource(async () => aBook({ description: undefined })));
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
+      expect(screen.getByText('Description not available yet.')).toBeTruthy();
+    });
+
+    it('offers no "Read more" for a short description', async () => {
+      setCatalogueSource(
+        fakeSource(async () => aBook({ description: 'A study of legal personhood.' })),
+      );
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText('About this title')).toBeTruthy());
+      expect(screen.queryByRole('button', { name: 'Read more' })).toBeNull();
+    });
+
+    it('clamps a long description behind "Read more", and expands it on press', async () => {
+      const longDescription = 'A study of legal personhood. '.repeat(20);
+      setCatalogueSource(fakeSource(async () => aBook({ description: longDescription })));
+
+      await render(<ItemDetailScreen {...routeProps} />);
+
+      await waitFor(() => expect(screen.getByText(longDescription)).toBeTruthy());
+      expect(screen.getByText(longDescription).props.numberOfLines).toBe(4);
+
+      await fireEvent.press(screen.getByRole('button', { name: 'Read more' }));
+
+      expect(screen.getByText(longDescription).props.numberOfLines).toBeUndefined();
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+    });
+  });
+
+  it('shows the format strip without pulling in the unavailable-tag treatment', async () => {
     setCatalogueSource(fakeSource(async () => aBook({ format: 'PDF' })));
 
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByTestId('format-strip')).toBeTruthy());
-    expect(screen.getAllByTestId('unavailable-tag')).toHaveLength(2);
+    // `unavailable-tag` is screen 04's marker now (the research-article eyebrow
+    // and the citation link) — screen 05 no longer has anything muted enough
+    // to need it, price and Table of Contents having moved to their own shapes.
+    expect(screen.queryAllByTestId('unavailable-tag')).toHaveLength(0);
   });
 });
 
@@ -635,7 +907,13 @@ describe('ItemDetailScreen errors', () => {
 
     await render(
       <ItemDetailScreen
-        {...{ route: { params: { itemId: 'item_missing' } }, navigation: { navigate: mockNavigate } }}
+        {...{
+          route: { params: { itemId: 'item_missing' } },
+          navigation: {
+            navigate: mockNavigate,
+            getParent: mockGetParent,
+          },
+        }}
       />,
     );
 
@@ -648,7 +926,8 @@ describe('ItemDetailScreen errors', () => {
     setCatalogueSource(
       fakeSource(async () => {
         attempt += 1;
-        if (attempt === 1) throw new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE, 'item_42');
+        if (attempt === 1)
+          throw new CatalogueFailure(CatalogueError.NETWORK_UNAVAILABLE, 'item_42');
         return aBook();
       }),
     );
@@ -770,7 +1049,9 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
   });
 
   it('renders the access tier badge for the resolved tier', async () => {
-    const detail = anArticleDetail({ acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }) });
+    const detail = anArticleDetail({
+      acquisition: anAcquisition({ licenceModel: 'SUBSCRIPTION' }),
+    });
 
     await render(renderArticleContent(detail, jest.fn()));
 
@@ -965,7 +1246,12 @@ describe('ItemDetailScreen selects presentation by workType', () => {
 describe('ItemDetailScreen — holdings joined from library store', () => {
   it('shows Revoke licence when the reader already holds an active loan for the item', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     // Pre-populate the store so the first resolved detail already sees the loan.
     // mockGetLibrary returns the same data so refresh() on mount does not overwrite it.
     useLibraryStore.setState({ loans: [loan], holds: [] });
@@ -1056,7 +1342,12 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
     selectAndSignIn(INSTITUTION);
-    const otherLoan = { loanId: 'loan_x', itemId: 'item_OTHER', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const otherLoan = {
+      loanId: 'loan_x',
+      itemId: 'item_OTHER',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     // Loan for a different itemId — must not affect this screen's item_42.
     useLibraryStore.setState({ loans: [otherLoan], holds: [] });
     mockGetLibrary.mockResolvedValue({ loans: [otherLoan], holds: [] });
@@ -1076,7 +1367,12 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
 describe('ItemDetailScreen — invalidate cache after action', () => {
   it('calls borrow and refreshes the library when Grant access is tapped', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     mockBorrow.mockResolvedValue(loan);
     // First call on mount returns empty → Grant access shown.
     // Second call after borrow returns the new loan → Revoke licence shown.
@@ -1098,7 +1394,12 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
 
   it('calls returnLoan and refreshes when Revoke licence is tapped', async () => {
     selectAndSignIn(INSTITUTION);
-    const loan = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999_999_999 };
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
     useLibraryStore.setState({ loans: [loan], holds: [] });
     mockReturnLoan.mockResolvedValue(undefined);
     // First call on mount preserves the pre-set loan → Revoke licence shown.
@@ -1122,9 +1423,19 @@ describe('ItemDetailScreen — invalidate cache after action', () => {
   it('falls through to placeHold when borrow is refused with NO_COPIES_AVAILABLE', async () => {
     selectAndSignIn(INSTITUTION);
     mockBorrow.mockRejectedValue(
-      new LicenceFailure(LicenceError.REFUSED, { errorCode: 'NO_COPIES_AVAILABLE', target: 'item_42' }),
+      new LicenceFailure(LicenceError.REFUSED, {
+        errorCode: 'NO_COPIES_AVAILABLE',
+        target: 'item_42',
+      }),
     );
-    const hold = { holdId: 'hold_1', itemId: 'item_42', state: 'queued' as const, position: 3, queueLength: 7, serverTime: new Date().toISOString() };
+    const hold = {
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued' as const,
+      position: 3,
+      queueLength: 7,
+      serverTime: new Date().toISOString(),
+    };
     mockPlaceHold.mockResolvedValue(hold);
     // First call on mount returns empty → Grant access shown.
     // Second call after placeHold returns hold → no actions (queued state).

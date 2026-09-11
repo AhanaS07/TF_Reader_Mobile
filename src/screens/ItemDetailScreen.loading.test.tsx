@@ -126,7 +126,14 @@ function anArticleDetailOpenAccess() {
 
 const routeProps = {
   route: { params: { itemId: 'item_42' } },
-  navigation: { navigate: mockNavigate },
+  // `setOptions`/`getParent` satisfy the screen's own header-title and
+  // tab-bar-hiding effects (see ItemDetailRouteProps's own comment) — no
+  // test in this file asserts on either, so plain no-op mocks are enough.
+  navigation: {
+    navigate: mockNavigate,
+    setOptions: jest.fn(),
+    getParent: () => ({ setOptions: jest.fn() }),
+  },
 } as unknown as Parameters<typeof ItemDetailScreen>[0];
 
 beforeEach(() => {

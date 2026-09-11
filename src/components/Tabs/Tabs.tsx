@@ -1,7 +1,10 @@
 // src/components/Tabs/Tabs.tsx
-// The tab bar for screen 01 (feed tabs), 04 (detail sections) and 09 (search
-// scope). Two variants: `segmented` (a filled pill track) and `underline` (a
-// teal rule under the active label).
+// The tab bar for screen 01 (feed tabs), 04 (detail sections), 09 (search
+// scope) and now screen 08 (Library's own filter rail). Three variants:
+// `segmented` (one filled pill track), `underline` (a rule under the active
+// label) and `pills` (each tab its own standalone pill, no shared track
+// background) — added for Library, whose spec explicitly rejected being
+// "trapped inside one giant grey container" the way `segmented` reads.
 //
 // ⚠ TABS ARE DATA, NOT CODE — and this is the whole reason the component exists
 // in this shape. Settled 16 Aug 2026 (AGENTS.md L-5): an administrator configures
@@ -24,9 +27,9 @@
 // chrome reads as a broken control, where absence reads as "no tabs here".
 //
 // It sets no outer margin: the screen owns where the bar sits.
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { color, radius, space, type } from '@theme/tokens';
+import { color, elevation, radius, space, type } from '@theme/tokens';
 
 // One tab. Deliberately minimal — id for identity, label for display, and
 // nothing else. A count or a badge would be a second component's job.
@@ -37,7 +40,7 @@ export interface TabItem {
   label: string;
 }
 
-export type TabsVariant = 'segmented' | 'underline';
+export type TabsVariant = 'segmented' | 'underline' | 'pills';
 
 export interface TabsProps {
   tabs: TabItem[];
@@ -86,6 +89,12 @@ export default function Tabs({
   }
 
   const segmented = variant === 'segmented';
+  const pills = variant === 'pills';
+  // Both fill-shaped variants flip the active label onto a filled background,
+  // where `underline` never fills anything and keeps the brand-coloured text
+  // instead. One flag rather than repeating `segmented || pills` at each style.
+  const onFill = segmented || pills;
+  const tabShapeStyle = segmented ? styles.tabSegmented : pills ? styles.tabPills : styles.tabUnderline;
 
   return (
     <ScrollView
@@ -98,6 +107,7 @@ export default function Tabs({
       contentContainerStyle={[
         styles.track,
         segmented && styles.trackSegmented,
+        pills && styles.trackPills,
         fill && styles.trackFill,
       ]}
     >
@@ -114,8 +124,13 @@ export default function Tabs({
             accessibilityState={{ selected: active }}
             style={[
               styles.tab,
-              segmented ? styles.tabSegmented : styles.tabUnderline,
+              tabShapeStyle,
               segmented && active && styles.tabSegmentedActive,
+              // `elevation.card`'s own platform-split shadow, only on the active
+              // pill — see the file header's "subtle elevation" note.
+              // Segmented/underline never lift off the page, so this stays
+              // pills-only.
+              pills && active && styles.tabPillsActive,
             ]}
           >
             <Text
@@ -125,7 +140,8 @@ export default function Tabs({
               numberOfLines={1}
               style={[
                 styles.label,
-                active && (segmented ? styles.labelSegmentedActive : styles.labelActive),
+                pills && !active && styles.labelPillsInactive,
+                active && (onFill ? styles.labelSegmentedActive : styles.labelActive),
               ]}
             >
               {tab.label}
@@ -134,7 +150,7 @@ export default function Tabs({
             {/* The underline is its own element rather than a bottom border on
                 the tab, so it can sit inside the horizontal padding and match
                 the label's width instead of the tab's. */}
-            {!segmented && active && (
+            {variant === 'underline' && active && (
               <View testID={`tabs-underline-${tab.id}`} style={styles.underline} />
             )}
           </Pressable>
@@ -165,6 +181,13 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: color.border,
   },
+  // `pills`, unlike `trackSegmented`, carries no shared track background —
+  // every tab is its own standalone pill (Library's own spec: "rather than
+  // being trapped inside one giant grey container"), so the gap is the only
+  // thing the track itself contributes.
+  trackPills: {
+    gap: space.sm,
+  },
   tab: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -177,6 +200,25 @@ const styles = StyleSheet.create({
   tabSegmentedActive: {
     backgroundColor: color.primary,
   },
+  // Subtle neutral fill, unselected — `surface` rather than `border`'s flat
+  // grey, so the pill still reads as part of this app's palette rather than
+  // a generic chrome control.
+  tabPills: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    backgroundColor: color.surface,
+  },
+  // Filled brand blue plus a lift off the page — the "polished and
+  // intentional" selected state the spec asks for, one step stronger than
+  // `tabSegmented`'s flat fill.
+  tabPillsActive: {
+    backgroundColor: color.primary,
+    ...(Platform.OS === 'ios' ? elevation.card.ios : elevation.card.android),
+  },
   tabUnderline: {
     paddingHorizontal: space.md,
     // Room for the rule below the label, so the active tab does not grow taller
@@ -188,7 +230,6 @@ const styles = StyleSheet.create({
   // someone reads word-for-word — safe to size down while this component has
   // no other consumer yet (see the file header's planned screens 01/04/09).
   label: {
-    fontWeight: type.smallLabel.weight,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
@@ -199,8 +240,15 @@ const styles = StyleSheet.create({
   },
   labelSegmentedActive: {
     // On-primary: the active segment is a filled primary pill, so the label
-    // takes white.
+    // takes white. Shared by `pills` — see `onFill` above.
     color: color.white,
+  },
+  // `pills`'s own UNSELECTED state is navy, not `label`'s shared grey — the
+  // spec's own "dark navy text" for an inactive pill, one shade stronger than
+  // `segmented`/`underline`'s muted default. Applied only when `pills &&
+  // !active`, so the other two variants keep their existing grey untouched.
+  labelPillsInactive: {
+    color: color.textPrimary,
   },
   underline: {
     // Full width of the label above it, which is what makes it read as a rule

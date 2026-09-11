@@ -28,13 +28,18 @@
 // the same week he is building two stores. Raised for the accessibility pass
 // rather than fixed by forking a component.
 import { StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { SectionHeader } from '@components/SectionHeader';
 import { Tabs } from '@components/Tabs';
 import type { Theme } from '@/shared/contracts';
-import { color, space, type as typeScale } from '@theme/tokens';
+import { color, radius, space, type as typeScale } from '@theme/tokens';
 
 import { THEME_OPTIONS } from '@/features/personalization/prefsOptions';
+
+// Composed from the spacing scale (CONVENTIONS §5) — shared by every section
+// icon on this screen's own card treatment.
+const SECTION_ICON_SIZE = space.md + space.xs;
 
 export interface ThemeSectionProps {
   /** The stored value. May be one this section does not offer — see below. */
@@ -60,7 +65,10 @@ export default function ThemeSection({ theme, onSelectTheme }: ThemeSectionProps
     // to one section with `within()`, which is the fix that does not involve
     // adding a prefix prop to a shared component for one screen's convenience.
     <View style={styles.section} testID="theme-section">
-      <SectionHeader title="Theme" />
+      <SectionHeader
+        title="Theme"
+        icon={<Ionicons name="sunny-outline" size={SECTION_ICON_SIZE} color={color.primary} />}
+      />
 
       <Tabs
         tabs={[...THEME_OPTIONS]}
@@ -79,10 +87,17 @@ export default function ThemeSection({ theme, onSelectTheme }: ThemeSectionProps
 }
 
 const styles = StyleSheet.create({
-  // No outer margin — the screen owns where the section sits (§8). The gap is
-  // internal spacing between the header and its control.
+  // No outer margin — the screen owns where the section sits (§8). Now a
+  // bordered, rounded card — the redesign's own "one section, one surface"
+  // language, matching ProfileScreen's `groupCard`/`identityCard` treatment —
+  // rather than a bare gap between the header and its control.
   section: {
     gap: space.sm,
+    padding: space.md,
+    backgroundColor: color.white,
+    borderRadius: radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: color.border,
   },
   note: {
     fontWeight: typeScale.smallLabel.weight,

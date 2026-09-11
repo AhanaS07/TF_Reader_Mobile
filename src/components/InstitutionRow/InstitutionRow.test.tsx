@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import InstitutionRow from './InstitutionRow';
 import type { Institution } from '@model/institution';
 
@@ -37,6 +37,26 @@ describe('InstitutionRow content', () => {
     await render(<InstitutionRow institution={NO_CREST} onPress={() => {}} />);
     // "Kwame Nkrumah..." → "KN"
     expect(screen.getByText('KN')).toBeTruthy();
+  });
+
+  // A failed fetch (a broken URL, a rate-limited backend) used to leave a
+  // blank, backgroundColor-only box — the image simply never painted, with
+  // no signal that anything was even meant to be there. This is the same
+  // "a failure is not the same as absence" fallback ContentCard already
+  // makes for its own cover art.
+  it('falls back to initials when the crest image fails to load, not a blank box', async () => {
+    await render(<InstitutionRow institution={WITH_CREST} onPress={() => {}} />);
+    expect(screen.getByLabelText('Imperial College London logo')).toBeTruthy();
+    expect(screen.queryByText('IC')).toBeNull();
+
+    fireEvent(screen.getByLabelText('Imperial College London logo'), 'onError', {
+      nativeEvent: { error: 'load failed' },
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Imperial College London logo')).toBeNull(),
+    );
+    expect(screen.getByText('IC')).toBeTruthy();
   });
 });
 

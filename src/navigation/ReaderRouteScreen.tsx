@@ -331,8 +331,8 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         Alert.alert(
           'Reading progress updated',
           pausedTts
-            ? 'Your progress in this book was updated on another device. Text-to-speech has been paused. Resume from there, or continue reading here?'
-            : 'Your progress in this book was updated on another device. Resume from there, or continue reading here?',
+            ? 'Your progress in this title was updated on another device. Text-to-speech has been paused. Resume from there, or continue reading here?'
+            : 'Your progress in this title was updated on another device. Resume from there, or continue reading here?',
           [
             {
               text: 'Continue here',

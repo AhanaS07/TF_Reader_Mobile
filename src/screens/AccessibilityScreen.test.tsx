@@ -240,12 +240,12 @@ describe('AccessibilityScreen preserves nested values on save', () => {
     expect(patch.accessibility.text.fontScaleMultiplier).toBe(0.8);
   });
 
-  it('says screen reader hints do not reach book content', async () => {
+  it('says screen reader hints do not reach title content', async () => {
     await renderReady(fakeSource());
 
     const hints = within(screen.getByTestId('accessibility-hints-group'));
-    expect(hints.getByText(/does not change book content/i)).toBeTruthy();
-    expect(hints.getByText(/text inside a book .* is not affected/i)).toBeTruthy();
+    expect(hints.getByText(/does not change title content/i)).toBeTruthy();
+    expect(hints.getByText(/text inside a title .* is not affected/i)).toBeTruthy();
   });
 });
 

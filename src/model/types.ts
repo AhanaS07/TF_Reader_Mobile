@@ -74,8 +74,16 @@ export type AcquisitionRel = 'borrow' | 'acquire' | 'openAccess' | 'subscribe';
 // offline copy after Accept, and none once a licence is held. That rule lives in
 // resolveAccess and never in a component, which is exactly why `download` stays
 // in this union — Open Access and Subscription both still use it.
+// `play` IS NOT A SEPARATE ACCESS DECISION FROM `read` — it is the same
+// entitlement ("this reader may consume this item"), worded for the medium.
+// `resolveAccess` still only ever returns `read`; it has no business reading
+// a `ContentFormat` (see its own header comment on staying narrow), so the
+// `read`→`play` swap for an AUDIO item happens one layer up, in
+// ItemDetailScreen, right before the actions reach `ActionBar`. Both ids are
+// handled identically wherever a licence call is made, because they are.
 export const ACTION_IDS = [
   'read',
+  'play',
   'download',
   'grantAccess',
   'acceptOffer',

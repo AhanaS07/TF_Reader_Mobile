@@ -122,8 +122,16 @@ function renderNavigator() {
   );
 }
 
+const TEST_INSTITUTION = {
+  id: 'inst_test',
+  name: 'Imperial College London',
+  country: 'United Kingdom',
+  code: 'ICL',
+  city: 'London',
+};
+
 afterEach(() => {
-  useInstitutionStore.setState({ _hasHydrated: false });
+  useInstitutionStore.setState({ _hasHydrated: false, selectedInstitution: null });
   useSessionStore.setState({ _authReady: false });
 });
 
@@ -225,6 +233,95 @@ describe('RootNavigator — tab wiring', () => {
     });
 
     expect(screen.getByTestId('screen-profile-home')).toBeTruthy();
+  });
+});
+
+// ─── AppHeader — institution pill ────────────────────────────────────────────
+
+describe('RootNavigator — institution pill', () => {
+  // The pill replaced CatalogueScreen's own in-body picker row — it now lives
+  // beside the brand mark instead of repeated as a full-width row underneath.
+  it('shows the selected institution on the Catalogue tab root', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('shows no pill when no institution is selected', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: null });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    expect(screen.queryByText('Imperial College London')).toBeNull();
+  });
+
+  // The pill shows on every tab root, not just Catalogue's — Library/Search/
+  // Profile all act on behalf of the same signed-in institution even though
+  // they don't browse its feed directly (see AppHeader's own comment).
+  it('shows the pill on the Search tab root too', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Search'));
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('shows the pill on the Library tab root too', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Library'));
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('shows the pill on the Profile tab root too', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Profile'));
+    });
+
+    expect(screen.getByText('Imperial College London')).toBeTruthy();
+  });
+
+  it('navigates to InstitutionList when pressed', async () => {
+    await act(async () => {
+      useInstitutionStore.setState({ _hasHydrated: true, selectedInstitution: TEST_INSTITUTION });
+      useSessionStore.setState({ _authReady: true });
+      renderNavigator();
+    });
+
+    await act(async () => {
+      fireEvent.press(screen.getByText('Imperial College London'));
+    });
+
+    // InstitutionListScreen itself is stubbed to null (see the mocks above) —
+    // the pushed screen's own header title is what confirms the navigation,
+    // and the pill itself disappears (this route pushes, so `back` is now set).
+    expect(screen.getByText('Change institution')).toBeTruthy();
+    expect(screen.queryByText('Imperial College London')).toBeNull();
   });
 });
 

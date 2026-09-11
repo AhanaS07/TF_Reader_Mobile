@@ -64,6 +64,12 @@ export type CatalogueStackParamList = {
   // Accessibility's publication-info screen, pushed from ReaderRouteScreen's info button.
   // No `format` param — re-derived via getPublicationAccessibility's own getFormat(bookId).
   BookInfo: { bookId: BookId };
+  // AUDIO's own destination — ItemDetailScreen's 'read'/'play' action pushes
+  // this instead of 'Reader' when the item's format is AUDIO. A separate
+  // route, not a `Reader` param, because the two screens have unrelated
+  // implementations underneath (expo-audio vs. the epub.js/pdf.js WebView
+  // bridge) — see AudioPlayerRouteScreen.tsx's own header.
+  AudioPlayer: { bookId: BookId; title: string };
 };
 
 /** Search nested stack — shares ItemDetail shape. */
@@ -83,10 +89,43 @@ export type SearchStackParamList = {
   // "Read" from a Search result doesn't have to jump to the Catalogue tab.
   Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
   BookInfo: { bookId: BookId };
+  // Same reason as CatalogueStackParamList.AudioPlayer — see its own comment.
+  AudioPlayer: { bookId: BookId; title: string };
 };
 
-/** Single-screen stack — no pushed screens in Week 1. */
-export type LibraryStackParamList = { LibraryHome: undefined };
+/**
+ * Library nested stack. `InstitutionList` is registered here for the same
+ * reason it is in Search/Profile: the institution pill in `AppHeader` shows
+ * on every tab-root screen now (Catalogue, Search, Library, Profile), so
+ * each of their stacks needs the destination it pushes to.
+ *
+ * `ItemDetail` is registered for the same reason it is in Catalogue/Search:
+ * tapping an item ROW anywhere in the app goes to its detail page first —
+ * Library's own cards are no different, and reading itself happens from
+ * that page's own ActionBar, not from a direct open on the shelf.
+ *
+ * `AccessGate`/`SignIn`/`PersonalAccount`/`Reader`/`BookInfo` are registered
+ * here for the SAME reason they are duplicated into the Search stack rather
+ * than shared from Catalogue's copy (see `SearchStackParamList`'s own
+ * comment): `ItemDetail`'s "read"/"play" action pushes 'Reader' directly,
+ * `ItemDetail`'s access check can raise 'AccessGate', and `AccessGate` can in
+ * turn push 'SignIn'/'PersonalAccount', and 'Reader' can push 'BookInfo' —
+ * every one of those routes has to exist in WHICHEVER stack pushed
+ * `ItemDetail` in the first place, or navigation.navigate throws "was not
+ * handled by any navigator" the moment a Library-opened book is read.
+ */
+export type LibraryStackParamList = {
+  LibraryHome: undefined;
+  InstitutionList: undefined;
+  ItemDetail: { itemId: string };
+  AccessGate: { itemId: string; title: string; authors: string };
+  SignIn: undefined;
+  PersonalAccount: { mode: PersonalAccountMode };
+  Reader: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTarget };
+  BookInfo: { bookId: BookId };
+  // Same reason as CatalogueStackParamList.AudioPlayer — see its own comment.
+  AudioPlayer: { bookId: BookId; title: string };
+};
 
 /** Profile stack — screen 10, plus the settings screens it pushes. */
 export type ProfileStackParamList = {
