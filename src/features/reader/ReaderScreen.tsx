@@ -2515,6 +2515,13 @@ function ReaderScreenComponent(
             onDeleteHighlightRequested={() => {
               send?.({ type: 'confirmDeleteHighlight' });
             }}
+            // TalkBack's native page-turn action (TALKBACK_GESTURE_FIX_PROPOSAL.md) — a third
+            // trigger for the exact effect the toolbar Prev/Next buttons below already have, so it
+            // gets the identical `pendingInitialVerifyRef` clear rather than skipping half of it.
+            onPageTurnRequested={(direction) => {
+              pendingInitialVerifyRef.current = null; // see `goTo`'s own note on why
+              send?.({ type: direction });
+            }}
           />
         )}
 

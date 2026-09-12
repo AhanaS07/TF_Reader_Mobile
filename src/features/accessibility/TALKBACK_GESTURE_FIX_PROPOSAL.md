@@ -131,3 +131,36 @@ multi-finger gesture injection is unreliable on a stock emulator image.
 - Any change to `touchGesture.ts` or `epub.entry.ts`'s existing swipe/long-press handling — this
   proposal adds a parallel path, it doesn't touch the existing one.
 - Continuous-scroll-specific behavior beyond the open question above.
+
+## Resolution, Ahana (2026-09-11) — sketch corrected, open question answered
+
+**The sketch's placement reintroduces the exact `accessibilityLabel` container trap this codebase
+already fixed once, via a different prop.** Putting `accessibilityActions`/`accessibilityRole` on
+the container `View` (as sketched above) triggers RN's own Android delegate
+(`ReactAccessibilityDelegate.kt`'s `onInitializeAccessibilityNodeInfo`) to **synthesize** a
+`contentDescription` on that node whenever it has no existing text/description and either
+`accessibilityActions`, `accessibilityState`, `accessibilityLabelledBy`, or `accessibilityRole` is
+set (`hasContentToAnnounce`, ~lines 177–187) — by walking and concatenating descendant
+text/descriptions (`getTalkbackDescription`, ~lines 944–1004). A ViewGroup with a synthesized
+`contentDescription` is a screen-reader focus **leaf**: TalkBack announces it and never descends
+into the WebView's own virtual accessibility tree — the identical Android-side symptom rule #1 of
+`CLAUDE.md`'s reader-accessibility rules already fixed for a literal `accessibilityLabel` prop, just
+triggered here by a different prop pair.
+
+**Fix**: do not put `accessibilityActions`/`accessibilityRole`/`onAccessibilityAction` on the
+container. Add a **second, dedicated 1x1 sibling `View`** inside the container instead — parallel to
+the existing `testID="reader-webview-a11y-stop"` node, not layered onto it (that node is the "Book
+content" named stop, a different purpose with its own role/label). The container itself keeps
+exactly its current props.
+
+**Open question, answered.** `next()`/`prev()` are not paginated-flow-only. epub.js's own vendored
+source confirms it: `mapManager('scrolled-doc')` resolves to the `continuous` manager
+(`node_modules/epubjs/src/managers/continuous/index.js`), whose `next()`/`prev()` (lines 525–567) are
+a *separate* implementation from the paginated manager's — they call
+`this.scrollBy(0, ±this.layout.height, true)`, i.e. a viewport-height scroll. That is exactly the
+"native scrolling of the content" §13 already says is the thing TalkBack currently can't do at all
+in `scrolled-doc` flow. No second/scroll-by-viewport command is needed — the same
+`send({type:'next'|'prev'})` this proposal already reuses covers both flows.
+
+See Ahana's plan (executed alongside this addendum) for the corrected implementation and its test
+coverage.

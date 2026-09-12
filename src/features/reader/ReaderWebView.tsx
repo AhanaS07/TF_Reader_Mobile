@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import type { AccessibilityActionEvent, AccessibilityActionInfo } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type {
   WebViewMessageEvent,
@@ -46,6 +47,17 @@ const CREATE_MENU_ITEMS: WebViewCustomMenuItems[] = [{ label: 'Highlight', key: 
 /** Shown while `highlightTouchActive` — the press landed on an existing highlight. */
 const DELETE_MENU_ITEMS: WebViewCustomMenuItems[] = [
   { label: 'Delete Highlight', key: 'delete-highlight' },
+];
+
+/** RN's standard action pair for `accessibilityRole="adjustable"` — TalkBack maps these to its own
+ * increment/decrement gesture (a two-finger swipe) rather than requiring a local "Actions" menu.
+ * Stable reference, same reasoning as CREATE_MENU_ITEMS/DELETE_MENU_ITEMS above. See
+ * TALKBACK_GESTURE_FIX_PROPOSAL.md for why this exists and why it targets a dedicated sibling node,
+ * never the container (accessibilityLabel's own doc above explains the container leaf-trap this
+ * would otherwise reintroduce via a different prop). */
+const PAGE_TURN_ACTIONS: AccessibilityActionInfo[] = [
+  { name: 'increment', label: 'Next page' },
+  { name: 'decrement', label: 'Previous page' },
 ];
 
 export interface ReaderWebViewProps {
@@ -111,6 +123,16 @@ export interface ReaderWebViewProps {
   onHighlightRequested: () => void;
   /** Native "Delete Highlight" item tapped. `ReaderScreen` sends `confirmDeleteHighlight`. */
   onDeleteHighlightRequested: () => void;
+  /**
+   * TalkBack's native page-turn action fired (see the `reader-webview-a11y-pageturn` node below and
+   * TALKBACK_GESTURE_FIX_PROPOSAL.md). A prop rather than this component calling `send({type:
+   * 'next'|'prev'})` itself, because the toolbar Prev/Next buttons ALSO clear
+   * `pendingInitialVerifyRef.current` before calling `send` (`ReaderScreen.tsx`'s own note on
+   * `goTo`) — this component has no access to that ref, so the host gets the chance to do the same
+   * before navigating, keeping this a second trigger for the toolbar's exact effect rather than a
+   * behavior that quietly skips half of it.
+   */
+  onPageTurnRequested?: (direction: 'next' | 'prev') => void;
 }
 
 export function ReaderWebView({
@@ -123,6 +145,7 @@ export function ReaderWebView({
   accessibilityLabel,
   onHighlightRequested,
   onDeleteHighlightRequested,
+  onPageTurnRequested,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
@@ -150,6 +173,28 @@ export function ReaderWebView({
   const send = useCallback((command: ReaderCommand): void => {
     webViewRef.current?.injectJavaScript(buildCommandScript(command));
   }, []);
+
+  /**
+   * Gated on `isReady`, not just "mounted": the container (and this node) render immediately,
+   * before the bridge's `ready` has landed, so an action fired in that window would otherwise ask
+   * the host to navigate a page whose command listener does not exist yet. The toolbar Prev/Next
+   * buttons get the same protection for free at the `ReaderScreen` layer (`send === null` disables
+   * them) — this mirrors that here, at the layer that actually owns `isReady`.
+   */
+  const handlePageTurnAction = useCallback(
+    (event: AccessibilityActionEvent): void => {
+      if (!isReady) return;
+      switch (event.nativeEvent.actionName) {
+        case 'increment':
+          onPageTurnRequested?.('next');
+          break;
+        case 'decrement':
+          onPageTurnRequested?.('prev');
+          break;
+      }
+    },
+    [isReady, onPageTurnRequested],
+  );
 
   // Ready-or-timeout. Cleared on unmount and as soon as `ready` lands.
   useEffect(() => {
@@ -288,6 +333,27 @@ export function ReaderWebView({
           style={styles.a11yStop}
         />
       )}
+      {/* A SEPARATE sibling from the a11y-stop above, not layered onto it — that node is the named
+          "Book content" stop with its own role/label and a different purpose. This one exists purely
+          to carry accessibilityActions/accessibilityRole SAFELY: putting either on the CONTAINER (see
+          its accessibilityLabel doc above) resynthesizes a contentDescription on the container
+          ViewGroup via RN's Android accessibility delegate and makes TalkBack treat it as a focus
+          leaf — the same trap, a different trigger prop. See TALKBACK_GESTURE_FIX_PROPOSAL.md.
+          Always rendered, unlike the a11y-stop: a page-turn control isn't an optional accessible
+          name, it needs to exist whenever the book does. `hidden` on the container still hides it for
+          free while a panel is open, because it lives in that same subtree. No `accessibilityValue`
+          (min/now/max) yet — that needs page-position data this component doesn't have; deferred,
+          not forgotten. */}
+      <View
+        testID="reader-webview-a11y-pageturn"
+        pointerEvents="none"
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel="Turn page"
+        accessibilityActions={PAGE_TURN_ACTIONS}
+        onAccessibilityAction={handlePageTurnAction}
+        style={styles.a11yPageTurn}
+      />
       <WebView
         ref={webViewRef}
         source={{ uri: sourceUri }}
@@ -382,4 +448,7 @@ const styles = StyleSheet.create({
   // flex:1 chain epub.js measures, and a node with real height would shrink the viewer and
   // re-paginate the book.
   a11yStop: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
+  // Same reasoning as a11yStop. A second entry rather than reusing it: the two nodes serve
+  // different purposes and may need independent positioning/visibility tuning later.
+  a11yPageTurn: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
 });
