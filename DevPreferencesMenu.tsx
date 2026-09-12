@@ -118,6 +118,21 @@ const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[
   { label: 'Double', spread: 'double' },
 ];
 
+/**
+ * Matches `PDF_SPREAD_MIN_WIDTH` in `webview/src/pdfOutline.ts`, which itself matches epub.js's own
+ * `layout.js` `minSpreadWidth` default (see that file's comment, and `WEBVIEW_BRIDGE.md`'s note on
+ * `spread`). Duplicated rather than imported — this file is RN, that one is bundled into the
+ * WebView, and every other value shared across that boundary in this codebase is duplicated with a
+ * cross-referencing comment the same way (e.g. `epub.entry.ts`'s `mapSpread`) rather than factored
+ * into a module both sides import.
+ *
+ * This is ONLY for deciding whether to warn here, in RN — the WebView is still the one enforcing
+ * it against its own live viewport width at render time (`epub.entry.ts`'s `mapSpread`,
+ * `pdfOutline.ts`'s `shouldRenderSpread`), so a mismatch between this copy and that one would only
+ * make this warning fire a little early or late, never make an actual page render wrong.
+ */
+const SPREAD_MIN_WIDTH = 800;
+
 /** Spreads the CURRENT layout group so changing `flow` can never silently reset `spread` (or the
  * reverse) — the exact mistake PREFS_API_FOR_FRONTEND.md's "one rule that bites" warns about.
  * EXCEPT for the one combination below, where resetting the other field is deliberate, not a bug. */
@@ -152,12 +167,37 @@ function toggleFlow(current: SharedPrefs, flow: LayoutPrefs['flow']): PrefsPatch
   return { layout: { ...current.layout, flow: nextFlow } };
 }
 
-function toggleSpread(current: SharedPrefs, spread: LayoutPrefs['spread']): PrefsPatch {
+/**
+ * Purely informational — unlike `warnScrolledDoubleSpreadConflict`, nothing gets reverted here.
+ * `mapSpread`/`shouldRenderSpread` already make `double` inert on a narrow viewport rather than
+ * wrong ("expected, not a bug to chase" — `epub.entry.ts`'s own comment), so the preference is
+ * still worth storing: rotating to landscape, or opening the same account on a tablet, can cross
+ * `SPREAD_MIN_WIDTH` without the user ever having to reselect Double. This alert exists only so
+ * "why didn't anything change" has an answer on screen right when it's picked, on the screen where
+ * it's currently inert.
+ */
+function warnSpreadTooNarrow(): void {
+  Alert.alert(
+    'Double spread',
+    'This screen is too narrow for a double-page spread, so pages will keep showing one at a ' +
+      'time. Double spread will take effect on a wider screen — landscape or a tablet.',
+  );
+}
+
+function toggleSpread(
+  current: SharedPrefs,
+  spread: LayoutPrefs['spread'],
+  windowWidth: number,
+): PrefsPatch {
   const nextSpread = current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread;
 
   if (nextSpread === 'double' && current.layout.flow === 'scrolled-doc') {
     warnScrolledDoubleSpreadConflict('Flow', 'Double spread');
     return { layout: { ...current.layout, spread: nextSpread, flow: DEFAULT_PREFS.layout.flow } };
+  }
+
+  if (nextSpread === 'double' && windowWidth < SPREAD_MIN_WIDTH) {
+    warnSpreadTooNarrow();
   }
 
   return { layout: { ...current.layout, spread: nextSpread } };
@@ -175,6 +215,24 @@ const ZOOM_THUMB_SIZE = 20;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * The ratio (0-1 along the track) of every valid step value from `min` to `max` inclusive.
+ *
+ * Line height/letter spacing/margins have few enough steps (9-13) that drawing every one of them
+ * as a tick mark is what tells a dragging finger "only these stops exist" BEFORE release, instead
+ * of the value only visibly snapping once the finger lifts — which reads as the slider fighting the
+ * drag rather than as the stepped control it actually is. Font size (21 steps) and zoom (26 steps)
+ * are fine-grained enough that marking every stop would just be visual noise, which is why only the
+ * three sliders that asked for this get it, not a change to every slider's shared track pieces.
+ *
+ * A pure ratio calculation, not a slider component — sharing it doesn't reopen the "one dev widget,
+ * not a design system" call each slider component above already makes for itself.
+ */
+function stepTickRatios(min: number, max: number, step: number): number[] {
+  const steps = Math.round((max - min) / step);
+  return Array.from({ length: steps + 1 }, (_, i) => i / steps);
 }
 
 /** Rounds to the nearest step and away from float noise (e.g. 1.7000000000000002). */
@@ -353,6 +411,291 @@ function FontSizeSlider({
   );
 }
 
+/**
+ * Line-height bounds for the slider only — `TypographyPrefs.lineHeight` itself carries no
+ * documented range (prefs.ts:50 just says "multiplier, e.g. 1.5"). 1.0-2.2 covers single spacing
+ * through a clearly loosened reading rhythm without letting the line grid in readerMetrics.ts
+ * (which rounds `fontPx * lineHeight` to a whole-pixel grid unit) produce an absurdly tall line.
+ */
+const LINE_HEIGHT_MIN = 1.0;
+const LINE_HEIGHT_MAX = 2.2;
+const LINE_HEIGHT_STEP = 0.1;
+const LINE_HEIGHT_THUMB_SIZE = 20;
+
+function snapToLineHeightStep(value: number): number {
+  return (
+    Math.round(clamp(value, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX) / LINE_HEIGHT_STEP) *
+    LINE_HEIGHT_STEP
+  );
+}
+
+/** Same drag-live/commit-on-release shape as `FontSizeSlider` above, adapted to
+ * `typography.lineHeight`'s own bounds and a "1.5×"-style label. Kept as its own copy rather than a
+ * shared generic slider, for the same "one dev widget, not a design system" reason `FontSizeSlider`
+ * already gives. */
+function LineHeightSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToLineHeightStep(LINE_HEIGHT_MIN + ratio * (LINE_HEIGHT_MAX - LINE_HEIGHT_MIN));
+    },
+    [trackWidth, value],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio =
+    (clamp(displayValue, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX) - LINE_HEIGHT_MIN) /
+    (LINE_HEIGHT_MAX - LINE_HEIGHT_MIN);
+  const thumbLeft = ratio * trackWidth - LINE_HEIGHT_THUMB_SIZE / 2;
+
+  return (
+    <View style={styles.fontSizeSlider}>
+      <Text style={styles.zoomValue}>{displayValue.toFixed(1)}×</Text>
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        {stepTickRatios(LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, LINE_HEIGHT_STEP).map((tickRatio) => (
+          <View key={tickRatio} style={[styles.sliderTick, { left: `${tickRatio * 100}%` }]} />
+        ))}
+        <View
+          style={[
+            styles.zoomThumb,
+            {
+              left: clamp(
+                thumbLeft,
+                -LINE_HEIGHT_THUMB_SIZE / 2,
+                trackWidth - LINE_HEIGHT_THUMB_SIZE / 2,
+              ),
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Letter-spacing bounds for the slider only — `TypographyPrefs.spacing` itself carries no
+ * documented range beyond "0 = none" (prefs.ts:51-60). 0-4px covers no tracking through a clearly
+ * widened one without spacing letters far enough apart to break word recognition.
+ */
+const LETTER_SPACING_MIN = 0;
+const LETTER_SPACING_MAX = 4;
+const LETTER_SPACING_STEP = 0.5;
+const LETTER_SPACING_THUMB_SIZE = 20;
+
+function snapToLetterSpacingStep(value: number): number {
+  return (
+    Math.round(clamp(value, LETTER_SPACING_MIN, LETTER_SPACING_MAX) / LETTER_SPACING_STEP) *
+    LETTER_SPACING_STEP
+  );
+}
+
+/** Same drag-live/commit-on-release shape as `FontSizeSlider` above, adapted to
+ * `typography.spacing`'s own bounds and a "0.5px"-style label. Kept as its own copy for the same
+ * reason `FontSizeSlider` and `LineHeightSlider` are. */
+function LetterSpacingSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToLetterSpacingStep(
+        LETTER_SPACING_MIN + ratio * (LETTER_SPACING_MAX - LETTER_SPACING_MIN),
+      );
+    },
+    [trackWidth, value],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio =
+    (clamp(displayValue, LETTER_SPACING_MIN, LETTER_SPACING_MAX) - LETTER_SPACING_MIN) /
+    (LETTER_SPACING_MAX - LETTER_SPACING_MIN);
+  const thumbLeft = ratio * trackWidth - LETTER_SPACING_THUMB_SIZE / 2;
+
+  return (
+    <View style={styles.fontSizeSlider}>
+      <Text style={styles.zoomValue}>{displayValue.toFixed(1)}px</Text>
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        {stepTickRatios(LETTER_SPACING_MIN, LETTER_SPACING_MAX, LETTER_SPACING_STEP).map(
+          (tickRatio) => (
+            <View key={tickRatio} style={[styles.sliderTick, { left: `${tickRatio * 100}%` }]} />
+          ),
+        )}
+        <View
+          style={[
+            styles.zoomThumb,
+            {
+              left: clamp(
+                thumbLeft,
+                -LETTER_SPACING_THUMB_SIZE / 2,
+                trackWidth - LETTER_SPACING_THUMB_SIZE / 2,
+              ),
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Page-margin bounds for the slider only — `TypographyPrefs.margins` itself carries no documented
+ * range (prefs.ts:62 just says "page margin, in px"). 0-48px covers edge-to-edge through a
+ * generously wide margin; `readerMetrics.ts`'s `clampMargin()` separately caps the applied value at
+ * a quarter of the viewport height at render time regardless of what this slider allows, so this
+ * range is a comfortable UI range, not something that has to match that runtime clamp exactly.
+ */
+const MARGINS_MIN = 0;
+const MARGINS_MAX = 48;
+const MARGINS_STEP = 4;
+const MARGINS_THUMB_SIZE = 20;
+
+function snapToMarginsStep(value: number): number {
+  return Math.round(clamp(value, MARGINS_MIN, MARGINS_MAX) / MARGINS_STEP) * MARGINS_STEP;
+}
+
+/** Same drag-live/commit-on-release shape as `FontSizeSlider` above, adapted to
+ * `typography.margins`'s own bounds and an integer "16px"-style label. Kept as its own copy for the
+ * same reason `FontSizeSlider`, `LineHeightSlider` and `LetterSpacingSlider` are. */
+function PageMarginsSlider({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [dragValue, setDragValue] = useState<number | null>(null);
+
+  const valueFromX = useCallback(
+    (x: number): number => {
+      if (trackWidth <= 0) return value;
+      const ratio = clamp(x / trackWidth, 0, 1);
+      return snapToMarginsStep(MARGINS_MIN + ratio * (MARGINS_MAX - MARGINS_MIN));
+    },
+    [trackWidth, value],
+  );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (evt) => {
+          setDragValue(valueFromX(evt.nativeEvent.locationX));
+        },
+        onPanResponderRelease: (evt) => {
+          const next = valueFromX(evt.nativeEvent.locationX);
+          setDragValue(null);
+          onCommit(next);
+        },
+        onPanResponderTerminate: () => {
+          setDragValue(null);
+        },
+      }),
+    [valueFromX, onCommit],
+  );
+
+  const handleTrackLayout = useCallback((event: LayoutChangeEvent) => {
+    setTrackWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const displayValue = dragValue ?? value;
+  const ratio =
+    (clamp(displayValue, MARGINS_MIN, MARGINS_MAX) - MARGINS_MIN) / (MARGINS_MAX - MARGINS_MIN);
+  const thumbLeft = ratio * trackWidth - MARGINS_THUMB_SIZE / 2;
+
+  return (
+    <View style={styles.fontSizeSlider}>
+      <Text style={styles.zoomValue}>{Math.round(displayValue)}px</Text>
+      <View style={styles.zoomTrack} onLayout={handleTrackLayout} {...panResponder.panHandlers}>
+        <View style={styles.zoomTrackBase} />
+        <View style={[styles.zoomTrackFill, { width: `${ratio * 100}%` }]} />
+        {stepTickRatios(MARGINS_MIN, MARGINS_MAX, MARGINS_STEP).map((tickRatio) => (
+          <View key={tickRatio} style={[styles.sliderTick, { left: `${tickRatio * 100}%` }]} />
+        ))}
+        <View
+          style={[
+            styles.zoomThumb,
+            {
+              left: clamp(thumbLeft, -MARGINS_THUMB_SIZE / 2, trackWidth - MARGINS_THUMB_SIZE / 2),
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export interface DevPreferencesMenuProps {
   /** The active book's format, so Zoom can be hidden for an EPUB — see the header note on why.
    * Optional only for callers with no format to hand; ReaderRouteScreen (the only render site)
@@ -485,6 +828,32 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
     [prefs],
   );
 
+  // Same "spread the current typography group" shape as `commitFontSize` — and the same reason it
+  // depends on `prefs` rather than being stable like `commitZoom`.
+  const commitLineHeight = useCallback(
+    (lineHeight: number) => {
+      if (!prefs) return;
+      void prefsStore.savePrefs({ typography: { ...prefs.typography, lineHeight } });
+    },
+    [prefs],
+  );
+
+  const commitLetterSpacing = useCallback(
+    (spacing: number) => {
+      if (!prefs) return;
+      void prefsStore.savePrefs({ typography: { ...prefs.typography, spacing } });
+    },
+    [prefs],
+  );
+
+  const commitMargins = useCallback(
+    (margins: number) => {
+      if (!prefs) return;
+      void prefsStore.savePrefs({ typography: { ...prefs.typography, margins } });
+    },
+    [prefs],
+  );
+
   return (
     <View style={styles.container}>
       <Pressable
@@ -561,7 +930,17 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
           {format !== 'PDF' && (
             <>
               <Text style={styles.sectionLabel}>Typography</Text>
+              <Text style={styles.sliderLabel}>Font size</Text>
               <FontSizeSlider value={prefs.typography.size} onCommit={commitFontSize} />
+              <Text style={styles.sliderLabel}>Line height</Text>
+              <LineHeightSlider value={prefs.typography.lineHeight} onCommit={commitLineHeight} />
+              <Text style={styles.sliderLabel}>Letter spacing</Text>
+              <LetterSpacingSlider
+                value={prefs.typography.spacing}
+                onCommit={commitLetterSpacing}
+              />
+              <Text style={styles.sliderLabel}>Page margins</Text>
+              <PageMarginsSlider value={prefs.typography.margins} onCommit={commitMargins} />
               <View style={styles.row}>
                 {FAMILY_OPTIONS.map(({ label, family }) => {
                   const active = prefs.font.family === family;
@@ -640,7 +1019,12 @@ export function DevPreferencesMenu({ format }: DevPreferencesMenuProps): React.J
                   accessibilityLabel={`Spread: ${label}${active ? ', selected' : ''}`}
                   disabled={flowOverridden}
                   onPress={() => {
-                    void prefsStore.savePrefs(toggleSpread(prefs, spread));
+                    // One-shot read at press time, same as `toggleOpen`'s own use of `Dimensions`
+                    // above — this is an event handler, not a render-time computation, so it does
+                    // not need the reactive `useWindowDimensions()` hook.
+                    void prefsStore.savePrefs(
+                      toggleSpread(prefs, spread, Dimensions.get('window').width),
+                    );
                   }}
                   style={[
                     styles.toggle,
@@ -790,6 +1174,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 6,
   },
+  // Distinguishes the three typography sliders from each other under one shared "Typography"
+  // section label — smaller and not uppercased, so it doesn't compete with sectionLabel above it.
+  sliderLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#444444',
+    marginBottom: 4,
+  },
   hint: {
     fontSize: 11,
     color: '#8a8a8a',
@@ -853,5 +1245,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderWidth: 2,
     borderColor: '#111111',
+  },
+
+  // A stop mark for every value `stepTickRatios` reports valid, on the line-height/letter-spacing/
+  // margins sliders only (see that function's own comment on why not every slider gets these). No
+  // `top` set — same reasoning as `zoomTrackBase`/`zoomTrackFill` above it: `zoomTrack`'s own
+  // `justifyContent: 'center'` centers each of these independently, the same way it already
+  // centers the 6px track inside the 28px touch target. Taller than the track (10 vs 6) so a tick
+  // pokes past both edges of the fill/base bar, and outlined rather than solid so it stays visible
+  // whether it lands on the light base or the dark filled portion.
+  sliderTick: {
+    position: 'absolute',
+    width: 2,
+    height: 10,
+    marginLeft: -1,
+    borderRadius: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(17, 17, 17, 0.35)',
   },
 });
