@@ -1655,6 +1655,27 @@ function liftSearchMatch(): void {
 }
 
 /**
+ * Re-add BOTH spoken layers ON TOP of whatever was just painted beneath them — the §4 fix for the
+ * two batch boundaries that used to leave `search` (or a freshly added `user` highlight) above
+ * `tts`. THE PAIR IS THE UNIT: lifting the sentence alone would put it over its own word, so this
+ * always re-adds the sentence first and then `repaintSpokenWord()`, exactly like every other caller
+ * of either.
+ *
+ * NOT called from `repaintLiveAnnotations` — that one already re-adds both spoken layers AFTER its
+ * own `liftSearchMatch()` call (see its note), so `tts` is already on top there and a second lift
+ * would just be a redundant re-measure.
+ *
+ * Called last, after `liftSearchMatch()`, at the other two of the three batch boundaries that
+ * function names: `paintHighlights` and `rebuildForFlowIfNeeded`.
+ */
+function liftSpokenLayers(): void {
+  if (!rendition || currentSpokenCfi === null) return;
+  highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
+  highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+  repaintSpokenWord();
+}
+
+/**
  * Build a rendition against the current appearance's flow/spread, wire its handlers, and set it as
  * THE rendition. Used both by `openEpub` (the first one) and by `applyAppearance` (to rebuild one
  * when a flow change needs a different manager — see `mapManager`'s note).
@@ -1720,24 +1741,16 @@ function rebuildForFlowIfNeeded(): boolean {
       // already attached. That is the duplicate-mark defect `repaintLiveAnnotations` documents,
       // arriving by a different route. Remove-then-add is idempotent either way, and epub.js's
       // `remove` tolerates a miss.
-      //
-      // >>> KNOWN §4 DEVIATION, RECORDED RATHER THAN FIXED HERE. <<< This leaves `search` above the
-      // two `tts` layers, where HIGHLIGHT_LAYERS.md §4 puts `tts` on top. It predates the word layer
-      // (the sentence has always been added before this line) and the word inherits it unchanged, so
-      // nothing regressed — but it is real, and `paintHighlights` has the same shape: it lifts only
-      // `search`, so a newly created user highlight is appended above BOTH spoken layers.
-      //
-      // The fix, when someone takes it: a `liftSpokenLayers()` sibling of `liftSearchMatch` that
-      // removes-then-re-adds the sentence AND the word as a PAIR — the pair is the unit, because
-      // lifting the sentence alone would put it over its own word — called from the same three batch
-      // boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`, here), last.
-      // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
+      // §4 FIX: put `tts` back on top of `search`, as a pair with its word wash — see
+      // `liftSpokenLayers`'s own note. This used to be a known, recorded deviation
+      // (HIGHLIGHT_LAYERS.md §4); it no longer is.
+      liftSpokenLayers();
 
       // A fresh rendition means a fresh DOM order too — re-establish `user`-over-`tts` for the
-      // overlap, if any, same reasoning as `repaintLiveAnnotations`'s own note. (Currently a no-op
-      // in practice: the §4 deviation noted above already leaves `user` on top of both `tts` layers
-      // here by accident. Explicit anyway, so this keeps working the day that deviation is fixed.)
+      // overlap, if any, same reasoning as `repaintLiveAnnotations`'s own note. Now meaningful
+      // rather than a no-op: `liftSpokenLayers()` above puts `tts` back on top of `search`, so this
+      // is what re-establishes `user`'s overlap-only exception on top of THAT.
       if (currentSpokenCfi !== null && rendition) {
         const spokenContents = contentsForCfi(currentSpokenCfi);
         if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
@@ -2261,7 +2274,12 @@ const api: TFReaderApi<'openEpub'> = {
     // the lift is worth skipping when the diff added nothing: a repaint that changed nothing must
     // not detach and re-attach a mark for no reason, and this command is re-sent on every change to
     // the host's highlight state.
-    if (applyUserHighlights(mine)) liftSearchMatch();
+    if (applyUserHighlights(mine)) {
+      liftSearchMatch();
+      // §4 FIX: a newly added user highlight used to land above both spoken layers — see
+      // `liftSpokenLayers`'s own note.
+      liftSpokenLayers();
+    }
 
     if (foreign > 0) {
       fail(

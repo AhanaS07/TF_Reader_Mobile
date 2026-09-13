@@ -168,6 +168,20 @@ describe('useTtsSession', () => {
     expect(provider.spokenWordRanges).toHaveLength(0);
   });
 
+  it("never paints setSpokenRange when highlightMode is 'none'", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'none' }));
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('none'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    // 'Off' must suppress the sentence wash too, not just the word-level refinement — this is
+    // the gap handleTtsStart used to miss (it called setSpokenRange unconditionally).
+    expect(provider.spokenRanges).toHaveLength(0);
+  });
+
   it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word'", async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
     const provider = createTestReaderTextProvider();

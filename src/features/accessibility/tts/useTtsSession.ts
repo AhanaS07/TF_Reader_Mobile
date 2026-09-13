@@ -268,7 +268,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       }
       setErrorMessage(null);
       updateStatus('speaking');
-      if (currentlySpeaking) {
+      if (currentlySpeaking && livePrefs.highlightMode !== 'none') {
         source.setSpokenRange(currentlySpeaking.cfi);
       }
     }

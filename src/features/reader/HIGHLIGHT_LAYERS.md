@@ -290,22 +290,26 @@ layer is never removed to show a higher one.
 refinement drawn on top of it, and adding them the other way round hides the thing that moves.
 `epub.entry.ts`'s `repaintSpokenWord()` is called after every sentence add for exactly this.
 
-> #### ⚠️ Two places the EPUB shell does NOT currently honour this ordering
+> #### Fixed 2026-09-13 — the two places the EPUB shell used to not honour this ordering
 >
-> Recorded 2026-09-05 while landing the word layer, which inherits both unchanged rather than
-> creating either:
+> Recorded 2026-09-05 while landing the word layer, which inherited both unchanged rather than
+> creating either. Both are fixed now, by a **`liftSpokenLayers()`** sibling of `liftSearchMatch()`
+> that removes-then-re-adds the sentence AND the word **as a pair** — the pair is the unit, because
+> lifting the sentence alone would put it over its own word:
 >
-> - **`rebuildForFlowIfNeeded`** ends with `liftSearchMatch()` *after* the tts adds, leaving `search`
->   above both spoken layers.
-> - **`paintHighlights`** lifts only `search`, so a newly created user highlight is appended above
->   both spoken layers.
+> - **`rebuildForFlowIfNeeded`** used to end with `liftSearchMatch()` *after* the tts adds, leaving
+>   `search` above both spoken layers. It now calls `liftSpokenLayers()` right after
+>   `liftSearchMatch()`, which is also what makes the flow rebuild's `liftOverlappingUserHighlights`
+>   call (§4's second exception, below) meaningful again rather than an accidental no-op.
+> - **`paintHighlights`** used to lift only `search`, so a newly created user highlight was appended
+>   above both spoken layers. It now calls `liftSpokenLayers()` alongside `liftSearchMatch()`, under
+>   the same "only if the diff added something" condition.
 >
-> The fix, when someone takes it: a **`liftSpokenLayers()`** sibling of `liftSearchMatch()` that
-> removes-then-re-adds the sentence AND the word **as a pair** — the pair is the unit, because
-> lifting the sentence alone would put it over its own word — called last at the same three batch
-> boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`,
-> `rebuildForFlowIfNeeded`). It is a paint-order change in paths no unit test can see, so it wants a
-> device pass, which is why it was not bundled into a change that lands without one.
+> `repaintLiveAnnotations` never needed this call — it already re-adds both spoken layers right after
+> its own `liftSearchMatch()` — so `liftSpokenLayers()` is deliberately NOT called there; a third call
+> site would just be a redundant re-measure. `readerTemplate.test.ts`'s "the spoken layers are lifted
+> back on top" describe block pins both call sites, their ordering after `liftSearchMatch()`, and this
+> exclusion.
 
 **2026-09-08 — `user` deliberately goes ABOVE `tts` too, but ONLY for the range they overlap.** This
 is a second, intentional exception to `tts > search > user`, not a third bug to fold into the one
@@ -329,10 +333,11 @@ inside it.
 `setSpokenRange` (the primary trigger, once per sentence), `repaintLiveAnnotations` (a theme/font-size
 repaint re-adds every `user` highlight BEFORE re-adding `tts`, which would otherwise silently undo
 whatever `setSpokenRange` had lifted, until the next sentence), and `rebuildForFlowIfNeeded` (a fresh
-`Rendition` is a fresh DOM order). The rebuild call site is currently a no-op in practice — the
-§4 deviation recorded above already leaves `user` on top of both `tts` layers there by accident — but
-it is explicit anyway, so this keeps working the day that deviation is fixed rather than silently
-relying on it.
+`Rendition` is a fresh DOM order). The rebuild call site used to be a no-op in practice — the §4
+deviation recorded above left `user` on top of both `tts` layers there by accident, which happened to
+look like this override already working — but it was explicit anyway, and now that `liftSpokenLayers()`
+puts `tts` back on top of `search` at that same site, this call is what re-establishes the overlap
+exception on top of `tts` again, exactly as it already did at the other two call sites.
 
 **No interaction with `search`.** A three-way overlap (a search match landing inside both a user
 highlight and the currently spoken sentence) is not specifically handled — `liftOverlappingUserHighlights`

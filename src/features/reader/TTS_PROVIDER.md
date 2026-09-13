@@ -162,6 +162,22 @@ and `HIGHLIGHT_LAYERS.md` §3 the visual half; what belongs to this seam:
   constants in `webview/src/selectionTheme.ts`'s `spokenWordOpacity` — computed from the palettes and
   WCAG contrast, never observed — and its comment names the two failure signatures to look for.
 
+### "Off" highlight mode — `setSpokenRange` gated on `highlightMode !== 'none'`, fixed 2026-09-13
+
+`useTtsSession.ts`'s `handleTtsStart()` called `source.setSpokenRange(currentlySpeaking.cfi)`
+unconditionally, with no check on `highlightMode` at all — only `handleTtsProgress`'s
+`setSpokenWordRange` forwarding was ever gated (on `=== 'word'`). So `highlightMode: 'none'` never
+suppressed the sentence wash: every mode painted it, and "Off" did nothing. Fixed by adding the same
+shape of gate `handleTtsProgress` already had: `if (currentlySpeaking && livePrefs.highlightMode !==
+'none') source.setSpokenRange(currentlySpeaking.cfi)`.
+
+Flipping to "Off" **mid-utterance** leaves the current sentence painted until the next
+`tts-start`/stop — this is not a residual bug, it deliberately matches the tolerance
+`handleTtsProgress`'s own word-mode gate already has for the symmetric case (turning word mode off
+mid-utterance): "a caller which stops sending word ranges... is not leaving a stale wash behind: the
+next sentence removes it." Tightening either one to clear instantly on the pref flip itself, if ever
+wanted, is a design change for both gates together, not a one-sided fix.
+
 **Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
 Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount
 point — deleted along with its test, `src/navigation/TtsDemoScreen.tsx`, the `TtsDemo` route in

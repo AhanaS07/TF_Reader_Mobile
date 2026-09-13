@@ -1727,6 +1727,12 @@ ${columnOverrideCss()}` : currentCss;
       searchMatchStyles()
     );
   }
+  function liftSpokenLayers() {
+    if (!rendition || currentSpokenCfi === null) return;
+    remove(rendition, TTS_OWNER, currentSpokenCfi);
+    add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    repaintSpokenWord();
+  }
   function rebuildForFlowIfNeeded() {
     if (!rendition || openInFlight) return false;
     if (renditionFlow === currentFlow()) return false;
@@ -1741,6 +1747,7 @@ ${columnOverrideCss()}` : currentCss;
       repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
+      liftSpokenLayers();
       if (currentSpokenCfi !== null && rendition) {
         const spokenContents = contentsForCfi(currentSpokenCfi);
         if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
@@ -2048,7 +2055,10 @@ ${columnOverrideCss()}` : currentCss;
     paintHighlights: (highlights) => {
       const { mine, foreign } = epubHighlights(highlights);
       lastUserHighlights = mine;
-      if (applyUserHighlights(mine)) liftSearchMatch();
+      if (applyUserHighlights(mine)) {
+        liftSearchMatch();
+        liftSpokenLayers();
+      }
       if (foreign > 0) {
         fail(
           "NAVIGATION_FAILED",

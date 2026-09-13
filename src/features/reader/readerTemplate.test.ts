@@ -1322,6 +1322,41 @@ describe('the search outline is lifted exactly once per batch', () => {
     // skip is worth having — the command is re-sent on every change to the host's highlight state,
     // and a repaint that changed nothing must not detach a live mark.
     const body = blockAfter(EPUB_ENTRY, 'paintHighlights: (highlights) =>');
-    expect(body).toContain('if (applyUserHighlights(mine)) liftSearchMatch();');
+    expect(body).toContain('if (applyUserHighlights(mine)) {');
+    expect(body).toContain('liftSearchMatch();');
+  });
+});
+
+describe('the spoken layers are lifted back on top, fixing HIGHLIGHT_LAYERS.md §4', () => {
+  // `rebuildForFlowIfNeeded` and `paintHighlights` used to end with `liftSearchMatch()` (or a fresh
+  // user highlight) left above both `tts` layers — a recorded, deferred §4 deviation. This pins the
+  // fix: `liftSpokenLayers()` at exactly those two sites, always AFTER `liftSearchMatch()` there, and
+  // deliberately absent from `repaintLiveAnnotations`, which was already correct on its own (it
+  // re-adds both spoken layers right after its own `liftSearchMatch()` call) and would only pay for a
+  // redundant re-measure if this were added there too.
+
+  it('lifts from exactly the two batch boundaries that needed it', () => {
+    const stripped = EPUB_ENTRY.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    // The definition plus two calls.
+    expect(stripped.match(/liftSpokenLayers\(/g)).toHaveLength(3);
+
+    for (const [name, marker] of [
+      ['the paint command', 'paintHighlights: (highlights) =>'],
+      ['the flow rebuild', 'function rebuildForFlowIfNeeded('],
+    ] as const) {
+      const body = blockAfter(EPUB_ENTRY, marker);
+      expect([name, body.includes('liftSpokenLayers(')]).toEqual([name, true]);
+      // Ordering matters: §4 puts `tts` above `search`, so the spoken lift must come after the
+      // search lift at each shared site, not before it.
+      expect([name, body.indexOf('liftSpokenLayers(') > body.indexOf('liftSearchMatch(')]).toEqual([
+        name,
+        true,
+      ]);
+    }
+  });
+
+  it('is absent from the live re-measure, which was already correct', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations()');
+    expect(body).not.toContain('liftSpokenLayers(');
   });
 });
