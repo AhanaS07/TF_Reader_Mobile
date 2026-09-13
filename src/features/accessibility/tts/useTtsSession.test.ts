@@ -66,6 +66,13 @@ jest.mock('@/features/sync/sharedPrefs', () => ({
   writeSharedPrefs: jest.fn(() => Promise.resolve()),
 }));
 
+// `prefsStore` is how `AccessibilitySettingsPanel.tsx` actually delivers a highlightMode change —
+// a DIFFERENT component with no access to this hook's own setters — so this mock, and capturing
+// the registered listener below, is what lets a test simulate that external write.
+jest.mock('@/features/personalization/prefsStore', () => ({
+  prefsStore: { subscribe: jest.fn() },
+}));
+
 // Pulling the test-only __fire helper off the mock; it deliberately isn't part of ttsEngine's
 // real, typed surface, which is why this needs a cast rather than a normal import.
 const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine') as {
@@ -85,6 +92,15 @@ const { default: mockTts, __fire: fireTtsEvent } = jest.requireMock('./ttsEngine
 
 const readSharedPrefsMock = readSharedPrefs as jest.Mock;
 const writeSharedPrefsMock = writeSharedPrefs as jest.Mock;
+
+const { prefsStore } = jest.requireMock('@/features/personalization/prefsStore') as {
+  prefsStore: { subscribe: jest.Mock };
+};
+const subscribePrefsMock = prefsStore.subscribe;
+// Captured by the mock's implementation (set in beforeEach) so a test can simulate a write made
+// from AccessibilitySettingsPanel by invoking this directly, the way `prefsStore`'s real `notify`
+// would.
+let firePrefsChange: ((prefs: SharedPrefs) => void) | undefined;
 
 function makeSharedPrefs(tts: Partial<A11yTtsPrefs> = {}): SharedPrefs {
   return {
@@ -130,6 +146,11 @@ beforeEach(() => {
   _resetAudioTtsCoordinatorForTests();
   _resetAudioPlaybackBridgeForTests();
   readSharedPrefsMock.mockResolvedValue(makeSharedPrefs());
+  firePrefsChange = undefined;
+  subscribePrefsMock.mockImplementation((listener: (prefs: SharedPrefs) => void) => {
+    firePrefsChange = listener;
+    return () => undefined;
+  });
 });
 
 describe('useTtsSession', () => {
@@ -168,7 +189,7 @@ describe('useTtsSession', () => {
     expect(provider.spokenWordRanges).toHaveLength(0);
   });
 
-  it("never paints setSpokenRange when highlightMode is 'none'", async () => {
+  it("never paints a real cfi via setSpokenRange when highlightMode is 'none'", async () => {
     readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'none' }));
     const provider = createTestReaderTextProvider();
     const { result } = await renderHook(() => useTtsSession(provider));
@@ -178,8 +199,83 @@ describe('useTtsSession', () => {
     await act(() => fireTtsEvent('tts-start'));
 
     // 'Off' must suppress the sentence wash too, not just the word-level refinement — this is
-    // the gap handleTtsStart used to miss (it called setSpokenRange unconditionally).
+    // the gap handleTtsStart used to miss (it called setSpokenRange unconditionally). It's still
+    // called, but always with null — applySentenceWash() paints nothing for any mode but 'sentence'.
+    expect(provider.spokenRanges).toEqual([null]);
+  });
+
+  it("never paints a real cfi via setSpokenRange when highlightMode is 'word' — only the word wash paints", async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'word' }));
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('word'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+
+    // A product decision (2026-09-13): a lone highlighted word reads more clearly on its own than
+    // against a sentence wash it would otherwise stand out from. 'word' mode used to paint both.
+    expect(provider.spokenRanges).toEqual([null]);
+
+    await act(() => fireTtsEvent('tts-progress', { location: 4, length: 3 }));
+    expect(provider.spokenWordRanges.at(-1)).toEqual({
+      cfi: provider.sentences[0].cfi,
+      start: 4,
+      end: 7,
+    });
+  });
+
+  it("picks up a highlightMode change written by AccessibilitySettingsPanel, mid-utterance, without a reopen", async () => {
+    // AccessibilitySettingsPanel writes through prefsStore.savePrefs, a component this session
+    // has no reference to — readSharedPrefs() only ever runs once, at mount, so without the
+    // prefsStore subscription this change would never reach a session that is already speaking,
+    // no matter how many times play/pause is pressed afterward.
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(provider.spokenRanges).toEqual([provider.sentences[0].cfi]);
+
+    await act(() => firePrefsChange?.(makeSharedPrefs({ highlightMode: 'none' })));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('none'));
+    // Applied to the sentence already on screen immediately, not left painted until whichever
+    // sentence happens to start next.
+    expect(provider.spokenRanges.at(-1)).toBeNull();
+  });
+
+  it('repaints the sentence wash immediately when highlightMode flips away from none mid-utterance', async () => {
+    readSharedPrefsMock.mockResolvedValue(makeSharedPrefs({ highlightMode: 'none' }));
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('none'));
+    await act(() => result.current.play());
+    await act(() => fireTtsEvent('tts-start'));
+    expect(provider.spokenRanges).toEqual([null]);
+
+    await act(() => firePrefsChange?.(makeSharedPrefs({ highlightMode: 'sentence' })));
+
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
+    expect(provider.spokenRanges.at(-1)).toEqual(provider.sentences[0].cfi);
+  });
+
+  it('does not repaint anything when a prefs change leaves highlightMode unchanged, or nothing is speaking', async () => {
+    const provider = createTestReaderTextProvider();
+    const { result } = await renderHook(() => useTtsSession(provider));
+    await waitFor(() => expect(result.current.prefs.highlightMode).toBe('sentence'));
+
+    // highlightMode unchanged — a write to some other pref (e.g. rate, from a different device's
+    // own settings screen) must not cause a spurious repaint.
+    await act(() => firePrefsChange?.(makeSharedPrefs({ highlightMode: 'sentence', rate: 1.5 })));
     expect(provider.spokenRanges).toHaveLength(0);
+
+    // highlightMode changed, but nothing is currently speaking — nothing to (re)paint yet.
+    await act(() => firePrefsChange?.(makeSharedPrefs({ highlightMode: 'word' })));
+    expect(provider.spokenRanges).toHaveLength(0);
+    expect(result.current.prefs.highlightMode).toBe('word');
   });
 
   it("forwards tts-progress to setSpokenWordRange when highlightMode is 'word'", async () => {

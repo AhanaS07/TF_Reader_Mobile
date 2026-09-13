@@ -728,11 +728,14 @@ ${text}`;
     if (rects.length === 0) return null;
     const viewportHeight = viewport.bottom - viewport.top;
     if (viewportHeight <= 0) return null;
+    const topMost = Math.min(...rects.map((rect) => rect.top));
     const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
     const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
     if (positionFraction < options.triggerFraction) return null;
     const targetBottom = viewport.top + options.targetFraction * viewportHeight;
-    return deepestBottom - targetBottom;
+    const minTop = viewport.top + options.minTopFraction * viewportHeight;
+    const delta = Math.min(deepestBottom - targetBottom, topMost - minTop);
+    return delta > 0 ? delta : null;
   }
 
   // src/features/reader/webview/src/highlightPaint.ts
@@ -1646,6 +1649,7 @@ ${columnOverrideCss()}` : currentCss;
   }
   var READING_ZONE_TRIGGER_FRACTION = 0.75;
   var READING_ZONE_TARGET_FRACTION = 0.35;
+  var READING_ZONE_MIN_TOP_FRACTION = 0.08;
   function repositionForReadingZone(cfi) {
     const geometry = spokenRangeGeometry(cfi);
     if (!geometry) return false;
@@ -1653,7 +1657,8 @@ ${columnOverrideCss()}` : currentCss;
     if (!manager) return false;
     const delta = readingZoneScrollDelta(geometry.rects, geometry.viewport, {
       triggerFraction: READING_ZONE_TRIGGER_FRACTION,
-      targetFraction: READING_ZONE_TARGET_FRACTION
+      targetFraction: READING_ZONE_TARGET_FRACTION,
+      minTopFraction: READING_ZONE_MIN_TOP_FRACTION
     });
     if (delta === null) return true;
     followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
@@ -1728,9 +1733,11 @@ ${columnOverrideCss()}` : currentCss;
     );
   }
   function liftSpokenLayers() {
-    if (!rendition || currentSpokenCfi === null) return;
-    remove(rendition, TTS_OWNER, currentSpokenCfi);
-    add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    if (!rendition) return;
+    if (currentSpokenCfi !== null) {
+      remove(rendition, TTS_OWNER, currentSpokenCfi);
+      add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    }
     repaintSpokenWord();
   }
   function rebuildForFlowIfNeeded() {
@@ -2128,17 +2135,24 @@ ${columnOverrideCss()}` : currentCss;
       }
     },
     /**
-     * Paint or clear the spoken-WORD highlight — the word inside the sentence `setSpokenRange` is
-     * showing. Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+     * Paint or clear the spoken-WORD highlight — the word within the sentence currently being spoken.
+     * Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+     *
+     * NOT NECESSARILY "the word inside the sentence `setSpokenRange` is showing" any more — since
+     * 2026-09-13, `'word'` highlight mode paints ONLY this, never a sentence wash underneath it (a
+     * product decision: a lone highlighted word reads more clearly against plain text than against a
+     * wash it would otherwise stand out from). `setSpokenRange` still says which sentence to speak
+     * from/resolve against (its `cfi` is what every `range.cfi` here is relative to), it just does not
+     * necessarily PAINT that sentence any more — see `applySentenceWash` in `useTtsSession.ts`.
      *
      * >>> THE PREVIOUS WORD IS CLEARED BEFORE THE NEW ONE IS RESOLVED, NOT AFTER. <<< That ordering is
      * the whole correctness argument, because `resolveSpokenWordCfi` bails to `null` for a list of
-     * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, the
-     * rendered text no longer matches what was spoken, the sentence is a single word already covered
-     * by the sentence wash. A bail means "I do not know where this word is", and a highlight left on
-     * the previous word while the voice has moved on is a LIE, whereas no word highlight is merely
-     * less information. The sentence wash is on screen throughout either way, so what a bail costs is
-     * the refinement, never the "you are here".
+     * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, or the
+     * rendered text no longer matches what was spoken. A bail means "I do not know where this word
+     * is", and a highlight left on the previous word while the voice has moved on is a LIE, whereas no
+     * word highlight is merely less information — and, now that this is the ONLY thing `'word'` mode
+     * paints, a bail genuinely means nothing is highlighted at all until the next tick resolves
+     * successfully, not just a lost refinement over an otherwise-still-visible sentence wash.
      *
      * `!rendition` returns before any of that, exactly as `setSpokenRange` does and for a reason worth
      * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
@@ -2164,6 +2178,8 @@ ${columnOverrideCss()}` : currentCss;
           currentSpokenWordCfi = cfi;
           repaintSpokenWord({ live: false });
         }
+        const wordContents = contentsForCfi(cfi);
+        if (wordContents) liftOverlappingUserHighlights(wordContents, cfi);
         followSpokenRange(cfi);
       } catch {
       }

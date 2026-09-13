@@ -56,6 +56,7 @@ import {
   registerActiveTtsSession,
 } from '@/features/reader/audio/audioTtsCoordinator';
 import { readSharedPrefs, writeSharedPrefs } from '@/features/sync/sharedPrefs';
+import { prefsStore } from '@/features/personalization/prefsStore';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
 import type { A11yTtsPrefs } from '@/shared/contracts';
 
@@ -259,6 +260,25 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       applyFetchResult(result, myGeneration);
     }
 
+    /**
+     * Paint (or clear) the SENTENCE wash for whichever mode is live right now — the one thing
+     * `handleTtsStart` and a live `highlightMode` change (the `prefsStore` subscription below) both
+     * need, so they share it rather than re-deriving the same three-way branch twice.
+     *
+     * ONLY `'sentence'` MODE EVER PAINTS THE SENTENCE WASH. `'word'` mode used to paint it too — the
+     * word wash as a refinement layered on top, per `readerTextProvider.ts`'s original doc — until a
+     * product decision (2026-09-13) that a lone word standing out against an otherwise-unhighlighted
+     * sentence reads more clearly than the same word against a wash that already covers the whole
+     * sentence. `'word'` mode now calls this with `null` too, same as `'none'` — the sole difference
+     * between the two is `handleTtsProgress`'s own `=== 'word'` gate on `setSpokenWordRange` below,
+     * which is what actually paints the word wash a moment later, once the first `tts-progress` tick
+     * of this sentence arrives.
+     */
+    function applySentenceWash(): void {
+      if (!currentlySpeaking) return;
+      source.setSpokenRange(livePrefs.highlightMode === 'sentence' ? currentlySpeaking.cfi : null);
+    }
+
     function handleTtsStart(): void {
       if (!awaitingUtterance) return;
       pauseActiveAudio();
@@ -268,9 +288,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       }
       setErrorMessage(null);
       updateStatus('speaking');
-      if (currentlySpeaking && livePrefs.highlightMode !== 'none') {
-        source.setSpokenRange(currentlySpeaking.cfi);
-      }
+      applySentenceWash();
     }
 
     /**
@@ -575,6 +593,34 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       if (livePrefs.voiceId) void Tts.setDefaultVoice(livePrefs.voiceId).catch(noop);
     });
 
+    // `highlightMode` is set from `AccessibilitySettingsPanel.tsx`, a DIFFERENT mounted component
+    // with no access to this session's setters — unlike rate/pitch/voice/autoContinueChapter,
+    // which are only ever changed through `TtsSession`'s own methods above and so stay correct via
+    // `applyPrefsPatch` alone. Without this subscription `livePrefs.highlightMode` is whatever
+    // `readSharedPrefs()` returned at mount and NEVER changes again for the life of this effect
+    // (i.e. for as long as the book stays open and TTS stays enabled) — pausing and pressing play
+    // again does not re-run this effect, so it looked "not wired in" rather than merely stale.
+    // `prefsStore` (not the lower-level `subscribeToSharedPrefsChanges`) is the right seam: it is
+    // the same local-writes-only notification channel `ReaderScreen.tsx` already uses to re-apply
+    // typography/theme live, and it fires only for a write made on THIS device, never for a
+    // cross-device sync pull — see `prefsStore.ts`'s own note on why that distinction matters for a
+    // rendering preference.
+    const unsubscribePrefs = prefsStore.subscribe((fresh) => {
+      if (torn) return;
+      const nextHighlightMode = fresh.accessibility.tts.highlightMode;
+      if (nextHighlightMode === livePrefs.highlightMode) return;
+      livePrefs = { ...livePrefs, highlightMode: nextHighlightMode };
+      setPrefs(livePrefs);
+      // Applied immediately rather than left for the next sentence, matching the rest of this
+      // app's "no reopen needed" prefs philosophy: a currently-painted highlight would otherwise
+      // sit there — or stay missing — until whatever sentence happens to start next, which can be
+      // many seconds away and reads as the toggle having done nothing. `livePrefs.highlightMode`
+      // is already updated above, so `applySentenceWash()` reads the NEW mode. Flipping TO 'word'
+      // mid-utterance clears the sentence wash immediately but does not conjure a word wash out of
+      // nowhere — that paints at the next `tts-progress` tick, same as it would starting fresh.
+      applySentenceWash();
+    });
+
     // AUDIO SESSION CONCURRENCY: Registers this active session with the coordinator so that
     // when an audiobook begins playback (from the player screen or lock screen / bluetooth),
     // this TTS speech is cleanly stopped, highlights cleared, and status set to idle.
@@ -594,6 +640,7 @@ export function useTtsSession(provider: ReaderTextProvider | null): TtsSession {
       subscriptions.forEach((subscription) => subscription.remove());
       appStateSubscription.remove();
       unsubscribeInterrupted();
+      unsubscribePrefs();
       generation += 1;
       clearHighlight();
       try {

@@ -152,15 +152,18 @@ and `HIGHLIGHT_LAYERS.md` §3 the visual half; what belongs to this seam:
 - **One nullable object, not three arguments.** The bridge's `CommandArgsMatchPayloads` proof
   requires one payload field per command; the reasoning is on the type itself.
 - **Failure is silent and clears the previous word.** Resolution genuinely fails in ordinary
-  situations — paged away mid-utterance, section not rendered, a one-word sentence the sentence wash
-  already covers — and on all of them the previous word is removed rather than left painted. A
-  highlight on the last word while the voice has moved on is a lie; showing nothing is not.
-- **`setSpokenRange` clears it**, so a caller changing sentence, stopping, or turning word mode off
-  mid-utterance needs no separate clear.
+  situations — paged away mid-utterance, or the section is not rendered — and on all of them the
+  previous word is removed rather than left painted. A highlight on the last word while the voice has
+  moved on is a lie; showing nothing is not.
+- **`setSpokenRange` clears it**, so a caller changing sentence or stopping needs no separate clear.
 - **Device verification is Accessibility's**, deferred deliberately: nothing on `T4_Ahana` calls this
   yet, so it landed unverified on hardware. What that pass is actually checking is the two opacity
   constants in `webview/src/selectionTheme.ts`'s `spokenWordOpacity` — computed from the palettes and
   WCAG contrast, never observed — and its comment names the two failure signatures to look for.
+
+**Read the paint side of this landing (the "one-word sentence the sentence wash already covers" bail
+reason, and "word mode paints BOTH") as superseded, not current — see "Word highlighting shows ONLY
+the word" below, 2026-09-13, for what changed and why.**
 
 ### "Off" highlight mode — `setSpokenRange` gated on `highlightMode !== 'none'`, fixed 2026-09-13
 
@@ -171,12 +174,73 @@ suppressed the sentence wash: every mode painted it, and "Off" did nothing. Fixe
 shape of gate `handleTtsProgress` already had: `if (currentlySpeaking && livePrefs.highlightMode !==
 'none') source.setSpokenRange(currentlySpeaking.cfi)`.
 
-Flipping to "Off" **mid-utterance** leaves the current sentence painted until the next
-`tts-start`/stop — this is not a residual bug, it deliberately matches the tolerance
-`handleTtsProgress`'s own word-mode gate already has for the symmetric case (turning word mode off
-mid-utterance): "a caller which stops sending word ranges... is not leaving a stale wash behind: the
-next sentence removes it." Tightening either one to clear instantly on the pref flip itself, if ever
-wanted, is a design change for both gates together, not a one-sided fix.
+**A second, deeper defect travelled with this one, and is fixed in the same change: the gate above
+was correct but unreachable in real use.** `livePrefs` is a closure variable read from
+`readSharedPrefs()` exactly ONCE, when this effect mounts against a `provider` (i.e. once per
+book-open) — it is not React state and nothing re-reads it afterward except this hook's OWN setters
+(`setRate`/`setPitch`/`setVoice`/`setAutoContinueChapter`, via `applyPrefsPatch`). But `highlightMode`
+is set from `AccessibilitySettingsPanel.tsx`, a DIFFERENT mounted component with no reference to this
+session's setters at all — it writes through `prefsStore.savePrefs()`. So changing "TTS Highlight"
+while a book is open — the only way anyone would ever use the control — never reached a session that
+was already speaking, no matter how many times play/pause was pressed afterward; only closing and
+reopening the book (a fresh `provider`, a fresh effect mount) would pick it up. Fixed by subscribing
+to `prefsStore.subscribe()` inside the same effect and updating `livePrefs.highlightMode` (only that
+field — rate/pitch/voice/autoContinueChapter stay owned by this hook's own pending-patch machinery,
+untouched by an external write) on every notification. `prefsStore`, not the lower-level
+`subscribeToSharedPrefsChanges`, is the right seam: it is the same local-writes-only channel
+`ReaderScreen.tsx` already uses to re-apply typography/theme live, firing only for a write made on
+THIS device, never for a cross-device sync pull.
+
+**The mode change is now applied to whatever is on screen IMMEDIATELY, not left for the next
+sentence** — an earlier version of this note argued for tolerating a one-sentence lag, by analogy
+with `handleTtsProgress`'s own word-mode gate; that reasoning is superseded now that the change is
+reachable at all, because "wait up to one sentence" reads very differently once "never" was the
+actual prior behaviour. On every `prefsStore` notification, if a sentence is currently on screen
+(speaking OR paused — `currentlySpeaking` is not cleared by pause), `applySentenceWash()` re-runs
+immediately against the NEW mode (see "Word highlighting shows ONLY the word" below for what that
+function actually decides per mode since 2026-09-13). This mirrors the rest of this app's "no reopen
+needed" prefs philosophy (`prefsStore.ts`'s own "LIVE RE-APPLY" note) rather than being a special case
+invented for this seam.
+
+### Word highlighting shows ONLY the word, not the sentence too — changed 2026-09-13
+
+Word-level highlighting landed (2026-09-05, above) as a refinement layered ON the sentence wash:
+`'word'` mode painted the sentence (on utterance start, via `setSpokenRange`) and the word on top of
+it (every progress tick, via `setSpokenWordRange`). A product decision reversed that: a lone
+highlighted word reads more clearly against otherwise-plain text than against a wash it would
+otherwise stand out from. `'word'` mode now paints ONLY the word.
+
+The mechanism is `useTtsSession.ts`'s `applySentenceWash()` (shared by `handleTtsStart` and the
+`prefsStore` subscription above, so a fresh sentence and a live mode change both go through the same
+decision): it calls `source.setSpokenRange(cfi)` for `'sentence'` mode, and
+`source.setSpokenRange(null)` for BOTH `'word'` and `'none'`. `setSpokenRange`'s own contract
+(`readerTextProvider.ts`) is unchanged — it still identifies which sentence a caller is speaking
+from/resolving against, and every `setSpokenWordRange` call's `range.cfi` is still relative to it —
+what changed is only that the caller no longer asks it to PAINT that sentence in word mode.
+
+**Three things that used to be implicitly true because the sentence wash was always present needed an
+explicit fix in the same change, because `epub.entry.ts`'s `currentSpokenCfi` now stays `null` for an
+entire word-only session** (only `currentSpokenWordCfi` is real):
+
+1. **`liftSpokenLayers()`** (the §4 z-order fix) used to guard its ENTIRE body on
+   `currentSpokenCfi !== null`, which made it a permanent no-op in word-only mode — the word wash was
+   never re-lifted above `search`/a newly-added `user` highlight at either of its two batch
+   boundaries. Fixed by making the sentence branch independently conditional; `repaintSpokenWord()`
+   (already self-guarding on `currentSpokenWordCfi`) always runs.
+2. **The overlap-lift exception** (HIGHLIGHT_LAYERS.md §4's "`user` deliberately goes ABOVE `tts`
+   … where they overlap") was only ever triggered from `setSpokenRange`, at SENTENCE granularity —
+   with no sentence wash to trigger it, a reader's own highlight would never rise above the word wash
+   it overlaps in word-only mode. Fixed by adding the same call to `setSpokenWordRange`'s handler, at
+   WORD granularity — the two callers never run in the same session, so there is no double-lift or
+   ordering to reason about between them. See HIGHLIGHT_LAYERS.md §4 for the full account.
+3. **The coarse, once-per-sentence auto-follow trigger** that used to fire the instant `setSpokenRange`
+   painted a new sentence (independent of word ticks) is gone for word-only mode, since that branch
+   only runs when `cfi !== null`. Auto-follow in word-only mode now starts only once the first
+   `tts-progress` tick of the new sentence arrives (roughly 200-400ms later, per this doc's own
+   "word ticks arrive roughly every 200-400ms" note above) rather than at the exact instant the
+   sentence starts. Accepted as a minor, likely-imperceptible timing gap rather than fixed with a
+   separate "track but don't paint" call — inventing that would reintroduce the same complexity this
+   whole change removes.
 
 **Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
 Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount
@@ -381,6 +445,27 @@ Accessibility's (Hruthik's) call.
    has no "recently navigated" signal for that path, so the next tick pulls the view back to wherever
    speech currently is. PDF's `setSpokenRange`/`setSpokenWordRange` remain documented no-ops
    (`pdf.entry.ts`) — nothing to follow there yet.
+
+   **Fourth on-device-reported defect, fixed 2026-09-13: a long (multi-line-wrapped) sentence could
+   have its OWN FIRST LINE scrolled off the top of the viewport the instant it triggered a
+   reposition.** `readingZoneScrollDelta` decided both whether to trigger and where to land using only
+   the target's deepest rect — correct for deciding *whether* to scroll (a multi-line target should be
+   judged by the line that would be cut off first), wrong for deciding *how far*: pulling the deepest
+   rect all the way to `READING_ZONE_TARGET_FRACTION` (0.35) assumes the target is short enough to fit
+   between there and the top of the viewport. A sentence taller than that gap does not fit, and
+   honouring the target fraction regardless dragged its first line up past the top edge, hiding
+   exactly the part the reader was about to read — the "beginning of the sentence gets hidden" report.
+   Fixed with a new floor, `READING_ZONE_MIN_TOP_FRACTION = 0.08`: the delta is now capped so the
+   target's OWN topmost rect is never scrolled above it, even at the cost of leaving the deepest rect
+   short of the target fraction (a tall sentence's tail simply stays past the fold, and a later tick —
+   the next sentence, or the next word-level check in word mode — catches up as the reader genuinely
+   progresses further into it). When the cap would require a delta of zero or less, this returns
+   `null` rather than a negative one — this mechanism only ever scrolls forward, per its own existing
+   rule, so "cannot help without hiding the beginning" means "do nothing," not "scroll up."
+   `readingZoneScrollDelta`'s own doc in `highlightGeometry.ts` has the full reasoning and the pure
+   arithmetic; `highlightGeometry.test.ts`'s "the reading zone never hides a target's own beginning"
+   describe block pins it, including the case that used to be wrong (a multi-line target whose first
+   line was comfortably in view).
 3. **`react-native-tts` is not in `package.json`.** It is a native module, so adding it forces a
    prebuild and a fresh dev build for everyone on T4 — an announcement, not a silent install.
 4. ~~**Highlight styling will collide with Personalization's.**~~ **SOLVED, 2026-08-23.**

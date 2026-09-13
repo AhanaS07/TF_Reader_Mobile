@@ -906,6 +906,18 @@ describe('re-measuring every painted layer after a re-layout', () => {
     );
   });
 
+  it("a spoken WORD lifts the reader's own overlapping highlight too — word mode has no sentence wash to trigger it any more", () => {
+    // Added 2026-09-13 alongside 'word' mode no longer painting a sentence wash: without this, the
+    // overlap exception above would go silently inert for a whole word-only session, since nothing
+    // ever calls setSpokenRange with a real cfi in that mode. Checked at WORD granularity here,
+    // mirroring the sentence-granularity version above — see HIGHLIGHT_LAYERS.md §4.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenWordRange: (range) =>');
+    expect(body).toContain('liftOverlappingUserHighlights(wordContents, cfi)');
+    expect(body.indexOf('followSpokenRange(cfi)')).toBeGreaterThan(
+      body.indexOf('liftOverlappingUserHighlights(wordContents, cfi)'),
+    );
+  });
+
   it('liftUserHighlight re-adds through the SAME owner-namespaced seam as every other repaint', () => {
     // Not a bespoke DOM poke — remove-then-add through highlightSeam.ts, exactly like
     // liftSearchMatch's own lift, so it participates in the same collision/removal guarantees
@@ -1358,5 +1370,21 @@ describe('the spoken layers are lifted back on top, fixing HIGHLIGHT_LAYERS.md �
   it('is absent from the live re-measure, which was already correct', () => {
     const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations()');
     expect(body).not.toContain('liftSpokenLayers(');
+  });
+
+  it('assumes neither layer, since word mode paints only the word and never the sentence', () => {
+    // Added 2026-09-13: this used to guard its ENTIRE body on `currentSpokenCfi === null`, which
+    // made it a permanent no-op for a whole word-only session (currentSpokenCfi never becomes
+    // non-null there). The sentence branch must be its own, narrower guard, and repaintSpokenWord()
+    // (self-guarding on currentSpokenWordCfi) must run unconditionally rather than nested behind it.
+    const body = blockAfter(EPUB_ENTRY, 'function liftSpokenLayers(): void');
+    expect(body).not.toMatch(/if \(!rendition \|\| currentSpokenCfi === null\)/);
+    const ifIndex = body.indexOf('if (currentSpokenCfi !== null) {');
+    expect(ifIndex).toBeGreaterThan(-1);
+    // The if-block has no braces of its own inside it, so the first `}` after it opens is exactly
+    // its closing brace — repaintSpokenWord() must appear AFTER that, not nested before it.
+    const ifCloseIndex = body.indexOf('}', ifIndex);
+    const repaintIndex = body.indexOf('repaintSpokenWord();');
+    expect(repaintIndex).toBeGreaterThan(ifCloseIndex);
   });
 });

@@ -255,27 +255,31 @@ export interface ReaderTextProvider {
 
   /**
    * Paint or move the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
-   * is currently showing. `null` clears it.
+   * is currently resolving/speaking from. `null` clears it.
    *
-   * A REFINEMENT OF THE SENTENCE HIGHLIGHT, NOT A REPLACEMENT FOR IT. The two layers compose:
-   * the sentence wash says which sentence, the word wash says where inside it. Both are the
-   * `tts` owner and the same colour at different intensities (HIGHLIGHT_LAYERS.md §3), so a
-   * caller in word mode paints BOTH — `setSpokenRange` when the utterance starts, this on
-   * every progress event.
+   * NOT A REFINEMENT LAYERED ON THE SENTENCE HIGHLIGHT ANY MORE — since 2026-09-13, `'word'`
+   * highlight mode paints ONLY this, and `'sentence'` mode never calls this at all. The two used
+   * to compose (the sentence wash says which sentence, the word wash says where inside it, both
+   * the `tts` owner at different intensities, HIGHLIGHT_LAYERS.md §3) until a product decision
+   * that a lone highlighted word reads more clearly on its own than against a wash it would
+   * otherwise stand out from. `setSpokenRange` still identifies which sentence a caller is
+   * speaking from — every `range.cfi` here is relative to it — it just does not necessarily
+   * PAINT that sentence any more; see `useTtsSession.ts`'s `applySentenceWash`.
    *
-   * CALLING `setSpokenRange` CLEARS THIS. The word is a sub-range of one sentence, so moving
-   * to the next sentence invalidates it; the caller does not have to clear it first, and a
-   * caller that does anyway is harmless. That also means a caller which stops sending word
-   * ranges — because the reader turned word mode off mid-utterance — is not leaving a stale
-   * wash behind: the next sentence removes it.
+   * CALLING `setSpokenRange` STILL CLEARS THIS, whatever `cfi`/`null` it's called with. The word
+   * is a sub-range of one sentence, so moving to the next sentence invalidates it regardless of
+   * mode; the caller does not have to clear it first, and one that does anyway is harmless. A
+   * caller that changes `highlightMode` mid-utterance is also covered: `useTtsSession.ts` applies
+   * the change immediately (not at the next sentence) by calling `setSpokenRange` itself the
+   * moment the preference changes, which clears any stale word wash as a side effect of that call.
    *
    * WHEN THE RANGE CANNOT BE RESOLVED, THE PREVIOUS WORD IS STILL CLEARED. Reader resolves
-   * these offsets against the live document and can legitimately fail — the reader paged
-   * away mid-utterance, the section is not rendered, the sentence is a single word already
-   * covered by the sentence highlight. Every one of those clears the previous word and paints
-   * nothing, because a highlight left on the last word while speech has moved on is worse
-   * than no word highlight at all. The sentence wash stays throughout, so what is lost is the
-   * refinement, not the "you are here".
+   * these offsets against the live document and can legitimately fail — the reader paged away
+   * mid-utterance, or the section is not rendered. Every failure clears the previous word and
+   * paints nothing, because a highlight left on the last word while speech has moved on is worse
+   * than no word highlight at all. In `'word'` mode — the only mode that calls this — there is no
+   * sentence wash underneath to fall back on, so a resolution failure means nothing is
+   * highlighted at all until the next tick succeeds, not merely a lost refinement.
    *
    * Fire-and-forget and best-effort, exactly like `setSpokenRange`: it never throws and never
    * reports failure, so nothing here can interrupt speech.
