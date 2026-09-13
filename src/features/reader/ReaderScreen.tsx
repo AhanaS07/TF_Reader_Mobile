@@ -529,7 +529,10 @@ function ReaderScreenComponent(
   // Live (updates across a rotation while the dropdown is open, unlike a one-off `Dimensions.get`)
   // — bounds the Accessibility dropdown's ScrollView so it stays scrollable rather than growing
   // past the screen, which the panel's own toggle rows can do on a small phone in landscape.
-  const { height: windowHeight } = useWindowDimensions();
+  // `width` rides along on the same reactive hook so the height ratio below can branch on window
+  // size too, rather than only reacting to height.
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isAccessibilityDropdownCompactWidth = windowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH;
 
   /**
    * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
@@ -2457,15 +2460,31 @@ function ReaderScreenComponent(
               if (next) {
                 // Same measure-on-open shape as DevPreferencesMenu.tsx's `toggleOpen` — see
                 // `accessibilityAnchor`'s own doc for why this has to be measured rather than laid
-                // out relatively, now that the dropdown renders inside a `Modal`.
+                // out relatively, now that the dropdown renders inside a `Modal`. A one-shot read
+                // here, not the reactive `windowWidth` above — an anchor position is a snapshot at
+                // the moment the dropdown opens, unlike the ScrollView's height cap, which
+                // deliberately DOES stay live across a rotation while it's already open. Named
+                // `openWindowWidth` rather than `windowWidth` only to avoid shadowing that outer,
+                // reactive one — same value shape, different lifetime.
                 accessibilityButtonRef.current?.measureInWindow((x, y, width, height) => {
-                  const windowWidth = Dimensions.get('window').width;
-                  const right = Math.max(0, windowWidth - (x + width));
-                  setAccessibilityAnchor({
-                    top: y + height,
-                    right,
-                    maxWidth: Math.max(0, windowWidth - right - ACCESSIBILITY_DROPDOWN_EDGE_MARGIN),
-                  });
+                  const openWindowWidth = Dimensions.get('window').width;
+                  const right = Math.max(0, openWindowWidth - (x + width));
+                  const rightBasedMaxWidth = Math.max(
+                    0,
+                    openWindowWidth - right - ACCESSIBILITY_DROPDOWN_EDGE_MARGIN,
+                  );
+                  // Phone-only ceiling, layered ON TOP of the existing formula rather than
+                  // replacing it — above the compact-width threshold (tablet), `rightBasedMaxWidth`
+                  // is unchanged from before, and is already effectively capped further by
+                  // AccessibilitySettingsPanel's own `container.maxWidth: 560`. Below it,
+                  // `rightBasedMaxWidth` alone is "almost the full screen width minus the button's
+                  // own offset" — nearly edge-to-edge on a phone — so this caps it at 60% of the
+                  // window's width instead, leaving a clearly visible strip of the reader beside it.
+                  const maxWidth =
+                    openWindowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH
+                      ? Math.min(rightBasedMaxWidth, openWindowWidth * 0.6)
+                      : rightBasedMaxWidth;
+                  setAccessibilityAnchor({ top: y + height, right, maxWidth });
                 });
               }
               return next;
@@ -2988,9 +3007,11 @@ function ReaderScreenComponent(
                   phone in landscape, the exact overflow case the old full-bleed panel's own
                   ScrollView already had to cover. `windowHeight` (from `useWindowDimensions`, not a
                   one-off `Dimensions.get`) keeps that cap correct across a rotation while the
-                  dropdown is open. */}
+                  dropdown is open. 0.7 is unchanged above `ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH`
+                  (the tablet case that was already "perfect"); below it, 0.5 leaves roughly half a
+                  phone's screen visible behind the dropdown instead of nearly all of it. */}
               <ScrollView
-                style={{ maxHeight: windowHeight * 0.7 }}
+                style={{ maxHeight: windowHeight * (isAccessibilityDropdownCompactWidth ? 0.5 : 0.7) }}
                 contentContainerStyle={styles.accessibilityContent}
               >
                 {/* `undefined` rather than a guess while the book is still resolving: the prop's own
@@ -3197,6 +3218,17 @@ const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as c
 // Matches DevPreferencesMenu.tsx's own DROPDOWN_EDGE_MARGIN — same shape of anchor maths, same
 // margin, so the two dropdowns feel like one family even though they're two components.
 const ACCESSIBILITY_DROPDOWN_EDGE_MARGIN = 12;
+
+// Google's Material Design "compact" window-size-class boundary (compact width < 600dp) — an
+// authoritative phone/tablet width threshold. Deliberately NOT DevPreferencesMenu.tsx's own
+// `SPREAD_MIN_WIDTH` (800): that number is calibrated to epub.js's two-page-spread fit, a
+// different question, and reusing it here would misclassify an iPad mini's ~744pt portrait width
+// as a "phone" — exactly the tablet case this threshold exists to leave alone. Below this width,
+// the accessibility dropdown sizes down (see `isAccessibilityDropdownCompactWidth`'s use below and
+// in `styles.accessibilityDropdown`'s anchor calc) so it never covers nearly the whole screen on a
+// phone the way a flat percentage of window size did; at or above it, sizing is unchanged from
+// before this threshold existed.
+const ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH = 600;
 
 const styles = StyleSheet.create({
   // Reads as a status line rather than a control: no border, no press affordance. Tabular figures so

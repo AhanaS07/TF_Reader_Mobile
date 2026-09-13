@@ -140,6 +140,28 @@ describe('AccessibilitySettingsPanel', () => {
     });
   });
 
+  it('hides TTS Highlight while TTS is off — a control with nothing to control', async () => {
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('tts-highlight-mode-row')).toBeNull();
+    expect(screen.queryByLabelText(/TTS highlight/)).toBeNull();
+  });
+
+  it('shows TTS Highlight once TTS is on', async () => {
+    getPrefsMock.mockResolvedValue({
+      accessibility: {
+        ...structuredClone(DEFAULT_ACCESSIBILITY_PREFS),
+        tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts, enabled: true },
+      },
+    });
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    expect(screen.getByTestId('tts-highlight-mode-row')).toBeTruthy();
+    expect(screen.getByLabelText('TTS highlight: Sentence')).toBeTruthy();
+  });
+
   it('turns page announcements off without touching chapters', async () => {
     // Separate preferences on purpose: a page turn announces constantly, a chapter change a handful
     // of times a book. Silencing one must not silence the other.

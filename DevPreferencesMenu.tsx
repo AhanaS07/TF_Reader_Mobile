@@ -126,10 +126,12 @@ const SPREAD_OPTIONS: readonly { label: string; spread: LayoutPrefs['spread'] }[
  * cross-referencing comment the same way (e.g. `epub.entry.ts`'s `mapSpread`) rather than factored
  * into a module both sides import.
  *
- * This is ONLY for deciding whether to warn here, in RN — the WebView is still the one enforcing
- * it against its own live viewport width at render time (`epub.entry.ts`'s `mapSpread`,
+ * This is ONLY for deciding whether to warn AND revert here, in RN — the WebView is still the one
+ * enforcing it against its own live viewport width at render time (`epub.entry.ts`'s `mapSpread`,
  * `pdfOutline.ts`'s `shouldRenderSpread`), so a mismatch between this copy and that one would only
- * make this warning fire a little early or late, never make an actual page render wrong.
+ * make this warning/revert fire a little early or late, never make an actual page render wrong:
+ * even if this check somehow let `double` through on a screen the WebView disagrees is wide
+ * enough, the WebView's own check still makes it inert there rather than broken.
  */
 const SPREAD_MIN_WIDTH = 800;
 
@@ -168,19 +170,21 @@ function toggleFlow(current: SharedPrefs, flow: LayoutPrefs['flow']): PrefsPatch
 }
 
 /**
- * Purely informational — unlike `warnScrolledDoubleSpreadConflict`, nothing gets reverted here.
- * `mapSpread`/`shouldRenderSpread` already make `double` inert on a narrow viewport rather than
- * wrong ("expected, not a bug to chase" — `epub.entry.ts`'s own comment), so the preference is
- * still worth storing: rotating to landscape, or opening the same account on a tablet, can cross
- * `SPREAD_MIN_WIDTH` without the user ever having to reselect Double. This alert exists only so
- * "why didn't anything change" has an answer on screen right when it's picked, on the screen where
- * it's currently inert.
+ * REVERTS `spread` back to its default (single), same as `warnScrolledDoubleSpreadConflict` does
+ * for its own conflict — this used to be purely informational (double was still stored, on the
+ * reasoning that rotating to landscape or opening the same account on a tablet could cross
+ * `SPREAD_MIN_WIDTH` later without the user reselecting Double). That traded correctness for
+ * convenience: it left a preference stored that could not apply on THIS screen at all, which is a
+ * worse trade than asking the user to press Double again once the screen is actually wide enough.
+ * Checked FIRST in `toggleSpread`, ahead of the scrolled-flow conflict below — a screen too narrow
+ * for a double-page spread is true regardless of what `flow` currently is, so this can't be
+ * allowed to depend on which check happens to run first or short-circuit the other.
  */
 function warnSpreadTooNarrow(): void {
   Alert.alert(
     'Double spread',
-    'This screen is too narrow for a double-page spread, so pages will keep showing one at a ' +
-      'time. Double spread will take effect on a wider screen — landscape or a tablet.',
+    'This screen is too narrow for a double-page spread, so it will stay on Single. Try Double ' +
+      'again once the screen is wider — landscape or a tablet.',
   );
 }
 
@@ -191,13 +195,18 @@ function toggleSpread(
 ): PrefsPatch {
   const nextSpread = current.layout.spread === spread ? DEFAULT_PREFS.layout.spread : spread;
 
+  // Checked BEFORE the scrolled-flow conflict below, and unconditionally on its own `return` —
+  // double cannot apply on a screen this narrow no matter what `flow` is, so this can't be skipped
+  // just because `current.layout.flow` happens to already be `'scrolled-doc'` (which used to make
+  // the OTHER check return first, leaving `double` stored anyway on a screen that can't show it).
+  if (nextSpread === 'double' && windowWidth < SPREAD_MIN_WIDTH) {
+    warnSpreadTooNarrow();
+    return { layout: { ...current.layout, spread: DEFAULT_PREFS.layout.spread } };
+  }
+
   if (nextSpread === 'double' && current.layout.flow === 'scrolled-doc') {
     warnScrolledDoubleSpreadConflict('Flow', 'Double spread');
     return { layout: { ...current.layout, spread: nextSpread, flow: DEFAULT_PREFS.layout.flow } };
-  }
-
-  if (nextSpread === 'double' && windowWidth < SPREAD_MIN_WIDTH) {
-    warnSpreadTooNarrow();
   }
 
   return { layout: { ...current.layout, spread: nextSpread } };

@@ -301,24 +301,37 @@ export function AccessibilitySettingsPanel({
         </Pressable>
       </View>
 
-      <Text style={styles.sectionLabel}>TTS Highlight</Text>
-      <View style={styles.chipRow} testID="tts-highlight-mode-row">
-        {HIGHLIGHT_MODE_OPTIONS.map(({ value, label }) => {
-          const selected = prefs.tts.highlightMode === value;
-          return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`TTS highlight: ${label}`}
-              accessibilityState={{ selected }}
-              key={value}
-              onPress={() => setHighlightMode(value)}
-              style={[styles.chip, selected && styles.chipSelected]}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+      {/* A control with nothing to control when TTS is off — same reasoning DevPreferencesMenu.tsx
+          already applies to Zoom (hidden for EPUB) and Typography (hidden for PDF). Gated on
+          `prefs.tts.enabled` rather than format, mirroring `showDyslexiaFont`'s fragment shape
+          above. The divider below stays UNCONDITIONAL, unlike Dyslexia Font's own conditional one:
+          that one exists only because Dyslexia Font can be the panel's first section; TTS
+          Highlight never is (Text-to-Speech always precedes it), so there is no equivalent
+          divider-collision case to guard against here. */}
+      {prefs.tts.enabled && (
+        <>
+          <Text style={styles.sectionLabel}>TTS Highlight</Text>
+          <View style={styles.chipRow} testID="tts-highlight-mode-row">
+            {HIGHLIGHT_MODE_OPTIONS.map(({ value, label }) => {
+              const selected = prefs.tts.highlightMode === value;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`TTS highlight: ${label}`}
+                  accessibilityState={{ selected }}
+                  key={value}
+                  onPress={() => setHighlightMode(value)}
+                  style={[styles.chip, selected && styles.chipSelected]}
+                >
+                  <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
 
       <View style={styles.divider} />
       {/* THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a

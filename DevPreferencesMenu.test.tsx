@@ -7,6 +7,7 @@
 // The rest of this menu is exercised through ReaderScreen's own prefs-application tests.
 
 import { render, screen, fireEvent, act } from '@testing-library/react-native';
+import { Alert, Dimensions } from 'react-native';
 
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { setOverrideDeclined } from '@/features/reader/a11yOverrideChoice';
@@ -106,5 +107,80 @@ describe('the Layout rows while a screen reader is running', () => {
     await openMenu();
 
     expect(screen.queryByTestId('prefs-flow-override-note')).toBeNull();
+  });
+});
+
+describe('picking Double spread on a screen too narrow to show it', () => {
+  // 800 is SPREAD_MIN_WIDTH — matches epub.js's own minSpreadWidth / pdfOutline.ts's
+  // PDF_SPREAD_MIN_WIDTH. Values either side of it are what these tests actually depend on, not
+  // the constant's own name (it isn't exported).
+  const NARROW_WIDTH = 400;
+  const WIDE_WIDTH = 900;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('reverts to Single and warns, instead of storing an inert preference', async () => {
+    jest.spyOn(Dimensions, 'get').mockReturnValue({ width: NARROW_WIDTH } as never);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    await openMenu();
+
+    await fireEvent.press(screen.getByLabelText('Spread: Double'));
+
+    expect(alertSpy).toHaveBeenCalledWith('Double spread', expect.stringContaining('too narrow'));
+    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'paginated', spread: 'single' },
+    });
+  });
+
+  it('applies Double normally once the screen is wide enough', async () => {
+    jest.spyOn(Dimensions, 'get').mockReturnValue({ width: WIDE_WIDTH } as never);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    await openMenu();
+
+    await fireEvent.press(screen.getByLabelText('Spread: Double'));
+
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'paginated', spread: 'double' },
+    });
+  });
+
+  it('still reverts for a narrow screen even when scrolled flow is already set — not skipped by the flow check', async () => {
+    // The regression this test exists for: the narrow-screen check used to run AFTER the
+    // scrolled-flow conflict check, which `return`s early — so picking Double while already in
+    // scrolled flow skipped the narrow-screen check entirely and stored `double` anyway, on a
+    // screen that could never show it.
+    const scrolled = makePrefs();
+    scrolled.layout = { flow: 'scrolled-doc', spread: 'single' };
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(scrolled);
+    jest.spyOn(Dimensions, 'get').mockReturnValue({ width: NARROW_WIDTH } as never);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    await openMenu();
+
+    await fireEvent.press(screen.getByLabelText('Spread: Double'));
+
+    expect(alertSpy).toHaveBeenCalledWith('Double spread', expect.stringContaining('too narrow'));
+    expect(alertSpy).not.toHaveBeenCalledWith('Layout updated', expect.anything());
+    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'scrolled-doc', spread: 'single' },
+    });
+  });
+
+  it('still resolves the scrolled-flow conflict as before once the screen is wide enough', async () => {
+    const scrolled = makePrefs();
+    scrolled.layout = { flow: 'scrolled-doc', spread: 'single' };
+    jest.mocked(prefsStore.getPrefs).mockResolvedValue(scrolled);
+    jest.spyOn(Dimensions, 'get').mockReturnValue({ width: WIDE_WIDTH } as never);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    await openMenu();
+
+    await fireEvent.press(screen.getByLabelText('Spread: Double'));
+
+    expect(alertSpy).toHaveBeenCalledWith('Layout updated', expect.stringContaining('Scrolled flow'));
+    expect(prefsStore.savePrefs).toHaveBeenCalledWith({
+      layout: { flow: 'paginated', spread: 'double' },
+    });
   });
 });
