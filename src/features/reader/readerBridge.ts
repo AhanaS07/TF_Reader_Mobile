@@ -455,6 +455,7 @@ export const READER_COMMANDS = {
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
   setSpokenWordRange: 'setSpokenWordRange',
+  followSpokenPosition: 'followSpokenPosition',
   paintHighlights: 'paintHighlights',
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
@@ -538,6 +539,31 @@ export type ReaderCommand =
    * reason to interrupt speech if it fails.
    */
   | { type: 'setSpokenRange'; cfi: string | null }
+  /**
+   * Keep a position on screen (scroll/page to follow it) WITHOUT painting anything for it.
+   *
+   * Added 2026-09-14 for `'none'` TTS highlight mode: once `'word'`/`'none'` stopped painting a
+   * sentence wash (see `TTS_PROVIDER.md`'s "Word highlighting shows ONLY the word"), `'none'`
+   * mode had nothing left that ever called `setSpokenRange` with a real cfi — and auto-follow is
+   * triggered from INSIDE that command's own handler, so speech kept advancing with nothing
+   * telling the view to keep pace, in both paginated and scrolled-doc flow alike.
+   *
+   * WIDENED LATER THE SAME DAY from a bare `cfi: string | null` to this `SpokenWordRange`-shaped
+   * payload — a second, more serious bug: `'sentence'`/`'none'` modes were still only checking
+   * auto-follow ONCE per sentence, with the WHOLE sentence's geometry. For a sentence straddling a
+   * page break in PAGINATED flow, the sentence's own beginning stays "visible" for the check's
+   * entire duration, so the page never turned until the NEXT sentence started — the reader heard
+   * the tail spoken over a page that never moved. `'word'` mode never had this problem because
+   * `setSpokenWordRange` re-resolves a precise sub-range on every `tts-progress` tick; this command
+   * now does the same resolution (via the WebView's own `resolveSpokenWordCfi`, in
+   * `epubTtsResolver.ts`), purely for tracking, never for paint. See `TTS_PROVIDER.md`'s
+   * "'sentence'/'none' modes' own auto-follow gap" for the full account.
+   *
+   * Fire-and-forget, same contract as `setSpokenRange`: best-effort, never a reply, never a reason
+   * to interrupt speech if it fails. `null` clears the tracked position (mirrors `setSpokenRange`'s
+   * own clear, though there is nothing painted to remove).
+   */
+  | { type: 'followSpokenPosition'; range: SpokenWordRange | null }
   /**
    * Paint or clear the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
    * is showing. `null` clears it. Fire-and-forget, on the same contract as its sibling.
@@ -968,28 +994,33 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : command.type === 'setSpokenWordRange'
-                ? // The whole nullable object, in the same uniform chain as everything above —
-                  // which is the point of the shape. `cfi` is minted from the book's own text and
-                  // the two offsets are numbers reported by the platform TTS engine, so this is
-                  // the payload rule 1 is about, quoted rather than pasted.
+              : command.type === 'followSpokenPosition'
+                ? // Same shape and same safety argument as setSpokenWordRange below — the whole
+                  // nullable object, `cfi` minted from the book's own text, quoted rather than
+                  // pasted.
                   JSON.stringify(command.range)
-                : command.type === 'paintHighlights'
-                  ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
-                    // two locator fields explicitly into a flat per-shell shape, so this is exactly as
-                    // safe as `applyAppearance` above. The COLOUR is the one field that came from
-                    // storage rather than from a locator, and JSON.stringify escapes it like any other
-                    // string; nothing here is pasted into the script unquoted.
-                    JSON.stringify(command.highlights)
-                  : command.type === 'paintSearchMatch'
-                    ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
-                      // book's text, so this is the payload rule 1 above is actually about — both are
-                      // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
-                      JSON.stringify(command.match)
-                    : command.type === 'setTtsSpeaking'
-                      ? // A plain boolean, same as any other primitive payload in this chain.
-                        JSON.stringify(command.speaking)
-                      : '';
+                : command.type === 'setSpokenWordRange'
+                  ? // The whole nullable object, in the same uniform chain as everything above —
+                    // which is the point of the shape. `cfi` is minted from the book's own text and
+                    // the two offsets are numbers reported by the platform TTS engine, so this is
+                    // the payload rule 1 is about, quoted rather than pasted.
+                    JSON.stringify(command.range)
+                  : command.type === 'paintHighlights'
+                    ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                      // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                      // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                      // storage rather than from a locator, and JSON.stringify escapes it like any other
+                      // string; nothing here is pasted into the script unquoted.
+                      JSON.stringify(command.highlights)
+                    : command.type === 'paintSearchMatch'
+                      ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                        // book's text, so this is the payload rule 1 above is actually about — both are
+                        // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                        JSON.stringify(command.match)
+                      : command.type === 'setTtsSpeaking'
+                        ? // A plain boolean, same as any other primitive payload in this chain.
+                          JSON.stringify(command.speaking)
+                        : '';
 
   return `(function(){
     try {

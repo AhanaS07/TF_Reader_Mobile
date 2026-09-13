@@ -927,7 +927,10 @@ ${text}`;
     for (const surface of pageSurfaces.values()) {
       outcomes.push(paintSearchPage(surface, searchMatch, stroke));
     }
-    return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+    return aggregateSearchOutcome(
+      outcomes,
+      searchMatch === null || pageSurfaces.has(searchMatch.page)
+    );
   }
   var reportedSearchPainted = null;
   function reportSearchPaint(outcome) {
@@ -1511,6 +1514,11 @@ ${text}`;
      * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
      * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
     setSpokenRange: () => {
+    },
+    /** Documented no-op for the same reason as `setSpokenRange` directly above — TTS never mounts for
+     * a PDF book, so nothing ever asks this shell to auto-follow a spoken position either, painted or
+     * not. */
+    followSpokenPosition: () => {
     },
     /** Documented no-op for the same reason as `setSpokenRange` directly above, one step further out:
      * this shell never receives a sentence to refine, because Reader never constructs a

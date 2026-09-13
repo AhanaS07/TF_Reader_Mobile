@@ -241,7 +241,9 @@ describe('the line grid — why a line cannot be sliced by a page edge', () => {
   it('keeps the focus ring out of the layout, so it cannot move a glyph', () => {
     // `outline` does not participate in layout; a border or padding would, and would push text off
     // the line grid. This is why the rule is not classified as geometry in epubLayoutSignature.ts.
-    const rule = /:focus-visible \{[^}]*\}/.exec(baselineCss(readerMetrics(393, 700), { link: '#1a4f8b' }));
+    const rule = /:focus-visible \{[^}]*\}/.exec(
+      baselineCss(readerMetrics(393, 700), { link: '#1a4f8b' }),
+    );
     expect(rule).not.toBeNull();
     expect(rule?.[0]).not.toMatch(/border|padding|margin|line-height/);
     // Spacing comes from outline-offset, the one property that gives room without taking any.
@@ -434,10 +436,12 @@ describe('prefs-driven typography clamps the viewport FACTOR, not the product', 
     // The absolute guard is a pathological-value backstop, not a design bound — it must not fire for
     // any legitimate accessibility size, but a corrupt stored value (or a defect upstream) must not
     // reach the line-grid arithmetic unchecked either.
-    expect(readerMetrics(393, 700, { fontSizePt: 100_000, lineHeight: 1.5, marginPx: 16 }).fontPx)
-      .toBeLessThan(1000);
-    expect(readerMetrics(393, 700, { fontSizePt: -50, lineHeight: 1.5, marginPx: 16 }).fontPx)
-      .toBeGreaterThan(0);
+    expect(
+      readerMetrics(393, 700, { fontSizePt: 100_000, lineHeight: 1.5, marginPx: 16 }).fontPx,
+    ).toBeLessThan(1000);
+    expect(
+      readerMetrics(393, 700, { fontSizePt: -50, lineHeight: 1.5, marginPx: 16 }).fontPx,
+    ).toBeGreaterThan(0);
   });
 
   it('never lets an adversarial marginPx drive padBottom negative', () => {
@@ -484,7 +488,10 @@ describe('baselineCss carries the prefs-application theme/typography overrides',
   });
 
   it('injects an @font-face, declared under the bare fontFamily, when both are given', () => {
-    const css = baselineCss(m, { fontFamily: 'Inter', fontFaceDataUri: 'data:font/ttf;base64,AAA=' });
+    const css = baselineCss(m, {
+      fontFamily: 'Inter',
+      fontFaceDataUri: 'data:font/ttf;base64,AAA=',
+    });
     expect(css).toMatch(/@font-face \{/);
     expect(css).toMatch(/font-family: Inter;/);
     expect(css).toMatch(/src: url\("data:font\/ttf;base64,AAA="\);/);
@@ -495,7 +502,9 @@ describe('baselineCss carries the prefs-application theme/typography overrides',
 
   it('emits no @font-face when either half is missing', () => {
     expect(baselineCss(m, { fontFamily: 'Inter' })).not.toMatch(/@font-face/);
-    expect(baselineCss(m, { fontFaceDataUri: 'data:font/ttf;base64,AAA=' })).not.toMatch(/@font-face/);
+    expect(baselineCss(m, { fontFaceDataUri: 'data:font/ttf;base64,AAA=' })).not.toMatch(
+      /@font-face/,
+    );
     expect(baselineCss(m)).not.toMatch(/@font-face/);
   });
 });
@@ -618,23 +627,30 @@ describe('each shell carries the DOM its entry queries', () => {
   it.each(SHELLS)('%s defines the fallback element and its .visible class', (name, source) => {
     const required = [/<pre id="fallback"><\/pre>/, /#fallback\s*\{/, /#fallback\.visible\s*\{/];
 
-    expect(required.filter((re) => !re.test(source())).map((re) => `${name} lacks ${String(re)}`))
-      .toEqual([]);
+    expect(
+      required.filter((re) => !re.test(source())).map((re) => `${name} lacks ${String(re)}`),
+    ).toEqual([]);
   });
 
-  it.each(SHELLS)('%s defines the container its renderer draws into', (_name, source, container) => {
-    expect(source()).toMatch(container);
-  });
+  it.each(SHELLS)(
+    '%s defines the container its renderer draws into',
+    (_name, source, container) => {
+      expect(source()).toMatch(container);
+    },
+  );
 
-  it.each(SHELLS)('%s carries the entry marker and no inline script of its own', (_name, source) => {
-    // The behaviour lives in a compiled entry now. An inline <script> here would be a second,
-    // untypechecked half of the bridge growing back.
-    expect(source()).toMatch(/<!-- @inject:entry -->/);
-    expect(source()).not.toMatch(/<script>\s*\n\s*\(function/);
-  });
+  it.each(SHELLS)(
+    '%s carries the entry marker and no inline script of its own',
+    (_name, source) => {
+      // The behaviour lives in a compiled entry now. An inline <script> here would be a second,
+      // untypechecked half of the bridge growing back.
+      expect(source()).toMatch(/<!-- @inject:entry -->/);
+      expect(source()).not.toMatch(/<script>\s*\n\s*\(function/);
+    },
+  );
 });
 
-describe('the PDF shell carries continuous scroll\'s second surface', () => {
+describe("the PDF shell carries continuous scroll's second surface", () => {
   // pdf.entry.ts toggles which of #pdf-single/#pdf-scroll is visible off applyAppearance's flow —
   // both silently do nothing if their elements go missing, same failure mode the block above guards
   // for the single-page surface.
@@ -661,7 +677,7 @@ describe('the PDF shell carries continuous scroll\'s second surface', () => {
   });
 });
 
-describe('the PDF shell carries double-page spread\'s second canvas', () => {
+describe("the PDF shell carries double-page spread's second canvas", () => {
   // renderCurrent() (pdf.entry.ts) toggles #pdf-canvas-2's display when a spread has two pages —
   // same failure mode as the rest of this file: an element that goes missing here means the second
   // page of a spread silently never appears, with no error to explain why.
@@ -677,7 +693,7 @@ describe('the PDF shell carries double-page spread\'s second canvas', () => {
   });
 });
 
-describe("the PDF shell carries the layers a highlight is selected and painted in", () => {
+describe('the PDF shell carries the layers a highlight is selected and painted in', () => {
   // pdf.entry.ts CREATES these elements at runtime but cannot style them — a .ts file carries no
   // CSS. Both fail silently and differently if their rules go missing: an unstyled text layer is
   // opaque text stacked on top of the page bitmap, and an unstyled highlight layer is a set of
@@ -705,7 +721,9 @@ describe("the PDF shell carries the layers a highlight is selected and painted i
     // `multiply` is what makes a SOLID fill (the user layer's channel in HIGHLIGHT_LAYERS.md §3)
     // readable: it darkens the rasterised glyphs towards the colour instead of hiding them, the same
     // compositing epub.js's own highlight defaults give the EPUB shell.
-    expect(PDF_TEMPLATE).toMatch(/\.pdf-highlight-layer\s*>\s*div\s*\{[^}]*mix-blend-mode:\s*multiply/);
+    expect(PDF_TEMPLATE).toMatch(
+      /\.pdf-highlight-layer\s*>\s*div\s*\{[^}]*mix-blend-mode:\s*multiply/,
+    );
   });
 
   it('keeps the search outline out of the touch path too', () => {
@@ -732,8 +750,8 @@ describe("the PDF shell carries the layers a highlight is selected and painted i
     // Reversing the two appends would put a user fill over the outline meant to be found on top of
     // it, which no stylesheet rule would reveal.
     const seam = webviewFile('src', 'pdfHighlightSeam.ts');
-    expect(seam.indexOf("root.appendChild(searchLayer)")).toBeGreaterThan(
-      seam.indexOf("root.appendChild(highlightLayer)"),
+    expect(seam.indexOf('root.appendChild(searchLayer)')).toBeGreaterThan(
+      seam.indexOf('root.appendChild(highlightLayer)'),
     );
   });
 });
@@ -853,7 +871,9 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // A new book: a word CFI from the previous one resolves against THIS one's first chapter rather
     // than failing (`EpubCFI.toRange` ignores the spine component), so leaving it set would paint a
     // stale wash over unrelated text at the next repaint.
-    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('currentSpokenWordCfi = null');
+    expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain(
+      'currentSpokenWordCfi = null',
+    );
     // Same hazard for auto-follow's own dedupe: a stale match against the new book's first spoken
     // CFI would wrongly skip a follow it genuinely needs.
     expect(blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>')).toContain('lastAutoFollowedCfi = null');
@@ -903,6 +923,18 @@ describe('re-measuring every painted layer after a re-layout', () => {
     expect(body).toContain('liftOverlappingUserHighlights(spokenContents, cfi)');
     expect(body.indexOf('highlightAdd(')).toBeLessThan(
       body.indexOf('liftOverlappingUserHighlights(spokenContents, cfi)'),
+    );
+  });
+
+  it("a spoken WORD lifts the reader's own overlapping highlight too — word mode has no sentence wash to trigger it any more", () => {
+    // Added 2026-09-13 alongside 'word' mode no longer painting a sentence wash: without this, the
+    // overlap exception above would go silently inert for a whole word-only session, since nothing
+    // ever calls setSpokenRange with a real cfi in that mode. Checked at WORD granularity here,
+    // mirroring the sentence-granularity version above — see HIGHLIGHT_LAYERS.md §4.
+    const body = blockAfter(EPUB_ENTRY, 'setSpokenWordRange: (range) =>');
+    expect(body).toContain('liftOverlappingUserHighlights(wordContents, cfi)');
+    expect(body.indexOf('followSpokenRange(cfi)')).toBeGreaterThan(
+      body.indexOf('liftOverlappingUserHighlights(wordContents, cfi)'),
     );
   });
 
@@ -1041,7 +1073,7 @@ describe('re-measuring every painted layer after a re-layout', () => {
     );
   });
 
-  it('every internal reposition marks its own relocated event, not just auto-follow\'s', () => {
+  it("every internal reposition marks its own relocated event, not just auto-follow's", () => {
     // A real, shipped bug: ReaderScreen.tsx's relocated handler used to treat every relocation as
     // "the reader navigated away" and told the TTS session so — which wiped its prefetched next
     // sentence and cleared the very highlight auto-follow had just centered on screen. ALL FOUR
@@ -1168,11 +1200,15 @@ describe('re-measuring every painted layer after a re-layout', () => {
     // longer exists.
     const body = blockAfter(EPUB_ENTRY, 'requestTtsSentence: ({ requestId, from, mode }) =>');
     expect(body).toContain('const myRenditionGeneration = renditionInstanceGeneration;');
-    const occurrences = body.split('renditionInstanceGeneration !== myRenditionGeneration').length - 1;
+    const occurrences =
+      body.split('renditionInstanceGeneration !== myRenditionGeneration').length - 1;
     expect(occurrences).toBe(2); // once after the await, once in the catch
     expect(
-      (body.match(/renditionInstanceGeneration !== myRenditionGeneration\)[\s\S]*?'unavailable'/g) ?? [])
-        .length,
+      (
+        body.match(
+          /renditionInstanceGeneration !== myRenditionGeneration\)[\s\S]*?'unavailable'/g,
+        ) ?? []
+      ).length,
     ).toBe(2);
   });
 
@@ -1259,7 +1295,7 @@ describe('manual scroll/page-turn is gated while TTS speaks', () => {
     // long-press never sees it — pinning the ORDER is what proves selection stays unaffected.
     const body = blockAfter(EPUB_ENTRY, "'touchend',");
     const longPressGuardIndex = body.indexOf('if (!origin || !touch || longPressFired) return;');
-    const selectionGuardIndex = body.indexOf("if (!view.getSelection()?.isCollapsed) return;");
+    const selectionGuardIndex = body.indexOf('if (!view.getSelection()?.isCollapsed) return;');
     const ttsGuardIndex = body.indexOf('if (ttsSpeaking) return;');
     expect(longPressGuardIndex).toBeGreaterThan(-1);
     expect(selectionGuardIndex).toBeGreaterThan(longPressGuardIndex);
@@ -1322,6 +1358,124 @@ describe('the search outline is lifted exactly once per batch', () => {
     // skip is worth having — the command is re-sent on every change to the host's highlight state,
     // and a repaint that changed nothing must not detach a live mark.
     const body = blockAfter(EPUB_ENTRY, 'paintHighlights: (highlights) =>');
-    expect(body).toContain('if (applyUserHighlights(mine)) liftSearchMatch();');
+    expect(body).toContain('if (applyUserHighlights(mine)) {');
+    expect(body).toContain('liftSearchMatch();');
+  });
+});
+
+describe('the spoken layers are lifted back on top, fixing HIGHLIGHT_LAYERS.md §4', () => {
+  // `rebuildForFlowIfNeeded` and `paintHighlights` used to end with `liftSearchMatch()` (or a fresh
+  // user highlight) left above both `tts` layers — a recorded, deferred §4 deviation. This pins the
+  // fix: `liftSpokenLayers()` at exactly those two sites, always AFTER `liftSearchMatch()` there, and
+  // deliberately absent from `repaintLiveAnnotations`, which was already correct on its own (it
+  // re-adds both spoken layers right after its own `liftSearchMatch()` call) and would only pay for a
+  // redundant re-measure if this were added there too.
+
+  it('lifts from exactly the two batch boundaries that needed it', () => {
+    const stripped = EPUB_ENTRY.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    // The definition plus two calls.
+    expect(stripped.match(/liftSpokenLayers\(/g)).toHaveLength(3);
+
+    for (const [name, marker] of [
+      ['the paint command', 'paintHighlights: (highlights) =>'],
+      ['the flow rebuild', 'function rebuildForFlowIfNeeded('],
+    ] as const) {
+      const body = blockAfter(EPUB_ENTRY, marker);
+      expect([name, body.includes('liftSpokenLayers(')]).toEqual([name, true]);
+      // Ordering matters: §4 puts `tts` above `search`, so the spoken lift must come after the
+      // search lift at each shared site, not before it.
+      expect([name, body.indexOf('liftSpokenLayers(') > body.indexOf('liftSearchMatch(')]).toEqual([
+        name,
+        true,
+      ]);
+    }
+  });
+
+  it('is absent from the live re-measure, which was already correct', () => {
+    const body = blockAfter(EPUB_ENTRY, 'function repaintLiveAnnotations()');
+    expect(body).not.toContain('liftSpokenLayers(');
+  });
+
+  it('assumes neither layer, since word mode paints only the word and never the sentence', () => {
+    // Added 2026-09-13: this used to guard its ENTIRE body on `currentSpokenCfi === null`, which
+    // made it a permanent no-op for a whole word-only session (currentSpokenCfi never becomes
+    // non-null there). The sentence branch must be its own, narrower guard, and repaintSpokenWord()
+    // (self-guarding on currentSpokenWordCfi) must run unconditionally rather than nested behind it.
+    const body = blockAfter(EPUB_ENTRY, 'function liftSpokenLayers(): void');
+    expect(body).not.toMatch(/if \(!rendition \|\| currentSpokenCfi === null\)/);
+    const ifIndex = body.indexOf('if (currentSpokenCfi !== null) {');
+    expect(ifIndex).toBeGreaterThan(-1);
+    // The if-block has no braces of its own inside it, so the first `}` after it opens is exactly
+    // its closing brace — repaintSpokenWord() must appear AFTER that, not nested before it.
+    const ifCloseIndex = body.indexOf('}', ifIndex);
+    const repaintIndex = body.indexOf('repaintSpokenWord();');
+    expect(repaintIndex).toBeGreaterThan(ifCloseIndex);
+  });
+});
+
+describe("followSpokenPosition — 'sentence'/'none' highlight modes' own auto-follow", () => {
+  // 'none' mode stopped calling setSpokenRange with a real cfi (see the describe block above), which
+  // left it with nothing that ever triggered auto-follow — TTS kept speaking with nothing telling
+  // either flow to keep pace. This command exists to track and follow a position WITHOUT painting
+  // anything for it, so 'none' mode gets the same auto-follow every other mode has.
+  //
+  // WIDENED THE SAME DAY from a bare cfi to a resolved SpokenWordRange, called per tick for BOTH
+  // 'sentence' and 'none' modes now — a once-per-sentence, whole-sentence check was not enough: in
+  // paginated flow, a sentence straddling a page break kept its beginning "visible" for the whole
+  // sentence's duration, so the page never turned until the NEXT sentence started. Resolving a
+  // precise sub-range per tick (the same resolution setSpokenWordRange uses for its own paint) is
+  // what fixes that.
+
+  it('resolves before following, and touches nothing a paint would', () => {
+    const body = blockAfter(EPUB_ENTRY, 'followSpokenPosition: (range) =>');
+    expect(body).toContain('resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end)');
+    expect(body).toContain('currentSpokenFollowCfi = cfi');
+    expect(body).toContain('followSpokenRange(cfi)');
+    // The whole point: nothing here paints. If any of these ever appear, the "no visual" half of
+    // 'sentence'/'none' modes is broken.
+    expect(body).not.toContain('highlightAdd(');
+    expect(body).not.toContain('highlightRemove(');
+    expect(body).not.toContain('clearSpokenWord(');
+    expect(body).not.toContain('liftOverlappingUserHighlights(');
+    expect(body).not.toContain('spokenWordCollides(');
+  });
+
+  it('clears the tracked position and returns early on a null argument, before ever resolving anything', () => {
+    const body = blockAfter(EPUB_ENTRY, 'followSpokenPosition: (range) =>');
+    const nullBranchIndex = body.indexOf('if (range === null) {');
+    expect(nullBranchIndex).toBeGreaterThan(-1);
+    const nullBranchClose = body.indexOf('}', nullBranchIndex);
+    const returnIndex = body.indexOf('return;', nullBranchIndex);
+    // The null branch must itself contain the early return, not just precede the resolve call —
+    // otherwise this would pass even if the return were accidentally deleted.
+    expect(returnIndex).toBeGreaterThan(-1);
+    expect(returnIndex).toBeLessThan(nullBranchClose);
+    expect(body.indexOf('resolveSpokenWordCfi(')).toBeGreaterThan(nullBranchClose);
+  });
+
+  it('is the fallback of last resort in both reflow/rebuild auto-follow re-checks, behind a real paint', () => {
+    // A real paint (sentence or word) is always more precise than the tracked-but-unpainted
+    // position, so it must come first in the chain, not override it.
+    for (const [name, marker] of [
+      ['the geometry reanchor', 'function scheduleGeometryRefresh('],
+      ['the flow rebuild', 'function rebuildForFlowIfNeeded('],
+    ] as const) {
+      const body = blockAfter(EPUB_ENTRY, marker);
+      expect([name, body]).toEqual([
+        name,
+        expect.stringContaining(
+          'currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi',
+        ),
+      ]);
+    }
+  });
+
+  it('resets on a fresh book, same as the paint-side spoken CFIs do', () => {
+    const body = blockAfter(EPUB_ENTRY, 'openEpub: (base64) =>');
+    expect(body).toContain('currentSpokenFollowCfi = null');
+  });
+
+  it('is a documented no-op in the PDF shell, same as its painting sibling', () => {
+    expect(PDF_ENTRY).toContain('followSpokenPosition: () => {}');
   });
 });

@@ -301,24 +301,37 @@ export function AccessibilitySettingsPanel({
         </Pressable>
       </View>
 
-      <Text style={styles.sectionLabel}>TTS Highlight</Text>
-      <View style={styles.chipRow} testID="tts-highlight-mode-row">
-        {HIGHLIGHT_MODE_OPTIONS.map(({ value, label }) => {
-          const selected = prefs.tts.highlightMode === value;
-          return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`TTS highlight: ${label}`}
-              accessibilityState={{ selected }}
-              key={value}
-              onPress={() => setHighlightMode(value)}
-              style={[styles.chip, selected && styles.chipSelected]}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
+      {/* A control with nothing to control when TTS is off — same reasoning DevPreferencesMenu.tsx
+          already applies to Zoom (hidden for EPUB) and Typography (hidden for PDF). Gated on
+          `prefs.tts.enabled` rather than format, mirroring `showDyslexiaFont`'s fragment shape
+          above. The divider below stays UNCONDITIONAL, unlike Dyslexia Font's own conditional one:
+          that one exists only because Dyslexia Font can be the panel's first section; TTS
+          Highlight never is (Text-to-Speech always precedes it), so there is no equivalent
+          divider-collision case to guard against here. */}
+      {prefs.tts.enabled && (
+        <>
+          <Text style={styles.sectionLabel}>TTS Highlight</Text>
+          <View style={styles.chipRow} testID="tts-highlight-mode-row">
+            {HIGHLIGHT_MODE_OPTIONS.map(({ value, label }) => {
+              const selected = prefs.tts.highlightMode === value;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`TTS highlight: ${label}`}
+                  accessibilityState={{ selected }}
+                  key={value}
+                  onPress={() => setHighlightMode(value)}
+                  style={[styles.chip, selected && styles.chipSelected]}
+                >
+                  <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
 
       <View style={styles.divider} />
       {/* THE TWO NAVIGATION-ANNOUNCEMENT GATES. Without a control they are unreachable on a
@@ -327,7 +340,7 @@ export function AccessibilitySettingsPanel({
           below this section: `AccessibilityInfoButton`, the next thing rendered after this panel
           (in ReaderScreen.tsx), already supplies its own leading hairline. */}
       <Text style={styles.sectionLabel}>Announcements</Text>
-      <View style={styles.chipRow} testID="announce-row">
+      <View style={[styles.chipRow, styles.lastChipRow]} testID="announce-row">
         {ANNOUNCE_OPTIONS.map(({ label, field }) => {
           const on = prefs.announce[field];
           return (
@@ -393,6 +406,19 @@ const styles = StyleSheet.create({
     marginTop: 4,
     textAlign: 'center',
   },
+  // `flexWrap: 'wrap'` here is correct, not the bug it would be on a full-width DOCKED strip like
+  // TtsControls.tsx's own chipRow. This panel is mounted inside `ReaderScreen.tsx`'s
+  // `accessibilityDropdown` — an `alignSelf: 'flex-start'`, content-sized anchored dropdown (same
+  // shape as `DevPreferencesMenu.tsx`'s own dropdown, including that file's own comment on why:
+  // iOS shrink-wraps that style, Android stretches it edge-to-edge). A shrink-wrap parent has no
+  // definite width for a `flex: 1` child to divide — Android's stretched-to-fill width made
+  // `flex: 1` chips balloon to fill it evenly (the "much too large" symptom), while iOS's
+  // shrink-wrap resolution against zero-basis flex children left too little width for the text,
+  // wrapping it inside the chip. `DevPreferencesMenu.tsx`'s own toggle rows use this identical
+  // wrap + content-sized-button shape in the identical container type, and it is not a bug there.
+  // Wrapping to a second line only happens if the anchored dropdown's computed `maxWidth` is
+  // narrower than these chips' combined natural width — the correct behaviour for a shrink-wrap
+  // menu, the same way `DevPreferencesMenu.tsx`'s own rows wrap under the same condition.
   chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'center' },
   chip: {
     paddingHorizontal: 10,
@@ -403,4 +429,12 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: '#111111' },
   chipText: { fontSize: 13, color: '#111111', fontWeight: '600' },
   chipTextSelected: { color: '#ffffff' },
+  // Announcements is always the LAST section (no divider or section follows it — see that
+  // section's own comment on why). Every other section's trailing gap comes from the NEXT
+  // section's `sectionLabel.marginTop`/`divider.marginTop`; the last one has nothing following it
+  // to produce that, so without this it fell back to only `container`'s own `paddingVertical` —
+  // the same "last row has no trailing margin of its own" bug already found and fixed in
+  // TtsControls.tsx's Pitch row. Kept separate from `chipRow` itself so it doesn't change the gap
+  // ABOVE this row (already correctly sized by this section's own `sectionLabel.marginTop`).
+  lastChipRow: { marginBottom: 6 },
 });

@@ -35,12 +35,7 @@ import {
 } from './bridge';
 import { pdfHighlights } from './highlightPaint';
 import { matchStroke, selectionBackground } from './selectionTheme';
-import {
-  LONG_PRESS_MS,
-  movedBeyondSlop,
-  swipeDirection,
-  type TouchPoint,
-} from './touchGesture';
+import { LONG_PRESS_MS, movedBeyondSlop, swipeDirection, type TouchPoint } from './touchGesture';
 import {
   clearTextLayer,
   ensureSurface,
@@ -295,7 +290,10 @@ function repaintSearchMatch(): SearchPaintOutcome {
   }
   // The aggregation is next door and unit-tested, because the case it exists for is invisible from
   // here: "no surface holds the match's page" has to read as `pending`, not as a failure.
-  return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+  return aggregateSearchOutcome(
+    outcomes,
+    searchMatch === null || pageSurfaces.has(searchMatch.page),
+  );
 }
 
 /**
@@ -807,7 +805,8 @@ async function renderCurrent(pageNumber: number): Promise<void> {
     { root: 'pdf-page-2', canvas: 'pdf-canvas-2' },
   ] as const;
   const renders: Promise<void>[] = [];
-  const surfaceWork: { page: number; proxy: (typeof pageProxies)[number]; root: HTMLElement }[] = [];
+  const surfaceWork: { page: number; proxy: (typeof pageProxies)[number]; root: HTMLElement }[] =
+    [];
 
   for (let i = 0; i < spreadSlots.length; i++) {
     const root = document.getElementById(spreadSlots[i].root);
@@ -1286,6 +1285,11 @@ const api: TFReaderApi<'openPdf'> = {
    * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
    * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
   setSpokenRange: () => {},
+
+  /** Documented no-op for the same reason as `setSpokenRange` directly above — TTS never mounts for
+   * a PDF book, so nothing ever asks this shell to auto-follow a spoken position either, painted or
+   * not. */
+  followSpokenPosition: () => {},
 
   /** Documented no-op for the same reason as `setSpokenRange` directly above, one step further out:
    * this shell never receives a sentence to refine, because Reader never constructs a
