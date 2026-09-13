@@ -1158,6 +1158,7 @@ ${text}`;
   var lastCfi = null;
   var currentSpokenCfi = null;
   var currentSpokenWordCfi = null;
+  var currentSpokenFollowCfi = null;
   var lastAutoFollowedCfi = null;
   var followCooldownUntil = 0;
   var renditionTransitionGeneration = 0;
@@ -1399,7 +1400,13 @@ ${columnOverrideCss()}` : currentCss;
     const highlight = lastUserHighlights.find((entry) => entry.id === id);
     if (!highlight) return;
     remove(rendition, USER_OWNER, cfiRange);
-    add(rendition, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+    add(
+      rendition,
+      USER_OWNER,
+      cfiRange,
+      USER_SAVED_VARIANT,
+      userHighlightStyles(highlight.color)
+    );
   }
   function liftOverlappingUserHighlights(contents, spokenCfi) {
     for (const id of userHighlightIdsOverlapping(contents, spokenCfi)) {
@@ -1585,7 +1592,7 @@ ${columnOverrideCss()}` : currentCss;
         repaintLiveAnnotations();
         invalidateHighlightBoxes();
         if (transitionId !== void 0) endRenditionTransition(transitionId);
-        const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+        const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
         if (spokenTarget !== null) {
           lastAutoFollowedCfi = null;
           followSpokenRange(spokenTarget);
@@ -1760,7 +1767,7 @@ ${columnOverrideCss()}` : currentCss;
         if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
       }
       endRenditionTransition(transitionId);
-      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
       if (spokenTarget !== null) {
         lastAutoFollowedCfi = null;
         followSpokenRange(spokenTarget);
@@ -1877,6 +1884,7 @@ ${columnOverrideCss()}` : currentCss;
           resetTtsState();
           currentSpokenCfi = null;
           currentSpokenWordCfi = null;
+          currentSpokenFollowCfi = null;
           lastAutoFollowedCfi = null;
           followCooldownUntil = 0;
           renditionTransitionGeneration = 0;
@@ -2131,6 +2139,43 @@ ${columnOverrideCss()}` : currentCss;
         } else {
           lastAutoFollowedCfi = null;
         }
+      } catch {
+      }
+    },
+    /**
+     * Track a resolved sub-range for auto-follow WITHOUT painting anything for it —
+     * `'sentence'`/`'none'` TTS highlight modes' own case. See `ReaderCommand`'s own note for why
+     * this exists as a sibling to `setSpokenRange`/`setSpokenWordRange` rather than a flag on either.
+     *
+     * Added 2026-09-14 as a bare `cfi: string | null`, called once per sentence for `'none'` mode
+     * only. WIDENED THE SAME DAY to this shape, resolved via `resolveSpokenWordCfi` — the identical
+     * call `setSpokenWordRange` makes for its own paint — because a once-per-sentence, whole-sentence
+     * check was not enough: in paginated flow, a sentence straddling a page break kept its beginning
+     * "visible" for the check's entire duration, so the page never turned until the NEXT sentence
+     * started. `useTtsSession.ts` now calls this on every `tts-progress` tick for `'sentence'`/
+     * `'none'` modes, the same cadence `'word'` mode's own paint already gets.
+     *
+     * DELIBERATELY MINIMAL OTHERWISE: no `clearSpokenWord()`, no `highlightAdd`/`highlightRemove`, no
+     * `liftOverlappingUserHighlights`, no `spokenWordCollides` check — there is nothing painted here
+     * for any of those to apply to. Only `currentSpokenFollowCfi` (this command's own state, kept out
+     * of `currentSpokenCfi` for the reason that variable's own doc gives) and the shared
+     * `followSpokenRange` call, fed the RESOLVED position rather than the whole-sentence cfi.
+     *
+     * A resolution failure (paged away mid-utterance, section not rendered, or the sub-range
+     * happens to equal the whole sentence — see `resolveSpokenWordCfi`'s own bail) clears the tracked
+     * position rather than leaving a stale one: a follow target from speech that has moved on is as
+     * much a lie here as a stale word paint would be.
+     */
+    followSpokenPosition: (range) => {
+      try {
+        if (!rendition) return;
+        if (range === null) {
+          currentSpokenFollowCfi = null;
+          return;
+        }
+        const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
+        currentSpokenFollowCfi = cfi;
+        if (cfi !== null) followSpokenRange(cfi);
       } catch {
       }
     },

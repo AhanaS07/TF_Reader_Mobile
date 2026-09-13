@@ -129,6 +129,15 @@ export function createEpubReaderTextProvider(
     send({ type: 'setSpokenRange', cfi });
   }
 
+  function followSpokenPosition(range: SpokenWordRange | null): void {
+    // Same contract, same guard, same shape as `setSpokenWordRange` below — widened from a bare
+    // cfi the same day it was added, once per-tick resolution turned out to be what paginated
+    // flow's page-turn timing needed. Nothing is validated here for the same reason that
+    // function's own comment gives.
+    if (terminated) return;
+    send({ type: 'followSpokenPosition', range });
+  }
+
   function setSpokenWordRange(range: SpokenWordRange | null): void {
     // Same contract, same guard, same reasons as `setSpokenRange` above. Nothing is validated here
     // — not the CFI, not the offsets: whether they resolve is a question only the live document can
@@ -142,6 +151,7 @@ export function createEpubReaderTextProvider(
     current: (from, signal) => request(from, 'current', signal),
     next: (after, signal) => request(after, 'next', signal),
     setSpokenRange,
+    followSpokenPosition,
     setSpokenWordRange,
 
     onInterrupted(handler) {

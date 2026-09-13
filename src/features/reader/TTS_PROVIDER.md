@@ -238,9 +238,48 @@ entire word-only session** (only `currentSpokenWordCfi` is real):
    only runs when `cfi !== null`. Auto-follow in word-only mode now starts only once the first
    `tts-progress` tick of the new sentence arrives (roughly 200-400ms later, per this doc's own
    "word ticks arrive roughly every 200-400ms" note above) rather than at the exact instant the
-   sentence starts. Accepted as a minor, likely-imperceptible timing gap rather than fixed with a
-   separate "track but don't paint" call — inventing that would reintroduce the same complexity this
-   whole change removes.
+   sentence starts. Accepted as a minor, likely-imperceptible timing gap for `'word'` mode's OWN
+   coarse case — unlike `'sentence'`/`'none'` modes' own once-per-sentence gap (see the section
+   below), this one is bounded to a few hundred ms at the very start of a sentence, never a whole
+   sentence's worth of drift, so it did not need the same fix.
+
+### `'sentence'`/`'none'` modes' own auto-follow gap — found on-device, fixed 2026-09-14 in two steps
+
+**Step one: `'none'` mode's auto-follow went missing entirely.** No auto-follow at all, in EITHER
+flow, for the whole session. Root cause: auto-follow is triggered from *inside* `setSpokenRange`'s
+and `setSpokenWordRange`'s own WebView handlers, not from a separate mechanism that watches speech
+progress on its own. Once `'none'` mode stopped calling either with a real cfi (`setSpokenRange`
+always gets `null`; `setSpokenWordRange` is never called at all outside `'word'` mode), nothing in
+the WebView ever reached the shared `followSpokenRange` function — including its own flow branch
+(paginated's discrete `display()` vs scrolled-doc's teleprompter reposition), which lives one level
+deeper inside it. Speech kept advancing; the view just never moved. Fixed with a new bridge command,
+`followSpokenPosition`, called once per sentence for `'none'` mode — the same coarse cadence
+`'sentence'` mode's own `setSpokenRange` call gets.
+
+**Step two, later the same day: the once-per-sentence call was not enough, for `'sentence'` mode
+too.** A sentence-level check has the SAME shape of gap item 3 above names for `'word'` mode's
+coarse case, except much worse: in PAGINATED flow, `spokenRangeVisible`'s "any rect visible" test
+means a sentence straddling a page break keeps its BEGINNING "visible" for the check's ENTIRE
+duration once it is only checked at sentence start — so the page never turned until the NEXT
+sentence began, and the reader heard the tail spoken over a page that never moved. `'sentence'`
+mode had this exact defect too (its own `setSpokenRange`-driven coarse follow has the identical
+once-at-the-start limitation); `'word'` mode never did, because `setSpokenWordRange` already
+re-resolves a precise sub-range on every tick.
+
+Fixed by widening `followSpokenPosition` from a bare `cfi: string | null` to the same
+`SpokenWordRange`-shaped payload `setSpokenWordRange` uses (`{cfi, start, end} | null`), resolved
+the same way (`resolveSpokenWordCfi`, in `epub.entry.ts`'s handler) but never painted. `useTtsSession.ts`'s
+`handleTtsProgress` now forwards EVERY `tts-progress` tick to `followSpokenPosition` for both
+`'sentence'` and `'none'` modes (previously it did nothing at all for either) — the same per-tick
+precision `'word'` mode's paint has always had. `applySentenceWash`'s job shrank to a single
+unconditional `followSpokenPosition(null)` at each sentence boundary, clearing whatever the
+PREVIOUS sentence's last tick resolved, for every mode uniformly; `'sentence'` mode still gets its
+own coarse follow for free from `setSpokenRange`'s paint, and `'none'` mode falls back to the same
+~200-400ms until-first-tick gap `'word'` mode's own coarse case already has (item 3, above) — bounded
+and accepted, unlike the whole-sentence-duration miss this fixes.
+
+See `WEBVIEW_BRIDGE.md`'s "Auto-follow without a paint" for the wire-level account, including why
+`currentSpokenFollowCfi` had to be a variable of its own rather than reusing `currentSpokenCfi`.
 
 **Step 6, Accessibility's half: done, 2026-08-26.** `TtsReadingScreen.tsx` (the standalone "TTS
 Demo" screen, with no `bookId`/`send` of its own) is retired now that `ReaderScreen` has a real mount

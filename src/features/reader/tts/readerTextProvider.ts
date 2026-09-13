@@ -254,6 +254,35 @@ export interface ReaderTextProvider {
   setSpokenRange(cfi: string | null): void;
 
   /**
+   * Keep a position on screen — scroll or turn the page to follow it, in whichever flow the reader
+   * has open — WITHOUT painting any highlight for it. `null` stops tracking.
+   *
+   * FOR `'sentence'`/`'none'` HIGHLIGHT MODES. Added 2026-09-14 for `'none'` mode alone, as a bare
+   * `cfi: string | null` called once per sentence: once `'word'`/`'none'` stopped calling
+   * `setSpokenRange` with a real cfi (see that method's own callers in `useTtsSession.ts`), auto-
+   * follow — triggered from inside `setSpokenRange`'s and `setSpokenWordRange`'s WebView handlers —
+   * had nothing left to trigger it in `'none'` mode at all, in EITHER flow.
+   *
+   * WIDENED THE SAME DAY to this `SpokenWordRange`-shaped payload, called on EVERY `tts-progress`
+   * tick for BOTH `'sentence'` and `'none'` modes — a once-per-sentence call, even a real one, was
+   * not enough. In PAGINATED flow specifically, a sentence straddling a page break kept its
+   * beginning "visible" for the WHOLE sentence's duration once checked only at sentence start, so
+   * the page never turned until the NEXT sentence began. The caller resolves the SAME precise
+   * sub-range `'word'` mode already paints (`{cfi, start, end}` indexing the spoken sentence's
+   * text) and hands it here instead of to `setSpokenWordRange` — same resolution, no paint. See
+   * `TTS_PROVIDER.md`'s "'sentence'/'none' modes' own auto-follow gap" for the full account,
+   * including why this needed to become the SAME payload shape `setSpokenWordRange` uses rather
+   * than growing a second field.
+   *
+   * `'word'` mode does not call this at all: `setSpokenWordRange`'s own handler already triggers
+   * the same underlying follow on every resolved tick, as a side effect of painting.
+   *
+   * Fire-and-forget and best-effort, exactly like `setSpokenRange`: it never throws and never
+   * reports failure, so nothing here can interrupt speech.
+   */
+  followSpokenPosition(range: SpokenWordRange | null): void;
+
+  /**
    * Paint or move the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
    * is currently resolving/speaking from. `null` clears it.
    *

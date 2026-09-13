@@ -148,6 +148,7 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `followSpokenPosition` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenWordRange` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
 | `requestCurrentSelection` | — | **yes** (`selection`) | both |
@@ -227,6 +228,51 @@ explains why the mark is round the page rather than the word.
 
 **Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
 the host retract a notice it has already dropped.
+
+### Auto-follow without a paint — `followSpokenPosition`
+
+Added 2026-09-14, one day after `'word'` mode stopped painting a sentence wash, once that gap
+surfaced on-device — then WIDENED later the same day, for a second, more serious gap. Defined on
+both entries, same as `setSpokenRange`/`setSpokenWordRange`, but it paints NOTHING.
+
+**Why it exists at all:** `'none'` TTS highlight mode broke auto-follow entirely, in BOTH paginated
+and scrolled-doc flow, once it stopped calling `setSpokenRange` with a real cfi: auto-follow is
+triggered from *inside* `setSpokenRange`'s and `setSpokenWordRange`'s own WebView handlers, and
+`'none'` mode called neither with anything to follow. The flow branch itself (paginated's discrete
+`display()` vs scrolled-doc's teleprompter reposition) lives one level deeper, inside the shared
+`followSpokenRange` function — this command gives `'none'` mode a way to reach it.
+
+**Why it was widened from a bare `cfi: string | null` to the SAME `SpokenWordRange` shape
+`setSpokenWordRange` uses:** a once-per-sentence call, even a real one, was not enough. In PAGINATED
+flow specifically, `spokenRangeVisible`'s "any rect visible" test means a sentence straddling a page
+break keeps its BEGINNING "visible" for the check's ENTIRE duration once checked only at sentence
+start — the page never turned until the NEXT sentence began, cutting the reader off from everything
+spoken over the tail. `'sentence'` mode had the identical defect (its own coarse, once-per-sentence
+follow from `setSpokenRange`'s paint has the same limitation); only `'word'` mode was ever immune,
+because `setSpokenWordRange` already re-resolves a precise sub-range on every tick. The fix: this
+command's handler now resolves via `resolveSpokenWordCfi` — the SAME resolution `setSpokenWordRange`
+makes for its own paint — before calling `followSpokenRange`, and `useTtsSession.ts`'s
+`handleTtsProgress` forwards EVERY `tts-progress` tick to it for both `'sentence'` and `'none'`
+modes now (previously neither got any ticks forwarded here at all).
+
+`'word'` mode still does not need this: `setSpokenWordRange` already triggers the same
+`followSpokenRange` call, as a side effect of its own paint. `useTtsSession.ts`'s
+`applySentenceWash` no longer sends a coarse cfi at sentence start at all — it calls
+`followSpokenPosition(null)` unconditionally, for every mode, purely to clear whatever the PREVIOUS
+sentence's last tick resolved before the new one's own first tick arrives. `'sentence'` mode still
+gets an effective coarse follow for free (from `setSpokenRange`'s own `followSpokenRange` call at
+paint time); `'none'` mode relies on its first tick, the same small until-first-tick gap `'word'`
+mode's own coarse case has always had.
+
+**Kept in a variable separate from `currentSpokenCfi`** (`epub.entry.ts`'s `currentSpokenFollowCfi`)
+— reusing the paint-state variable for a position nothing is painted for would make
+`liftSpokenLayers`/`repaintLiveAnnotations`'s sentence branches (both gated on
+`currentSpokenCfi !== null` to mean "the wash IS painted here") wrongly paint one on their next
+repaint. Consulted only as the last resort in the `currentSpokenWordCfi ?? currentSpokenCfi ??
+currentSpokenFollowCfi` fallback chains a reflow/flow-rebuild re-check uses. A resolution failure
+(the SAME bail reasons `setSpokenWordRange` can hit) clears the tracked position rather than leaving
+a stale one — a follow target from speech that has moved on is as much a lie here as a stale word
+paint would be.
 
 ### The spoken word — `setSpokenWordRange`
 

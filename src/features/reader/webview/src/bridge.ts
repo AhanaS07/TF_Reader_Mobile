@@ -175,6 +175,10 @@ export interface CommandArgs {
   applyAppearance: [appearance: ReaderAppearance];
   requestTtsSentence: [request: TtsSentenceRequest];
   setSpokenRange: [cfi: string | null];
+  // Widened from a bare cfi to this SpokenWordRange shape the same day it was added — see
+  // ReaderCommand's own note on why: per-tick resolution is what fixes the paginated page-turn
+  // timing bug, and that needs the same (cfi, start, end) triple setSpokenWordRange resolves.
+  followSpokenPosition: [range: SpokenWordRange | null];
   // ONE argument, because the command has one field. The object is what keeps it that way — see
   // `ReaderCommand`'s own note: three fields would make `ExpectedArgs` a 1-tuple of a union that
   // no hand-written entry can match, and the failure would surface in the proof below rather than
