@@ -769,3 +769,109 @@ and Phase 5 already used, against this fixture instead of the real reader:
 
 Not wired into navigation on purpose (see the component's own header) — mount it temporarily to run
 the experiment, then revert. Record whichever outcome here once run.
+
+**Runbook + reconstructed instrumentation source (not yet run).** Neither the 2026-09-11 nor the
+2026-09-14 instrumentation test was ever committed — both were deliberately temporary,
+`android/app/src/androidTest/`, gitignored, deleted after each run (`TALKBACK_GESTURE_FIX_
+PROPOSAL.md`'s Phase 5 says so explicitly) — so there is nothing to reuse verbatim from this repo.
+Written from an environment with no Android SDK/adb access (confirmed while writing this), so the
+Kotlin below is a **reconstruction** from this doc's own description of the working method, not a
+copy of the original file — treat it as a starting point to adapt, not as pre-verified code.
+
+Steps:
+1. Temporarily change whatever `RootNavigator.tsx` mounts as its initial screen to
+   `<WebViewA11yDiagnostic />` (revert before committing anything else — this is a manual step,
+   not a navigation change to land).
+2. Create `android/app/src/androidTest/java/.../WebViewA11yDiagnosticTest.kt` (gitignored per the
+   established pattern above; add the directory to `android/.gitignore` only if it isn't already
+   covered, and remove both after the run):
+
+   ```kotlin
+   package com.tfreadermobile // match this app's actual applicationId
+
+   import android.view.accessibility.AccessibilityNodeInfo
+   import androidx.test.ext.junit.runners.AndroidJUnit4
+   import androidx.test.platform.app.InstrumentationRegistry
+   import org.junit.Assert.assertTrue
+   import org.junit.Test
+   import org.junit.runner.RunWith
+
+   @RunWith(AndroidJUnit4::class)
+   class WebViewA11yDiagnosticTest {
+
+     // testID props map to viewIdResourceName via RN's Android accessibility delegate — confirmed
+     // by reading ReactAccessibilityDelegate.kt directly (`info.viewIdResourceName = testId`).
+     private fun findByTestId(root: AccessibilityNodeInfo, testId: String): AccessibilityNodeInfo? {
+       // viewIdResourceName is namespaced (e.g. "com.tfreadermobile:id/<testId>" on Fabric/RN's
+       // synthetic ids) — match by suffix rather than exact string for that reason.
+       if (root.viewIdResourceName?.endsWith(testId) == true) return root
+       for (i in 0 until root.childCount) {
+         val child = root.getChild(i) ?: continue
+         findByTestId(child, testId)?.let { return it }
+       }
+       return null
+     }
+
+     @Test
+     fun actionAcceptedButFocusDoesNotPersist() {
+       val uiAutomation = InstrumentationRegistry.getInstrumentation().uiAutomation
+       Thread.sleep(2000) // let the diagnostic screen + WebView finish loading srcdoc
+
+       val root = uiAutomation.rootInActiveWindow
+         ?: throw AssertionError("No root accessibility node — is TalkBack/an a11y service enabled?")
+
+       // The WebView's own node, found by the testID this repo already uses
+       // (`a11y-diagnostic-webview`). If this doesn't resolve to anything usable, the WebView's
+       // CONTENT (inside the iframe) may need a text-based lookup instead — see the fallback below.
+       val webViewNode = findByTestId(root, "a11y-diagnostic-webview")
+         ?: throw AssertionError("Could not find a11y-diagnostic-webview in the node tree")
+
+       // Fallback if the WebView node itself isn't a useful focus target: search for the fixture's
+       // own heading text instead, since Chromium's accessibility tree should expose it as a
+       // descendant once the page has rendered.
+       val target = webViewNode.findAccessibilityNodeInfosByText("Diagnostic Chapter")
+         .firstOrNull() ?: webViewNode
+
+       val accepted = target.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+       Thread.sleep(500)
+
+       // Re-query fresh — AccessibilityNodeInfo instances go stale after an action; must fetch a
+       // new one from a fresh root rather than reusing `target`. Same reasoning as the original
+       // 2026-09-11 finding this reconstructs.
+       val refreshedRoot = uiAutomation.rootInActiveWindow
+       val refreshedTarget = refreshedRoot?.let { findByTestId(it, "a11y-diagnostic-webview") }
+       val stillFocused = refreshedTarget?.isAccessibilityFocused ?: false
+
+       println("performAction(ACTION_ACCESSIBILITY_FOCUS) accepted=$accepted, " +
+         "isAccessibilityFocused 500ms later=$stillFocused")
+
+       // The interesting outcome is the COMPARISON, not a pass/fail assertion — record `accepted`
+       // and `stillFocused` in this doc rather than asserting a specific combination here. Left as
+       // a loose assertion so the test runs to completion and prints both values either way.
+       assertTrue("performAction should at least return without throwing", true)
+     }
+   }
+   ```
+
+3. Run it (`./gradlew connectedAndroidTest` or via Android Studio's test runner against
+   `tts_spike` or a physical device) and record `accepted`/`stillFocused` from logcat/test output.
+4. Revert step 1's navigation change and delete the `androidTest` directory, same as every prior
+   pass — this is intentionally not committed scaffolding.
+
+**Outcome — fill in once run:**
+
+| | `accepted` | `stillFocused` (~500ms later) |
+|---|---|---|
+| Real reader (2026-09-11, for reference) | `true` | `false` |
+| `WebViewA11yDiagnostic` fixture | — | — |
+
+- If the fixture reproduces `true`/`false` (accepted, doesn't persist) — generic Android
+  WebView/Chromium bug, not epub.js-specific. Treat the page-turn action (Phase 5/6 above) and TTS
+  auto-follow as the accepted permanent mitigations; consider filing this upstream (Chromium/AOSP)
+  with the fixture as the minimal repro.
+- If the fixture does NOT reproduce it (focus persists, or the action is rejected outright) —
+  something specific to epub.js's own iframe/CSS setup is the actual trigger. Next bisection step:
+  vary one thing at a time in `WebViewA11yDiagnostic.tsx` toward the real book's exact setup (e.g.
+  epub.js's actual `sandbox`/`allow` attributes on the iframe if any, the exact column-width/count,
+  whether `tabindex` or any ARIA attribute epub.js sets matters) until it starts reproducing —
+  whichever variable flips the result is the actual trigger to report or work around.

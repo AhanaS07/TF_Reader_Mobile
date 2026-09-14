@@ -229,3 +229,44 @@ gesture surfacing is confirmed working, a user has no way to know to try it with
 support article. `ReaderWebView` would need `screenReaderHints` threaded in as a prop (from wherever
 `ReaderScreen.tsx` already reads accessibility prefs for other purposes) — left to Ahana's judgment
 on the cleanest way to wire it in her own file.
+
+## Phase 6 — real gesture surfacing, runbook (not yet run)
+
+Closes the one thing Phase 5 explicitly left open. Needs a real device or the `tts_spike` rooted
+AVD — not runnable from an environment without Android SDK/adb access (confirmed none available
+while writing this runbook), so this is written to be followed by whoever next has device access,
+not something either automated in CI or executed here.
+
+**Setup**, same as Phase 5's own environment:
+1. Install the dev build: `expo run:android` (or reinstall onto `tts_spike` / a physical device).
+2. Enable TalkBack: Settings → Accessibility → TalkBack → On (or
+   `adb shell settings put secure enabled_accessibility_services
+   com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService`).
+3. Open any book in the reader.
+
+**Steps** — four combinations, each independent:
+
+| Flow | Mechanism to try | What to check |
+|---|---|---|
+| Paginated (screen reader off, or "Use pages anyway" chosen) | Two-finger swipe up/down while the `reader-webview-a11y-pageturn` node ("Turn page") has TalkBack focus | Does the page visibly turn? |
+| Paginated | TalkBack's local "Actions" menu (long-press with two fingers, or swipe-down-then-right depending on TalkBack version) on the same node, selecting the next/previous action | Does the page visibly turn? |
+| Screen-reader-forced `scrolled-doc` (the `readerA11yLayout.ts` override, screen reader on, override not opted out of) | Two-finger swipe up/down on the same node | Does the content visibly scroll by roughly a screen? |
+| `scrolled-doc` | Local Actions menu, same node | Does the content visibly scroll by roughly a screen? |
+
+Also check, once, independent of the four rows above: open a panel (TOC or Search) and confirm
+TalkBack can no longer reach the "Turn page" node at all — it should disappear from the
+touch-exploration order along with the rest of the container's subtree (`hidden` prop cascades to
+this sibling the same way it does to the WebView itself).
+
+**Results** — fill in during the session; empty means untested, not passing, same convention as
+`WEBVIEW_A11Y_SPIKE.md`'s own tables.
+
+| Flow | Two-finger swipe | Local Actions menu | Notes |
+|---|---|---|---|
+| Paginated | — | — | |
+| `scrolled-doc` | — | — | |
+
+`hidden`-cascade check: — (untested)
+
+**Once run**: record the outcome here and fold a summary into `WEBVIEW_A11Y_SPIKE.md`'s §14,
+matching the pattern the rest of that section already follows for every prior finding.
