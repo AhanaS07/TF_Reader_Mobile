@@ -359,6 +359,8 @@ export function offerCountdownLabel(
 }
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
+const MS_PER_MINUTE = 60_000;
 
 /**
  * Due-date copy for a loan on the shelf.
@@ -367,9 +369,16 @@ const MS_PER_DAY = 86_400_000;
  * contract omits `dueAt` for it entirely, so "No due date" is the correct
  * sentence rather than a fallback hiding missing data.
  *
- * Measured against the server's clock like everything else here. Days are
- * CEILED: a loan with four hours left is due "in 1 day", not "in 0 days" —
- * rounding a live loan down to nothing reads as expired.
+ * THREE UNITS, ONE PER ORDER OF MAGNITUDE — found live, 14 Sep: a loan with
+ * five minutes left used to round UP through whole days (`Math.ceil` of a
+ * fraction is always at least 1), reading as "Due in 1 day" for a title that
+ * was, in real terms, already gone. Days only once at least a full day
+ * remains; hours only once at least a full hour remains within that day;
+ * minutes for anything under an hour — each tier ceiled the same way days
+ * always were, so "a few seconds left" still reads as "in 1 minute", not
+ * "in 0 minutes", which would read as already due.
+ *
+ * Measured against the server's clock like everything else here.
  */
 export function dueLabel(
   loan: Loan,
@@ -379,8 +388,19 @@ export function dueLabel(
   if (loan.expiresAt === undefined) return 'No due date';
   const remaining = loan.expiresAt - (deviceNowMs + offsetMs);
   if (remaining <= 0) return 'Due now';
-  const days = Math.ceil(remaining / MS_PER_DAY);
-  return days === 1 ? 'Due in 1 day' : `Due in ${days} days`;
+
+  if (remaining >= MS_PER_DAY) {
+    const days = Math.ceil(remaining / MS_PER_DAY);
+    return days === 1 ? 'Due in 1 day' : `Due in ${days} days`;
+  }
+
+  if (remaining >= MS_PER_HOUR) {
+    const hours = Math.ceil(remaining / MS_PER_HOUR);
+    return hours === 1 ? 'Due in 1 hour' : `Due in ${hours} hours`;
+  }
+
+  const minutes = Math.ceil(remaining / MS_PER_MINUTE);
+  return minutes === 1 ? 'Due in 1 minute' : `Due in ${minutes} minutes`;
 }
 
 // ─── downloads copy ──────────────────────────────────────────────────────────

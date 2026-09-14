@@ -173,6 +173,10 @@ export function renderBookContent(
   // whenever a new publication arrives.
   coverFailed = false,
   onCoverError?: () => void,
+  // Device-local fact, not an access one — see this function's caller. Never
+  // touches `detail.access` itself, only the already-resolved actions this
+  // function is about to hand to `ActionBar`.
+  isDownloaded = false,
 ): ReactElement {
   const showCoverPlaceholder = detail.coverUrl === undefined || coverFailed;
 
@@ -183,10 +187,16 @@ export function renderBookContent(
   // is only ever set from whatever `ActionBar` handed back to `onAction`,
   // which already reads this same remapped array. `handleAction` treats
   // `read` and `play` identically once pressed.
-  const actions: ActionId[] =
+  //
+  // `download` IS DROPPED WHEN ALREADY DOWNLOADED — `resolveAccess`'s own
+  // `withDownload` always pairs it with `read` in the `available` state (see
+  // that function's own comment), so filtering it here can never also drop
+  // `read`/`play`. `DownloadedBadge` below stands in its place.
+  const actions: ActionId[] = (
     detail.format === 'AUDIO'
       ? detail.access.actions.map((action) => (action === 'read' ? 'play' : action))
-      : detail.access.actions;
+      : detail.access.actions
+  ).filter((action) => action !== 'download' || !isDownloaded);
 
   return (
     <>
@@ -258,18 +268,13 @@ export function renderBookContent(
             so the buttons need no gate of their own. Renders nothing at all
             (not even the row) when neither is present, rather than an empty
             band of padding. */}
-        {(detail.format !== undefined || !isNotEntitled(detail.access)) && (
+        {(detail.format !== undefined || !isNotEntitled(detail.access) || isDownloaded) && (
           <View style={styles.badgeRow}>
             {detail.format !== undefined && <FormatStrip format={detail.format} />}
             {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+            {isDownloaded && <DownloadedBadge />}
           </View>
         )}
-
-        {/* D12 — the `queued` half: "queued shows a position and nothing
-            tappable". `resolveAccess` returns no actions in that state, so
-            ActionBar draws nothing and this line is the entire UI for it —
-            without it a waiting reader sees a detail screen with no answer. */}
-        <QueuePositionLine access={detail.access} />
 
         {/* Publisher, published date, ISBN and page count are each shown only
           when the feed actually supplied them — "render whatever fields are
@@ -332,12 +337,19 @@ export function renderBookContent(
       </ScrollView>
 
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
-          and draws its own top border, so it needs no wrapper of its own here. */}
+          and draws its own top border, so it needs no wrapper of its own here.
+          On direct instruction, 14 Sep: the queued position moved from a bare
+          line inside the scroll to THIS footer slot — see QueuePositionLine's
+          own comment for why it now renders ActionBar's own bar container
+          rather than a plain Text. The two are mutually exclusive (queued
+          resolves to no actions, so ActionBar renders null right where this
+          renders something), so nothing here ever shows both at once. */}
       {licenceMessage !== undefined && (
         <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
           {licenceMessage}
         </Text>
       )}
+      <QueuePositionLine access={detail.access} />
       <ActionBar actions={actions} onAction={onAction} pending={pending} />
     </>
   );
@@ -362,7 +374,19 @@ function MetaRow({
   );
 }
 
-// D12's `queued` state on the detail screen. A status line, not a control.
+// D12's `queued` state on the detail screen. A status, not a control.
+//
+// RENDERED IN ACTIONBAR'S OWN FOOTER SLOT, on direct instruction, 14 Sep — it
+// used to sit as a bare line inline in the scroll, which read as an
+// afterthought next to how every other state gets the full pinned bottom bar.
+// `actions` resolves to `[]` while queued (ActionBar's own CONVENTIONS §3
+// null-render), so this and ActionBar are mutually exclusive by construction:
+// whichever the current state actually is, exactly one of the two draws
+// anything in that slot, never both. `styles.queuePositionBar` deliberately
+// copies ActionBar's own `bar` container (white, top border, `space.md`
+// padding) rather than sharing a component with it — CONVENTIONS §10 still
+// rules out a two-caller abstraction for what is, and stays, a one-screen
+// concern (see the note below).
 //
 // LOCAL TO THIS SCREEN, because this is the ONLY surface the queue appears on.
 // Confirmed team decision, 26 Aug: D12 is item detail only, so there is no card
@@ -376,9 +400,11 @@ function QueuePositionLine({ access }: { access: ItemDetail['access'] }): ReactE
   if (label === undefined) return null;
 
   return (
-    <Text testID="queue-position" style={styles.queuePosition} accessibilityRole="text">
-      {label}
-    </Text>
+    <View style={styles.queuePositionBar} testID="queue-position-bar">
+      <Text testID="queue-position" style={styles.queuePosition} accessibilityRole="text">
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -399,6 +425,21 @@ function FormatStrip({ format }: { format: ContentFormat }): ReactElement {
   return (
     <View testID="format-strip" style={styles.formatStrip} accessibilityRole="text">
       <Text style={styles.formatStripLabel}>{format}</Text>
+    </View>
+  );
+}
+
+// The on-device differentiator for the Download action's replacement — same
+// "real data, not a control" shape as `FormatStrip` above (static, no
+// `onPress`), and `color.success` for the same reason `AccessTierBadge` uses
+// it for OPEN_ACCESS: tokens.ts names that colour for "Open Access, completed
+// downloads" explicitly. Does not gate `openBook` itself — see this
+// function's own caller.
+function DownloadedBadge(): ReactElement {
+  return (
+    <View testID="downloaded-badge" style={styles.downloadedBadge} accessibilityRole="text">
+      <Ionicons name="checkmark-circle" size={14} color={color.white} />
+      <Text style={styles.downloadedBadgeLabel}>Downloaded</Text>
     </View>
   );
 }
@@ -475,7 +516,10 @@ export function renderArticleContent(
   // carries no parent-journal reference of its own, so there is nothing to
   // read here when the article was opened any other way (e.g. Search).
   articleContext?: { journalTitle: string; volumeTitle?: string; issueTitle?: string },
+  /** See renderBookContent. */
+  isDownloaded = false,
 ): ReactElement {
+  const actions = detail.access.actions.filter((action) => action !== 'download' || !isDownloaded);
   const issueLine =
     articleContext !== undefined
       ? [articleContext.volumeTitle, articleContext.issueTitle].filter(
@@ -504,13 +548,12 @@ export function renderArticleContent(
             filler; drawing it would label a title the reader cannot open as
             free to read. ActionBar already renders null on the empty action
             set, so the buttons need no gate. */}
-        {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
-
-        {/* D12 — the `queued` half: "queued shows a position and nothing
-            tappable". `resolveAccess` returns no actions in that state, so
-            ActionBar draws nothing and this line is the entire UI for it —
-            without it a waiting reader sees a detail screen with no answer. */}
-        <QueuePositionLine access={detail.access} />
+        {(!isNotEntitled(detail.access) || isDownloaded) && (
+          <View style={styles.badgeRow}>
+            {!isNotEntitled(detail.access) && <AccessTierBadge tier={detail.access.tier} />}
+            {isDownloaded && <DownloadedBadge />}
+          </View>
+        )}
 
         {/* ONE card, not a repeated eyebrow-plus-card: journal/volume/issue
             (real data on `articleContext`, present only when this article was
@@ -586,13 +629,16 @@ export function renderArticleContent(
       {/* Outside the ScrollView — see the header comment. ActionBar pads itself
           and draws its own top border, so no wrapper is needed here; the
           `actionBarWrapper` stretch fix exists only for the book layout, whose
-          centring column would otherwise shrink it. */}
+          centring column would otherwise shrink it. `QueuePositionLine` now
+          renders in this same footer slot rather than inline in the scroll —
+          see its own comment and `renderBookContent`'s identical footer. */}
       {licenceMessage !== undefined && (
         <Text style={styles.licenceError} accessibilityRole="alert" testID="licence-error">
           {licenceMessage}
         </Text>
       )}
-      <ActionBar actions={detail.access.actions} onAction={onAction} pending={pending} />
+      <QueuePositionLine access={detail.access} />
+      <ActionBar actions={actions} onAction={onAction} pending={pending} />
     </>
   );
 }
@@ -600,6 +646,14 @@ export function renderArticleContent(
 export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteProps) {
   const { itemId, workType: routeWorkType, articleContext } = route.params;
   const downloadProgress = useDownloadProgress();
+  // Device-local, same fact LibraryScreen's Downloads tab shows — read here so
+  // the Download action can be replaced with a "Downloaded" indicator instead
+  // of offering to re-download a copy already on this device. This changes
+  // nothing about `handleAction`'s `read`/`play` branch: `openBook` already
+  // decides downloaded-vs-online for itself (checkLicense first, always —
+  // see that file's own header), so this is a UI differentiator only, not a
+  // second place that decides how the book opens.
+  const isDownloaded = useDownloadStore((s) => s.downloads.some((d) => d.itemId === itemId));
 
   const selectedInstitution = useInstitutionStore((s) => s.selectedInstitution);
 
@@ -637,6 +691,12 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
   const loans = useLibraryStore((s) => s.loans);
   const holds = useLibraryStore((s) => s.holds);
   const refresh = useLibraryStore((s) => s.refresh);
+  // See libraryStore.ts's own header — `loans`/`holds` above may be the last
+  // SUCCESSFUL read, not a confirmed current one, whenever this is true. The
+  // action bar (Read vs. Grant access) and `QueuePositionLine` are both
+  // resolved from those two arrays, so a failed refresh here is just as
+  // capable of showing stale access as LibraryScreen's own due-date labels.
+  const holdingsRefreshFailed = useLibraryStore((s) => s.refreshFailed);
   const loan = loans.find((l) => l.itemId === itemId);
   const hold = holds.find((h) => h.itemId === itemId);
 
@@ -956,7 +1016,14 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       pendingAction ?? (downloadProgress.status === 'downloading' ? 'download' : undefined);
     body =
       detail.workType === 'article'
-        ? renderArticleContent(detail, handleAction, effectivePending, licenceMessage, articleContext)
+        ? renderArticleContent(
+            detail,
+            handleAction,
+            effectivePending,
+            licenceMessage,
+            articleContext,
+            isDownloaded,
+          )
         : renderBookContent(
             detail,
             handleAction,
@@ -964,6 +1031,7 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
             licenceMessage,
             coverFailed,
             () => setCoverFailed(true),
+            isDownloaded,
           );
   }
 
@@ -972,6 +1040,13 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       {/* Overlays whatever is above, in every state — the library stays usable
           behind it (§State: "offline means degraded but usable"). */}
       <OfflineBanner visible={!isOnline} />
+      {/* Only once there is real content to doubt — a skeleton or an error
+          state has no access decision on screen yet for this to qualify. */}
+      {!loading && !failed && detail !== null && holdingsRefreshFailed && (
+        <Text style={styles.staleAccessNotice} testID="access-refresh-stale">
+          Couldn’t confirm your current access. The status below may be out of date.
+        </Text>
+      )}
       {body}
     </View>
   );
@@ -1149,6 +1224,17 @@ const styles = StyleSheet.create({
   },
   // D12's queue position: a status line, styled as metadata rather than as an
   // action, because that is what it is.
+  // Copies ActionBar's own `bar` style exactly (white, top border, `space.md`
+  // padding) — see QueuePositionLine's own comment on why this stays a
+  // duplicate rather than a shared component for a two-caller abstraction
+  // with only one real caller.
+  queuePositionBar: {
+    padding: space.md,
+    alignItems: 'center',
+    backgroundColor: color.white,
+    borderTopWidth: 1,
+    borderTopColor: color.border,
+  },
   queuePosition: {
     fontFamily: typeScale.meta.fontFamily,
     fontSize: typeScale.meta.size,
@@ -1187,6 +1273,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
+  },
+  downloadedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    backgroundColor: color.success,
+  },
+  downloadedBadgeLabel: {
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
+    color: color.white,
   },
   // `alignSelf` now that `content` no longer centres its children — same one
   // line AccessTierBadge sets on itself, and for the same reason: a chip that
@@ -1288,5 +1390,19 @@ const styles = StyleSheet.create({
     lineHeight: typeScale.smallLabel.lineHeight,
     color: color.error,
     backgroundColor: color.white,
+  },
+  // Same neutral "informational, not a failure" card LibraryScreen's own
+  // `notice` style uses — this is a caveat about the access decision the
+  // reader is about to see, not an error dialog of its own.
+  staleAccessNotice: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    padding: space.sm,
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
+    color: color.textSecondary,
+    fontFamily: typeScale.smallLabel.fontFamily,
+    fontSize: typeScale.smallLabel.size,
+    lineHeight: typeScale.smallLabel.lineHeight,
   },
 });

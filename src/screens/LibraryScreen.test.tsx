@@ -14,6 +14,7 @@
 //
 // `await render(...)` and `await fireEvent(...)` are required — RTL 14's
 // render and event helpers are async.
+import { Alert } from 'react-native';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import { LibraryProviderContext } from '@/features/library/context';
@@ -25,9 +26,32 @@ import { setCatalogueSource } from '@config/catalogue';
 import type { BookSummary, Hold, Loan } from '@model/types';
 import { useArticleJournalStore } from '@store/articleJournalStore';
 import { useDownloadStore } from '@store/downloadStore';
+import { useExpiredDownloadsStore } from '@store/expiredDownloadsStore';
 import { useLibraryStore } from '@store/libraryStore';
 
 import LibraryScreen from './LibraryScreen';
+
+// Mocked at the module boundary, same reason ItemDetailScreen.test.tsx mocks
+// `@/features/download/openBook` rather than reaching into real Encryption
+// internals: `destroy` really does touch Keychain/expo-file-system, and this
+// screen only cares that it gets called with the right id and that a
+// rejection is handled, not that a real key gets wiped.
+const mockDestroy = jest.fn().mockResolvedValue(undefined);
+jest.mock('@/features/encryption/contentStore', () => ({
+  contentStore: { destroy: (...args: unknown[]) => mockDestroy(...args) },
+}));
+
+// Same auto-press shape ReaderRouteScreen.test.tsx's own `mockAlert` uses —
+// pressing synchronously inside `Alert.alert`'s own mocked call keeps it in
+// the same microtask the real confirm dialog's tap would be.
+let mockAlertAutoPress: string | null = null;
+const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+  if (mockAlertAutoPress === null) return;
+  const button = (buttons as { text: string; onPress?: () => void }[] | undefined)?.find(
+    (candidate) => candidate.text === mockAlertAutoPress,
+  );
+  button?.onPress?.();
+});
 
 const SERVER_NOW = new Date().toISOString();
 const SERVER_NOW_MS = Date.parse(SERVER_NOW);
@@ -130,11 +154,14 @@ beforeEach(async () => {
   mockAcceptOffer.mockResolvedValue({ loanId: 'loan_new', itemId: 'item_99', state: 'active' });
   mockCancelHold.mockResolvedValue(undefined);
   mockBorrow.mockResolvedValue({ loanId: 'loan_new', itemId: 'item_42', state: 'active' });
-  useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useLibraryStore.setState({ loans: [], holds: [], loading: false, refreshFailed: false, hasSyncedOnce: false });
   // Device-local and persisted, so unlike libraryStore these survive a test and
   // would leak a download into the next one's "empty shelf".
   useDownloadStore.getState().clear();
   useArticleJournalStore.getState().clear();
+  useExpiredDownloadsStore.getState().dismissAll();
+  mockAlertAutoPress = null;
+  mockDestroy.mockReset().mockResolvedValue(undefined);
   await resetBookmarksTable();
   setCatalogueSource(fakeSource(async () => ({ items: [], notFound: [], denied: [] })));
 });
@@ -260,7 +287,9 @@ describe('LibraryScreen — All tab', () => {
         denied: [],
       })),
     );
-    givenHoldings([aLoan({ itemId: 'item_42', expiresAt: SERVER_NOW_MS + 86_400_000 })], []);
+    // 2 days, not exactly 1 — see the "stale holdings" describe block's own
+    // note on why a due date right on the day boundary is flaky here.
+    givenHoldings([aLoan({ itemId: 'item_42', expiresAt: SERVER_NOW_MS + 2 * 86_400_000 })], []);
     useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
 
     await renderScreen();
@@ -268,7 +297,7 @@ describe('LibraryScreen — All tab', () => {
     await waitFor(() => expect(screen.getAllByText('Playful Identities')).toHaveLength(1));
     expect(screen.getByText('1 item')).toBeTruthy();
     // Both facts about the one book still show, merged onto the same row.
-    expect(screen.getByText('Due in 1 day')).toBeTruthy();
+    expect(screen.getByText('Due in 2 days')).toBeTruthy();
     expect(screen.getByText('Downloaded')).toBeTruthy();
   });
 
@@ -320,10 +349,56 @@ describe('LibraryScreen — All tab', () => {
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
   });
 
+  // Found live: delete used to exist only on the Downloads tab's own row, which
+  // reads as "there is no delete" to a reader who never leaves the default All
+  // tab. Every merged row for a download now carries the same action.
+  it('offers delete on a downloaded title from the All tab too, not only the Downloads tab', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        // OPEN_ACCESS, deliberately — no loan ever backs one, so it is immune
+        // to the expiry sweep (see that effect's own comment) and this test
+        // is not accidentally about that mechanism.
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'OPEN_ACCESS' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    expect(screen.getByTestId('download-delete-button')).toBeTruthy();
+  });
+
+  it('offers no delete on a merged row that is only a loan or a bookmark, never downloaded', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    expect(screen.queryByTestId('download-delete-button')).toBeNull();
+  });
+
   it('shows a journal-linked article under its journal, not its own title and authors', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
-        items: [aSummary({ id: 'item_a1', title: 'A Specific Article', authors: ['Some Author'] })],
+        // OPEN_ACCESS — see the All tab delete test's own comment on why.
+        items: [
+          aSummary({
+            id: 'item_a1',
+            title: 'A Specific Article',
+            authors: ['Some Author'],
+            accessTier: 'OPEN_ACCESS',
+          }),
+        ],
         notFound: [],
         denied: [],
       })),
@@ -464,7 +539,8 @@ describe('LibraryScreen — Downloads tab', () => {
   it('lists a downloaded book with a real count', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        // OPEN_ACCESS — see the All tab delete test's own comment on why.
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'OPEN_ACCESS' })],
         notFound: [],
         denied: [],
       })),
@@ -498,7 +574,15 @@ describe('LibraryScreen — Downloads tab', () => {
   it('goes to the item’s detail page when a Downloads row is tapped', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        // OPEN_ACCESS — see the All tab delete test's own comment on why.
+        items: [
+          aSummary({
+            id: 'item_42',
+            title: 'Applied Thermodynamics',
+            format: 'PDF',
+            accessTier: 'OPEN_ACCESS',
+          }),
+        ],
         notFound: [],
         denied: [],
       })),
@@ -513,6 +597,57 @@ describe('LibraryScreen — Downloads tab', () => {
     await fireEvent.press(screen.getByTestId('content-card'));
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
+  });
+
+  it('confirms, then deletes the real content and this device’s tracking record together', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    mockAlertAutoPress = 'Delete';
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+    await waitFor(() => expect(screen.getByTestId('download-delete-button')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('download-delete-button'));
+
+    expect(mockAlert).toHaveBeenCalledWith(
+      'Delete download?',
+      'This removes it from your device. You can download it again anytime.',
+      expect.anything(),
+    );
+    await waitFor(() => expect(mockDestroy).toHaveBeenCalledWith('item_42'));
+    await waitFor(() => expect(screen.getByText('No downloads yet.')).toBeTruthy());
+  });
+
+  it('keeps the download when the confirm is cancelled', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    mockAlertAutoPress = 'Cancel';
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+    await waitFor(() => expect(screen.getByTestId('download-delete-button')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('download-delete-button'));
+
+    expect(mockDestroy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('download-delete-button')).toBeTruthy();
+  });
+
+  it('reports a real failure and keeps the row rather than reporting a title as gone while its bytes remain', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    mockDestroy.mockRejectedValue(new Error('disk error'));
+    mockAlertAutoPress = 'Delete';
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-downloads')).toBeTruthy());
+    await openDownloads();
+    await waitFor(() => expect(screen.getByTestId('download-delete-button')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('download-delete-button'));
+
+    await waitFor(() => expect(screen.getByText('Couldn’t delete that download. Try again.')).toBeTruthy());
+    expect(screen.getByTestId('download-delete-button')).toBeTruthy();
   });
 });
 
@@ -975,6 +1110,138 @@ describe('LibraryScreen — offline', () => {
 
     await waitFor(() => expect(screen.getByText('Library')).toBeTruthy());
     expect(screen.queryByText("You're offline")).toBeNull();
+  });
+});
+
+// Found live: a loan already on screen with a real due date kept showing that
+// exact date through an entire window where refresh() was actually failing —
+// nothing on screen said the number might be wrong. See libraryStore.ts's own
+// header on `refreshFailed`.
+describe('LibraryScreen — stale holdings', () => {
+  it('flags a due date as unconfirmed when the mount-time refresh fails', async () => {
+    // 2 days, not exactly 1 — dueLabel now buckets by day/hour/minute (see its
+    // own header), so an expiry sitting right on the day boundary is one real
+    // clock tick from crossing into the next bucket by the time this test's
+    // own assertion runs. A due date safely inside the "days" bucket is the
+    // point of this test; the exact number is not.
+    useLibraryStore.setState({ loans: [aLoan({ itemId: 'item_42', expiresAt: SERVER_NOW_MS + 2 * 86_400_000 })] });
+    mockGetLibrary.mockRejectedValueOnce(new Error('network error'));
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId('library-holdings-stale')).toBeTruthy());
+    // The stale loan itself is still shown — see libraryStore's own
+    // "stale beats blank" reasoning — just now flagged as unconfirmed.
+    expect(screen.getByText('Due in 2 days')).toBeTruthy();
+  });
+
+  it('shows no stale-holdings notice once a refresh succeeds', async () => {
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Library')).toBeTruthy());
+    expect(screen.queryByTestId('library-holdings-stale')).toBeNull();
+  });
+});
+
+// On direct instruction: a downloaded Elite/Subscription title whose licence
+// has actually lapsed is deleted from this device, not merely hidden, and the
+// reader is told so. See LibraryScreen.tsx's own comment on the sweep effect.
+describe('LibraryScreen — expiry sweep', () => {
+  const LONG_AGO = SERVER_NOW_MS - 10 * 60_000; // outside the 2-minute race grace window
+
+  it('deletes a downloaded Elite title once a confirmed refresh shows no matching active loan', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: LONG_AGO });
+    givenHoldings([], []); // a confirmed refresh; nothing held
+
+    await renderScreen();
+
+    await waitFor(() => expect(mockDestroy).toHaveBeenCalledWith('item_42'));
+    await waitFor(() => expect(screen.getByTestId('expired-downloads-notice')).toBeTruthy());
+    expect(
+      screen.getByText('“Applied Thermodynamics” was removed from this device because its licence ended.'),
+    ).toBeTruthy();
+  });
+
+  it('leaves a downloaded Subscription title alone while its own loan is still active', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: LONG_AGO });
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+
+    expect(mockDestroy).not.toHaveBeenCalled();
+  });
+
+  it('never sweeps an Open Access download, which no loan ever backs', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'OPEN_ACCESS' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: LONG_AGO });
+    givenHoldings([], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+
+    expect(mockDestroy).not.toHaveBeenCalled();
+  });
+
+  it('does not sweep a download still inside its own race-grace window', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'SUBSCRIPTION' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    // Downloaded moments ago — this device's own loans cache may simply not
+    // have caught up yet with the borrow that happened server-side to grant
+    // this download, not a genuinely expired licence.
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: Date.now() });
+    givenHoldings([], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+
+    expect(mockDestroy).not.toHaveBeenCalled();
+  });
+
+  it('dismisses the notice on tap, all at once', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: LONG_AGO });
+    givenHoldings([], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('expired-downloads-notice')).toBeTruthy());
+
+    await fireEvent.press(screen.getByText('Dismiss'));
+
+    await waitFor(() => expect(screen.queryByTestId('expired-downloads-notice')).toBeNull());
   });
 });
 

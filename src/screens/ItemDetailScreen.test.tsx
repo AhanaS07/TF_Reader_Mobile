@@ -283,7 +283,7 @@ afterEach(() => {
     errorMessage: null,
   };
   useInstitutionStore.setState({ selectedInstitution: null });
-  useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useLibraryStore.setState({ loans: [], holds: [], loading: false, refreshFailed: false });
   useDownloadStore.setState({ downloads: [] });
   useRecentlyViewedStore.getState().clear();
   useSessionStore.setState({
@@ -599,6 +599,40 @@ describe('ItemDetailScreen with a book', () => {
     expect(mockDownloadStart).not.toHaveBeenCalled();
   });
 
+  // The differentiator this reader asked for: a title already on this device
+  // (per `useDownloadStore`, the same fact LibraryScreen's Downloads tab
+  // shows) offers no Download button to re-tap — `Downloaded` stands in its
+  // place — but still opens through Read, same as an item never downloaded at
+  // all (`openBook` itself decides local-vs-online, and always re-checks the
+  // licence first — see this screen's own `isDownloaded` comment).
+  it('shows Downloaded instead of Download once this device already has the item, and still offers Read', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
+    setCatalogueSource(
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('downloaded-badge')).toBeTruthy());
+    expect(screen.queryByText('Download')).toBeNull();
+    expect(screen.getByText('Read')).toBeTruthy();
+  });
+
+  it('offers Download, not Downloaded, for an item not yet on this device', async () => {
+    setCatalogueSource(
+      fakeSource(async () =>
+        aBook({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) }),
+      ),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Download')).toBeTruthy());
+    expect(screen.queryByTestId('downloaded-badge')).toBeNull();
+  });
+
   // Regression test: `useDownloadProgress`/`downloadManager` persist a
   // completed download to SQLite, but `LibraryScreen`'s Downloads tab still
   // reads the older `downloadStore` (see that file's own header on why it's
@@ -643,10 +677,11 @@ describe('ItemDetailScreen with a book', () => {
 
   // A7 — the other half of the promise: signing in is supposed to unlock
   // different buttons, not just a different set of books. Subscription rather
-  // than Elite, so the contrast is the clean two-state one resolveAccess
-  // documents (§6) — Elite's nothing-held case resolves to Grant access, not
-  // Read, which is a second real distinction and not this test's point.
-  it('resolves a Subscription title to Read once an institution is selected, instead of Sign in', async () => {
+  // than Elite, though both now resolve nothing-held to Grant access
+  // (resolveAccess.ts's own 14 Sep comment on why Subscription's flow was
+  // reversed to match Elite's) — the point here is only Sign in vs. not,
+  // never that the two tiers' nothing-held buttons still differ.
+  it('resolves a Subscription title to Grant access once an institution is selected, instead of Sign in', async () => {
     selectAndSignIn(INSTITUTION);
     setCatalogueSource(
       fakeSource(async () =>
@@ -656,7 +691,7 @@ describe('ItemDetailScreen with a book', () => {
 
     await render(<ItemDetailScreen {...routeProps} />);
 
-    await waitFor(() => expect(screen.getByText('Read')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
     expect(screen.queryByText('Sign in')).toBeNull();
   });
 
@@ -1185,6 +1220,18 @@ describe('ItemDetailScreen article presentation (renderArticleContent)', () => {
     expect(screen.getByText('Download')).toBeTruthy();
   });
 
+  it('shows Downloaded instead of Download once this device already has the article, keeping Read', async () => {
+    const detail = anArticleDetail({ acquisition: anAcquisition({ licenceModel: 'OPEN_ACCESS' }) });
+
+    await render(
+      renderArticleContent(detail, jest.fn(), undefined, undefined, undefined, true),
+    );
+
+    expect(screen.getByTestId('downloaded-badge')).toBeTruthy();
+    expect(screen.getByText('Read')).toBeTruthy();
+    expect(screen.queryByText('Download')).toBeNull();
+  });
+
   it('does not crash and still renders title and authors with every optional field absent', async () => {
     const detail = anArticleDetail({ published: undefined, description: undefined });
 
@@ -1412,6 +1459,12 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByText('Position 3 of 7 in queue')).toBeTruthy());
+    // In ActionBar's own footer slot now, not a bare line inline in the
+    // scroll — see QueuePositionLine's own comment on why. ActionBar itself
+    // renders null here (queued resolves to no actions), so this is the
+    // entire footer while queued, not a second thing competing with it.
+    expect(screen.getByTestId('queue-position-bar')).toBeTruthy();
+    expect(screen.queryByTestId('action-bar')).toBeNull();
   });
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {
@@ -1432,6 +1485,45 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     await render(<ItemDetailScreen {...routeProps} />);
 
     await waitFor(() => expect(screen.getByText('Grant access')).toBeTruthy());
+  });
+});
+
+// Found live, alongside libraryStore.ts's own `refreshFailed`: the action bar
+// below (Read vs. Grant access) is resolved from the same loans/holds a
+// failed refresh leaves stale, so this screen needs the same "unconfirmed"
+// signal LibraryScreen's own due-date labels do.
+describe('ItemDetailScreen — stale holdings', () => {
+  it('shows an unconfirmed-access notice when the mount-time refresh fails, keeping the stale action', async () => {
+    selectAndSignIn(INSTITUTION);
+    const loan = {
+      loanId: 'loan_1',
+      itemId: 'item_42',
+      state: 'active' as const,
+      expiresAt: 9_999_999_999,
+    };
+    useLibraryStore.setState({ loans: [loan], holds: [] });
+    mockGetLibrary.mockRejectedValueOnce(new Error('network error'));
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('access-refresh-stale')).toBeTruthy());
+    // The stale loan's own action is still shown — see libraryStore's own
+    // "stale beats blank" reasoning — just now flagged as unconfirmed.
+    expect(screen.getByText('Revoke licence')).toBeTruthy();
+  });
+
+  it('shows no stale-access notice once a refresh succeeds', async () => {
+    selectAndSignIn(INSTITUTION);
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+    setCatalogueSource(fakeSource(async () => aBook()));
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Rights for Robots')).toBeTruthy());
+    expect(screen.queryByTestId('access-refresh-stale')).toBeNull();
   });
 });
 

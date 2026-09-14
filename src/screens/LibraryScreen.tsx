@@ -130,14 +130,15 @@
 // is rendered exactly as sparse — `TabHint` is what keeps that from looking
 // broken rather than a reason to invent more rows.
 import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
-import type { Bookmark } from '@/shared/contracts';
+import type { BookId, Bookmark } from '@/shared/contracts';
 import { useLibraryProvider } from '@/features/library/context';
 import { ReaderUnavailableError } from '@/features/library/ports';
 import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
+import { contentStore } from '@/features/encryption/contentStore';
 import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { USER_ID } from '@/features/sync/syncConfig';
 import { AccessTierBadge } from '@components/AccessTierBadge';
@@ -154,6 +155,7 @@ import { type ServerClock, useServerClock } from '@hooks/useServerClock';
 import type { BookSummary, Loan } from '@model/types';
 import { useArticleJournalStore } from '@store/articleJournalStore';
 import { type DownloadRecord, useDownloadStore } from '@store/downloadStore';
+import { useExpiredDownloadsStore } from '@store/expiredDownloadsStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type } from '@theme/tokens';
 
@@ -193,6 +195,12 @@ const SKELETON_ROWS = 2;
 // render. A fresh `new Map()` would be a new identity each time and re-run
 // anything downstream that compares it.
 const EMPTY_TITLES: Map<string, BookSummary> = new Map();
+
+// The expiry sweep's own race window — see that effect's own comment. Real
+// loan periods run for days; this only needs to outlast the gap between a
+// fresh download's server-side borrow and this screen's next successful
+// `libraryStore.refresh()`, so a couple of minutes is generous, not tight.
+const EXPIRY_SWEEP_GRACE_MS = 2 * 60_000;
 
 type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'journals';
 
@@ -241,6 +249,15 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const holds = useLibraryStore((s) => s.holds);
   const loading = useLibraryStore((s) => s.loading);
   const refresh = useLibraryStore((s) => s.refresh);
+  // See libraryStore.ts's own header: the loans/holds above may be the last
+  // SUCCESSFUL read, not a confirmed current one, whenever this is true — most
+  // visibly, a due date computed from a `loan.expiresAt` the server may have
+  // already changed or dropped.
+  const holdingsRefreshFailed = useLibraryStore((s) => s.refreshFailed);
+  // Gate for the expiry sweep below — see that effect's own comment on why a
+  // cold-start empty `loans` array must never be read as "confirmed: nothing
+  // is held".
+  const hasSyncedOnce = useLibraryStore((s) => s.hasSyncedOnce);
   // Device-local, so they are not part of `loading` and are not refetched by a
   // pull: there is nothing to fetch. A book on this phone is on this phone
   // whether or not the network answered.
@@ -282,6 +299,8 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const [expandedBookId, setExpandedBookId] = useState<string | undefined>(undefined);
   // Which book is mid-download from the Bookmarks tab's own group action.
   const [downloadingBookId, setDownloadingBookId] = useState<string | undefined>(undefined);
+  // Which download is mid-delete, from the Downloads tab's own row action.
+  const [deletingItemId, setDeletingItemId] = useState<string | undefined>(undefined);
   // The REAL, synced bookmarks — `bookmarkTable.listActive(USER_ID)` with no
   // `bookId`, which already lists across every book for a user (confirmed:
   // `listActive`'s own SQL only filters on `book_id` when one is passed). An
@@ -385,6 +404,62 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const publisherFor = (itemId: string): string | undefined =>
     titles.get(itemId)?.authors?.join(', ');
   const summaryFor = (itemId: string): BookSummary | undefined => titles.get(itemId);
+
+  // THE EXPIRY SWEEP, on direct instruction: a downloaded Elite or Subscription
+  // title whose licence has actually lapsed is deleted from this device, not
+  // merely hidden — a stale, unopenable ciphertext sitting in storage the reader
+  // cannot read is worse than no file at all. OPEN_ACCESS is never swept (no
+  // loan ever backs it, so "no active loan" is its permanent, correct state,
+  // not a lapse) and an item whose tier isn't hydrated yet is left alone rather
+  // than guessed at.
+  //
+  // GATED ON `hasSyncedOnce`, NOT JUST "loans is empty" — the cold-start value
+  // of `loans` is also an empty array, and treating that as "confirmed: nothing
+  // is held" would delete every downloaded Elite/Subscription title on every
+  // app launch, before the real answer has even arrived. See libraryStore.ts's
+  // own comment on the flag.
+  //
+  // A GRACE WINDOW, NOT AN IMMEDIATE CHECK — a Subscription download's own
+  // borrow happens server-side, invisibly, ahead of the bytes (resolveAccess.ts
+  // §7's own comment), so the loan already exists by the time this device's
+  // download completes. But THIS screen's own `loans` cache only catches up on
+  // its next successful refresh, which can genuinely land before that borrow's
+  // effects are visible if Library happens to already be open. Without the
+  // window, that ordinary race reads as "no active loan" and deletes a title
+  // that was never actually unlicensed for even a moment.
+  useEffect(() => {
+    if (!hasSyncedOnce) return;
+    // SEEDED ON THE NEXT MACROTASK, same reason `useServerClock.ts` reads
+    // `Date.now()` inside a `setTimeout` rather than the effect body itself —
+    // a direct call here is flagged as an impure read of the render path
+    // (react-hooks/purity) even though this effect's own timing has nothing
+    // to do with rendering. A `setTimeout(0)` costs nothing observable and
+    // keeps the read out of that path.
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      const activeLoanItemIds = new Set(live.map((loan) => loan.itemId));
+      for (const record of downloads) {
+        const tier = summaryFor(record.itemId)?.accessTier;
+        if (tier !== 'ELITE' && tier !== 'SUBSCRIPTION') continue;
+        if (activeLoanItemIds.has(record.itemId)) continue;
+        if (now - record.downloadedAt < EXPIRY_SWEEP_GRACE_MS) continue;
+
+        const expiredTitle = titleFor(record.itemId);
+        void contentStore.destroy(record.itemId as BookId).finally(() => {
+          useDownloadStore.getState().removeDownload(record.itemId);
+          useExpiredDownloadsStore.getState().recordExpired({
+            itemId: record.itemId,
+            title: expiredTitle,
+            expiredAt: Date.now(),
+          });
+        });
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `live`/`downloads`/`titleFor`/`summaryFor` are rebuilt every render from `loans`/`downloadRecords`/`titles`, which are already listed.
+  }, [hasSyncedOnce, loans, downloadRecords, titles]);
+
+  const expiredDownloadNotices = useExpiredDownloadsStore((s) => s.notices);
 
   // Every row taps through to the item's own detail page — see the file
   // header. `goToDetail` is the one place that navigation happens, so every
@@ -506,6 +581,36 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     [],
   );
 
+  // Delete a download from the Downloads tab's own row action — confirmed
+  // first, since it frees real bytes on disk. `contentStore.destroy` (Content/
+  // Encryption's own "book deleted" terminal action, `contentStore.ts`'s own
+  // doc comment) drops the ciphertext, metadata and key; `removeDownload`
+  // drops this device's tracking record so the row itself disappears. Run in
+  // that order — a failed `destroy` leaves the row in place with a real error
+  // rather than reporting a title as gone while its bytes still sit on disk.
+  const handleDeleteDownload = useCallback((deleteItemId: string) => {
+    Alert.alert(
+      'Delete download?',
+      'This removes it from your device. You can download it again anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setActionNotice(undefined);
+            setDeletingItemId(deleteItemId);
+            contentStore
+              .destroy(deleteItemId as BookId)
+              .then(() => useDownloadStore.getState().removeDownload(deleteItemId))
+              .catch(() => setActionNotice('Couldn’t delete that download. Try again.'))
+              .finally(() => setDeletingItemId(undefined));
+          },
+        },
+      ],
+    );
+  }, []);
+
   // Any row will do — `serverTime` is stamped once for the whole response, so
   // every loan and hold in one response carries the same value.
   const clock = useServerClock(offered[0]?.serverTime ?? waiting[0]?.serverTime, idKey, TICK_MS);
@@ -574,6 +679,8 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           publisher={publisherFor(record.itemId)}
           summary={summaryFor(record.itemId)}
           onPress={() => goToDetail(record.itemId)}
+          onDelete={() => handleDeleteDownload(record.itemId)}
+          deleting={deletingItemId === record.itemId}
         />
       </View>
     ));
@@ -689,6 +796,17 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           {...(badges.length === 0
             ? {}
             : { badge: <View style={styles.badgeStack}>{badges}</View> })}
+          {...(item.download === undefined
+            ? {}
+            : {
+                action: (
+                  <DeleteDownloadButton
+                    title={titleFor(item.itemId)}
+                    onDelete={() => handleDeleteDownload(item.itemId)}
+                    deleting={deletingItemId === item.itemId}
+                  />
+                ),
+              })}
         />
       </View>
     );
@@ -931,6 +1049,31 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} />}
         testID="library-scroll"
       >
+        {expiredDownloadNotices.length > 0 && (
+          <View style={styles.expiredNoticeContainer} testID="expired-downloads-notice">
+            <Text style={styles.expiredNoticeText}>
+              {expiredDownloadNotices.length === 1
+                ? `“${expiredDownloadNotices[0].title}” was removed from this device because its licence ended.`
+                : `${expiredDownloadNotices.length} downloads were removed from this device because their licences ended.`}
+            </Text>
+            <Pressable
+              onPress={() => useExpiredDownloadsStore.getState().dismissAll()}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              hitSlop={8}
+            >
+              <Text style={styles.expiredNoticeDismiss}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {holdingsRefreshFailed && (
+          <Text style={styles.notice} testID="library-holdings-stale">
+            Couldn’t confirm your current access. Due dates and loan status below may be out of
+            date — pull to try again.
+          </Text>
+        )}
+
         {hydrationFailed && (
           <Text style={styles.notice}>
             Titles couldn’t be loaded. Pull to try again — your books are still here.
@@ -1184,11 +1327,13 @@ function EliteQueueRow({
 
 // A book whose bytes are on this phone.
 //
-// NO "Read offline" BUTTON, AND NO DELETE. Opening it needs a decrypt through
-// CAP-7's `ContentProvider`, and deleting it needs `ContentStore.destroy` to
-// take the wrapped key with it — a row that removed our record and left the
-// ciphertext on disk would report free space that was never freed. Both are
-// behind a seam this repo does not implement yet, so the row states the fact.
+// STILL NO "Read offline" BUTTON — opening it goes through `ItemDetail`'s own
+// Read/Play action like every other row on this screen (see the file
+// header), which decrypts through `openBook` regardless of tab. DELETE now
+// IS WIRED: `onDelete` calls `contentStore.destroy` (takes the ciphertext,
+// metadata and wrapped key with it, not just this device's tracking record —
+// see `handleDeleteDownload`'s own comment), so this row no longer risks
+// reporting free space that was never actually freed.
 //
 // IT DOES NOT SAY WHETHER THE BOOK STILL OPENS. See `downloadedLabel`: this
 // screen knows a download happened, not that the licence behind it is still
@@ -1199,6 +1344,8 @@ function DownloadRow({
   publisher,
   summary,
   onPress,
+  onDelete,
+  deleting,
 }: {
   record: DownloadRecord;
   title: string;
@@ -1206,6 +1353,11 @@ function DownloadRow({
   summary?: BookSummary;
   /** Tap → this item's detail page. */
   onPress: () => void;
+  /** Confirms, then deletes — see `handleDeleteDownload`'s own comment. */
+  onDelete: () => void;
+  /** This row's own delete call is in flight — disables the button so a
+   * second tap cannot fire a second `contentStore.destroy` for the same id. */
+  deleting: boolean;
 }) {
   return (
     <ContentCard
@@ -1217,7 +1369,43 @@ function DownloadRow({
       // "Downloaded" badge stays on `downloadedLabel`'s own honest wording.
       {...(summary?.format === undefined ? {} : { format: summary.format })}
       badge={<Text style={styles.badgeLabel}>{downloadedLabel(record)}</Text>}
+      action={<DeleteDownloadButton title={title} onDelete={onDelete} deleting={deleting} />}
     />
+  );
+}
+
+// Shared between `DownloadRow` (the Downloads tab) and `renderMergedContentRow`
+// (the All tab) — a download is a download regardless of which tab a reader
+// found it on, and the All tab is the one most readers land on first, so
+// scoping delete to the Downloads tab alone (the original shape here) left it
+// looking missing entirely to a reader who never switches tabs.
+//
+// A nested Pressable inside `ContentCard`'s own — see that file's `action` doc
+// comment: it claims the touch itself, so deleting never also navigates to
+// the detail page.
+function DeleteDownloadButton({
+  title,
+  onDelete,
+  deleting,
+}: {
+  title: string;
+  /** Confirms, then deletes — see `handleDeleteDownload`'s own comment. */
+  onDelete: () => void;
+  /** This row's own delete call is in flight — disables the button so a
+   * second tap cannot fire a second `contentStore.destroy` for the same id. */
+  deleting: boolean;
+}) {
+  return (
+    <Pressable
+      testID="download-delete-button"
+      onPress={onDelete}
+      disabled={deleting}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={`Delete ${title} from this device`}
+    >
+      <Ionicons name={deleting ? 'hourglass-outline' : 'trash-outline'} size={20} color={color.textSecondary} />
+    </Pressable>
   );
 }
 
@@ -1363,6 +1551,31 @@ const styles = StyleSheet.create({
     padding: space.sm,
     marginBottom: space.md,
     color: color.textSecondary,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+  },
+  // Same card as `notice` above, but a View rather than a Text — this one
+  // carries its own Dismiss control alongside the message.
+  expiredNoticeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.sm,
+    backgroundColor: color.surface,
+    borderRadius: radius.card,
+    padding: space.sm,
+    marginBottom: space.md,
+  },
+  expiredNoticeText: {
+    flex: 1,
+    color: color.textSecondary,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+  },
+  expiredNoticeDismiss: {
+    color: color.primary,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
