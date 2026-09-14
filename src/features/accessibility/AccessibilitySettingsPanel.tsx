@@ -216,6 +216,22 @@ export function AccessibilitySettingsPanel({
       });
   };
 
+  /**
+   * A plain flip, same shape as `toggleHighContrast` — the contract's own default is `false`, so
+   * there's no revert-to-default ambiguity to worry about. SCOPE WARNING carried over from the
+   * contract itself (`AccessibilityPrefs.screenReaderHints`'s own doc comment): this reaches native
+   * RN controls only, never EPUB content inside the WebView.
+   */
+  const toggleScreenReaderHints = (): void => {
+    void prefsStore
+      .savePrefs({
+        accessibility: { ...prefs, screenReaderHints: !prefs.screenReaderHints },
+      })
+      .catch((error: unknown) => {
+        console.warn('AccessibilitySettingsPanel: failed to save screenReaderHints', error);
+      });
+  };
+
   return (
     <View style={styles.container}>
       {showDyslexiaFont && (
@@ -280,6 +296,22 @@ export function AccessibilitySettingsPanel({
           Currently: {reduceMotionResolved ? 'On' : 'Off'}
         </Text>
       )}
+
+      <View style={styles.divider} />
+      <Text style={styles.sectionLabel}>Screen Reader Hints</Text>
+      <View style={styles.chipRow} testID="screen-reader-hints-row">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Screen reader hints: ${prefs.screenReaderHints ? 'On' : 'Off'}`}
+          accessibilityState={{ selected: prefs.screenReaderHints }}
+          onPress={toggleScreenReaderHints}
+          style={[styles.chip, prefs.screenReaderHints && styles.chipSelected]}
+        >
+          <Text style={[styles.chipText, prefs.screenReaderHints && styles.chipTextSelected]}>
+            Screen Reader Hints: {prefs.screenReaderHints ? 'On' : 'Off'}
+          </Text>
+        </Pressable>
+      </View>
 
       <View style={styles.divider} />
       {/* NOT format-gated, unlike Dyslexia Font above: TTS is a device-wide accessibility

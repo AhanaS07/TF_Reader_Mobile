@@ -209,3 +209,23 @@ swipe vs. local Actions menu) on a real device — this test fired the underlyin
 directly, which is what either surfacing mechanism would itself invoke, but doesn't confirm which
 UX a real TalkBack user actually gets to trigger it, or how discoverable it is. That still needs a
 real device or a rooted AVD per this doc's own original testing plan.
+
+## Addendum, Hruthik (2026-09-14) — proposed discoverability hint for `reader-webview-a11y-pageturn`
+
+Not a code change here — `ReaderWebView.tsx` is Ahana's file — but worth proposing before the
+gesture-surfacing pass above is run: right now nothing tells a TalkBack user the "Turn page" node
+has a custom action at all. `AccessibilityPrefs.screenReaderHints` (a previously-unwired contract
+field — now wired to a real toggle in `AccessibilitySettingsPanel.tsx` and consumed by
+`AccessibilityInfoButton.tsx` on the accessibility side) exists for exactly this purpose: "extra a11y
+labels for TalkBack/VoiceOver," native-controls-only per its own scope warning.
+
+**Proposal**: when `screenReaderHints` is on, give the `reader-webview-a11y-pageturn` sibling node an
+`accessibilityHint`, e.g. `"Use a two-finger swipe or the actions menu to turn pages"` — announced
+after the label, exactly how the hint on `AccessibilityInfoButton` already works. This costs nothing
+architecturally (the node's `accessibilityRole`/`accessibilityActions` are unaffected, so it can't
+reopen the leaf-trap this doc's own Resolution section fixed) and directly addresses the
+discoverability gap the still-open gesture-surfacing item above is really about: even once real
+gesture surfacing is confirmed working, a user has no way to know to try it without a hint or a
+support article. `ReaderWebView` would need `screenReaderHints` threaded in as a prop (from wherever
+`ReaderScreen.tsx` already reads accessibility prefs for other purposes) — left to Ahana's judgment
+on the cleanest way to wire it in her own file.

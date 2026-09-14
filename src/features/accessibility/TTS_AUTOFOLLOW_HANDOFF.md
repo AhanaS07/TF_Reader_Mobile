@@ -153,9 +153,13 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   (`uiautomator`-bounds) signal, on the exact flow/config this checklist item names. Session also hit
   two unrelated instabilities worth logging, not blocking: a cross-device sync conflict dialog
   ("Reading progress updated... Resume from there, or continue reading here?") interrupted playback
-  once — dismissed via "Continue here", TTS resumed correctly after; and TalkBack itself crashed once
-  mid-session ("Android Accessibility Suite keeps stopping"), recovered on its own (rebound
-  automatically, confirmed via `dumpsys accessibility`) without needing the service to be re-enabled.
+  once — dismissed via "Continue here", TTS resumed correctly after (**confirmed not an auto-resume**:
+  `ReaderScreenHandle.pauseTtsIfSpeaking()`, `ReaderScreen.tsx:379-382`/`1084-1094`, only pauses, and
+  neither dialog handler in `ReaderRouteScreen.tsx` (lines `274-295`, `327-346`) touches TTS at all —
+  this was manually pressing Play again, exactly the documented "no auto-resume" design, not a
+  behavior change); and TalkBack itself crashed once mid-session ("Android Accessibility Suite keeps
+  stopping"), recovered on its own (rebound automatically, confirmed via `dumpsys accessibility`)
+  without needing the service to be re-enabled — OS-level flakiness, not app-actionable.
   **Paginated flow was not separately re-checked this pass** (auto-follow's own design only applies
   to the forced-scrolled-doc case per this doc's mechanism section) — not a gap, just scoped out as
   N/A rather than left ambiguous.
