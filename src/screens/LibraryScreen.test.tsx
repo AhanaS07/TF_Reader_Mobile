@@ -449,15 +449,14 @@ describe('LibraryScreen — Borrowed tab', () => {
     await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
   }
 
-  it('always shows the "Borrowed" heading and a compact hint, even when empty', async () => {
+  it('shows one combined hint, and no per-section heading, when nothing is borrowed, held or waited on', async () => {
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
 
     await openBorrowed();
 
-    expect(screen.getByTestId('tab-heading-borrowed')).toBeTruthy();
-    expect(screen.getByText('No items currently borrowed.')).toBeTruthy();
-    expect(screen.getByText('Items you borrow will appear here until they’re due.')).toBeTruthy();
+    expect(screen.queryByTestId('tab-heading-borrowed')).toBeNull();
+    expect(screen.getByText('Nothing borrowed or waiting on right now.')).toBeTruthy();
   });
 
   it('lists a subscription loan with its due date and a real count', async () => {
@@ -476,9 +475,9 @@ describe('LibraryScreen — Borrowed tab', () => {
 
     await waitFor(() => expect(screen.getByText('Due in 14 days')).toBeTruthy());
     expect(screen.getByText('1 item')).toBeTruthy();
-    // The hint's plain caption stays, under the real row — it never
-    // disappears just because the tab now has something in it.
-    expect(screen.getByText('Items you borrow will appear here until they’re due.')).toBeTruthy();
+    // No hint caption once the section has real content — see
+    // `renderBorrowedTab`'s own comment on why the per-section hint went.
+    expect(screen.queryByText('Items you borrow will appear here until they’re due.')).toBeNull();
   });
 
   it('keeps an unhydrated loan here until its tier is known', async () => {
@@ -861,16 +860,15 @@ describe('LibraryScreen — Borrowed tab (Elite access & waiting)', () => {
     await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
   }
 
-  it('always shows "Your Elite access" and "Waiting for access", each with its own compact hint when empty', async () => {
+  it('shows neither "Your Elite access" nor "Waiting for access" while both are empty', async () => {
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
 
     await openBorrowed();
 
-    expect(screen.getByText('Your Elite access')).toBeTruthy();
-    expect(screen.getByText('No active Elite access.')).toBeTruthy();
-    expect(screen.getByText('Waiting for access')).toBeTruthy();
-    expect(screen.getByText('No items currently waiting.')).toBeTruthy();
+    expect(screen.queryByText('Your Elite access')).toBeNull();
+    expect(screen.queryByText('Waiting for access')).toBeNull();
+    expect(screen.getByText('Nothing borrowed or waiting on right now.')).toBeTruthy();
   });
 
   it('reserves no heading or hint for a pending offer when there is none', async () => {

@@ -1465,6 +1465,31 @@ describe('ItemDetailScreen — holdings joined from library store', () => {
     // entire footer while queued, not a second thing competing with it.
     expect(screen.getByTestId('queue-position-bar')).toBeTruthy();
     expect(screen.queryByTestId('action-bar')).toBeNull();
+    // The same waitlist fill Library's own Elite queue row draws — position 3
+    // of 7 means 5 of 7 places from the front (queueLength - position + 1).
+    expect(screen.getByTestId('queue-position-progress-track')).toBeTruthy();
+    expect(screen.getByTestId('queue-position-progress-fill')).toHaveStyle({ width: `${(5 / 7) * 100}%` });
+  });
+
+  it('omits the queue progress bar when no queue total has arrived yet', async () => {
+    selectAndSignIn(INSTITUTION);
+    const hold = {
+      holdId: 'hold_1',
+      itemId: 'item_42',
+      state: 'queued' as const,
+      position: 3,
+      serverTime: new Date().toISOString(),
+    };
+    useLibraryStore.setState({ loans: [], holds: [hold] });
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [hold] });
+    setCatalogueSource(
+      fakeSource(async () => aBook({ acquisition: anAcquisition({ licenceModel: 'ELITE' }) })),
+    );
+
+    await render(<ItemDetailScreen {...routeProps} />);
+
+    await waitFor(() => expect(screen.getByText('Position 3 in queue')).toBeTruthy());
+    expect(screen.queryByTestId('queue-position-progress-track')).toBeNull();
   });
 
   it('ignores a loan for a different item — still shows Grant access for this one', async () => {

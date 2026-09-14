@@ -60,7 +60,7 @@ import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
 import { getCatalogueSource } from '@config/catalogue';
 import { getLicenceSource } from '@config/licence';
-import { borrowOrPlaceHold, queuePositionLabel } from '@/licence/queueRequest';
+import { borrowOrPlaceHold, queuePositionLabel, queueProgressFraction } from '@/licence/queueRequest';
 import { openBook } from '@/features/download/openBook';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
@@ -399,11 +399,28 @@ function QueuePositionLine({ access }: { access: ItemDetail['access'] }): ReactE
   const label = queuePositionLabel(access);
   if (label === undefined) return null;
 
+  // THE SAME FILL LIBRARY'S OWN ELITE QUEUE ROW ALREADY DRAWS
+  // (`ContentCard`'s `progress` prop, `color.wait` — "no seats, waitlist"),
+  // on direct instruction, 14 Sep: this screen already tells the reader
+  // their numeric position, but Library's queue row also gives it a visual
+  // sense of how close that is, and the two surfaces read as inconsistent
+  // without it. `undefined` (no `queueLength` yet) simply omits the bar —
+  // the text line alone still says everything a fraction can't.
+  const progress = queueProgressFraction(access);
+
   return (
     <View style={styles.queuePositionBar} testID="queue-position-bar">
       <Text testID="queue-position" style={styles.queuePosition} accessibilityRole="text">
         {label}
       </Text>
+      {progress !== undefined && (
+        <View style={styles.queueProgressTrack} testID="queue-position-progress-track">
+          <View
+            testID="queue-position-progress-fill"
+            style={[styles.queueProgressFill, { width: `${progress * 100}%` }]}
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -1240,6 +1257,22 @@ const styles = StyleSheet.create({
     fontSize: typeScale.meta.size,
     lineHeight: typeScale.meta.lineHeight,
     color: color.textSecondary,
+  },
+  // Byte-identical to `ContentCard`'s own `progressTrack`/`progressFill` —
+  // see `QueuePositionLine`'s own comment on why this screen draws the same
+  // waitlist fill rather than importing a shared component for it.
+  queueProgressTrack: {
+    width: '100%',
+    height: space.xs,
+    marginTop: space.xs,
+    borderRadius: radius.pill,
+    backgroundColor: color.border,
+    overflow: 'hidden',
+  },
+  queueProgressFill: {
+    height: '100%',
+    borderRadius: radius.pill,
+    backgroundColor: color.wait,
   },
   metaRow: {
     fontFamily: typeScale.meta.fontFamily,

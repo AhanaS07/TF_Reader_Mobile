@@ -64,6 +64,13 @@
 // shrink: compact enough to sit under real content without reading as
 // leftover space, not a full-page "nothing here" card.
 //
+// BORROWED IS THE ONE EXCEPTION, on direct instruction, 14 Sep: it holds up
+// to four DIFFERENT facts (an offer, a loan, Elite access, a queue position)
+// rather than one, and a permanent hint under each of the three that
+// happened to be empty read as three stacked apologies rather than a tab
+// with real content in it. That tab shows a hint only when ALL FOUR are
+// empty — see `renderBorrowedTab`'s own comment.
+//
 // EVERY ROW ON THIS SCREEN IS ONE `ContentCard`, REGARDLESS OF TAB OR
 // SOURCE. `EliteLoanRow`/`EliteQueueRow` (below, beside `BorrowedBookRow`/
 // `DownloadRow`/`BookmarkGroupRow`) render Elite's two navigable states
@@ -912,13 +919,33 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   // Borrowed and Premium, merged into one tab on explicit instruction — safe
   // because `partitionLoansByTier`'s own invariant guarantees a title can
   // never be both a subscription and an Elite loan, so nothing here can show
-  // twice. Each of the four facts (an offer, a subscription loan, an Elite
-  // loan, a queue position) keeps its own heading and its own compact hint
-  // when empty, same "never a reserved empty slot for an offer, always a
-  // hint for the other three" rule the two separate tabs already followed —
-  // only the tab bar shrank from two entries to one.
+  // twice. UNLIKE THE OTHER SINGLE-PURPOSE TABS, none of the four facts (an
+  // offer, a subscription loan, an Elite loan, a queue position) gets a
+  // permanent `TabHint` of its own any more — see `renderBorrowedTab`'s own
+  // comment for why that reversed.
   function renderBorrowedTab(): ReactNode {
     if (holdingsLoading) return <HoldingsSkeleton />;
+
+    // EACH OF THE FOUR FACTS RENDERS ONLY WHEN IT'S TRUE, on direct
+    // instruction, 14 Sep — this used to always render all three of
+    // Borrowed/Elite/Waiting, each with its own permanent `TabHint` even
+    // while genuinely empty ("No items currently borrowed.", etc.), which
+    // read as three stacked apologies rather than a tab with content in it.
+    // A reader with only an Elite loan now sees exactly that one section,
+    // not two empty ones either side of it.
+    const hasAnything =
+      offered.length > 0 || subscriptionLoans.length > 0 || eliteLoans.length > 0 || waiting.length > 0;
+
+    if (!hasAnything) {
+      return (
+        <TabHint
+          icon="library-outline"
+          headline="Nothing borrowed or waiting on right now."
+          caption="Titles you borrow, Elite access you hold, and any Elite queue you’re waiting in will all appear here."
+        />
+      );
+    }
+
     return (
       <>
         {offered.length > 0 && (
@@ -928,36 +955,26 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           </View>
         )}
 
-        <View style={styles.section}>
-          <TabHeading title="Borrowed" count={subscriptionLoans.length} />
-          {subscriptionLoans.length > 0 && renderSubscriptionLoans()}
-          <TabHint
-            icon="library-outline"
-            headline={subscriptionLoans.length === 0 ? 'No items currently borrowed.' : undefined}
-            caption="Items you borrow will appear here until they’re due."
-          />
-        </View>
+        {subscriptionLoans.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Borrowed" count={subscriptionLoans.length} />
+            {renderSubscriptionLoans()}
+          </View>
+        )}
 
-        <View style={styles.section}>
-          <TabHeading title="Your Elite access" count={eliteLoans.length} />
-          {eliteLoans.length > 0 && renderEliteActiveLoans()}
-          <TabHint
-            icon="crown-outline"
-            headline={eliteLoans.length === 0 ? 'No active Elite access.' : undefined}
-            caption="When you have access, your titles will appear here."
-            iconSet="material"
-          />
-        </View>
+        {eliteLoans.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Your Elite access" count={eliteLoans.length} />
+            {renderEliteActiveLoans()}
+          </View>
+        )}
 
-        <View style={styles.section}>
-          <TabHeading title="Waiting for access" count={waiting.length} />
-          {waiting.length > 0 && renderWaitingQueue()}
-          <TabHint
-            icon="hourglass-outline"
-            headline={waiting.length === 0 ? 'No items currently waiting.' : undefined}
-            caption="Titles waiting for Elite access will appear here."
-          />
-        </View>
+        {waiting.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Waiting for access" count={waiting.length} />
+            {renderWaitingQueue()}
+          </View>
+        )}
       </>
     );
   }
