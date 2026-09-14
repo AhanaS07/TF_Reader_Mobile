@@ -12,8 +12,6 @@
 // AN OVERLAY, matching Contents and Search, for the same reason those are: resizing the viewer
 // re-paginates epub.js, and a CFI resolved under one pagination points at a different page under
 // another. Overlaying keeps the viewer a fixed size for the whole time this panel is open.
-//
-// Colours are inline for the same reason the rest of the reader's are: src/theme/ has not landed yet.
 
 import { useState } from 'react';
 import {
@@ -25,6 +23,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+import { color, radius, space } from '@theme/tokens';
 
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
 
@@ -138,7 +138,7 @@ export function BookmarksPanel({
           onChangeText={setLabel}
           onSubmitEditing={submitAdd}
           placeholder="Name this bookmark (optional)"
-          placeholderTextColor="#8a8a8a"
+          placeholderTextColor={color.textSecondary}
           returnKeyType="done"
           editable={canAddCurrent}
         />
@@ -266,75 +266,75 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
-    paddingHorizontal: 16,
+    borderTopColor: color.border,
+    paddingHorizontal: space.md,
     paddingTop: 12,
   },
 
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 18, fontWeight: '600', color: '#111111' },
+  title: { fontSize: 18, fontWeight: '700', color: color.textPrimary },
   action: {
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f2f2f2',
+    paddingVertical: space.sm,
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
   },
-  actionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  actionText: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
 
-  addRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  addRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: 12 },
   addInput: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
-    borderRadius: 8,
+    borderColor: color.border,
+    borderRadius: radius.card,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: space.sm,
     fontSize: 14,
-    color: '#111111',
+    color: color.textPrimary,
   },
   addButton: {
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: radius.card,
     alignItems: 'center',
-    backgroundColor: '#f2f2f2',
+    backgroundColor: color.surface,
   },
-  addButtonText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  addButtonText: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
   disabled: { opacity: 0.4 },
 
   listWrap: { flex: 1, marginTop: 12 },
-  list: { borderTopWidth: 1, borderTopColor: '#e2e2e2' },
+  list: { borderTopWidth: 1, borderTopColor: color.border },
   listContent: { paddingBottom: 48 },
 
-  busyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
-  hint: { marginTop: 6, fontSize: 13, color: '#777777' },
+  busyRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.sm },
+  hint: { marginTop: 6, fontSize: 13, color: color.textSecondary },
 
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: color.border,
   },
   rowBody: { flex: 1, paddingVertical: 12 },
-  rowLabel: { fontSize: 15, color: '#111111' },
-  editButton: { paddingHorizontal: 10, paddingVertical: 8 },
-  editButtonText: { fontSize: 13, fontWeight: '600', color: '#111111' },
-  deleteButton: { paddingHorizontal: 10, paddingVertical: 8 },
-  deleteButtonText: { fontSize: 13, fontWeight: '600', color: '#8a1c1c' },
+  rowLabel: { fontSize: 15, color: color.textPrimary },
+  editButton: { paddingHorizontal: 10, paddingVertical: space.sm },
+  editButtonText: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
+  deleteButton: { paddingHorizontal: 10, paddingVertical: space.sm },
+  deleteButtonText: { fontSize: 13, fontWeight: '700', color: color.error },
 
   editInput: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
-    borderRadius: 8,
-    paddingHorizontal: 8,
+    borderColor: color.border,
+    borderRadius: radius.card,
+    paddingHorizontal: space.sm,
     paddingVertical: 6,
-    marginVertical: 8,
+    marginVertical: space.sm,
     fontSize: 15,
-    color: '#111111',
+    color: color.textPrimary,
   },
-  editAction: { paddingHorizontal: 8, paddingVertical: 8 },
-  editActionText: { fontSize: 13, fontWeight: '600', color: '#111111' },
+  editAction: { paddingHorizontal: space.sm, paddingVertical: space.sm },
+  editActionText: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
 });
