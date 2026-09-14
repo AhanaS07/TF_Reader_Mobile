@@ -26,6 +26,8 @@
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, space } from '@theme/tokens';
+
 import { prefsStore } from '@/features/personalization/prefsStore';
 import {
   guardTtsEnableForSleepTimer,
@@ -385,7 +387,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
-    color: '#777777',
+    color: color.textSecondary,
     marginTop: 10,
     marginBottom: 4,
     textAlign: 'center',
@@ -395,14 +397,14 @@ const styles = StyleSheet.create({
   // as one continuously-divided list rather than two different divider styles.
   divider: {
     height: 1,
-    backgroundColor: '#e2e2e2',
-    marginTop: 8,
+    backgroundColor: color.border,
+    marginTop: space.sm,
   },
   // Same weight/colour as sectionLabel but not uppercase or bold — this is a live status readout,
   // not a section heading, and shouldn't compete with one visually.
   helperText: {
     fontSize: 12,
-    color: '#777777',
+    color: color.textSecondary,
     marginTop: 4,
     textAlign: 'center',
   },
@@ -424,11 +426,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
-    backgroundColor: '#f2f2f2',
+    backgroundColor: color.surface,
   },
-  chipSelected: { backgroundColor: '#111111' },
-  chipText: { fontSize: 13, color: '#111111', fontWeight: '600' },
-  chipTextSelected: { color: '#ffffff' },
+  // `color.primary` — the brand's own "active tabs" colour, same call TtsControls.tsx's own
+  // selected-chip state makes.
+  chipSelected: { backgroundColor: color.primary },
+  chipText: { fontSize: 13, color: color.textPrimary, fontWeight: '700' },
+  chipTextSelected: { color: color.white },
   // Announcements is always the LAST section (no divider or section follows it — see that
   // section's own comment on why). Every other section's trailing gap comes from the NEXT
   // section's `sectionLabel.marginTop`/`divider.marginTop`; the last one has nothing following it

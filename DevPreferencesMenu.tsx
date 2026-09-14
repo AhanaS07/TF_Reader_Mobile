@@ -54,6 +54,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent, View as RNView } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import {
   READER_CAPTURE_KEY,
   allowScreenCaptureAsync,
@@ -1128,15 +1130,15 @@ const styles = StyleSheet.create({
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 8,
+    borderRadius: radius.card,
   },
-  menuIcon: { fontSize: 22, color: '#111111' },
+  menuIcon: { fontSize: 22, color: color.textPrimary },
 
   // Matches the visual weight of a `disabled` Pressable elsewhere in the reader (ReaderScreen's
   // Prev/Next), so a row the screen-reader override has taken over reads as unavailable rather than
   // as broken.
   toggleDisabled: { opacity: 0.4 },
-  sectionNote: { fontSize: 11, lineHeight: 15, color: '#555555', marginBottom: 6 },
+  sectionNote: { fontSize: 11, lineHeight: 15, color: color.textSecondary, marginBottom: 6 },
 
   // Floats over the reader — z-indexed above it and NOT part of the header's own layout flow, so
   // opening it never resizes the WebView underneath (which would re-paginate for no reason).
@@ -1163,14 +1165,15 @@ const styles = StyleSheet.create({
     // constant. This is only the pre-measurement/test-renderer fallback, same reasoning as the
     // `top: 48, right: 0` above it.
     minWidth: 220,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    backgroundColor: color.white,
+    borderRadius: radius.tile,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
+    borderColor: color.border,
     padding: 12,
     // RN's boxShadow is iOS/Android-agnostic as of RN 0.76+; elevation is the Android fallback for
-    // engines that ignore it.
-    boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.12)',
+    // engines that ignore it. Indigo (`color.navy`) rather than plain black, matching the elevation
+    // shadows the shared component library already uses.
+    boxShadow: '0px 4px 12px rgba(0, 34, 68, 0.12)',
     elevation: 6,
     zIndex: 10,
   },
@@ -1178,7 +1181,7 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#8a8a8a',
+    color: color.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 6,
@@ -1187,29 +1190,31 @@ const styles = StyleSheet.create({
   // section label — smaller and not uppercased, so it doesn't compete with sectionLabel above it.
   sliderLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#444444',
+    fontWeight: '700',
+    color: color.textPrimary,
     marginBottom: 4,
   },
   hint: {
     fontSize: 11,
-    color: '#8a8a8a',
+    color: color.textSecondary,
     marginBottom: 8,
     fontStyle: 'italic',
   },
-  row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  row: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: 12 },
 
   toggle: {
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#c8c8c8',
-    backgroundColor: '#ffffff',
+    borderColor: color.border,
+    backgroundColor: color.white,
   },
-  toggleActive: { backgroundColor: '#111111', borderColor: '#111111' },
-  toggleLabel: { fontSize: 13, fontWeight: '600', color: '#444444' },
-  toggleLabelActive: { color: '#ffffff' },
+  // `color.primary` — the brand's own "active tabs" colour, same call every other selected-chip
+  // state in the reader makes.
+  toggleActive: { backgroundColor: color.primary, borderColor: color.primary },
+  toggleLabel: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
+  toggleLabelActive: { color: color.white },
 
   // Spacing between the font-size slider and the font-family row directly below it — the Zoom
   // slider needs no equivalent since nothing else follows it in that section.
@@ -1221,7 +1226,7 @@ const styles = StyleSheet.create({
   zoomValue: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#111111',
+    color: color.textPrimary,
     marginBottom: 8,
     fontVariant: ['tabular-nums'],
   },
@@ -1237,23 +1242,25 @@ const styles = StyleSheet.create({
     right: 0,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#e2e2e2',
+    backgroundColor: color.border,
   },
+  // The accent, not body text — same `color.primary` every other progress/selection fill in the
+  // reader uses.
   zoomTrackFill: {
     position: 'absolute',
     left: 0,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   zoomThumb: {
     position: 'absolute',
     width: ZOOM_THUMB_SIZE,
     height: ZOOM_THUMB_SIZE,
     borderRadius: ZOOM_THUMB_SIZE / 2,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     borderWidth: 2,
-    borderColor: '#111111',
+    borderColor: color.primary,
   },
 
   // A stop mark for every value `stepTickRatios` reports valid, on the line-height/letter-spacing/
@@ -1270,7 +1277,8 @@ const styles = StyleSheet.create({
     marginLeft: -1,
     borderRadius: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    // Indigo (`color.navy`), matching this file's other dark-overlay rgba values.
+    borderColor: 'rgba(0, 34, 68, 0.35)',
     borderWidth: 1,
-    borderColor: 'rgba(17, 17, 17, 0.35)',
   },
 });

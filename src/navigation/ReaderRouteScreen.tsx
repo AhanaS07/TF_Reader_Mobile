@@ -82,6 +82,8 @@ import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId, Locator } from '@/shared/contracts';
 
+import { color } from '@theme/tokens';
+
 import { DevPreferencesMenu } from '../../DevPreferencesMenu';
 import type { CatalogueStackParamList } from './types';
 
@@ -387,6 +389,6 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, backgroundColor: color.white },
   loadingIndicator: { flex: 1, alignSelf: 'center' },
 });

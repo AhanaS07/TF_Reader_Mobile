@@ -23,6 +23,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { DownloadProgressIndicator } from '@/features/download/DownloadProgressIndicator';
 import { useDownloadProgress } from '@/features/download/useDownloadProgress';
 import { openBook } from '@/features/download/openBook';
@@ -465,34 +467,35 @@ export function BookListScreen({ navigation }: Props): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  screenContainer: { flex: 1, backgroundColor: '#ffffff' },
+  screenContainer: { flex: 1, backgroundColor: color.white },
   container: { flex: 1 },
-  content: { padding: 16, gap: 16 },
+  content: { padding: space.md, gap: space.lg },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#f8f9fa',
+    backgroundColor: color.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#e9ecef',
+    borderBottomColor: color.border,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
+    paddingVertical: space.sm,
+    gap: space.sm,
   },
   tabButton: {
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: space.sm,
     borderRadius: 20,
     backgroundColor: 'transparent',
   },
+  // `color.primary` — the brand's own "active tabs" colour.
   tabButtonActive: {
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   tabButtonText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#666666',
+    fontWeight: '700',
+    color: color.textSecondary,
   },
   tabButtonTextActive: {
-    color: '#ffffff',
+    color: color.white,
   },
   section: {
     gap: 10,
@@ -503,28 +506,28 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#111111',
+    color: color.textPrimary,
   },
   sectionSubtitle: {
     fontSize: 12,
-    color: '#666666',
+    color: color.textSecondary,
     marginTop: 2,
   },
   row: {
     borderWidth: 1,
-    borderColor: '#e2e2e2',
-    borderRadius: 12,
+    borderColor: color.border,
+    borderRadius: radius.tile,
     padding: 14,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
   },
   audioRow: {
-    borderColor: '#d0d7de',
-    backgroundColor: '#fcfcfd',
+    borderColor: color.border,
+    backgroundColor: color.surface,
   },
   activeAudioRow: {
-    borderColor: '#111111',
+    borderColor: color.primary,
     borderWidth: 2,
-    backgroundColor: '#f6f8fa',
+    backgroundColor: color.subscriptionTint,
   },
   rowHeader: {
     flexDirection: 'row',
@@ -541,20 +544,23 @@ const styles = StyleSheet.create({
   audioIcon: {
     fontSize: 18,
   },
-  rowLabel: { fontSize: 16, fontWeight: '600', color: '#111111' },
+  rowLabel: { fontSize: 16, fontWeight: '700', color: color.textPrimary },
   activeRowLabel: { fontWeight: '700' },
+  // The brand palette has no light tint for `color.success` (Mint) the way it does for
+  // subscription/error, so this keeps a neutral background rather than inventing an untracked
+  // green hex (CONVENTIONS §5) — the border/text still carry the "downloaded" signal.
   statusBadge: {
-    backgroundColor: '#e6f4ea',
-    paddingHorizontal: 8,
+    backgroundColor: color.surface,
+    paddingHorizontal: space.sm,
     paddingVertical: 3,
-    borderRadius: 12,
+    borderRadius: radius.tile,
     borderWidth: 1,
-    borderColor: '#34a853',
+    borderColor: color.success,
   },
   statusBadgeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#137333',
+    color: color.success,
   },
   rowActions: {
     flexDirection: 'row',
@@ -572,38 +578,40 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 14,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   pauseButton: {
-    backgroundColor: '#444444',
+    backgroundColor: color.textSecondary,
   },
   primaryButtonLabel: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#ffffff',
+    color: color.white,
   },
   openPlayerButton: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#888888',
-    backgroundColor: '#ffffff',
+    borderColor: color.border,
+    backgroundColor: color.white,
   },
   openPlayerButtonLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#444444',
+    fontWeight: '700',
+    color: color.textPrimary,
   },
+  // `color.primary` — the brand's own "primary buttons" colour, same call every other CTA fill in
+  // the reader makes.
   downloadButton: {
     alignSelf: 'flex-start',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 14,
-    backgroundColor: '#333333',
+    backgroundColor: color.primary,
   },
-  downloadButtonDisabled: { backgroundColor: '#9a9a9a' },
-  downloadButtonLabel: { fontSize: 13, fontWeight: '600', color: '#ffffff' },
+  downloadButtonDisabled: { backgroundColor: color.textSecondary },
+  downloadButtonLabel: { fontSize: 13, fontWeight: '700', color: color.white },
   audioQueueActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -614,29 +622,29 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#bbbbbb',
-    backgroundColor: '#ffffff',
+    borderColor: color.border,
+    backgroundColor: color.white,
   },
   queueButtonDisabled: {
-    backgroundColor: '#f1f3f5',
-    borderColor: '#e2e8f0',
+    backgroundColor: color.surface,
+    borderColor: color.border,
   },
   queueButtonLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#333333',
+    fontWeight: '700',
+    color: color.textPrimary,
   },
   queueButtonLabelDisabled: {
-    color: '#868e96',
+    color: color.textSecondary,
   },
   clearAllButton: {
     borderWidth: 1,
-    borderColor: '#c0392b',
-    borderRadius: 12,
+    borderColor: color.error,
+    borderRadius: radius.tile,
     padding: 12,
     alignItems: 'center',
-    backgroundColor: '#fdecea',
+    backgroundColor: color.errorTint,
   },
   clearAllButtonDisabled: { opacity: 0.5 },
-  clearAllButtonLabel: { fontSize: 15, fontWeight: '700', color: '#c0392b' },
+  clearAllButtonLabel: { fontSize: 15, fontWeight: '700', color: color.error },
 });

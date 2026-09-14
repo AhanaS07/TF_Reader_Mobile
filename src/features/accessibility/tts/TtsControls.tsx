@@ -12,6 +12,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { announce } from '@/features/reader/a11yAnnounce';
 import { focusOn } from '@/features/reader/a11yFocus';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
@@ -232,14 +234,14 @@ const styles = StyleSheet.create({
     maxWidth: 560,
     alignSelf: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
+    borderTopColor: color.border,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  error: { color: '#8a1c1c', marginBottom: 8, textAlign: 'center' },
+  error: { color: color.error, marginBottom: space.sm, textAlign: 'center' },
   // `flex: 1` children already divide the row, so `justifyContent` only matters if one ever stops
   // flexing — cheap insurance against a future fourth button that sizes to its content.
-  transportRow: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
+  transportRow: { flexDirection: 'row', gap: space.sm, justifyContent: 'center' },
   button: {
     flex: 1,
     // A floor, not a width: three buttons at `flex: 1` divide a 320pt screen into ~93pt each,
@@ -250,17 +252,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#f2f2f2',
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
     // Reserved at rest, not added only on focus — toggling `borderColor` alone (rather than adding
     // the border on focus) keeps the box the same size whether or not the ring is showing.
     borderWidth: FOCUS_RING_WIDTH,
     borderColor: 'transparent',
   },
   buttonDisabled: { opacity: 0.4 },
-  buttonText: { fontWeight: '600', color: '#111111' },
+  buttonText: { fontWeight: '700', color: color.textPrimary },
   sectionLabel: {
-    color: '#777777',
+    color: color.textSecondary,
     marginTop: 10,
     marginBottom: 4,
     textAlign: 'center',
@@ -276,7 +278,7 @@ const styles = StyleSheet.create({
   // the room seven items need instead comes from a tighter `paddingHorizontal`/`gap` than `button`'s
   // three-item row ever needed. Below a phone's practical minimum width this overflows rather than
   // wraps, the same trade-off `button`'s own comment already accepts.
-  chipRow: { flexDirection: 'row', gap: 4, justifyContent: 'center' },
+  chipRow: { flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   chip: {
     flex: 1,
     minWidth: MIN_TOUCH_TARGET,
@@ -286,13 +288,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingVertical: 6,
     borderRadius: 14,
-    backgroundColor: '#f2f2f2',
+    backgroundColor: color.surface,
     borderWidth: FOCUS_RING_WIDTH,
     borderColor: 'transparent',
   },
-  chipSelected: { backgroundColor: '#111111' },
-  chipText: { color: '#111111', fontWeight: '600' },
-  chipTextSelected: { color: '#ffffff' },
+  // `color.primary` — the brand's own "active tabs" colour, same call the reader's own
+  // AudioPlayerScreen/SleepTimerModal make for their selected-chip states.
+  chipSelected: { backgroundColor: color.primary },
+  chipText: { color: color.textPrimary, fontWeight: '700' },
+  chipTextSelected: { color: color.white },
   // Every OTHER gap in this panel is anchored by the label that follows it (`sectionLabel`'s own
   // `marginTop`) — Voice's row leads into "Speed", Speed's row leads into "Pitch" — so the same
   // numeric gap reads as deliberate spacing there. Pitch is the LAST row: nothing follows it to

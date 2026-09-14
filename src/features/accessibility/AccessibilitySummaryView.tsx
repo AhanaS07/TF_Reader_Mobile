@@ -15,6 +15,8 @@
 
 import { StyleSheet, Text, View } from 'react-native';
 
+import { color, space } from '@theme/tokens';
+
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
 import type { PublicationAccessibilitySummary } from './publicationA11ySummary';
@@ -116,12 +118,12 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 560,
     alignSelf: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: space.md,
     paddingVertical: 12,
   },
-  headline: { fontWeight: '700', color: '#111111', marginBottom: 12 },
+  headline: { fontWeight: '700', color: color.textPrimary, marginBottom: 12 },
   section: { marginBottom: 16 },
-  sectionHeader: { fontWeight: '600', color: '#111111', marginBottom: 6 },
-  sectionBody: { color: '#333333' },
-  listItem: { color: '#333333', marginBottom: 2 },
+  sectionHeader: { fontWeight: '700', color: color.textPrimary, marginBottom: 6 },
+  sectionBody: { color: color.textPrimary },
+  listItem: { color: color.textPrimary, marginBottom: 2 },
 });

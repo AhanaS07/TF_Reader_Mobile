@@ -94,6 +94,8 @@ import { audioQueueStore } from '@/features/reader/audio/audioQueueStore';
 import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
+import { color } from '@theme/tokens';
+
 import type { Locator } from '@/shared/contracts';
 import type { CatalogueStackParamList } from './types';
 
@@ -453,6 +455,6 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, backgroundColor: color.white },
   loadingIndicator: { flex: 1, alignSelf: 'center' },
 });

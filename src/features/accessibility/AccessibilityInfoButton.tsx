@@ -13,6 +13,8 @@
 
 import { Pressable, StyleSheet, Text } from 'react-native';
 
+import { color, space } from '@theme/tokens';
+
 import { MIN_TOUCH_TARGET } from './a11yConstants';
 
 export interface AccessibilityInfoButtonProps {
@@ -39,7 +41,7 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: space.sm,
     minHeight: MIN_TOUCH_TARGET,
     // Matches AccessibilitySettingsPanel's own `paddingHorizontal: 12` container inset, ON TOP OF
     // the dropdown box's own padding — this row is a sibling of that panel, not its child, so
@@ -50,10 +52,10 @@ const styles = StyleSheet.create({
     // (see e.g. `tocList`'s comment): separates this button from the toggle rows above it without
     // adding a second, fighting line at the bottom.
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
+    borderTopColor: color.border,
     marginTop: 10,
     paddingTop: 10,
   },
   icon: { fontSize: 18 },
-  label: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  label: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
 });
