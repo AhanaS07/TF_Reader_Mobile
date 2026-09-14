@@ -11,8 +11,11 @@
 // the store subscription, and the arithmetic it would otherwise bury lives
 // where a test can reach it without a renderer.
 import type { Bookmark } from '@/shared/contracts';
+import type { BookmarkRow } from '@/features/sync/localDb/types';
+import { parseLocator } from '@/features/sync/stores/bookmarkStore';
 import { MAX_BATCH_IDS } from '@model/batchItems';
 import type { AccessTier, Hold, Loan } from '@model/types';
+import type { ArticleJournalMembership } from '@store/articleJournalStore';
 import type { DownloadRecord } from '@store/downloadStore';
 
 // ─── the five sections ───────────────────────────────────────────────────────
@@ -496,6 +499,98 @@ export function queueProgressFraction(hold: Hold): number | undefined {
   if (hold.queueLength <= 0) return undefined;
   const fromFront = hold.queueLength - hold.position + 1;
   return Math.max(0, Math.min(1, fromFront / hold.queueLength));
+}
+
+// ─── bookmarks: the real store's row shape → the frozen contract ───────────
+
+/**
+ * `bookmarkTable.listActive()` (the REAL, synced bookmark store —
+ * `src/features/sync/stores/bookmarkStore.ts`) returns `BookmarkRow[]`, the
+ * SQLite row shape: snake_case, ISO-string timestamps, `0`/`1` ints for
+ * `is_deleted`/`synced`. Everything in this file and `LibraryScreen.tsx`
+ * (`sortedBookmarks`, `groupBookmarksByTitle`, `bookmarkLocationLabel`,
+ * `bookmarkTarget`) already types against the frozen `Bookmark` contract
+ * (`@/shared/contracts`) instead — the shape another team's sync layer
+ * publishes, epoch-ms `Timestamp`s included. This is the one converter
+ * between them, so the row shape stays an implementation detail of the sync
+ * feature and does not leak into how Library already reasons about a
+ * bookmark.
+ *
+ * DROPS A ROW WHOSE LOCATOR FAILS TO PARSE, rather than crash or fabricate
+ * one — `parseLocator` already returns `null` for malformed/legacy JSON (see
+ * its own comment), and a bookmark with no readable position is not a
+ * bookmark this screen can render or resume.
+ */
+export function bookmarkFromRow(row: BookmarkRow): Bookmark | null {
+  const locator = parseLocator(row.locator);
+  if (locator === null) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    bookId: row.book_id,
+    ...(row.chapter_id === null ? {} : { chapterId: row.chapter_id }),
+    locator,
+    ...(row.name === null ? {} : { name: row.name }),
+    createdAt: Date.parse(row.created_at),
+    updatedAt: Date.parse(row.updated_at),
+    isDeleted: row.is_deleted === 1,
+    synced: row.synced === 1,
+  };
+}
+
+// ─── journals: articles this reader has grouped by which journal they're from ─
+
+/** One journal, and which of this reader's own article ids came from it. */
+export interface JournalGroup {
+  journalWorkId: string;
+  journalTitle: string;
+  institutionId: string;
+  articleItemIds: string[];
+}
+
+/**
+ * Groups the itemIds this reader actually holds (downloaded, borrowed, or
+ * bookmarked — the SAME universe `collectItemIds` already gathers) by which
+ * journal they belong to, per `articleJournalStore`'s membership map.
+ *
+ * AN ITEM WITH NO MEMBERSHIP ENTRY IS NOT AN ARTICLE FROM THIS FLOW, not an
+ * error — most items in a reader's library are books, which never gain a
+ * membership entry (see `articleJournalStore`'s own header: it is written
+ * only from the journal drill-down). Silently excluded here; the Journals
+ * tab shows exactly the articles this store actually knows about, nothing
+ * more.
+ *
+ * ORDER IS FIRST-SEEN ACROSS `itemIds`, same rule `mergeContentItems` already
+ * uses — the caller's own ordering (offered → loans → downloads → bookmarks
+ * → waiting, from `collectItemIds`) is preserved rather than re-sorted here.
+ */
+export function groupArticlesByJournal(
+  itemIds: string[],
+  membership: Record<string, ArticleJournalMembership>,
+): JournalGroup[] {
+  const order: string[] = [];
+  const byJournal = new Map<string, JournalGroup>();
+  for (const itemId of itemIds) {
+    const entry = membership[itemId];
+    if (entry === undefined) continue;
+    const existing = byJournal.get(entry.journalWorkId);
+    if (existing === undefined) {
+      byJournal.set(entry.journalWorkId, {
+        journalWorkId: entry.journalWorkId,
+        journalTitle: entry.journalTitle,
+        institutionId: entry.institutionId,
+        articleItemIds: [itemId],
+      });
+      order.push(entry.journalWorkId);
+    } else {
+      existing.articleItemIds.push(itemId);
+    }
+  }
+  return order.map((journalWorkId) => {
+    const group = byJournal.get(journalWorkId);
+    if (group === undefined) throw new Error(`groupArticlesByJournal: missing group for ${journalWorkId}`);
+    return group;
+  });
 }
 
 // NOT BUILT: the estimated wait, which Module E's screen spec asks for as "a

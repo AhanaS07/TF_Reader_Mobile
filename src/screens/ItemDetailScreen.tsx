@@ -75,6 +75,7 @@ import { formatPublishedDate } from '@model/formatPublishedDate';
 import { useDownloadStore } from '@store/downloadStore';
 import { useInstitutionStore } from '@store/institutionStore';
 import { useLibraryStore } from '@store/libraryStore';
+import { useArticleJournalStore } from '@store/articleJournalStore';
 import { useRecentlyViewedStore } from '@store/recentlyViewedStore';
 import { color, elevation, radius, space, type as typeScale } from '@theme/tokens';
 
@@ -720,6 +721,16 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         // actually resolves a full `Publication` for an item id. See
         // recentlyViewedStore.ts's own note on why this stores a snapshot.
         useRecentlyViewedStore.getState().recordView(pub);
+        // Same reasoning, same call site, for `articleJournalStore`: this is
+        // the one place a journal article's own itemId and its journal
+        // context are both in hand at once. Fires on every resolved article
+        // view reached via the journal drill-down, not gated on the reader
+        // downloading/borrowing/bookmarking it — see that store's own header
+        // for why Library intersects this against those three instead of a
+        // fourth "read" concept.
+        if (articleContext !== undefined) {
+          useArticleJournalStore.getState().recordMembership(itemId, articleContext);
+        }
       })
       .catch((err: unknown) => {
         setErrorCode(isCatalogueFailure(err) ? err.code : undefined);
@@ -727,7 +738,10 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
       })
       .finally(() => setLoading(false));
     // isSignedIn is intentionally listed even though the body never reads it
-    // — see the isSignedIn comment above.
+    // — see the isSignedIn comment above. articleContext is a route param
+    // that cannot change without a new itemId (a different article is a new
+    // screen instance, not a prop change on this one), so it is read here but
+    // not listed as a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [institutionId, itemId, isSignedIn]);
 

@@ -5,29 +5,47 @@
 // what Elite title needs their answer. Loans and holds come from
 // `GET /api/v1/library`, reached through `LicenceSource.getLibrary()` rather
 // than through HTTP (see `src/licence/`). Downloads and bookmarks are
-// DEVICE-LOCAL and come from `downloadStore` and `bookmarkStore` — that
-// endpoint carries neither.
+// DEVICE-LOCAL — downloads from `downloadStore`, bookmarks from the REAL
+// synced `bookmarkTable` (`src/features/sync/stores/bookmarkStore.ts`; an
+// earlier version of this screen read a dead Zustand stand-in at
+// `src/store/bookmarkStore.ts` that nothing ever wrote to, so the tab
+// rendered empty regardless of what the reader had actually bookmarked) —
+// that endpoint carries neither.
 //
 // REBUILT AROUND A PRODUCT MODEL, NOT FIVE BACKEND SECTIONS (product spec,
-// Sept 2026, refined against a reference mockup the same month). The tab
-// rail is real navigation — each tab renders a DIFFERENT view of the same
-// underlying data. Five tabs:
+// Sept 2026, refined against a reference mockup the same month; Borrowed and
+// Premium were later merged into one tab, and a Journals tab added, on
+// direct instruction — see `partitionLoansByTier` and `articleJournalStore`'s
+// own headers). The tab rail is real navigation — each tab renders a
+// DIFFERENT view of the same underlying data. Five tabs:
 //
 //   All       — a genuine overview: a pending Elite offer first if one
 //               exists (never a reserved empty slot for it), then "Your
 //               content" (loans/downloads/bookmarks merged, one heading not
 //               five) and, separately, "Premium waiting" if the reader is
-//               queued for anything.
-//   Borrowed  — SUBSCRIPTION LOANS ONLY. Elite is a different tier with a
-//               different lifecycle (temporary, re-requested on expiry) and
-//               does not belong here — see `partitionLoansByTier`.
+//               queued for anything. A journal article inside "Your content"
+//               renders as its JOURNAL (the same row `Journals` renders),
+//               never by its own title and authors line — that line carries
+//               no journal context, and duplicating the article there too
+//               would just be `Journals`'s own row shown twice. See
+//               `journalArticleIds`'s own comment.
+//   Borrowed  — every reason a title is currently in this reader's hands
+//               that ISN'T a plain download or a bookmark: a pending Elite
+//               offer, a subscription loan, active Elite access, and a
+//               waiting-queue position, each under its own heading. A title
+//               can only ever be in one of the loan buckets at once —
+//               `partitionLoansByTier`'s own invariant — so nothing here can
+//               show twice.
 //   Downloads — unchanged: content actually on this device, sourced from
 //               `downloadStore`, never re-derived from a tier.
 //   Bookmarks — GROUPED BY TITLE, not one row per bookmark. Tapping a title
 //               expands that title's own bookmarks in place.
-//   Premium   — the three Elite states, in priority order: a pending offer
-//               needing Accept/Decline, active Elite access already granted,
-//               and a place in a waiting queue. Nothing else belongs here.
+//   Journals  — articles reached through the journal drill-down, grouped by
+//               which journal they came from rather than shown as bare
+//               titles mixed in with books elsewhere on this screen. See
+//               `articleJournalStore`'s own header for why this needed a new
+//               store: nothing in the download/loan/bookmark data model
+//               otherwise records which journal an article belongs to.
 //
 // EVERY TAB RESTATES ITS OWN NAME AS A HEADING, WITH A REAL COUNT BESIDE IT
 // WHEN NON-ZERO ("Downloads   2 items"). Tapping a pill already tells the
@@ -61,7 +79,7 @@
 // tap-through, no chevron), not a navigable content row, so forcing it
 // through the same card would mean either losing its two buttons or
 // misusing `ContentCard`'s single `action` slot for a two-button decision
-// it was never shaped for. Shared between `All` and `Premium` regardless —
+// it was never shaped for. Shared between `All` and `Borrowed` regardless —
 // one implementation of that state, composed into both views.
 //
 // EVERY ROW TAPS THROUGH TO THE ITEM'S OWN DETAIL PAGE, THE SAME AS
@@ -120,6 +138,8 @@ import type { Bookmark } from '@/shared/contracts';
 import { useLibraryProvider } from '@/features/library/context';
 import { ReaderUnavailableError } from '@/features/library/ports';
 import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
+import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
+import { USER_ID } from '@/features/sync/syncConfig';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '@components/ContentCard';
@@ -132,19 +152,21 @@ import { getLicenceSource } from '@config/licence';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { type ServerClock, useServerClock } from '@hooks/useServerClock';
 import type { BookSummary, Loan } from '@model/types';
-import { useBookmarkStore } from '@store/bookmarkStore';
+import { useArticleJournalStore } from '@store/articleJournalStore';
 import { type DownloadRecord, useDownloadStore } from '@store/downloadStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type } from '@theme/tokens';
 
 import {
   activeLoans,
+  bookmarkFromRow,
   bookmarkLocationLabel,
   type BookmarkGroup,
   collectItemIds,
   downloadedLabel,
   downloadsSummaryLabel,
   dueLabel,
+  groupArticlesByJournal,
   groupBookmarksByTitle,
   mergeContentItems,
   type MergedLibraryItem,
@@ -172,24 +194,30 @@ const SKELETON_ROWS = 2;
 // anything downstream that compares it.
 const EMPTY_TITLES: Map<string, BookSummary> = new Map();
 
-type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'holds';
+type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'journals';
 
 // Plain text, no count badge on the pill itself — on explicit instruction: a
 // number beside every filter label ("Downloads 1", "Borrowed 0") read as
 // noise before the reader had chosen anything. The identical count instead
 // appears inside each tab's own content, beside its restated heading — see
 // `TabHeading`.
+//
+// BORROWED NOW COVERS BOTH TIERS. This used to be four sections split across
+// two tabs (Borrowed = subscription only; Premium = offered/Elite/waiting) —
+// merged on explicit instruction, and safe to merge because
+// `partitionLoansByTier`'s own invariant already guarantees the two loan
+// lists are disjoint by item: nothing shows twice. The id stays `loans`.
 const LIBRARY_TABS: TabItem[] = [
   { id: 'all', label: 'All' },
-  // Shown as "Borrowed"; the id stays `loans` because that is the partition
-  // it selects. Not "Borrowed Books" — the shelf holds books, journals and
-  // audiobooks alike, and the label must not name just one of them.
   { id: 'loans', label: 'Borrowed' },
   { id: 'downloads', label: 'Downloads' },
   { id: 'bookmarks', label: 'Bookmarks' },
-  // Shown as "Premium"; the id stays `holds` because that is the partition
-  // it selects (Offered + Elite loans + Waiting).
-  { id: 'holds', label: 'Premium' },
+  // Articles reached through the journal drill-down, grouped by journal
+  // rather than shown as bare titles — see `articleJournalStore`'s own
+  // header for why this needs a store at all (nothing else in the
+  // download/loan/bookmark data model records which journal an article came
+  // from).
+  { id: 'journals', label: 'Journals' },
 ];
 
 // Hand-typed to the one real call this screen makes, the same reason
@@ -200,7 +228,11 @@ const LIBRARY_TABS: TabItem[] = [
 // standing up a real `NavigationContainer`.
 interface LibraryScreenProps {
   navigation: {
-    navigate: (screen: 'ItemDetail', params: { itemId: string }) => void;
+    navigate(screen: 'ItemDetail', params: { itemId: string }): void;
+    navigate(
+      screen: 'LibraryJournal',
+      params: { journalWorkId: string; journalTitle: string; itemIds: string[] },
+    ): void;
   };
 }
 
@@ -213,8 +245,8 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   // pull: there is nothing to fetch. A book on this phone is on this phone
   // whether or not the network answered.
   const downloadRecords = useDownloadStore((s) => s.downloads);
-  const bookmarkRecords = useBookmarkStore((s) => s.bookmarks);
   const isOnline = useNetworkStatus();
+  const journalMembership = useArticleJournalStore((s) => s.membership);
   // The seam to the reader/download stack (Team 4's, merged later). Defaults to a
   // stand-in whose `openBook` politely refuses. Only `BookmarkGroupRow`'s own
   // "Read" action still calls through this — see the file header.
@@ -250,6 +282,47 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const [expandedBookId, setExpandedBookId] = useState<string | undefined>(undefined);
   // Which book is mid-download from the Bookmarks tab's own group action.
   const [downloadingBookId, setDownloadingBookId] = useState<string | undefined>(undefined);
+  // The REAL, synced bookmarks — `bookmarkTable.listActive(USER_ID)` with no
+  // `bookId`, which already lists across every book for a user (confirmed:
+  // `listActive`'s own SQL only filters on `book_id` when one is passed). An
+  // earlier version of this screen read `src/store/bookmarkStore.ts`, a
+  // Zustand stand-in that never had anything write to it — this fixes that
+  // without changing anything downstream, which still consumes `Bookmark[]`.
+  const [bookmarkRecords, setBookmarkRecords] = useState<Bookmark[]>([]);
+  // Unlike loans/holds/downloads, bookmarks arrive from an async SQLite read
+  // rather than already-hydrated store state, so they are not in hand on the
+  // very first render. The hydration batch call below waits on this flag
+  // rather than firing once with a bookmark-less id set and again the moment
+  // the real bookmark ids arrive — see that effect's own comment.
+  const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
+
+  // Loads on mount and again on every change to the real table — a bookmark
+  // created just now while reading must show up here without a manual pull,
+  // the same reason `ReaderScreen`'s own bookmarks effect subscribes rather
+  // than loading once.
+  useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      void bookmarkTable.listActive(USER_ID).then((rows) => {
+        if (cancelled) return;
+        // A row whose locator fails to parse is dropped, not surfaced as an
+        // error — see `bookmarkFromRow`'s own comment.
+        const parsed: Bookmark[] = [];
+        for (const row of rows) {
+          const bookmark = bookmarkFromRow(row);
+          if (bookmark !== null) parsed.push(bookmark);
+        }
+        setBookmarkRecords(parsed);
+        setBookmarksLoaded(true);
+      });
+    };
+    reload();
+    const unsubscribe = bookmarkTable.subscribe(reload);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const { offered, waiting } = partitionHolds(holds);
   const live = activeLoans(loans);
@@ -277,8 +350,13 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const idKey = ids.join(',');
 
   // ONE BATCH CALL PER DISTINCT SET OF IDS. Not per render, and not per row.
+  // Gated on `bookmarksLoaded` so the very first call already carries any
+  // bookmarked ids — without it, this fires once on mount (loans/downloads
+  // only, bookmarks not back yet) and again the instant the async bookmark
+  // read resolves and changes `idKey`, double-hitting the catalogue for
+  // every load rather than once.
   useEffect(() => {
-    if (ids.length === 0) return;
+    if (!bookmarksLoaded || ids.length === 0) return;
     let cancelled = false;
     getCatalogueSource()
       .getItemsBatch(ids)
@@ -297,7 +375,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `ids` is rebuilt every render; `idKey` is its stable identity.
-  }, [idKey]);
+  }, [idKey, bookmarksLoaded]);
 
   const onRefresh = useCallback(() => {
     void refresh();
@@ -317,10 +395,23 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     [navigation],
   );
 
-  // Borrowed means subscription loans only — Elite is a different tier with a
-  // different lifecycle. See `partitionLoansByTier`'s own comment.
+  // Subscription and Elite are still partitioned internally — a subscription
+  // loan and an Elite loan render through different rows (`BorrowedBookRow`
+  // vs `EliteLoanRow`) even though the Borrowed TAB now shows both together.
+  // See `partitionLoansByTier`'s own comment.
   const { subscriptionLoans, eliteLoans } = partitionLoansByTier(live, (itemId) => summaryFor(itemId)?.accessTier);
   const bookmarkGroups = groupBookmarksByTitle(bookmarks);
+  // Every id this reader holds, across the same universe `collectItemIds`
+  // already gathers for hydration — an item with no journal membership entry
+  // is a book (or an article reached some other way) and is silently
+  // excluded, not an error. See `groupArticlesByJournal`'s own comment.
+  const journalGroups = groupArticlesByJournal(ids, journalMembership);
+  // Every article id folded into some journal group above — `All`'s merged
+  // content excludes these (see `renderAllTab`) so a journal article shows
+  // once, as its journal, rather than twice: once here by its own title and
+  // authors line (which read as an unrelated "article + section" row with no
+  // journal context at all) and again as its journal on the Journals tab.
+  const journalArticleIds = new Set(journalGroups.flatMap((group) => group.articleItemIds));
 
   // Guards against a second tap while a bookmark's own resume-open is in
   // flight — with the real provider two concurrent `openBook` calls would
@@ -613,8 +704,14 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
       );
     }
 
-    const mergedContent = mergeContentItems(eliteLoans, subscriptionLoans, downloads, bookmarkGroups);
-    const hasContent = mergedContent.length > 0;
+    // A journal article is excluded here and rendered as its JOURNAL instead
+    // (below) — otherwise it shows up by its own title with its authors line
+    // underneath, which carries no journal context at all and reads as an
+    // unrelated book. See `journalArticleIds`'s own comment.
+    const mergedContent = mergeContentItems(eliteLoans, subscriptionLoans, downloads, bookmarkGroups).filter(
+      (item) => !journalArticleIds.has(item.itemId),
+    );
+    const hasContent = mergedContent.length > 0 || journalGroups.length > 0;
     const hasWaiting = waiting.length > 0;
 
     if (!hasContent && !hasWaiting && offered.length === 0) {
@@ -626,8 +723,9 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         {renderPendingOffers()}
         {hasContent && (
           <View style={styles.section}>
-            <TabHeading title="Your content" count={mergedContent.length} />
+            <TabHeading title="Your content" count={mergedContent.length + journalGroups.length} />
             {mergedContent.map(renderMergedContentRow)}
+            {journalGroups.length > 0 && renderJournalGroups()}
           </View>
         )}
         {hasWaiting && (
@@ -640,18 +738,55 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     );
   }
 
+  // Borrowed and Premium, merged into one tab on explicit instruction — safe
+  // because `partitionLoansByTier`'s own invariant guarantees a title can
+  // never be both a subscription and an Elite loan, so nothing here can show
+  // twice. Each of the four facts (an offer, a subscription loan, an Elite
+  // loan, a queue position) keeps its own heading and its own compact hint
+  // when empty, same "never a reserved empty slot for an offer, always a
+  // hint for the other three" rule the two separate tabs already followed —
+  // only the tab bar shrank from two entries to one.
   function renderBorrowedTab(): ReactNode {
     if (holdingsLoading) return <HoldingsSkeleton />;
-    const count = subscriptionLoans.length;
     return (
       <>
-        <TabHeading title="Borrowed" count={count} />
-        {count > 0 && renderSubscriptionLoans()}
-        <TabHint
-          icon="library-outline"
-          headline={count === 0 ? 'No items currently borrowed.' : undefined}
-          caption="Items you borrow will appear here until they’re due."
-        />
+        {offered.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Access available" count={offered.length} />
+            {renderPendingOffers()}
+          </View>
+        )}
+
+        <View style={styles.section}>
+          <TabHeading title="Borrowed" count={subscriptionLoans.length} />
+          {subscriptionLoans.length > 0 && renderSubscriptionLoans()}
+          <TabHint
+            icon="library-outline"
+            headline={subscriptionLoans.length === 0 ? 'No items currently borrowed.' : undefined}
+            caption="Items you borrow will appear here until they’re due."
+          />
+        </View>
+
+        <View style={styles.section}>
+          <TabHeading title="Your Elite access" count={eliteLoans.length} />
+          {eliteLoans.length > 0 && renderEliteActiveLoans()}
+          <TabHint
+            icon="crown-outline"
+            headline={eliteLoans.length === 0 ? 'No active Elite access.' : undefined}
+            caption="When you have access, your titles will appear here."
+            iconSet="material"
+          />
+        </View>
+
+        <View style={styles.section}>
+          <TabHeading title="Waiting for access" count={waiting.length} />
+          {waiting.length > 0 && renderWaitingQueue()}
+          <TabHint
+            icon="hourglass-outline"
+            headline={waiting.length === 0 ? 'No items currently waiting.' : undefined}
+            caption="Titles waiting for Elite access will appear here."
+          />
+        </View>
       </>
     );
   }
@@ -697,46 +832,48 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     );
   }
 
-  function renderPremiumTab(): ReactNode {
-    if (holdingsLoading) return <HoldingsSkeleton />;
+  // One row per JOURNAL, not per article — an article with no membership
+  // entry never reaches `journalGroups` at all (see `groupArticlesByJournal`),
+  // so every row here is real. Tapping navigates to this reader's own
+  // article list for that journal (`LibraryJournalScreen`), NOT the
+  // catalogue's Journal Details/Volumes & Issues browse — that flow needs a
+  // live `getWork` call and an institution context this screen has no
+  // business repeating for a journal the reader has already been reading.
+  function renderJournalGroups(): ReactNode {
+    return journalGroups.map((group) => (
+      <View key={group.journalWorkId} style={styles.row}>
+        <ContentCard
+          title={group.journalTitle}
+          onPress={() =>
+            navigation.navigate('LibraryJournal', {
+              journalWorkId: group.journalWorkId,
+              journalTitle: group.journalTitle,
+              itemIds: group.articleItemIds,
+            })
+          }
+          badge={
+            <Text style={styles.badgeLabel}>
+              {group.articleItemIds.length === 1
+                ? '1 article'
+                : `${group.articleItemIds.length} articles`}
+            </Text>
+          }
+        />
+      </View>
+    ));
+  }
+
+  function renderJournalsTab(): ReactNode {
+    const count = journalGroups.length;
     return (
       <>
-        {/* Never a reserved empty slot — product spec §4: "If there is no
-            pending access notification/action... do NOT reserve an empty
-            area for it." */}
-        {offered.length > 0 && (
-          <View style={styles.section}>
-            <TabHeading title="Access available" count={offered.length} />
-            {renderPendingOffers()}
-          </View>
-        )}
-
-        <View style={styles.section}>
-          <TabHeading title="Your Elite access" count={eliteLoans.length} />
-          {eliteLoans.length > 0 ? (
-            renderEliteActiveLoans()
-          ) : (
-            <TabHint
-              icon="crown-outline"
-              headline="No active Elite access."
-              caption="When you have access, your titles will appear here."
-              iconSet="material"
-            />
-          )}
-        </View>
-
-        <View style={styles.section}>
-          <TabHeading title="Waiting for access" count={waiting.length} />
-          {waiting.length > 0 ? (
-            renderWaitingQueue()
-          ) : (
-            <TabHint
-              icon="hourglass-outline"
-              headline="No items currently waiting."
-              caption="Titles waiting for Elite access will appear here."
-            />
-          )}
-        </View>
+        <TabHeading title="Journals" count={count} />
+        {count > 0 && renderJournalGroups()}
+        <TabHint
+          icon="albums-outline"
+          headline={count === 0 ? 'No journal articles yet.' : undefined}
+          caption="Articles you open from a journal will appear here, grouped by journal."
+        />
       </>
     );
   }
@@ -810,7 +947,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         {activeTab === 'loans' && renderBorrowedTab()}
         {activeTab === 'downloads' && renderDownloadsTab()}
         {activeTab === 'bookmarks' && renderBookmarksTab()}
-        {activeTab === 'holds' && renderPremiumTab()}
+        {activeTab === 'journals' && renderJournalsTab()}
       </ScrollView>
     </View>
   );

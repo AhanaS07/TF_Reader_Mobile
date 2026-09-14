@@ -16,13 +16,14 @@
 // render and event helpers are async.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
-import type { Bookmark } from '@/shared/contracts';
 import { LibraryProviderContext } from '@/features/library/context';
 import type { LibraryProvider } from '@/features/library/ports';
+import { getDatabase } from '@/features/sync/localDb/database';
+import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
 import type { DataSource } from '@adapters/InstitutionSource';
 import { setCatalogueSource } from '@config/catalogue';
 import type { BookSummary, Hold, Loan } from '@model/types';
-import { useBookmarkStore } from '@store/bookmarkStore';
+import { useArticleJournalStore } from '@store/articleJournalStore';
 import { useDownloadStore } from '@store/downloadStore';
 import { useLibraryStore } from '@store/libraryStore';
 
@@ -93,18 +94,24 @@ function givenHoldings(loans: Loan[], holds: Hold[]): void {
   mockGetLibrary.mockResolvedValue({ loans, holds });
 }
 
-function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
-  return {
-    id: 'bm_1',
-    userId: 'user_1',
-    bookId: 'item_42',
-    locator: { type: 'PDF', page: 12 },
-    createdAt: SERVER_NOW_MS,
-    updatedAt: SERVER_NOW_MS,
-    isDeleted: false,
-    synced: false,
-    ...over,
-  };
+// Seeds a bookmark through the REAL, synced store `LibraryScreen.tsx` now
+// reads (`bookmarkTable.listActive`), not the dead Zustand stand-in this
+// screen used to read. Defaults to `item_42`/page 12, matching the old
+// `aBookmark()` fixture's own defaults, so most call sites below are an
+// `await` and an API-name change, nothing more. `userId` is left at
+// `bookmarkStore`'s own default (`USER_ID` from `syncConfig.ts`) — the exact
+// id `LibraryScreen.tsx` queries with — so a caller never needs to pass one.
+function aBookmark(bookId = 'item_42', page = 12, name?: string) {
+  return bookmarkStore.addForPage(page, name, bookId);
+}
+
+// Same reset shape `src/features/sync/stores/bookmarkStore.test.ts` already
+// uses: `getDatabase()` caches its instance at module scope (Jest resets
+// modules per FILE, not per test), so a clean table between tests means
+// deleting rows, not recreating the database.
+async function resetBookmarksTable(): Promise<void> {
+  const db = await getDatabase();
+  await db.execAsync(`DELETE FROM bookmarks; DELETE FROM outbox;`);
 }
 
 const mockNavigate = jest.fn();
@@ -116,7 +123,7 @@ function renderScreen(provider?: LibraryProvider) {
   return render(<LibraryProviderContext.Provider value={provider}>{element}</LibraryProviderContext.Provider>);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
   mockUseNetworkStatus.mockReturnValue(true);
   mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
@@ -127,7 +134,8 @@ beforeEach(() => {
   // Device-local and persisted, so unlike libraryStore these survive a test and
   // would leak a download into the next one's "empty shelf".
   useDownloadStore.getState().clear();
-  useBookmarkStore.getState().clear();
+  useArticleJournalStore.getState().clear();
+  await resetBookmarksTable();
   setCatalogueSource(fakeSource(async () => ({ items: [], notFound: [], denied: [] })));
 });
 
@@ -153,14 +161,14 @@ describe('LibraryScreen — header', () => {
 });
 
 describe('LibraryScreen — tab bar', () => {
-  it('names exactly five tabs: All, Borrowed, Downloads, Bookmarks, Premium', async () => {
+  it('names exactly five tabs: All, Borrowed, Downloads, Bookmarks, Journals', async () => {
     await renderScreen();
 
     await waitFor(() => expect(screen.getByTestId('tabs-tab-all')).toBeTruthy());
     expect(screen.getByTestId('tabs-label-loans').props.children).toBe('Borrowed');
     expect(screen.getByTestId('tabs-label-downloads').props.children).toBe('Downloads');
     expect(screen.getByTestId('tabs-label-bookmarks').props.children).toBe('Bookmarks');
-    expect(screen.getByTestId('tabs-label-holds').props.children).toBe('Premium');
+    expect(screen.getByTestId('tabs-label-journals').props.children).toBe('Journals');
   });
 
   it('opens on the All tab by default', async () => {
@@ -311,6 +319,52 @@ describe('LibraryScreen — All tab', () => {
 
     expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
   });
+
+  it('shows a journal-linked article under its journal, not its own title and authors', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_a1', title: 'A Specific Article', authors: ['Some Author'] })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a1', downloadedAt: 1 });
+    useArticleJournalStore.getState().recordMembership('item_a1', {
+      journalWorkId: 'journal_1',
+      institutionId: 'inst_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+    });
+
+    await renderScreen();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' })).toBeTruthy(),
+    );
+    expect(screen.queryByText('A Specific Article')).toBeNull();
+    expect(screen.queryByText('Some Author')).toBeNull();
+  });
+
+  it('navigates to this reader’s own article list for that journal when its row is tapped from "Your content"', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a1', downloadedAt: 1 });
+    useArticleJournalStore.getState().recordMembership('item_a1', {
+      journalWorkId: 'journal_1',
+      institutionId: 'inst_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+    });
+
+    await renderScreen();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' })).toBeTruthy(),
+    );
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('LibraryJournal', {
+      journalWorkId: 'journal_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+      itemIds: ['item_a1'],
+    });
+  });
 });
 
 describe('LibraryScreen — Borrowed tab', () => {
@@ -348,23 +402,6 @@ describe('LibraryScreen — Borrowed tab', () => {
     // The hint's plain caption stays, under the real row — it never
     // disappears just because the tab now has something in it.
     expect(screen.getByText('Items you borrow will appear here until they’re due.')).toBeTruthy();
-  });
-
-  it('excludes an Elite loan — Elite is Premium’s, not Borrowed’s', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', accessTier: 'ELITE' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    givenHoldings([aLoan({ itemId: 'item_42' })], []);
-
-    await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
-    await openBorrowed();
-
-    await waitFor(() => expect(screen.getByText('No items currently borrowed.')).toBeTruthy());
   });
 
   it('keeps an unhydrated loan here until its tier is known', async () => {
@@ -496,8 +533,10 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('groups every bookmark in one book under its title, with a real count', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42' }));
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42' }));
+    // Distinct pages: the real store dedups on (user, book, locator), so two
+    // bookmarks meant to be genuinely distinct need different positions.
+    await aBookmark('item_42', 12);
+    await aBookmark('item_42', 88);
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -507,9 +546,9 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('shows a real count of bookmarked TITLES for the tab, not of bookmarks', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42' }));
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42' }));
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_3', bookId: 'item_99' }));
+    await aBookmark('item_42', 12);
+    await aBookmark('item_42', 88);
+    await aBookmark('item_99', 12);
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -520,12 +559,8 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('expands a title in place to show its real bookmarks, rather than navigating', async () => {
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ id: 'bm_1', bookId: 'item_42', locator: { type: 'PDF', page: 12 } }));
-    useBookmarkStore
-      .getState()
-      .addBookmark(aBookmark({ id: 'bm_2', bookId: 'item_42', locator: { type: 'PDF', page: 88 } }));
+    await aBookmark('item_42', 12);
+    await aBookmark('item_42', 88);
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -542,7 +577,7 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('collapses an expanded title on a second tap', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ locator: { type: 'PDF', page: 12 } }));
+    await aBookmark();
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -558,7 +593,7 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('renders a reader-typed name ahead of a raw position, inventing neither', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ name: 'The proof', locator: { type: 'PDF', page: 12 } }));
+    await aBookmark('item_42', 12, 'The proof');
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -569,7 +604,7 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('offers Download for a title not yet on this device', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    await aBookmark('item_42');
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -580,7 +615,7 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('omits Download once the title is already on this device', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    await aBookmark('item_42');
     useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
 
     await renderScreen();
@@ -593,7 +628,7 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 
   it('downloads the title through the same borrow-then-record call ItemDetailScreen uses', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    await aBookmark('item_42');
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
@@ -607,16 +642,93 @@ describe('LibraryScreen — Bookmarks tab', () => {
   });
 });
 
-describe('LibraryScreen — Premium tab', () => {
-  async function openPremium() {
-    await fireEvent.press(screen.getByTestId('tabs-tab-holds'));
+describe('LibraryScreen — Journals tab', () => {
+  async function openJournals() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-journals'));
+  }
+
+  it('always shows the "Journals" heading and a compact hint, even when empty', async () => {
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-journals')).toBeTruthy());
+
+    await openJournals();
+
+    expect(screen.getByTestId('tab-heading-journals')).toBeTruthy();
+    expect(screen.getByText('No journal articles yet.')).toBeTruthy();
+    expect(
+      screen.getByText('Articles you open from a journal will appear here, grouped by journal.'),
+    ).toBeTruthy();
+  });
+
+  it('groups every downloaded article from the same journal under one row, with a real count', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a1', downloadedAt: 1 });
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a2', downloadedAt: 2 });
+    useArticleJournalStore.getState().recordMembership('item_a1', {
+      journalWorkId: 'journal_1',
+      institutionId: 'inst_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+    });
+    useArticleJournalStore.getState().recordMembership('item_a2', {
+      journalWorkId: 'journal_1',
+      institutionId: 'inst_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+    });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-journals')).toBeTruthy());
+    await openJournals();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' })).toBeTruthy(),
+    );
+    expect(screen.getByText('2 articles')).toBeTruthy();
+  });
+
+  it('excludes an item with no recorded journal membership — a book, or an article reached some other way', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_book', downloadedAt: 1 });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-journals')).toBeTruthy());
+    await openJournals();
+
+    await waitFor(() => expect(screen.getByText('No journal articles yet.')).toBeTruthy());
+  });
+
+  it('navigates to this reader’s own article list for that journal when a journal row is tapped', async () => {
+    useDownloadStore.getState().markDownloaded({ itemId: 'item_a1', downloadedAt: 1 });
+    useArticleJournalStore.getState().recordMembership('item_a1', {
+      journalWorkId: 'journal_1',
+      institutionId: 'inst_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+    });
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-journals')).toBeTruthy());
+    await openJournals();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' })).toBeTruthy(),
+    );
+
+    await fireEvent.press(screen.getByRole('button', { name: 'Journal of Applied Thermodynamics' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('LibraryJournal', {
+      journalWorkId: 'journal_1',
+      journalTitle: 'Journal of Applied Thermodynamics',
+      itemIds: ['item_a1'],
+    });
+  });
+});
+
+describe('LibraryScreen — Borrowed tab (Elite access & waiting)', () => {
+  async function openBorrowed() {
+    await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
   }
 
   it('always shows "Your Elite access" and "Waiting for access", each with its own compact hint when empty', async () => {
     await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
 
-    await openPremium();
+    await openBorrowed();
 
     expect(screen.getByText('Your Elite access')).toBeTruthy();
     expect(screen.getByText('No active Elite access.')).toBeTruthy();
@@ -626,9 +738,9 @@ describe('LibraryScreen — Premium tab', () => {
 
   it('reserves no heading or hint for a pending offer when there is none', async () => {
     await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
 
-    await openPremium();
+    await openBorrowed();
 
     expect(screen.queryByText('Access available')).toBeNull();
   });
@@ -650,8 +762,8 @@ describe('LibraryScreen — Premium tab', () => {
     );
 
     await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
-    await openPremium();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
 
     await waitFor(() => expect(screen.getByTestId('elite-pending-access-card')).toBeTruthy());
     expect(screen.getByTestId('tab-heading-access-available')).toBeTruthy();
@@ -665,21 +777,28 @@ describe('LibraryScreen — Premium tab', () => {
     expect(screen.getByText('#3 of 7')).toBeTruthy();
   });
 
-  it('does not show a subscription loan here — Premium is Elite-only', async () => {
+  it('lists a subscription loan under "Borrowed" and an Elite loan under "Your Elite access" — together, not either-or', async () => {
     setCatalogueSource(
       fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', accessTier: 'SUBSCRIPTION' })],
+        items: [
+          aSummary({ id: 'item_sub', title: 'A Subscription Title', accessTier: 'SUBSCRIPTION' }),
+          aSummary({ id: 'item_elite', title: 'An Elite Title', accessTier: 'ELITE' }),
+        ],
         notFound: [],
         denied: [],
       })),
     );
-    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+    givenHoldings(
+      [aLoan({ loanId: 'loan_sub', itemId: 'item_sub' }), aLoan({ loanId: 'loan_elite', itemId: 'item_elite' })],
+      [],
+    );
 
     await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
-    await openPremium();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
 
-    await waitFor(() => expect(screen.getByText('No active Elite access.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'A Subscription Title' })).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'An Elite Title' })).toBeTruthy();
   });
 
   it('goes to the item’s detail page when an active-access or waiting card is tapped', async () => {
@@ -693,8 +812,8 @@ describe('LibraryScreen — Premium tab', () => {
     givenHoldings([aLoan({ loanId: 'loan_active', itemId: 'item_active' })], []);
 
     await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-holds')).toBeTruthy());
-    await openPremium();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
+    await openBorrowed();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Digital Media Cultures' })).toBeTruthy(),
     );
@@ -773,7 +892,7 @@ describe('LibraryScreen — hydration', () => {
       ],
     );
     useDownloadStore.getState().markDownloaded({ itemId: 'item_11', downloadedAt: 1 });
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_22' }));
+    await aBookmark('item_22');
 
     await renderScreen();
 
@@ -870,16 +989,13 @@ describe('LibraryScreen — first load', () => {
     await waitFor(() => expect(screen.getByTestId('library-loading')).toBeTruthy());
   });
 
-  it('skeletons the Borrowed and Premium tabs the same way', async () => {
+  it('skeletons the Borrowed tab the same way', async () => {
     mockGetLibrary.mockReturnValue(new Promise(() => {}));
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-loans')).toBeTruthy());
 
     await fireEvent.press(screen.getByTestId('tabs-tab-loans'));
-    expect(screen.getByTestId('library-loading')).toBeTruthy();
-
-    await fireEvent.press(screen.getByTestId('tabs-tab-holds'));
     expect(screen.getByTestId('library-loading')).toBeTruthy();
   });
 
@@ -929,17 +1045,13 @@ describe('LibraryScreen — resuming a bookmark through the provider', () => {
         denied: [],
       })),
     );
-    useBookmarkStore.getState().addBookmark(
-      aBookmark({
-        id: 'bm_old',
-        bookId: 'item_42',
-        locator: { type: 'PDF', page: 12 },
-        updatedAt: SERVER_NOW_MS - 60_000,
-      }),
-    );
-    useBookmarkStore.getState().addBookmark(
-      aBookmark({ id: 'bm_new', bookId: 'item_42', locator: { type: 'PDF', page: 42 }, updatedAt: SERVER_NOW_MS }),
-    );
+    // `updated_at` is millisecond-precision wall-clock time (`nowIso()`), and
+    // "most recent" is a real `updatedAt` sort — a real gap between the two
+    // creates, not a manual timestamp override, is what makes bm_new sort
+    // first.
+    await aBookmark('item_42', 12);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await aBookmark('item_42', 42);
     const provider = makeProvider();
 
     await renderScreen(provider);
@@ -960,7 +1072,7 @@ describe('LibraryScreen — resuming a bookmark through the provider', () => {
   });
 
   it('shows an honest, user-appropriate notice when the reader is not in this build — never the internal implementation note', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    await aBookmark('item_42');
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
@@ -983,7 +1095,7 @@ describe('LibraryScreen — resuming a bookmark through the provider', () => {
   });
 
   it('ignores a second tap while the first resume is still in flight', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ bookId: 'item_42' }));
+    await aBookmark('item_42');
     setCatalogueSource(
       fakeSource(async () => ({
         items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
