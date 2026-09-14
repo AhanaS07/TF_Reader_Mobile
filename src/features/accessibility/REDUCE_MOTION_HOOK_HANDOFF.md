@@ -1,57 +1,60 @@
-# `useReduceMotion.ts` duplication — handoff for Ahana
+# `useReduceMotion.ts` vs. `useAppearanceEnv.ts` — resolved, no code change
 
-**From:** Accessibility (Hruthik). **Date:** 2026-09-11. **Not applied** — this is a note about
-Reader's file, not an edit to it. Per the repo's ownership rules, the actual change (if you want
-it) is yours to make.
+**From:** Accessibility (Hruthik). **Date:** 2026-09-11. **Status: CLOSED — decided against the
+refactor**, after Ahana caught a real error in this doc's first draft. Read this as the record of
+that correction, not a to-do list.
 
-## What was found
+## What this doc originally claimed (wrong)
 
-`src/features/accessibility/useReduceMotion.ts` is headed:
+The first version of this handoff said `useAppearanceEnv.ts` (Reader, Ahana's) "independently
+re-implements the same OS-subscribe + `resolveReduceMotion` logic" as `useReduceMotion.ts`
+(Accessibility, this file's), and suggested Ahana swap her hook to call this one instead.
 
-```
-// Owner: Accessibility (Hruthik). Consumed by Reader (Ahana).
-```
+**That premise was wrong, and the suggested swap would have introduced a real bug, not just
+churn:**
 
-That was never true. Reader doesn't import this hook anywhere. Instead,
-`src/features/reader/useAppearanceEnv.ts` independently re-implements the exact same logic this
-hook already provides:
+- `useAppearanceEnv.ts` never calls `resolveReduceMotion()`. It only exposes the *raw* OS boolean
+  (`AccessibilityInfo.isReduceMotionEnabled()` seed + `reduceMotionChanged` listener) as
+  `AppearanceEnv.osReduceMotionEnabled` — confirmed by reading the file: `readEnv()` just threads
+  the raw signal through, no resolve call anywhere in it.
+- The actual resolve against the stored tri-state preference happens exactly once, downstream, in
+  `src/features/personalization/readerAppearance.ts:266` —
+  `resolveReduceMotion(display.reduceMotion, env.osReduceMotionEnabled)` — fed by `ReaderScreen`'s
+  own already-existing `prefsStore` subscription for `display`.
+- `useReduceMotion.ts` (this file) does its own independent `prefsStore` read/subscribe *and*
+  resolve, producing a final answer for a different consumer (the settings-panel caption). It's a
+  different layer of the same pipeline, not a copy of the same layer.
+- Swapping `useAppearanceEnv`'s raw signal for this hook's already-resolved output would have fed
+  an already-resolved boolean into `resolveReduceMotion` a **second time** (double-resolution),
+  and added a **second, independent `prefsStore` subscription** inside Reader purely to re-derive
+  one field the existing subscription already produces — the "second cache that can silently
+  diverge" pattern this codebase already deleted once for reading progress
+  (`sessionProgress.ts`, per `ReaderRouteScreen`'s own history). It happened to not visibly
+  misbehave only because `resolveReduceMotion` ignores its second argument whenever the preference
+  isn't `'system'`.
 
-- Seeds `osReduceMotionEnabled` from `AccessibilityInfo.isReduceMotionEnabled()`.
-- Subscribes to `AccessibilityInfo.addEventListener('reduceMotionChanged', ...)` for live updates.
-- Feeds the result, plus the stored tri-state preference, through the same frozen
-  `resolveReduceMotion()` (`shared/contracts/accessibility.ts`).
+## The actual overlap, and the decision on it
 
-Both hooks do the identical seed+subscribe+resolve dance against the identical OS API, in two
-files, maintained by two people. That's the DRY violation.
+The only real overlap between the two hooks is ~10–15 lines of `AccessibilityInfo` seed/listener
+boilerplate — not "the same logic." A follow-up plan proposed extracting that into a shared
+`src/shared/osReduceMotion.ts` → `useOsReduceMotionEnabled()`, with both hooks wrapping it (this
+version is technically safe — it doesn't touch either hook's resolve step).
 
-## Why it happened
+**Decided against, by Accessibility (this file's owner), 2026-09-11:**
 
-`useReduceMotion.ts` was introduced in commit `4dbceac` ("feat(accessibility): implement PDF
-support in TTS with new test providers and hooks") — bundled into a larger feature commit rather
-than built for a named call site, and never actually wired into Reader afterward. The header
-comment describes the *intended* consumer, not an *actual* one.
+- The saved code is smaller than most style guides would call a real duplication problem.
+- The cost is a new shared module plus a cross-team edit to this file, for that small a save —
+  real coordination overhead for a double-digit line count.
+- This repo's own stated bias is explicit here: prefer duplicated lines over a premature
+  abstraction. Two hooks that share a listener shape but return genuinely different things (raw
+  signal vs. a fully-resolved preference) is coincidental overlap, not a shared concept straining
+  to get out.
 
-## What we did on our side
+**Revisit if** a third consumer of the raw OS signal shows up — that's the point where the
+extraction stops being premature.
 
-Since Reader never called it, the hook had zero real consumers. Rather than leave it as dead code,
-we gave it a genuine consumer inside our own lane: `AccessibilitySettingsPanel.tsx` now shows a
-"Currently: On/Off" caption under the Reduce Motion control, visible only when the stored
-preference is `'system'` (the only selection where the resolved state isn't already obvious from
-the picker itself). So the hook is no longer unconsumed — just not consumed by Reader, which is
-what its own header still claims.
+## What's still open, unrelated to this
 
-## What's still yours to decide
-
-`useAppearanceEnv.ts` could import `useReduceMotion` from `@/features/accessibility` and drop its
-own duplicate `AccessibilityInfo` subscription, collapsing the duplication to one implementation.
-We haven't made that change — it's your file, and it may not be worth the churn if
-`useAppearanceEnv.ts`'s shape doesn't compose well with a hook that resolves the *stored
-preference* as well as the OS signal (yours may only need the OS half, or may want to stay
-independent for a reason we don't have visibility into). Your call either way; flagging it so the
-duplication is at least written down somewhere.
-
-## One more small thing while we're here
-
-`CLAUDE.md` L127 (root) still says *"the full account, including why `reduceMotion` stays
-unconsumed by both shells"* — that's stale since `epub.entry.ts` started consuming it 2026-09-08.
-Since you own `shared/`/root docs as lead, flagging rather than editing it ourselves.
+`CLAUDE.md` L127 (root) still says *"why `reduceMotion` stays unconsumed by both shells"* — stale
+since `epub.entry.ts` started consuming it 2026-09-08. Ahana owns root/shared docs as lead; still
+just a flag, not something this file's owner should edit.

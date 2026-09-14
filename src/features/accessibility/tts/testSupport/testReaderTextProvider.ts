@@ -94,6 +94,10 @@ export interface TestReaderTextProvider extends ReaderTextProvider {
   readonly sentences: readonly TtsSentence[];
   /** Every `setSpokenRange` argument, in call order. `null` entries are clears. */
   readonly spokenRanges: readonly (string | null)[];
+  /** Every `followSpokenPosition` argument, in call order. `null` entries stop tracking. Widened
+   * from a bare cfi to this `SpokenWordRange` shape the same day it was added, once per-tick
+   * resolution turned out to be what paginated flow's page-turn timing needed. */
+  readonly followedPositions: readonly (SpokenWordRange | null)[];
   /** Every `setSpokenWordRange` argument, in call order. `null` entries are clears. */
   readonly spokenWordRanges: readonly (SpokenWordRange | null)[];
   /** Move the reader's position silently. The resume-position setup. */
@@ -219,6 +223,7 @@ export function createTestReaderTextProvider(
   const indexByCfi = new Map<string, number>(sentences.map((s, i) => [s.cfi, i]));
 
   const spokenRanges: (string | null)[] = [];
+  const followedPositions: (SpokenWordRange | null)[] = [];
   const spokenWordRanges: (SpokenWordRange | null)[] = [];
   const handlers = new Set<(reason: TtsInterruption) => void>();
 
@@ -260,6 +265,7 @@ export function createTestReaderTextProvider(
   return {
     sentences,
     spokenRanges,
+    followedPositions,
     spokenWordRanges,
 
     async current(from: string | null, signal?: AbortSignal): Promise<TtsFetchResult> {
@@ -289,6 +295,13 @@ export function createTestReaderTextProvider(
       // against a guarantee it will not get.
       if (terminated) return;
       spokenRanges.push(cfi);
+    },
+
+    followSpokenPosition(range: SpokenWordRange | null): void {
+      // Recorded the same way setSpokenWordRange is — 'sentence'/'none' highlight modes' own
+      // per-tick call, so auto-follow keeps working without painting for either.
+      if (terminated) return;
+      followedPositions.push(range);
     },
 
     setSpokenWordRange(range: SpokenWordRange | null): void {

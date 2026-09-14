@@ -144,15 +144,33 @@ export interface ReadingZoneOptions {
    * upper-middle position, so a reposition reveals a full screen of upcoming text, not the bare
    * minimum needed to be visible. */
   targetFraction: number;
+  /** Fraction of viewport height the target's OWN topmost point must never be scrolled above. Caps
+   * the delta for a target taller than the gap between where it triggers and `targetFraction` — see
+   * this function's own note on why that gap matters. */
+  minTopFraction: number;
 }
 
 /**
  * How far to scroll (positive = down) to bring a target back into the reading zone, or null if it
- * is already comfortably inside it.
+ * is already comfortably inside it (or already as close as it can safely get).
  *
- * USES THE DEEPEST RECT (max `top + height`), NOT THE FIRST — the point that would be cut off first
- * as the reader scrolls forward, so a multi-line sentence is judged by its lowest line, not where it
- * starts.
+ * USES THE DEEPEST RECT (max `top + height`) TO DECIDE *WHETHER* TO TRIGGER, NOT THE FIRST — the
+ * point that would be cut off first as the reader scrolls forward, so a multi-line sentence is
+ * judged by its lowest line, not where it starts.
+ *
+ * >>> BUT THE DELTA IS CAPPED BY THE TOPMOST RECT, AND THAT CAP IS NOT COSMETIC. <<< Pulling the
+ * deepest point all the way to `targetFraction` assumes the target is short enough to fit in the gap
+ * between there and the top of the viewport. A sentence taller than that gap — several wrapped lines,
+ * common in scrolled-doc flow on a phone-width viewport — does not fit, and honouring `targetFraction`
+ * regardless would push the target's OWN FIRST LINE above the viewport the instant it triggers: the
+ * exact moment the reader most needs to see where the sentence starts. `minTopFraction` is the floor
+ * that stops that — the delta is capped so the topmost rect never ends up above it, even at the cost
+ * of leaving the deepest rect short of `targetFraction`. When the cap would require a delta of zero
+ * or less (the topmost rect is already at or below the floor), this returns null rather than a
+ * negative delta — there is nothing to gain by scrolling, since forward is the only direction this
+ * function will ever move the view, and a tall target simply extends past the fold either way; a
+ * later call (the next sentence, or the next word-level tick in word mode) catches up once the
+ * reader has genuinely progressed further into it.
  *
  * NEVER TRIGGERS FOR A TARGET ABOVE THE ZONE. A target near or above the top of the viewport has a
  * small or negative `positionFraction`, which is always `< triggerFraction` — this only ever catches
@@ -168,10 +186,13 @@ export function readingZoneScrollDelta(
   const viewportHeight = viewport.bottom - viewport.top;
   if (viewportHeight <= 0) return null;
 
+  const topMost = Math.min(...rects.map((rect) => rect.top));
   const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
   const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
   if (positionFraction < options.triggerFraction) return null;
 
   const targetBottom = viewport.top + options.targetFraction * viewportHeight;
-  return deepestBottom - targetBottom;
+  const minTop = viewport.top + options.minTopFraction * viewportHeight;
+  const delta = Math.min(deepestBottom - targetBottom, topMost - minTop);
+  return delta > 0 ? delta : null;
 }

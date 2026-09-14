@@ -148,6 +148,7 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `followSpokenPosition` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenWordRange` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
 | `requestCurrentSelection` | — | **yes** (`selection`) | both |
@@ -228,11 +229,64 @@ explains why the mark is round the page rather than the word.
 **Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
 the host retract a notice it has already dropped.
 
+### Auto-follow without a paint — `followSpokenPosition`
+
+Added 2026-09-14, one day after `'word'` mode stopped painting a sentence wash, once that gap
+surfaced on-device — then WIDENED later the same day, for a second, more serious gap. Defined on
+both entries, same as `setSpokenRange`/`setSpokenWordRange`, but it paints NOTHING.
+
+**Why it exists at all:** `'none'` TTS highlight mode broke auto-follow entirely, in BOTH paginated
+and scrolled-doc flow, once it stopped calling `setSpokenRange` with a real cfi: auto-follow is
+triggered from *inside* `setSpokenRange`'s and `setSpokenWordRange`'s own WebView handlers, and
+`'none'` mode called neither with anything to follow. The flow branch itself (paginated's discrete
+`display()` vs scrolled-doc's teleprompter reposition) lives one level deeper, inside the shared
+`followSpokenRange` function — this command gives `'none'` mode a way to reach it.
+
+**Why it was widened from a bare `cfi: string | null` to the SAME `SpokenWordRange` shape
+`setSpokenWordRange` uses:** a once-per-sentence call, even a real one, was not enough. In PAGINATED
+flow specifically, `spokenRangeVisible`'s "any rect visible" test means a sentence straddling a page
+break keeps its BEGINNING "visible" for the check's ENTIRE duration once checked only at sentence
+start — the page never turned until the NEXT sentence began, cutting the reader off from everything
+spoken over the tail. `'sentence'` mode had the identical defect (its own coarse, once-per-sentence
+follow from `setSpokenRange`'s paint has the same limitation); only `'word'` mode was ever immune,
+because `setSpokenWordRange` already re-resolves a precise sub-range on every tick. The fix: this
+command's handler now resolves via `resolveSpokenWordCfi` — the SAME resolution `setSpokenWordRange`
+makes for its own paint — before calling `followSpokenRange`, and `useTtsSession.ts`'s
+`handleTtsProgress` forwards EVERY `tts-progress` tick to it for both `'sentence'` and `'none'`
+modes now (previously neither got any ticks forwarded here at all).
+
+`'word'` mode still does not need this: `setSpokenWordRange` already triggers the same
+`followSpokenRange` call, as a side effect of its own paint. `useTtsSession.ts`'s
+`applySentenceWash` no longer sends a coarse cfi at sentence start at all — it calls
+`followSpokenPosition(null)` unconditionally, for every mode, purely to clear whatever the PREVIOUS
+sentence's last tick resolved before the new one's own first tick arrives. `'sentence'` mode still
+gets an effective coarse follow for free (from `setSpokenRange`'s own `followSpokenRange` call at
+paint time); `'none'` mode relies on its first tick, the same small until-first-tick gap `'word'`
+mode's own coarse case has always had.
+
+**Kept in a variable separate from `currentSpokenCfi`** (`epub.entry.ts`'s `currentSpokenFollowCfi`)
+— reusing the paint-state variable for a position nothing is painted for would make
+`liftSpokenLayers`/`repaintLiveAnnotations`'s sentence branches (both gated on
+`currentSpokenCfi !== null` to mean "the wash IS painted here") wrongly paint one on their next
+repaint. Consulted only as the last resort in the `currentSpokenWordCfi ?? currentSpokenCfi ??
+currentSpokenFollowCfi` fallback chains a reflow/flow-rebuild re-check uses. A resolution failure
+(the SAME bail reasons `setSpokenWordRange` can hit) clears the tracked position rather than leaving
+a stale one — a follow target from speech that has moved on is as much a lie here as a stale word
+paint would be.
+
 ### The spoken word — `setSpokenWordRange`
 
-The refinement of `setSpokenRange`: that one says which SENTENCE is being read, this one says which
-WORD inside it. Sent on every `tts-progress` event while `tts.highlightMode === 'word'`; `null`
-clears. Accessibility (Hruthik) is the only caller, through `ReaderTextProvider`.
+`setSpokenRange` says which SENTENCE the caller is speaking from/resolving against; this says which
+WORD. Sent on every `tts-progress` event while `tts.highlightMode === 'word'`; `null` clears.
+Accessibility (Hruthik) is the only caller, through `ReaderTextProvider`.
+
+**Not layered ON a sentence wash any more, since 2026-09-13.** `'word'` mode used to also call
+`setSpokenRange` with a real cfi, so the word wash always sat on top of a painted sentence — until a
+product decision that a lone highlighted word reads more clearly on its own. `'word'` mode now calls
+`setSpokenRange(null)` instead (same as `'none'`), so this command's paint is the ONLY thing on screen
+in that mode. See `TTS_PROVIDER.md`'s "Word highlighting shows ONLY the word" for the full account,
+including what depended on the sentence wash always being present and needed a fix in the same
+change.
 
 **One nullable payload OBJECT, not three fields, and the constraint is `bridge.ts`'s own proof.**
 Every command here carries exactly one non-`type` field, because `ExpectedArgs` /
@@ -250,17 +304,21 @@ offset N in the collapsed text is not offset N in any node — and would fail si
 box over the wrong word.
 
 **No reply, deliberately.** Whether the word could be painted is not reported, because failing is
-ORDINARY rather than exceptional: the reader pages away mid-utterance, the section is not rendered,
-the sentence is one word already covered by the sentence wash. A reply would be a channel for
-something no caller can act on. What the shell guarantees instead is that **a range it cannot resolve
-clears the previous word rather than leaving it painted** — a stale word wash while the voice has
-moved on is a lie, where no word wash is merely less information. The sentence highlight stays up
-throughout, so what a failure costs is the refinement, never the "you are here".
+ORDINARY rather than exceptional: the reader pages away mid-utterance, or the section is not
+rendered. A reply would be a channel for something no caller can act on. What the shell guarantees
+instead is that **a range it cannot resolve clears the previous word rather than leaving it painted**
+— a stale word wash while the voice has moved on is a lie, where no word wash is merely less
+information. In `'sentence'` mode the sentence highlight stays up throughout, so a failure there costs
+only the refinement — but `'word'` mode (the only mode that calls this command) has no sentence wash
+to fall back on, so a failure there means nothing is highlighted at all until the next tick resolves.
 
-**`setSpokenRange` clears it.** The word is a sub-range of one sentence, so the sentence moving
-invalidates it; the caller does not have to clear it first, and a caller that does anyway is
-harmless. This is what covers the reader turning word mode off mid-utterance, which produces no
-further word commands at all.
+**`setSpokenRange` clears it, however it's called.** The word is a sub-range of one sentence, so the
+sentence moving invalidates it regardless of mode; the caller does not have to clear it first, and a
+caller that does anyway is harmless. This is what covers a caller changing `highlightMode`
+mid-utterance too — `useTtsSession.ts` applies that change immediately by calling `setSpokenRange`
+itself the moment the preference changes (see `TTS_PROVIDER.md`'s "Off highlight mode" note), which
+clears any stale word wash as a side effect of that call rather than waiting for the reader to turn
+word mode off and produce no further word commands.
 
 ### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
 

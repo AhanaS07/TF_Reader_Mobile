@@ -555,12 +555,31 @@ file's H1/H2 write-up). Reserve swipe for when the question is genuinely about g
 end-to-end, not node reachability — and expect to need a real device/finger or a rooted AVD even
 then.
 
+**CORRECTION, 2026-09-10 (`02_a11y_root_cause_RESULT.md`'s dated addendum) — the sentence above is
+no longer safe to rely on as written.** Tap-exact-bounds's "reliable every time" verdict was only
+ever demonstrated against **clickable** targets (book-list rows, dialog buttons) — where a raw tap
+that bypasses touch-exploration and lands as a plain pass-through click is indistinguishable from a
+tap that correctly drove focus and found nothing to activate. A control test run against
+definitively **non-clickable native Chrome UI text** (nothing to do with any WebView) found the
+identical "silent, focus never moves" signature across four separate methods: a plain
+exact-bounds tap, a simulated 600ms hold at the same point, `adb shell input keycombination
+ALT_LEFT DPAD_RIGHT` (TalkBack's own documented linear-next shortcut), and a real dragged swipe.
+TalkBack was confirmed bound and alive throughout (`dumpsys accessibility`). **This means
+tap-exact-bounds cannot currently distinguish "TalkBack failed to route touch-exploration here"
+from "synthetic input on this emulator doesn't drive touch exploration for non-clickable content at
+all, regardless of what it's aimed at."** Every "confirmed silent" result in §12.3 and this
+section's own H2 write-up used a non-clickable target, so every one of them needs this caveat
+attached — it does not mean F4 is wrong, it means the method used to gather this evidence has an
+unresolved confound that a real device/finger or a rooted AVD is needed to rule out. See the
+plan/status notes tracked outside this repo for the full control-test table; the finding itself is
+recorded here so it isn't only in an untracked file.
+
 ### 12.6 Risk register update
 
 | Risk (from §9) | 2026-08-24/25 rating | 2026-08-31 Configuration A observation |
 |---|---|---|
 | WebView content nodes have degenerate zero-size bounds | Critical/Blocking | **Downgraded for on-screen content** — bounds are correct when visible (§12.2). Off-screen degenerate bounds are normal virtualization, not this bug. |
-| `epub.js` iframe/content focus (TalkBack cannot reach content) | Critical/Blocking | **Unchanged — still Critical/Blocking.** Confirmed via 3 independent touch points on content with correct bounds (§12.3). Bounds were necessary but not sufficient. |
+| `epub.js` iframe/content focus (TalkBack cannot reach content) | Critical/Blocking | **Unchanged — still Critical/Blocking, but see the 2026-09-10 correction above §12.6.** Confirmed via 3 independent touch points on content with correct bounds (§12.3). Bounds were necessary but not sufficient. **Caveat added 2026-09-10**: the same tap-exact-bounds method is also silent on plain non-clickable *native* content with nothing to do with WebView/epub.js — so this rating reflects "the tooling used so far can't rule out F4," not a confirmed WebView-specific defect independent of that tooling gap. **2026-09-11, decisive and independent of that confound**: an in-process instrumentation test calling `AccessibilityNodeInfo.performAction(ACTION_ACCESSIBILITY_FOCUS)` directly on the WebView content node — no synthetic touch/gesture at all, so the tap-exact-bounds confound doesn't apply — got `true` back from the action call, but a fresh re-query of the live tree 500ms later showed `isAccessibilityFocused() == false`. The action is accepted, not rejected, but never durably lands. This is new evidence, not a repeat of the tooling gap: it rules out "the node structurally refuses focus" as the explanation and narrows the search to something between action-dispatch and focus-persistence in the WebView's accessibility bridge specifically. Full account: `02_a11y_root_cause_RESULT.md`'s 2026-09-11 section. |
 | TOC panel leaves elements in a11y tree after chapter-selection dismissal (F5) | Medium | **Downgraded — not observed in this pass** (§12.4), consistent with the doc's own re-diagnosis. |
 | Confusing "Contents quantity 22" announcement (F1) | Low | **Closed** — button now reads "Contents"/"Close contents" cleanly (not independently re-verified by touch/label read this pass, but the source change is confirmed present and no regression seen). |
 
@@ -626,3 +645,56 @@ crossing the WebView/iframe boundary at all — it's a native `AccessibilityInfo
 **not blocked by 12.3's finding**. Native-side accessibility features (announcements, toolbar
 controls, TOC panel) continue to work correctly throughout; the confirmed-open defect is specifically
 WebView content reachability.
+
+## 13. 2026-09-11 — user-reproduced on emulator; gesture-level mechanism now understood
+
+F4 reproduced again, independently of any of the sessions above: manual use (not synthetic input) on
+the Android Studio emulator, TalkBack on, confirmed that neither page-turn (swipe) nor scrolling the
+book content is possible. This matches §12.3's finding exactly, just via ordinary use instead of
+`adb`-driven testing, so it is not subject to that section's synthetic-input confound (§12.5–12.6).
+
+**New mechanism-level detail, from reading the gesture code directly rather than probing behaviour
+from outside.** `src/features/reader/webview/src/touchGesture.ts` and its caller,
+`watchTouches` in `src/features/reader/webview/src/epub.entry.ts` (lines 865-936), only turn a page
+in response to a raw `touchstart` → `touchmove` → `touchend` sequence dispatched to the chapter
+document itself. Android's touch-exploration layer is what consumes a single-finger touch when
+TalkBack is on — by design, that's how "explore by touch" works everywhere in the OS — and it does
+this *before* the event would otherwise reach a page's own DOM listeners. So this class of listener
+is structurally unreachable while touch exploration is on, **independent of** both the bounds/label
+bugs this doc already tracks (§8's causes (a)/(b)) and the still-open WebView-accessibility-bridge
+defect in §12.6 (the `ACTION_ACCESSIBILITY_FOCUS` accepted-but-non-persisting behaviour). Three
+separate things are broken at three separate layers, and fixing any one does not touch the others.
+
+One clarification this adds to F4's scope: in the a11y-forced `scrolled-doc` flow
+(`readerA11yLayout.ts`), `epub.entry.ts`'s swipe handler already deliberately no-ops for page-turn
+(`if (!isPaginated(currentFlow())) return;`) — so swipe-to-*turn* was never expected to work in that
+mode by design, screen reader or not. What *is* expected to work there, and doesn't, is native
+*scrolling* of the WebView's content — blocked by the same touch-exploration consumption described
+above (for a single-finger drag) and, per §12.3/§12.6, by the WebView accessibility-bridge gap for
+any TalkBack-mediated approach.
+
+**What already works, confirmed again this session**: the native toolbar Prev/Next buttons
+(`ReaderScreen.tsx:3042-3144`, plain RN `Pressable`s, `accessibilityLabel="Previous page"`/`"Next
+page"`) and the TOC panel are all reachable and activatable by TalkBack — they sit outside the
+WebView entirely, so none of the three defects above apply to them. Both buttons call
+`send({type:'next'})` / `send({type:'prev'})`, which resolves to
+`webViewRef.current?.injectJavaScript(buildCommandScript(command))` in `ReaderWebView.tsx:150-152` —
+a payload-free, already-proven-reliable bridge command (`readerBridge.ts:520-524`). That reliability
+is the basis for the fix proposal below.
+
+**Proposal, not yet implemented**: see `TALKBACK_GESTURE_FIX_PROPOSAL.md` in this directory — a
+handoff document for Ahana (owner of `src/features/reader/`, where every file this proposes touching
+lives), not a code change made here. It proposes reusing that exact `send({type:'next'|'prev'})` call
+from a native `accessibilityActions`/`onAccessibilityAction` pair, so page navigation becomes
+reachable through a native View already proven to work with TalkBack, sidestepping all three defects
+above rather than fixing any of them.
+
+**A second, already-shipped candidate exists on the accessibility side and needs on-device
+verification, not new code.** TTS auto-follow (`TTS_AUTOFOLLOW_HANDOFF.md`, implemented 2026-09-07)
+calls `rendition.display(cfi)` directly from `epub.entry.ts`'s `followSpokenRange` whenever the
+spoken sentence goes off-screen — a JS-internal epub.js call, not a touch event and not a TalkBack
+focus request, so it depends on neither of the two defects above. If it works under TalkBack in the
+screen-reader-forced `scrolled-doc` flow, turning on "Read aloud" is a real, working-today
+alternative to swipe/scroll for a TalkBack user. That doc's own checklist marks on-device
+verification for exactly this flow as **pending** — worth running before relying on it, and worth
+recording here either way once run.

@@ -137,6 +137,17 @@ let currentSpokenCfi: string | null = null;
  * own header says the same thing about caching, at more length. */
 let currentSpokenWordCfi: string | null = null;
 
+/** The RESOLVED CFI `followSpokenPosition` is tracking, or null — `'sentence'`/`'none'` highlight
+ * modes' own per-tick position, kept DELIBERATELY SEPARATE from `currentSpokenCfi`. Reusing that
+ * variable for a position nothing is painted for would make `liftSpokenLayers`/
+ * `repaintLiveAnnotations`'s sentence branches — both gated on `currentSpokenCfi !== null` to mean
+ * "the sentence wash IS painted here" — wrongly paint one during their next repaint. Resolved via
+ * `resolveSpokenWordCfi`, the same sub-range resolution `setSpokenWordRange` uses for its OWN
+ * paint, just never painted here. Consulted only as the LAST resort in the `currentSpokenWordCfi ??
+ * currentSpokenCfi ?? currentSpokenFollowCfi` fallback chains a reflow/flow-rebuild re-check uses,
+ * since a real paint (sentence or word) is always the more precise target when one exists. */
+let currentSpokenFollowCfi: string | null = null;
+
 /** The CFI last brought on screen by auto-follow's own `display()`, or null. Lets a repeat call for
  * the SAME target skip re-checking geometry — once auto-follow has just displayed it, re-issuing
  * `display()` for it again would fight the manager mid-settle rather than dedupe. See
@@ -795,7 +806,13 @@ function liftUserHighlight(id: string): void {
   const highlight = lastUserHighlights.find((entry) => entry.id === id);
   if (!highlight) return;
   highlightRemove(rendition, USER_OWNER, cfiRange);
-  highlightAdd(rendition, USER_OWNER, cfiRange, USER_SAVED_VARIANT, userHighlightStyles(highlight.color));
+  highlightAdd(
+    rendition,
+    USER_OWNER,
+    cfiRange,
+    USER_SAVED_VARIANT,
+    userHighlightStyles(highlight.color),
+  );
 }
 
 /**
@@ -804,11 +821,18 @@ function liftUserHighlight(id: string): void {
  * in a few seconds. A deliberate, EXPLICIT departure from HIGHLIGHT_LAYERS.md §4's default z-order
  * (`tts > search > user`) for exactly the overlapping range, and only for it: this does not touch
  * §4's ordering anywhere the two do not overlap, because DOM/paint-order z-index only has any visual
- * effect where two marks occupy the same screen space to begin with. Called once per spoken
- * SENTENCE (`setSpokenRange`, not `setSpokenWordRange`) — "the tts whole highlight" the reader
- * asked for this against is the sentence wash, and checking at sentence granularity means a user
- * highlight lifts as soon as TTS's sentence wash reaches it, not only once the exact word being
- * read happens to fall inside it.
+ * effect where two marks occupy the same screen space to begin with.
+ *
+ * TWO CALLERS, ONE PER MODE, NEVER BOTH AT ONCE. `setSpokenRange` calls this at SENTENCE
+ * granularity — "the tts whole highlight" the reader asked for this against is the sentence wash,
+ * so a user highlight lifts as soon as the sentence wash reaches it, not only once the exact word
+ * being read happens to fall inside it. `setSpokenWordRange` calls this too (added 2026-09-13, when
+ * `'word'` mode stopped also painting a sentence wash): with no sentence wash to check sentence-
+ * granularity against, WORD granularity is what "the tts whole highlight" means for that mode, not a
+ * narrowing of the original decision. The two callers cannot run in the same session — `useTtsSession`
+ * only calls `setSpokenWordRange` while `highlightMode === 'word'`, and only that mode ever leaves
+ * `setSpokenRange`'s cfi argument non-null in `'sentence'` mode — so there is no ordering to reason
+ * about between them.
  */
 function liftOverlappingUserHighlights(contents: Contents, spokenCfi: string): void {
   for (const id of userHighlightIdsOverlapping(contents, spokenCfi)) {
@@ -1238,11 +1262,12 @@ function scheduleGeometryRefresh(options: { reanchor?: boolean } = {}): void {
       if (transitionId !== undefined) endRenditionTransition(transitionId);
 
       // Word-level position wins when it exists — it is the more precise of the two, and it is
-      // what `setSpokenWordRange`'s own auto-follow call already prefers. `lastAutoFollowedCfi` is
-      // deliberately NOT trusted here even if it equals this target: it records "this CFI was
-      // on-screen as of the last CHECK", and a reflow is exactly the event that can make that
-      // stale without the CFI itself changing.
-      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      // what `setSpokenWordRange`'s own auto-follow call already prefers. `currentSpokenFollowCfi`
+      // is the last resort, only reached in 'none' highlight mode where neither of the first two is
+      // ever set. `lastAutoFollowedCfi` is deliberately NOT trusted here even if it equals this
+      // target: it records "this CFI was on-screen as of the last CHECK", and a reflow is exactly
+      // the event that can make that stale without the CFI itself changing.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
       if (spokenTarget !== null) {
         lastAutoFollowedCfi = null;
         followSpokenRange(spokenTarget);
@@ -1388,9 +1413,10 @@ function applyTtsScrollLock(): void {
  * the element sits inside the scrolling container) against the manager's `bounds()` (the fixed stage
  * viewport).
  */
-function spokenRangeGeometry(
-  cfi: string,
-): { rects: { left: number; top: number; width: number; height: number }[]; viewport: EpubRectLike } | null {
+function spokenRangeGeometry(cfi: string): {
+  rects: { left: number; top: number; width: number; height: number }[];
+  viewport: EpubRectLike;
+} | null {
   const contents = contentsForCfi(cfi);
   if (!contents) return null;
   const range = rangeForCfi(contents, cfi);
@@ -1419,11 +1445,13 @@ function spokenRangeVisible(cfi: string): boolean {
   return geometry !== null && anyRectOnScreen(geometry.rects, geometry.viewport);
 }
 
-/** Fraction of viewport height past which a spoken target triggers a scrolled-doc reposition, and
- * the fraction it lands at afterward. See `readingZoneScrollDelta`'s own doc for the reasoning;
- * these are the two numbers to retune first after an on-device pass. */
+/** Fraction of viewport height past which a spoken target triggers a scrolled-doc reposition, the
+ * fraction it lands at afterward, and the fraction its OWN first line must never be scrolled above.
+ * See `readingZoneScrollDelta`'s own doc for the reasoning; these are the numbers to retune first
+ * after an on-device pass. */
 const READING_ZONE_TRIGGER_FRACTION = 0.75;
 const READING_ZONE_TARGET_FRACTION = 0.35;
+const READING_ZONE_MIN_TOP_FRACTION = 0.08;
 
 /**
  * Scrolled-doc flow's half of auto-follow: smoothly nudge the view to keep the spoken position in a
@@ -1449,6 +1477,7 @@ function repositionForReadingZone(cfi: string): boolean {
   const delta = readingZoneScrollDelta(geometry.rects, geometry.viewport, {
     triggerFraction: READING_ZONE_TRIGGER_FRACTION,
     targetFraction: READING_ZONE_TARGET_FRACTION,
+    minTopFraction: READING_ZONE_MIN_TOP_FRACTION,
   });
   if (delta === null) return true;
 
@@ -1655,6 +1684,39 @@ function liftSearchMatch(): void {
 }
 
 /**
+ * Re-add WHICHEVER spoken layers are currently painted ON TOP of whatever was just painted beneath
+ * them — the §4 fix for the two batch boundaries that used to leave `search` (or a freshly added
+ * `user` highlight) above `tts`.
+ *
+ * NEITHER LAYER'S PRESENCE IS ASSUMED. `'word'` highlight mode (`useTtsSession.ts`) paints ONLY the
+ * word wash now, never the sentence — `currentSpokenCfi` stays null for a whole word-only session,
+ * while `currentSpokenWordCfi` is real. Guarding this whole function on `currentSpokenCfi === null`,
+ * as it originally did, made it a permanent no-op for exactly that mode — the word wash was never
+ * re-lifted at either batch boundary below, silently reopening the §4 gap this function exists to
+ * close, just for a different mode. So the sentence branch is now independently conditional, and
+ * `repaintSpokenWord()` (which already no-ops on its own when `currentSpokenWordCfi` is null) always
+ * runs — one or the other is typically painted, per the mode, but neither call assumes which.
+ *
+ * WHEN BOTH ARE PAINTED, THE SENTENCE MUST BE RE-ADDED FIRST, still — lifting the sentence alone
+ * would put it over its own word.
+ *
+ * NOT called from `repaintLiveAnnotations` — that one already re-adds both spoken layers AFTER its
+ * own `liftSearchMatch()` call (see its note), so `tts` is already on top there and a second lift
+ * would just be a redundant re-measure.
+ *
+ * Called last, after `liftSearchMatch()`, at the other two of the three batch boundaries that
+ * function names: `paintHighlights` and `rebuildForFlowIfNeeded`.
+ */
+function liftSpokenLayers(): void {
+  if (!rendition) return;
+  if (currentSpokenCfi !== null) {
+    highlightRemove(rendition, TTS_OWNER, currentSpokenCfi);
+    highlightAdd(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+  }
+  repaintSpokenWord();
+}
+
+/**
  * Build a rendition against the current appearance's flow/spread, wire its handlers, and set it as
  * THE rendition. Used both by `openEpub` (the first one) and by `applyAppearance` (to rebuild one
  * when a flow change needs a different manager — see `mapManager`'s note).
@@ -1720,24 +1782,16 @@ function rebuildForFlowIfNeeded(): boolean {
       // already attached. That is the duplicate-mark defect `repaintLiveAnnotations` documents,
       // arriving by a different route. Remove-then-add is idempotent either way, and epub.js's
       // `remove` tolerates a miss.
-      //
-      // >>> KNOWN §4 DEVIATION, RECORDED RATHER THAN FIXED HERE. <<< This leaves `search` above the
-      // two `tts` layers, where HIGHLIGHT_LAYERS.md §4 puts `tts` on top. It predates the word layer
-      // (the sentence has always been added before this line) and the word inherits it unchanged, so
-      // nothing regressed — but it is real, and `paintHighlights` has the same shape: it lifts only
-      // `search`, so a newly created user highlight is appended above BOTH spoken layers.
-      //
-      // The fix, when someone takes it: a `liftSpokenLayers()` sibling of `liftSearchMatch` that
-      // removes-then-re-adds the sentence AND the word as a PAIR — the pair is the unit, because
-      // lifting the sentence alone would put it over its own word — called from the same three batch
-      // boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`, here), last.
-      // It wants a device pass, which is why it is not bundled into a change that lands without one.
       liftSearchMatch();
+      // §4 FIX: put `tts` back on top of `search`, as a pair with its word wash — see
+      // `liftSpokenLayers`'s own note. This used to be a known, recorded deviation
+      // (HIGHLIGHT_LAYERS.md §4); it no longer is.
+      liftSpokenLayers();
 
       // A fresh rendition means a fresh DOM order too — re-establish `user`-over-`tts` for the
-      // overlap, if any, same reasoning as `repaintLiveAnnotations`'s own note. (Currently a no-op
-      // in practice: the §4 deviation noted above already leaves `user` on top of both `tts` layers
-      // here by accident. Explicit anyway, so this keeps working the day that deviation is fixed.)
+      // overlap, if any, same reasoning as `repaintLiveAnnotations`'s own note. Now meaningful
+      // rather than a no-op: `liftSpokenLayers()` above puts `tts` back on top of `search`, so this
+      // is what re-establishes `user`'s overlap-only exception on top of THAT.
       if (currentSpokenCfi !== null && rendition) {
         const spokenContents = contentsForCfi(currentSpokenCfi);
         if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
@@ -1754,7 +1808,9 @@ function rebuildForFlowIfNeeded(): boolean {
       // rebuilds the manager entirely, and the new one may not fit the same content on screen at
       // that same anchor. Reset the dedupe for the same reason: a fresh rendition means this CFI's
       // last-checked visibility, if any, was against a manager that no longer exists.
-      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi;
+      // `currentSpokenFollowCfi` is the 'none' highlight mode fallback — see the other call site's
+      // identical note.
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
       if (spokenTarget !== null) {
         lastAutoFollowedCfi = null;
         followSpokenRange(spokenTarget);
@@ -1977,6 +2033,8 @@ const api: TFReaderApi<'openEpub'> = {
         // resolve happily against this one's first chapter and be re-painted by the first repaint
         // that came along, over whatever text sits at the same tree position.
         currentSpokenWordCfi = null;
+        // Same hazard again, for 'none' highlight mode's own tracked-but-unpainted position.
+        currentSpokenFollowCfi = null;
         // A CFI auto-followed in the previous book addresses nothing here either — same
         // cross-book-resolves-anyway hazard, and a stale match would wrongly skip a follow this
         // book's first spoken CFI genuinely needs.
@@ -2261,7 +2319,12 @@ const api: TFReaderApi<'openEpub'> = {
     // the lift is worth skipping when the diff added nothing: a repaint that changed nothing must
     // not detach and re-attach a mark for no reason, and this command is re-sent on every change to
     // the host's highlight state.
-    if (applyUserHighlights(mine)) liftSearchMatch();
+    if (applyUserHighlights(mine)) {
+      liftSearchMatch();
+      // §4 FIX: a newly added user highlight used to land above both spoken layers — see
+      // `liftSpokenLayers`'s own note.
+      liftSpokenLayers();
+    }
 
     if (foreign > 0) {
       fail(
@@ -2341,17 +2404,63 @@ const api: TFReaderApi<'openEpub'> = {
   },
 
   /**
-   * Paint or clear the spoken-WORD highlight — the word inside the sentence `setSpokenRange` is
-   * showing. Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+   * Track a resolved sub-range for auto-follow WITHOUT painting anything for it —
+   * `'sentence'`/`'none'` TTS highlight modes' own case. See `ReaderCommand`'s own note for why
+   * this exists as a sibling to `setSpokenRange`/`setSpokenWordRange` rather than a flag on either.
+   *
+   * Added 2026-09-14 as a bare `cfi: string | null`, called once per sentence for `'none'` mode
+   * only. WIDENED THE SAME DAY to this shape, resolved via `resolveSpokenWordCfi` — the identical
+   * call `setSpokenWordRange` makes for its own paint — because a once-per-sentence, whole-sentence
+   * check was not enough: in paginated flow, a sentence straddling a page break kept its beginning
+   * "visible" for the check's entire duration, so the page never turned until the NEXT sentence
+   * started. `useTtsSession.ts` now calls this on every `tts-progress` tick for `'sentence'`/
+   * `'none'` modes, the same cadence `'word'` mode's own paint already gets.
+   *
+   * DELIBERATELY MINIMAL OTHERWISE: no `clearSpokenWord()`, no `highlightAdd`/`highlightRemove`, no
+   * `liftOverlappingUserHighlights`, no `spokenWordCollides` check — there is nothing painted here
+   * for any of those to apply to. Only `currentSpokenFollowCfi` (this command's own state, kept out
+   * of `currentSpokenCfi` for the reason that variable's own doc gives) and the shared
+   * `followSpokenRange` call, fed the RESOLVED position rather than the whole-sentence cfi.
+   *
+   * A resolution failure (paged away mid-utterance, section not rendered, or the sub-range
+   * happens to equal the whole sentence — see `resolveSpokenWordCfi`'s own bail) clears the tracked
+   * position rather than leaving a stale one: a follow target from speech that has moved on is as
+   * much a lie here as a stale word paint would be.
+   */
+  followSpokenPosition: (range) => {
+    try {
+      if (!rendition) return;
+      if (range === null) {
+        currentSpokenFollowCfi = null;
+        return;
+      }
+      const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
+      currentSpokenFollowCfi = cfi;
+      if (cfi !== null) followSpokenRange(cfi);
+    } catch {
+      // Best-effort, per the interface's own contract — swallowed rather than reported.
+    }
+  },
+
+  /**
+   * Paint or clear the spoken-WORD highlight — the word within the sentence currently being spoken.
+   * Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+   *
+   * NOT NECESSARILY "the word inside the sentence `setSpokenRange` is showing" any more — since
+   * 2026-09-13, `'word'` highlight mode paints ONLY this, never a sentence wash underneath it (a
+   * product decision: a lone highlighted word reads more clearly against plain text than against a
+   * wash it would otherwise stand out from). `setSpokenRange` still says which sentence to speak
+   * from/resolve against (its `cfi` is what every `range.cfi` here is relative to), it just does not
+   * necessarily PAINT that sentence any more — see `applySentenceWash` in `useTtsSession.ts`.
    *
    * >>> THE PREVIOUS WORD IS CLEARED BEFORE THE NEW ONE IS RESOLVED, NOT AFTER. <<< That ordering is
    * the whole correctness argument, because `resolveSpokenWordCfi` bails to `null` for a list of
-   * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, the
-   * rendered text no longer matches what was spoken, the sentence is a single word already covered
-   * by the sentence wash. A bail means "I do not know where this word is", and a highlight left on
-   * the previous word while the voice has moved on is a LIE, whereas no word highlight is merely
-   * less information. The sentence wash is on screen throughout either way, so what a bail costs is
-   * the refinement, never the "you are here".
+   * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, or the
+   * rendered text no longer matches what was spoken. A bail means "I do not know where this word
+   * is", and a highlight left on the previous word while the voice has moved on is a LIE, whereas no
+   * word highlight is merely less information — and, now that this is the ONLY thing `'word'` mode
+   * paints, a bail genuinely means nothing is highlighted at all until the next tick resolves
+   * successfully, not just a lost refinement over an otherwise-still-visible sentence wash.
    *
    * `!rendition` returns before any of that, exactly as `setSpokenRange` does and for a reason worth
    * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
@@ -2383,6 +2492,16 @@ const api: TFReaderApi<'openEpub'> = {
         // Added AFTER the sentence in DOM order, which is what puts the word wash on top of it.
         repaintSpokenWord({ live: false });
       }
+      // Word-only mode's own instance of the overlap exception `liftOverlappingUserHighlights`
+      // documents — see its own note. `setSpokenRange` never carries a real cfi in word mode any
+      // more (only `'sentence'` mode paints the sentence wash), so without this call here, a
+      // reader's own saved highlight would never rise above the word wash it overlaps: the sentence-
+      // granularity trigger that used to cover this case no longer fires. Runs regardless of the
+      // collision guard just above, same reasoning as `followSpokenRange` below: the word's real
+      // position is what a saved highlight is overlapping, whether or not this session's OWN word
+      // wash was allowed to paint over top of it.
+      const wordContents = contentsForCfi(cfi);
+      if (wordContents) liftOverlappingUserHighlights(wordContents, cfi);
       followSpokenRange(cfi);
     } catch {
       // Best-effort, per the interface's own contract — swallowed rather than reported.
