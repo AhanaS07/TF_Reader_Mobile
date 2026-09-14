@@ -104,7 +104,7 @@ because the app has already picked a side on two of them.
 | # | Gap | Status | Owner |
 | --- | --- | --- | --- |
 | `C1` | Sync client claims unallocated `/api/v1/**` subtrees; tracked backend serves `/api/*` | ❌ | Karthik |
-| `C2` | No contract covers CAP-7's sync surface at all | ❌ | CAP-7 to publish one |
+| `C2` | No contract covers CAP-7's sync surface at all | 🟡 **partially closed 2026-09-14** — Accessibility published its slice: `src/features/accessibility/ACCESSIBILITY_API_CONTRACT.md`. Personalization/progress/bookmarks/highlights/outbox still uncovered | CAP-7 to publish one (accessibility done; rest still open) |
 | `C3` | No catalogue/discovery/institution client — **unowned**, still the source half of `B12` and blocks step 1 of `B1` | ❌ | needs an owner |
 | `C4` | `items:batch` 100-id cap interacts with `GET /library`'s non-pagination | ❌ | whoever builds the shelf |
 | `C5` | `availability` endpoint has a documented consumer, no implementation | ❌ | flambeau |
