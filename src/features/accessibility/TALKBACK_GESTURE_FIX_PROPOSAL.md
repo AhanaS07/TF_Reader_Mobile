@@ -1,9 +1,11 @@
 # Proposal: expose page navigation as a native accessibility action, for TalkBack
 
-**Status: proposal only, not implemented. Needs Ahana's review and sign-off before any of
-`ReaderScreen.tsx`, `ReaderWebView.tsx`, or `readerBridge.ts` is touched** — every file this
-proposes changing lives in `src/features/reader/`, which she owns per this repo's `CLAUDE.md`
-ownership table. This document is the extent of the change made from here.
+**Status: implemented and unit-tested.** Ahana reviewed this proposal, caught a real defect in its
+original sketch (see "Resolution, Ahana" below), and implemented the corrected version (`0a2b46d`)
+— a dedicated sibling node on `ReaderWebView`, not the container, wired through to
+`ReaderScreen.tsx`. On-device verification confirmed the underlying action fires and the page
+visibly turns (see "Phase 5 — on-device verification" below); real TalkBack gesture-surfacing
+(two-finger swipe vs. local Actions menu) is the one item still open.
 
 Written from `src/features/accessibility/` (Hruthik's lane) as a handoff, prompted by
 `WEBVIEW_A11Y_SPIKE.md` §13 (2026-09-11) — read that section first for the reproduction and the
@@ -164,3 +166,46 @@ in `scrolled-doc` flow. No second/scroll-by-viewport command is needed — the s
 
 See Ahana's plan (executed alongside this addendum) for the corrected implementation and its test
 coverage.
+
+## Phase 5 — on-device verification (Hruthik, 2026-09-14)
+
+**Verified working, with one non-obvious caveat about the return value.** Confirmed via a temporary
+in-process instrumentation test (same method as the 2026-09-11 F4 finding — a direct
+`AccessibilityNodeInfo.performAction()` call, not gesture synthesis; `android/app/src/androidTest/`,
+gitignored, deleted after; `build.gradle` reverted after) against `tts_spike`:
+
+1. **The node is real and correctly exposed.** RN's `accessibilityRole="adjustable"` reports as
+   `android.widget.SeekBar` to the accessibility tree — that's RN's own Android mapping, not a
+   wrong-node bug — carrying exactly the two custom actions: `ACTION_SCROLL_FORWARD` labelled
+   "Next page", `ACTION_SCROLL_BACKWARD` labelled "Previous page". Confirmed by reading
+   `ReactAccessibilityDelegate.kt` directly: `increment`/`decrement` map to those two standard
+   framework action IDs (lines 567–568), not custom ones.
+2. **`performAction(ACTION_SCROLL_FORWARD)` returns `false` — and that is a red herring, not a
+   failure.** Traced to `ReactAccessibilityDelegate.kt:220–264`: for any action in
+   `accessibilityActionsMap`, the JS `AccessibilityActionEvent` is dispatched **unconditionally,
+   before** the method returns anything (line 236–238). Only the *return value* differs for
+   `adjustable` role on scroll actions — it delegates to `super.performAccessibilityAction()`
+   instead of the usual `return true`, and a plain (non-natively-scrollable) `View`'s superclass
+   answers `false` for `ACTION_SCROLL_FORWARD`/`BACKWARD` regardless of whether the JS handler ran.
+   **A test (or a future reader of this doc) that stops at the boolean return value would wrongly
+   conclude this doesn't work.**
+3. **The page actually turns.** Confirmed visually, not just by return value: a screenshot taken
+   ~immediately after firing `ACTION_SCROLL_FORWARD` shows the visible chapter content advanced
+   from "paragraph 1" to "paragraph 3/4/5" (the sample fixture's own filler-paragraph numbering).
+   Text-content comparison via the accessibility tree's `getText()` was tried first and is
+   **not** a usable signal for this — the WebView's exposed text node appears to span far more of
+   the chapter than what's on-screen (consistent with every prior finding in this file about
+   CSS-column-paginated content's accessibility exposure), so it read identically before and after
+   even though the visible page changed. Only a visual (screenshot) check caught the real result.
+
+**Conclusion: the proposal works as corrected and implemented.** TalkBack users get a working
+page-turn path that never depends on the still-open WebView touch-exploration defect (§12.6). The
+`false` return value is expected and not a defect — noting it here so nobody "fixes" it later by
+trying to make it return `true`, which would require making the sibling node a real
+natively-scrollable View for no benefit.
+
+**Not verified by this pass, and still open:** the actual TalkBack-gesture surfacing (two-finger
+swipe vs. local Actions menu) on a real device — this test fired the underlying Android action
+directly, which is what either surfacing mechanism would itself invoke, but doesn't confirm which
+UX a real TalkBack user actually gets to trigger it, or how discoverable it is. That still needs a
+real device or a rooted AVD per this doc's own original testing plan.
