@@ -3,7 +3,9 @@
 // Pins: initial render reflects the seeded prefs, each control saves a patch that spreads both
 // `accessibility` and the touched sub-block only (the "patches merge at the top level only" rule
 // every prefs writer in this app must follow), Reduce Motion saves the raw tri-state string rather
-// than a collapsed boolean, and the Dyslexia Font control hides for non-EPUB formats.
+// than a collapsed boolean, the Dyslexia Font control hides for non-EPUB formats, and the
+// "Currently: On/Off" caption (this panel's own `useReduceMotion()` consumer) shows only for the
+// "System" selection and reflects the live OS signal, not the stored preference.
 //
 // The TTS on/off and announce-gate cases below were PORTED from DevPreferencesMenu.test.tsx when
 // that UI moved into this panel — same assertions, same exact-match patch style already used above
@@ -11,6 +13,7 @@
 // `expect.objectContaining`), so all five controls in this file are pinned the same way.
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 
 import { prefsStore } from '@/features/personalization/prefsStore';
 import { DEFAULT_ACCESSIBILITY_PREFS } from '@/shared/contracts';
@@ -31,6 +34,17 @@ describe('AccessibilitySettingsPanel', () => {
     subscribeMock.mockReturnValue(() => undefined);
     getPrefsMock.mockResolvedValue({ accessibility: structuredClone(DEFAULT_ACCESSIBILITY_PREFS) });
     savePrefsMock.mockResolvedValue(undefined);
+    // Spied directly rather than module-mocked, matching useReduceMotion.test.ts's own convention
+    // (mocking the whole `react-native` module re-triggers native-module registration under
+    // jest-expo) — this panel now renders `useReduceMotion()`'s "System" caption.
+    jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);
+    jest.spyOn(AccessibilityInfo, 'addEventListener').mockReturnValue({
+      remove: () => undefined,
+    } as never);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('renders all five controls at their stored defaults', async () => {
@@ -89,6 +103,29 @@ describe('AccessibilitySettingsPanel', () => {
     });
   });
 
+  it('shows the resolved motion state when the stored preference is "system"', async () => {
+    jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
+
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    await waitFor(() => expect(screen.getByTestId('reduce-motion-resolved')).toHaveTextContent('Currently: On'));
+  });
+
+  it('hides the resolved-motion caption once the preference is an explicit "on"/"off"', async () => {
+    getPrefsMock.mockResolvedValue({
+      accessibility: {
+        ...structuredClone(DEFAULT_ACCESSIBILITY_PREFS),
+        display: { ...DEFAULT_ACCESSIBILITY_PREFS.display, reduceMotion: 'on' },
+      },
+    });
+
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('reduce-motion-resolved')).toBeNull();
+  });
+
   it('pressing TTS saves a patch that only touches tts.enabled', async () => {
     await render(<AccessibilitySettingsPanel />);
     await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
@@ -101,6 +138,28 @@ describe('AccessibilitySettingsPanel', () => {
         tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts, enabled: true },
       },
     });
+  });
+
+  it('hides TTS Highlight while TTS is off — a control with nothing to control', async () => {
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('tts-highlight-mode-row')).toBeNull();
+    expect(screen.queryByLabelText(/TTS highlight/)).toBeNull();
+  });
+
+  it('shows TTS Highlight once TTS is on', async () => {
+    getPrefsMock.mockResolvedValue({
+      accessibility: {
+        ...structuredClone(DEFAULT_ACCESSIBILITY_PREFS),
+        tts: { ...DEFAULT_ACCESSIBILITY_PREFS.tts, enabled: true },
+      },
+    });
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    expect(screen.getByTestId('tts-highlight-mode-row')).toBeTruthy();
+    expect(screen.getByLabelText('TTS highlight: Sentence')).toBeTruthy();
   });
 
   it('turns page announcements off without touching chapters', async () => {

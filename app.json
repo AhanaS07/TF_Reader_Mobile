@@ -45,7 +45,8 @@
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": true
         }
-      ]
+      ],
+      "expo-notifications"
     ],
     "extra": {
       "eas": {

@@ -35,12 +35,7 @@ import {
 } from './bridge';
 import { pdfHighlights } from './highlightPaint';
 import { matchStroke, selectionBackground } from './selectionTheme';
-import {
-  LONG_PRESS_MS,
-  movedBeyondSlop,
-  swipeDirection,
-  type TouchPoint,
-} from './touchGesture';
+import { LONG_PRESS_MS, movedBeyondSlop, swipeDirection, type TouchPoint } from './touchGesture';
 import {
   clearTextLayer,
   ensureSurface,
@@ -295,7 +290,10 @@ function repaintSearchMatch(): SearchPaintOutcome {
   }
   // The aggregation is next door and unit-tested, because the case it exists for is invisible from
   // here: "no surface holds the match's page" has to read as `pending`, not as a failure.
-  return aggregateSearchOutcome(outcomes, searchMatch === null || pageSurfaces.has(searchMatch.page));
+  return aggregateSearchOutcome(
+    outcomes,
+    searchMatch === null || pageSurfaces.has(searchMatch.page),
+  );
 }
 
 /**
@@ -528,6 +526,11 @@ function disposeScrollPage(pageNumber: number): void {
 
 let scrollRaf = 0;
 
+/** The page `virtualize` last reported to the host via `relocated`, or 0 when none has been reported
+ * this scroll session. Gates the `relocated` post so it fires only on a real page change — see the
+ * note in `virtualize`. Reset to 0 on `leaveScrollMode` so re-entering scroll mode reports afresh. */
+let lastReportedScrollPage = 0;
+
 /** Coalesces scroll events onto one rAF-scheduled pass rather than running the (cheap but
  * non-trivial) virtualisation math once per native scroll event, which can fire far more often
  * than the display can repaint. */
@@ -562,6 +565,18 @@ function virtualize(): void {
   }
 
   currentPage = current;
+
+  // Render/dispose above runs every frame — it must, the buffer tracks the live scroll position. But
+  // the host only needs `relocated` when the most-visible page ACTUALLY changes. The rAF above
+  // coalesces multiple native scroll events into one pass PER FRAME, yet a sustained flick still spans
+  // many frames on the same page, so posting unconditionally delivered dozens of identical {page:N}
+  // events — each a redundant setPosition/setBounds re-render and a throttled progress-write on the RN
+  // side (confirmed on a 20MB PDF: ~30 same-page posts per page). Nothing host-side needs sub-page
+  // scroll granularity, so gate on a real page change. `lastReportedScrollPage` starts at 0 (and resets
+  // on leaveScrollMode), so the first pass of any scroll session always reports.
+  if (current === lastReportedScrollPage) return;
+  lastReportedScrollPage = current;
+
   post({
     type: 'relocated',
     position: { kind: 'page', page: current, pageCount },
@@ -619,6 +634,7 @@ function leaveScrollMode(): void {
   if (!scrollMode) return;
   scrollMode = false;
   detachScrollListener();
+  lastReportedScrollPage = 0; // next scroll session reports its first page afresh
 
   for (const page of [...renderedPages]) disposeScrollPage(page);
   pageSurfaces.clear();
@@ -789,7 +805,8 @@ async function renderCurrent(pageNumber: number): Promise<void> {
     { root: 'pdf-page-2', canvas: 'pdf-canvas-2' },
   ] as const;
   const renders: Promise<void>[] = [];
-  const surfaceWork: { page: number; proxy: (typeof pageProxies)[number]; root: HTMLElement }[] = [];
+  const surfaceWork: { page: number; proxy: (typeof pageProxies)[number]; root: HTMLElement }[] =
+    [];
 
   for (let i = 0; i < spreadSlots.length; i++) {
     const root = document.getElementById(spreadSlots[i].root);
@@ -1275,6 +1292,11 @@ const api: TFReaderApi<'openPdf'> = {
    * NOT for want of a seam any more — `pdfHighlightSeam.ts` exists and the user layer paints through
    * it; a TTS layer here would be a matter of segmentation, which is EPUB-only. */
   setSpokenRange: () => {},
+
+  /** Documented no-op for the same reason as `setSpokenRange` directly above — TTS never mounts for
+   * a PDF book, so nothing ever asks this shell to auto-follow a spoken position either, painted or
+   * not. */
+  followSpokenPosition: () => {},
 
   /** Documented no-op for the same reason as `setSpokenRange` directly above, one step further out:
    * this shell never receives a sentence to refine, because Reader never constructs a

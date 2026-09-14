@@ -193,9 +193,10 @@ describe('whether any rect is on screen', () => {
 
 describe('the teleprompter reading-zone reposition delta', () => {
   // A 0-100 tall viewport (anchored at the origin for readability), reposition triggers past 75%
-  // down and lands the target's deepest point at 35% down.
+  // down, lands the target's deepest point at 35% down, and never scrolls the target's OWN topmost
+  // point above 8% down.
   const VIEWPORT = { left: 0, top: 0, right: 200, bottom: 100 };
-  const ZONE = { triggerFraction: 0.75, targetFraction: 0.35 };
+  const ZONE = { triggerFraction: 0.75, targetFraction: 0.35, minTopFraction: 0.08 };
 
   it('is null when the target is comfortably inside the zone', () => {
     // Deepest bottom at 50 -> 50% down, well short of the 75% trigger.
@@ -238,9 +239,12 @@ describe('the teleprompter reading-zone reposition delta', () => {
     ).toBeNull();
   });
 
-  it('judges a multi-line (multi-rect) target by its DEEPEST rect, not its first', () => {
+  it('judges a multi-line (multi-rect) target by its DEEPEST rect for the TRIGGER decision', () => {
     // The sentence starts comfortably in view (first rect at 10% down) but wraps down to 90% —
     // the part that would actually be cut off first. Must reposition off the second rect.
+    // The DELTA itself is a different question — see the describe block below: pulling the
+    // deepest rect all the way to 35% would drag the first rect (currently at 10%) up past 0%,
+    // off-screen, so the 8% floor caps it well short of the naive 90 - 35 = 55.
     const delta = readingZoneScrollDelta(
       [
         { left: 0, top: 10, width: 100, height: 10 }, // first line: 10-20%, in view
@@ -250,7 +254,7 @@ describe('the teleprompter reading-zone reposition delta', () => {
       ZONE,
     );
     expect(delta).not.toBeNull();
-    expect(delta).toBe(90 - 35); // deepest bottom (90) minus the target position (35)
+    expect(delta).toBe(10 - 8); // capped: topmost rect (10) minus the floor (8), not 90 - 35
   });
 
   it('is null for an empty rects list — nothing to measure', () => {
@@ -262,5 +266,53 @@ describe('the teleprompter reading-zone reposition delta', () => {
     expect(
       readingZoneScrollDelta([{ left: 0, top: 40, width: 100, height: 10 }], flatViewport, ZONE),
     ).toBeNull();
+  });
+});
+
+describe('the reading zone never hides a target\'s own beginning', () => {
+  // Same shape as the describe block above: a 0-100 viewport, trigger at 75%, target at 35%,
+  // floor at 8%.
+  const VIEWPORT = { left: 0, top: 0, right: 200, bottom: 100 };
+  const ZONE = { triggerFraction: 0.75, targetFraction: 0.35, minTopFraction: 0.08 };
+
+  it('caps the delta for a long (tall) sentence so its first line stays on screen', () => {
+    // A sentence spanning several wrapped lines, starting at 5% down and running to 95% — taller
+    // than the whole gap between the floor and the target fraction. Naively chasing
+    // `targetFraction` (90 - wait: 95 - 35 = 60) would drag the first line from 5% up to
+    // 5 - 60 = -55%, well above the viewport — exactly the reported bug. The floor caps it at
+    // 5 - 8, which is already below the floor, so the correct answer is null: nothing safe to gain.
+    expect(
+      readingZoneScrollDelta(
+        [{ left: 0, top: 5, width: 100, height: 90 }],
+        VIEWPORT,
+        ZONE,
+      ),
+    ).toBeNull();
+  });
+
+  it('still scrolls a tall sentence partway, when the first line has room to give before the floor', () => {
+    // First line at 30% (room to move down to the 8% floor = 22 of travel), deepest at 95%
+    // (wants to move up by 95 - 35 = 60 to fully reach the target). The floor wins: delta is
+    // capped at 30 - 8 = 22, not the full 60 — the sentence's tail stays past the fold, but its
+    // first line lands exactly on the floor rather than disappearing above the viewport.
+    const delta = readingZoneScrollDelta(
+      [{ left: 0, top: 30, width: 100, height: 65 }], // 30% to 95%
+      VIEWPORT,
+      ZONE,
+    );
+    expect(delta).toBe(22);
+  });
+
+  it('is unaffected for a short target that fits comfortably inside the gap', () => {
+    // A normal, single-line-ish target: first line at 65%, deepest at 80% — short enough that
+    // reaching targetFraction (35%) does not push the first line anywhere near the 8% floor.
+    // Matches this file's pre-existing "returns a positive delta" case: the floor changes nothing
+    // when the target is short.
+    const delta = readingZoneScrollDelta(
+      [{ left: 0, top: 65, width: 100, height: 15 }], // 65% to 80%
+      VIEWPORT,
+      ZONE,
+    );
+    expect(delta).toBe(80 - 35);
   });
 });

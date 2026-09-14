@@ -40,6 +40,8 @@ import { AppState } from 'react-native';
 
 import { commitCurrentPlayerPosition } from './audioPlayerInstance';
 import { installAudioScratchReclaimer } from './audioScratchReclaimer';
+import { checkSleepTimerDeadlinePassed } from './sleepTimerEngine';
+import { configureSleepTimerNotificationChannel } from './sleepTimerNotifications';
 
 let setupPromise: Promise<void> | null = null;
 
@@ -78,6 +80,16 @@ export function useAudioPlayerSetup(): void {
     })();
   }, []);
 
+  // SLEEP TIMER (SLEEP_TIMER_PLAN.md §5): the Android notification channel, created once at
+  // startup, same "app-wide, one-time" shape as ensureAudioModeConfigured() above — a feature the
+  // user hasn't touched yet, unlike the permission request in sleepTimerNotifications.ts, which is
+  // deliberately lazy (first timer start, not app launch).
+  useEffect(() => {
+    void configureSleepTimerNotificationChannel().catch((error: unknown) => {
+      console.error('[useAudioPlayerSetup] sleep timer notification channel setup failed:', error);
+    });
+  }, []);
+
   // AUDIO PHASE 4: persist the playing book's position when the app leaves the foreground.
   //
   // THIS LIVES APP-WIDE, NOT IN AudioPlayerScreen, because that is the whole point of the
@@ -88,11 +100,19 @@ export function useAudioPlayerSetup(): void {
   //
   // Hosted in this hook rather than a new one so App.tsx (outside Reader's ownership) needs no
   // change; this is already the app-wide audio-lifecycle hook it calls.
+  //
+  // SLEEP TIMER catch-up (SLEEP_TIMER_PLAN.md §4): extends this SAME listener rather than adding a
+  // second one, on EVERY transition (not just away from active) — the safety net for the case
+  // where the JS timer's own setTimeout didn't get to run while backgrounded (Android in
+  // particular may suspend timers even with a foreground service active). checkSleepTimerDeadlinePassed()
+  // is idempotent and a no-op unless a running timer's deadline has actually passed, so calling it
+  // unconditionally on every transition costs nothing on the common path.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active') {
         commitCurrentPlayerPosition();
       }
+      checkSleepTimerDeadlinePassed();
     });
     return () => subscription.remove();
   }, []);

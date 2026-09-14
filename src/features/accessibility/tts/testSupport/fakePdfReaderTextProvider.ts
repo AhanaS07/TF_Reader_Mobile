@@ -55,6 +55,9 @@ export interface FakePdfReaderTextProviderOptions {
 export interface FakePdfReaderTextProvider extends ReaderTextProvider {
   readonly sentences: readonly TtsSentence[];
   readonly spokenRanges: readonly (string | null)[];
+  /** Every `followSpokenPosition` argument, in call order. `null` entries stop tracking. Widened
+   * from a bare cfi to this `SpokenWordRange` shape the same day it was added. */
+  readonly followedPositions: readonly (SpokenWordRange | null)[];
   /** Every `setSpokenWordRange` argument, in call order. `null` entries are clears. */
   readonly spokenWordRanges: readonly (SpokenWordRange | null)[];
   setPosition(index: number): void;
@@ -97,6 +100,7 @@ export function createFakePdfReaderTextProvider(
   const indexByAnchor = new Map<string, number>(sentences.map((s, i) => [s.cfi, i]));
 
   const spokenRanges: (string | null)[] = [];
+  const followedPositions: (SpokenWordRange | null)[] = [];
   const spokenWordRanges: (SpokenWordRange | null)[] = [];
   const handlers = new Set<(reason: TtsInterruption) => void>();
 
@@ -131,6 +135,7 @@ export function createFakePdfReaderTextProvider(
   return {
     sentences,
     spokenRanges,
+    followedPositions,
     spokenWordRanges,
 
     async current(from: string | null): Promise<TtsFetchResult> {
@@ -148,6 +153,11 @@ export function createFakePdfReaderTextProvider(
     setSpokenRange(anchor: string | null): void {
       if (terminated) return;
       spokenRanges.push(anchor);
+    },
+
+    followSpokenPosition(range: SpokenWordRange | null): void {
+      if (terminated) return;
+      followedPositions.push(range);
     },
 
     setSpokenWordRange(range: SpokenWordRange | null): void {

@@ -408,6 +408,34 @@ describe('buildCommandScript', () => {
     );
   });
 
+  it('calls followSpokenPosition with one JSON-encoded object, and with null to clear', () => {
+    // buildCommandScript's ternary chain is hand-written, not derived — a missing branch falls
+    // through to '' args silently (method === undefined, no compile error), which is exactly the
+    // regression a dedicated test per command exists to catch. Widened from a bare cfi to this
+    // SpokenWordRange shape the same day it was added — same assertion shape as
+    // setSpokenWordRange's own test below, deliberately.
+    const range = { cfi: 'epubcfi(/6/2!/4/2,/1:0,/1:11)', start: 4, end: 9 };
+    expect(buildCommandScript({ type: 'followSpokenPosition', range })).toContain(
+      `window.TFReader.followSpokenPosition(${JSON.stringify(range)})`,
+    );
+    expect(buildCommandScript({ type: 'followSpokenPosition', range: null })).toContain(
+      'window.TFReader.followSpokenPosition(null)',
+    );
+  });
+
+  it('quotes a followSpokenPosition cfi rather than pasting it into the script', () => {
+    // Same rule and same defence as setSpokenWordRange's own equivalent test — the cfi is minted
+    // from the book's own text, so it is content, so it is untrusted.
+    const script = buildCommandScript({
+      type: 'followSpokenPosition',
+      range: { cfi: `a'); alert('xss`, start: 0, end: 1 },
+    });
+    expect(script).toContain(
+      String.raw`window.TFReader.followSpokenPosition({"cfi":"a'); alert('xss","start":0,"end":1})`,
+    );
+    expect(script).not.toContain(`alert('xss')`);
+  });
+
   it('calls setSpokenWordRange with one JSON-encoded object, and with null to clear', () => {
     // ONE ARGUMENT IS THE ASSERTION, not a detail of it. The shape exists so this command joins the
     // uniform `JSON.stringify(command.x)` chain and so bridge.ts's `CommandArgsMatchPayloads` proof
