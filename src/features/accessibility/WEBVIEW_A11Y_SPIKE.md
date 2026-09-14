@@ -751,3 +751,21 @@ distinction §12.6's `ACTION_ACCESSIBILITY_FOCUS` instrumentation test drew for 
 and the same class of gap §12.5's confound note already named for gesture-specific testing on this
 emulator. Until that's run, treat this as "the mechanism is sound and reachable in principle,"
 not "a TalkBack user has been confirmed able to turn the page."
+
+**Item 2 — a concrete next experiment for §12.6's still-open root cause, built but not yet run.**
+`WebViewA11yDiagnostic.tsx` (this directory) isolates one variable: a bare same-origin iframe with a
+CSS multi-column, `overflow: hidden` layout, its `srcdoc` assigned via JS exactly how epub.js does
+it — no epub.js, no reader bridge, no app code. Run the same direct
+`AccessibilityNodeInfo.performAction(ACTION_ACCESSIBILITY_FOCUS)` instrumentation method this section
+and Phase 5 already used, against this fixture instead of the real reader:
+
+- **Reproduces** → strong evidence this is a generic Android WebView/Chromium bug (same-origin
+  iframe + CSS multi-column), not epub.js-specific or fixable in this app. The page-turn action and
+  TTS auto-follow above become the accepted, permanent mitigations rather than a stopgap, and this
+  becomes a candidate to report upstream instead of keep investigating here.
+- **Does not reproduce** → something specific to epub.js's own DOM/CSS/JS setup is the actual
+  trigger, and this fixture is a genuinely reduced, shareable test case for whoever picks up §12.7's
+  code-level investigation next — a real starting point instead of an open-ended note.
+
+Not wired into navigation on purpose (see the component's own header) — mount it temporarily to run
+the experiment, then revert. Record whichever outcome here once run.

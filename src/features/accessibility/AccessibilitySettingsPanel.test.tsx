@@ -47,18 +47,30 @@ describe('AccessibilitySettingsPanel', () => {
     jest.restoreAllMocks();
   });
 
-  it('renders all five controls at their stored defaults', async () => {
+  it('renders all six controls at their stored defaults', async () => {
     await render(<AccessibilitySettingsPanel />);
     await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
 
     expect(screen.getByLabelText('Dyslexia font: Off')).toBeTruthy();
     expect(screen.getByLabelText('High contrast: Off')).toBeTruthy();
     expect(screen.getByLabelText('Reduce motion: System')).toBeTruthy();
+    expect(screen.getByLabelText('Screen reader hints: Off')).toBeTruthy();
     expect(screen.getByLabelText('TTS: Off')).toBeTruthy();
     // Both announce gates default ON — see `toggleAnnounce`'s own comment for why these are plain
     // flips rather than this file's usual revert-to-default toggles.
     expect(screen.getByLabelText('Pages announcements: On')).toBeTruthy();
     expect(screen.getByLabelText('Chapters announcements: On')).toBeTruthy();
+  });
+
+  it('pressing Screen Reader Hints saves a patch that only touches screenReaderHints', async () => {
+    await render(<AccessibilitySettingsPanel />);
+    await waitFor(() => expect(getPrefsMock).toHaveBeenCalled());
+
+    await fireEvent.press(screen.getByLabelText('Screen reader hints: Off'));
+
+    expect(savePrefsMock).toHaveBeenCalledWith({
+      accessibility: { ...DEFAULT_ACCESSIBILITY_PREFS, screenReaderHints: true },
+    });
   });
 
   it('pressing Dyslexia Font saves a patch that only touches text.dyslexiaFont', async () => {

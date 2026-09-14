@@ -10,10 +10,17 @@
 //
 // Height floors at MIN_TOUCH_TARGET rather than ReaderScreen's own hard-coded 44 — see
 // a11yConstants.ts's header for why these stay two separate copies.
+//
+// Reads `screenReaderHints` itself via `useAccessibilityPrefs` rather than taking it as a prop —
+// this component's only prop has always been `onPress` (see its own header note on staying
+// navigation-agnostic), and adding a second prop would mean threading the pref through
+// `ReaderScreen.tsx`, a file this feature doesn't own. Reading the pref internally keeps this the
+// first real consumer of `AccessibilityPrefs.screenReaderHints` without touching anyone else's file.
 
 import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { MIN_TOUCH_TARGET } from './a11yConstants';
+import { useAccessibilityPrefs } from './AccessibilitySettingsPanel';
 
 export interface AccessibilityInfoButtonProps {
   onPress: () => void;
@@ -22,10 +29,17 @@ export interface AccessibilityInfoButtonProps {
 export function AccessibilityInfoButton({
   onPress,
 }: AccessibilityInfoButtonProps): React.JSX.Element {
+  const prefs = useAccessibilityPrefs();
+
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel="Accessibility information"
+      accessibilityHint={
+        prefs.screenReaderHints
+          ? 'Opens accessibility settings and supported-features information'
+          : undefined
+      }
       onPress={onPress}
       style={styles.row}
     >
