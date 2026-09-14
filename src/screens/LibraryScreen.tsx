@@ -156,6 +156,7 @@ import type { BookSummary, Loan } from '@model/types';
 import { useArticleJournalStore } from '@store/articleJournalStore';
 import { type DownloadRecord, useDownloadStore } from '@store/downloadStore';
 import { useExpiredDownloadsStore } from '@store/expiredDownloadsStore';
+import { useExpiredLoansStore } from '@store/expiredLoansStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type } from '@theme/tokens';
 
@@ -615,6 +616,58 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   // every loan and hold in one response carries the same value.
   const clock = useServerClock(offered[0]?.serverTime ?? waiting[0]?.serverTime, idKey, TICK_MS);
 
+  // ELITE-LOAN-EXPIRY NOTICE — separate from the download-expiry sweep above,
+  // and for a different reason: that sweep only ever fires for a title that
+  // was also DOWNLOADED. An Elite title read online without ever being
+  // downloaded just vanished from this screen the moment its loan lapsed,
+  // with nothing to say why once it was gone — Library's own list already
+  // drops it for free (it only ever renders `activeLoans(loans)`), but
+  // dropping it silently is the gap this effect closes.
+  //
+  // A LOAN CAN ALSO DISAPPEAR BECAUSE THE READER CHOSE TO END IT.
+  // `ItemDetailScreen`'s own "Revoke licence" action (the ELITE branch of
+  // `resolveAccess.ts`) calls the identical `returnLoan` a real expiry would
+  // eventually trigger server-side, and both leave the SAME footprint here —
+  // the loan is just gone on the next refresh. They must not read the same to
+  // the reader: telling someone "your access expired" for a title they just
+  // chose to give back would be a wrong, confusing claim. The loan's own
+  // `expiresAt` is what tells the two apart — a loan that vanished AFTER its
+  // stated expiry has genuinely lapsed; one that vanished BEFORE it was ended
+  // some other way, and gets no notice here.
+  const prevEliteLoansRef = useRef<Loan[] | undefined>(undefined);
+  useEffect(() => {
+    if (!hasSyncedOnce || !clock.ready) return;
+    const prevLoans = prevEliteLoansRef.current;
+    prevEliteLoansRef.current = eliteLoans;
+    // The FIRST successful sync only ever seeds the baseline — there is
+    // nothing to compare a cold start against, and treating "nothing seen
+    // yet" as "everything just expired" would fire a notice for every Elite
+    // loan the reader already held before this screen ever opened.
+    if (prevLoans === undefined) return;
+    const stillHeld = new Set(eliteLoans.map((loan) => loan.itemId));
+    const deviceNowMs = clock.nowMs + clock.offsetMs;
+    const lapsed = prevLoans.filter(
+      (loan) => !stillHeld.has(loan.itemId) && loan.expiresAt !== undefined && deviceNowMs >= loan.expiresAt,
+    );
+    if (lapsed.length === 0) return;
+    // SEEDED ON THE NEXT MACROTASK — see the download-expiry sweep's own
+    // comment above on why `Date.now()` cannot be read directly in an effect
+    // body (react-hooks/purity).
+    const timer = setTimeout(() => {
+      for (const loan of lapsed) {
+        useExpiredLoansStore.getState().recordExpired({
+          itemId: loan.itemId,
+          title: titleFor(loan.itemId),
+          expiredAt: Date.now(),
+        });
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `titleFor` is rebuilt every render from `titles`, not an independent input.
+  }, [hasSyncedOnce, eliteLoans, clock.ready, clock.nowMs, clock.offsetMs]);
+
+  const expiredLoanNotices = useExpiredLoansStore((s) => s.notices);
+
   // FIRST LOAD OF THE SERVER-SOURCED HOLDINGS ONLY. Downloads and bookmarks are
   // already in hand — they came off this device — so a whole-screen skeleton
   // would hide rows that are ready in order to wait for rows that are not.
@@ -1058,6 +1111,24 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
             </Text>
             <Pressable
               onPress={() => useExpiredDownloadsStore.getState().dismissAll()}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              hitSlop={8}
+            >
+              <Text style={styles.expiredNoticeDismiss}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {expiredLoanNotices.length > 0 && (
+          <View style={styles.expiredNoticeContainer} testID="expired-loans-notice">
+            <Text style={styles.expiredNoticeText}>
+              {expiredLoanNotices.length === 1
+                ? `Your access to “${expiredLoanNotices[0].title}” expired and it was removed from your library.`
+                : `Your access to ${expiredLoanNotices.length} titles expired and they were removed from your library.`}
+            </Text>
+            <Pressable
+              onPress={() => useExpiredLoansStore.getState().dismissAll()}
               accessibilityRole="button"
               accessibilityLabel="Dismiss"
               hitSlop={8}

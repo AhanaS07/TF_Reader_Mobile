@@ -423,6 +423,24 @@ interface ReaderScreenProps {
   onRelocated?: (position: ReaderPosition) => void;
 
   /**
+   * Fired once, from `tearDownAndLock`, the moment this book's access ends while it is
+   * open — a `content.lock` push (Sync's offline advisory) or `startAccessMonitor`'s own
+   * poll finding an explicit, fail-closed denial (see that module's own doc comment).
+   *
+   * ADDITIVE TO THE INLINE `lockedState` BANNER BELOW, NOT A REPLACEMENT FOR IT. The banner
+   * stays the source of truth for "why is there nothing here" if a caller ignores this or
+   * navigation is for some reason delayed; this is only the louder, modal half a reader
+   * expects for something as consequential as losing a book mid-read — CONVENTIONS-alike
+   * to `ReaderRouteScreen.tsx`'s own cross-device-conflict `Alert.alert`, which this
+   * mirrors rather than invents a second idiom for.
+   *
+   * NOT THIS COMPONENT'S CONCERN TO SHOW THE ALERT OR NAVIGATE, same division `onRelocated`
+   * already draws: this file has no `navigation` prop and no business acquiring one just for
+   * a single dialog. `ReaderRouteScreen.tsx` owns both.
+   */
+  onLocked?: (code: ReaderErrorCode, message: string) => void;
+
+  /**
    * Rendered as the LAST child of the toolbar row (after Search and, when shown, TTS), so it lands
    * rightmost — nearest the screen edge — with the built-in icons to its left, all in one row.
    *
@@ -437,7 +455,7 @@ interface ReaderScreenProps {
 }
 
 function ReaderScreenComponent(
-  { bookId, initialTarget, onRelocated, toolbarExtra }: ReaderScreenProps,
+  { bookId, initialTarget, onRelocated, onLocked, toolbarExtra }: ReaderScreenProps,
   ref: React.ForwardedRef<ReaderScreenHandle>,
 ): React.JSX.Element {
   /**
@@ -1080,8 +1098,9 @@ function ReaderScreenComponent(
       clearSearch();
       void closeBook(bookId).catch(() => {});
       raiseError(code, message);
+      onLocked?.(code, message);
     },
-    [bookId, raiseError, clearSearch],
+    [bookId, raiseError, clearSearch, onLocked],
   );
 
   /**

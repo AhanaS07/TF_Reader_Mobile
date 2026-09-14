@@ -15,7 +15,7 @@
 // `await render(...)` and `await fireEvent(...)` are required — RTL 14's
 // render and event helpers are async.
 import { Alert } from 'react-native';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import { LibraryProviderContext } from '@/features/library/context';
 import type { LibraryProvider } from '@/features/library/ports';
@@ -27,6 +27,7 @@ import type { BookSummary, Hold, Loan } from '@model/types';
 import { useArticleJournalStore } from '@store/articleJournalStore';
 import { useDownloadStore } from '@store/downloadStore';
 import { useExpiredDownloadsStore } from '@store/expiredDownloadsStore';
+import { useExpiredLoansStore } from '@store/expiredLoansStore';
 import { useLibraryStore } from '@store/libraryStore';
 
 import LibraryScreen from './LibraryScreen';
@@ -160,6 +161,7 @@ beforeEach(async () => {
   useDownloadStore.getState().clear();
   useArticleJournalStore.getState().clear();
   useExpiredDownloadsStore.getState().dismissAll();
+  useExpiredLoansStore.getState().dismissAll();
   mockAlertAutoPress = null;
   mockDestroy.mockReset().mockResolvedValue(undefined);
   await resetBookmarksTable();
@@ -1242,6 +1244,89 @@ describe('LibraryScreen — expiry sweep', () => {
     await fireEvent.press(screen.getByText('Dismiss'));
 
     await waitFor(() => expect(screen.queryByTestId('expired-downloads-notice')).toBeNull());
+  });
+});
+
+describe('LibraryScreen — Elite loan expiry notice', () => {
+  it('tells the reader when a held Elite loan disappears after its own expiry', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_elite', title: 'Digital Media Cultures', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    const lapsedLoan = aLoan({ loanId: 'loan_elite', itemId: 'item_elite', expiresAt: SERVER_NOW_MS - 60_000 });
+    givenHoldings([lapsedLoan], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Digital Media Cultures')).toBeTruthy());
+
+    // The next refresh confirms the loan is genuinely gone — past its own
+    // stated expiry, so this is a real lapse, not a voluntary give-back.
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+    await act(async () => {
+      await useLibraryStore.getState().refresh();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('expired-loans-notice')).toBeTruthy());
+    expect(
+      screen.getByText('Your access to “Digital Media Cultures” expired and it was removed from your library.'),
+    ).toBeTruthy();
+  });
+
+  it('says nothing when an Elite loan disappears before its own expiry — a voluntary revoke, not a lapse', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_elite', title: 'Digital Media Cultures', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    const activeLoan = aLoan({
+      loanId: 'loan_elite',
+      itemId: 'item_elite',
+      expiresAt: SERVER_NOW_MS + 3 * 86_400_000,
+    });
+    givenHoldings([activeLoan], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Digital Media Cultures')).toBeTruthy());
+
+    // Gone on the next refresh, but well before its own `expiresAt` — the
+    // same footprint `ItemDetailScreen`'s "Revoke licence" action leaves.
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+    await act(async () => {
+      await useLibraryStore.getState().refresh();
+    });
+
+    await waitFor(() => expect(screen.queryByText('Digital Media Cultures')).toBeNull());
+    expect(screen.queryByTestId('expired-loans-notice')).toBeNull();
+  });
+
+  it('dismisses the Elite-expiry notice on tap, all at once', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_elite', title: 'Digital Media Cultures', accessTier: 'ELITE' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    const lapsedLoan = aLoan({ loanId: 'loan_elite', itemId: 'item_elite', expiresAt: SERVER_NOW_MS - 60_000 });
+    givenHoldings([lapsedLoan], []);
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByText('Digital Media Cultures')).toBeTruthy());
+
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+    await act(async () => {
+      await useLibraryStore.getState().refresh();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('expired-loans-notice')).toBeTruthy());
+    await fireEvent.press(screen.getByText('Dismiss'));
+
+    await waitFor(() => expect(screen.queryByTestId('expired-loans-notice')).toBeNull());
   });
 });
 
