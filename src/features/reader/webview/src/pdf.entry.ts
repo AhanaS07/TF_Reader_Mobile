@@ -882,12 +882,19 @@ function renderCurrentGuarded(pageNumber: number): void {
 
 /**
  * The reader tapped "Highlight". Reads `document.getSelection()` fresh, so a selection extended
- * right up to the tap is what's used. `selectionInSurface` finds which page it's on (spread-aware);
- * refuses (`null`) if the press was on an existing highlight (`pressedHighlightId`).
+ * right up to the tap is what's used. `selectionInSurface` finds which page it's on (spread-aware).
+ *
+ * FALLS THROUGH TO DELETE, RATHER THAN NO-OPING, WHEN THE PRESS WAS ON AN EXISTING HIGHLIGHT
+ * (`pressedHighlightId`) — mirrors `epub.entry.ts`'s own `requestCurrentSelection`. The native menu
+ * can still show "Highlight" for a press that's actually on a highlight (the `highlightTouchActive`
+ * round trip lost the race against `startLongPress:`), and taking the only item on offer used to
+ * just post `selection: null` and do nothing — reported as "delete highlight doesn't work on iOS".
+ * `pressedHighlightId` is re-read here at tap time, same as `confirmDeleteHighlight` does, so this
+ * never deletes the wrong highlight, only ever the one the press actually landed on.
  */
 function requestCurrentSelection(): void {
   if (pressedHighlightId !== null) {
-    post({ type: 'selection', selection: null });
+    post({ type: 'highlightPressed', id: pressedHighlightId });
     return;
   }
 

@@ -1235,7 +1235,7 @@ ${text}`;
   }
   function requestCurrentSelection() {
     if (pressedHighlightId !== null) {
-      post({ type: "selection", selection: null });
+      post({ type: "highlightPressed", id: pressedHighlightId });
       return;
     }
     const selection = document.getSelection();

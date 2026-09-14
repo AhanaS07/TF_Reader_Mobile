@@ -2168,14 +2168,24 @@ ${columnOverrideCss()}` : currentCss;
      * `contents.js`) rather than reading `lastSelection` as-is, so a selection extended a moment ago
      * is what gets read.
      *
-     * REFUSES (`null`) WHENEVER THE GESTURE ALREADY MEETS A HIGHLIGHT — `activeHighlightId`, which is
-     * the SELECTION's overlap first and the pressed point only as a fallback. Refusing on
-     * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null,
-     * so this happily created a second annotation over the first. See `highlightIdForRange`.
+     * NEVER CREATES A SECOND ANNOTATION OVER AN EXISTING ONE — `activeHighlightId`, which is the
+     * SELECTION's overlap first and the pressed point only as a fallback, decides that. Refusing on
+     * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null, so
+     * this happily created a second annotation over the first. See `highlightIdForRange`.
+     *
+     * FALLS THROUGH TO DELETE, RATHER THAN NO-OPING, WHEN THE GESTURE MEETS A HIGHLIGHT — this is the
+     * label-race fallback `CREATE_MENU_ITEMS`'s note in `ReaderWebView.tsx` describes: the native menu
+     * can still show "Highlight" for a press that's actually on a highlight (`highlightTouchActive`
+     * lost the round trip against `startLongPress:`), and taking the only item on offer used to just
+     * post `selection: null` and do nothing — which is what got reported as "delete highlight doesn't
+     * work on iOS". `activeHighlightId()` is re-computed fresh right here, at tap time, same as
+     * `confirmDeleteHighlight` does — so this never deletes the wrong highlight, only ever the one the
+     * gesture is actually on, regardless of which label happened to be showing.
      */
     requestCurrentSelection: () => {
-      if (activeHighlightId() !== null) {
-        post({ type: "selection", selection: null });
+      const activeId = activeHighlightId();
+      if (activeId !== null) {
+        post({ type: "highlightPressed", id: activeId });
         return;
       }
       const selected = currentSelectionRange();

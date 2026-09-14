@@ -38,9 +38,30 @@ import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/r
  */
 const READY_TIMEOUT_MS = 10_000;
 
-/** Shown over plain text — the common case, and the default before any `highlightTouchActive`
+/**
+ * Shown over plain text — the common case, and the default before any `highlightTouchActive`
  * signal has arrived for the current gesture. Stable references, not inline literals in the JSX
- * below, so neither array gets a new identity on every render. */
+ * below, so neither array gets a new identity on every render.
+ *
+ * WHICH ONE SHOWS IS A RACE, NARROWED BUT NOT ELIMINATED — read this before touching either side.
+ * `menuItems` toggles off `highlightTouchActive`, a signal computed inside the WebView's JS/DOM
+ * that has to cross a postMessage -> RN JS -> native-bridge round trip before WebKit reads this
+ * prop. `patches/react-native-webview+13.16.1.patch` widens the native long-press recognizer's
+ * `minimumPressDuration` (`RNCWebViewImpl.m`, 0.4f -> 0.6f) to give that round trip more guaranteed
+ * time to land before `startLongPress:` can fire — but `startLongPress:` still reads whatever
+ * `menuItems` happens to hold at that instant, so a slow enough round trip (a busy JS thread, a
+ * congested bridge) can still lose. THAT IS WHY `requestCurrentSelection`/`confirmDeleteHighlight`
+ * MUST KEEP RE-DECIDING FOR THEMSELVES AT TAP TIME (`activeHighlightId()` in `epub.entry.ts`;
+ * `pressedHighlightId` in `pdf.entry.ts`) RATHER THAN TRUSTING THE LABEL THAT WAS SHOWING — losing
+ * the race after the patch costs a wrong LABEL, never a wrong HIGHLIGHT: `requestCurrentSelection`
+ * now falls through to deleting whatever the gesture is actually on rather than no-oping when the
+ * shown label was "Highlight", so the reader is never stuck with a menu that visibly can't reach the
+ * highlight under their finger (previously reported as "delete highlight doesn't work on iOS"). If
+ * the wrong label starts showing often enough that the ACTION-vs-LABEL mismatch itself becomes
+ * confusing (a reader taps "Highlight" and something gets deleted), the fix is a wider
+ * `minimumPressDuration` (or reverting to always showing both — see git history), not loosening
+ * either bridge handler's own re-check.
+ */
 const CREATE_MENU_ITEMS: WebViewCustomMenuItems[] = [{ label: 'Highlight', key: 'highlight' }];
 
 /** Shown while `highlightTouchActive` — the press landed on an existing highlight. */
@@ -126,8 +147,10 @@ export function ReaderWebView({
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
-  /** Drives `menuItems` below. Best-effort display only — correctness lives in the WebView's own
-   * `pressedHighlightId` checks, so a stale value here shows the wrong item, never a wrong action. */
+  /** Drives `menuItems` below. Best-effort display only, narrowed but not eliminated by the native
+   * patch — correctness lives in the WebView's own `pressedHighlightId`/`activeHighlightId` checks,
+   * so a stale value here shows the wrong item, never a wrong action. See `CREATE_MENU_ITEMS`'s own
+   * note above before changing this. */
   const [highlightTouchActive, setHighlightTouchActive] = useState(false);
 
   // Refs, not deps: these are called from WebView callbacks, and putting the
@@ -324,13 +347,18 @@ export function ReaderWebView({
         thirdPartyCookiesEnabled={false}
         cacheEnabled={false}
         incognito
+        // Dev-only: lets Safari's Develop menu attach to this WebView's own JS console (iOS
+        // 16.4+; `RNCWebViewImpl.m` maps this to `WKWebView.inspectable`). Off in production —
+        // decrypted book content is what runs in here, and inspectability is a debugging
+        // surface, not something to leave open on a device nobody is holding a debugger to.
+        webviewDebuggingEnabled={__DEV__}
         // Pagination is driven by the bridge, not by dragging the document — EXCEPT in
         // continuous-scroll flow, where the caller opts this in. See the prop doc above.
         scrollEnabled={scrollEnabled}
         bounces={false}
         overScrollMode="never"
         // Replaces WebKit's Copy/Translate/Share callout entirely, so there's nothing left to
-        // out-z-order. The toggle is best-effort display only — see `highlightTouchActive` above.
+        // out-z-order. The toggle is best-effort display only — see `CREATE_MENU_ITEMS` above.
         menuItems={highlightTouchActive ? DELETE_MENU_ITEMS : CREATE_MENU_ITEMS}
         onCustomMenuSelection={(event) => {
           switch (event.nativeEvent.key) {

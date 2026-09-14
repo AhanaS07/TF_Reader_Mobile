@@ -102,8 +102,8 @@ about behaviour changed.
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 | `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
-| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection` |
-| `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
+| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection`, and only when the gesture did NOT meet an existing highlight |
+| `highlightPressed` | `id` — sent in reply to `confirmDeleteHighlight`, OR in reply to `requestCurrentSelection` when the gesture met an existing highlight |
 | `highlightTouchActive` | `active` (`boolean`)                                        |
 | `searchMatchPainted` | `painted` (`boolean`) — sent ONLY for a `paintSearchMatch` that asked for a paint, never for a clear |
 
@@ -150,7 +150,7 @@ wrong one.
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenWordRange` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
-| `requestCurrentSelection` | — | **yes** (`selection`) | both |
+| `requestCurrentSelection` | — | **yes** (`selection`, or `highlightPressed` if the gesture met an existing highlight) | both |
 | `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
 | `paintSearchMatch` | `match` (`ReaderSearchMatch`) | **yes** (`searchMatchPainted`), only for a paint | both (real) |
 | `setTtsSpeaking` | `speaking` (`boolean`) | no | EPUB entry (real — gates manual swipe/scroll gestures via `touch-action`), PDF entry (documented no-op) |
@@ -276,40 +276,72 @@ for either action can be triggered correctly and still be visually unreachable. 
 text also makes WebKit select the word underneath, so the native menu can sit over an RN "Delete"
 popup and disable it too, not just over the "Highlight" case.
 
-**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT OFFERS DELETE, AND REFUSES CREATE.** Signed off
-2026-08-28. Any overlap at all counts; merely abutting one does not, or highlighting the sentence
-after the one you already did would be impossible. `requestCurrentSelection` answers `null` and
-`confirmDeleteHighlight` answers with the overlapped id.
+**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT DELETES IT, AND NEVER CREATES A SECOND ONE OVER IT.**
+Signed off 2026-08-28, revised 2026-09-15. Any overlap at all counts; merely abutting one does not,
+or highlighting the sentence after the one you already did would be impossible.
+`requestCurrentSelection` answers `highlightPressed` for the overlapped id (not `selection`) when
+there is one, falling back to `selection: null` only when there is genuinely nothing selected;
+`confirmDeleteHighlight` answers with the overlapped id the same way. Both commands compute the
+overlapped id fresh, at tap time, from `activeHighlightId()`/`pressedHighlightId` — never from
+whichever menu label happened to be showing.
 
-**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything is a
-separate, post-hoc check — only the second is load-bearing.** `ReaderWebView.tsx` swaps `menuItems`
-between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message.
-`requestCurrentSelection` and `confirmDeleteHighlight` both re-decide at tap time and refuse if it
-doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a display
-mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything, and WHAT,
+is a separate, post-hoc check — only the second is load-bearing, and that is true no matter how good
+the toggle's timing gets.** `ReaderWebView.tsx` swaps `menuItems` between `CREATE_MENU_ITEMS`/
+`DELETE_MENU_ITEMS` off a `highlightTouchActive` message. `requestCurrentSelection` and
+`confirmDeleteHighlight` both re-decide at tap time regardless of which label showed. Before
+2026-09-15, `requestCurrentSelection` REFUSED (answered `selection: null`, doing nothing) whenever
+the gesture met a highlight — so a press that landed on an existing highlight while the toggle still
+said "Highlight" could not delete it that gesture, no matter how the reader tapped. This shipped, was
+reported as "delete highlight doesn't work on iOS," and is why `requestCurrentSelection` now falls
+through to `highlightPressed` instead of refusing: the label can still be wrong, but taking the only
+item on offer always acts on the highlight the gesture is actually on, never on nothing.
 
-**The decision is the SELECTION's overlap first, the pressed point only as a fallback** —
-`activeHighlightId()` in `epub.entry.ts`. Deciding from `touchstart` alone was a real bug, not just
-an imprecision: `pressedHighlightId` records where the finger first *landed*, which equals what the
-reader selected only when the press neither moved nor was adjusted. Dragging a selection from plain
-text into a highlight left it null, so the menu offered "Highlight" and taking it painted a second
-annotation over the first — visibly darker, and only half-deletable once the two ids collided in
-epub.js's own map. The EPUB shell therefore posts `highlightTouchActive` twice per gesture: once
-from `touchstart` (a point test, all that is knowable before anything is selected) and again from
-epub.js's `selected` event, which debounces `selectionchange` by 250ms and so lands while the finger
-is usually still down — i.e. before `touchend`, which is when WebKit builds the menu.
+**The toggle is still a genuine race against a native timer, and `patches/react-native-webview+13.16.1.patch`
+narrows it — it does not, and cannot from this side of the bridge, close it. The 2026-09-15 fallback
+above is what makes that acceptable rather than something to keep chasing with timing alone.** The
+toggle depends on a postMessage -> RN JS -> native-bridge round trip landing before WebKit's own
+`UILongPressGestureRecognizer` (`RNCWebViewImpl.m`) reads `menuItems` in `startLongPress:`, which
+fires at `UIGestureRecognizerStateEnded` — i.e. not before `minimumPressDuration` has elapsed AND
+the finger has lifted. The patch raises that duration from the upstream `0.4f` to `0.6f`, buying the
+round trip more guaranteed minimum time before the earliest possible read. It was tried instead of
+permanently showing both items (an earlier version of this doc; see git history for
+`ReaderWebView.tsx` around 2026-09-11) because product wanted the single-item UX back. Widening the
+timer alone was always going to remain a mitigation, not a fix: a slow enough round trip (a busy JS
+thread mid-pagination, a congested bridge) can still lose even at 0.6f, and nothing at the JS layer
+can prove it never will. **What actually closes the practical gap is that a lost race now costs a
+wrong LABEL, not a wrong OUTCOME** — a reader who taps whatever the menu shows over a highlight
+always ends up with it deleted, they just might see "Highlight" instead of "Delete Highlight" while
+doing it. If that label/outcome mismatch itself becomes a reported problem (a reader alarmed that
+tapping "Highlight" deleted something), the next lever is a larger `minimumPressDuration`
+(diminishing returns — too large and the gesture stops feeling like a normal long press) or
+reverting to always showing both items, not loosening either bridge handler's own re-check — that
+re-check is still the only thing standing between a lost race and acting on the WRONG highlight,
+which it prevents by recomputing the overlapped id fresh rather than trusting anything cached from
+`touchstart`.
 
-Two failure modes so far, both fixed:
-1. **Pre-empting which item showed was unreliable.** An earlier version updated `menuItems` before
-   WebKit built its menu — but that build comes from an independent `UILongPressGestureRecognizer`
-   (`RNCWebViewImpl.m`, 0.4s `minimumPressDuration`), racing our own touchstart round trip with no
-   ordering guarantee, and sometimes losing. Fixed by pairing the toggle with the post-hoc check
-   above rather than relying on the toggle alone.
+**The decision (which highlight a tap/selection is acting on) is the SELECTION's overlap first, the
+pressed point only as a fallback** — `activeHighlightId()` in `epub.entry.ts`. Deciding from
+`touchstart` alone was a real bug, not just an imprecision: `pressedHighlightId` records where the
+finger first *landed*, which equals what the reader selected only when the press neither moved nor
+was adjusted. Dragging a selection from plain text into a highlight left it null, so the menu offered
+"Highlight" and taking it painted a second annotation over the first — visibly darker, and only
+half-deletable once the two ids collided in epub.js's own map. The EPUB shell therefore posts
+`highlightTouchActive` twice per gesture: once from `touchstart` (a point test, all that is knowable
+before anything is selected) and again from epub.js's `selected` event, which debounces
+`selectionchange` by 250ms and so lands while the finger is usually still down — i.e. before
+`touchend`, which is when WebKit builds the menu.
+
+Failure modes so far:
+1. **Pre-empting which item showed was unreliable** at the original `0.4f` — see the two paragraphs
+   above. Narrowed (not closed) by the `minimumPressDuration` patch; the post-hoc check is what
+   actually keeps a lost race safe.
 2. **Clearing `highlightTouchActive` on `touchend` crashed the app.** The native menu builds around
    `touchend`, and `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` fresh at TAP time with
    no bounds check. Clearing on `touchend` flipped `menuItems` back to `[highlight]` right as
    "Delete Highlight" appeared, so tapping it filtered to an empty array and indexing `[0]` threw.
-   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime.
+   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime —
+   still true today, and still the reason neither WebView shell clears this signal on `touchend`.
 
 **EPUB's original press detection (`highlightAdd`'s `onTap`, riding marks-pane's own touch-proxy
 wiring) never fired reliably** — it needs marks-pane to translate coordinates between the chapter
@@ -341,10 +373,11 @@ confirmation; `highlightPressed` means "the reader confirmed this," and the host
 **Known limitation: the native menu doesn't reliably reappear after dragging a selection handle.**
 `startLongPress:`'s `UILongPressGestureRecognizer` cancels instead of ending once a drag exceeds
 UIKit's default 10pt `allowableMovement`, so the menu isn't re-shown at drag end. A quick tap on the
-extended selection doesn't help either (it can't hold the 0.4s `minimumPressDuration`) — only a
-fresh, stationary long-press brings the menu back. This is `react-native-webview`'s gesture
-recognizer, not fixable from this side of the bridge; patching it (`patch-package`) is the only
-lever and hasn't been attempted.
+extended selection doesn't help either (it can't hold `minimumPressDuration`, `0.6f` since the patch
+above) — only a fresh, stationary long-press brings the menu back. `patch-package` is already in use
+against this same gesture recognizer for the timing-margin fix above, so patching this too is a real
+lever, not a hypothetical one — it just hasn't been attempted, and would need its own reasoning
+about what "reappear after a drag" should actually do.
 
 - **`paintHighlights` carries the WHOLE set every time, never a patch.** Every `readerHighlights.ts`
   call-site returns the fresh, full, authoritative set, so the host has nothing else to send. Each
