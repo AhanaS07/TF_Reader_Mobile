@@ -349,7 +349,9 @@ export type ReaderMessage =
   | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
   /**
    * The currently selected text, in reply to `requestCurrentSelection` — or null if nothing is
-   * selected, or if the selection meets an existing highlight (refused; see that command's note).
+   * selected. If the gesture meets an existing highlight, `requestCurrentSelection` replies with
+   * `highlightPressed` instead of this (see that command's note) rather than answering `null` and
+   * leaving the reader with no way to act on it.
    * Sent only on request, not passively — creation is a native `menuItems` entry now, not a
    * floating host UI tracking a live selection. No anchor: nothing positions a menu against this.
    */
@@ -365,7 +367,10 @@ export type ReaderMessage =
    * Whether the reader's current gesture is acting on a painted highlight. Drives which native menu
    * item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection` and
    * `confirmDeleteHighlight` re-decide for themselves, so a wrong/late value here only shows the
-   * "wrong" item, never causes a wrong action.
+   * "wrong" item, never acts on the wrong highlight. It CAN still mean the item taken performs the
+   * other command's action — tapping "Highlight" while this lagged behind a press that is actually
+   * on one deletes that highlight rather than doing nothing — but always the correct highlight for
+   * the gesture, per each command's own re-check.
    *
    * SENT TWICE PER GESTURE BY THE EPUB SHELL, and the second one is the accurate one. At
    * `touchstart` nothing is selected yet, so the only question answerable is "is the finger on a
@@ -608,8 +613,12 @@ export type ReaderCommand =
   | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] }
   /**
    * Fired when the reader taps the native "Highlight" item. Reads the selection fresh (not
-   * cached), so a selection extended right up to the tap is used. Answers `null` if the gesture
-   * meets an existing highlight — refuses rather than duplicating.
+   * cached), so a selection extended right up to the tap is used. NEVER creates a second annotation
+   * over an existing one: if the gesture meets an existing highlight, replies with `highlightPressed`
+   * for that highlight instead of `selection` — deleting it rather than doing nothing, because
+   * "Highlight" can still be the label showing for a press that's actually on a highlight (see
+   * `highlightTouchActive`'s own note below) and a no-op there was reported as "delete highlight
+   * doesn't work on iOS". Answers `selection: null` only when there is genuinely nothing selected.
    *
    * "Meets" is the SELECTION's overlap first, the pressed point only as a fallback. Checking the
    * pressed point alone let a selection dragged from plain text into a highlight paint a second
