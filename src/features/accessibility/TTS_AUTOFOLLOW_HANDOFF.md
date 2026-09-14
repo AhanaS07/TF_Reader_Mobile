@@ -139,9 +139,26 @@ Stays entirely inside the existing `setSpokenRange` handler. **No new bridge com
   nor the first defect had a unit test that could have caught it: this one is specifically an
   async-timing interaction with a real `requestAnimationFrame` under real device load, which a
   synchronous jsdom test cannot reproduce.
-- On-device: paginated flow, scrolled-doc flow, and the screen-reader-forced scrolled-doc override —
-  pending device verification (same status as word-level highlighting's own on-device pass,
-  `TTS_PROVIDER.md`'s note on `selectionTheme.ts`'s opacity constants).
+- **On-device, screen-reader-forced scrolled-doc override — VERIFIED, 2026-09-14 (Hruthik,
+  `tts_spike` emulator, TalkBack on).** Opened the plain `EPUB` fixture; the a11y override fired and
+  forced `scrolled-doc` as expected. Enabled TTS ("TTS: On" in the merged Accessibility panel — the
+  old broken `DevPreferencesMenu` toggle is gone; this one persists correctly) and pressed Play.
+  `uiautomator dump`/screenshot at two points during playback: first showed the spoken sentence
+  highlighted inside paragraph 3 with paragraph 1's tail now scrolled to the top of the viewport
+  (paragraphs 1–2 no longer degenerate-bounds at that point, meaning they'd been on-screen a moment
+  before); a second dump taken later in the same run showed paragraphs 1–4 now degenerate-bounds
+  (scrolled off) and paragraphs 5–6 holding real bounds instead — the viewport tracking forward as
+  speech progressed, not a one-off jump. This is `followSpokenRange`'s `rendition.display(cfi)` call
+  working as designed, confirmed by both a visual (screenshot) and structural
+  (`uiautomator`-bounds) signal, on the exact flow/config this checklist item names. Session also hit
+  two unrelated instabilities worth logging, not blocking: a cross-device sync conflict dialog
+  ("Reading progress updated... Resume from there, or continue reading here?") interrupted playback
+  once — dismissed via "Continue here", TTS resumed correctly after; and TalkBack itself crashed once
+  mid-session ("Android Accessibility Suite keeps stopping"), recovered on its own (rebound
+  automatically, confirmed via `dumpsys accessibility`) without needing the service to be re-enabled.
+  **Paginated flow was not separately re-checked this pass** (auto-follow's own design only applies
+  to the forced-scrolled-doc case per this doc's mechanism section) — not a gap, just scoped out as
+  N/A rather than left ambiguous.
 - `npm test && npm run typecheck && npm run lint` — green. `npm run reader:build-html` WAS needed —
   `anyRectOnScreen` is a new export on `highlightGeometry.ts`, a shared pure module, contradicting
   this doc's own guess above that it shouldn't be. Both generated HTML files were regenerated;

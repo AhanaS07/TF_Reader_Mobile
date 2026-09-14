@@ -682,12 +682,13 @@ WebView entirely, so none of the three defects above apply to them. Both buttons
 a payload-free, already-proven-reliable bridge command (`readerBridge.ts:520-524`). That reliability
 is the basis for the fix proposal below.
 
-**Proposal, not yet implemented**: see `TALKBACK_GESTURE_FIX_PROPOSAL.md` in this directory — a
-handoff document for Ahana (owner of `src/features/reader/`, where every file this proposes touching
-lives), not a code change made here. It proposes reusing that exact `send({type:'next'|'prev'})` call
-from a native `accessibilityActions`/`onAccessibilityAction` pair, so page navigation becomes
-reachable through a native View already proven to work with TalkBack, sidestepping all three defects
-above rather than fixing any of them.
+**Proposal — implemented, unit-tested, and on-device action-verified; see §14 below**: see
+`TALKBACK_GESTURE_FIX_PROPOSAL.md` in this directory — originally a handoff document for Ahana
+(owner of `src/features/reader/`, where every file this proposes touching lives), now the record of
+her corrected implementation plus this doc's own on-device follow-up. It reuses that exact
+`send({type:'next'|'prev'})` call from a native `accessibilityActions`/`onAccessibilityAction` pair,
+so page navigation becomes reachable through a native View already proven to work with TalkBack,
+sidestepping all three defects above rather than fixing any of them.
 
 **A second, already-shipped candidate exists on the accessibility side and needs on-device
 verification, not new code.** TTS auto-follow (`TTS_AUTOFOLLOW_HANDOFF.md`, implemented 2026-09-07)
@@ -698,3 +699,55 @@ screen-reader-forced `scrolled-doc` flow, turning on "Read aloud" is a real, wor
 alternative to swipe/scroll for a TalkBack user. That doc's own checklist marks on-device
 verification for exactly this flow as **pending** — worth running before relying on it, and worth
 recording here either way once run.
+
+**Verified working, 2026-09-14 (Hruthik) — see `TTS_AUTOFOLLOW_HANDOFF.md`'s checklist for the full
+account.** With TalkBack on and the a11y override forcing `scrolled-doc`, playing TTS produced a
+viewport that visibly and repeatedly scrolled forward to keep the spoken sentence on-screen —
+confirmed both visually (screenshot) and structurally (`uiautomator` bounds flipping from real to
+degenerate as content scrolled past, and back, across two separate points in one playback run, not
+a single lucky sample). **This is a real, working-today page-following mechanism for TalkBack users
+that does not depend on §12.6's still-open WebView-focus defect or §13's touch-exploration-consumes-
+the-gesture problem at all** — it never asks TalkBack to focus or touch anything inside the WebView.
+Between this and §14's page-turn action below, TalkBack users now have two independent, verified
+ways to progress through a book without needing either open defect fixed.
+
+## 14. 2026-09-14 — page-turn fix implemented; action verified, gesture surfacing still open
+
+The proposal above was corrected and implemented by Ahana (`0a2b46d`): the `accessibilityActions`/
+`onAccessibilityAction` pair was moved off `ReaderWebView`'s container onto a dedicated 1x1 sibling
+node (`reader-webview-a11y-pageturn`), because the sketch as originally written would have
+resynthesized the exact container-leaf trap rule #1 already fixed, via `accessibilityActions`/
+`accessibilityRole` instead of a literal `accessibilityLabel` — see
+`TALKBACK_GESTURE_FIX_PROPOSAL.md`'s "Resolution, Ahana" section for the full account, and
+`CLAUDE.md`'s new rule #5. Also resolved there: `next()`/`prev()` already do a viewport-height
+`scrollBy` in `scrolled-doc` flow via epub.js's `continuous` manager, so the same
+`send({type:'next'|'prev'})` covers both flows — no second command was needed.
+
+**Verified by code review**: the landed diff matches the corrected proposal exactly — container
+confirmed still free of `accessibilityActions`/`accessibilityRole`/`accessibilityLabel`, the
+existing `reader-webview-a11y-stop` node untouched, `readerBridge.ts` untouched. `ReaderWebView
+.test.tsx` gained 7 tests, including the regression guard that matters most here: an explicit
+assertion that the container carries none of those three props, so a future edit can't
+silently reintroduce the trap. `npx jest ReaderWebView` (7/7), `npm run typecheck`, `npm run lint`
+all green.
+
+**Verified on-device, by Hruthik (`TALKBACK_GESTURE_FIX_PROPOSAL.md`'s "Phase 5 — on-device
+verification" section, 2026-09-14)**: via a temporary, gitignored `androidTest` instrumentation test
+on a `tts_spike` build, calling `AccessibilityNodeInfo.performAction()` directly (not gesture
+synthesis) — the wired `ACTION_SCROLL_FORWARD`/`ACTION_SCROLL_BACKWARD` action (Android's mapping
+for `adjustable`'s `increment`/`decrement`, `ReactAccessibilityDelegate.kt:567-568`) fires and the
+page visibly turns, confirmed by screenshot. The action's `false` return value is a known non-signal
+for this role/action combination on a plain View — the JS event fires before the return value is
+computed (`ReactAccessibilityDelegate.kt:220-264`) — not evidence of failure. The test file and
+screenshot were not committed (temporary/gitignored, per that section's own account), so this
+evidence, like some of §12's, rests on the written record rather than something independently
+re-runnable from this repo.
+
+**Still explicitly open, not resolved by the above**: real TalkBack gesture surfacing — whether a
+two-finger swipe or TalkBack's local Actions menu is what actually reaches this action on a real
+device or rooted AVD. This pass confirms the wired action works when invoked directly; it does not
+confirm TalkBack's own gesture routing reaches it, which is a different question — the same
+distinction §12.6's `ACTION_ACCESSIBILITY_FOCUS` instrumentation test drew for content reachability,
+and the same class of gap §12.5's confound note already named for gesture-specific testing on this
+emulator. Until that's run, treat this as "the mechanism is sound and reachable in principle,"
+not "a TalkBack user has been confirmed able to turn the page."
