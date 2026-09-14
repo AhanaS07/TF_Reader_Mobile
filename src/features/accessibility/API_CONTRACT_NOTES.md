@@ -201,3 +201,84 @@ directly (`api.create`/`api.update`), which was never a real seam: accessibility
 endpoint of its own to call, and Karthik's sync engine is the only thing that talks to Mongo.
 Accessibility's job stays exactly `accessibilityStore.update()` writing to SQLite; nothing here
 should ever reach past that. Verified no other file imported either half before deleting.
+
+---
+
+## 8. Per-device sync scope — a design sketch, so this stays deferred rather than re-derived later
+
+**Not implemented, not scheduled — §7's decision to stay account-scoped is unchanged.** Written
+down now because §4/§7 both warn that retrofitting this later is a migration, and a migration is
+cheaper to execute against a plan than to improvise once someone is actually blocked on it.
+
+**The shape, if/when this is picked up**, mirroring `migratePrefs.ts`'s (Personalization's)
+existing precedent for versioned local-schema changes:
+
+1. **Add a `deviceId` column to the `accessibility` table**, generated once per install (a UUID
+   persisted outside the syncable record itself — e.g. alongside `expo-dev-launcher-installation-id.txt`'s
+   pattern, or `expo-application`'s installation id if that's already available), not derived from
+   anything account-related.
+2. **Split `ACCESSIBILITY_MERGE_FIELDS` into two groups**, not one: device-scoped
+   (`ttsVoiceId`, `ttsRate`, `ttsPitch`, `ttsHighlightMode`, `reduceMotion`, `largeAudioControls`,
+   `ttsBackgroundPlayback` — properties of the hardware/OS a device runs on) vs. account-scoped
+   (`dyslexiaFont`, `boldText`, `readableSpacing`, `highContrast`, `screenReaderHints`,
+   `announcePageChanges`, `announceChapterChanges` — properties of how this *person* reads,
+   reasonably expected to follow them across devices). This split itself is the one open judgment
+   call — `largeTouchTargets`/`respectOsFontScale`/`fontScaleMultiplier` are debatable either way
+   and would need an actual product decision, not just an engineering one, when this is picked up.
+3. **Device-scoped fields key on `(userId, deviceId)`, not `userId` alone** — meaning the sync
+   entity itself gains a compound identity, not just an extra column on today's one-row-per-user
+   record. `syncApi.ts`'s generic `/api/v1/{entity}` CRUD pattern doesn't need to change shape for
+   this (still `POST`/`PUT`/`DELETE` by `id`); what changes is that a device now creates its own
+   accessibility record on first sync rather than reading/writing the one shared row.
+4. **`reduceMotion` needs no change under this scheme** — it already resolves against live
+   `AccessibilityInfo.isReduceMotionEnabled()` per device via `useReduceMotion.ts`'s tri-state
+   resolution, independent of sync scope. The gap this migration actually closes is narrower than
+   §4/§7 originally framed it: not "reduceMotion syncs wrong" (already handled), but "`ttsVoiceId`/
+   `ttsRate`/`ttsHighlightMode` follow the account when a screen-reader user's voice and speed are
+   properties of a specific device/headphone setup, not of their library."
+
+**Trigger for actually building this:** real per-device identity existing at all (§7's own
+condition) — `B1`'s single dev-token identity has no per-device concept to attach step 1 to yet,
+so there's genuinely nothing to build against today, not just a deprioritization.
+
+---
+
+## 9. Revocation mid-TTS-session — a design sketch for when `B6`/`B7` land
+
+**Not implemented, not scheduled — §5's "accepted behaviour, not a guarantee to build on" stands.**
+Written down now for the same reason as §8: so this is a quick job when `B6`/`B7` (Download's
+change feed) ship, not a rediscovery under pressure at that point.
+
+**What actually happens today, for context:** `ReaderTextProvider`'s methods never reject
+(`readerTextProvider.ts`'s own contract) — a mid-read decryption failure would resolve
+`{status: 'unavailable'}` rather than throwing, and `useTtsSession.ts`'s `handleTtsFinish`/error
+paths already treat an `unavailable` fetch result as a stopping condition. So the session
+*wouldn't* crash if the key vanished mid-read — it would just stop, the same as reaching the end of
+downloaded content. What's missing is *why* it stopped ever reaching the user or this file's own
+telemetry as a distinct reason.
+
+**The shape, when `B6`/`B7` exist:**
+
+1. **The interruption reason should be `'revoked'`, not `'closed'`** — this is exactly the label
+   distinction named in §6/the `tts.highlightMode` history and in `TTS_PROVIDER.md`'s open item 1:
+   `EpubReaderTextProvider` already has `terminate('revoked')` reachable internally, but no
+   `notifyRevoked()` method calls it — only `notifyClosed()` exists. **If item 12's proposal to
+   Karthik/Abhinav lands first, this section has nothing further to do** — the plumbing already
+   exists once that label is wired through. If it doesn't land first, this section's own trigger
+   (a real revocation event) is a second, independent reason to finally add `notifyRevoked()`.
+2. **The trigger is Sync's event bus, not a new signal Accessibility invents.** `offline-lock.ts`'s
+   `content.lock` event with `reason: 'revoked'` is already the documented, wired mechanism
+   (`useContentLock`, consumed today by `ReaderScreen.tsx`'s `tearDownAndLock`). The TTS session
+   doesn't need its own subscription — `tearDownAndLock` already calls
+   `ttsProviderRef.current?.notifyClosed()` before `closeBook()`; this section's whole ask is
+   swapping that one call to `notifyRevoked()` specifically when the teardown reason is a
+   revocation, which is a Reader-side (`ReaderScreen.tsx`) one-line change, not an Accessibility one.
+3. **What Accessibility's own side would do with the distinct reason, once it exists:** surface a
+   different message than a plain "session ended" — e.g. via `ttsStatusAnnouncement`
+   (`ttsAnnouncements.ts`) — so a screen-reader user hears *why* TTS stopped rather than silence.
+   `useTtsSession.ts`'s `status` already goes to `'idle'`/`'error'` on interruption; this is a
+   messaging refinement on top of already-correct state handling, not a new state.
+
+**Trigger for actually building this:** `B6`/`B7` shipping, which is what makes a live revocation
+mid-session possible at all — today's fail-open entitlement check means this scenario cannot occur
+in practice yet.
