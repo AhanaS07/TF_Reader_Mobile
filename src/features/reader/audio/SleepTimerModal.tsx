@@ -3,11 +3,13 @@
 // SLEEP TIMER MODAL. Bottom-sheet modal, visually matching AudioQueueModal.tsx exactly
 // (animationType="slide", transparent, the same modalOverlay/modalContainer pair, SafeAreaView,
 // header row with title + ✕ close button) — copied rather than invented, per
-// SLEEP_TIMER_PLAN.md §6: this app has no shared theme module to pull from.
+// SLEEP_TIMER_PLAN.md §6.
 
 import { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { color, radius, space } from '@theme/tokens';
 
 import { cancelSleepTimer, startSleepTimer } from './sleepTimerEngine';
 import { useSleepTimerStore } from './sleepTimerStore';
@@ -223,13 +225,14 @@ const styles = StyleSheet.create({
   // Copied from AudioQueueModal.tsx's own styles of the same names — see this file's header.
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    // Indigo (`color.navy`), the brand's own "dark overlays" colour.
+    backgroundColor: 'rgba(0, 34, 68, 0.45)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: color.white,
+    borderTopLeftRadius: radius.sheet,
+    borderTopRightRadius: radius.sheet,
     maxHeight: '80%',
     minHeight: '40%',
   },
@@ -238,18 +241,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingTop: space.md,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d0d0d0',
+    borderBottomColor: color.border,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#111827',
+    color: color.textPrimary,
   },
   closeButton: {
-    padding: 8,
+    padding: space.sm,
     minWidth: 44,
     minHeight: 44,
     justifyContent: 'center',
@@ -257,7 +260,7 @@ const styles = StyleSheet.create({
   },
   closeIcon: {
     fontSize: 18,
-    color: '#374151',
+    color: color.textPrimary,
     fontWeight: '700',
   },
   body: {
@@ -270,13 +273,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
-    color: '#777777',
+    color: color.textSecondary,
     alignSelf: 'flex-start',
   },
   presetRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 8,
+    gap: space.sm,
     alignSelf: 'stretch',
   },
   // Same rateButton/rateButtonActive shape as AudioPlayerScreen.tsx's PLAYBACK_RATES pill row.
@@ -286,20 +289,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#cccccc',
+    borderColor: color.border,
     alignItems: 'center',
   },
-  presetButtonActive: { backgroundColor: '#111111', borderColor: '#111111' },
-  presetButtonLabel: { fontSize: 14, fontWeight: '600', color: '#111111' },
-  presetButtonLabelActive: { color: '#ffffff' },
+  presetButtonActive: { backgroundColor: color.primary, borderColor: color.primary },
+  presetButtonLabel: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
+  presetButtonLabelActive: { color: color.white },
   customPickerContainer: {
     alignSelf: 'stretch',
     gap: 10,
   },
   customPickerLabel: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#111111',
+    fontWeight: '700',
+    color: color.textPrimary,
     textAlign: 'center',
   },
   dragTrack: {
@@ -312,12 +315,13 @@ const styles = StyleSheet.create({
     right: 0,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#e2e2e2',
+    backgroundColor: color.border,
   },
+  // The accent, not body text — same `color.primary` as AudioPlayerScreen's own scrubberFill.
   dragTrackFill: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   dragStopDot: {
     position: 'absolute',
@@ -326,57 +330,57 @@ const styles = StyleSheet.create({
     height: 16,
     borderRadius: 8,
     marginLeft: -8,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: color.surface,
     borderWidth: 1,
-    borderColor: '#cccccc',
+    borderColor: color.border,
   },
   dragStopDotActive: {
-    backgroundColor: '#111111',
-    borderColor: '#111111',
+    backgroundColor: color.primary,
+    borderColor: color.primary,
   },
   startButton: {
     alignSelf: 'stretch',
     paddingVertical: 14,
     borderRadius: 24,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
     alignItems: 'center',
   },
   startButtonDisabled: {
-    backgroundColor: '#f0f0f0',
+    backgroundColor: color.surface,
   },
   startButtonLabel: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#ffffff',
+    color: color.white,
   },
   startButtonLabelDisabled: {
-    color: '#9ca3af',
+    color: color.textSecondary,
   },
   countdownLabel: {
     fontSize: 40,
     fontWeight: '700',
-    color: '#111111',
+    color: color.textPrimary,
   },
   countdownSubLabel: {
     fontSize: 13,
-    color: '#6b7280',
+    color: color.textSecondary,
   },
   firedLabel: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#111111',
+    fontWeight: '700',
+    color: color.textPrimary,
     textAlign: 'center',
   },
   actionButton: {
     alignSelf: 'stretch',
     paddingVertical: 12,
     alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: '#fee2e2',
+    borderRadius: radius.card,
+    backgroundColor: color.errorTint,
   },
   actionButtonLabel: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#b91c1c',
+    fontWeight: '700',
+    color: color.error,
   },
 });

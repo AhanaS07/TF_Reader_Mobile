@@ -27,6 +27,8 @@ import type {
   WebViewCustomMenuItems,
 } from 'react-native-webview/lib/WebViewTypes';
 
+import { color } from '@theme/tokens';
+
 import { buildCommandScript, parseReaderMessage } from '@/features/reader/readerBridge';
 import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/reader/readerBridge';
 
@@ -471,7 +473,7 @@ const styles = StyleSheet.create({
   // ancestor anywhere in this chain renders a blank page with no error — the
   // single most common false "epub.js is broken" report.
   container: { flex: 1 },
-  webView: { flex: 1, backgroundColor: '#ffffff' },
+  webView: { flex: 1, backgroundColor: color.white },
   // Absolutely positioned and 1x1 so the named stop costs no layout: this sits inside the same
   // flex:1 chain epub.js measures, and a node with real height would shrink the viewer and
   // re-paginate the book.

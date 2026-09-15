@@ -17,6 +17,8 @@
 import { forwardRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { hasNavigableFrom } from '@/features/reader/useBookSearch';
 import type { SearchHit } from '@/shared/contracts';
 
@@ -132,29 +134,29 @@ const styles = StyleSheet.create({
     bottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: space.xs,
     paddingHorizontal: 6,
     paddingVertical: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
-    backgroundColor: '#f7f7f7',
+    borderColor: color.border,
+    backgroundColor: color.surface,
   },
-  counterButton: { flex: 1, paddingHorizontal: 8, paddingVertical: 6 },
+  counterButton: { flex: 1, paddingHorizontal: space.sm, paddingVertical: 6 },
   // Carries the word "Match" deliberately: it is what distinguishes this row's arrows
   // from the page Prev/Next buttons sitting just below it.
-  counterText: { fontSize: 13, fontWeight: '600', color: '#111111' },
+  counterText: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
   step: {
     minWidth: 40,
     minHeight: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 8,
-    backgroundColor: '#ffffff',
+    borderRadius: radius.card,
+    backgroundColor: color.white,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
+    borderColor: color.border,
   },
-  stepText: { fontSize: 18, fontWeight: '600', color: '#111111' },
-  dismissText: { fontSize: 15, fontWeight: '600', color: '#555555' },
+  stepText: { fontSize: 18, fontWeight: '700', color: color.textPrimary },
+  dismissText: { fontSize: 15, fontWeight: '700', color: color.textSecondary },
   disabled: { opacity: 0.4 },
 });

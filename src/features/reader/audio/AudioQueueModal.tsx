@@ -20,6 +20,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { clearAudioQueue, removeQueueItem } from './audioQueueCoordinator';
 import { useAudioQueueStore, type AudioQueueItem, type RepeatMode } from './audioQueueStore';
 
@@ -236,13 +238,14 @@ export function AudioQueueModal({
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    // Indigo (`color.navy`), the brand's own "dark overlays" colour.
+    backgroundColor: 'rgba(0, 34, 68, 0.45)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: color.white,
+    borderTopLeftRadius: radius.sheet,
+    borderTopRightRadius: radius.sheet,
     maxHeight: '80%',
     minHeight: '40%',
   },
@@ -251,19 +254,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingTop: space.md,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d0d0d0',
+    borderBottomColor: color.border,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#111827',
+    color: color.textPrimary,
   },
   headerSubtitle: {
     fontSize: 13,
-    color: '#6b7280',
+    color: color.textSecondary,
     marginTop: 2,
   },
   headerRight: {
@@ -274,25 +277,27 @@ const styles = StyleSheet.create({
   repeatButton: {
     paddingVertical: 6,
     paddingHorizontal: 12,
-    borderRadius: 16,
+    borderRadius: radius.sheet,
     borderWidth: 1,
-    borderColor: '#9ca3af',
-    backgroundColor: '#f9fafb',
+    borderColor: color.border,
+    backgroundColor: color.surface,
   },
+  // `color.primary` — the brand's own "active tabs" colour, same call this file's
+  // rateButtonActive-equivalent makes for AudioPlayerScreen's playback-speed picker.
   repeatButtonActive: {
-    borderColor: '#2563eb',
-    backgroundColor: '#eff6ff',
+    borderColor: color.primary,
+    backgroundColor: color.subscriptionTint,
   },
   repeatButtonLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#4b5563',
+    fontWeight: '700',
+    color: color.textSecondary,
   },
   repeatButtonLabelActive: {
-    color: '#2563eb',
+    color: color.primary,
   },
   closeButton: {
-    padding: 8,
+    padding: space.sm,
     minWidth: 44,
     minHeight: 44,
     justifyContent: 'center',
@@ -300,11 +305,11 @@ const styles = StyleSheet.create({
   },
   closeIcon: {
     fontSize: 18,
-    color: '#374151',
+    color: color.textPrimary,
     fontWeight: '700',
   },
   listContent: {
-    paddingVertical: 8,
+    paddingVertical: space.sm,
   },
   itemRow: {
     flexDirection: 'row',
@@ -313,25 +318,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f3f4f6',
+    borderBottomColor: color.border,
   },
+  // The brand palette has no light tint for `color.success` (Mint) the way it does for
+  // subscription/error, so "now playing" reuses the same brand-blue "active" accent as
+  // `repeatButtonActive` above, rather than inventing an untracked green hex
+  // (CONVENTIONS §5).
   itemRowActive: {
-    backgroundColor: '#f0fdf4',
+    backgroundColor: color.subscriptionTint,
   },
   itemTrackInfo: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 8,
+    marginRight: space.sm,
   },
   itemIndex: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#9ca3af',
+    fontWeight: '700',
+    color: color.textSecondary,
     width: 24,
   },
   itemIndexActive: {
-    color: '#16a34a',
+    color: color.primary,
     fontWeight: '700',
   },
   itemTextContainer: {
@@ -339,29 +348,30 @@ const styles = StyleSheet.create({
   },
   itemTitle: {
     fontSize: 15,
-    fontWeight: '500',
-    color: '#1f2937',
+    // 500 is not a brand weight (only 300/400/700 exist) — 400 is the closest.
+    fontWeight: '400',
+    color: color.textPrimary,
   },
   itemTitleActive: {
-    color: '#15803d',
+    color: color.primary,
     fontWeight: '700',
   },
   itemArtist: {
     fontSize: 13,
-    color: '#6b7280',
+    color: color.textSecondary,
     marginTop: 2,
   },
   nowPlayingBadge: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#16a34a',
+    color: color.primary,
     textTransform: 'uppercase',
     marginTop: 2,
   },
   itemActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: space.xs,
   },
   actionButton: {
     padding: 6,
@@ -375,15 +385,15 @@ const styles = StyleSheet.create({
   },
   actionIcon: {
     fontSize: 12,
-    color: '#4b5563',
+    color: color.textSecondary,
   },
   actionIconDisabled: {
-    color: '#d1d5db',
+    color: color.border,
   },
   removeIcon: {
     fontSize: 16,
-    color: '#ef4444',
-    fontWeight: '600',
+    color: color.error,
+    fontWeight: '700',
   },
   emptyContainer: {
     padding: 40,
@@ -392,28 +402,28 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 16,
-    color: '#9ca3af',
+    color: color.textSecondary,
   },
   footer: {
-    padding: 16,
+    padding: space.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e7eb',
+    borderTopColor: color.border,
   },
   clearButton: {
     paddingVertical: 12,
     alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: '#fee2e2',
+    borderRadius: radius.card,
+    backgroundColor: color.errorTint,
   },
   clearButtonDisabled: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: color.surface,
   },
   clearButtonLabel: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#b91c1c',
+    fontWeight: '700',
+    color: color.error,
   },
   clearButtonLabelDisabled: {
-    color: '#9ca3af',
+    color: color.textSecondary,
   },
 });

@@ -2,9 +2,6 @@
 //
 // The reader screen: WebView + Prev/Next/Contents controls + a visible error
 // banner, reading decrypted bytes through the ContentProvider seam.
-//
-// Colours are inline for the same reason the navigation screens' (src/navigation/) are: src/theme/
-// has not landed yet. Replace with tokens when it does.
 
 import {
   forwardRef,
@@ -31,6 +28,8 @@ import {
 } from 'react-native';
 
 import { LinearGradient } from 'expo-linear-gradient';
+
+import { color, radius, space } from '@theme/tokens';
 
 import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import { AccessibilitySettingsPanel } from '@/features/accessibility/AccessibilitySettingsPanel';
@@ -2823,10 +2822,10 @@ function ReaderScreenComponent(
               the list there is nothing above to fade, and a permanent white veil over
               the first row would be the same visual bug in a different place.
 
-              The colour is the panel's own background, so the gradient dissolves the
-              row into the panel rather than tinting it. If the panel ever stops being
-              #ffffff (src/theme/ landing, or a dark theme) these two constants move
-              with it — which is why they sit next to it rather than inline.
+              The colour is the panel's own background (`color.white`), so the gradient
+              dissolves the row into the panel rather than tinting it. If the panel ever
+              moves to a dark reading theme, these two constants move with it — which is
+              why they sit next to it rather than inline.
             */}
               {/* `pointerEvents="none"` keeps them out of the way of a finger; the two a11y props
                   keep them out of the way of a screen reader. Both are needed and neither implies
@@ -3146,7 +3145,7 @@ function ReaderScreenComponent(
                 // explicit as well.
                 accessibilityLabel={`Go to page, 1 to ${position.pageCount}`}
                 placeholder={`1–${position.pageCount}`}
-                placeholderTextColor="#8a8a8a"
+                placeholderTextColor={color.textSecondary}
                 style={styles.pageJump}
                 value={pageJump}
                 onChangeText={setPageJump}
@@ -3198,7 +3197,7 @@ function targetKey(target: ReaderTarget): string {
  * Indent per TOC nesting level. A book's navigation document is a tree; the bridge
  * flattens it and carries a `depth`, so this is the only place the tree is visible.
  */
-const TOC_INDENT_PX = 16;
+const TOC_INDENT_PX = space.md;
 
 /**
  * Slack, in points, before an edge counts as "scrolled away from".
@@ -3211,8 +3210,8 @@ const FADE_EPSILON_PX = 1;
 
 // Transparent → panel background. Written as rgba rather than '#ffffff00' because
 // Android's colour parser has historically been unreliable with 8-digit hex.
-const TOC_FADE_UP = ['rgba(255, 255, 255, 0)', '#ffffff'] as const;
-const TOC_FADE_DOWN = ['#ffffff', 'rgba(255, 255, 255, 0)'] as const;
+const TOC_FADE_UP = ['rgba(255, 255, 255, 0)', color.white] as const;
+const TOC_FADE_DOWN = [color.white, 'rgba(255, 255, 255, 0)'] as const;
 
 /** Overlay fill. See the note on `busy` below for why this is not absoluteFillObject. */
 const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as const;
@@ -3237,7 +3236,7 @@ const styles = StyleSheet.create({
   // the row does not shift width as the page number gains a digit.
   pageIndicator: {
     fontSize: 13,
-    color: '#555555',
+    color: color.textSecondary,
     fontVariant: ['tabular-nums'],
   },
   // Sized to the widest page number it can hold rather than to its content, so opening the field does
@@ -3245,17 +3244,17 @@ const styles = StyleSheet.create({
   pageJump: {
     minWidth: 54,
     fontSize: 13,
-    color: '#111111',
+    color: color.textPrimary,
     paddingVertical: 4,
     paddingHorizontal: 6,
     borderBottomWidth: 1,
-    borderBottomColor: '#555555',
+    borderBottomColor: color.textSecondary,
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
   // flex:1 down to the WebView. See the note in ReaderWebView.tsx — epub.js
   // renders nothing at all into a zero-height container.
-  container: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, backgroundColor: color.white },
   viewer: { flex: 1 },
 
   // Right-aligned so the icon falls under the thumb rather than next to the native-stack header's
@@ -3264,14 +3263,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     paddingHorizontal: 12,
-    paddingVertical: 4,
+    paddingVertical: space.xs,
   },
   toolbarButton: {
     minWidth: 44,
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 8,
+    borderRadius: radius.card,
   },
   toolbarIcon: { fontSize: 20 },
 
@@ -3279,12 +3278,14 @@ const styles = StyleSheet.create({
   // Clears the match bar (bottom 12, ~48 tall) so the two never overlap.
   searchNoticeWrap: { position: 'absolute', left: 8, right: 8, bottom: 68, alignItems: 'center' },
   highlightNotice: {
-    backgroundColor: 'rgba(31, 31, 31, 0.85)',
-    color: '#ffffff',
+    // Indigo (`color.navy`), the brand's own "dark overlays" colour — rgba because RN has no alpha
+    // channel prop separate from the colour itself.
+    backgroundColor: 'rgba(0, 34, 68, 0.85)',
+    color: color.white,
     fontSize: 12,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 8,
+    borderRadius: radius.card,
     overflow: 'hidden',
     textAlign: 'center',
   },
@@ -3292,27 +3293,32 @@ const styles = StyleSheet.create({
   // Explicit inset rather than StyleSheet.absoluteFillObject: RN 0.86's types
   // export only `absoluteFill`, so the *Object form is a typecheck error here.
   busy: { ...FILL, alignItems: 'center', justifyContent: 'center' },
-  busyText: { marginTop: 8, fontSize: 13, color: '#555555' },
+  busyText: { marginTop: 8, fontSize: 13, color: color.textSecondary },
 
   // Inset from both edges, deliberately — see the note at the JSX for why this stays clear of the
   // text. Positioned on the WRAP, not the badge itself, so the tooltip below can be a normal sibling
   // laid out relative to it rather than a second independently-positioned absolute element.
   bookmarkBadgeWrap: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end' },
-  // A warm gold ribbon colour, not white-on-white: the badge needs to read as a DIFFERENT surface
-  // from the page underneath it at a glance, on both the light and (eventually) dark reading themes
-  // this file cannot yet see (src/theme/ has not landed — see the header note on inline colours). The
-  // shadow does the same job on Android, where a flat gold circle over a busy page can still blend in
-  // without one; `elevation` is Android's equivalent of the iOS shadow* props below it.
+  // Saffron (`color.wait`) — the only warm/gold token the brand palette has, so the badge still
+  // reads as a DIFFERENT surface from the page underneath it at a glance, on both the light and
+  // (eventually) dark reading themes. The shadow does the same job on Android, where a flat gold
+  // circle over a busy page can still blend in without one; `elevation` is Android's equivalent of
+  // the iOS shadow* props below it.
+  //
+  // NOTE: the brand palette only exposes one Saffron shade as a token (`color.wait`), not the
+  // lighter/darker tints named in the brand guide's own secondary palette — so fill and border
+  // share one token instead of the two-tone gold this badge had before. Flagging rather than
+  // inventing an untracked hex for the missing shade (CONVENTIONS §5).
   bookmarkBadge: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#ffd54f',
+    backgroundColor: color.wait,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#e0a800',
-    shadowColor: '#000000',
+    borderColor: color.wait,
+    shadowColor: color.navy,
     shadowOpacity: 0.2,
     shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
@@ -3320,17 +3326,18 @@ const styles = StyleSheet.create({
   },
   bookmarkBadgeIcon: { fontSize: 15 },
 
-  // Dark-on-light rather than matching the badge's own gold, so it reads as a SEPARATE floating label
-  // (the standard tooltip convention) instead of an extension of the badge shape. `alignSelf` on the
-  // wrap keeps this right-aligned under the badge regardless of the tooltip's own text width.
+  // Indigo (`color.navy`) rather than matching the badge's own gold, so it reads as a SEPARATE
+  // floating label (the standard tooltip convention) instead of an extension of the badge shape.
+  // `alignSelf` on the wrap keeps this right-aligned under the badge regardless of the tooltip's
+  // own text width.
   bookmarkTooltip: {
     marginTop: 6,
-    backgroundColor: 'rgba(17, 17, 17, 0.92)',
+    backgroundColor: 'rgba(0, 34, 68, 0.92)',
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  bookmarkTooltipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
+  bookmarkTooltipText: { color: color.white, fontSize: 12, fontWeight: '700' },
 
   // SAME CORNER AS THE BOOKMARK BADGE, and deliberately its own absolute element rather than a
   // second child of `bookmarkBadgeWrap`. Sharing that wrap would put this in normal flow under the
@@ -3345,12 +3352,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    // Cool blue against the badge's warm gold: the two can be on screen at once, and colour is
-    // what separates "you bookmarked this" from "this is being read aloud" at a glance.
-    backgroundColor: '#d6e4ff',
+    // Cornflower tint (`color.subscriptionTint`) against the badge's warm gold: the two can be on
+    // screen at once, and colour is what separates "you bookmarked this" from "this is being read
+    // aloud" at a glance. Border is `color.subscription`, the saturated blue that tint is meant to
+    // sit against.
+    backgroundColor: color.subscriptionTint,
     borderWidth: 1,
-    borderColor: '#5b8def',
-    shadowColor: '#000000',
+    borderColor: color.subscription,
+    shadowColor: color.navy,
     shadowOpacity: 0.2,
     shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
@@ -3363,13 +3372,15 @@ const styles = StyleSheet.create({
   ttsCueIcon: { fontSize: 15 },
 
   errorBanner: {
-    backgroundColor: '#fdf2f2',
+    backgroundColor: color.errorTint,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0c8c8',
+    // No lighter/tint border token exists for error state, so this borrows `color.error` itself
+    // rather than inventing an untracked hex (CONVENTIONS §5).
+    borderBottomColor: color.error,
     padding: 12,
   },
-  errorCode: { fontSize: 12, fontWeight: '700', color: '#8a1c1c' },
-  errorMessage: { marginTop: 4, fontSize: 13, color: '#8a1c1c' },
+  errorCode: { fontSize: 12, fontWeight: '700', color: color.error },
+  errorMessage: { marginTop: 4, fontSize: 13, color: color.error },
 
   // Same explicit-inset FILL as `busy` — see that style's own note on why not
   // StyleSheet.absoluteFillObject. Centred rather than top-anchored like the banner: this is the
@@ -3378,18 +3389,18 @@ const styles = StyleSheet.create({
     ...FILL,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
-    backgroundColor: '#fdf2f2',
+    paddingHorizontal: space.lg,
+    backgroundColor: color.errorTint,
   },
 
   tocPanel: {
     ...FILL,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
-    padding: 16,
+    borderTopColor: color.border,
+    padding: space.md,
   },
-  tocTitle: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: 12 },
+  tocTitle: { fontSize: 18, fontWeight: '700', color: color.textPrimary, marginBottom: 12 },
 
   // The merged Accessibility dropdown's chrome — content-sized, not the opaque full-bleed overlay
   // TOC/Bookmarks use, since (unlike those) this panel holds no book-derived content that needs
@@ -3405,12 +3416,14 @@ const styles = StyleSheet.create({
     right: 0,
     alignSelf: 'flex-start',
     minWidth: 220,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    backgroundColor: color.white,
+    borderRadius: radius.tile,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
+    borderColor: color.border,
     padding: 12,
-    boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.12)',
+    // Indigo (`color.navy`) rather than plain black, matching the elevation shadows the shared
+    // component library already uses (`theme/tokens.ts`'s `elevation.card`/`elevation.raised`).
+    boxShadow: '0px 4px 12px rgba(0, 34, 68, 0.12)',
     elevation: 6,
   },
   accessibilityContent: { paddingBottom: 4 },
@@ -3418,7 +3431,7 @@ const styles = StyleSheet.create({
   // Only a TOP hairline, to close the header off. There is deliberately no bottom
   // border any more: a hairline and a fade at the same edge fight each other — the
   // line reasserts the hard cut the fade exists to dissolve.
-  tocList: { borderTopWidth: 1, borderTopColor: '#e2e2e2' },
+  tocList: { borderTopWidth: 1, borderTopColor: color.border },
 
   // Room for the last entry to scroll clear of the panel edge. One row's worth, so it
   // does not read as a gap when the list is short.
@@ -3433,36 +3446,36 @@ const styles = StyleSheet.create({
   // 1, not 0: sits directly below the list's top hairline instead of washing it out.
   tocFadeTop: { top: 1 },
   tocFadeBottom: { bottom: 0 },
-  tocEmpty: { fontSize: 14, color: '#777777' },
-  tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  tocItemText: { fontSize: 15, color: '#111111' },
+  tocEmpty: { fontSize: 14, color: color.textSecondary },
+  tocItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: color.border },
+  tocItemText: { fontSize: 15, color: color.textPrimary },
   // A grouping heading with no href — see the note at the TOC row's `isNavigable` check.
   tocItemDisabled: { opacity: 0.5 },
 
   // FULLY OPAQUE is the whole point — a translucent cover still photographs the text underneath.
   privacyCover: {
     ...FILL,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  privacyCoverText: { fontSize: 17, fontWeight: '600', color: '#8a8a8a' },
+  privacyCoverText: { fontSize: 17, fontWeight: '700', color: color.textSecondary },
 
   controls: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
+    borderTopColor: color.border,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    gap: 8,
+    gap: space.sm,
   },
   button: {
     flex: 1,
     alignItems: 'center',
     paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#f2f2f2',
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
   },
   buttonDisabled: { opacity: 0.4 },
-  buttonText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  buttonText: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
 });

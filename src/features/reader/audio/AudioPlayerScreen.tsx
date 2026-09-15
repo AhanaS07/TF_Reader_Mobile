@@ -45,6 +45,8 @@ import {
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { useContentLock } from '@/features/reader/useContentLock';
 import { formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
@@ -646,34 +648,34 @@ export const AudioPlayerScreen = forwardRef(AudioPlayerScreenComponent);
 AudioPlayerScreen.displayName = 'AudioPlayerScreen';
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff', padding: 20, gap: 24 },
+  container: { flex: 1, backgroundColor: color.white, padding: 20, gap: space.lg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 20 },
-  loadingLabel: { fontSize: 15, color: '#555555' },
-  errorTitle: { fontSize: 17, fontWeight: '600', color: '#b00020', textAlign: 'center' },
-  errorDetail: { fontSize: 14, color: '#555555', textAlign: 'center' },
+  loadingLabel: { fontSize: 15, color: color.textSecondary },
+  errorTitle: { fontSize: 17, fontWeight: '700', color: color.error, textAlign: 'center' },
+  errorDetail: { fontSize: 14, color: color.textSecondary, textAlign: 'center' },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: 12,
-    gap: 8,
+    gap: space.sm,
   },
-  title: { fontSize: 20, fontWeight: '700', color: '#111111', flex: 1, marginRight: 12 },
+  title: { fontSize: 20, fontWeight: '700', color: color.textPrimary, flex: 1, marginRight: 12 },
   queueButton: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#f3f4f6',
+    borderRadius: radius.sheet,
+    backgroundColor: color.surface,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: color.border,
   },
   queueButtonLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#374151',
+    fontWeight: '700',
+    color: color.textSecondary,
   },
-  scrubberRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  timeLabel: { fontSize: 12, color: '#555555', width: 40, textAlign: 'center' },
+  scrubberRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  timeLabel: { fontSize: 12, color: color.textSecondary, width: 40, textAlign: 'center' },
   scrubberTrack: {
     flex: 1,
     height: 28,
@@ -685,12 +687,14 @@ const styles = StyleSheet.create({
     right: 0,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#e2e2e2',
+    backgroundColor: color.border,
   },
+  // The accent, not body text — `color.primary` (Ultramarine), same token MiniAudioPlayer's own
+  // progress fill and play button use, so the mini and full players read as one brand-blue accent.
   scrubberFill: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   transportRow: {
     flexDirection: 'row',
@@ -699,12 +703,12 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   transportButton: {
-    paddingHorizontal: 16,
+    paddingHorizontal: space.md,
     paddingVertical: 12,
     borderRadius: 24,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: color.surface,
   },
-  transportButtonLabel: { fontSize: 15, fontWeight: '600', color: '#111111' },
+  transportButtonLabel: { fontSize: 15, fontWeight: '700', color: color.textPrimary },
   trackNavButton: {
     paddingHorizontal: 12,
   },
@@ -716,22 +720,22 @@ const styles = StyleSheet.create({
     opacity: 0.35,
   },
   transportButtonLabelDisabled: {
-    color: '#9ca3af',
+    color: color.textSecondary,
   },
-  playButton: { backgroundColor: '#111111', minWidth: 96, alignItems: 'center' },
+  playButton: { backgroundColor: color.primary, minWidth: 96, alignItems: 'center' },
   // Distinct from transportButtonDisabled's opacity dip: this button isn't disabled-looking,
   // it's mid-action — a grey fill reads as "pressed and working" rather than "unavailable".
-  playButtonPending: { backgroundColor: '#9ca3af' },
-  playButtonLabel: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
-  rateRow: { flexDirection: 'row', justifyContent: 'center', gap: 8 },
+  playButtonPending: { backgroundColor: color.textSecondary },
+  playButtonLabel: { fontSize: 15, fontWeight: '700', color: color.white },
+  rateRow: { flexDirection: 'row', justifyContent: 'center', gap: space.sm },
   rateButton: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#cccccc',
+    borderColor: color.border,
   },
-  rateButtonActive: { backgroundColor: '#111111', borderColor: '#111111' },
-  rateButtonLabel: { fontSize: 13, fontWeight: '600', color: '#111111' },
-  rateButtonLabelActive: { color: '#ffffff' },
+  rateButtonActive: { backgroundColor: color.primary, borderColor: color.primary },
+  rateButtonLabel: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
+  rateButtonLabelActive: { color: color.white },
 });

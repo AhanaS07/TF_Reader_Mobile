@@ -7,6 +7,8 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { color, radius, space } from '@theme/tokens';
+
 import {
   skipToNextTrack,
   skipToPreviousTrack,
@@ -118,10 +120,10 @@ export function MiniAudioPlayer({ onExpand }: MiniAudioPlayerProps): React.JSX.E
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    shadowColor: '#000000',
+    borderTopColor: color.border,
+    shadowColor: color.navy,
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.08,
     shadowRadius: 6,
@@ -129,12 +131,14 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: 3,
-    backgroundColor: '#e9ecef',
+    backgroundColor: color.border,
     width: '100%',
   },
+  // The filled portion is the accent, not body text — `color.primary` (Ultramarine), same
+  // token as the play/pause button below, so the two read as one brand-blue accent.
   progressFill: {
     height: '100%',
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   contentRow: {
     flexDirection: 'row',
@@ -146,8 +150,8 @@ const styles = StyleSheet.create({
   iconContainer: {
     width: 40,
     height: 40,
-    borderRadius: 8,
-    backgroundColor: '#f1f3f5',
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -163,17 +167,17 @@ const styles = StyleSheet.create({
   titleText: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#111111',
+    color: color.textPrimary,
   },
   statusText: {
     fontSize: 12,
-    color: '#666666',
+    color: color.textSecondary,
     marginTop: 2,
   },
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: space.sm,
   },
   controlButton: {
     padding: 6,
@@ -187,22 +191,24 @@ const styles = StyleSheet.create({
   },
   controlIcon: {
     fontSize: 14,
-    fontWeight: '800',
-    color: '#111111',
+    // 800 is not a brand weight (only 300/400/700 exist) — 700 is the closest.
+    fontWeight: '700',
+    color: color.textPrimary,
   },
   controlIconDisabled: {
-    color: '#888888',
+    color: color.textSecondary,
   },
+  // Same accent as `progressFill` — the two are this bar's only brand-blue accents.
   playPauseButton: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   playPauseIcon: {
     fontSize: 16,
-    color: '#ffffff',
+    color: color.white,
   },
 });
