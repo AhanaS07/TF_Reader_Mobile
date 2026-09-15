@@ -86,8 +86,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
+import { Alert, AppState, StyleSheet, View } from 'react-native';
 
+import Loader from '@components/Loader';
 import { AudioPlayerScreen } from '@/features/reader/audio/AudioPlayerScreen';
 import type { AudioPlayerScreenHandle } from '@/features/reader/audio/AudioPlayerScreen';
 import { audioQueueStore } from '@/features/reader/audio/audioQueueStore';
@@ -431,11 +432,7 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
   }, [positionReady, bookId, resolveConflictContinueHere, resolveConflictJumpThere]);
 
   if (!positionReady) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator style={styles.loadingIndicator} />
-      </View>
-    );
+    return <Loader testID="audio-route-loading" />;
   }
 
   return (
@@ -456,5 +453,4 @@ export function AudioPlayerRouteScreen({ route, navigation }: Props): React.JSX.
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.white },
-  loadingIndicator: { flex: 1, alignSelf: 'center' },
 });

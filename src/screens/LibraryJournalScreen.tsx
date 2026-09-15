@@ -14,11 +14,12 @@
 // ids only, the same call LibraryScreen makes for books, loans and downloads
 // alike.
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { ErrorState } from '@components/ErrorState';
 import { ContentCard } from '@components/ContentCard';
+import Spinner from '@components/Spinner';
 import { useServerClock } from '@hooks/useServerClock';
 import { useLibraryStore } from '@store/libraryStore';
 import { getCatalogueSource } from '../config/catalogue';
@@ -104,7 +105,7 @@ export default function LibraryJournalScreen({ route, navigation }: Props) {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={color.textSecondary} />
+          <Spinner size="large" color={color.textSecondary} />
         </View>
       ) : failed ? (
         <View style={styles.center}>

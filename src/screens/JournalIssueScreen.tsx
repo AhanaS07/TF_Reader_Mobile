@@ -17,7 +17,7 @@
 // one document — only its individual articles, each with their own licence —
 // so nothing is rendered that would promise a feature this app cannot do.
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -25,6 +25,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { ErrorState } from '@components/ErrorState';
 import { EmptyState } from '@components/EmptyState';
 import { SectionHeader } from '@components/SectionHeader';
+import Spinner from '@components/Spinner';
 import { useCurrentSession } from '@access/currentSession';
 import { useLibraryStore } from '@store/libraryStore';
 import { getCatalogueSource } from '../config/catalogue';
@@ -119,7 +120,7 @@ export default function JournalIssueScreen({ route }: Props) {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={color.textSecondary} />
+          <Spinner size="large" color={color.textSecondary} />
         </View>
       ) : articles.length === 0 ? (
         <View style={styles.center}>

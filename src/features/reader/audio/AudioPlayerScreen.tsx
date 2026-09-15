@@ -43,8 +43,9 @@ import {
 } from 'react';
 
 import { useAudioPlayerStatus } from 'expo-audio';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import Loader from '@components/Loader';
 import { color, radius, space } from '@theme/tokens';
 
 import { useContentLock } from '@/features/reader/useContentLock';
@@ -470,12 +471,7 @@ function AudioPlayerScreenComponent(
   }
 
   if (!status.isLoaded) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator />
-        <Text style={styles.loadingLabel}>Loading {title}…</Text>
-      </View>
-    );
+    return <Loader title={`Loading ${title}…`} testID="audio-player-loading" />;
   }
 
   return (
@@ -650,7 +646,6 @@ AudioPlayerScreen.displayName = 'AudioPlayerScreen';
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.white, padding: 20, gap: space.lg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 20 },
-  loadingLabel: { fontSize: 15, color: color.textSecondary },
   errorTitle: { fontSize: 17, fontWeight: '700', color: color.error, textAlign: 'center' },
   errorDetail: { fontSize: 14, color: color.textSecondary, textAlign: 'center' },
   headerRow: {

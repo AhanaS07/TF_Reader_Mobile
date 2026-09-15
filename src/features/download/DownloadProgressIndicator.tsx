@@ -2,12 +2,14 @@
 //
 // Presentational only — takes a DownloadProgressState (useDownloadProgress.ts) as props rather
 // than the hook itself, so it stays testable/reusable independent of how progress is sourced.
-// Follows the ActivityIndicator + adjacent Text idiom already used twice in Reader
-// (ReaderScreen.tsx's `busy` overlay, SearchPanel.tsx's `busyRow`) — colours now come from
-// `@theme/tokens`, matching the same migration those two files went through.
+// Follows the Spinner + adjacent Text idiom already used elsewhere in Reader
+// (ReaderScreen.tsx's `busy` overlay, SearchPanel.tsx's `busyRow`) — Spinner is the shared
+// branded stand-in for ActivityIndicator (see src/components/Spinner), colours from
+// `@theme/tokens`.
 
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
+import Spinner from '@components/Spinner';
 import { color, space } from '@theme/tokens';
 
 import type { DownloadProgressState } from './useDownloadProgress';
@@ -35,7 +37,7 @@ export function DownloadProgressIndicator({
             : null;
       return (
         <View style={styles.row}>
-          <ActivityIndicator />
+          <Spinner />
           <Text style={styles.text}>
             {bytesReceived} / {expectedLength ?? '?'} bytes ({percent ?? '…'}%)
           </Text>

@@ -15,7 +15,6 @@
 
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -24,6 +23,7 @@ import {
   View,
 } from 'react-native';
 
+import Spinner from '@components/Spinner';
 import { color, radius, space } from '@theme/tokens';
 
 import type { ReaderBookmark } from '@/features/personalization/readerBookmarks';
@@ -161,7 +161,7 @@ export function BookmarksPanel({
       <View style={styles.listWrap}>
         {!loaded ? (
           <View style={styles.busyRow}>
-            <ActivityIndicator />
+            <Spinner />
             <Text style={styles.hint}>Loading bookmarks…</Text>
           </View>
         ) : bookmarks.length === 0 ? (

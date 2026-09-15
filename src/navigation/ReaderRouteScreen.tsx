@@ -71,8 +71,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
+import { Alert, AppState, StyleSheet, View } from 'react-native';
 
+import Loader from '@components/Loader';
 import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import type { ReaderScreenHandle } from '@/features/reader/ReaderScreen';
@@ -383,11 +384,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
   }, [resolvedReady, bookId, resolveConflictContinueHere, resolveConflictJumpThere]);
 
   if (!resolvedReady) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator style={styles.loadingIndicator} />
-      </View>
-    );
+    return <Loader testID="reader-route-loading" />;
   }
 
   return (
@@ -408,5 +405,4 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: color.white },
-  loadingIndicator: { flex: 1, alignSelf: 'center' },
 });

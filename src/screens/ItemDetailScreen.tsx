@@ -55,6 +55,7 @@ import { ActionBar } from '@components/ActionBar';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { DescriptionSection } from '@components/DescriptionSection';
 import { ErrorState } from '@components/ErrorState';
+import Loader from '@components/Loader';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { SectionHeader } from '@components/SectionHeader';
@@ -1065,6 +1066,18 @@ export default function ItemDetailScreen({ route, navigation }: ItemDetailRouteP
         </Text>
       )}
       {body}
+      {/* `openBook()`'s real wait (download + decrypt) happens HERE, before
+          navigation — see `handleAction`'s 'read'/'play' branch. An overlay,
+          not a replacement of `body`: ActionButton stays mounted underneath,
+          inert and disabled, which is the duplicate-press guard
+          ItemDetailScreen.loading.test.tsx pins ("shows Read busy and
+          inert"). Removing the button from the tree here would silently drop
+          that guard. */}
+      {detail !== null && (pendingAction === 'read' || pendingAction === 'play') && (
+        <View style={StyleSheet.absoluteFill}>
+          <Loader title={`Opening ${detail.title}…`} testID="item-detail-opening" />
+        </View>
+      )}
     </View>
   );
 }

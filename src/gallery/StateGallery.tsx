@@ -20,12 +20,14 @@ import HeroBannerGallery from '@/components/HeroBanner/HeroBanner.gallery';
 import InstitutionDetailViewGallery from '@/components/InstitutionDetailView/InstitutionDetailView.gallery';
 import InstitutionRowGallery from '@/components/InstitutionRow/InstitutionRow.gallery';
 import ListRowGallery from '@/components/ListRow/ListRow.gallery';
+import LoaderGallery from '@/components/Loader/Loader.gallery';
 import OfflineBannerGallery from '@/components/OfflineBanner/OfflineBanner.gallery';
 import PrimaryButtonGallery from '@/components/PrimaryButton/PrimaryButton.gallery';
 import QueueNotificationGallery from '@/components/QueueNotification/QueueNotification.gallery';
 import SearchInputGallery from '@/components/SearchInput/SearchInput.gallery';
 import SectionHeaderGallery from '@/components/SectionHeader/SectionHeader.gallery';
 import SkeletonGallery from '@/components/Skeleton/Skeleton.gallery';
+import SpinnerGallery from '@/components/Spinner/Spinner.gallery';
 import SubjectChipGallery from '@/components/SubjectChip/SubjectChip.gallery';
 import TabsGallery from '@/components/Tabs/Tabs.gallery';
 import TextFieldGallery from '@/components/TextField/TextField.gallery';
@@ -35,6 +37,8 @@ import { color, radius, space, type } from '@theme/tokens';
 
 const SECTIONS = [
   'Skeleton',
+  'Spinner',
+  'Loader',
   'TopAppBar',
   'BottomTabBar',
   'BottomSheet',
@@ -104,6 +108,8 @@ export default function StateGallery() {
           <SkeletonGallery />
         </ScrollView>
       )}
+      {section === 'Spinner' && <SpinnerGallery />}
+      {section === 'Loader' && <LoaderGallery />}
       {section === 'TopAppBar' && <TopAppBarGallery />}
       {section === 'BottomTabBar' && <BottomTabBarGallery />}
       {section === 'BottomSheet' && <BottomSheetGallery />}

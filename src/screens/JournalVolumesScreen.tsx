@@ -32,11 +32,12 @@
 // asks "does this workId's feed have articles", so a volume standing in for
 // an issue is exactly the same call.
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
+import Spinner from '@components/Spinner';
 import { getCatalogueSource } from '../config/catalogue';
 import type { NavLink, WorkFeed } from '../model/types';
 import type { CatalogueStackParamList } from '../navigation/types';
@@ -172,7 +173,7 @@ export default function JournalVolumesScreen({ route }: Props) {
               {volume.link.title}
             </Text>
             {volume.loading ? (
-              <ActivityIndicator size="small" color={color.textSecondary} />
+              <Spinner size="small" color={color.textSecondary} />
             ) : (
               <Ionicons
                 name={volume.expanded ? 'chevron-down' : 'chevron-forward'}
