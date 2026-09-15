@@ -249,13 +249,23 @@ export function resolveAccess({
 
   // ── 7 · subscription ──────────────────────────────────────────────────────
   //
-  // The same pair whether or not a licence is already held, which is the point of
-  // the 12 Aug flow change: the first tap borrows, every tap after it opens a
-  // reading session, and the reader is never shown the difference. Which of the
-  // two is about to happen is decided behind the button, not by relabelling it —
-  // so `loan` deliberately does not appear in this branch.
+  // REVERSED on direct instruction, 14 Sep — the 12 Aug flow change above this
+  // comment (borrow invisibly behind the first Read/Download tap) is no longer
+  // the rule. A reader now sees the same explicit acquire step Elite already
+  // has: nothing held means one button, `grantAccess`, and Read/Download only
+  // appear once a loan is actually active. Mirrors ELITE's 5a/5d shape deliberately
+  // (`loan?.state === 'active'` first, `requires_grant` otherwise) rather than
+  // inventing a second one — the difference that remains is real, not cosmetic:
+  // Subscription still downloads (`withDownload`), because canPersist is what
+  // gates that, not the tier, and Subscription carries no queue/hold mechanics
+  // of its own here (an entitlement's copy limit still applies server-side, and
+  // a refused borrow surfaces through the same `licenceMessage` every other
+  // refusal does — see `runLicenceCall`), because nothing asked for one.
   if (tier === 'SUBSCRIPTION') {
-    return result(institutionId, item.id, tier, 'available', withDownload(['read'], acquisition));
+    if (loan?.state === 'active') {
+      return result(institutionId, item.id, tier, 'available', withDownload(['read'], acquisition));
+    }
+    return result(institutionId, item.id, tier, 'requires_grant', ['grantAccess']);
   }
 
   // A fourth tier is a compile error here rather than a silent fall-through to

@@ -20,6 +20,7 @@ import type { TabItem } from '../components/BottomTabBar';
 import CatalogueHomeScreen from '../screens/CatalogueHomeScreen';
 import SearchScreen from '../screens/SearchScreen';
 import LibraryScreen from '../screens/LibraryScreen';
+import LibraryJournalScreen from '../screens/LibraryJournalScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import ReaderPreferencesScreen from '../screens/ReaderPreferencesScreen';
 import AccessibilityScreen from '../screens/AccessibilityScreen';
@@ -421,6 +422,14 @@ function LibraryNavigator() {
         name="ItemDetail"
         component={ItemDetailScreen}
         options={{ title: 'Item Details' }}
+      />
+      {/* The Journals tab's own drill-down — this reader's own articles for
+          one journal, NOT the catalogue's Journal Details/Volumes & Issues
+          browse (that flow lives only in CatalogueStackParamList). */}
+      <LibraryStack.Screen
+        name="LibraryJournal"
+        component={LibraryJournalScreen}
+        options={({ route }) => ({ title: route.params.journalTitle })}
       />
       {/* AccessGate/SignIn/PersonalAccount/Reader/BookInfo — same reason as
           SearchNavigator's identical set: `ItemDetail`'s access check and its

@@ -1,12 +1,23 @@
 // src/features/library/standInProvider.ts
-// The `LibraryProvider` this repo ships TODAY, before Team 4's stack merges in.
+// The `LibraryProvider` this repo ships TODAY.
 //
-// Reads come from this repo's own device-local stores; opening is deliberately
-// inert. This exists so the Library screen can be wired to `ports.ts` NOW and
-// keep working exactly as it does today — the merge then swaps this object for a
-// real adapter over `downloadTable`/`bookmarkTable`/`openBook`/`Reader` and the
-// screen is untouched. See INTEGRATION.md.
-import { useBookmarkStore, liveBookmarks } from '@store/bookmarkStore';
+// `openBook`/`openReader` are STILL inert — the licence gate and the real
+// `Reader` route both exist elsewhere in this app now, but wiring THIS seam
+// to them (so a bookmark's own "Read" action actually opens the reader
+// instead of throwing `ReaderUnavailableError`) is real integration work of
+// its own and out of scope for the change that touched this file — see
+// `LibraryProviderContext.ts`'s own header: nothing wraps the app root in a
+// real provider yet, so this stand-in is still what every `useLibraryProvider()`
+// call sees.
+//
+// `listBookmarks` DOES read the real store now (`bookmarkTable`,
+// `src/features/sync/stores/bookmarkStore.ts`) — the sync layer this file's
+// own header used to say wasn't merged in yet has been, and there was no
+// reason left for this seam to keep reading a dead stand-in the Library
+// screen itself stopped reading in the same change. `listDownloads` was
+// already reading the real device-local `downloadStore`, so it is unchanged.
+import { bookmarkFromRow } from '@/screens/LibraryScreen.holdings';
+import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { useDownloadStore } from '@store/downloadStore';
 
 import {
@@ -21,12 +32,6 @@ import {
 // class itself lives in `ports.ts` as part of the seam contract.
 export { ReaderUnavailableError };
 
-/**
- * `userId` is ACCEPTED BUT IGNORED here: these stores are device-local and not
- * user-scoped (a book on this phone is on this phone). The parameter is on the
- * port because Team 4's `listActive(userId, …)` needs it, so keeping it in the
- * signature is what makes the merge a no-op for the screen's call site.
- */
 export const standInLibraryProvider: LibraryProvider = {
   async listDownloads(_userId: string): Promise<DownloadView[]> {
     // Mapped to fresh objects rather than handed out by reference, so a caller
@@ -39,11 +44,18 @@ export const standInLibraryProvider: LibraryProvider = {
     }));
   },
 
-  async listBookmarks(_userId: string): Promise<BookmarkView[]> {
-    // Tombstones dropped here, matching Team 4's `listActive` (which filters
-    // `is_deleted = 0` in SQL). The screen filters again in `sortedBookmarks`,
-    // which stays harmless and correct.
-    return liveBookmarks(useBookmarkStore.getState().bookmarks);
+  async listBookmarks(userId: string): Promise<BookmarkView[]> {
+    // Tombstones already dropped by `listActive`'s own SQL (`is_deleted = 0`);
+    // `sortedBookmarks` filters again downstream, which stays harmless and
+    // correct. A row whose locator fails to parse is dropped, not surfaced —
+    // see `bookmarkFromRow`'s own comment.
+    const rows = await bookmarkTable.listActive(userId);
+    const bookmarks: BookmarkView[] = [];
+    for (const row of rows) {
+      const bookmark = bookmarkFromRow(row);
+      if (bookmark !== null) bookmarks.push(bookmark);
+    }
+    return bookmarks;
   },
 
   // Args are unused here but are the seam the real impl consumes.

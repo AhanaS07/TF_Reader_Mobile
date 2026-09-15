@@ -103,6 +103,7 @@ jest.mock('@/features/reader/ReaderScreen', () => {
         bookId: string;
         initialTarget?: unknown;
         onRelocated?: (p: unknown) => void;
+        onLocked?: (code: string, message: string) => void;
         onOpenAccessibilityInfo?: () => void;
       },
       ref: unknown,
@@ -117,6 +118,9 @@ jest.mock('@/features/reader/ReaderScreen', () => {
           <RNText onPress={() => props.onRelocated?.({ kind: 'page', page: 7, pageCount: 20 })}>
             relocate
           </RNText>
+          <RNText onPress={() => props.onLocked?.('ACCESS_REVOKED', 'test lock message')}>
+            lock
+          </RNText>
           <RNText onPress={() => props.onOpenAccessibilityInfo?.()}>
             open accessibility info
           </RNText>
@@ -130,11 +134,13 @@ jest.mock('../../DevPreferencesMenu', () => ({
   DevPreferencesMenu: () => null,
 }));
 
+const mockGoBack = jest.fn();
+
 // `render` is ASYNC in @testing-library/react-native v14 — see App.test.tsx's own note.
 function renderReaderRoute(bookId: string, initialTarget?: unknown) {
   return render(
     <ReaderRouteScreen
-      navigation={{ setOptions: jest.fn() } as never}
+      navigation={{ setOptions: jest.fn(), goBack: mockGoBack } as never}
       route={
         { key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB', initialTarget } } as never
       }
@@ -172,6 +178,7 @@ describe('ReaderRouteScreen', () => {
     mockCurrentForBook.mockReset();
     mockPullBook.mockReset();
     mockPauseTtsIfSpeaking.mockReset();
+    mockGoBack.mockReset();
     mockCurrentLocator.mockResolvedValue(null);
     mockSyncRun.mockResolvedValue(undefined);
     mockCurrentForBook.mockResolvedValue(null);
@@ -315,6 +322,38 @@ describe('ReaderRouteScreen', () => {
       { type: 'PDF', page: 7 },
       'dev-sample-epub-throttle',
     );
+  });
+
+  // `ReaderScreen`'s own `tearDownAndLock` already did its half (stopped the monitor, closed
+  // the book, shown the inline banner) by the time `onLocked` fires here — this only covers
+  // this screen's own reaction: the modal Alert, and leaving on acknowledgement.
+  describe('access ending mid-read', () => {
+    it('shows a compulsory alert and leaves the reader once acknowledged', async () => {
+      mockAlertAutoPress = 'OK';
+      const { getByText } = await renderReaderRoute('dev-sample-epub-locked');
+      await waitFor(() => expect(getByText('lock')).toBeTruthy());
+
+      await fireEvent.press(getByText('lock'));
+
+      expect(mockAlert).toHaveBeenCalledWith(
+        'Access ended',
+        expect.stringContaining('licence expired'),
+        expect.anything(),
+        { cancelable: false },
+      );
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not leave the reader while the alert sits unanswered', async () => {
+      mockAlertAutoPress = null;
+      const { getByText } = await renderReaderRoute('dev-sample-epub-locked-pending');
+      await waitFor(() => expect(getByText('lock')).toBeTruthy());
+
+      await fireEvent.press(getByText('lock'));
+
+      expect(mockAlert).toHaveBeenCalled();
+      expect(mockGoBack).not.toHaveBeenCalled();
+    });
   });
 
   describe('cross-device conflict while the screen is open', () => {

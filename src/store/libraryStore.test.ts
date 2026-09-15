@@ -1,9 +1,12 @@
 // src/store/libraryStore.test.ts
-// Three concerns:
+// Four concerns:
 //   1. refresh() populates loans and holds from getLibrary.
 //   2. A failed refresh leaves the last-known data in place — stale data is
 //      better than blanking the UI mid-session.
 //   3. loading flag is true while the call is in flight and false after.
+//   4. refreshFailed tracks whether the LAST refresh succeeded — found live,
+//      see the store's own header: a due date computed from a stale loan with
+//      nothing marking it unconfirmed is a real defect, not a cosmetic one.
 import { useLibraryStore } from './libraryStore';
 
 const mockGetLibrary = jest.fn();
@@ -29,7 +32,7 @@ const QUEUED_HOLD = {
 };
 
 afterEach(() => {
-  useLibraryStore.setState({ loans: [], holds: [], loading: false });
+  useLibraryStore.setState({ loans: [], holds: [], loading: false, refreshFailed: false, hasSyncedOnce: false });
   mockGetLibrary.mockReset();
 });
 
@@ -108,5 +111,59 @@ describe('libraryStore — refresh', () => {
     resolve({ loans: [], holds: [] });
     await inFlight;
     expect(useLibraryStore.getState().loading).toBe(false);
+  });
+
+  it('marks a failed refresh so a stale loan can be flagged unconfirmed', async () => {
+    mockGetLibrary.mockRejectedValue(new Error('network error'));
+
+    await useLibraryStore.getState().refresh();
+
+    expect(useLibraryStore.getState().refreshFailed).toBe(true);
+  });
+
+  it('clears refreshFailed on the next successful refresh', async () => {
+    mockGetLibrary.mockRejectedValueOnce(new Error('network error'));
+    await useLibraryStore.getState().refresh();
+    expect(useLibraryStore.getState().refreshFailed).toBe(true);
+
+    mockGetLibrary.mockResolvedValueOnce({ loans: [], holds: [] });
+    await useLibraryStore.getState().refresh();
+
+    expect(useLibraryStore.getState().refreshFailed).toBe(false);
+  });
+
+  it('is not marked failed before any refresh has run, or after one succeeds', async () => {
+    expect(useLibraryStore.getState().refreshFailed).toBe(false);
+
+    mockGetLibrary.mockResolvedValue({ loans: [], holds: [] });
+    await useLibraryStore.getState().refresh();
+
+    expect(useLibraryStore.getState().refreshFailed).toBe(false);
+  });
+
+  it('is not synced before any refresh has run', () => {
+    expect(useLibraryStore.getState().hasSyncedOnce).toBe(false);
+  });
+
+  it('marks hasSyncedOnce true after a successful refresh, and leaves it true afterward', async () => {
+    mockGetLibrary.mockResolvedValueOnce({ loans: [], holds: [] });
+    await useLibraryStore.getState().refresh();
+    expect(useLibraryStore.getState().hasSyncedOnce).toBe(true);
+
+    // A later failure must not un-sync the store — a consumer gating on this flag
+    // (e.g. "has this device ever confirmed which loans it holds") still has a
+    // real, if stale, answer, which is exactly what refreshFailed is for.
+    mockGetLibrary.mockRejectedValueOnce(new Error('network error'));
+    await useLibraryStore.getState().refresh();
+
+    expect(useLibraryStore.getState().hasSyncedOnce).toBe(true);
+  });
+
+  it('does not mark hasSyncedOnce on a failed refresh alone', async () => {
+    mockGetLibrary.mockRejectedValue(new Error('network error'));
+
+    await useLibraryStore.getState().refresh();
+
+    expect(useLibraryStore.getState().hasSyncedOnce).toBe(false);
   });
 });
