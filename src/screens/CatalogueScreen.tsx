@@ -283,11 +283,11 @@ export default function CatalogueScreen({ institution }: CatalogueScreenProps) {
               // D8 — `not_entitled` renders nothing at all, badge included.
               // `tier` is a required field, so that state carries an
               // OPEN_ACCESS filler; drawing it would label a title the reader
-              // cannot open as free to read. The carousel tile gets the
-              // bigger `md` pill — it has the width a book cover affords;
-              // the dense row list keeps `sm` (the component's own default).
+              // cannot open as free to read. Same pill size as every other
+              // screen — the featured tile no longer gets a bigger variant,
+              // so the same tier reads identically everywhere in the app.
               const badge = isNotEntitled(access) ? undefined : (
-                <AccessTierBadge tier={access.tier} size={isFeatured ? 'md' : 'sm'} />
+                <AccessTierBadge tier={access.tier} />
               );
               const onPress = () => navigation.navigate('ItemDetail', { itemId: publication.id });
 

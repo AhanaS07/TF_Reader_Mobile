@@ -16,7 +16,6 @@ import { color, radius, space, type } from '@theme/tokens';
  */
 export interface AccessTierBadgeProps {
   tier: AccessTier;
-  size?: 'sm' | 'md';
 }
 
 /**
@@ -57,14 +56,11 @@ const TIERS: Record<
   },
 };
 
-export default function AccessTierBadge({ tier, size = 'sm' }: AccessTierBadgeProps) {
+export default function AccessTierBadge({ tier }: AccessTierBadgeProps) {
   const { label, icon, background, foreground } = TIERS[tier];
 
   return (
-    <View
-      accessibilityRole="text"
-      style={[styles.badge, styles[size], { backgroundColor: background }]}
-    >
+    <View accessibilityRole="text" style={[styles.badge, { backgroundColor: background }]}>
       <MaterialCommunityIcons name={icon} size={type.smallLabel.size} color={foreground} />
       <Text style={[styles.label, { color: foreground }]}>{label}</Text>
     </View>
@@ -80,9 +76,9 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     gap: space.xs,
     borderRadius: radius.pill,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
   },
-  sm: { paddingHorizontal: space.sm, paddingVertical: space.xs },
-  md: { paddingHorizontal: space.md, paddingVertical: space.xs },
   label: {
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,

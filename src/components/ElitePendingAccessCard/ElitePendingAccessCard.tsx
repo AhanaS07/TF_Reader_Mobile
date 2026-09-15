@@ -61,7 +61,7 @@ export default function ElitePendingAccessCard({
         </View>
         <Text style={styles.headerLabel}>Access available</Text>
         <View style={styles.headerSpacer} />
-        <AccessTierBadge tier="ELITE" size="sm" />
+        <AccessTierBadge tier="ELITE" />
       </View>
 
       <Text testID="elite-pending-access-title" style={styles.title} numberOfLines={2}>

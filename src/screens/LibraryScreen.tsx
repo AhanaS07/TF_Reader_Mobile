@@ -1365,7 +1365,7 @@ function EliteLoanRow({
           {expiresLabel !== undefined && (
             <Text style={styles.badgeLabel}>{`Access expires: ${expiresLabel}`}</Text>
           )}
-          <AccessTierBadge tier="ELITE" size="sm" />
+          <AccessTierBadge tier="ELITE" />
         </View>
       }
     />
@@ -1405,7 +1405,7 @@ function EliteQueueRow({
       badge={
         <View style={styles.badgeStack}>
           {label !== undefined && <Text style={styles.badgeLabel}>{label}</Text>}
-          <AccessTierBadge tier="ELITE" size="sm" />
+          <AccessTierBadge tier="ELITE" />
         </View>
       }
       {...(progressFraction === undefined ? {} : { progress: progressFraction })}

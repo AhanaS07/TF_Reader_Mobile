@@ -564,7 +564,7 @@ const CHEVRON = space.sm;
 // deliberate icon rather than a stray mark in a much larger well.
 const ICON_SIZE = space.xl;
 
-// AccessTierBadge's own rendered height at size="sm": its label line
+// AccessTierBadge's own rendered height: its label line
 // (`type.smallLabel.lineHeight`) plus its vertical padding (`space.xs`, top
 // and bottom). Shared by `badgeSlot` and its skeleton bar so both track the
 // same source instead of two guessed constants.

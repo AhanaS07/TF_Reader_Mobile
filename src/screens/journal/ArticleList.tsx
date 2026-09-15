@@ -37,7 +37,7 @@ export function ArticleList({
         const hold = holds.find((h) => h.itemId === article.id);
         const access = resolveAccess({ item: article, institutionId, session, loan, hold });
         const badge = isNotEntitled(access) ? undefined : (
-          <AccessTierBadge tier={access.tier} size="sm" />
+          <AccessTierBadge tier={access.tier} />
         );
         // Authors and date share one byline instead of two stacked lines —
         // fewer lines per card is what keeps a list built for scanning many
