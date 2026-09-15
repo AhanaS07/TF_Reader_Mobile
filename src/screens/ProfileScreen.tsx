@@ -236,9 +236,7 @@ export default function ProfileScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.pageHeader}>
         <Text style={styles.pageTitle}>Profile</Text>
-        <Text style={styles.pageSubtitle}>
-          Manage your account, access and reading preferences.
-        </Text>
+        
       </View>
 
       {institutionalSession && selectedInstitution !== null ? (

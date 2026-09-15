@@ -95,36 +95,24 @@ interface GlowOrbProps {
   /** "r, g, b" — no `rgba(...)` wrapper, so this file can vary only the alpha per ring. */
   rgb: string;
   baseAlpha: number;
-  top: `${number}%`;
-  left: `${number}%`;
-  /** True when `top`/`left` mark the orb's own centre, matching the mockup's `-translate-x/y-1/2`. */
-  centered?: boolean;
   animatedOpacity?: Animated.AnimatedInterpolation<number>;
   animatedScale?: Animated.AnimatedInterpolation<number>;
 }
 
-function GlowOrb({
-  diameter,
-  rgb,
-  baseAlpha,
-  top,
-  left,
-  centered,
-  animatedOpacity,
-  animatedScale,
-}: GlowOrbProps) {
-  const transform = [
-    ...(centered ? [{ translateX: -diameter / 2 }, { translateY: -diameter / 2 }] : []),
-    ...(animatedScale ? [{ scale: animatedScale }] : []),
-  ];
+// Not self-positioning: a percentage `left`/`top` plus a compensating
+// `translateX/Y(-diameter/2)` is exactly what CSS would do, but RN/Yoga's
+// percentage resolution for an absolutely-positioned child is unreliable
+// when the parent's own width comes from flex/stretch rather than an
+// explicit number — which `main` (the caller) is. Plain flexbox centering
+// has no such edge case, so GlowOrb only renders its own sized box and
+// leaves centering to a `alignItems/justifyContent: 'center'` wrapper.
+function GlowOrb({ diameter, rgb, baseAlpha, animatedOpacity, animatedScale }: GlowOrbProps) {
+  const transform = animatedScale ? [{ scale: animatedScale }] : [];
 
   return (
     <Animated.View
       pointerEvents="none"
       style={{
-        position: 'absolute',
-        top,
-        left,
         width: diameter,
         height: diameter,
         opacity: animatedOpacity ?? 1,
@@ -311,22 +299,24 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
     >
       <GridBackdrop />
 
-      {/* Just the one central glow now — the mockup's separate radial wash,
-          secondary cyan glow, and static corner orb are dropped so the
-          background reads as one clear ambient light rather than several
-          overlapping "bubbles". */}
-      <GlowOrb
-        diameter={380}
-        rgb="0, 60, 178"
-        baseAlpha={0.14}
-        top="44%"
-        left="50%"
-        centered
-        animatedOpacity={glow.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0.95, 0.85] })}
-        animatedScale={glow.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.85, 1.05, 1] })}
-      />
-
       <View style={styles.main}>
+        {/* Just the one central glow now — the mockup's separate radial wash,
+            secondary cyan glow, and static corner orb are dropped so the
+            background reads as one clear ambient light rather than several
+            overlapping "bubbles". Filling and centered on `main` itself
+            (not `stage`) — the same box the content column centers in — so
+            the glow tracks the content instead of a hardcoded fraction of
+            the full screen. */}
+        <View style={styles.glowLayer} pointerEvents="none">
+          <GlowOrb
+            diameter={380}
+            rgb="0, 60, 178"
+            baseAlpha={0.14}
+            animatedOpacity={glow.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0.95, 0.85] })}
+            animatedScale={glow.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.85, 1.05, 1] })}
+          />
+        </View>
+
         <Animated.View
           style={[
             styles.wordmarkWrap,
@@ -446,6 +436,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: space.lg,
+  },
+  // Fills `main` exactly and centers GlowOrb on it with plain flexbox —
+  // see GlowOrb's own comment for why this replaced a percentage `left`/`top`.
+  glowLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   wordmarkWrap: {
     alignItems: 'center',
