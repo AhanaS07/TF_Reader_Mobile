@@ -68,7 +68,7 @@ describe('SignInMethodScreen content', () => {
     await render(<SignInMethodScreen {...makeProps()} />);
 
     expect(screen.queryByTestId('method-create-account')).toBeNull();
-    expect(screen.queryByText('New to Taylor & Francis?')).toBeNull();
+    expect(screen.queryByText('New to Nexus?')).toBeNull();
   });
 });
 

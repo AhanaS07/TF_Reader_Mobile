@@ -38,7 +38,7 @@ const FAILURE_MESSAGE: Record<PersonalAuthErrorCode, string> = {
   INVALID_CREDENTIALS: 'That email and password do not match an account. Check both and try again.',
   EMAIL_ALREADY_REGISTERED: 'An account already exists for that email. Sign in instead.',
   WEAK_PASSWORD: 'Choose a longer password with a mix of letters and numbers.',
-  NETWORK: 'Could not reach Taylor & Francis. Check your connection and try again.',
+  NETWORK: 'Could not reach Nexus. Check your connection and try again.',
   UNKNOWN: 'Sign-in could not be completed. Try again.',
 };
 
@@ -163,10 +163,10 @@ export default function PersonalAccountScreen({ route, navigation }: Props) {
 
   const heading = signingUp ? 'Create an account' : 'Sign in';
   const intro = signingUp
-    ? 'A Taylor & Francis account gives you access to your personal subscriptions on any device.'
-    : 'Use the email and password for your Taylor & Francis account.';
+    ? 'A Nexus account gives you access to your personal subscriptions on any device.'
+    : 'Use the email and password for your Nexus account.';
   const submitLabel = signingUp ? 'Create account' : 'Sign in';
-  const switchPrompt = signingUp ? 'Already have an account?' : 'New to Taylor & Francis?';
+  const switchPrompt = signingUp ? 'Already have an account?' : 'New to Nexus?';
   const switchLabel = signingUp ? 'Sign in instead' : 'Create an account';
 
   return (

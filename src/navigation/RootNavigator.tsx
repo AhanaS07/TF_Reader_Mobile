@@ -249,7 +249,7 @@ function CatalogueNavigator() {
       <CatalogueStack.Screen
         name="CatalogueHome"
         component={CatalogueHomeScreen}
-        options={{ title: 'Taylor & Francis' }}
+        options={{ title: 'Nexus' }}
       />
       <CatalogueStack.Screen
         name="InstitutionDetail"

@@ -86,7 +86,7 @@ describe('PersonalAccountScreen — mode', () => {
     await render(<PersonalAccountScreen {...makeProps('signIn')} />);
 
     expect(
-      screen.getByText('Use the email and password for your Taylor & Francis account.'),
+      screen.getByText('Use the email and password for your Nexus account.'),
     ).toBeTruthy();
     expect(screen.getByTestId('personal-submit').props.accessibilityLabel).toBe('Sign in');
   });
@@ -291,7 +291,7 @@ describe('PersonalAccountScreen — a failed call', () => {
     await fireEvent.press(screen.getByTestId('personal-submit'));
 
     await waitFor(() => {
-      expect(screen.getByText(/Could not reach Taylor & Francis/)).toBeTruthy();
+      expect(screen.getByText(/Could not reach Nexus/)).toBeTruthy();
     });
     expect(useSessionStore.getState().isAuthenticated).toBe(false);
   });

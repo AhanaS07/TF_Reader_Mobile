@@ -394,7 +394,7 @@ describe('ProfileScreen rows with nothing behind them', () => {
   // 'Reading Preferences' and 'Accessibility' HAVE LEFT THIS LIST — both push
   // real, already-working screens and stay `variant="chevron"`; their own
   // tests sit in the describes below.
-  const UNAVAILABLE = ['Download & Offline', 'Notifications', 'Privacy & Security', 'About T&F Reader'];
+  const UNAVAILABLE = ['Download & Offline', 'Notifications', 'Privacy & Security', 'About Nexus'];
 
   it.each(UNAVAILABLE)('renders %s with no button or switch role', async (title) => {
     await render(<ProfileScreen />);

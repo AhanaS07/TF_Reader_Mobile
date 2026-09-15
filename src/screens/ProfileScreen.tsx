@@ -55,7 +55,7 @@
 // also render through and which this pass does not touch.
 //
 // "STATIC" IS A GENUINELY DIFFERENT ROW FROM "DISABLED", NOT A RELABELLING.
-// Download & Offline, Notifications, Privacy & Security and About T&F Reader
+// Download & Offline, Notifications, Privacy & Security and About Nexus
 // have no destination and never did — they are `variant="static"` (full
 // opacity, no chevron, not Pressable at all; see `ListRow.tsx`'s own note).
 // Reading Preferences and Accessibility, in contrast, push real, already-
@@ -437,7 +437,7 @@ export default function ProfileScreen() {
               drawn with no switch now, rather than one that would silently
               do nothing when flipped.
             · Privacy & Security has no destination.
-            · About T&F Reader has no destination either, and its version
+            · About Nexus has no destination either, and its version
               string has no source we can read without adding
               `expo-constants` as a declared dependency — a dependency
               decision, not this screen's. The row is drawn without the
@@ -510,7 +510,7 @@ export default function ProfileScreen() {
             )}
           />
           <ListRow
-            title="About T&F Reader"
+            title="About Nexus"
             subtitle="Version, legal terms"
             variant="static"
             emphasis="editorial"

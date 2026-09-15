@@ -1,9 +1,9 @@
 // src/boot/BootSplash.tsx
 // The animated boot screen shown from first paint until the app is ready
 // (fonts loaded, institution store hydrated, auth resolved). Ported from
-// design/app-popup/code.html — a deliberately distinct "Orbit1" dark boot
-// identity, approved as-is even though it does not match the app's real
-// light TF Reader brand used everywhere else.
+// design/app-popup/code.html — a deliberately distinct dark boot identity
+// for the Nexus brand, kept dark on purpose even though the rest of the app
+// (theme/tokens.ts) uses a light surface.
 //
 // NOT a shared component: it lives outside src/components/ on purpose, so it
 // is not bound by CONVENTIONS.md's "no raw hex" rule. theme/tokens.ts is the
@@ -23,8 +23,8 @@
 // indicator are Stitch screenshot dressing, not real UI, and are dropped —
 // the OS draws its own. Body copy substitutes the app's real brand font
 // (OpenSans, via resolveFont) for the mockup's Plus Jakarta Sans (visually
-// close, and not worth a second new font dependency for two lines of
-// tagline/imprint text).
+// close, and not worth a second new font dependency for one line of
+// tagline text).
 //
 // The mockup's blurred glow orbs (CSS `blur-*` filters) and its
 // grid-backdrop are both ported for real below, not dropped: RN has no CSS
@@ -32,21 +32,20 @@
 // opacity (GlowOrb) rather than a single flat-edged circle, and the grid
 // lines are drawn directly rather than baked into a background image.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, Easing, Image, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { radius, space, weight } from '@theme/tokens';
 import { resolveFont } from '@theme/resolveFont';
+
+// The Nexus mark — transparent background, same asset TopAppBar uses.
+const NEXUS_LOGO = require('../../assets/nexus-logo.png');
 
 // Lifted from design/app-popup/code.html's `:root` block — this screen's own
 // palette, not the app's brand tokens. See file header.
 const ORBIT = {
   bgDeep: '#020712',
   cyanElectric: '#00d4b4',
-  // Swapped from the mockup's own '#2962ff' to the real brand's Ultramarine
-  // — close enough in hue that the swap reads as a deepening, not a clash.
-  ultramarine: '#003CB2',
-  goldFoil: '#dfba73',
   white: '#ffffff',
 } as const;
 
@@ -55,20 +54,16 @@ const ORBIT = {
 const GRID_SIZE = 38;
 const GRID_LINE_COLOR = 'rgba(147, 197, 253, 0.042)';
 
-// Every typeface here except the eyebrow's is a real brand font, resolved the
-// same way tokens.ts does — so if OpenSans/Aleo's registered names ever
-// change, this screen moves with them instead of drifting. Cinzel is the one
-// deliberate exception: it carries the "Orbit1" boot identity's own eyebrow
-// mark and has no equivalent in the brand's three weights.
+// Every typeface here is a real brand font, resolved the same way
+// tokens.ts does — so if OpenSans/Aleo's registered names ever change, this
+// screen moves with them instead of drifting.
 // Per resolveFont.ts's own warning: never pair these with an explicit
 // fontWeight, or Android substitutes the system typeface.
 const WORDMARK_FONT = resolveFont('secondary', weight.bold); // Aleo_700Bold
 const TAGLINE_FONT = resolveFont('primary', weight.light); // OpenSans_300Light
-const IMPRINT_FONT = resolveFont('primary', weight.bold); // OpenSans_700Bold
-const EYEBROW_FONT = 'Cinzel_600SemiBold';
 
 // One-time intro, in ms — matches the mockup's own keyframe timings (the
-// full sequence through the imprint row, the last thing to appear).
+// full sequence through the T&F watermark, the last thing to appear).
 const INTRO_MS = 2400;
 // The floor on how long the splash stays on screen before exit can even
 // start, independent of INTRO_MS: 3500 + EXIT_FILL_MS + EXIT_FADE_MS below
@@ -183,12 +178,10 @@ export interface BootSplashProps {
 
 export default function BootSplash({ ready, onExited }: BootSplashProps) {
   const [glow] = useState(() => new Animated.Value(0));
-  const [eyebrow] = useState(() => new Animated.Value(0));
-  const [wings] = useState(() => new Animated.Value(0));
   const [wordmark] = useState(() => new Animated.Value(0));
   const [divider] = useState(() => new Animated.Value(0));
   const [tagline] = useState(() => new Animated.Value(0));
-  const [imprints] = useState(() => new Animated.Value(0));
+  const [tfMark] = useState(() => new Animated.Value(0));
   const [progress] = useState(() => new Animated.Value(0));
   const [shimmer] = useState(() => new Animated.Value(0));
   const [exitOpacity] = useState(() => new Animated.Value(1));
@@ -209,20 +202,6 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
         duration: INTRO_MS,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }),
-      Animated.timing(eyebrow, {
-        toValue: 1,
-        duration: 750,
-        delay: 400,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(wings, {
-        toValue: 1,
-        duration: 750,
-        delay: 450,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false, // width is not supported by the native driver
       }),
       Animated.timing(wordmark, {
         toValue: 1,
@@ -245,7 +224,7 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.timing(imprints, {
+      Animated.timing(tfMark, {
         toValue: 1,
         duration: 800,
         delay: 1300,
@@ -350,20 +329,6 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
       <View style={styles.main}>
         <Animated.View
           style={[
-            styles.eyebrowRow,
-            {
-              opacity: eyebrow,
-              transform: [{ translateY: eyebrow.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
-            },
-          ]}
-        >
-          <Animated.View style={[styles.wing, { width: wings.interpolate({ inputRange: [0, 1], outputRange: [0, 34] }) }]} />
-          <Text style={styles.eyebrowText}>Taylor &amp; Francis</Text>
-          <Animated.View style={[styles.wing, { width: wings.interpolate({ inputRange: [0, 1], outputRange: [0, 34] }) }]} />
-        </Animated.View>
-
-        <Animated.View
-          style={[
             styles.wordmarkWrap,
             {
               opacity: wordmark,
@@ -375,10 +340,8 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
           ]}
         >
           <View style={styles.wordmarkClip}>
-            <Text style={styles.wordmark}>
-              Orbit
-              <Text style={styles.wordmarkAccent}>1</Text>
-            </Text>
+            <Image source={NEXUS_LOGO} style={styles.nexusMark} resizeMode="contain" />
+            <Text style={styles.wordmark}>Nexus</Text>
             {/* Stand-in for the mockup's text-clipped gradient shimmer — see
                 file header for why this is a sweeping bar rather than a
                 clip. */}
@@ -396,6 +359,24 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
           </View>
         </Animated.View>
 
+        {/* Small T&F attribution, tucked in diagonally below-right of the
+            Nexus lockup — a watermark, not a second brand. Right-aligned
+            against `main`'s own width (not the lockup's shrink-wrapped one),
+            so the fuller "Taylor & Francis Group" text wraps within the
+            screen instead of overflowing off the edge the way an
+            absolutely-positioned overhang would. */}
+        <Animated.Text
+          style={[
+            styles.tfMark,
+            {
+              opacity: tfMark,
+              transform: [{ translateY: tfMark.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
+            },
+          ]}
+        >
+          by Taylor &amp; Francis Group
+        </Animated.Text>
+
         <Animated.View
           style={[styles.divider, { width: divider.interpolate({ inputRange: [0, 1], outputRange: [0, 140] }), opacity: divider }]}
         />
@@ -411,22 +392,6 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
         >
           One Destination. The Global Publishing Ecosystem.
         </Animated.Text>
-
-        <Animated.View
-          style={[
-            styles.imprintRow,
-            {
-              opacity: imprints,
-              transform: [{ translateY: imprints.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
-            },
-          ]}
-        >
-          <Text style={styles.imprintText}>Routledge</Text>
-          <View style={[styles.node, styles.nodeCyan]} />
-          <Text style={styles.imprintText}>CRC Press</Text>
-          <View style={[styles.node, styles.nodeBlue]} />
-          <Text style={styles.imprintText}>F1000</Text>
-        </Animated.View>
       </View>
 
       <View style={styles.footer}>
@@ -482,30 +447,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: space.lg,
   },
-  eyebrowRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginBottom: space.md,
-  },
-  wing: {
-    height: 1,
-    backgroundColor: ORBIT.goldFoil,
-    opacity: 0.7,
-  },
-  eyebrowText: {
-    fontFamily: EYEBROW_FONT,
-    fontSize: 10.5,
-    letterSpacing: 3.2,
-    textTransform: 'uppercase',
-    color: ORBIT.goldFoil,
-  },
   wordmarkWrap: {
     alignItems: 'center',
     justifyContent: 'center',
     marginVertical: space.xs,
   },
   wordmarkClip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
     overflow: 'hidden',
   },
   shimmerBar: {
@@ -514,15 +464,14 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: '60%',
   },
+  nexusMark: {
+    width: 56,
+    height: 56,
+  },
   wordmark: {
     fontFamily: WORDMARK_FONT,
-    fontSize: 58,
+    fontSize: 52,
     color: ORBIT.white,
-  },
-  wordmarkAccent: {
-    fontFamily: WORDMARK_FONT,
-    fontSize: 58,
-    color: ORBIT.cyanElectric,
   },
   divider: {
     height: 1,
@@ -537,29 +486,16 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     maxWidth: 280,
   },
-  imprintRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginTop: space.md,
-  },
-  imprintText: {
-    fontFamily: IMPRINT_FONT,
-    fontSize: 10,
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    color: 'rgba(224, 231, 255, 0.9)',
-  },
-  node: {
-    width: 6,
-    height: 6,
-    borderRadius: radius.pill,
-  },
-  nodeCyan: {
-    backgroundColor: ORBIT.cyanElectric,
-  },
-  nodeBlue: {
-    backgroundColor: ORBIT.ultramarine,
+  // The small T&F attribution — right-aligned and tucked close under the
+  // Nexus lockup for the diagonal watermark feel, small enough to stay
+  // secondary but legible enough to actually be read.
+  tfMark: {
+    alignSelf: 'flex-end',
+    marginTop: -8,
+    fontFamily: TAGLINE_FONT,
+    fontSize: 12,
+    letterSpacing: 0.3,
+    color: 'rgba(219, 234, 254, 0.85)',
   },
   footer: {
     alignItems: 'center',

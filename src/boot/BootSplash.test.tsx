@@ -20,11 +20,9 @@ describe('BootSplash content', () => {
   it('renders the boot identity', async () => {
     await render(<BootSplash ready={false} onExited={() => {}} />);
 
-    expect(screen.getByText('Taylor & Francis')).toBeTruthy();
+    expect(screen.getByText('Nexus')).toBeTruthy();
     expect(screen.getByText('One Destination. The Global Publishing Ecosystem.')).toBeTruthy();
-    expect(screen.getByText('Routledge')).toBeTruthy();
-    expect(screen.getByText('CRC Press')).toBeTruthy();
-    expect(screen.getByText('F1000')).toBeTruthy();
+    expect(screen.getByText('by Taylor & Francis Group')).toBeTruthy();
   });
 });
 
