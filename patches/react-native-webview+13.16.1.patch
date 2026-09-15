@@ -1,0 +1,22 @@
+diff --git a/node_modules/react-native-webview/apple/RNCWebViewImpl.m b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
+index 7f5c24d..51b2cd5 100644
+--- a/node_modules/react-native-webview/apple/RNCWebViewImpl.m
++++ b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
+@@ -583,7 +583,16 @@ - (void)didMoveToWindow
+     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(startLongPress:)];
+     longPress.delegate = self;
+ 
+-    longPress.minimumPressDuration = 0.4f;
++    // Widened from the upstream 0.4f — TF Reader toggles `menuItems` per gesture (create vs.
++    // delete highlight) off a signal computed inside the WebView's JS/DOM, which has to cross a
++    // postMessage -> RN JS -> native-bridge round trip before `startLongPress:` reads `menuItems`
++    // at UIGestureRecognizerStateEnded (i.e. not before this duration has elapsed AND the finger
++    // has lifted). 0.4f gave that round trip too little guaranteed margin, so the menu could still
++    // show the item for the PREVIOUS gesture's toggle state. This does not make the toggle
++    // synchronous or race-free — it only widens the window the round trip has to win — so the
++    // JS-side post-hoc re-check (`requestCurrentSelection`/`confirmDeleteHighlight` deciding again
++    // at tap time) must stay in place regardless of this value.
++    longPress.minimumPressDuration = 0.6f;
+     longPress.numberOfTouchesRequired = 1;
+     longPress.cancelsTouchesInView = YES;
+     [self addGestureRecognizer:longPress];

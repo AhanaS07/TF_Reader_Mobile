@@ -4023,9 +4023,12 @@ describe('ReaderScreen highlights', () => {
   });
 
   it('offers "Highlight" by default, and switches to "Delete Highlight" while highlightTouchActive', async () => {
-    // Best-effort display only (see `highlightTouchActive`'s own note in readerBridge.ts) — this
+    // Best-effort display only (see `CREATE_MENU_ITEMS`'s own note in ReaderWebView.tsx) — this
     // pins that `ReaderWebView` actually reads the signal and toggles `menuItems`, not that the
-    // signal always arrives in time on a real device, which nothing at this layer can pin.
+    // signal always arrives in time on a real device. `patches/react-native-webview+13.16.1.patch`
+    // widens the native long-press timer to give the round trip more margin, but nothing at this
+    // layer can pin a native timing race — that is exactly why `requestCurrentSelection`/
+    // `confirmDeleteHighlight` re-decide for themselves at tap time regardless of this toggle.
     await openBook();
 
     const getMenuItems = () =>
@@ -4093,10 +4096,12 @@ describe('ReaderScreen highlights', () => {
   });
 
   it('deletes by stored id when the shell confirms a highlight press', async () => {
-    // `highlightPressed` is now sent ONLY in reply to `confirmDeleteHighlight` (the reader chose
-    // "Delete Highlight" from the native menu) — there is no separate RN confirmation step any more,
-    // because choosing that item from an explicit menu IS the naming the old two-step gesture
-    // existed to require. See `deleteHighlightById`'s own note in ReaderScreen.tsx.
+    // `highlightPressed` arrives in reply to `confirmDeleteHighlight` (the reader chose "Delete
+    // Highlight" from the native menu), OR in reply to `requestCurrentSelection` when that gesture
+    // turned out to meet an existing highlight (readerBridge.ts's own note) — ReaderScreen does not,
+    // and must not, care which: both carry only an id, and the same `deleteHighlightById` runs
+    // either way, with no separate RN confirmation step, because choosing an explicit menu item IS
+    // the confirmation. See `deleteHighlightById`'s own note in ReaderScreen.tsx.
     await openBook();
     await replyHighlightPressed('h1');
 

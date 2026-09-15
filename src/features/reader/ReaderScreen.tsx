@@ -1776,7 +1776,9 @@ function ReaderScreenComponent(
         if (message.selection !== null) void createHighlightFromSelection(message.selection);
         break;
       case 'highlightPressed':
-        // Reply to `confirmDeleteHighlight` — deletes directly, no RN confirmation step.
+        // Reply to `confirmDeleteHighlight`, or to `requestCurrentSelection` when that gesture
+        // turned out to meet an existing highlight (see readerBridge.ts's own note) — either way,
+        // deletes directly, no RN confirmation step.
         void deleteHighlightById(message.id);
         break;
       case 'searchMatchPainted':
