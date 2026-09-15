@@ -8,6 +8,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { focusOn } from '@/features/reader/a11yFocus';
 import { useAppearanceEnv } from '@/features/reader/useAppearanceEnv';
 
@@ -135,19 +137,20 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    // Indigo (`color.navy`), the brand's own "dark overlays" colour.
+    backgroundColor: 'rgba(0, 34, 68, 0.3)',
     borderWidth: FOCUS_RING_WIDTH,
     borderColor: 'transparent',
   },
   sheet: {
     maxHeight: '70%',
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
+    backgroundColor: color.white,
+    borderTopLeftRadius: radius.sheet,
+    borderTopRightRadius: radius.sheet,
+    padding: space.md,
   },
-  title: { fontWeight: '600', color: '#111111', marginBottom: 8 },
-  empty: { color: '#777777', paddingVertical: 16 },
+  title: { fontWeight: '700', color: color.textPrimary, marginBottom: space.sm },
+  empty: { color: color.textSecondary, paddingVertical: space.md },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -159,9 +162,9 @@ const styles = StyleSheet.create({
     // The list divider stays on the bottom edge, which RN resolves independently of the
     // all-sides `borderWidth`/`borderColor` reserved above for the focus ring.
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: color.border,
   },
-  rowText: { color: '#111111' },
-  rowSubtext: { color: '#777777', marginTop: 2 },
-  check: { color: '#111111', fontWeight: '700' },
+  rowText: { color: color.textPrimary },
+  rowSubtext: { color: color.textSecondary, marginTop: 2 },
+  check: { color: color.textPrimary, fontWeight: '700' },
 });

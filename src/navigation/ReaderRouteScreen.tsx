@@ -68,12 +68,11 @@
 // rightmost" a layout guarantee instead of two files' pixel math staying in sync by luck.
 
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { ActivityIndicator, Alert, AppState, StyleSheet, View } from 'react-native';
 
-import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
 import type { ReaderPosition, ReaderTarget } from '@/features/reader/readerBridge';
 import { ReaderScreen } from '@/features/reader/ReaderScreen';
 import type { ReaderScreenHandle } from '@/features/reader/ReaderScreen';
@@ -82,6 +81,8 @@ import { syncEngine } from '@/features/sync/syncEngine';
 import { downloadStore } from '@/features/sync/stores/downloadStore';
 import { progressStore } from '@/features/sync/stores/progressStore';
 import type { BookId, Locator } from '@/shared/contracts';
+
+import { color } from '@theme/tokens';
 
 import { DevPreferencesMenu } from '../../DevPreferencesMenu';
 import type { CatalogueStackParamList } from './types';
@@ -398,20 +399,14 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         initialTarget={resolved.target}
         onRelocated={handleRelocated}
         onLocked={handleLocked}
-        toolbarExtra={
-          <Fragment>
-            <DevPreferencesMenu format={format} />
-            <AccessibilityInfoButton
-              onPress={() => navigation.navigate('BookInfo', { bookId })}
-            />
-          </Fragment>
-        }
+        toolbarExtra={<DevPreferencesMenu format={format} />}
+        onOpenAccessibilityInfo={() => navigation.navigate('BookInfo', { bookId })}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, backgroundColor: color.white },
   loadingIndicator: { flex: 1, alignSelf: 'center' },
 });

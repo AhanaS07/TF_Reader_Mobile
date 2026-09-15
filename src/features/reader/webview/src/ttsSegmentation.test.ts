@@ -1,7 +1,7 @@
 // Owner: Reader (Ahana).
 //
 // The pure sentence-boundary splitter and DOM skip-predicates, executed against fixtures that mirror
-// `fakeReaderTextProvider.ts`'s `DEFAULT_FAKE_BOOK` — same shapes, same guarantees, now against a
+// `testReaderTextProvider.ts`'s `DEFAULT_TEST_BOOK` — same shapes, same guarantees, now against a
 // real (if manual) segmenter rather than pre-split canned strings.
 
 import {
@@ -44,7 +44,7 @@ describe('splitIntoSentences', () => {
   });
 
   it('caps a run with no terminal punctuation at a word boundary, never mid-word', () => {
-    // Mirrors DEFAULT_FAKE_BOOK[2]'s reference-list fixture: no sentence-terminal punctuation for
+    // Mirrors DEFAULT_TEST_BOOK[2]'s reference-list fixture: no sentence-terminal punctuation for
     // pages at a time, comfortably past the cap.
     const text =
       'and then the list continued as such lists do with entry after entry after entry ' +
@@ -66,9 +66,9 @@ describe('splitIntoSentences', () => {
   });
 
   it('caps a single space-free token at exactly the limit, same as capSentence', () => {
-    // No space anywhere to break on, so this mirrors fakeReaderTextProvider's own capSentence:
+    // No space anywhere to break on, so this mirrors testReaderTextProvider's own capSentence:
     // cut at the cap length itself rather than emit one over-length piece. Documented behaviour,
-    // not a rare-in-practice concern this segmenter needs to solve differently from the fake.
+    // not a rare-in-practice concern this segmenter needs to solve differently from the test double.
     const longToken = 'a'.repeat(TTS_MAX_SENTENCE_CHARS + 50);
     const spans = spansOf(`${longToken}.`);
     expect(spans).toEqual([

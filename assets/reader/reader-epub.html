@@ -719,6 +719,24 @@ ${text}`;
   function rangesOverlap(a, b) {
     return a.compareBoundaryPoints(Range.START_TO_END, b) > 0 && a.compareBoundaryPoints(Range.END_TO_START, b) < 0;
   }
+  function anyRectOnScreen(rects, viewport) {
+    return rects.some(
+      (rect) => rect.width > 0 && rect.height > 0 && rect.left < viewport.right && rect.left + rect.width > viewport.left && rect.top < viewport.bottom && rect.top + rect.height > viewport.top
+    );
+  }
+  function readingZoneScrollDelta(rects, viewport, options) {
+    if (rects.length === 0) return null;
+    const viewportHeight = viewport.bottom - viewport.top;
+    if (viewportHeight <= 0) return null;
+    const topMost = Math.min(...rects.map((rect) => rect.top));
+    const deepestBottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+    const positionFraction = (deepestBottom - viewport.top) / viewportHeight;
+    if (positionFraction < options.triggerFraction) return null;
+    const targetBottom = viewport.top + options.targetFraction * viewportHeight;
+    const minTop = viewport.top + options.minTopFraction * viewportHeight;
+    const delta = Math.min(deepestBottom - targetBottom, topMost - minTop);
+    return delta > 0 ? delta : null;
+  }
 
   // src/features/reader/webview/src/highlightPaint.ts
   function isEpub(entry) {
@@ -815,7 +833,7 @@ ${text}`;
     return { fill: color, blend: "multiply" };
   }
   function spokenWordOpacity(blend) {
-    return blend === "screen" ? "0.3" : "0.5";
+    return blend === "screen" ? "0.25" : "0.5";
   }
   function matchStroke(bg) {
     const page = bg ? parseHex(bg) : null;
@@ -1140,10 +1158,23 @@ ${text}`;
   var lastCfi = null;
   var currentSpokenCfi = null;
   var currentSpokenWordCfi = null;
+  var currentSpokenFollowCfi = null;
+  var lastAutoFollowedCfi = null;
+  var followCooldownUntil = 0;
+  var renditionTransitionGeneration = 0;
+  function beginRenditionTransition() {
+    renditionTransitionGeneration += 1;
+    return renditionTransitionGeneration;
+  }
+  function endRenditionTransition(id) {
+    if (renditionTransitionGeneration === id) renditionTransitionGeneration = 0;
+  }
+  var renditionInstanceGeneration = 0;
+  var nextRelocationIsInternal = false;
   var TTS_OWNER = "tts";
   var TTS_SPOKEN_VARIANT = "spoken";
   var TTS_SPOKEN_WORD_VARIANT = "spoken-word";
-  var TTS_SPOKEN_COLOR = "#ffd500";
+  var TTS_SPOKEN_COLOR = "#90ee90";
   function ttsSpokenStyles() {
     const { fill, blend } = highlightFill(TTS_SPOKEN_COLOR, currentAppearance?.bg);
     return { fill, "fill-opacity": "0.2", "mix-blend-mode": blend };
@@ -1347,6 +1378,41 @@ ${columnOverrideCss()}` : currentCss;
     }
     return null;
   }
+  function userHighlightIdsOverlapping(contents, cfiRange) {
+    const range = rangeForCfi(contents, cfiRange);
+    if (!range) return [];
+    const ids = [];
+    for (const [id, painted] of paintedUserHighlights) {
+      const paintedRange = rangeForCfi(contents, painted);
+      if (!paintedRange) continue;
+      try {
+        if (rangesOverlap(range, paintedRange)) ids.push(id);
+      } catch {
+        continue;
+      }
+    }
+    return ids;
+  }
+  function liftUserHighlight(id) {
+    if (!rendition) return;
+    const cfiRange = paintedUserHighlights.get(id);
+    if (cfiRange === void 0) return;
+    const highlight = lastUserHighlights.find((entry) => entry.id === id);
+    if (!highlight) return;
+    remove(rendition, USER_OWNER, cfiRange);
+    add(
+      rendition,
+      USER_OWNER,
+      cfiRange,
+      USER_SAVED_VARIANT,
+      userHighlightStyles(highlight.color)
+    );
+  }
+  function liftOverlappingUserHighlights(contents, spokenCfi) {
+    for (const id of userHighlightIdsOverlapping(contents, spokenCfi)) {
+      liftUserHighlight(id);
+    }
+  }
   function currentSelectionRange() {
     if (!rendition) return null;
     for (const contents of rendition.getContents()) {
@@ -1409,6 +1475,7 @@ ${columnOverrideCss()}` : currentCss;
         if (!origin || !touch || longPressFired) return;
         if (!view.getSelection()?.isCollapsed) return;
         if (!isPaginated(currentFlow())) return;
+        if (ttsSpeaking) return;
         const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
         if (direction === null || !rendition) return;
         const turn = direction === "next" ? rendition.next() : rendition.prev();
@@ -1504,6 +1571,10 @@ ${columnOverrideCss()}` : currentCss;
       add(active, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
     }
     repaintSpokenWord();
+    if (currentSpokenCfi !== null) {
+      const spokenContents = contentsForCfi(currentSpokenCfi);
+      if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+    }
   }
   var geometryRaf = 0;
   var geometryReanchor = false;
@@ -1517,13 +1588,21 @@ ${columnOverrideCss()}` : currentCss;
       if (!rendition) return;
       const active = rendition;
       forceReflow(active);
-      const finish = () => {
+      const finish = (transitionId) => {
         repaintLiveAnnotations();
         invalidateHighlightBoxes();
+        if (transitionId !== void 0) endRenditionTransition(transitionId);
+        const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
+        if (spokenTarget !== null) {
+          lastAutoFollowedCfi = null;
+          followSpokenRange(spokenTarget);
+        }
       };
       if (reanchor && lastCfi !== null && !openInFlight) {
-        active.display(lastCfi).then(finish).catch(() => {
-          finish();
+        const transitionId = beginRenditionTransition();
+        nextRelocationIsInternal = true;
+        active.display(lastCfi).then(() => finish(transitionId)).catch(() => {
+          finish(transitionId);
         });
         return;
       }
@@ -1542,6 +1621,73 @@ ${columnOverrideCss()}` : currentCss;
       if (contents.sectionIndex === spinePos) return contents;
     }
     return null;
+  }
+  function renditionManager() {
+    if (!rendition) return null;
+    return rendition.manager ?? null;
+  }
+  var ttsSpeaking = false;
+  function applyTtsScrollLock() {
+    const manager = renditionManager();
+    if (!manager) return;
+    manager.container.style.touchAction = ttsSpeaking ? "none" : "";
+  }
+  function spokenRangeGeometry(cfi) {
+    const contents = contentsForCfi(cfi);
+    if (!contents) return null;
+    const range = rangeForCfi(contents, cfi);
+    if (!range) return null;
+    const manager = renditionManager();
+    if (!manager) return null;
+    const view = manager.views.find({ index: contents.sectionIndex });
+    if (!view) return null;
+    const offset = view.position();
+    const rects = Array.from(range.getClientRects(), (rect) => ({
+      left: rect.left + offset.left,
+      top: rect.top + offset.top,
+      width: rect.width,
+      height: rect.height
+    }));
+    return { rects, viewport: manager.bounds() };
+  }
+  function spokenRangeVisible(cfi) {
+    const geometry = spokenRangeGeometry(cfi);
+    return geometry !== null && anyRectOnScreen(geometry.rects, geometry.viewport);
+  }
+  var READING_ZONE_TRIGGER_FRACTION = 0.75;
+  var READING_ZONE_TARGET_FRACTION = 0.35;
+  var READING_ZONE_MIN_TOP_FRACTION = 0.08;
+  function repositionForReadingZone(cfi) {
+    const geometry = spokenRangeGeometry(cfi);
+    if (!geometry) return false;
+    const manager = renditionManager();
+    if (!manager) return false;
+    const delta = readingZoneScrollDelta(geometry.rects, geometry.viewport, {
+      triggerFraction: READING_ZONE_TRIGGER_FRACTION,
+      targetFraction: READING_ZONE_TARGET_FRACTION,
+      minTopFraction: READING_ZONE_MIN_TOP_FRACTION
+    });
+    if (delta === null) return true;
+    followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+    nextRelocationIsInternal = true;
+    manager.container.scrollBy({
+      top: delta,
+      behavior: currentAppearance?.reduceMotion ? "instant" : "smooth"
+    });
+    return true;
+  }
+  var FOLLOW_COOLDOWN_MS = 500;
+  function followSpokenRange(cfi) {
+    if (!rendition) return;
+    if (renditionTransitionGeneration !== 0) return;
+    if (Date.now() < followCooldownUntil) return;
+    if (currentFlow() === "scrolled-doc" && repositionForReadingZone(cfi)) return;
+    if (cfi === lastAutoFollowedCfi || spokenRangeVisible(cfi)) return;
+    lastAutoFollowedCfi = cfi;
+    followCooldownUntil = Date.now() + FOLLOW_COOLDOWN_MS;
+    nextRelocationIsInternal = true;
+    rendition.display(cfi).catch(() => {
+    });
   }
   function applySearchMatch(match) {
     if (!rendition) {
@@ -1593,10 +1739,20 @@ ${columnOverrideCss()}` : currentCss;
       searchMatchStyles()
     );
   }
+  function liftSpokenLayers() {
+    if (!rendition) return;
+    if (currentSpokenCfi !== null) {
+      remove(rendition, TTS_OWNER, currentSpokenCfi);
+      add(rendition, TTS_OWNER, currentSpokenCfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+    }
+    repaintSpokenWord();
+  }
   function rebuildForFlowIfNeeded() {
     if (!rendition || openInFlight) return false;
     if (renditionFlow === currentFlow()) return false;
     const cfi = lastCfi;
+    const transitionId = beginRenditionTransition();
+    nextRelocationIsInternal = true;
     rendition.destroy();
     createRendition().display(cfi ?? void 0).then(() => {
       if (currentSpokenCfi !== null && rendition) {
@@ -1605,13 +1761,26 @@ ${columnOverrideCss()}` : currentCss;
       repaintSpokenWord({ live: false });
       repaintUserHighlights();
       liftSearchMatch();
+      liftSpokenLayers();
+      if (currentSpokenCfi !== null && rendition) {
+        const spokenContents = contentsForCfi(currentSpokenCfi);
+        if (spokenContents) liftOverlappingUserHighlights(spokenContents, currentSpokenCfi);
+      }
+      endRenditionTransition(transitionId);
+      const spokenTarget = currentSpokenWordCfi ?? currentSpokenCfi ?? currentSpokenFollowCfi;
+      if (spokenTarget !== null) {
+        lastAutoFollowedCfi = null;
+        followSpokenRange(spokenTarget);
+      }
     }).catch((error) => {
+      endRenditionTransition(transitionId);
       fail("NAVIGATION_FAILED", error);
     });
     return true;
   }
   function createRendition() {
     if (!book) throw new Error("createRendition() called before a book was opened");
+    renditionInstanceGeneration += 1;
     renditionFlow = currentFlow();
     rendition = book.renderTo("viewer", {
       flow: currentFlow(),
@@ -1658,6 +1827,8 @@ ${columnOverrideCss()}` : currentCss;
       "relocated",
       (location) => {
         lastCfi = location?.start?.cfi ?? null;
+        const internalReposition = nextRelocationIsInternal;
+        nextRelocationIsInternal = false;
         lastSelection = null;
         invalidateHighlightBoxes();
         retrySearchMatch();
@@ -1677,10 +1848,12 @@ ${columnOverrideCss()}` : currentCss;
           position: { kind: "cfi", cfi: lastCfi },
           atStart: !!location?.atStart,
           atEnd: !!location?.atEnd,
-          section
+          section,
+          internalReposition
         });
       }
     );
+    applyTtsScrollLock();
     return rendition;
   }
   var api = {
@@ -1711,6 +1884,11 @@ ${columnOverrideCss()}` : currentCss;
           resetTtsState();
           currentSpokenCfi = null;
           currentSpokenWordCfi = null;
+          currentSpokenFollowCfi = null;
+          lastAutoFollowedCfi = null;
+          followCooldownUntil = 0;
+          renditionTransitionGeneration = 0;
+          nextRelocationIsInternal = false;
           paintedUserHighlights.clear();
           lastUserHighlights = [];
           currentSearchRange = null;
@@ -1821,15 +1999,32 @@ ${columnOverrideCss()}` : currentCss;
     },
     /**
      * The bridge's FIRST request/reply command. `book`/`rendition` are captured into locals before the
-     * async resolve work starts and used throughout it, rather than re-read from the module-locals —
-     * if a new `openEpub` reassigns them while this is still resolving, this request keeps operating
-     * against the OLD (still functional, just orphaned) book/rendition objects instead of reading a
-     * moved-on one mid-computation. Its eventual reply is harmless either way: the host's own
-     * per-book provider instance is what actually discards a stale reply, not this shell.
+     * async resolve work starts and used throughout it, rather than re-read from the module-locals, so
+     * this request keeps operating against a stable pair for its own duration instead of one that could
+     * be reassigned mid-computation.
+     *
+     * >>> THAT CAPTURE ALONE IS NOT ENOUGH, AND TREATING IT AS ENOUGH WAS A REAL BUG. <<< This
+     * historically reasoned that a reassignment left the captured rendition "still functional, just
+     * orphaned" — true for a NEW `openEpub` landing mid-request (nothing destroys the old book/rendition,
+     * it is simply superseded), but false for `rebuildForFlowIfNeeded`'s flow rebuild, which calls
+     * `rendition.destroy()` on the very object this handler may have already captured into
+     * `activeRendition`. `resolveCurrent`/`resolveNext` calling into a DESTROYED rendition can throw —
+     * `Rendition.destroy()` sets `this.book = undefined` and tears down its manager — which the
+     * try/catch below turns into an `'error'` reply, surfacing an alarming message to the reader for
+     * something that is actually benign: a layout toggle mid-utterance, not a real content problem.
+     *
+     * `renditionInstanceGeneration` is the fix — captured on entry, checked again once the async
+     * resolve settles, in BOTH the success and the catch path. A mismatch means the rendition this
+     * request computed against has since been destroyed/replaced, so the result (even one that did not
+     * throw) is discarded and replaced with `'unavailable'` — the status this seam already defines for
+     * "the request was superseded, nothing to surface" (`readerTextProvider.ts`). The host's own
+     * per-book provider instance still discards a stale reply on its own side too; this is the WebView
+     * half not manufacturing a false error report in the meantime.
      */
     requestTtsSentence: ({ requestId, from, mode }) => {
       const activeBook = book;
       const activeRendition = rendition;
+      const myRenditionGeneration = renditionInstanceGeneration;
       if (!activeBook || !activeRendition) {
         post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
         return;
@@ -1837,8 +2032,16 @@ ${columnOverrideCss()}` : currentCss;
       void (async () => {
         try {
           const result = mode === "current" ? await resolveCurrent(activeBook, activeRendition, from, lastCfi) : await resolveNext(activeBook, activeRendition, from ?? "");
+          if (renditionInstanceGeneration !== myRenditionGeneration) {
+            post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
+            return;
+          }
           post({ type: "ttsSentence", requestId, result });
         } catch (error) {
+          if (renditionInstanceGeneration !== myRenditionGeneration) {
+            post({ type: "ttsSentence", requestId, result: { status: "unavailable" } });
+            return;
+          }
           post({
             type: "ttsSentence",
             requestId,
@@ -1867,7 +2070,10 @@ ${columnOverrideCss()}` : currentCss;
     paintHighlights: (highlights) => {
       const { mine, foreign } = epubHighlights(highlights);
       lastUserHighlights = mine;
-      if (applyUserHighlights(mine)) liftSearchMatch();
+      if (applyUserHighlights(mine)) {
+        liftSearchMatch();
+        liftSpokenLayers();
+      }
       if (foreign > 0) {
         fail(
           "NAVIGATION_FAILED",
@@ -1910,11 +2116,14 @@ ${columnOverrideCss()}` : currentCss;
      * `highlightMode === 'word'`, so a reader who turns word mode OFF mid-utterance would otherwise
      * strand the last word wash on screen with nothing left that would ever remove it.
      *
-     * It also happens to be the precondition the auto-follow proposal
-     * (`accessibility/TTS_AUTOFOLLOW_HANDOFF.md`) needs: that proposal adds a visibility check and a
-     * `rendition.display(cfi)` to THIS handler, and a `display()` that re-renders the view while a
-     * stale word mark is still attached can re-attach it into the new one. Clearing before anything
-     * else keeps that free — do not move it below the paint.
+     * It is also the precondition auto-follow needs (`followSpokenRange`, below): a `display()` that
+     * re-renders the view while a stale word mark is still attached would carry it into the new view.
+     * Clearing before anything else keeps that free — do not move it below the paint.
+     *
+     * Also lifts any of the reader's OWN highlights this sentence overlaps back above the wash just
+     * painted (`liftOverlappingUserHighlights`) — a deliberate, explicit departure from §4's default
+     * z-order for exactly the overlapping range, so the reader's saved work stays more emphasized than
+     * the wash that will move on in a few seconds, not visually buried under it.
      */
     setSpokenRange: (cfi) => {
       try {
@@ -1922,28 +2131,86 @@ ${columnOverrideCss()}` : currentCss;
         clearSpokenWord();
         if (currentSpokenCfi !== null) remove(rendition, TTS_OWNER, currentSpokenCfi);
         currentSpokenCfi = cfi;
-        if (cfi !== null)
+        if (cfi !== null) {
           add(rendition, TTS_OWNER, cfi, TTS_SPOKEN_VARIANT, ttsSpokenStyles());
+          const spokenContents = contentsForCfi(cfi);
+          if (spokenContents) liftOverlappingUserHighlights(spokenContents, cfi);
+          followSpokenRange(cfi);
+        } else {
+          lastAutoFollowedCfi = null;
+        }
       } catch {
       }
     },
     /**
-     * Paint or clear the spoken-WORD highlight — the word inside the sentence `setSpokenRange` is
-     * showing. Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+     * Track a resolved sub-range for auto-follow WITHOUT painting anything for it —
+     * `'sentence'`/`'none'` TTS highlight modes' own case. See `ReaderCommand`'s own note for why
+     * this exists as a sibling to `setSpokenRange`/`setSpokenWordRange` rather than a flag on either.
+     *
+     * Added 2026-09-14 as a bare `cfi: string | null`, called once per sentence for `'none'` mode
+     * only. WIDENED THE SAME DAY to this shape, resolved via `resolveSpokenWordCfi` — the identical
+     * call `setSpokenWordRange` makes for its own paint — because a once-per-sentence, whole-sentence
+     * check was not enough: in paginated flow, a sentence straddling a page break kept its beginning
+     * "visible" for the check's entire duration, so the page never turned until the NEXT sentence
+     * started. `useTtsSession.ts` now calls this on every `tts-progress` tick for `'sentence'`/
+     * `'none'` modes, the same cadence `'word'` mode's own paint already gets.
+     *
+     * DELIBERATELY MINIMAL OTHERWISE: no `clearSpokenWord()`, no `highlightAdd`/`highlightRemove`, no
+     * `liftOverlappingUserHighlights`, no `spokenWordCollides` check — there is nothing painted here
+     * for any of those to apply to. Only `currentSpokenFollowCfi` (this command's own state, kept out
+     * of `currentSpokenCfi` for the reason that variable's own doc gives) and the shared
+     * `followSpokenRange` call, fed the RESOLVED position rather than the whole-sentence cfi.
+     *
+     * A resolution failure (paged away mid-utterance, section not rendered, or the sub-range
+     * happens to equal the whole sentence — see `resolveSpokenWordCfi`'s own bail) clears the tracked
+     * position rather than leaving a stale one: a follow target from speech that has moved on is as
+     * much a lie here as a stale word paint would be.
+     */
+    followSpokenPosition: (range) => {
+      try {
+        if (!rendition) return;
+        if (range === null) {
+          currentSpokenFollowCfi = null;
+          return;
+        }
+        const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
+        currentSpokenFollowCfi = cfi;
+        if (cfi !== null) followSpokenRange(cfi);
+      } catch {
+      }
+    },
+    /**
+     * Paint or clear the spoken-WORD highlight — the word within the sentence currently being spoken.
+     * Same contract as its sibling: fire-and-forget, best-effort, never posts, never throws.
+     *
+     * NOT NECESSARILY "the word inside the sentence `setSpokenRange` is showing" any more — since
+     * 2026-09-13, `'word'` highlight mode paints ONLY this, never a sentence wash underneath it (a
+     * product decision: a lone highlighted word reads more clearly against plain text than against a
+     * wash it would otherwise stand out from). `setSpokenRange` still says which sentence to speak
+     * from/resolve against (its `cfi` is what every `range.cfi` here is relative to), it just does not
+     * necessarily PAINT that sentence any more — see `applySentenceWash` in `useTtsSession.ts`.
      *
      * >>> THE PREVIOUS WORD IS CLEARED BEFORE THE NEW ONE IS RESOLVED, NOT AFTER. <<< That ordering is
      * the whole correctness argument, because `resolveSpokenWordCfi` bails to `null` for a list of
-     * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, the
-     * rendered text no longer matches what was spoken, the sentence is a single word already covered
-     * by the sentence wash. A bail means "I do not know where this word is", and a highlight left on
-     * the previous word while the voice has moved on is a LIE, whereas no word highlight is merely
-     * less information. The sentence wash is on screen throughout either way, so what a bail costs is
-     * the refinement, never the "you are here".
+     * ORDINARY reasons — the reader paged away mid-utterance so the section is not rendered, or the
+     * rendered text no longer matches what was spoken. A bail means "I do not know where this word
+     * is", and a highlight left on the previous word while the voice has moved on is a LIE, whereas no
+     * word highlight is merely less information — and, now that this is the ONLY thing `'word'` mode
+     * paints, a bail genuinely means nothing is highlighted at all until the next tick resolves
+     * successfully, not just a lost refinement over an otherwise-still-visible sentence wash.
      *
      * `!rendition` returns before any of that, exactly as `setSpokenRange` does and for a reason worth
      * naming: this can legitimately arrive before the rendition exists (nothing in the protocol orders
      * the host's commands), and with no rendition there is nothing painted for the state to disagree
      * with — `openEpub` nulls it, and a paint only ever happens with a live rendition.
+     *
+     * ALSO THE PRECISE HALF OF AUTO-FOLLOW. `followSpokenRange(cfi)` runs on the resolved word CFI
+     * regardless of whether the paint above was skipped for colliding with another owner's highlight —
+     * the word's position is real even when its paint is suppressed. This is what turns a page turn
+     * exactly on the first word to fall off the current one, not before and not a whole sentence late:
+     * `useTtsSession` calls this once per `tts-progress` tick while `highlightMode === 'word'`, so a
+     * sentence that straddles a page break gets checked word-by-word as speech crosses it, where
+     * `setSpokenRange`'s own once-per-sentence call could only check the sentence as a whole.
      */
     setSpokenWordRange: (range) => {
       try {
@@ -1952,25 +2219,44 @@ ${columnOverrideCss()}` : currentCss;
         if (range === null) return;
         const cfi = resolveSpokenWordCfi(rendition, range.cfi, range.start, range.end);
         if (cfi === null) return;
-        if (spokenWordCollides(cfi)) return;
-        currentSpokenWordCfi = cfi;
-        repaintSpokenWord({ live: false });
+        if (!spokenWordCollides(cfi)) {
+          currentSpokenWordCfi = cfi;
+          repaintSpokenWord({ live: false });
+        }
+        const wordContents = contentsForCfi(cfi);
+        if (wordContents) liftOverlappingUserHighlights(wordContents, cfi);
+        followSpokenRange(cfi);
       } catch {
       }
+    },
+    /** Gate manual swipe/drag while TTS speaks — see `ReaderCommand`'s own doc for scope. */
+    setTtsSpeaking: (speaking) => {
+      ttsSpeaking = speaking;
+      applyTtsScrollLock();
     },
     /**
      * The reader tapped "Highlight". Forces `triggerSelectedEvent` (epub.js's own CFI computation,
      * `contents.js`) rather than reading `lastSelection` as-is, so a selection extended a moment ago
      * is what gets read.
      *
-     * REFUSES (`null`) WHENEVER THE GESTURE ALREADY MEETS A HIGHLIGHT — `activeHighlightId`, which is
-     * the SELECTION's overlap first and the pressed point only as a fallback. Refusing on
-     * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null,
-     * so this happily created a second annotation over the first. See `highlightIdForRange`.
+     * NEVER CREATES A SECOND ANNOTATION OVER AN EXISTING ONE — `activeHighlightId`, which is the
+     * SELECTION's overlap first and the pressed point only as a fallback, decides that. Refusing on
+     * `pressedHighlightId` alone was not enough: a selection dragged into a highlight left it null, so
+     * this happily created a second annotation over the first. See `highlightIdForRange`.
+     *
+     * FALLS THROUGH TO DELETE, RATHER THAN NO-OPING, WHEN THE GESTURE MEETS A HIGHLIGHT — this is the
+     * label-race fallback `CREATE_MENU_ITEMS`'s note in `ReaderWebView.tsx` describes: the native menu
+     * can still show "Highlight" for a press that's actually on a highlight (`highlightTouchActive`
+     * lost the round trip against `startLongPress:`), and taking the only item on offer used to just
+     * post `selection: null` and do nothing — which is what got reported as "delete highlight doesn't
+     * work on iOS". `activeHighlightId()` is re-computed fresh right here, at tap time, same as
+     * `confirmDeleteHighlight` does — so this never deletes the wrong highlight, only ever the one the
+     * gesture is actually on, regardless of which label happened to be showing.
      */
     requestCurrentSelection: () => {
-      if (activeHighlightId() !== null) {
-        post({ type: "selection", selection: null });
+      const activeId = activeHighlightId();
+      if (activeId !== null) {
+        post({ type: "highlightPressed", id: activeId });
         return;
       }
       const selected = currentSelectionRange();

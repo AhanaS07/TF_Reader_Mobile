@@ -91,7 +91,7 @@ export const progressMapper = {
     id: record.id,
     user_id: record.userId,
     book_id: record.bookId,
-    offset: record.offset ?? 1,
+    offset: record.offset ?? 0,
     locator: record.locator == null ? null : stringifyJson(record.locator),
     updated_at: record.updatedAt,
     is_deleted: toInt(!!record.isDeleted),

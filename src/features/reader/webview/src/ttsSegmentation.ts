@@ -25,8 +25,8 @@ function isWhitespaceChar(ch: string | undefined): boolean {
 
 /**
  * Split one span of text into `TTS_MAX_SENTENCE_CHARS`-capped pieces, breaking on the last space
- * within the cap rather than mid-word. Mirrors `fakeReaderTextProvider.ts`'s `capSentence` exactly,
- * so a caller that already validated behaviour against the fake sees the same splitting rule against
+ * within the cap rather than mid-word. Mirrors `testReaderTextProvider.ts`'s `capSentence` exactly,
+ * so a caller that already validated behaviour against the test double sees the same splitting rule against
  * a real book: a single token longer than the cap is emitted over-length rather than cut mid-word.
  */
 function pushCapped(text: string, start: number, end: number, into: SentenceSpan[]): void {
@@ -66,7 +66,7 @@ function pushCapped(text: string, start: number, end: number, into: SentenceSpan
  * or splitting mid-word, both of which this guarantees regardless of where the punctuation scan
  * lands. Content with no terminal punctuation for pages at a time (reference lists, tables rendered
  * as running text) falls entirely to the cap-splitting path — see the reference-list fixture this
- * mirrors in `fakeReaderTextProvider.ts`'s `DEFAULT_FAKE_BOOK[2]`.
+ * mirrors in `testReaderTextProvider.ts`'s `DEFAULT_TEST_BOOK[2]`.
  */
 export function splitIntoSentences(text: string): SentenceSpan[] {
   const spans: SentenceSpan[] = [];

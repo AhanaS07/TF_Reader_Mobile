@@ -7,12 +7,14 @@ contracts do not support. Nothing here has been changed in your code.
 
 **Read before** touching `contentStore.ts`'s licence or key-resolution logic,
 `deviceKeypair.ts`'s fingerprint or wire encoding, or anything that reads
-`EncryptionDescriptor`/`SignedLicence`. **Update in the same change** that closes an item.
+`EncryptionDescriptor`/`LocalLicenceRecord`. **Update in the same change** that closes an item.
 
 - Ledger and cross-capability view: `src/shared/contracts/CONTRACT_ALIGNMENT.md`
 - Full evidence: `src/shared/contracts/API_CONTRACT_REVIEW_CONTEXT.md`
 - Download's list, which several of these pair with:
   `src/features/download/API_CONTRACT_NOTES.md`
+- Fail-closed guarantees (checksum, expiry, keystore, tamper): `FAIL_CLOSED_AUDIT.md` in
+  `src/features/download/` — `KEYSTORE_UNAVAILABLE` (this directory's case) is row 3.
 
 ---
 
@@ -91,30 +93,37 @@ fix on their side.
 
 ---
 
-## 2. `B4` 🔴 — `contentStore` is built around a licence no contract sends
+## 2. `B4` ✅ — RESOLVED 2026-09-03: `contentStore` was built around a licence no contract sends
 
-`assertLicenceMatchesPackage()` (`contentStore.ts:117`) rejects `encryption && !licence` loudly, and
+`assertLicenceMatchesPackage()` (`contentStore.ts`) rejects `encryption && !licence` loudly, and
 that rejection is correct given `EncryptedPackage`'s shape. But the object it demands **exists in
 neither published contract**: wokay's `ContentGrant` is exactly `content` / `index` / `encryption`,
 and flambeau's `ReadingSessionResponse` adds only session fields. Neither carries a licence, a
-signature, or print rights. So `downloadManager.ts` synthesizes one per download purely to satisfy
-this store.
+signature, or print rights. `downloadManager.ts`/`licenseCheck.ts` synthesize one per download
+purely to satisfy this store — that part is unchanged and correct, still.
 
-What that means for code in this directory:
+What changed: the type no longer pretends a signature exists.
 
-- **The RS256 trust path is decorative, and `contentStore.ts:24` and `:406` already say so.** The
-  signature isn't verified, and the value is `''` anyway, so `ContentError.LICENCE_INVALID` can
-  never fire for a signature. **This cannot be fixed here** — the server sends nothing to verify. It
-  needs the contract to either add a signed licence or drop the pretence.
-- **The open-access sentinel is a fail-open.** `'9999-12-31T23:59:59.000Z'` stands in for "never
-  expires", and `isLicenceExpired()` only compares to `Date.now()`, so it works. But it means a bug
-  that mis-tags a subscription book as open access grants a **perpetual** offline licence. A
-  nullable `expiresAt` would fail closed instead. Worth raising when `B4` is ruled on.
-- **`expiresAt` is the one field doing real work**, sourced correctly from `loan.dueAt`. Keep it.
+- **The RS256 trust path is gone, not just decorative.** `SignedLicence.signature` (always `''`,
+  never verified) is deleted; the type is renamed `LocalLicenceRecord`; `licenceSignature.ts`'s
+  stub is deleted along with both its call sites in `licenseCheck.ts`. There was nothing to fix
+  here — the server sends nothing to verify — so the honest move was removing the field the
+  contract never carried, not fixing a check that had nothing to check.
+- **Real, different protection replaces it**: `licenceSeal.ts` seals the persisted licence with the
+  book's own BEK, so `decryptBook()` checks expiry against a tamper-evident copy instead of the
+  hand-editable plaintext in meta.json. This is a device-local guarantee, not a signature from
+  flambeau — see that file's header for the ceiling. Full account: `FAIL_CLOSED_AUDIT.md`
+  (`download/`) row 4b.
+- **The open-access sentinel is still a fail-open**, unrelated to this finding and NOT fixed by it.
+  `'9999-12-31T23:59:59.000Z'` stands in for "never expires", and `isLicenceExpired()` only
+  compares to `Date.now()`, so it works — but a bug that mis-tags a subscription book as open
+  access still grants a **perpetual** offline licence. A nullable `expiresAt` would fail closed
+  instead. Still open, separately from `B4`.
+- **`expiresAt` is the one field doing real work**, sourced correctly from `loan.dueAt`. Unchanged.
 
-The Gate decision (does a signed licence exist in this system at all?) and the recommendation are
-written up in `src/shared/contracts/CONTRACT_ALIGNMENT.md` §B4. Read that before adding any field
-to `SignedLicence` or building anything on `signature`.
+Full writeup: `src/shared/contracts/CONTRACT_ALIGNMENT.md` §B4. Kept in `shared/contracts/` rather
+than moved out as the ledger originally floated — `EncryptedPackage.licence` still needs to
+reference it, and that file explains why moving it would invert the dependency graph.
 
 ---
 

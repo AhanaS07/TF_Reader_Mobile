@@ -1,4 +1,4 @@
-import { getAuthToken } from './devAuthToken';
+import { getAuthToken, invalidateAuthToken } from './devAuthToken';
 import { API_BASE_URL, API_V1, REQUEST_TIMEOUT_MS } from './syncConfig';
 
 /**
@@ -113,6 +113,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResponse
   const serverTime = parseServerDate(response.headers.get('date'));
 
   if (!response.ok) {
+    // If the token was rejected, clear it so the next request fetches a fresh one.
+    // A 401 means the server invalidated it (e.g., password changed on another device).
+    if (response.status === 401) {
+      invalidateAuthToken();
+    }
     throw new ApiError(
       `${response.status} ${response.statusText} on ${path}`,
       response.status,

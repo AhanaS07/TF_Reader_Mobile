@@ -117,27 +117,39 @@ regression, not a simplification. So each owner claims a different visual channe
 | -------- | ------- | --------- |
 | `user`   | **Solid/opaque fill** (the highlight colour) | It's the durable, user-authored layer; it reads as "the highlight." |
 | `search` | **Outline / box** (border, minimal fill) | Transient; must be findable *over* a user fill without hiding it. |
-| `tts`    | **Translucent overlay** on top, at **two intensities** — sentence and word | Ephemeral, moves every word; a low-alpha wash composites over whatever is beneath. |
+| `tts`    | **Translucent overlay** on top, at **two intensities** — sentence and word, painted by different highlight modes rather than together (see below) | Ephemeral, moves every word/sentence; a low-alpha wash composites over whatever is beneath. |
 
 **`styles` ARE SVG PRESENTATION ATTRIBUTES, NOT CSS DECLARATIONS** — the other half of the 2026-08-26
 correction. marks-pane applies them with `element.setAttribute(name, value)` onto an `<svg><g>`, so
 `fill` / `fill-opacity` / `mix-blend-mode` work and a camelCased CSS property name is *silently
 ignored*. `TTS_SPOKEN_STYLES` used to read `{ backgroundColor: 'rgba(255, 213, 0, 0.4)' }`, which did
-nothing at all; it is now `{ fill: '#ffd500', 'fill-opacity': '0.2', 'mix-blend-mode':
-<theme-adjusted> }` — the same intended translucent yellow, expressed in the vocabulary that reaches
-the element (opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep
-the two channels in the ordering this section's table intends). It goes through the same
-`highlightFill` as `user` for the same reason: a fixed `multiply` made the spoken word invisible on
-the dark theme, which is the theme where knowing where the voice is matters most. The interim rule
-for Hruthik is unchanged: **keep TTS translucent** so it layers rather than masks.
+nothing at all; it is now `{ fill: '#90ee90', 'fill-opacity': '0.2', 'mix-blend-mode':
+<theme-adjusted> }` — a translucent light green (`#ffd500` yellow before a 2026-09-08 colour change;
+opacity lowered from an original `0.4` alongside `user`'s own correction below, to keep the two
+channels in the ordering this section's table intends), expressed in the vocabulary that reaches the
+element. It goes through the same `highlightFill` as `user` for the same reason: a fixed `multiply`
+made the spoken word invisible on the dark theme, which is the theme where knowing where the voice is
+matters most. The interim rule for Hruthik is unchanged: **keep TTS translucent** so it layers rather
+than masks.
 
 **THE `tts` CHANNEL HAS TWO INTENSITIES, AND THEY ARE NOT A FOURTH OWNER.** Word-level highlighting
-(`tts.highlightMode === 'word'`) paints the spoken WORD inside the spoken SENTENCE — same owner, same
-`TTS_SPOKEN_COLOR`, same `highlightFill(colour, bg)` call, a higher `fill-opacity`, and the variant
-`spoken-word` (`tf-hl-tts--spoken-word`). It is a **variant**, which is what `highlightNaming.ts`'s
-second axis is for; §1's owner strings are still exactly three, and the cross-owner composition this
-table guarantees is unchanged. One feature owns both washes, always paints them as a pair, and always
-clears them as a pair.
+(`tts.highlightMode === 'word'`) paints the spoken WORD — same owner, same `TTS_SPOKEN_COLOR`, same
+`highlightFill(colour, bg)` call, a higher `fill-opacity`, and the variant `spoken-word`
+(`tf-hl-tts--spoken-word`). It is a **variant**, which is what `highlightNaming.ts`'s second axis is
+for; §1's owner strings are still exactly three, and the cross-owner composition this table
+guarantees is unchanged.
+
+**Fixed 2026-09-13 — the two intensities are no longer always painted as a pair.** They used to be:
+`'word'` mode painted the SENTENCE wash (`setSpokenRange`, on utterance start) and then the WORD wash
+on top of it (`setSpokenWordRange`, every progress tick), so a word always highlighted "inside" its
+sentence. A product decision reversed that: a lone highlighted word reads more clearly on its own
+than against a wash it would otherwise stand out from, so `'word'` mode now paints ONLY the word —
+`useTtsSession.ts`'s `applySentenceWash` calls `setSpokenRange(null)` for `'word'` mode exactly like
+it does for `'none'`, and only `'sentence'` mode ever passes it a real cfi. The two intensities are
+now mutually exclusive by MODE rather than composed within one: never both, per the mode that's
+active. See `TTS_PROVIDER.md`'s "Off highlight mode" note for the fuller account, including what
+this meant for auto-follow and the overlap-lift exception (§4, below) — both of which used to be
+keyed only off the sentence wash and needed a word-granularity counterpart added in the same change.
 
 **Sharing one `highlightFill` call is what makes the pair legible on every theme, and it is a
 structural argument rather than a colour choice.** The two layers can never disagree about fill or
@@ -161,8 +173,10 @@ wrong on two of the three shipped themes: it nearly disappears against dark's ne
 barely shifts a warm fill like the default yellow against sepia's similarly warm, pale page.
 `webview/src/selectionTheme.ts`'s `highlightFill(color, bg)` (pure, unit-tested) picks fill and
 blend per page: `screen` on a dark page, a darker shade of the same colour on a warm/light page like
-sepia, and the stored colour with `multiply` unchanged on a neutral light page. "Solid, distinct
-from `tts`" is still the intent; how to render it now depends on the page behind it.
+sepia (a transform aimed at a warm hue like the default yellow — `warm()`'s `r > b && g > b` test —
+which is why `tts`'s light green was chosen with `r === b`, to sidestep it entirely rather than
+re-argue it for a cool hue), and the stored colour with `multiply` unchanged on a neutral light page.
+"Solid, distinct from `tts`" is still the intent; how to render it now depends on the page behind it.
 
 **THE SHADE IS A FUNCTION OF THE PAGE, SO IT IS RE-DERIVED WHEN THE PAGE CHANGES COLOUR.** Both
 shells re-tint the `user` and `tts` layers from `applyAppearance` whenever `bg` moves, rather than
@@ -283,26 +297,88 @@ matters when two owners would otherwise occupy the *same* channel; the distinct-
 what keeps it from mattering most of the time. **This is priority, not mutual exclusion** — a lower
 layer is never removed to show a higher one.
 
-**Within `tts`, the WORD wash goes on after the SENTENCE wash**, for the same reason: it is a
-refinement drawn on top of it, and adding them the other way round hides the thing that moves.
-`epub.entry.ts`'s `repaintSpokenWord()` is called after every sentence add for exactly this.
+**Within `tts`, the WORD wash goes on after the SENTENCE wash, on the rare path where both exist at
+once.** Since 2026-09-13 that is no longer the common case — `'word'` mode paints only the word,
+`'sentence'` mode only the sentence, never both (see §3's "two intensities" note above) — but the
+ordering still matters at the two call sites that unconditionally repaint BOTH regardless of which
+one is actually populated right now (`repaintLiveAnnotations`, `rebuildForFlowIfNeeded`'s rebuild
+callback): each adds the sentence first, then calls `repaintSpokenWord()`, so if a sentence wash ever
+is present the word never ends up hidden beneath it. `epub.entry.ts`'s `repaintSpokenWord()` is
+called after every sentence (re-)add for exactly this, and no-ops harmlessly when there is no word to
+repaint.
 
-> #### ⚠️ Two places the EPUB shell does NOT currently honour this ordering
+> #### Fixed 2026-09-13 — the two places the EPUB shell used to not honour this ordering
 >
-> Recorded 2026-09-05 while landing the word layer, which inherits both unchanged rather than
-> creating either:
+> Recorded 2026-09-05 while landing the word layer, which inherited both unchanged rather than
+> creating either. Both are fixed now, by a **`liftSpokenLayers()`** sibling of `liftSearchMatch()`
+> that re-adds WHICHEVER of the sentence/word washes are currently painted, sentence first if both are
+> (lifting the sentence alone would put it over its own word) — NEITHER layer's presence is assumed,
+> since the same-day word-mode change (§3, above) means a session can now have only the word painted,
+> only the sentence, or neither:
 >
-> - **`rebuildForFlowIfNeeded`** ends with `liftSearchMatch()` *after* the tts adds, leaving `search`
->   above both spoken layers.
-> - **`paintHighlights`** lifts only `search`, so a newly created user highlight is appended above
->   both spoken layers.
+> - **`rebuildForFlowIfNeeded`** used to end with `liftSearchMatch()` *after* the tts adds, leaving
+>   `search` above both spoken layers. It now calls `liftSpokenLayers()` right after
+>   `liftSearchMatch()`, which is also what makes the flow rebuild's `liftOverlappingUserHighlights`
+>   call (§4's second exception, below) meaningful again rather than an accidental no-op.
+> - **`paintHighlights`** used to lift only `search`, so a newly created user highlight was appended
+>   above both spoken layers. It now calls `liftSpokenLayers()` alongside `liftSearchMatch()`, under
+>   the same "only if the diff added something" condition.
 >
-> The fix, when someone takes it: a **`liftSpokenLayers()`** sibling of `liftSearchMatch()` that
-> removes-then-re-adds the sentence AND the word **as a pair** — the pair is the unit, because
-> lifting the sentence alone would put it over its own word — called last at the same three batch
-> boundaries `liftSearchMatch` names (`paintHighlights`, `repaintLiveAnnotations`,
-> `rebuildForFlowIfNeeded`). It is a paint-order change in paths no unit test can see, so it wants a
-> device pass, which is why it was not bundled into a change that lands without one.
+> `repaintLiveAnnotations` never needed this call — it already re-adds both spoken layers right after
+> its own `liftSearchMatch()` — so `liftSpokenLayers()` is deliberately NOT called there; a third call
+> site would just be a redundant re-measure. `readerTemplate.test.ts`'s "the spoken layers are lifted
+> back on top" describe block pins both call sites, their ordering after `liftSearchMatch()`, and this
+> exclusion.
+
+**2026-09-08 — `user` deliberately goes ABOVE `tts` too, but ONLY for the range they overlap.** This
+is a second, intentional exception to `tts > search > user`, not a third bug to fold into the one
+above: the reader's own saved highlight should not visually recede under a wash that will move on in
+a few seconds once TTS reads over it. `liftOverlappingUserHighlights(contents, spokenCfi)`
+(`epub.entry.ts`) finds every painted `user` highlight that overlaps the CURRENTLY SPOKEN SENTENCE
+(`rangesOverlap`, the same overlap test `highlightIdForRange` already uses for "does a selection
+meet an existing highlight") and re-lifts each one — remove-then-add through the SAME
+owner-namespaced seam `liftSearchMatch` uses, just for `USER_OWNER`.
+
+**Why this does not contradict §4's own z-order table above.** DOM/paint order only has a visual
+effect where two marks occupy the *same* screen space — everywhere the sentence wash and a user
+highlight do NOT overlap, this changes nothing, because there is nothing for the two owners' relative
+order to affect there. The table's `tts > search > user` priority still holds as the default
+everywhere else; this is a targeted, per-pair override for exactly the overlapping range, checked at
+SENTENCE granularity ("the tts whole highlight") rather than per-word — for `'sentence'` mode. See the
+next paragraph for why `'word'` mode needed a second version of this at WORD granularity instead,
+2026-09-13.
+
+**A second caller, at WORD granularity, added 2026-09-13 alongside the same-day change that made
+`'word'` mode stop painting a sentence wash.** Before that change, `'word'` mode still painted the
+sentence wash underneath the word, so the sentence-granularity trigger above already covered it —
+"the tts whole highlight" a user highlight needed to rise above was still the sentence, in every mode.
+Once `'word'` mode stopped painting that sentence wash, there was no sentence-level highlight left for
+`setSpokenRange` to trigger this against during a word-only session, so the whole exception would have
+gone silently inert for that mode — a user's saved highlight overlapping the currently-spoken word
+would recede under the word wash with nothing to lift it back up. `setSpokenWordRange`'s handler now
+calls `liftOverlappingUserHighlights` too, using the resolved WORD cfi. This is not a narrowing of the
+original "sentence, not per-word" decision — it is what "the tts whole highlight" means for a mode
+that no longer has a sentence-level highlight at all. The two callers never run in the same session:
+`useTtsSession.ts` only sends word ranges while `highlightMode === 'word'`, and only `'sentence'` mode
+ever gives `setSpokenRange` a non-null cfi, so there is no ordering between the two callers to reason
+about.
+
+**Called from four places** (three matching the same batch boundaries `liftSearchMatch` already uses,
+plus the word-granularity one above): `setSpokenRange` (sentence granularity, `'sentence'` mode,
+once per sentence), `setSpokenWordRange` (word granularity, `'word'` mode, once per resolved tick),
+`repaintLiveAnnotations` (a theme/font-size repaint re-adds every `user` highlight BEFORE re-adding
+`tts`, which would otherwise silently undo whatever the sentence- or word-level trigger had lifted,
+until the next tick), and `rebuildForFlowIfNeeded` (a fresh `Rendition` is a fresh DOM order). The
+rebuild call site used to be a no-op in practice — the §4 deviation recorded above left `user` on top
+of both `tts` layers there by accident, which happened to look like this override already working —
+but it was explicit anyway, and now that `liftSpokenLayers()` puts `tts` back on top of `search` at
+that same site, this call is what re-establishes the overlap exception on top of `tts` again, exactly
+as it already did at the other call sites.
+
+**No interaction with `search`.** A three-way overlap (a search match landing inside both a user
+highlight and the currently spoken sentence) is not specifically handled — `liftOverlappingUserHighlights`
+only re-lifts `user`, which as a side effect also puts it above `search` (whatever was last-added
+becomes topmost), but nothing here reasons about that case beyond "reachable, not designed for."
 
 ## PDF — IN scope as of 2026-08-26, with its own seam
 

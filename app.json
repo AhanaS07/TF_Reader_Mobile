@@ -55,6 +55,7 @@
           "enableBackgroundPlayback": true
         }
       ],
+      "expo-notifications",
       "expo-image"
     ],
     "extra": {

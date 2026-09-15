@@ -19,6 +19,8 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { color, space } from '@theme/tokens';
+
 import { getPublicationAccessibility } from './getPublicationAccessibility';
 import { summarizePublicationAccessibility } from './publicationA11ySummary';
 import type { PublicationAccessibilitySummary } from './publicationA11ySummary';
@@ -92,23 +94,23 @@ export function AccessibilityInfoScreen({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff', paddingTop: 8 },
+  container: { flex: 1, backgroundColor: color.white, paddingTop: space.sm },
   closeButton: {
     minWidth: MIN_TOUCH_TARGET,
     minHeight: MIN_TOUCH_TARGET,
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'flex-end',
-    marginRight: 8,
+    marginRight: space.sm,
   },
-  closeIcon: { fontSize: 20, color: '#111111' },
+  closeIcon: { fontSize: 20, color: color.textPrimary },
   title: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#111111',
+    color: color.textPrimary,
     textAlign: 'center',
-    marginBottom: 8,
+    marginBottom: space.sm,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  errorText: { color: '#333333', paddingHorizontal: 16, textAlign: 'center' },
+  errorText: { color: color.textPrimary, paddingHorizontal: space.md, textAlign: 'center' },
 });

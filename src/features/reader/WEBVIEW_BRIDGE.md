@@ -98,12 +98,12 @@ about behaviour changed.
 | ----------- | ------------------------------------------- |
 | `ready`     | —                                           |
 | `rendered`  | —                                           |
-| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`) |
+| `relocated` | `position` (`ReaderPosition`), `atStart`, `atEnd`, `section` (`ReaderSection \| null`), `internalReposition?` (`boolean`) |
 | `toc`       | `items[]` (`{label, target, depth}`)        |
 | `error`     | `code`, `message`                           |
 | `ttsSentence` | `requestId`, `result` (`TtsFetchResult`)  |
-| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection` |
-| `highlightPressed` | `id` — sent ONLY in reply to `confirmDeleteHighlight`               |
+| `selection` | `selection` (`ReaderSelection \| null`) — sent ONLY in reply to `requestCurrentSelection`, and only when the gesture did NOT meet an existing highlight |
+| `highlightPressed` | `id` — sent in reply to `confirmDeleteHighlight`, OR in reply to `requestCurrentSelection` when the gesture met an existing highlight |
 | `highlightTouchActive` | `active` (`boolean`)                                        |
 | `searchMatchPainted` | `painted` (`boolean`) — sent ONLY for a `paintSearchMatch` that asked for a paint, never for a clear |
 
@@ -148,11 +148,13 @@ wrong one.
 | `applyAppearance`| `appearance` (`ReaderAppearance`) | no | both       |
 | `requestTtsSentence` | `request` (`TtsSentenceRequest`) | **yes** (`ttsSentence`) | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenRange` | `cfi` (`string \| null`)      | no     | EPUB entry (real), PDF entry (documented no-op) |
+| `followSpokenPosition` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `setSpokenWordRange` | `range` (`SpokenWordRange \| null`) | no | EPUB entry (real), PDF entry (documented no-op) |
 | `paintHighlights`| `highlights` (`EpubHighlightPaint[] \| PdfHighlightPaint[]`) | no | both (real) |
-| `requestCurrentSelection` | — | **yes** (`selection`) | both |
+| `requestCurrentSelection` | — | **yes** (`selection`, or `highlightPressed` if the gesture met an existing highlight) | both |
 | `confirmDeleteHighlight` | — | **yes** (`highlightPressed`), only if there was something to delete | both |
 | `paintSearchMatch` | `match` (`ReaderSearchMatch`) | **yes** (`searchMatchPainted`), only for a paint | both (real) |
+| `setTtsSpeaking` | `speaking` (`boolean`) | no | EPUB entry (real — gates manual swipe/scroll gestures via `touch-action`), PDF entry (documented no-op) |
 
 ### The search match — `paintSearchMatch` / `searchMatchPainted`
 
@@ -227,11 +229,64 @@ explains why the mark is round the page rather than the word.
 **Sent only for a payload that asked for a paint.** A clear cannot fail, and reporting one would make
 the host retract a notice it has already dropped.
 
+### Auto-follow without a paint — `followSpokenPosition`
+
+Added 2026-09-14, one day after `'word'` mode stopped painting a sentence wash, once that gap
+surfaced on-device — then WIDENED later the same day, for a second, more serious gap. Defined on
+both entries, same as `setSpokenRange`/`setSpokenWordRange`, but it paints NOTHING.
+
+**Why it exists at all:** `'none'` TTS highlight mode broke auto-follow entirely, in BOTH paginated
+and scrolled-doc flow, once it stopped calling `setSpokenRange` with a real cfi: auto-follow is
+triggered from *inside* `setSpokenRange`'s and `setSpokenWordRange`'s own WebView handlers, and
+`'none'` mode called neither with anything to follow. The flow branch itself (paginated's discrete
+`display()` vs scrolled-doc's teleprompter reposition) lives one level deeper, inside the shared
+`followSpokenRange` function — this command gives `'none'` mode a way to reach it.
+
+**Why it was widened from a bare `cfi: string | null` to the SAME `SpokenWordRange` shape
+`setSpokenWordRange` uses:** a once-per-sentence call, even a real one, was not enough. In PAGINATED
+flow specifically, `spokenRangeVisible`'s "any rect visible" test means a sentence straddling a page
+break keeps its BEGINNING "visible" for the check's ENTIRE duration once checked only at sentence
+start — the page never turned until the NEXT sentence began, cutting the reader off from everything
+spoken over the tail. `'sentence'` mode had the identical defect (its own coarse, once-per-sentence
+follow from `setSpokenRange`'s paint has the same limitation); only `'word'` mode was ever immune,
+because `setSpokenWordRange` already re-resolves a precise sub-range on every tick. The fix: this
+command's handler now resolves via `resolveSpokenWordCfi` — the SAME resolution `setSpokenWordRange`
+makes for its own paint — before calling `followSpokenRange`, and `useTtsSession.ts`'s
+`handleTtsProgress` forwards EVERY `tts-progress` tick to it for both `'sentence'` and `'none'`
+modes now (previously neither got any ticks forwarded here at all).
+
+`'word'` mode still does not need this: `setSpokenWordRange` already triggers the same
+`followSpokenRange` call, as a side effect of its own paint. `useTtsSession.ts`'s
+`applySentenceWash` no longer sends a coarse cfi at sentence start at all — it calls
+`followSpokenPosition(null)` unconditionally, for every mode, purely to clear whatever the PREVIOUS
+sentence's last tick resolved before the new one's own first tick arrives. `'sentence'` mode still
+gets an effective coarse follow for free (from `setSpokenRange`'s own `followSpokenRange` call at
+paint time); `'none'` mode relies on its first tick, the same small until-first-tick gap `'word'`
+mode's own coarse case has always had.
+
+**Kept in a variable separate from `currentSpokenCfi`** (`epub.entry.ts`'s `currentSpokenFollowCfi`)
+— reusing the paint-state variable for a position nothing is painted for would make
+`liftSpokenLayers`/`repaintLiveAnnotations`'s sentence branches (both gated on
+`currentSpokenCfi !== null` to mean "the wash IS painted here") wrongly paint one on their next
+repaint. Consulted only as the last resort in the `currentSpokenWordCfi ?? currentSpokenCfi ??
+currentSpokenFollowCfi` fallback chains a reflow/flow-rebuild re-check uses. A resolution failure
+(the SAME bail reasons `setSpokenWordRange` can hit) clears the tracked position rather than leaving
+a stale one — a follow target from speech that has moved on is as much a lie here as a stale word
+paint would be.
+
 ### The spoken word — `setSpokenWordRange`
 
-The refinement of `setSpokenRange`: that one says which SENTENCE is being read, this one says which
-WORD inside it. Sent on every `tts-progress` event while `tts.highlightMode === 'word'`; `null`
-clears. Accessibility (Hruthik) is the only caller, through `ReaderTextProvider`.
+`setSpokenRange` says which SENTENCE the caller is speaking from/resolving against; this says which
+WORD. Sent on every `tts-progress` event while `tts.highlightMode === 'word'`; `null` clears.
+Accessibility (Hruthik) is the only caller, through `ReaderTextProvider`.
+
+**Not layered ON a sentence wash any more, since 2026-09-13.** `'word'` mode used to also call
+`setSpokenRange` with a real cfi, so the word wash always sat on top of a painted sentence — until a
+product decision that a lone highlighted word reads more clearly on its own. `'word'` mode now calls
+`setSpokenRange(null)` instead (same as `'none'`), so this command's paint is the ONLY thing on screen
+in that mode. See `TTS_PROVIDER.md`'s "Word highlighting shows ONLY the word" for the full account,
+including what depended on the sentence wash always being present and needed a fix in the same
+change.
 
 **One nullable payload OBJECT, not three fields, and the constraint is `bridge.ts`'s own proof.**
 Every command here carries exactly one non-`type` field, because `ExpectedArgs` /
@@ -249,17 +304,21 @@ offset N in the collapsed text is not offset N in any node — and would fail si
 box over the wrong word.
 
 **No reply, deliberately.** Whether the word could be painted is not reported, because failing is
-ORDINARY rather than exceptional: the reader pages away mid-utterance, the section is not rendered,
-the sentence is one word already covered by the sentence wash. A reply would be a channel for
-something no caller can act on. What the shell guarantees instead is that **a range it cannot resolve
-clears the previous word rather than leaving it painted** — a stale word wash while the voice has
-moved on is a lie, where no word wash is merely less information. The sentence highlight stays up
-throughout, so what a failure costs is the refinement, never the "you are here".
+ORDINARY rather than exceptional: the reader pages away mid-utterance, or the section is not
+rendered. A reply would be a channel for something no caller can act on. What the shell guarantees
+instead is that **a range it cannot resolve clears the previous word rather than leaving it painted**
+— a stale word wash while the voice has moved on is a lie, where no word wash is merely less
+information. In `'sentence'` mode the sentence highlight stays up throughout, so a failure there costs
+only the refinement — but `'word'` mode (the only mode that calls this command) has no sentence wash
+to fall back on, so a failure there means nothing is highlighted at all until the next tick resolves.
 
-**`setSpokenRange` clears it.** The word is a sub-range of one sentence, so the sentence moving
-invalidates it; the caller does not have to clear it first, and a caller that does anyway is
-harmless. This is what covers the reader turning word mode off mid-utterance, which produces no
-further word commands at all.
+**`setSpokenRange` clears it, however it's called.** The word is a sub-range of one sentence, so the
+sentence moving invalidates it regardless of mode; the caller does not have to clear it first, and a
+caller that does anyway is harmless. This is what covers a caller changing `highlightMode`
+mid-utterance too — `useTtsSession.ts` applies that change immediately by calling `setSpokenRange`
+itself the moment the preference changes (see `TTS_PROVIDER.md`'s "Off highlight mode" note), which
+clears any stale word wash as a side effect of that call rather than waiting for the reader to turn
+word mode off and produce no further word commands.
 
 ### The highlight set — `paintHighlights`, `requestCurrentSelection`/`selection`, `confirmDeleteHighlight`/`highlightPressed`
 
@@ -275,40 +334,72 @@ for either action can be triggered correctly and still be visually unreachable. 
 text also makes WebKit select the word underneath, so the native menu can sit over an RN "Delete"
 popup and disable it too, not just over the "Highlight" case.
 
-**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT OFFERS DELETE, AND REFUSES CREATE.** Signed off
-2026-08-28. Any overlap at all counts; merely abutting one does not, or highlighting the sentence
-after the one you already did would be impossible. `requestCurrentSelection` answers `null` and
-`confirmDeleteHighlight` answers with the overlapped id.
+**A SELECTION THAT MEETS AN EXISTING HIGHLIGHT DELETES IT, AND NEVER CREATES A SECOND ONE OVER IT.**
+Signed off 2026-08-28, revised 2026-09-15. Any overlap at all counts; merely abutting one does not,
+or highlighting the sentence after the one you already did would be impossible.
+`requestCurrentSelection` answers `highlightPressed` for the overlapped id (not `selection`) when
+there is one, falling back to `selection: null` only when there is genuinely nothing selected;
+`confirmDeleteHighlight` answers with the overlapped id the same way. Both commands compute the
+overlapped id fresh, at tap time, from `activeHighlightId()`/`pressedHighlightId` — never from
+whichever menu label happened to be showing.
 
-**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything is a
-separate, post-hoc check — only the second is load-bearing.** `ReaderWebView.tsx` swaps `menuItems`
-between `CREATE_MENU_ITEMS`/`DELETE_MENU_ITEMS` off a `highlightTouchActive` message.
-`requestCurrentSelection` and `confirmDeleteHighlight` both re-decide at tap time and refuse if it
-doesn't apply, so a toggle that shows the "wrong" item for a gesture only ever costs a display
-mistake — tapping it safely no-ops rather than acting on the wrong highlight.
+**Which item shows is a toggle (`highlightTouchActive`); whether tapping it does anything, and WHAT,
+is a separate, post-hoc check — only the second is load-bearing, and that is true no matter how good
+the toggle's timing gets.** `ReaderWebView.tsx` swaps `menuItems` between `CREATE_MENU_ITEMS`/
+`DELETE_MENU_ITEMS` off a `highlightTouchActive` message. `requestCurrentSelection` and
+`confirmDeleteHighlight` both re-decide at tap time regardless of which label showed. Before
+2026-09-15, `requestCurrentSelection` REFUSED (answered `selection: null`, doing nothing) whenever
+the gesture met a highlight — so a press that landed on an existing highlight while the toggle still
+said "Highlight" could not delete it that gesture, no matter how the reader tapped. This shipped, was
+reported as "delete highlight doesn't work on iOS," and is why `requestCurrentSelection` now falls
+through to `highlightPressed` instead of refusing: the label can still be wrong, but taking the only
+item on offer always acts on the highlight the gesture is actually on, never on nothing.
 
-**The decision is the SELECTION's overlap first, the pressed point only as a fallback** —
-`activeHighlightId()` in `epub.entry.ts`. Deciding from `touchstart` alone was a real bug, not just
-an imprecision: `pressedHighlightId` records where the finger first *landed*, which equals what the
-reader selected only when the press neither moved nor was adjusted. Dragging a selection from plain
-text into a highlight left it null, so the menu offered "Highlight" and taking it painted a second
-annotation over the first — visibly darker, and only half-deletable once the two ids collided in
-epub.js's own map. The EPUB shell therefore posts `highlightTouchActive` twice per gesture: once
-from `touchstart` (a point test, all that is knowable before anything is selected) and again from
-epub.js's `selected` event, which debounces `selectionchange` by 250ms and so lands while the finger
-is usually still down — i.e. before `touchend`, which is when WebKit builds the menu.
+**The toggle is still a genuine race against a native timer, and `patches/react-native-webview+13.16.1.patch`
+narrows it — it does not, and cannot from this side of the bridge, close it. The 2026-09-15 fallback
+above is what makes that acceptable rather than something to keep chasing with timing alone.** The
+toggle depends on a postMessage -> RN JS -> native-bridge round trip landing before WebKit's own
+`UILongPressGestureRecognizer` (`RNCWebViewImpl.m`) reads `menuItems` in `startLongPress:`, which
+fires at `UIGestureRecognizerStateEnded` — i.e. not before `minimumPressDuration` has elapsed AND
+the finger has lifted. The patch raises that duration from the upstream `0.4f` to `0.6f`, buying the
+round trip more guaranteed minimum time before the earliest possible read. It was tried instead of
+permanently showing both items (an earlier version of this doc; see git history for
+`ReaderWebView.tsx` around 2026-09-11) because product wanted the single-item UX back. Widening the
+timer alone was always going to remain a mitigation, not a fix: a slow enough round trip (a busy JS
+thread mid-pagination, a congested bridge) can still lose even at 0.6f, and nothing at the JS layer
+can prove it never will. **What actually closes the practical gap is that a lost race now costs a
+wrong LABEL, not a wrong OUTCOME** — a reader who taps whatever the menu shows over a highlight
+always ends up with it deleted, they just might see "Highlight" instead of "Delete Highlight" while
+doing it. If that label/outcome mismatch itself becomes a reported problem (a reader alarmed that
+tapping "Highlight" deleted something), the next lever is a larger `minimumPressDuration`
+(diminishing returns — too large and the gesture stops feeling like a normal long press) or
+reverting to always showing both items, not loosening either bridge handler's own re-check — that
+re-check is still the only thing standing between a lost race and acting on the WRONG highlight,
+which it prevents by recomputing the overlapped id fresh rather than trusting anything cached from
+`touchstart`.
 
-Two failure modes so far, both fixed:
-1. **Pre-empting which item showed was unreliable.** An earlier version updated `menuItems` before
-   WebKit built its menu — but that build comes from an independent `UILongPressGestureRecognizer`
-   (`RNCWebViewImpl.m`, 0.4s `minimumPressDuration`), racing our own touchstart round trip with no
-   ordering guarantee, and sometimes losing. Fixed by pairing the toggle with the post-hoc check
-   above rather than relying on the toggle alone.
+**The decision (which highlight a tap/selection is acting on) is the SELECTION's overlap first, the
+pressed point only as a fallback** — `activeHighlightId()` in `epub.entry.ts`. Deciding from
+`touchstart` alone was a real bug, not just an imprecision: `pressedHighlightId` records where the
+finger first *landed*, which equals what the reader selected only when the press neither moved nor
+was adjusted. Dragging a selection from plain text into a highlight left it null, so the menu offered
+"Highlight" and taking it painted a second annotation over the first — visibly darker, and only
+half-deletable once the two ids collided in epub.js's own map. The EPUB shell therefore posts
+`highlightTouchActive` twice per gesture: once from `touchstart` (a point test, all that is knowable
+before anything is selected) and again from epub.js's `selected` event, which debounces
+`selectionchange` by 250ms and so lands while the finger is usually still down — i.e. before
+`touchend`, which is when WebKit builds the menu.
+
+Failure modes so far:
+1. **Pre-empting which item showed was unreliable** at the original `0.4f` — see the two paragraphs
+   above. Narrowed (not closed) by the `minimumPressDuration` patch; the post-hoc check is what
+   actually keeps a lost race safe.
 2. **Clearing `highlightTouchActive` on `touchend` crashed the app.** The native menu builds around
    `touchend`, and `RNCWebViewImpl.m`'s `tappedMenuItem:` re-reads `menuItems` fresh at TAP time with
    no bounds check. Clearing on `touchend` flipped `menuItems` back to `[highlight]` right as
    "Delete Highlight" appeared, so tapping it filtered to an empty array and indexing `[0]` threw.
-   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime.
+   Fixed by clearing only on the *next* `touchstart`, matching `pressedHighlightId`'s own lifetime —
+   still true today, and still the reason neither WebView shell clears this signal on `touchend`.
 
 **EPUB's original press detection (`highlightAdd`'s `onTap`, riding marks-pane's own touch-proxy
 wiring) never fired reliably** — it needs marks-pane to translate coordinates between the chapter
@@ -340,10 +431,11 @@ confirmation; `highlightPressed` means "the reader confirmed this," and the host
 **Known limitation: the native menu doesn't reliably reappear after dragging a selection handle.**
 `startLongPress:`'s `UILongPressGestureRecognizer` cancels instead of ending once a drag exceeds
 UIKit's default 10pt `allowableMovement`, so the menu isn't re-shown at drag end. A quick tap on the
-extended selection doesn't help either (it can't hold the 0.4s `minimumPressDuration`) — only a
-fresh, stationary long-press brings the menu back. This is `react-native-webview`'s gesture
-recognizer, not fixable from this side of the bridge; patching it (`patch-package`) is the only
-lever and hasn't been attempted.
+extended selection doesn't help either (it can't hold `minimumPressDuration`, `0.6f` since the patch
+above) — only a fresh, stationary long-press brings the menu back. `patch-package` is already in use
+against this same gesture recognizer for the timing-margin fix above, so patching this too is a real
+lever, not a hypothetical one — it just hasn't been attempted, and would need its own reasoning
+about what "reappear after a drag" should actually do.
 
 - **`paintHighlights` carries the WHOLE set every time, never a patch.** Every `readerHighlights.ts`
   call-site returns the fresh, full, authoritative set, so the host has nothing else to send. Each
@@ -579,6 +671,28 @@ been decided and landed in `ReaderRouteScreen.tsx`/`AudioPlayerRouteScreen.tsx` 
 navigation layer, not this bridge) — see CLAUDE.md's "Reading-position resume" section for the full
 account, not this paragraph.
 
+**`internalReposition` was added 2026-09-08, and it exists because `relocated` stopped meaning one
+thing.** `ReaderScreen.tsx`'s handler used to forward every `relocated` to
+`ttsProviderRef.current?.notifyRelocated()` unconditionally, on the reasoning that epub.js only ever
+fires `relocated` for a genuine navigation — `setSpokenRange`'s handler painted an annotation and
+did nothing else. TTS auto-follow's `rendition.display()`/`scrollBy()` calls, a font-size reflow's
+reanchor, and a paginated<->scrolled flow rebuild's redisplay all now live INSIDE that same
+`epub.entry.ts` machinery and all fire a genuine `relocated` too — none of them are the reader going
+anywhere new, all three redisplay a position the reader was already conceptually at. Before this
+field existed, `notifyRelocated()` treated every one of them as "the reader navigated away," which
+cleared the TTS session's highlight and invalidated its prefetched next sentence — the on-device
+symptom was TTS silently stopping the moment the sentence that triggered the first auto-follow jump
+finished speaking. `epub.entry.ts` sets it via one module-level flag
+(`nextRelocationIsInternal`) checked immediately before each of those four call sites and consumed
+(read then reset) by the `relocated` handler when it builds the outgoing message — see that flag's
+own doc comment for the exact four sites and the accepted narrow mis-attribution race with a
+host-driven navigation landing in the same instant. `ReaderRouteScreen.tsx`'s progress-tracking is
+unaffected either way — it reads every `relocated` regardless of this field, since persisted
+progress is deliberately "wherever the view/voice currently is," cause-agnostic. Optional, not
+required: `pdf.entry.ts` never sets it (none of the four triggers exist there), and every existing
+test literal constructing a `relocated` message without it stays meaningful as an ordinary,
+non-internal relocation.
+
 ## The prefs-application design, as signed off
 
 Requested by Personalization on 2026-08-18 and signed off the same day. Personalization's half is built
@@ -702,11 +816,16 @@ Both are recorded in `src/shared/contracts/prefs.ts`'s DECISION LOG rather than 
 - **#4 — `typography.size` is absolute points**, composed as
   `size × resolveFontScale(a11y.text, osFontScale)`, viewport factor applied last. `spacing` ratified
   as px in the same breath.
-- **#2 — `reduceMotion` is honoured by Reader.** Free today, and worth saying precisely why: there is
-  **no animation anywhere in the reader**. So suppression is currently vacuous and the real obligation
-  falls on whoever adds the first page-turn animation. `readerTemplate.test.ts` pins that across both
-  templates **and both entries** now — before the conversion an animation could only have come from
-  CSS; a `.ts` entry can add one imperatively.
+- ~~**#2 — `reduceMotion` is honoured by Reader.**~~ **The obligation landed, 2026-09-08.** TTS
+  auto-follow's teleprompter-style reposition (`repositionForReadingZone`, `epub.entry.ts`,
+  scrolled-doc flow only) is the first animation either shell has ever added — a JS
+  `Element.scrollBy({ behavior })` call, not CSS, so `readerTemplate.test.ts`'s existing
+  `transition`/`animation`/`@keyframes` regex genuinely does not and should not match it. That test's
+  own describe block ("reduceMotion has nothing to suppress, and must not quietly acquire one") now
+  carries a dedicated case asserting the GATE instead: `currentAppearance?.reduceMotion` is read
+  fresh, inline, at the one call site that decides `'instant'` vs `'smooth'` — no cached flag, so a
+  live preference toggle takes effect on the very next reposition. `pdf.entry.ts` still consumes
+  nothing here — it has no scrolled-doc/continuous-scroll concept for this to apply to.
 
 ### The accessibility overrides are resolved HOST-SIDE, and no field was added for them
 
@@ -750,22 +869,21 @@ of base64 on the bridge for every preference change.
 all**, and the book silently loses theme, text size, margins, flow, spread and both announce gates
 for the sake of a font. `ReaderScreen.test.tsx` pins the fallback.
 
-### `reduceMotion` stays unconsumed by both shells, deliberately
+### `reduceMotion` — consumed by `epub.entry.ts` only, and `pdf.entry.ts` stays exactly as it was
 
-Asked for as a `currentReduceMotion` module variable in `pdf.entry.ts`, mirroring `epub.entry.ts`'s
-`currentAppearance`, and **declined** — recorded here rather than left looking overlooked.
+This section used to say `reduceMotion` stayed unconsumed by both shells deliberately, on the
+reasoning that a variable holding a value nothing reads is reported by `no-unused-vars` at
+`--max-warnings=0`. That reasoning is now moot for `epub.entry.ts` — decision #2 above records what
+consumed it — but it still holds, unchanged, for `pdf.entry.ts`: PDF has no scrolled-doc/
+continuous-scroll concept, TTS never mounts for a PDF book at all
+(`readerTextProvider.ts`/`TTS_PROVIDER.md`), and `pdf.entry.ts` still keeps no whole-appearance
+object, only `currentBg`/`currentZoom`/`spreadPref`/`wantsScroll` — every one of them read. Adding a
+`currentReduceMotion` there with nothing to gate would still be exactly the dead variable this
+section originally declined.
 
-There is still no animation anywhere in the reader (see decision #2 above), both scroll paths are
-documented as instant, and `readerTemplate.test.ts` asserts the absence across both templates and
-both entries. A variable holding a value nothing reads is reported by `no-unused-vars`, and
-`npm run lint` runs at `--max-warnings=0`, so it could only exist behind a suppression whose sole
-purpose was keeping dead code alive. It would also break `pdf.entry.ts`'s own pattern: that file
-keeps no whole-appearance object, only `currentBg`/`currentZoom`/`spreadPref`/`wantsScroll`, and
-every one of them is read.
-
-`reduceMotion` is already on the payload and already classified in `epubLayoutSignature.ts`, so the
-first page-turn animation is one line away from honouring it. That obligation is decision #2's, and
-it has not moved.
+`reduceMotion` was already on the payload and already classified in `epubLayoutSignature.ts`
+(`PaintOnlyKey`) before this landed — that classification is unchanged, since the teleprompter
+reposition is a scroll, not a re-layout, and does not move a glyph.
 
 ## Before you change the bridge
 

@@ -13,7 +13,7 @@ import {
 } from '@/shared/contracts';
 import type { Locator, SharedPrefs } from '@/shared/contracts';
 import { getDatabase } from './localDb/database';
-import { parseLocator } from './localDb/mappers';
+import { parseLocator, progressMapper } from './localDb/mappers';
 import type { AccessibilityRow, HighlightRow, PersonalizationRow } from './localDb/types';
 import { accessibilityStore } from './stores/accessibilityStore';
 import { bookmarkStore } from './stores/bookmarkStore';
@@ -191,6 +191,33 @@ describe('EPUB progress anchoring', () => {
     );
 
     expect(await progressStore.currentLocator()).toBeNull();
+  });
+
+  it('maps a pulled server record with absent offset to 0, not 1', () => {
+    // Servers may omit the offset field (null or undefined) for records where it has no meaning
+    // (EPUB) or was never written. The ?? fallback must be 0 — 1 would open a freshly-synced
+    // PDF at page 1 on Device 2, overwriting wherever Device 1 actually was.
+    const rowNull = progressMapper.toRow({
+      id: 'p-null',
+      userId: USER,
+      bookId: BOOK,
+      offset: null,
+      locator: { type: 'PDF', page: 5 },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDeleted: false,
+    });
+    expect(rowNull.offset).toBe(0);
+
+    const rowUndefined = progressMapper.toRow({
+      id: 'p-undef',
+      userId: USER,
+      bookId: BOOK,
+      // offset field absent
+      locator: { type: 'EPUB', cfi: 'epubcfi(/6/4!/4/2)' },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      isDeleted: false,
+    });
+    expect(rowUndefined.offset).toBe(0);
   });
 });
 

@@ -8,7 +8,7 @@ procedure cannot be re-run, and a number that cannot be re-run becomes an assump
 it — the exact failure `WEBVIEW_BRIDGE.md` calls out for triggers.
 
 The EPUB numbers stay where they are, in `CLAUDE.md`'s "Known open items" table: there they are the
-_evidence for open item 2_ (peak tracks the number of full-size copies), which is Abhinav's to close.
+_evidence for open item 1_ (peak tracks the number of full-size copies), which is Abhinav's to close.
 This file is the procedure, the PDF results, and the per-format comparison.
 
 ---

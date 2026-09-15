@@ -309,13 +309,49 @@ export type ReaderMessage =
        * a shell that could not name one.
        */
       section: ReaderSection | null;
+      /**
+       * True when THIS relocation was `epub.entry.ts`'s OWN internal repositioning machinery
+       * redisplaying the reader at a position they were already conceptually at — TTS auto-follow
+       * (`followSpokenRange`/`repositionForReadingZone`), a font-size/layout reflow's reanchor
+       * (`scheduleGeometryRefresh`), or a paginated<->scrolled flow rebuild's redisplay
+       * (`rebuildForFlowIfNeeded`). False for every genuine navigation (a page turn, a swipe,
+       * `goTo`, search). PDF never sets this — none of those four mechanisms exist there, and TTS
+       * never mounts for a PDF book — so the field is always absent/`false` for a PDF book.
+       *
+       * >>> WHY THIS EXISTS: A RELOCATED EVENT USED TO MEAN ONE THING, AND TTS AUTO-FOLLOW MADE THAT
+       * STOP BEING TRUE. <<< `ReaderScreen.tsx`'s `relocated` handler forwards every relocation to
+       * `ttsProviderRef.current?.notifyRelocated()`, on the reasoning (once correct) that "epub.js
+       * never fires `relocated` for `setSpokenRange`, which only touches annotations." Auto-follow's
+       * `rendition.display()`/`scrollBy()` calls are *inside* `setSpokenRange`'s/`setSpokenWordRange`'s
+       * own handlers now, so that stopped being true: auto-follow's own reposition fired exactly the
+       * same `relocated` a manual page turn would, `notifyRelocated()` treated it as "the reader
+       * navigated away," which (a) cleared the very highlight auto-follow had just centered on screen
+       * (`notifyRelocated()` calls `setSpokenRange(null)`) and (b) invalidated the session's
+       * prefetched next sentence, so the moment the current sentence finished, `handleTtsFinish()`
+       * found no prefetch and treated it as end-of-book — TTS stopped, silently, on the very first
+       * auto-follow action every time. The same logic applies to a reflow reanchor or a flow rebuild
+       * redisplaying `lastCfi`: neither is the reader going anywhere new either. This field is what
+       * lets `ReaderScreen.tsx` tell all of these apart from a genuine navigation without guessing:
+       * progress-tracking (`ReaderRouteScreen.tsx`) still gets EVERY relocation unconditionally,
+       * cause-agnostic, exactly as before — this field only gates the `notifyRelocated()` call
+       * specifically.
+       *
+       * OPTIONAL, NOT REQUIRED — the safe default (`undefined` reads as `false`, "a real navigation")
+       * matters more here than exhaustiveness: `pdf.entry.ts` omits it entirely rather than adding a
+       * dead `false` to both its `post()` call sites, and every existing test literal constructing a
+       * `relocated` message without this field stays meaningful (a manual/host-driven relocation)
+       * rather than needing a mechanical `internalReposition: false` added everywhere.
+       */
+      internalReposition?: boolean;
     }
   | { type: 'toc'; items: ReaderTocItem[] }
   | { type: 'error'; code: ReaderErrorCode; message: string }
   | { type: 'ttsSentence'; requestId: number; result: TtsFetchResult }
   /**
    * The currently selected text, in reply to `requestCurrentSelection` — or null if nothing is
-   * selected, or if the selection meets an existing highlight (refused; see that command's note).
+   * selected. If the gesture meets an existing highlight, `requestCurrentSelection` replies with
+   * `highlightPressed` instead of this (see that command's note) rather than answering `null` and
+   * leaving the reader with no way to act on it.
    * Sent only on request, not passively — creation is a native `menuItems` entry now, not a
    * floating host UI tracking a live selection. No anchor: nothing positions a menu against this.
    */
@@ -331,7 +367,10 @@ export type ReaderMessage =
    * Whether the reader's current gesture is acting on a painted highlight. Drives which native menu
    * item `ReaderWebView.tsx` shows — best-effort DISPLAY only; `requestCurrentSelection` and
    * `confirmDeleteHighlight` re-decide for themselves, so a wrong/late value here only shows the
-   * "wrong" item, never causes a wrong action.
+   * "wrong" item, never acts on the wrong highlight. It CAN still mean the item taken performs the
+   * other command's action — tapping "Highlight" while this lagged behind a press that is actually
+   * on one deletes that highlight rather than doing nothing — but always the correct highlight for
+   * the gesture, per each command's own re-check.
    *
    * SENT TWICE PER GESTURE BY THE EPUB SHELL, and the second one is the accurate one. At
    * `touchstart` nothing is selected yet, so the only question answerable is "is the finger on a
@@ -421,10 +460,12 @@ export const READER_COMMANDS = {
   requestTtsSentence: 'requestTtsSentence',
   setSpokenRange: 'setSpokenRange',
   setSpokenWordRange: 'setSpokenWordRange',
+  followSpokenPosition: 'followSpokenPosition',
   paintHighlights: 'paintHighlights',
   requestCurrentSelection: 'requestCurrentSelection',
   confirmDeleteHighlight: 'confirmDeleteHighlight',
   paintSearchMatch: 'paintSearchMatch',
+  setTtsSpeaking: 'setTtsSpeaking',
 } as const;
 
 /**
@@ -504,6 +545,31 @@ export type ReaderCommand =
    */
   | { type: 'setSpokenRange'; cfi: string | null }
   /**
+   * Keep a position on screen (scroll/page to follow it) WITHOUT painting anything for it.
+   *
+   * Added 2026-09-14 for `'none'` TTS highlight mode: once `'word'`/`'none'` stopped painting a
+   * sentence wash (see `TTS_PROVIDER.md`'s "Word highlighting shows ONLY the word"), `'none'`
+   * mode had nothing left that ever called `setSpokenRange` with a real cfi — and auto-follow is
+   * triggered from INSIDE that command's own handler, so speech kept advancing with nothing
+   * telling the view to keep pace, in both paginated and scrolled-doc flow alike.
+   *
+   * WIDENED LATER THE SAME DAY from a bare `cfi: string | null` to this `SpokenWordRange`-shaped
+   * payload — a second, more serious bug: `'sentence'`/`'none'` modes were still only checking
+   * auto-follow ONCE per sentence, with the WHOLE sentence's geometry. For a sentence straddling a
+   * page break in PAGINATED flow, the sentence's own beginning stays "visible" for the check's
+   * entire duration, so the page never turned until the NEXT sentence started — the reader heard
+   * the tail spoken over a page that never moved. `'word'` mode never had this problem because
+   * `setSpokenWordRange` re-resolves a precise sub-range on every `tts-progress` tick; this command
+   * now does the same resolution (via the WebView's own `resolveSpokenWordCfi`, in
+   * `epubTtsResolver.ts`), purely for tracking, never for paint. See `TTS_PROVIDER.md`'s
+   * "'sentence'/'none' modes' own auto-follow gap" for the full account.
+   *
+   * Fire-and-forget, same contract as `setSpokenRange`: best-effort, never a reply, never a reason
+   * to interrupt speech if it fails. `null` clears the tracked position (mirrors `setSpokenRange`'s
+   * own clear, though there is nothing painted to remove).
+   */
+  | { type: 'followSpokenPosition'; range: SpokenWordRange | null }
+  /**
    * Paint or clear the spoken-WORD highlight — a sub-range of the sentence `setSpokenRange`
    * is showing. `null` clears it. Fire-and-forget, on the same contract as its sibling.
    *
@@ -547,8 +613,12 @@ export type ReaderCommand =
   | { type: 'paintHighlights'; highlights: EpubHighlightPaint[] | PdfHighlightPaint[] }
   /**
    * Fired when the reader taps the native "Highlight" item. Reads the selection fresh (not
-   * cached), so a selection extended right up to the tap is used. Answers `null` if the gesture
-   * meets an existing highlight — refuses rather than duplicating.
+   * cached), so a selection extended right up to the tap is used. NEVER creates a second annotation
+   * over an existing one: if the gesture meets an existing highlight, replies with `highlightPressed`
+   * for that highlight instead of `selection` — deleting it rather than doing nothing, because
+   * "Highlight" can still be the label showing for a press that's actually on a highlight (see
+   * `highlightTouchActive`'s own note below) and a no-op there was reported as "delete highlight
+   * doesn't work on iOS". Answers `selection: null` only when there is genuinely nothing selected.
    *
    * "Meets" is the SELECTION's overlap first, the pressed point only as a fallback. Checking the
    * pressed point alone let a selection dragged from plain text into a highlight paint a second
@@ -585,7 +655,19 @@ export type ReaderCommand =
    * Replies `searchMatchPainted` for a paint (not for a clear). That is a NOTICE, not an ack: the
    * command is fire-and-forget like `paintHighlights`, and nothing waits on it.
    */
-  | { type: 'paintSearchMatch'; match: ReaderSearchMatch };
+  | { type: 'paintSearchMatch'; match: ReaderSearchMatch }
+  /**
+   * Gate manual scroll/page-turn GESTURES while TTS is actively speaking — `true` the instant status
+   * becomes `'speaking'`, `false` the instant it leaves that status (paused, idle, or error). Only
+   * the two gesture-driven paths (paginated swipe, scrolled-doc drag) are affected; `goTo`/TOC/search
+   * taps are untouched on purpose. See `TTS_PROVIDER.md`'s open item: manual navigation while
+   * speaking is a separate, pre-existing behavior (auto-follow pulls the view back) that this does
+   * not change — it only stops the reader from fighting auto-follow with a raw drag/swipe.
+   *
+   * Fire-and-forget, no reply, on the same contract as `setSpokenRange` — a lock that fails to apply
+   * must not be able to interrupt reading.
+   */
+  | { type: 'setTtsSpeaking'; speaking: boolean };
 
 // --- WebView -> RN -----------------------------------------------------------
 
@@ -821,6 +903,12 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
         // itself is still valid and still has to reach the page indicator, TTS and session
         // progress. Dropping the message over it would trade a missing word for a stuck reader.
         section: asSection(parsed.section),
+        // Defaulted to false, same reasoning as atStart/atEnd above: an unrecognised or absent
+        // value must not be misread as "this was internal" — that would wrongly suppress
+        // notifyRelocated() for what might be a genuine navigation, silently breaking the
+        // TTS-invalidation behaviour this field exists to protect rather than merely dropping this
+        // one message. False is the safe default in both directions this field is used for.
+        internalReposition: parsed.internalReposition === true,
       };
     }
 
@@ -915,25 +1003,33 @@ export function buildCommandScript(command: ReaderCommand): string {
             ? JSON.stringify(command.request)
             : command.type === 'setSpokenRange'
               ? JSON.stringify(command.cfi)
-              : command.type === 'setSpokenWordRange'
-                ? // The whole nullable object, in the same uniform chain as everything above —
-                  // which is the point of the shape. `cfi` is minted from the book's own text and
-                  // the two offsets are numbers reported by the platform TTS engine, so this is
-                  // the payload rule 1 is about, quoted rather than pasted.
+              : command.type === 'followSpokenPosition'
+                ? // Same shape and same safety argument as setSpokenWordRange below — the whole
+                  // nullable object, `cfi` minted from the book's own text, quoted rather than
+                  // pasted.
                   JSON.stringify(command.range)
-                : command.type === 'paintHighlights'
-                  ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
-                    // two locator fields explicitly into a flat per-shell shape, so this is exactly as
-                    // safe as `applyAppearance` above. The COLOUR is the one field that came from
-                    // storage rather than from a locator, and JSON.stringify escapes it like any other
-                    // string; nothing here is pasted into the script unquoted.
-                    JSON.stringify(command.highlights)
-                  : command.type === 'paintSearchMatch'
-                    ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
-                      // book's text, so this is the payload rule 1 above is actually about — both are
-                      // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
-                      JSON.stringify(command.match)
-                    : '';
+                : command.type === 'setSpokenWordRange'
+                  ? // The whole nullable object, in the same uniform chain as everything above —
+                    // which is the point of the shape. `cfi` is minted from the book's own text and
+                    // the two offsets are numbers reported by the platform TTS engine, so this is
+                    // the payload rule 1 is about, quoted rather than pasted.
+                    JSON.stringify(command.range)
+                  : command.type === 'paintHighlights'
+                    ? // Primitive-only by construction — `toReaderHighlights` copies id/colour and the
+                      // two locator fields explicitly into a flat per-shell shape, so this is exactly as
+                      // safe as `applyAppearance` above. The COLOUR is the one field that came from
+                      // storage rather than from a locator, and JSON.stringify escapes it like any other
+                      // string; nothing here is pasted into the script unquoted.
+                      JSON.stringify(command.highlights)
+                    : command.type === 'paintSearchMatch'
+                      ? // `matchText` is the reader's own typed query and `startCfi` is minted from the
+                        // book's text, so this is the payload rule 1 above is actually about — both are
+                        // untrusted strings, and both are quoted by JSON.stringify rather than pasted.
+                        JSON.stringify(command.match)
+                      : command.type === 'setTtsSpeaking'
+                        ? // A plain boolean, same as any other primitive payload in this chain.
+                          JSON.stringify(command.speaking)
+                        : '';
 
   return `(function(){
     try {

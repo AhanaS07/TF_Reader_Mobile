@@ -122,8 +122,7 @@ export function highlightFill(color: string, bg?: string): { fill: string; blend
  *    Alpha is capped by nothing, so it is set high enough to be unmistakable.
  *  - `screen` CAN ONLY LIGHTEN. On a dark page the glyph is the LIGHTEST thing, so more alpha drives
  *    the background up toward the glyph and the text under the word goes muddy. Alpha is capped by
- *    readability here, and the low value is not timidity — the sentence wash on a near-black page is
- *    so dim that 0.3 is still a ~3.5x step in linear luminance.
+ *    readability here.
  *
  * Keyed on `blend` rather than on luminance so there is ONE cutoff in this file: move
  * `highlightFill`'s 0.35 and this follows automatically. It also covers Accessibility's
@@ -131,21 +130,31 @@ export function highlightFill(color: string, bg?: string): { fill: string; blend
  * function of the page that actually arrives, not of a theme name.
  *
  * >>> BOTH NUMBERS ARE COMPUTED, NEVER OBSERVED ON HARDWARE. <<< They come from compositing
- * `THEME_PALETTES` (readerAppearance.ts) against the 0.2 sentence wash and checking WCAG contrast —
- * light 0.5 ~= 14:1 glyph contrast, sepia 0.5 ~= 4.8:1, dark 0.3 ~= 4.6:1, and dark at 0.5 would be
- * ~= 2.7:1, which is why it is not 0.5. The device pass belongs to Accessibility (Hruthik), and
- * THESE TWO NUMBERS ARE WHAT IT IS FOR — not "does a highlight appear". The two failure signatures
- * to look for:
+ * `THEME_PALETTES` (readerAppearance.ts) against the 0.2 sentence wash and checking WCAG contrast.
+ * Recomputed for `TTS_SPOKEN_COLOR = '#90ee90'` (light green, was `#ffd500` yellow) — the exact
+ * numbers move with the hue, so they are re-derived here rather than carried over:
+ *
+ *  - light, `multiply` at 0.5: ~14.85:1
+ *  - sepia, `multiply` at 0.5: ~5.92:1
+ *  - dark, `screen` at 0.3 (yellow's value): ~4.24:1 — BELOW WCAG AA's 4.5:1 for normal text. Green
+ *    composites differently than yellow under `screen` (which can only lighten): the same 0.3 that
+ *    was safe for yellow is not safe for green. Lowered to 0.25 -> ~4.8:1, comfortably clear again,
+ *    and still above the 0.2 sentence wash underneath it, so the word/sentence intensity ordering
+ *    the design above depends on is unchanged.
+ *  - dark, `screen` at 0.5 would be ~2.67:1, which is why it is not 0.5.
+ *
+ * The device pass belongs to Accessibility (Hruthik), and THESE NUMBERS ARE WHAT IT IS FOR — not
+ * "does a highlight appear". The two failure signatures to look for:
  *
  *  - DARK: the word wash lifts the page toward the glyph and the text under it goes muddy -> lower
- *    the `screen` value.
+ *    the `screen` value further.
  *  - LIGHT / SEPIA: the word does not separate from the sentence wash around it -> raise the
  *    `multiply` value, which multiply makes safe.
  *
  * Either correction is a one-line change here, in a pure unit-tested module, with no shell edit.
  */
 export function spokenWordOpacity(blend: 'multiply' | 'screen'): string {
-  return blend === 'screen' ? '0.3' : '0.5';
+  return blend === 'screen' ? '0.25' : '0.5';
 }
 
 /**

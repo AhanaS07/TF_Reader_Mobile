@@ -37,7 +37,7 @@ type TtsSentenceMessage = Extract<ReaderMessage, { type: 'ttsSentence' }>;
 
 /**
  * What `ReaderScreen.tsx` gets beyond the public `ReaderTextProvider` surface Accessibility codes
- * against — the same split `fakeReaderTextProvider.ts`'s test-only handles use, and for the same
+ * against — the same split `testReaderTextProvider.ts`'s test-only handles use, and for the same
  * reason: nothing outside Reader should be able to reach these, so a caller typed as plain
  * `ReaderTextProvider` cannot.
  */
@@ -77,7 +77,7 @@ export function createEpubReaderTextProvider(
 
   function fire(reason: TtsInterruption): void {
     // Iterate a copy: a one-shot handler that unsubscribes itself during dispatch would otherwise
-    // mutate `handlers` mid-iteration — same reasoning as the fake's `fire`.
+    // mutate `handlers` mid-iteration — same reasoning as the test double's `fire`.
     for (const handler of [...handlers]) {
       try {
         handler(reason);
@@ -129,6 +129,15 @@ export function createEpubReaderTextProvider(
     send({ type: 'setSpokenRange', cfi });
   }
 
+  function followSpokenPosition(range: SpokenWordRange | null): void {
+    // Same contract, same guard, same shape as `setSpokenWordRange` below — widened from a bare
+    // cfi the same day it was added, once per-tick resolution turned out to be what paginated
+    // flow's page-turn timing needed. Nothing is validated here for the same reason that
+    // function's own comment gives.
+    if (terminated) return;
+    send({ type: 'followSpokenPosition', range });
+  }
+
   function setSpokenWordRange(range: SpokenWordRange | null): void {
     // Same contract, same guard, same reasons as `setSpokenRange` above. Nothing is validated here
     // — not the CFI, not the offsets: whether they resolve is a question only the live document can
@@ -142,6 +151,7 @@ export function createEpubReaderTextProvider(
     current: (from, signal) => request(from, 'current', signal),
     next: (after, signal) => request(after, 'next', signal),
     setSpokenRange,
+    followSpokenPosition,
     setSpokenWordRange,
 
     onInterrupted(handler) {

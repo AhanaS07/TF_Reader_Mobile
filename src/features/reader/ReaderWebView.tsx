@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import type { AccessibilityActionEvent, AccessibilityActionInfo } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type {
   WebViewMessageEvent,
@@ -25,6 +26,8 @@ import type {
   ShouldStartLoadRequest,
   WebViewCustomMenuItems,
 } from 'react-native-webview/lib/WebViewTypes';
+
+import { color } from '@theme/tokens';
 
 import { buildCommandScript, parseReaderMessage } from '@/features/reader/readerBridge';
 import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/reader/readerBridge';
@@ -38,14 +41,46 @@ import type { ReaderCommand, ReaderErrorCode, ReaderMessage } from '@/features/r
  */
 const READY_TIMEOUT_MS = 10_000;
 
-/** Shown over plain text — the common case, and the default before any `highlightTouchActive`
+/**
+ * Shown over plain text — the common case, and the default before any `highlightTouchActive`
  * signal has arrived for the current gesture. Stable references, not inline literals in the JSX
- * below, so neither array gets a new identity on every render. */
+ * below, so neither array gets a new identity on every render.
+ *
+ * WHICH ONE SHOWS IS A RACE, NARROWED BUT NOT ELIMINATED — read this before touching either side.
+ * `menuItems` toggles off `highlightTouchActive`, a signal computed inside the WebView's JS/DOM
+ * that has to cross a postMessage -> RN JS -> native-bridge round trip before WebKit reads this
+ * prop. `patches/react-native-webview+13.16.1.patch` widens the native long-press recognizer's
+ * `minimumPressDuration` (`RNCWebViewImpl.m`, 0.4f -> 0.6f) to give that round trip more guaranteed
+ * time to land before `startLongPress:` can fire — but `startLongPress:` still reads whatever
+ * `menuItems` happens to hold at that instant, so a slow enough round trip (a busy JS thread, a
+ * congested bridge) can still lose. THAT IS WHY `requestCurrentSelection`/`confirmDeleteHighlight`
+ * MUST KEEP RE-DECIDING FOR THEMSELVES AT TAP TIME (`activeHighlightId()` in `epub.entry.ts`;
+ * `pressedHighlightId` in `pdf.entry.ts`) RATHER THAN TRUSTING THE LABEL THAT WAS SHOWING — losing
+ * the race after the patch costs a wrong LABEL, never a wrong HIGHLIGHT: `requestCurrentSelection`
+ * now falls through to deleting whatever the gesture is actually on rather than no-oping when the
+ * shown label was "Highlight", so the reader is never stuck with a menu that visibly can't reach the
+ * highlight under their finger (previously reported as "delete highlight doesn't work on iOS"). If
+ * the wrong label starts showing often enough that the ACTION-vs-LABEL mismatch itself becomes
+ * confusing (a reader taps "Highlight" and something gets deleted), the fix is a wider
+ * `minimumPressDuration` (or reverting to always showing both — see git history), not loosening
+ * either bridge handler's own re-check.
+ */
 const CREATE_MENU_ITEMS: WebViewCustomMenuItems[] = [{ label: 'Highlight', key: 'highlight' }];
 
 /** Shown while `highlightTouchActive` — the press landed on an existing highlight. */
 const DELETE_MENU_ITEMS: WebViewCustomMenuItems[] = [
   { label: 'Delete Highlight', key: 'delete-highlight' },
+];
+
+/** RN's standard action pair for `accessibilityRole="adjustable"` — TalkBack maps these to its own
+ * increment/decrement gesture (a two-finger swipe) rather than requiring a local "Actions" menu.
+ * Stable reference, same reasoning as CREATE_MENU_ITEMS/DELETE_MENU_ITEMS above. See
+ * TALKBACK_GESTURE_FIX_PROPOSAL.md for why this exists and why it targets a dedicated sibling node,
+ * never the container (accessibilityLabel's own doc above explains the container leaf-trap this
+ * would otherwise reintroduce via a different prop). */
+const PAGE_TURN_ACTIONS: AccessibilityActionInfo[] = [
+  { name: 'increment', label: 'Next page' },
+  { name: 'decrement', label: 'Previous page' },
 ];
 
 export interface ReaderWebViewProps {
@@ -111,6 +146,16 @@ export interface ReaderWebViewProps {
   onHighlightRequested: () => void;
   /** Native "Delete Highlight" item tapped. `ReaderScreen` sends `confirmDeleteHighlight`. */
   onDeleteHighlightRequested: () => void;
+  /**
+   * TalkBack's native page-turn action fired (see the `reader-webview-a11y-pageturn` node below and
+   * TALKBACK_GESTURE_FIX_PROPOSAL.md). A prop rather than this component calling `send({type:
+   * 'next'|'prev'})` itself, because the toolbar Prev/Next buttons ALSO clear
+   * `pendingInitialVerifyRef.current` before calling `send` (`ReaderScreen.tsx`'s own note on
+   * `goTo`) — this component has no access to that ref, so the host gets the chance to do the same
+   * before navigating, keeping this a second trigger for the toolbar's exact effect rather than a
+   * behavior that quietly skips half of it.
+   */
+  onPageTurnRequested?: (direction: 'next' | 'prev') => void;
 }
 
 export function ReaderWebView({
@@ -123,11 +168,14 @@ export function ReaderWebView({
   accessibilityLabel,
   onHighlightRequested,
   onDeleteHighlightRequested,
+  onPageTurnRequested,
 }: ReaderWebViewProps): React.JSX.Element {
   const webViewRef = useRef<WebView>(null);
   const [isReady, setIsReady] = useState(false);
-  /** Drives `menuItems` below. Best-effort display only — correctness lives in the WebView's own
-   * `pressedHighlightId` checks, so a stale value here shows the wrong item, never a wrong action. */
+  /** Drives `menuItems` below. Best-effort display only, narrowed but not eliminated by the native
+   * patch — correctness lives in the WebView's own `pressedHighlightId`/`activeHighlightId` checks,
+   * so a stale value here shows the wrong item, never a wrong action. See `CREATE_MENU_ITEMS`'s own
+   * note above before changing this. */
   const [highlightTouchActive, setHighlightTouchActive] = useState(false);
 
   // Refs, not deps: these are called from WebView callbacks, and putting the
@@ -150,6 +198,28 @@ export function ReaderWebView({
   const send = useCallback((command: ReaderCommand): void => {
     webViewRef.current?.injectJavaScript(buildCommandScript(command));
   }, []);
+
+  /**
+   * Gated on `isReady`, not just "mounted": the container (and this node) render immediately,
+   * before the bridge's `ready` has landed, so an action fired in that window would otherwise ask
+   * the host to navigate a page whose command listener does not exist yet. The toolbar Prev/Next
+   * buttons get the same protection for free at the `ReaderScreen` layer (`send === null` disables
+   * them) — this mirrors that here, at the layer that actually owns `isReady`.
+   */
+  const handlePageTurnAction = useCallback(
+    (event: AccessibilityActionEvent): void => {
+      if (!isReady) return;
+      switch (event.nativeEvent.actionName) {
+        case 'increment':
+          onPageTurnRequested?.('next');
+          break;
+        case 'decrement':
+          onPageTurnRequested?.('prev');
+          break;
+      }
+    },
+    [isReady, onPageTurnRequested],
+  );
 
   // Ready-or-timeout. Cleared on unmount and as soon as `ready` lands.
   useEffect(() => {
@@ -288,6 +358,27 @@ export function ReaderWebView({
           style={styles.a11yStop}
         />
       )}
+      {/* A SEPARATE sibling from the a11y-stop above, not layered onto it — that node is the named
+          "Book content" stop with its own role/label and a different purpose. This one exists purely
+          to carry accessibilityActions/accessibilityRole SAFELY: putting either on the CONTAINER (see
+          its accessibilityLabel doc above) resynthesizes a contentDescription on the container
+          ViewGroup via RN's Android accessibility delegate and makes TalkBack treat it as a focus
+          leaf — the same trap, a different trigger prop. See TALKBACK_GESTURE_FIX_PROPOSAL.md.
+          Always rendered, unlike the a11y-stop: a page-turn control isn't an optional accessible
+          name, it needs to exist whenever the book does. `hidden` on the container still hides it for
+          free while a panel is open, because it lives in that same subtree. No `accessibilityValue`
+          (min/now/max) yet — that needs page-position data this component doesn't have; deferred,
+          not forgotten. */}
+      <View
+        testID="reader-webview-a11y-pageturn"
+        pointerEvents="none"
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel="Turn page"
+        accessibilityActions={PAGE_TURN_ACTIONS}
+        onAccessibilityAction={handlePageTurnAction}
+        style={styles.a11yPageTurn}
+      />
       <WebView
         ref={webViewRef}
         source={{ uri: sourceUri }}
@@ -324,13 +415,18 @@ export function ReaderWebView({
         thirdPartyCookiesEnabled={false}
         cacheEnabled={false}
         incognito
+        // Dev-only: lets Safari's Develop menu attach to this WebView's own JS console (iOS
+        // 16.4+; `RNCWebViewImpl.m` maps this to `WKWebView.inspectable`). Off in production —
+        // decrypted book content is what runs in here, and inspectability is a debugging
+        // surface, not something to leave open on a device nobody is holding a debugger to.
+        webviewDebuggingEnabled={__DEV__}
         // Pagination is driven by the bridge, not by dragging the document — EXCEPT in
         // continuous-scroll flow, where the caller opts this in. See the prop doc above.
         scrollEnabled={scrollEnabled}
         bounces={false}
         overScrollMode="never"
         // Replaces WebKit's Copy/Translate/Share callout entirely, so there's nothing left to
-        // out-z-order. The toggle is best-effort display only — see `highlightTouchActive` above.
+        // out-z-order. The toggle is best-effort display only — see `CREATE_MENU_ITEMS` above.
         menuItems={highlightTouchActive ? DELETE_MENU_ITEMS : CREATE_MENU_ITEMS}
         onCustomMenuSelection={(event) => {
           switch (event.nativeEvent.key) {
@@ -377,9 +473,12 @@ const styles = StyleSheet.create({
   // ancestor anywhere in this chain renders a blank page with no error — the
   // single most common false "epub.js is broken" report.
   container: { flex: 1 },
-  webView: { flex: 1, backgroundColor: '#ffffff' },
+  webView: { flex: 1, backgroundColor: color.white },
   // Absolutely positioned and 1x1 so the named stop costs no layout: this sits inside the same
   // flex:1 chain epub.js measures, and a node with real height would shrink the viewer and
   // re-paginate the book.
   a11yStop: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
+  // Same reasoning as a11yStop. A second entry rather than reusing it: the two nodes serve
+  // different purposes and may need independent positioning/visibility tuning later.
+  a11yPageTurn: { position: 'absolute', top: 0, left: 0, width: 1, height: 1 },
 });

@@ -104,6 +104,7 @@ jest.mock('@/features/reader/ReaderScreen', () => {
         initialTarget?: unknown;
         onRelocated?: (p: unknown) => void;
         onLocked?: (code: string, message: string) => void;
+        onOpenAccessibilityInfo?: () => void;
       },
       ref: unknown,
     ) {
@@ -119,6 +120,9 @@ jest.mock('@/features/reader/ReaderScreen', () => {
           </RNText>
           <RNText onPress={() => props.onLocked?.('ACCESS_REVOKED', 'test lock message')}>
             lock
+          </RNText>
+          <RNText onPress={() => props.onOpenAccessibilityInfo?.()}>
+            open accessibility info
           </RNText>
         </View>
       );
@@ -180,6 +184,29 @@ describe('ReaderRouteScreen', () => {
     mockCurrentForBook.mockResolvedValue(null);
     mockPullBook.mockResolvedValue(undefined);
     mockPauseTtsIfSpeaking.mockReturnValue(false);
+  });
+
+  describe('onOpenAccessibilityInfo', () => {
+    it('wires ReaderScreen straight to navigation.navigate("BookInfo", { bookId })', async () => {
+      const mockNavigate = jest.fn();
+      const { getByText } = await render(
+        <ReaderRouteScreen
+          navigation={{ setOptions: jest.fn(), navigate: mockNavigate } as never}
+          route={
+            {
+              key: 'Reader',
+              name: 'Reader',
+              params: { bookId: 'test-book', format: 'EPUB' },
+            } as never
+          }
+        />,
+      );
+
+      await waitFor(() => expect(getByText('open accessibility info')).toBeTruthy());
+      await fireEvent.press(getByText('open accessibility info'));
+
+      expect(mockNavigate).toHaveBeenCalledWith('BookInfo', { bookId: 'test-book' });
+    });
   });
 
   describe('a book read online without ever being downloaded', () => {
@@ -612,4 +639,5 @@ describe('ReaderRouteScreen', () => {
       });
     });
   });
+
 });

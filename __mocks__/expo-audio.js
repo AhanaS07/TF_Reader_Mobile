@@ -18,21 +18,41 @@
 // Only the members this repo's code actually references (useAudioPlayerSetup.ts,
 // AudioPlayerScreen.tsx) — not the full real module surface.
 function createAudioPlayer() {
-  return {
+  const listeners = new Map();
+  const player = {
     playing: false,
     currentTime: 0,
     duration: 0,
     isLoaded: true,
     playbackRate: 1,
-    play: () => undefined,
-    pause: () => undefined,
+    play: () => {
+      player.playing = true;
+    },
+    pause: () => {
+      player.playing = false;
+    },
     seekTo: () => Promise.resolve(),
+    replace: () => undefined,
     setPlaybackRate: () => undefined,
     setActiveForLockScreen: () => undefined,
     updateLockScreenMetadata: () => undefined,
     clearLockScreenControls: () => undefined,
     remove: () => undefined,
+    addListener: (event, handler) => {
+      const set = listeners.get(event) ?? new Set();
+      set.add(handler);
+      listeners.set(event, set);
+      return {
+        remove: () => {
+          set.delete(handler);
+        },
+      };
+    },
+    emit: (event, payload) => {
+      listeners.get(event)?.forEach((handler) => handler(payload));
+    },
   };
+  return player;
 }
 
 // STATIC, NOT REACTIVE — a fixed "already loaded, at rest" snapshot, matching this file's own

@@ -3,11 +3,12 @@
 // Presentational only — takes a DownloadProgressState (useDownloadProgress.ts) as props rather
 // than the hook itself, so it stays testable/reusable independent of how progress is sourced.
 // Follows the ActivityIndicator + adjacent Text idiom already used twice in Reader
-// (ReaderScreen.tsx's `busy` overlay, SearchPanel.tsx's `busyRow`) — there is no themed/token
-// system yet (src/theme/ "has not landed", per both files' headers), so inline styles here match
-// that precedent rather than inventing a new one.
+// (ReaderScreen.tsx's `busy` overlay, SearchPanel.tsx's `busyRow`) — colours now come from
+// `@theme/tokens`, matching the same migration those two files went through.
 
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+
+import { color, space } from '@theme/tokens';
 
 import type { DownloadProgressState } from './useDownloadProgress';
 
@@ -57,7 +58,7 @@ export function DownloadProgressIndicator({
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
-  text: { fontSize: 13, color: '#555555' },
-  errorText: { fontSize: 13, color: '#8a1c1c' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.sm },
+  text: { fontSize: 13, color: color.textSecondary },
+  errorText: { fontSize: 13, color: color.error },
 });

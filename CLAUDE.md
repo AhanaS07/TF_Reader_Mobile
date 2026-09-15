@@ -77,10 +77,10 @@ let the payload split into a second `applyA11y` sibling — one command carries 
 renders with, for all three claimants (Personalization's typography/theme, Reader's `reduceMotion`,
 Accessibility's `announce.pageChanges`).
 
-## Reader accessibility — four rules that are easy to undo by accident
+## Reader accessibility — five rules that are easy to undo by accident
 
 `src/features/reader/READER_ANNOUNCEMENTS.md` is the source of truth for the announcement seam;
-`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Four things in the code
+`src/features/accessibility/WEBVIEW_A11Y_SPIKE.md` is the device evidence. Five things in the code
 look like tidy-ups and are not:
 
 **1. `ReaderWebView`'s container must NOT carry an `accessibilityLabel`.** On Android RN maps it to
@@ -124,7 +124,21 @@ PDF's payload, and pdf.js has no text CSS layer to override.
 try/catch: an escaping reject would abort `buildAppearanceWithFont` inside `applyAppearanceWith`'s
 single catch and send the WebView NO appearance at all — losing theme, text size, margins, flow and
 both announce gates for the sake of a font. `WEBVIEW_BRIDGE.md` has the full account, including why
-`reduceMotion` stays unconsumed by both shells.
+`reduceMotion` is now consumed by `epub.entry.ts` only (wired in 2026-09-08, for TTS's teleprompter
+repositioning) and stays unconsumed, deliberately, by `pdf.entry.ts`.
+
+**5. `ReaderWebView`'s container must not carry `accessibilityActions`/`accessibilityRole` either —
+same mechanism as rule #1, a different prop.** RN's Android accessibility delegate synthesizes a
+`contentDescription` on any view that has `accessibilityActions`, `accessibilityState`,
+`accessibilityLabelledBy`, or `accessibilityRole` set and no existing text/description, by
+concatenating descendant text/descriptions. A ViewGroup with a synthesized `contentDescription` is
+the identical screen-reader focus LEAF rule #1 already fixed for a literal `accessibilityLabel`
+prop — TalkBack announces it and never descends into the WebView's tree. This surfaced when
+`TALKBACK_GESTURE_FIX_PROPOSAL.md`'s page-turn action (a native `accessibilityActions`/
+`onAccessibilityAction` pair, so TalkBack can turn pages without needing the still-open WebView
+accessibility-bridge defect fixed) was originally sketched onto the container. The action pair lives
+on `reader-webview-a11y-pageturn`, a dedicated 1x1 sibling — parallel to the existing
+`reader-webview-a11y-stop` named stop, not layered onto it (that node serves a different purpose).
 
 **A painted highlight's RECTS live for one layout, and epub.js will not re-measure them for you.**
 marks-pane re-measures only inside `View.reframe()`, which a stylesheet change never reaches — the
@@ -441,29 +455,27 @@ downstream routes off the stored format. A distinct id is load-bearing, not cosm
 `ensureSeeded()` short-circuits on `isAvailableOffline()`, so a shared id would serve whichever book
 was stored first and `getFormat()` would report the wrong format for it.
 
-### `fakeReaderTextProvider.ts` — stands in for the real TTS text provider
+### `testReaderTextProvider.ts` — stood in for the real TTS text provider (renamed from `fakeReaderTextProvider.ts`, 2026-09-09)
 
-`src/features/reader/tts/fakeReaderTextProvider.ts` serves canned sentences with **synthetic CFIs
-that resolve against no book**, so Accessibility (Hruthik) can build a TTS session before the real
-provider exists. The real one is blocked behind the typechecked-WebView conversion; without the
-fake, Accessibility either idles or hand-rolls a stub, and a hand-rolled stub is a guess at the
-interface that makes integration a rewrite rather than a substitution.
+**`src/features/reader/tts/fakeReaderTextProvider.ts` is DELETED**, on 2026-09-09, together with
+its test — Accessibility (Hruthik) already had its own forked, permanent copy (renamed the same
+day to `src/features/accessibility/tts/testSupport/testReaderTextProvider.ts`, dropping "Fake" from
+every identifier and the filename — "fake" was confusable with a mocking-library fake rather than
+what this is: a deterministic, hand-written test double) since 2026-08-28, and by the time of
+deletion nothing outside `reader/tts/` still imported Reader's original. Read the rest of this
+section as a record of what happened, not a to-do list.
 
-**`src/features/reader/tts/readerTextProvider.ts` is NOT scaffolding.** It is the permanent,
-agreed contract and it stays. Only the fake goes. Delete together:
+It served canned sentences with **synthetic CFIs that resolve against no book**, so Accessibility
+could build a TTS session before the real provider existed. `src/features/reader/tts/readerTextProvider.ts`
+is **not** scaffolding and was never on the deletion list — it is the permanent, agreed contract and
+it stays.
 
-| # | Delete |
-| - | ------ |
-| 1 | `src/features/reader/tts/fakeReaderTextProvider.ts` |
-| 2 | `src/features/reader/tts/fakeReaderTextProvider.test.ts` |
-| 3 | every `createFakeReaderTextProvider` call site outside `src/features/reader/tts/` |
-| 4 | the fake's section in `src/features/reader/TTS_PROVIDER.md`, and this one |
-
-Port `fakeReaderTextProvider.test.ts` rather than dropping it — every case pins a property of the
-seam, not of the fake, so it is the checklist the real provider must satisfy. The test-only handles
-live on `FakeReaderTextProvider` and deliberately **not** on `ReaderTextProvider`, so production
-code typed against the interface cannot reach them; if deleting the fake breaks something outside
-`tts/`, the boundary has leaked and that is the bug.
+The deleted test file's cases were ported into the fork's test file rather than dropped — every
+case pins a property of the seam, not of the test double, so each is a checklist the real provider
+(and the fork, now the sole surviving copy) must keep satisfying. Four cases (`setSpokenWordRange`/
+`spokenWordRanges`: call-order, independence from the sentence log, teardown, silent-accept of an
+unresolvable range) were missing from the fork and were added as part of this deletion, not left as
+a gap.
 
 `src/features/reader/TTS_PROVIDER.md` is the source of truth for this seam — the decisions, the
 ownership boundary, the sequencing, and the open items. Read it before changing

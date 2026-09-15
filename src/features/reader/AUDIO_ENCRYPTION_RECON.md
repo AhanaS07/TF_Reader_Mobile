@@ -108,13 +108,19 @@ Consequence to keep in view: **audio currently reaches the resolver only via `de
 nothing on the audio path talks to the backend yet. That is the single biggest gap between "audio
 plays" and "audio pipeline is complete."
 
-### One trap for whoever connects audio to the network later
+### The trap this section warned about did bite, and is now CLOSED (2026-08-26)
 
-`openBook` builds an *ephemeral Elite* package for books not on disk. `audioAssetResolver` calls
-`closeBook(bookId)` right after writing its scratch file, and per CLAUDE.md's known open item 1
-`close()` is terminal for Elite: it drops the sole `packageCache` entry. Won't bite the seeded
-fixtures (they short-circuit to the disk copy); will bite the first genuinely streamed audiobook.
-Abhinav's to fix.
+`openBook` builds an *ephemeral Elite* package for books not on disk, and `audioAssetResolver`
+calls `closeBook(bookId)` right after writing its scratch file. `close()` dropping the sole
+`packageCache` entry made that terminal for Elite, exactly as predicted — the first genuinely
+streamed audiobook (`dev-sample-audio-encrypted`) failed `DECRYPTION_FAILED` on re-entry.
+
+`contentStore.close()` now exempts Elite from that delete, so it is REVERSIBLE for every tier.
+A second defect surfaced with it: `contentStore` sessions have **no reference counting**, so two
+overlapping resolves tore each other down — the first to finish zeroed the shared plaintext the
+second was writing, silently producing a scratch file of pure zeros. `audioAssetResolver` now
+dedupes in-flight acquires per bookId. Both are covered by tests; see CLAUDE.md's "Known open
+items".
 
 ---
 
@@ -181,11 +187,11 @@ decrypted file outliving the licence that authorised it.
 | 1 | 🔴 **`contentStore.destroy()` emits no event, so a destroyed book's decrypted scratch file survives until the next app-state sweep** — Sync-driven revocation/expiry IS handled (`content.lock` → release player → delete). A direct `destroy()` is not observable from Reader. Recommended hook (one `eventBus.emit` at the end of `destroy()`) written up in `audio/AUDIO_PLAYER_DECISION.md` Part 4 | no hook exists; adding one edits `contentStore.ts` | **Abhinav** |
 | 2 | 🟡 **Delete-after-open REJECTED for Android** — unlinking the scratch file once the player holds a descriptor would cut exposure to milliseconds, but media3's `FileDataSource` reopens **by path** on every unbuffered seek, so seek breaks. iOS (AVURLAsset) looks fine. **Source-analysis only — the device test was not run.** Full reasoning + the retest recipe in `AUDIO_PLAYER_DECISION.md` Part 4 | library architecture, not our code | Reader, if revisited |
 | 3 | 🟡 **iOS `NSFileProtectionComplete` not applied** — `expo-file-system`'s new File/Directory API exposes no file-attribute surface; would need a native call, which is out of scope. Default is `CompleteUntilFirstUserAuthentication` | library gap | documented, not fixed |
-| 4 | 🔴 `closeBook()` is terminal for an `openBook`-acquired audiobook | CLAUDE.md open item 1, new route | **Abhinav** |
+| 4 | ✅ **FIXED 2026-08-26** — `closeBook()` was terminal for an `openBook`-acquired audiobook, and overlapping resolves also zeroed each other's bytes. `contentStore.close()` exempts Elite from the package drop; `audioAssetResolver` dedupes in-flight acquires | was CLAUDE.md open item 1 | Abhinav ✅ |
 | 5 | 🟡 **No automated test exercises the REAL encrypted audio path** — `audioAssetResolver.test.ts` mocks `openBook`, so fetch → unwrap → decrypt → play is only ever proven by hand. Inherent to needing a live backend and a device keypair; the manual steps are in `AUDIO_PLAYER_DECISION.md` Part 3 | was "nothing references `audioEncrypted`", which is now deleted | Reader |
 | 6 | 🟡 stale "audio is never encrypted" claims | Reader-owned ones are now **all corrected** (`readerAssets.ts`, `readerBridge.ts`, `audioAssetResolver.ts`, `devContentSeed.ts`, `AUDIO_PLAYER_DECISION.md`). What remains is outside Reader: `primitives.ts:25` and `reading-session.ts:60` are **frozen**, and `downloadManager.ts:263` ("both contracts agree audio is never encrypted regardless of tier") + `contentStore.ts:482` ("open access / audio: already plaintext") are Abhinav's | Reader ✅; the rest → **Abhinav** |
 | 7 | 🟡 `MAX_DECRYPTED_BYTES` mis-cited — encrypted audio still gets `MAX_AUDIO_DECRYPTED_BYTES` (20 MB), not 25 MB; `maxDecryptedBytesFor` keys off **format** (`contentStore.ts:74`) | | one-word fix, both repos |
-| 8 | 🟡 Encrypted-audio memory unmeasured | `AUDIO_MEMORY_REPORT.md` measured the **plaintext** path (2 copies, ~+40 MB). Encrypted audio takes the EPUB/PDF decrypt path — CLAUDE.md open item 2 puts that at ~6 copies, order ~120 MB transient at the cap | Reader |
+| 8 | 🟡 Encrypted-audio memory unmeasured | `AUDIO_MEMORY_REPORT.md` measured the **plaintext** path (2 copies, ~+40 MB). Encrypted audio takes the EPUB/PDF decrypt path — CLAUDE.md open item 1 puts that at ~6 copies, order ~120 MB transient at the cap | Reader |
 
 ### Not issues
 Memory headroom (closed by the 20 MB cap). `contentStore` decrypt (already format-blind).

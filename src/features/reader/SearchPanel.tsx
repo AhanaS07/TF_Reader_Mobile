@@ -16,9 +16,6 @@
 // What you read against afterwards is SearchMatchBar, which floats and also does not
 // reflow. The stepper lives there rather than here for the same reason: stepping is
 // something you do while looking at the page.
-//
-// Colours are inline for the same reason the rest of the reader's are: src/theme/ has
-// not landed yet.
 
 import {
   ActivityIndicator,
@@ -29,6 +26,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+import { color, radius, space } from '@theme/tokens';
 
 import { targetOf, locatorKey } from '@/features/reader/useBookSearch';
 import type { SearchStatus } from '@/features/reader/useBookSearch';
@@ -108,7 +107,7 @@ export function SearchPanel({
           onChangeText={onQueryChange}
           onSubmitEditing={onSubmit}
           placeholder="Search in this title"
-          placeholderTextColor="#8a8a8a"
+          placeholderTextColor={color.textSecondary}
           returnKeyType="search"
           autoFocus
           autoCorrect={false}
@@ -335,46 +334,49 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: '#ffffff',
+    backgroundColor: color.white,
     borderTopWidth: 1,
-    borderTopColor: '#e2e2e2',
-    paddingHorizontal: 16,
+    borderTopColor: color.border,
+    paddingHorizontal: space.md,
     paddingTop: 12,
   },
 
-  inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  inputRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   input: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#e2e2e2',
-    borderRadius: 8,
+    borderColor: color.border,
+    borderRadius: radius.card,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: space.sm,
     fontSize: 15,
-    color: '#111111',
+    color: color.textPrimary,
   },
   action: {
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#f2f2f2',
+    paddingVertical: space.sm,
+    borderRadius: radius.card,
+    backgroundColor: color.surface,
   },
-  actionText: { fontSize: 14, fontWeight: '600', color: '#111111' },
+  actionText: { fontSize: 14, fontWeight: '700', color: color.textPrimary },
 
-  status: { marginTop: 10, fontSize: 13, fontWeight: '600', color: '#111111' },
-  hint: { marginTop: 6, fontSize: 13, color: '#777777' },
-  busyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  status: { marginTop: 10, fontSize: 13, fontWeight: '700', color: color.textPrimary },
+  hint: { marginTop: 6, fontSize: 13, color: color.textSecondary },
+  busyRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.sm },
 
   failure: {
-    marginTop: 8,
-    backgroundColor: '#fdf2f2',
+    marginTop: space.sm,
+    backgroundColor: color.errorTint,
     borderWidth: 1,
-    borderColor: '#f0c8c8',
-    borderRadius: 8,
+    // No lighter/tint border token exists for error state, so this borrows `color.error`
+    // itself rather than inventing an untracked hex (CONVENTIONS §5) — same call as
+    // ReaderScreen's own errorBanner.
+    borderColor: color.error,
+    borderRadius: radius.card,
     padding: 10,
   },
-  failureTitle: { fontSize: 13, fontWeight: '700', color: '#8a1c1c' },
-  failureMessage: { marginTop: 4, fontSize: 12, color: '#8a1c1c' },
+  failureTitle: { fontSize: 13, fontWeight: '700', color: color.error },
+  failureMessage: { marginTop: 4, fontSize: 12, color: color.error },
 
   disabled: { opacity: 0.4 },
 
@@ -384,7 +386,7 @@ const styles = StyleSheet.create({
 
   // No `flex: 1` here: the wrapper above bounds it, and ScrollView already carries
   // flexGrow/flexShrink: 1 in its own base style.
-  list: { marginTop: 10, borderTopWidth: 1, borderTopColor: '#e2e2e2' },
+  list: { marginTop: 10, borderTopWidth: 1, borderTopColor: color.border },
   listContent: { paddingBottom: 48 },
 
   chapterCaption: {
@@ -392,18 +394,18 @@ const styles = StyleSheet.create({
     marginBottom: 2,
     fontSize: 11,
     fontWeight: '700',
-    color: '#8a8a8a',
+    color: color.textSecondary,
   },
   row: {
     flexDirection: 'row',
     gap: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: color.border,
   },
-  rowActive: { backgroundColor: '#f2f2f2' },
-  rowOrdinal: { fontSize: 12, color: '#8a8a8a', minWidth: 22 },
+  rowActive: { backgroundColor: color.surface },
+  rowOrdinal: { fontSize: 12, color: color.textSecondary, minWidth: 22 },
   rowBody: { flex: 1 },
-  rowSnippet: { fontSize: 14, color: '#111111' },
-  rowUnavailable: { marginTop: 2, fontSize: 11, color: '#8a8a8a' },
+  rowSnippet: { fontSize: 14, color: color.textPrimary },
+  rowUnavailable: { marginTop: 2, fontSize: 11, color: color.textSecondary },
 });

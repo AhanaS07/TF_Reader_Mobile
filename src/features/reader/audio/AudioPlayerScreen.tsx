@@ -45,12 +45,24 @@ import {
 import { useAudioPlayerStatus } from 'expo-audio';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { color, radius, space } from '@theme/tokens';
+
 import { useContentLock } from '@/features/reader/useContentLock';
 import { formatDiagnosticErrorMessage } from '@/shared/contracts';
 import type { BookId } from '@/shared/contracts';
 
 import { audioAssetResolver } from './audioAssetResolver';
 import { getAudioPlayerFor } from './audioPlayerInstance';
+import { AudioQueueModal } from './AudioQueueModal';
+import {
+  jumpToQueueIndex,
+  skipToNextTrack,
+  skipToPreviousTrack,
+} from './audioQueueCoordinator';
+import { useAudioQueueStore } from './audioQueueStore';
+import { stopActiveTts } from './audioTtsCoordinator';
+import { SleepTimerModal } from './SleepTimerModal';
+import { useSleepTimerStore } from './sleepTimerStore';
 import { ensureAudioModeConfigured } from './useAudioPlayerSetup';
 
 const SKIP_SECONDS = 15;
@@ -173,7 +185,15 @@ function AudioPlayerScreenComponent(
   const [uri, setUri] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const hasResumedRef = useRef(false);
-  const hasSetLockScreenRef = useRef(false);
+  const [queueModalVisible, setQueueModalVisible] = useState(false);
+  const [sleepTimerModalVisible, setSleepTimerModalVisible] = useState(false);
+
+  const hasNext = useAudioQueueStore((s) => s.hasNext());
+  const hasPrevious = useAudioQueueStore((s) => s.hasPrevious());
+  const queueLength = useAudioQueueStore((s) => s.items.length);
+
+  const sleepTimerPhase = useSleepTimerStore((s) => s.phase);
+  const sleepTimerRemainingSeconds = useSleepTimerStore((s) => s.remainingSeconds);
 
   /**
    * Sync's `content.lock` bus signal for THIS book, rendered — the visible half of the
@@ -265,7 +285,13 @@ function AudioPlayerScreenComponent(
     if (status.isLoaded && !hasResumedRef.current) {
       hasResumedRef.current = true;
       if (isNew && initialPosition && initialPosition > 0) {
-        void player.seekTo(clamp(initialPosition, 0, status.duration || initialPosition));
+        const target =
+          status.duration > 0 && initialPosition >= status.duration - 2
+            ? 0
+            : clamp(initialPosition, 0, status.duration || initialPosition);
+        if (target > 0) {
+          void player.seekTo(target);
+        }
       }
     }
   }, [status.isLoaded, status.duration, initialPosition, isNew, player]);
@@ -280,16 +306,24 @@ function AudioPlayerScreenComponent(
   // "another player" today means only the one a previous book left behind — releasing that one
   // calls setActivePlayer(nil) natively (AudioPlayer.sharedObjectWillRelease), which clears the
   // card, so re-claiming here is what puts it back.
+  //
+  // GATED ON status.playing, NOT status.isLoaded — iOS lock-screen fix. MPNowPlayingInfoCenter
+  // only shows the lock-screen card when the first registration arrives with a non-zero playback
+  // rate. If we register while the player is loaded-but-paused (rate = 0.0), iOS silently accepts
+  // the info but never surfaces the card. Waiting for the first actual play event guarantees the
+  // initial nowPlayingInfo has MPNowPlayingInfoPropertyPlaybackRate > 0, which is what iOS needs
+  // to transition from "no card" to "card visible". For a reused player that is already playing
+  // on mount (isNew: false), status.playing is true on the first render and the call fires
+  // immediately — same timing as before for that case.
   useEffect(() => {
-    if (status.isLoaded && !hasSetLockScreenRef.current) {
-      hasSetLockScreenRef.current = true;
+    if (status.playing) {
       player.setActiveForLockScreen(
         true,
         { title, artist: 'TF Reader' },
         { showSeekForward: true, showSeekBackward: true },
       );
     }
-  }, [status.isLoaded, player, title]);
+  }, [status.playing, player, title]);
 
   // NO clearLockScreenControls()/remove() ON UNMOUNT, DELIBERATELY. The player is owned by
   // audioPlayerInstance.ts, not by this component — unmounting this screen (navigating back) must
@@ -301,10 +335,15 @@ function AudioPlayerScreenComponent(
   // is opened (audioPlayerInstance.ts releases the old one then) or the app process ends.
 
   useEffect(() => {
-    if (status.isLoaded) {
-      onPositionChange?.(status.currentTime);
-    }
-  }, [status.isLoaded, status.currentTime, onPositionChange]);
+    if (!status.isLoaded) return;
+    // Skip the initial zero-position tick when a new player hasn't yet seeked to the saved
+    // position. Both this effect and the seekTo effect above fire when `status.isLoaded` first
+    // becomes true — but seekTo is async, so `currentTime` is still 0 at this point. Without
+    // this guard, handlePositionChange writes positionMs=0 unthrottled (lastWriteAtRef=0) and
+    // pushes it before the correct position lands, triggering false conflict alerts on Device 1.
+    if (isNew && status.currentTime === 0 && initialPosition && initialPosition > 0) return;
+    onPositionChange?.(status.currentTime);
+  }, [status.isLoaded, status.currentTime, onPositionChange, initialPosition, isNew]);
 
   // AUDIO PHASE 4. Held in a ref so the unmount effect below can stay `[player]`-scoped: reading
   // the prop directly would put `onPositionCommit` in that effect's deps, and a caller passing an
@@ -358,6 +397,13 @@ function AudioPlayerScreenComponent(
     try {
       const allowed = (await beforePlayRef.current?.()) ?? true;
       if (allowed) {
+        // AUDIO SESSION CONCURRENCY: Only one audio stream runs at a time.
+        // Stop any active TTS speech before audiobook playback begins.
+        stopActiveTts();
+
+        // Re-assert audio session configuration in case TTS modified AVAudioSession mode/options.
+        await ensureAudioModeConfigured(true);
+
         // At end of track the position is already duration, so play() is a no-op.
         // Reads from the PLAYER, not `status`: `status` can be up to one 250ms tick stale
         // (the same reasoning the unmount-commit effect already documents).
@@ -434,9 +480,37 @@ function AudioPlayerScreenComponent(
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title} numberOfLines={2}>
-        {title}
-      </Text>
+      <View style={styles.headerRow}>
+        <Text style={styles.title} numberOfLines={2}>
+          {title}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            sleepTimerPhase === 'running'
+              ? `Sleep timer, ${formatTime(sleepTimerRemainingSeconds)} remaining`
+              : 'Sleep timer'
+          }
+          onPress={() => setSleepTimerModalVisible(true)}
+          style={styles.queueButton}
+        >
+          <Text style={styles.queueButtonLabel}>
+            {sleepTimerPhase === 'running'
+              ? formatTime(sleepTimerRemainingSeconds)
+              : 'Sleep Timer'}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Open queue, ${queueLength} track${queueLength === 1 ? '' : 's'}`}
+          onPress={() => setQueueModalVisible(true)}
+          style={styles.queueButton}
+        >
+          <Text style={styles.queueButtonLabel}>
+            Queue {queueLength > 0 ? `(${queueLength})` : ''}
+          </Text>
+        </Pressable>
+      </View>
 
       <Scrubber
         positionSeconds={status.currentTime}
@@ -448,6 +522,28 @@ function AudioPlayerScreenComponent(
       />
 
       <View style={styles.transportRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Previous track"
+          disabled={!hasPrevious && status.currentTime <= 3.0}
+          onPress={() => void skipToPreviousTrack(status.currentTime)}
+          style={[
+            styles.transportButton,
+            styles.trackNavButton,
+            !hasPrevious && status.currentTime <= 3.0 && styles.transportButtonDisabled,
+          ]}
+        >
+          <Text
+            style={[
+              styles.transportButtonLabel,
+              styles.trackNavIcon,
+              !hasPrevious && status.currentTime <= 3.0 && styles.transportButtonLabelDisabled,
+            ]}
+          >
+            |◀◀
+          </Text>
+        </Pressable>
+
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Skip back ${SKIP_SECONDS} seconds`}
@@ -473,11 +569,13 @@ function AudioPlayerScreenComponent(
               void beginPlayback();
             }
           }}
-          style={[styles.transportButton, styles.playButton]}
+          style={[
+            styles.transportButton,
+            styles.playButton,
+            playCheckPending && styles.playButtonPending,
+          ]}
         >
-          <Text style={styles.playButtonLabel}>
-            {status.playing ? 'Pause' : playCheckPending ? 'Checking…' : 'Play'}
-          </Text>
+          <Text style={styles.playButtonLabel}>{status.playing ? 'Pause' : 'Play'}</Text>
         </Pressable>
 
         <Pressable
@@ -487,6 +585,28 @@ function AudioPlayerScreenComponent(
           style={styles.transportButton}
         >
           <Text style={styles.transportButtonLabel}>+{SKIP_SECONDS}s</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Next track"
+          disabled={!hasNext}
+          onPress={() => void skipToNextTrack()}
+          style={[
+            styles.transportButton,
+            styles.trackNavButton,
+            !hasNext && styles.transportButtonDisabled,
+          ]}
+        >
+          <Text
+            style={[
+              styles.transportButtonLabel,
+              styles.trackNavIcon,
+              !hasNext && styles.transportButtonLabelDisabled,
+            ]}
+          >
+            ▶▶|
+          </Text>
         </Pressable>
       </View>
 
@@ -507,6 +627,17 @@ function AudioPlayerScreenComponent(
           </Pressable>
         ))}
       </View>
+
+      <AudioQueueModal
+        visible={queueModalVisible}
+        onClose={() => setQueueModalVisible(false)}
+        onSelectTrack={(idx) => void jumpToQueueIndex(idx)}
+      />
+
+      <SleepTimerModal
+        visible={sleepTimerModalVisible}
+        onClose={() => setSleepTimerModalVisible(false)}
+      />
     </View>
   );
 }
@@ -517,14 +648,34 @@ export const AudioPlayerScreen = forwardRef(AudioPlayerScreenComponent);
 AudioPlayerScreen.displayName = 'AudioPlayerScreen';
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff', padding: 20, gap: 24 },
+  container: { flex: 1, backgroundColor: color.white, padding: 20, gap: space.lg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 20 },
-  loadingLabel: { fontSize: 15, color: '#555555' },
-  errorTitle: { fontSize: 17, fontWeight: '600', color: '#b00020', textAlign: 'center' },
-  errorDetail: { fontSize: 14, color: '#555555', textAlign: 'center' },
-  title: { fontSize: 20, fontWeight: '700', color: '#111111', marginTop: 12 },
-  scrubberRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  timeLabel: { fontSize: 12, color: '#555555', width: 40, textAlign: 'center' },
+  loadingLabel: { fontSize: 15, color: color.textSecondary },
+  errorTitle: { fontSize: 17, fontWeight: '700', color: color.error, textAlign: 'center' },
+  errorDetail: { fontSize: 14, color: color.textSecondary, textAlign: 'center' },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: space.sm,
+  },
+  title: { fontSize: 20, fontWeight: '700', color: color.textPrimary, flex: 1, marginRight: 12 },
+  queueButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.sheet,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+  },
+  queueButtonLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: color.textSecondary,
+  },
+  scrubberRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  timeLabel: { fontSize: 12, color: color.textSecondary, width: 40, textAlign: 'center' },
   scrubberTrack: {
     flex: 1,
     height: 28,
@@ -536,12 +687,14 @@ const styles = StyleSheet.create({
     right: 0,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#e2e2e2',
+    backgroundColor: color.border,
   },
+  // The accent, not body text — `color.primary` (Ultramarine), same token MiniAudioPlayer's own
+  // progress fill and play button use, so the mini and full players read as one brand-blue accent.
   scrubberFill: {
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#111111',
+    backgroundColor: color.primary,
   },
   transportRow: {
     flexDirection: 'row',
@@ -550,23 +703,39 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   transportButton: {
-    paddingHorizontal: 16,
+    paddingHorizontal: space.md,
     paddingVertical: 12,
     borderRadius: 24,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: color.surface,
   },
-  transportButtonLabel: { fontSize: 15, fontWeight: '600', color: '#111111' },
-  playButton: { backgroundColor: '#111111', minWidth: 96, alignItems: 'center' },
-  playButtonLabel: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
-  rateRow: { flexDirection: 'row', justifyContent: 'center', gap: 8 },
+  transportButtonLabel: { fontSize: 15, fontWeight: '700', color: color.textPrimary },
+  trackNavButton: {
+    paddingHorizontal: 12,
+  },
+  trackNavIcon: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  transportButtonDisabled: {
+    opacity: 0.35,
+  },
+  transportButtonLabelDisabled: {
+    color: color.textSecondary,
+  },
+  playButton: { backgroundColor: color.primary, minWidth: 96, alignItems: 'center' },
+  // Distinct from transportButtonDisabled's opacity dip: this button isn't disabled-looking,
+  // it's mid-action — a grey fill reads as "pressed and working" rather than "unavailable".
+  playButtonPending: { backgroundColor: color.textSecondary },
+  playButtonLabel: { fontSize: 15, fontWeight: '700', color: color.white },
+  rateRow: { flexDirection: 'row', justifyContent: 'center', gap: space.sm },
   rateButton: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#cccccc',
+    borderColor: color.border,
   },
-  rateButtonActive: { backgroundColor: '#111111', borderColor: '#111111' },
-  rateButtonLabel: { fontSize: 13, fontWeight: '600', color: '#111111' },
-  rateButtonLabelActive: { color: '#ffffff' },
+  rateButtonActive: { backgroundColor: color.primary, borderColor: color.primary },
+  rateButtonLabel: { fontSize: 13, fontWeight: '700', color: color.textPrimary },
+  rateButtonLabelActive: { color: color.white },
 });
