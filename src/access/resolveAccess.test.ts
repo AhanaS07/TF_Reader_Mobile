@@ -227,21 +227,20 @@ describe('resolveAccess', () => {
   });
 
   describe('subscription', () => {
-    it('offers read and download with no licence held', () => {
+    // REVERSED on direct instruction, 14 Sep — see resolveAccess.ts's own comment
+    // on this branch. Nothing held now offers exactly one button, the same shape
+    // as ELITE's `requires_grant`, rather than the old "borrow invisibly behind
+    // Read/Download" flow this describe block used to pin.
+    it('offers only Grant access with no licence held', () => {
       const result = resolve();
-      expect(result.state).toBe('available');
-      expect(result.actions).toEqual(['read', 'download']);
+      expect(result.state).toBe('requires_grant');
+      expect(result.actions).toEqual(['grantAccess']);
     });
 
-    // The 12 Aug flow change, asserted: first tap and every tap after it show the
-    // same button in the same place. One borrows and one opens a reading session,
-    // and the reader is not meant to be able to tell them apart — so if these two
-    // ever diverge, the change was made in the wrong place.
-    it('offers the identical pair once a licence is held', () => {
-      const before = resolve({ loan: aLoan('none') });
-      const after = resolve({ loan: aLoan('active') });
-      expect(after.actions).toEqual(before.actions);
-      expect(after.state).toBe(before.state);
+    it('offers read and download once a licence is actually held', () => {
+      const result = resolve({ loan: aLoan('active') });
+      expect(result.state).toBe('available');
+      expect(result.actions).toEqual(['read', 'download']);
     });
 
     it('offers no revoke, which would cost the reader something and gain them nothing', () => {
@@ -418,12 +417,12 @@ describe('resolveAccess', () => {
 
     it('hides Download on subscription', () => {
       const item = anItem({ acquisition: anAcquisition({ canPersist: false }) });
-      expect(resolve({ item }).actions).toEqual(['read']);
+      expect(resolve({ item, loan: aLoan('active') }).actions).toEqual(['read']);
     });
 
     it('never hides Read, which is what the reader came for', () => {
       const item = anItem({ acquisition: anAcquisition({ canPersist: false }) });
-      expect(resolve({ item }).actions).toContain('read');
+      expect(resolve({ item, loan: aLoan('active') }).actions).toContain('read');
     });
   });
 
@@ -467,6 +466,9 @@ describe('resolveAccess', () => {
       const produced = new Set(
         [
           resolve(),
+          // Subscription's own `available` — `resolve()` alone no longer reaches
+          // it now that nothing held resolves to `requires_grant` instead.
+          resolve({ loan: aLoan('active') }),
           resolve({ session: null }),
           resolve({ item: { id: 'item_42' } }),
           resolve({

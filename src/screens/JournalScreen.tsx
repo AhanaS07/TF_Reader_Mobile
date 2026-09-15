@@ -127,19 +127,20 @@ export default function JournalScreen({ route }: Props) {
       navigation.navigate('ItemDetail', {
         itemId: id,
         workType: 'article',
-        articleContext: { journalTitle: title },
+        articleContext: { journalWorkId: workId, institutionId, journalTitle: title },
       }),
-    [navigation, title],
+    [navigation, workId, institutionId, title],
   );
 
   const goToVolumes = useCallback(() => {
     if (feed === null || feed.kind !== 'navigation') return;
     navigation.navigate('JournalVolumes', {
+      journalWorkId: workId,
       journalTitle: title,
       institutionId,
       volumes: feed.children,
     });
-  }, [navigation, feed, title, institutionId]);
+  }, [navigation, feed, workId, title, institutionId]);
 
   const onShare = useCallback(() => {
     void Share.share({ message: title });

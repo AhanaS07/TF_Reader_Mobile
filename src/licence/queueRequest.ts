@@ -70,3 +70,22 @@ export function queuePositionLabel(
     ? `Position ${access.queuePosition} in queue`
     : `Position ${access.queuePosition} of ${access.queueLength} in queue`;
 }
+
+/**
+ * How far toward the front of the queue the reader is, 0 (just joined) to 1
+ * (next in line) — the same fraction `LibraryScreen.holdings.ts`'s own
+ * `queueProgressFraction` computes for the identical Elite queue row there,
+ * duplicated rather than imported: that one operates on a `Hold`'s
+ * `position`/`queueLength`, this one on `AccessResult`'s differently-named
+ * `queuePosition`/`queueLength`, and D12 stays this screen's own concern (see
+ * the file header). Undefined under the same conditions `queuePositionLabel`
+ * treats as "nothing to say" — no total to measure progress against.
+ */
+export function queueProgressFraction(
+  access: Pick<AccessResult, 'queuePosition' | 'queueLength'>,
+): number | undefined {
+  if (access.queuePosition === undefined || access.queueLength === undefined) return undefined;
+  if (access.queueLength <= 0) return undefined;
+  const fromFront = access.queueLength - access.queuePosition + 1;
+  return Math.max(0, Math.min(1, fromFront / access.queueLength));
+}

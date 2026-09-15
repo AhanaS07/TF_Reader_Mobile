@@ -5,29 +5,47 @@
 // what Elite title needs their answer. Loans and holds come from
 // `GET /api/v1/library`, reached through `LicenceSource.getLibrary()` rather
 // than through HTTP (see `src/licence/`). Downloads and bookmarks are
-// DEVICE-LOCAL and come from `downloadStore` and `bookmarkStore` — that
-// endpoint carries neither.
+// DEVICE-LOCAL — downloads from `downloadStore`, bookmarks from the REAL
+// synced `bookmarkTable` (`src/features/sync/stores/bookmarkStore.ts`; an
+// earlier version of this screen read a dead Zustand stand-in at
+// `src/store/bookmarkStore.ts` that nothing ever wrote to, so the tab
+// rendered empty regardless of what the reader had actually bookmarked) —
+// that endpoint carries neither.
 //
 // REBUILT AROUND A PRODUCT MODEL, NOT FIVE BACKEND SECTIONS (product spec,
-// Sept 2026, refined against a reference mockup the same month). The tab
-// rail is real navigation — each tab renders a DIFFERENT view of the same
-// underlying data. Five tabs:
+// Sept 2026, refined against a reference mockup the same month; Borrowed and
+// Premium were later merged into one tab, and a Journals tab added, on
+// direct instruction — see `partitionLoansByTier` and `articleJournalStore`'s
+// own headers). The tab rail is real navigation — each tab renders a
+// DIFFERENT view of the same underlying data. Five tabs:
 //
 //   All       — a genuine overview: a pending Elite offer first if one
 //               exists (never a reserved empty slot for it), then "Your
 //               content" (loans/downloads/bookmarks merged, one heading not
 //               five) and, separately, "Premium waiting" if the reader is
-//               queued for anything.
-//   Borrowed  — SUBSCRIPTION LOANS ONLY. Elite is a different tier with a
-//               different lifecycle (temporary, re-requested on expiry) and
-//               does not belong here — see `partitionLoansByTier`.
+//               queued for anything. A journal article inside "Your content"
+//               renders as its JOURNAL (the same row `Journals` renders),
+//               never by its own title and authors line — that line carries
+//               no journal context, and duplicating the article there too
+//               would just be `Journals`'s own row shown twice. See
+//               `journalArticleIds`'s own comment.
+//   Borrowed  — every reason a title is currently in this reader's hands
+//               that ISN'T a plain download or a bookmark: a pending Elite
+//               offer, a subscription loan, active Elite access, and a
+//               waiting-queue position, each under its own heading. A title
+//               can only ever be in one of the loan buckets at once —
+//               `partitionLoansByTier`'s own invariant — so nothing here can
+//               show twice.
 //   Downloads — unchanged: content actually on this device, sourced from
 //               `downloadStore`, never re-derived from a tier.
 //   Bookmarks — GROUPED BY TITLE, not one row per bookmark. Tapping a title
 //               expands that title's own bookmarks in place.
-//   Premium   — the three Elite states, in priority order: a pending offer
-//               needing Accept/Decline, active Elite access already granted,
-//               and a place in a waiting queue. Nothing else belongs here.
+//   Journals  — articles reached through the journal drill-down, grouped by
+//               which journal they came from rather than shown as bare
+//               titles mixed in with books elsewhere on this screen. See
+//               `articleJournalStore`'s own header for why this needed a new
+//               store: nothing in the download/loan/bookmark data model
+//               otherwise records which journal an article belongs to.
 //
 // EVERY TAB RESTATES ITS OWN NAME AS A HEADING, WITH A REAL COUNT BESIDE IT
 // WHEN NON-ZERO ("Downloads   2 items"). Tapping a pill already tells the
@@ -46,6 +64,13 @@
 // shrink: compact enough to sit under real content without reading as
 // leftover space, not a full-page "nothing here" card.
 //
+// BORROWED IS THE ONE EXCEPTION, on direct instruction, 14 Sep: it holds up
+// to four DIFFERENT facts (an offer, a loan, Elite access, a queue position)
+// rather than one, and a permanent hint under each of the three that
+// happened to be empty read as three stacked apologies rather than a tab
+// with real content in it. That tab shows a hint only when ALL FOUR are
+// empty — see `renderBorrowedTab`'s own comment.
+//
 // EVERY ROW ON THIS SCREEN IS ONE `ContentCard`, REGARDLESS OF TAB OR
 // SOURCE. `EliteLoanRow`/`EliteQueueRow` (below, beside `BorrowedBookRow`/
 // `DownloadRow`/`BookmarkGroupRow`) render Elite's two navigable states
@@ -61,7 +86,7 @@
 // tap-through, no chevron), not a navigable content row, so forcing it
 // through the same card would mean either losing its two buttons or
 // misusing `ContentCard`'s single `action` slot for a two-button decision
-// it was never shaped for. Shared between `All` and `Premium` regardless —
+// it was never shaped for. Shared between `All` and `Borrowed` regardless —
 // one implementation of that state, composed into both views.
 //
 // EVERY ROW TAPS THROUGH TO THE ITEM'S OWN DETAIL PAGE, THE SAME AS
@@ -112,14 +137,17 @@
 // is rendered exactly as sparse — `TabHint` is what keeps that from looking
 // broken rather than a reason to invent more rows.
 import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
-import type { Bookmark } from '@/shared/contracts';
+import type { BookId, Bookmark } from '@/shared/contracts';
 import { useLibraryProvider } from '@/features/library/context';
 import { ReaderUnavailableError } from '@/features/library/ports';
 import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
+import { contentStore } from '@/features/encryption/contentStore';
+import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
+import { USER_ID } from '@/features/sync/syncConfig';
 import { AccessTierBadge } from '@components/AccessTierBadge';
 import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '@components/ContentCard';
@@ -132,19 +160,23 @@ import { getLicenceSource } from '@config/licence';
 import { useNetworkStatus } from '@hooks/useNetworkStatus';
 import { type ServerClock, useServerClock } from '@hooks/useServerClock';
 import type { BookSummary, Loan } from '@model/types';
-import { useBookmarkStore } from '@store/bookmarkStore';
+import { useArticleJournalStore } from '@store/articleJournalStore';
 import { type DownloadRecord, useDownloadStore } from '@store/downloadStore';
+import { useExpiredDownloadsStore } from '@store/expiredDownloadsStore';
+import { useExpiredLoansStore } from '@store/expiredLoansStore';
 import { useLibraryStore } from '@store/libraryStore';
 import { color, radius, space, type } from '@theme/tokens';
 
 import {
   activeLoans,
+  bookmarkFromRow,
   bookmarkLocationLabel,
   type BookmarkGroup,
   collectItemIds,
   downloadedLabel,
   downloadsSummaryLabel,
   dueLabel,
+  groupArticlesByJournal,
   groupBookmarksByTitle,
   mergeContentItems,
   type MergedLibraryItem,
@@ -172,24 +204,36 @@ const SKELETON_ROWS = 2;
 // anything downstream that compares it.
 const EMPTY_TITLES: Map<string, BookSummary> = new Map();
 
-type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'holds';
+// The expiry sweep's own race window — see that effect's own comment. Real
+// loan periods run for days; this only needs to outlast the gap between a
+// fresh download's server-side borrow and this screen's next successful
+// `libraryStore.refresh()`, so a couple of minutes is generous, not tight.
+const EXPIRY_SWEEP_GRACE_MS = 2 * 60_000;
+
+type LibraryTabId = 'all' | 'loans' | 'downloads' | 'bookmarks' | 'journals';
 
 // Plain text, no count badge on the pill itself — on explicit instruction: a
 // number beside every filter label ("Downloads 1", "Borrowed 0") read as
 // noise before the reader had chosen anything. The identical count instead
 // appears inside each tab's own content, beside its restated heading — see
 // `TabHeading`.
+//
+// BORROWED NOW COVERS BOTH TIERS. This used to be four sections split across
+// two tabs (Borrowed = subscription only; Premium = offered/Elite/waiting) —
+// merged on explicit instruction, and safe to merge because
+// `partitionLoansByTier`'s own invariant already guarantees the two loan
+// lists are disjoint by item: nothing shows twice. The id stays `loans`.
 const LIBRARY_TABS: TabItem[] = [
   { id: 'all', label: 'All' },
-  // Shown as "Borrowed"; the id stays `loans` because that is the partition
-  // it selects. Not "Borrowed Books" — the shelf holds books, journals and
-  // audiobooks alike, and the label must not name just one of them.
   { id: 'loans', label: 'Borrowed' },
   { id: 'downloads', label: 'Downloads' },
   { id: 'bookmarks', label: 'Bookmarks' },
-  // Shown as "Premium"; the id stays `holds` because that is the partition
-  // it selects (Offered + Elite loans + Waiting).
-  { id: 'holds', label: 'Premium' },
+  // Articles reached through the journal drill-down, grouped by journal
+  // rather than shown as bare titles — see `articleJournalStore`'s own
+  // header for why this needs a store at all (nothing else in the
+  // download/loan/bookmark data model records which journal an article came
+  // from).
+  { id: 'journals', label: 'Journals' },
 ];
 
 // Hand-typed to the one real call this screen makes, the same reason
@@ -200,7 +244,11 @@ const LIBRARY_TABS: TabItem[] = [
 // standing up a real `NavigationContainer`.
 interface LibraryScreenProps {
   navigation: {
-    navigate: (screen: 'ItemDetail', params: { itemId: string }) => void;
+    navigate(screen: 'ItemDetail', params: { itemId: string }): void;
+    navigate(
+      screen: 'LibraryJournal',
+      params: { journalWorkId: string; journalTitle: string; itemIds: string[] },
+    ): void;
   };
 }
 
@@ -209,12 +257,21 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const holds = useLibraryStore((s) => s.holds);
   const loading = useLibraryStore((s) => s.loading);
   const refresh = useLibraryStore((s) => s.refresh);
+  // See libraryStore.ts's own header: the loans/holds above may be the last
+  // SUCCESSFUL read, not a confirmed current one, whenever this is true — most
+  // visibly, a due date computed from a `loan.expiresAt` the server may have
+  // already changed or dropped.
+  const holdingsRefreshFailed = useLibraryStore((s) => s.refreshFailed);
+  // Gate for the expiry sweep below — see that effect's own comment on why a
+  // cold-start empty `loans` array must never be read as "confirmed: nothing
+  // is held".
+  const hasSyncedOnce = useLibraryStore((s) => s.hasSyncedOnce);
   // Device-local, so they are not part of `loading` and are not refetched by a
   // pull: there is nothing to fetch. A book on this phone is on this phone
   // whether or not the network answered.
   const downloadRecords = useDownloadStore((s) => s.downloads);
-  const bookmarkRecords = useBookmarkStore((s) => s.bookmarks);
   const isOnline = useNetworkStatus();
+  const journalMembership = useArticleJournalStore((s) => s.membership);
   // The seam to the reader/download stack (Team 4's, merged later). Defaults to a
   // stand-in whose `openBook` politely refuses. Only `BookmarkGroupRow`'s own
   // "Read" action still calls through this — see the file header.
@@ -250,6 +307,49 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const [expandedBookId, setExpandedBookId] = useState<string | undefined>(undefined);
   // Which book is mid-download from the Bookmarks tab's own group action.
   const [downloadingBookId, setDownloadingBookId] = useState<string | undefined>(undefined);
+  // Which download is mid-delete, from the Downloads tab's own row action.
+  const [deletingItemId, setDeletingItemId] = useState<string | undefined>(undefined);
+  // The REAL, synced bookmarks — `bookmarkTable.listActive(USER_ID)` with no
+  // `bookId`, which already lists across every book for a user (confirmed:
+  // `listActive`'s own SQL only filters on `book_id` when one is passed). An
+  // earlier version of this screen read `src/store/bookmarkStore.ts`, a
+  // Zustand stand-in that never had anything write to it — this fixes that
+  // without changing anything downstream, which still consumes `Bookmark[]`.
+  const [bookmarkRecords, setBookmarkRecords] = useState<Bookmark[]>([]);
+  // Unlike loans/holds/downloads, bookmarks arrive from an async SQLite read
+  // rather than already-hydrated store state, so they are not in hand on the
+  // very first render. The hydration batch call below waits on this flag
+  // rather than firing once with a bookmark-less id set and again the moment
+  // the real bookmark ids arrive — see that effect's own comment.
+  const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
+
+  // Loads on mount and again on every change to the real table — a bookmark
+  // created just now while reading must show up here without a manual pull,
+  // the same reason `ReaderScreen`'s own bookmarks effect subscribes rather
+  // than loading once.
+  useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      void bookmarkTable.listActive(USER_ID).then((rows) => {
+        if (cancelled) return;
+        // A row whose locator fails to parse is dropped, not surfaced as an
+        // error — see `bookmarkFromRow`'s own comment.
+        const parsed: Bookmark[] = [];
+        for (const row of rows) {
+          const bookmark = bookmarkFromRow(row);
+          if (bookmark !== null) parsed.push(bookmark);
+        }
+        setBookmarkRecords(parsed);
+        setBookmarksLoaded(true);
+      });
+    };
+    reload();
+    const unsubscribe = bookmarkTable.subscribe(reload);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const { offered, waiting } = partitionHolds(holds);
   const live = activeLoans(loans);
@@ -277,8 +377,13 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const idKey = ids.join(',');
 
   // ONE BATCH CALL PER DISTINCT SET OF IDS. Not per render, and not per row.
+  // Gated on `bookmarksLoaded` so the very first call already carries any
+  // bookmarked ids — without it, this fires once on mount (loans/downloads
+  // only, bookmarks not back yet) and again the instant the async bookmark
+  // read resolves and changes `idKey`, double-hitting the catalogue for
+  // every load rather than once.
   useEffect(() => {
-    if (ids.length === 0) return;
+    if (!bookmarksLoaded || ids.length === 0) return;
     let cancelled = false;
     getCatalogueSource()
       .getItemsBatch(ids)
@@ -297,7 +402,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `ids` is rebuilt every render; `idKey` is its stable identity.
-  }, [idKey]);
+  }, [idKey, bookmarksLoaded]);
 
   const onRefresh = useCallback(() => {
     void refresh();
@@ -308,6 +413,62 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     titles.get(itemId)?.authors?.join(', ');
   const summaryFor = (itemId: string): BookSummary | undefined => titles.get(itemId);
 
+  // THE EXPIRY SWEEP, on direct instruction: a downloaded Elite or Subscription
+  // title whose licence has actually lapsed is deleted from this device, not
+  // merely hidden — a stale, unopenable ciphertext sitting in storage the reader
+  // cannot read is worse than no file at all. OPEN_ACCESS is never swept (no
+  // loan ever backs it, so "no active loan" is its permanent, correct state,
+  // not a lapse) and an item whose tier isn't hydrated yet is left alone rather
+  // than guessed at.
+  //
+  // GATED ON `hasSyncedOnce`, NOT JUST "loans is empty" — the cold-start value
+  // of `loans` is also an empty array, and treating that as "confirmed: nothing
+  // is held" would delete every downloaded Elite/Subscription title on every
+  // app launch, before the real answer has even arrived. See libraryStore.ts's
+  // own comment on the flag.
+  //
+  // A GRACE WINDOW, NOT AN IMMEDIATE CHECK — a Subscription download's own
+  // borrow happens server-side, invisibly, ahead of the bytes (resolveAccess.ts
+  // §7's own comment), so the loan already exists by the time this device's
+  // download completes. But THIS screen's own `loans` cache only catches up on
+  // its next successful refresh, which can genuinely land before that borrow's
+  // effects are visible if Library happens to already be open. Without the
+  // window, that ordinary race reads as "no active loan" and deletes a title
+  // that was never actually unlicensed for even a moment.
+  useEffect(() => {
+    if (!hasSyncedOnce) return;
+    // SEEDED ON THE NEXT MACROTASK, same reason `useServerClock.ts` reads
+    // `Date.now()` inside a `setTimeout` rather than the effect body itself —
+    // a direct call here is flagged as an impure read of the render path
+    // (react-hooks/purity) even though this effect's own timing has nothing
+    // to do with rendering. A `setTimeout(0)` costs nothing observable and
+    // keeps the read out of that path.
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      const activeLoanItemIds = new Set(live.map((loan) => loan.itemId));
+      for (const record of downloads) {
+        const tier = summaryFor(record.itemId)?.accessTier;
+        if (tier !== 'ELITE' && tier !== 'SUBSCRIPTION') continue;
+        if (activeLoanItemIds.has(record.itemId)) continue;
+        if (now - record.downloadedAt < EXPIRY_SWEEP_GRACE_MS) continue;
+
+        const expiredTitle = titleFor(record.itemId);
+        void contentStore.destroy(record.itemId as BookId).finally(() => {
+          useDownloadStore.getState().removeDownload(record.itemId);
+          useExpiredDownloadsStore.getState().recordExpired({
+            itemId: record.itemId,
+            title: expiredTitle,
+            expiredAt: Date.now(),
+          });
+        });
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `live`/`downloads`/`titleFor`/`summaryFor` are rebuilt every render from `loans`/`downloadRecords`/`titles`, which are already listed.
+  }, [hasSyncedOnce, loans, downloadRecords, titles]);
+
+  const expiredDownloadNotices = useExpiredDownloadsStore((s) => s.notices);
+
   // Every row taps through to the item's own detail page — see the file
   // header. `goToDetail` is the one place that navigation happens, so every
   // row/card below hands this the same itemId rather than building its own
@@ -317,10 +478,23 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     [navigation],
   );
 
-  // Borrowed means subscription loans only — Elite is a different tier with a
-  // different lifecycle. See `partitionLoansByTier`'s own comment.
+  // Subscription and Elite are still partitioned internally — a subscription
+  // loan and an Elite loan render through different rows (`BorrowedBookRow`
+  // vs `EliteLoanRow`) even though the Borrowed TAB now shows both together.
+  // See `partitionLoansByTier`'s own comment.
   const { subscriptionLoans, eliteLoans } = partitionLoansByTier(live, (itemId) => summaryFor(itemId)?.accessTier);
   const bookmarkGroups = groupBookmarksByTitle(bookmarks);
+  // Every id this reader holds, across the same universe `collectItemIds`
+  // already gathers for hydration — an item with no journal membership entry
+  // is a book (or an article reached some other way) and is silently
+  // excluded, not an error. See `groupArticlesByJournal`'s own comment.
+  const journalGroups = groupArticlesByJournal(ids, journalMembership);
+  // Every article id folded into some journal group above — `All`'s merged
+  // content excludes these (see `renderAllTab`) so a journal article shows
+  // once, as its journal, rather than twice: once here by its own title and
+  // authors line (which read as an unrelated "article + section" row with no
+  // journal context at all) and again as its journal on the Journals tab.
+  const journalArticleIds = new Set(journalGroups.flatMap((group) => group.articleItemIds));
 
   // Guards against a second tap while a bookmark's own resume-open is in
   // flight — with the real provider two concurrent `openBook` calls would
@@ -415,9 +589,91 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     [],
   );
 
+  // Delete a download from the Downloads tab's own row action — confirmed
+  // first, since it frees real bytes on disk. `contentStore.destroy` (Content/
+  // Encryption's own "book deleted" terminal action, `contentStore.ts`'s own
+  // doc comment) drops the ciphertext, metadata and key; `removeDownload`
+  // drops this device's tracking record so the row itself disappears. Run in
+  // that order — a failed `destroy` leaves the row in place with a real error
+  // rather than reporting a title as gone while its bytes still sit on disk.
+  const handleDeleteDownload = useCallback((deleteItemId: string) => {
+    Alert.alert(
+      'Delete download?',
+      'This removes it from your device. You can download it again anytime.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setActionNotice(undefined);
+            setDeletingItemId(deleteItemId);
+            contentStore
+              .destroy(deleteItemId as BookId)
+              .then(() => useDownloadStore.getState().removeDownload(deleteItemId))
+              .catch(() => setActionNotice('Couldn’t delete that download. Try again.'))
+              .finally(() => setDeletingItemId(undefined));
+          },
+        },
+      ],
+    );
+  }, []);
+
   // Any row will do — `serverTime` is stamped once for the whole response, so
   // every loan and hold in one response carries the same value.
   const clock = useServerClock(offered[0]?.serverTime ?? waiting[0]?.serverTime, idKey, TICK_MS);
+
+  // ELITE-LOAN-EXPIRY NOTICE — separate from the download-expiry sweep above,
+  // and for a different reason: that sweep only ever fires for a title that
+  // was also DOWNLOADED. An Elite title read online without ever being
+  // downloaded just vanished from this screen the moment its loan lapsed,
+  // with nothing to say why once it was gone — Library's own list already
+  // drops it for free (it only ever renders `activeLoans(loans)`), but
+  // dropping it silently is the gap this effect closes.
+  //
+  // A LOAN CAN ALSO DISAPPEAR BECAUSE THE READER CHOSE TO END IT.
+  // `ItemDetailScreen`'s own "Revoke licence" action (the ELITE branch of
+  // `resolveAccess.ts`) calls the identical `returnLoan` a real expiry would
+  // eventually trigger server-side, and both leave the SAME footprint here —
+  // the loan is just gone on the next refresh. They must not read the same to
+  // the reader: telling someone "your access expired" for a title they just
+  // chose to give back would be a wrong, confusing claim. The loan's own
+  // `expiresAt` is what tells the two apart — a loan that vanished AFTER its
+  // stated expiry has genuinely lapsed; one that vanished BEFORE it was ended
+  // some other way, and gets no notice here.
+  const prevEliteLoansRef = useRef<Loan[] | undefined>(undefined);
+  useEffect(() => {
+    if (!hasSyncedOnce || !clock.ready) return;
+    const prevLoans = prevEliteLoansRef.current;
+    prevEliteLoansRef.current = eliteLoans;
+    // The FIRST successful sync only ever seeds the baseline — there is
+    // nothing to compare a cold start against, and treating "nothing seen
+    // yet" as "everything just expired" would fire a notice for every Elite
+    // loan the reader already held before this screen ever opened.
+    if (prevLoans === undefined) return;
+    const stillHeld = new Set(eliteLoans.map((loan) => loan.itemId));
+    const deviceNowMs = clock.nowMs + clock.offsetMs;
+    const lapsed = prevLoans.filter(
+      (loan) => !stillHeld.has(loan.itemId) && loan.expiresAt !== undefined && deviceNowMs >= loan.expiresAt,
+    );
+    if (lapsed.length === 0) return;
+    // SEEDED ON THE NEXT MACROTASK — see the download-expiry sweep's own
+    // comment above on why `Date.now()` cannot be read directly in an effect
+    // body (react-hooks/purity).
+    const timer = setTimeout(() => {
+      for (const loan of lapsed) {
+        useExpiredLoansStore.getState().recordExpired({
+          itemId: loan.itemId,
+          title: titleFor(loan.itemId),
+          expiredAt: Date.now(),
+        });
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `titleFor` is rebuilt every render from `titles`, not an independent input.
+  }, [hasSyncedOnce, eliteLoans, clock.ready, clock.nowMs, clock.offsetMs]);
+
+  const expiredLoanNotices = useExpiredLoansStore((s) => s.notices);
 
   // FIRST LOAD OF THE SERVER-SOURCED HOLDINGS ONLY. Downloads and bookmarks are
   // already in hand — they came off this device — so a whole-screen skeleton
@@ -483,6 +739,8 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           publisher={publisherFor(record.itemId)}
           summary={summaryFor(record.itemId)}
           onPress={() => goToDetail(record.itemId)}
+          onDelete={() => handleDeleteDownload(record.itemId)}
+          deleting={deletingItemId === record.itemId}
         />
       </View>
     ));
@@ -598,6 +856,17 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           {...(badges.length === 0
             ? {}
             : { badge: <View style={styles.badgeStack}>{badges}</View> })}
+          {...(item.download === undefined
+            ? {}
+            : {
+                action: (
+                  <DeleteDownloadButton
+                    title={titleFor(item.itemId)}
+                    onDelete={() => handleDeleteDownload(item.itemId)}
+                    deleting={deletingItemId === item.itemId}
+                  />
+                ),
+              })}
         />
       </View>
     );
@@ -613,8 +882,14 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
       );
     }
 
-    const mergedContent = mergeContentItems(eliteLoans, subscriptionLoans, downloads, bookmarkGroups);
-    const hasContent = mergedContent.length > 0;
+    // A journal article is excluded here and rendered as its JOURNAL instead
+    // (below) — otherwise it shows up by its own title with its authors line
+    // underneath, which carries no journal context at all and reads as an
+    // unrelated book. See `journalArticleIds`'s own comment.
+    const mergedContent = mergeContentItems(eliteLoans, subscriptionLoans, downloads, bookmarkGroups).filter(
+      (item) => !journalArticleIds.has(item.itemId),
+    );
+    const hasContent = mergedContent.length > 0 || journalGroups.length > 0;
     const hasWaiting = waiting.length > 0;
 
     if (!hasContent && !hasWaiting && offered.length === 0) {
@@ -626,8 +901,9 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         {renderPendingOffers()}
         {hasContent && (
           <View style={styles.section}>
-            <TabHeading title="Your content" count={mergedContent.length} />
+            <TabHeading title="Your content" count={mergedContent.length + journalGroups.length} />
             {mergedContent.map(renderMergedContentRow)}
+            {journalGroups.length > 0 && renderJournalGroups()}
           </View>
         )}
         {hasWaiting && (
@@ -640,18 +916,65 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     );
   }
 
+  // Borrowed and Premium, merged into one tab on explicit instruction — safe
+  // because `partitionLoansByTier`'s own invariant guarantees a title can
+  // never be both a subscription and an Elite loan, so nothing here can show
+  // twice. UNLIKE THE OTHER SINGLE-PURPOSE TABS, none of the four facts (an
+  // offer, a subscription loan, an Elite loan, a queue position) gets a
+  // permanent `TabHint` of its own any more — see `renderBorrowedTab`'s own
+  // comment for why that reversed.
   function renderBorrowedTab(): ReactNode {
     if (holdingsLoading) return <HoldingsSkeleton />;
-    const count = subscriptionLoans.length;
-    return (
-      <>
-        <TabHeading title="Borrowed" count={count} />
-        {count > 0 && renderSubscriptionLoans()}
+
+    // EACH OF THE FOUR FACTS RENDERS ONLY WHEN IT'S TRUE, on direct
+    // instruction, 14 Sep — this used to always render all three of
+    // Borrowed/Elite/Waiting, each with its own permanent `TabHint` even
+    // while genuinely empty ("No items currently borrowed.", etc.), which
+    // read as three stacked apologies rather than a tab with content in it.
+    // A reader with only an Elite loan now sees exactly that one section,
+    // not two empty ones either side of it.
+    const hasAnything =
+      offered.length > 0 || subscriptionLoans.length > 0 || eliteLoans.length > 0 || waiting.length > 0;
+
+    if (!hasAnything) {
+      return (
         <TabHint
           icon="library-outline"
-          headline={count === 0 ? 'No items currently borrowed.' : undefined}
-          caption="Items you borrow will appear here until they’re due."
+          headline="Nothing borrowed or waiting on right now."
+          caption="Titles you borrow, Elite access you hold, and any Elite queue you’re waiting in will all appear here."
         />
+      );
+    }
+
+    return (
+      <>
+        {offered.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Access available" count={offered.length} />
+            {renderPendingOffers()}
+          </View>
+        )}
+
+        {subscriptionLoans.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Borrowed" count={subscriptionLoans.length} />
+            {renderSubscriptionLoans()}
+          </View>
+        )}
+
+        {eliteLoans.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Your Elite access" count={eliteLoans.length} />
+            {renderEliteActiveLoans()}
+          </View>
+        )}
+
+        {waiting.length > 0 && (
+          <View style={styles.section}>
+            <TabHeading title="Waiting for access" count={waiting.length} />
+            {renderWaitingQueue()}
+          </View>
+        )}
       </>
     );
   }
@@ -697,46 +1020,48 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     );
   }
 
-  function renderPremiumTab(): ReactNode {
-    if (holdingsLoading) return <HoldingsSkeleton />;
+  // One row per JOURNAL, not per article — an article with no membership
+  // entry never reaches `journalGroups` at all (see `groupArticlesByJournal`),
+  // so every row here is real. Tapping navigates to this reader's own
+  // article list for that journal (`LibraryJournalScreen`), NOT the
+  // catalogue's Journal Details/Volumes & Issues browse — that flow needs a
+  // live `getWork` call and an institution context this screen has no
+  // business repeating for a journal the reader has already been reading.
+  function renderJournalGroups(): ReactNode {
+    return journalGroups.map((group) => (
+      <View key={group.journalWorkId} style={styles.row}>
+        <ContentCard
+          title={group.journalTitle}
+          onPress={() =>
+            navigation.navigate('LibraryJournal', {
+              journalWorkId: group.journalWorkId,
+              journalTitle: group.journalTitle,
+              itemIds: group.articleItemIds,
+            })
+          }
+          badge={
+            <Text style={styles.badgeLabel}>
+              {group.articleItemIds.length === 1
+                ? '1 article'
+                : `${group.articleItemIds.length} articles`}
+            </Text>
+          }
+        />
+      </View>
+    ));
+  }
+
+  function renderJournalsTab(): ReactNode {
+    const count = journalGroups.length;
     return (
       <>
-        {/* Never a reserved empty slot — product spec §4: "If there is no
-            pending access notification/action... do NOT reserve an empty
-            area for it." */}
-        {offered.length > 0 && (
-          <View style={styles.section}>
-            <TabHeading title="Access available" count={offered.length} />
-            {renderPendingOffers()}
-          </View>
-        )}
-
-        <View style={styles.section}>
-          <TabHeading title="Your Elite access" count={eliteLoans.length} />
-          {eliteLoans.length > 0 ? (
-            renderEliteActiveLoans()
-          ) : (
-            <TabHint
-              icon="crown-outline"
-              headline="No active Elite access."
-              caption="When you have access, your titles will appear here."
-              iconSet="material"
-            />
-          )}
-        </View>
-
-        <View style={styles.section}>
-          <TabHeading title="Waiting for access" count={waiting.length} />
-          {waiting.length > 0 ? (
-            renderWaitingQueue()
-          ) : (
-            <TabHint
-              icon="hourglass-outline"
-              headline="No items currently waiting."
-              caption="Titles waiting for Elite access will appear here."
-            />
-          )}
-        </View>
+        <TabHeading title="Journals" count={count} />
+        {count > 0 && renderJournalGroups()}
+        <TabHint
+          icon="albums-outline"
+          headline={count === 0 ? 'No journal articles yet.' : undefined}
+          caption="Articles you open from a journal will appear here, grouped by journal."
+        />
       </>
     );
   }
@@ -794,6 +1119,49 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} />}
         testID="library-scroll"
       >
+        {expiredDownloadNotices.length > 0 && (
+          <View style={styles.expiredNoticeContainer} testID="expired-downloads-notice">
+            <Text style={styles.expiredNoticeText}>
+              {expiredDownloadNotices.length === 1
+                ? `“${expiredDownloadNotices[0].title}” was removed from this device because its licence ended.`
+                : `${expiredDownloadNotices.length} downloads were removed from this device because their licences ended.`}
+            </Text>
+            <Pressable
+              onPress={() => useExpiredDownloadsStore.getState().dismissAll()}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              hitSlop={8}
+            >
+              <Text style={styles.expiredNoticeDismiss}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {expiredLoanNotices.length > 0 && (
+          <View style={styles.expiredNoticeContainer} testID="expired-loans-notice">
+            <Text style={styles.expiredNoticeText}>
+              {expiredLoanNotices.length === 1
+                ? `Your access to “${expiredLoanNotices[0].title}” expired and it was removed from your library.`
+                : `Your access to ${expiredLoanNotices.length} titles expired and they were removed from your library.`}
+            </Text>
+            <Pressable
+              onPress={() => useExpiredLoansStore.getState().dismissAll()}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss"
+              hitSlop={8}
+            >
+              <Text style={styles.expiredNoticeDismiss}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {holdingsRefreshFailed && (
+          <Text style={styles.notice} testID="library-holdings-stale">
+            Couldn’t confirm your current access. Due dates and loan status below may be out of
+            date — pull to try again.
+          </Text>
+        )}
+
         {hydrationFailed && (
           <Text style={styles.notice}>
             Titles couldn’t be loaded. Pull to try again — your books are still here.
@@ -810,7 +1178,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         {activeTab === 'loans' && renderBorrowedTab()}
         {activeTab === 'downloads' && renderDownloadsTab()}
         {activeTab === 'bookmarks' && renderBookmarksTab()}
-        {activeTab === 'holds' && renderPremiumTab()}
+        {activeTab === 'journals' && renderJournalsTab()}
       </ScrollView>
     </View>
   );
@@ -1047,11 +1415,13 @@ function EliteQueueRow({
 
 // A book whose bytes are on this phone.
 //
-// NO "Read offline" BUTTON, AND NO DELETE. Opening it needs a decrypt through
-// CAP-7's `ContentProvider`, and deleting it needs `ContentStore.destroy` to
-// take the wrapped key with it — a row that removed our record and left the
-// ciphertext on disk would report free space that was never freed. Both are
-// behind a seam this repo does not implement yet, so the row states the fact.
+// STILL NO "Read offline" BUTTON — opening it goes through `ItemDetail`'s own
+// Read/Play action like every other row on this screen (see the file
+// header), which decrypts through `openBook` regardless of tab. DELETE now
+// IS WIRED: `onDelete` calls `contentStore.destroy` (takes the ciphertext,
+// metadata and wrapped key with it, not just this device's tracking record —
+// see `handleDeleteDownload`'s own comment), so this row no longer risks
+// reporting free space that was never actually freed.
 //
 // IT DOES NOT SAY WHETHER THE BOOK STILL OPENS. See `downloadedLabel`: this
 // screen knows a download happened, not that the licence behind it is still
@@ -1062,6 +1432,8 @@ function DownloadRow({
   publisher,
   summary,
   onPress,
+  onDelete,
+  deleting,
 }: {
   record: DownloadRecord;
   title: string;
@@ -1069,6 +1441,11 @@ function DownloadRow({
   summary?: BookSummary;
   /** Tap → this item's detail page. */
   onPress: () => void;
+  /** Confirms, then deletes — see `handleDeleteDownload`'s own comment. */
+  onDelete: () => void;
+  /** This row's own delete call is in flight — disables the button so a
+   * second tap cannot fire a second `contentStore.destroy` for the same id. */
+  deleting: boolean;
 }) {
   return (
     <ContentCard
@@ -1080,7 +1457,43 @@ function DownloadRow({
       // "Downloaded" badge stays on `downloadedLabel`'s own honest wording.
       {...(summary?.format === undefined ? {} : { format: summary.format })}
       badge={<Text style={styles.badgeLabel}>{downloadedLabel(record)}</Text>}
+      action={<DeleteDownloadButton title={title} onDelete={onDelete} deleting={deleting} />}
     />
+  );
+}
+
+// Shared between `DownloadRow` (the Downloads tab) and `renderMergedContentRow`
+// (the All tab) — a download is a download regardless of which tab a reader
+// found it on, and the All tab is the one most readers land on first, so
+// scoping delete to the Downloads tab alone (the original shape here) left it
+// looking missing entirely to a reader who never switches tabs.
+//
+// A nested Pressable inside `ContentCard`'s own — see that file's `action` doc
+// comment: it claims the touch itself, so deleting never also navigates to
+// the detail page.
+function DeleteDownloadButton({
+  title,
+  onDelete,
+  deleting,
+}: {
+  title: string;
+  /** Confirms, then deletes — see `handleDeleteDownload`'s own comment. */
+  onDelete: () => void;
+  /** This row's own delete call is in flight — disables the button so a
+   * second tap cannot fire a second `contentStore.destroy` for the same id. */
+  deleting: boolean;
+}) {
+  return (
+    <Pressable
+      testID="download-delete-button"
+      onPress={onDelete}
+      disabled={deleting}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={`Delete ${title} from this device`}
+    >
+      <Ionicons name={deleting ? 'hourglass-outline' : 'trash-outline'} size={20} color={color.textSecondary} />
+    </Pressable>
   );
 }
 
@@ -1226,6 +1639,31 @@ const styles = StyleSheet.create({
     padding: space.sm,
     marginBottom: space.md,
     color: color.textSecondary,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+  },
+  // Same card as `notice` above, but a View rather than a Text — this one
+  // carries its own Dismiss control alongside the message.
+  expiredNoticeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.sm,
+    backgroundColor: color.surface,
+    borderRadius: radius.card,
+    padding: space.sm,
+    marginBottom: space.md,
+  },
+  expiredNoticeText: {
+    flex: 1,
+    color: color.textSecondary,
+    fontFamily: type.smallLabel.fontFamily,
+    fontSize: type.smallLabel.size,
+    lineHeight: type.smallLabel.lineHeight,
+  },
+  expiredNoticeDismiss: {
+    color: color.primary,
     fontFamily: type.smallLabel.fontFamily,
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,

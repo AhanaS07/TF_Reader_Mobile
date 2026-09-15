@@ -1,31 +1,26 @@
 // src/features/library/standInProvider.test.ts
-// The stand-in that backs the Library seam until Team 4's stack merges: reads
-// this repo's own stores, refuses to open (no reader in this build).
-import type { Bookmark } from '@/shared/contracts';
-import { useBookmarkStore } from '@store/bookmarkStore';
+// The stand-in that backs the Library seam: reads real device-local/synced
+// stores, refuses to open (no adapter wired to the real reader yet — see
+// standInProvider.ts's own header).
+import { getDatabase } from '@/features/sync/localDb/database';
+import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
 import { useDownloadStore } from '@store/downloadStore';
 
 import { ReaderUnavailableError, standInLibraryProvider } from './standInProvider';
 
 const USER = 'user_1';
 
-function aBookmark(over: Partial<Bookmark> = {}): Bookmark {
-  return {
-    id: 'bm_1',
-    userId: USER,
-    bookId: 'item_42',
-    locator: { type: 'PDF', page: 12 },
-    createdAt: 1,
-    updatedAt: 1,
-    isDeleted: false,
-    synced: false,
-    ...over,
-  };
+// Same reset shape `src/features/sync/stores/bookmarkStore.test.ts` already
+// uses: `getDatabase()` caches its instance at module scope, so a fresh test
+// run gets a clean table by deleting rows, not by recreating the database.
+async function resetBookmarksTable(): Promise<void> {
+  const db = await getDatabase();
+  await db.execAsync(`DELETE FROM bookmarks; DELETE FROM outbox;`);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   useDownloadStore.getState().clear();
-  useBookmarkStore.getState().clear();
+  await resetBookmarksTable();
 });
 
 describe('standInLibraryProvider.listDownloads', () => {
@@ -54,12 +49,20 @@ describe('standInLibraryProvider.listDownloads', () => {
 
 describe('standInLibraryProvider.listBookmarks', () => {
   it('returns live bookmarks and drops tombstones', async () => {
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_1' }));
-    useBookmarkStore.getState().addBookmark(aBookmark({ id: 'bm_2' }));
-    useBookmarkStore.getState().removeBookmark('bm_2', 2);
+    const bm1 = await bookmarkStore.addForPage(12, undefined, 'item_42', USER);
+    const bm2 = await bookmarkStore.addForPage(88, undefined, 'item_42', USER);
+    await bookmarkStore.remove(bm2.id);
 
     const rows = await standInLibraryProvider.listBookmarks(USER);
-    expect(rows.map((b) => b.id)).toEqual(['bm_1']);
+    expect(rows.map((b) => b.id)).toEqual([bm1.id]);
+  });
+
+  it('lists across every book for the user, not one hard-coded book', async () => {
+    await bookmarkStore.addForPage(1, undefined, 'item_a', USER);
+    await bookmarkStore.addForPage(1, undefined, 'item_b', USER);
+
+    const rows = await standInLibraryProvider.listBookmarks(USER);
+    expect(rows.map((b) => b.bookId).sort()).toEqual(['item_a', 'item_b']);
   });
 });
 

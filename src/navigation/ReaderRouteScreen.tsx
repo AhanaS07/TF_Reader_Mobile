@@ -202,6 +202,23 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     [flushProgress],
   );
 
+  // `ReaderScreen`'s own `tearDownAndLock` already stopped the monitor, closed the book and
+  // shown the inline banner by the time this fires — this is only the louder, modal half a
+  // reader expects for losing a book mid-read, same idiom as the cross-device-conflict
+  // `Alert.alert` above. Compulsory (`cancelable: false`), same reasoning as that one: the
+  // book is already gone, so there is nothing to silently dismiss back into — the reader must
+  // acknowledge it, which is also the moment this screen leaves (`navigation.goBack()`), since
+  // staying on a permanently locked reader with nothing left to do is not a real option.
+  const handleLocked = useCallback(() => {
+    Alert.alert(
+      'Access ended',
+      'Your access to this title has ended, most likely because its licence expired. ' +
+        'You can grant access again from its details page to continue.',
+      [{ text: 'OK', onPress: () => navigation.goBack() }],
+      { cancelable: false },
+    );
+  }, [navigation]);
+
   // Resets the throttle for a new book — a stale timestamp from a previous book must not swallow
   // this book's first write — and flushes on the way out, covering both a genuine unmount (normal
   // back-navigation) and a bookId change on this same persistent instance (switching books without
@@ -380,6 +397,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         bookId={bookId}
         initialTarget={resolved.target}
         onRelocated={handleRelocated}
+        onLocked={handleLocked}
         toolbarExtra={
           <Fragment>
             <DevPreferencesMenu format={format} />
