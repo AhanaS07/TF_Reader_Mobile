@@ -11,7 +11,7 @@
 
 import { LicenceError, LicenceFailure, type LicenceSource } from '@/licence/LicenceSource';
 
-import { borrowOrPlaceHold, queuePositionLabel } from './queueRequest';
+import { borrowOrPlaceHold, queuePositionLabel, queueProgressFraction } from './queueRequest';
 
 const LOAN = { loanId: 'loan_1', itemId: 'item_42', state: 'active' as const, expiresAt: 9_999 };
 const HELD = {
@@ -109,5 +109,28 @@ describe('queuePositionLabel', () => {
   it('says nothing when there is no position', () => {
     expect(queuePositionLabel({})).toBeUndefined();
     expect(queuePositionLabel({ queueLength: 7 })).toBeUndefined();
+  });
+});
+
+// ── queueProgressFraction — the same fill LibraryScreen's Elite queue row
+// already draws, mirrored here for D12's own queued state ────────────────────
+describe('queueProgressFraction', () => {
+  it('is lowest at the back of the queue and 1 for next in line', () => {
+    expect(queueProgressFraction({ queuePosition: 7, queueLength: 7 })).toBeCloseTo(1 / 7);
+    expect(queueProgressFraction({ queuePosition: 1, queueLength: 7 })).toBe(1);
+  });
+
+  it('rises toward 1 as the position gets closer to the front', () => {
+    expect(queueProgressFraction({ queuePosition: 3, queueLength: 7 })).toBeCloseTo(5 / 7);
+  });
+
+  it('is undefined without both a position and a total', () => {
+    expect(queueProgressFraction({})).toBeUndefined();
+    expect(queueProgressFraction({ queuePosition: 1 })).toBeUndefined();
+    expect(queueProgressFraction({ queueLength: 7 })).toBeUndefined();
+  });
+
+  it('is undefined for a nonsensical zero-length queue rather than dividing by zero', () => {
+    expect(queueProgressFraction({ queuePosition: 1, queueLength: 0 })).toBeUndefined();
   });
 });

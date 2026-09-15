@@ -11,8 +11,11 @@
 // the store subscription, and the arithmetic it would otherwise bury lives
 // where a test can reach it without a renderer.
 import type { Bookmark } from '@/shared/contracts';
+import type { BookmarkRow } from '@/features/sync/localDb/types';
+import { parseLocator } from '@/features/sync/stores/bookmarkStore';
 import { MAX_BATCH_IDS } from '@model/batchItems';
 import type { AccessTier, Hold, Loan } from '@model/types';
+import type { ArticleJournalMembership } from '@store/articleJournalStore';
 import type { DownloadRecord } from '@store/downloadStore';
 
 // ─── the five sections ───────────────────────────────────────────────────────
@@ -356,6 +359,8 @@ export function offerCountdownLabel(
 }
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
+const MS_PER_MINUTE = 60_000;
 
 /**
  * Due-date copy for a loan on the shelf.
@@ -364,9 +369,16 @@ const MS_PER_DAY = 86_400_000;
  * contract omits `dueAt` for it entirely, so "No due date" is the correct
  * sentence rather than a fallback hiding missing data.
  *
- * Measured against the server's clock like everything else here. Days are
- * CEILED: a loan with four hours left is due "in 1 day", not "in 0 days" —
- * rounding a live loan down to nothing reads as expired.
+ * THREE UNITS, ONE PER ORDER OF MAGNITUDE — found live, 14 Sep: a loan with
+ * five minutes left used to round UP through whole days (`Math.ceil` of a
+ * fraction is always at least 1), reading as "Due in 1 day" for a title that
+ * was, in real terms, already gone. Days only once at least a full day
+ * remains; hours only once at least a full hour remains within that day;
+ * minutes for anything under an hour — each tier ceiled the same way days
+ * always were, so "a few seconds left" still reads as "in 1 minute", not
+ * "in 0 minutes", which would read as already due.
+ *
+ * Measured against the server's clock like everything else here.
  */
 export function dueLabel(
   loan: Loan,
@@ -376,8 +388,19 @@ export function dueLabel(
   if (loan.expiresAt === undefined) return 'No due date';
   const remaining = loan.expiresAt - (deviceNowMs + offsetMs);
   if (remaining <= 0) return 'Due now';
-  const days = Math.ceil(remaining / MS_PER_DAY);
-  return days === 1 ? 'Due in 1 day' : `Due in ${days} days`;
+
+  if (remaining >= MS_PER_DAY) {
+    const days = Math.ceil(remaining / MS_PER_DAY);
+    return days === 1 ? 'Due in 1 day' : `Due in ${days} days`;
+  }
+
+  if (remaining >= MS_PER_HOUR) {
+    const hours = Math.ceil(remaining / MS_PER_HOUR);
+    return hours === 1 ? 'Due in 1 hour' : `Due in ${hours} hours`;
+  }
+
+  const minutes = Math.ceil(remaining / MS_PER_MINUTE);
+  return minutes === 1 ? 'Due in 1 minute' : `Due in ${minutes} minutes`;
 }
 
 // ─── downloads copy ──────────────────────────────────────────────────────────
@@ -496,6 +519,98 @@ export function queueProgressFraction(hold: Hold): number | undefined {
   if (hold.queueLength <= 0) return undefined;
   const fromFront = hold.queueLength - hold.position + 1;
   return Math.max(0, Math.min(1, fromFront / hold.queueLength));
+}
+
+// ─── bookmarks: the real store's row shape → the frozen contract ───────────
+
+/**
+ * `bookmarkTable.listActive()` (the REAL, synced bookmark store —
+ * `src/features/sync/stores/bookmarkStore.ts`) returns `BookmarkRow[]`, the
+ * SQLite row shape: snake_case, ISO-string timestamps, `0`/`1` ints for
+ * `is_deleted`/`synced`. Everything in this file and `LibraryScreen.tsx`
+ * (`sortedBookmarks`, `groupBookmarksByTitle`, `bookmarkLocationLabel`,
+ * `bookmarkTarget`) already types against the frozen `Bookmark` contract
+ * (`@/shared/contracts`) instead — the shape another team's sync layer
+ * publishes, epoch-ms `Timestamp`s included. This is the one converter
+ * between them, so the row shape stays an implementation detail of the sync
+ * feature and does not leak into how Library already reasons about a
+ * bookmark.
+ *
+ * DROPS A ROW WHOSE LOCATOR FAILS TO PARSE, rather than crash or fabricate
+ * one — `parseLocator` already returns `null` for malformed/legacy JSON (see
+ * its own comment), and a bookmark with no readable position is not a
+ * bookmark this screen can render or resume.
+ */
+export function bookmarkFromRow(row: BookmarkRow): Bookmark | null {
+  const locator = parseLocator(row.locator);
+  if (locator === null) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    bookId: row.book_id,
+    ...(row.chapter_id === null ? {} : { chapterId: row.chapter_id }),
+    locator,
+    ...(row.name === null ? {} : { name: row.name }),
+    createdAt: Date.parse(row.created_at),
+    updatedAt: Date.parse(row.updated_at),
+    isDeleted: row.is_deleted === 1,
+    synced: row.synced === 1,
+  };
+}
+
+// ─── journals: articles this reader has grouped by which journal they're from ─
+
+/** One journal, and which of this reader's own article ids came from it. */
+export interface JournalGroup {
+  journalWorkId: string;
+  journalTitle: string;
+  institutionId: string;
+  articleItemIds: string[];
+}
+
+/**
+ * Groups the itemIds this reader actually holds (downloaded, borrowed, or
+ * bookmarked — the SAME universe `collectItemIds` already gathers) by which
+ * journal they belong to, per `articleJournalStore`'s membership map.
+ *
+ * AN ITEM WITH NO MEMBERSHIP ENTRY IS NOT AN ARTICLE FROM THIS FLOW, not an
+ * error — most items in a reader's library are books, which never gain a
+ * membership entry (see `articleJournalStore`'s own header: it is written
+ * only from the journal drill-down). Silently excluded here; the Journals
+ * tab shows exactly the articles this store actually knows about, nothing
+ * more.
+ *
+ * ORDER IS FIRST-SEEN ACROSS `itemIds`, same rule `mergeContentItems` already
+ * uses — the caller's own ordering (offered → loans → downloads → bookmarks
+ * → waiting, from `collectItemIds`) is preserved rather than re-sorted here.
+ */
+export function groupArticlesByJournal(
+  itemIds: string[],
+  membership: Record<string, ArticleJournalMembership>,
+): JournalGroup[] {
+  const order: string[] = [];
+  const byJournal = new Map<string, JournalGroup>();
+  for (const itemId of itemIds) {
+    const entry = membership[itemId];
+    if (entry === undefined) continue;
+    const existing = byJournal.get(entry.journalWorkId);
+    if (existing === undefined) {
+      byJournal.set(entry.journalWorkId, {
+        journalWorkId: entry.journalWorkId,
+        journalTitle: entry.journalTitle,
+        institutionId: entry.institutionId,
+        articleItemIds: [itemId],
+      });
+      order.push(entry.journalWorkId);
+    } else {
+      existing.articleItemIds.push(itemId);
+    }
+  }
+  return order.map((journalWorkId) => {
+    const group = byJournal.get(journalWorkId);
+    if (group === undefined) throw new Error(`groupArticlesByJournal: missing group for ${journalWorkId}`);
+    return group;
+  });
 }
 
 // NOT BUILT: the estimated wait, which Module E's screen spec asks for as "a

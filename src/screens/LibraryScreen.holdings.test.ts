@@ -521,16 +521,62 @@ describe('dueLabel', () => {
     expect(dueLabel(aLoan(), 0, SERVER_NOW_MS)).toBe('No due date');
   });
 
-  it('ceils, so a loan with hours left is due in 1 day rather than 0', () => {
-    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 4 * 60 * 60_000 });
+  it('ceils days, so a loan with over a day left rounds up to the next whole day', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 25 * 60 * 60_000 });
 
-    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 1 day');
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 2 days');
   });
 
-  it('pluralises', () => {
+  it('pluralises days', () => {
     const loan = aLoan({ expiresAt: SERVER_NOW_MS + 14 * 86_400_000 });
 
     expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 14 days');
+  });
+
+  // Found live, 14 Sep: a loan with hours left used to still ceil through days
+  // (4 hours read as "Due in 1 day"), which is a real loan's expiry read as a
+  // full day away when it was actually a few hours off. Under a day now drops
+  // to hours instead.
+  it('drops to hours once under a day remains, rather than still ceiling to 1 day', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 4 * 60 * 60_000 });
+
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 4 hours');
+  });
+
+  it('ceils hours, so a loan with a fraction of an hour left rounds up to the next whole hour', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 90 * 60_000 });
+
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 2 hours');
+  });
+
+  it('pluralises hours, and singularises exactly 1', () => {
+    expect(dueLabel(aLoan({ expiresAt: SERVER_NOW_MS + 3 * 60 * 60_000 }), 0, SERVER_NOW_MS)).toBe(
+      'Due in 3 hours',
+    );
+    expect(dueLabel(aLoan({ expiresAt: SERVER_NOW_MS + 60 * 60_000 }), 0, SERVER_NOW_MS)).toBe(
+      'Due in 1 hour',
+    );
+  });
+
+  // The same real gap this whole fix exists for: a 5-minute loan (this app's
+  // own dev-fixture Elite period, confirmed live against the real backend)
+  // must read in minutes, not round all the way up to a day OR an hour.
+  it('drops to minutes once under an hour remains', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 5 * 60_000 });
+
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 5 minutes');
+  });
+
+  it('ceils minutes, so a loan with a fraction of a minute left rounds up rather than reading as due', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 30_000 });
+
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 1 minute');
+  });
+
+  it('pluralises minutes', () => {
+    const loan = aLoan({ expiresAt: SERVER_NOW_MS + 2 * 60_000 });
+
+    expect(dueLabel(loan, 0, SERVER_NOW_MS)).toBe('Due in 2 minutes');
   });
 
   it('measures against the server clock, not the device one', () => {

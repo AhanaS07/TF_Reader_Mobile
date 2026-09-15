@@ -10,12 +10,21 @@ import type { NavLink, WorkType } from '@model/types';
  * absent for an ordinary book/audiobook push. `workType: 'article'` is what
  * makes ItemDetailScreen render screen 04 instead of falling back to screen
  * 05 (Publication.workType is never 'article' — wokay's @type enum has no
- * value for it yet, Q-1b). `articleContext` supplies the journal/volume/issue
- * names for screen 04's context line — a Publication has no parent-journal
- * reference of its own, so this is display data the caller already has,
- * exactly like Shelf's own `title` param.
+ * value for it yet, Q-1b). `journalTitle`/`volumeTitle`/`issueTitle` supply
+ * screen 04's context line — a Publication has no parent-journal reference of
+ * its own, so this is display data the caller already has, exactly like
+ * Shelf's own `title` param.
+ *
+ * `journalWorkId`/`institutionId` are NOT display data — they are the stable
+ * identity needed to persist "this article belongs to this journal" into
+ * `articleJournalStore` (ItemDetailScreen's fetch-success effect), so Library
+ * can group an article under its journal and a reader can navigate back to
+ * it. Both are already in hand at every call site that builds this object
+ * (JournalScreen/JournalIssueScreen), so nothing here is a new fetch.
  */
 export interface ArticleContext {
+  journalWorkId: string;
+  institutionId: string;
   journalTitle: string;
   volumeTitle?: string;
   issueTitle?: string;
@@ -90,15 +99,21 @@ export type CatalogueStackParamList = {
   // cover — the reference layout for this screen is a plain list, not a
   // cover-led page.
   JournalVolumes: {
+    journalWorkId: string;
     journalTitle: string;
     institutionId: string;
     volumes: NavLink[];
   };
-  // Issue Articles (screen 04's list). workId is the ISSUE's own work id —
+  // Issue Articles (screen 04's list). `workId` is the ISSUE's own work id —
   // this screen makes the one lazy getWork() call for it, same as today's
-  // per-issue expand in JournalScreen used to. volumeTitle is absent when the
+  // per-issue expand in JournalScreen used to. `journalWorkId` is the
+  // JOURNAL's own id (the root JournalScreen's `workId`), threaded through
+  // unchanged by JournalVolumesScreen — it is what `ItemDetail`'s
+  // `articleContext` needs to persist journal membership, and is a different
+  // id from this screen's own `workId`. volumeTitle is absent when the
   // journal has no volume level (an issue sitting directly under the journal).
   JournalIssue: {
+    journalWorkId: string;
     journalTitle: string;
     institutionId: string;
     volumeTitle?: string;
@@ -171,6 +186,14 @@ export type LibraryStackParamList = {
   LibraryHome: undefined;
   InstitutionList: undefined;
   ItemDetail: { itemId: string; workType?: WorkType; articleContext?: ArticleContext };
+  // The Journals tab's own drill-down — NOT the catalogue's Journal Details/
+  // Volumes & Issues browse (that flow lives only in CatalogueStackParamList
+  // and needs a live `getWork` call this screen has no reason to repeat).
+  // `itemIds` are the article ids `LibraryScreen` already knows belong to
+  // this journal (from `articleJournalStore`, cross-referenced against this
+  // reader's own downloads/loans/bookmarks) — this screen only hydrates their
+  // titles via `getItemsBatch`, the same call `LibraryScreen` itself makes.
+  LibraryJournal: { journalWorkId: string; journalTitle: string; itemIds: string[] };
   AccessGate: { itemId: string; title: string; authors: string };
   SignIn: undefined;
   PersonalAccount: { mode: PersonalAccountMode };

@@ -55,7 +55,7 @@ type VolumeRow = {
 };
 
 export default function JournalVolumesScreen({ route }: Props) {
-  const { journalTitle, institutionId, volumes: initialVolumes } = route.params;
+  const { journalWorkId, journalTitle, institutionId, volumes: initialVolumes } = route.params;
   const navigation = useNavigation<Nav>();
 
   // The newest volume opens already expanded (see the file header) — seeded
@@ -75,13 +75,14 @@ export default function JournalVolumesScreen({ route }: Props) {
   const goToIssue = useCallback(
     (workId: string, issueTitle: string, volumeTitle?: string) =>
       navigation.navigate('JournalIssue', {
+        journalWorkId,
         journalTitle,
         institutionId,
         volumeTitle,
         issueTitle,
         workId,
       }),
-    [navigation, journalTitle, institutionId],
+    [navigation, journalWorkId, journalTitle, institutionId],
   );
 
   // Only ever called once a caller has already marked `vIdx` loading — a
