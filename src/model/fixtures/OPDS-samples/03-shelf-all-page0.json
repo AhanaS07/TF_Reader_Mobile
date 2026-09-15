@@ -1,0 +1,262 @@
+{
+  "metadata": {
+    "title": "All titles",
+    "numberOfItems": 8,
+    "itemsPerPage": 4,
+    "currentPage": 0,
+    "modified": "2026-08-16T08:30:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/all?page=0",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "next",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/groups/all?page=1",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search this catalogue"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9780367211745",
+        "title": "Rights for Robots",
+        "author": [
+          {
+            "name": "Joshua C. Gellers"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2020-09-30",
+        "subject": [
+          {
+            "name": "Law"
+          },
+          {
+            "name": "Technology"
+          }
+        ],
+        "numberOfPages": 212
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_42",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/borrow",
+          "href": "https://api.tf/api/v1/loans?itemId=item_42",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "ELITE",
+            "indirectAcquisition": [
+              {
+                "type": "application/pdf"
+              }
+            ],
+            "copies": {
+              "total": 2
+            },
+            "encrypted": {
+              "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+              "originalLength": 6373752
+            },
+            "hasSearchIndex": true,
+            "canPersist": false
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_42.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:tf:catalogue:item_env",
+        "title": "Environmental Policy and Air Pollution in China",
+        "author": [
+          {
+            "name": "Yuan Xu"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2021-03-15",
+        "subject": [
+          {
+            "name": "Environment"
+          },
+          {
+            "name": "Public Policy"
+          }
+        ],
+        "numberOfPages": 268
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_env",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition",
+          "href": "https://api.tf/api/v1/loans?itemId=item_env",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "application/pdf"
+              }
+            ],
+            "encrypted": {
+              "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+              "originalLength": 3596255
+            },
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_env.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Audiobook",
+        "identifier": "urn:tf:catalogue:item_stat",
+        "title": "Statistics for Social Research",
+        "author": [
+          {
+            "name": "Marta Silva"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2019-11-04",
+        "subject": [
+          {
+            "name": "Research Methods"
+          }
+        ]
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_stat",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition",
+          "href": "https://api.tf/api/v1/loans?itemId=item_stat",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "audio/mpeg"
+              }
+            ],
+            "hasSearchIndex": false,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_stat.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9780367559021",
+        "title": "Sociology of Everyday Risk",
+        "author": [
+          {
+            "name": "Tom Weller"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2022-09-01",
+        "subject": [
+          {
+            "name": "Sociology"
+          }
+        ],
+        "numberOfPages": 298
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_soc",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/borrow",
+          "href": "https://api.tf/api/v1/loans?itemId=item_soc",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "application/epub+zip"
+              }
+            ],
+            "encrypted": {
+              "algorithm": "http://www.w3.org/2009/xmlenc11#aes256-gcm",
+              "originalLength": 2210544
+            },
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_soc.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    }
+  ]
+}

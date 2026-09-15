@@ -1,0 +1,211 @@
+# CodeRabbit configuration — team1
+#
+# Profile is `assertive`, so the noise control is done here rather than by
+# turning the reviewer down: every instruction block below carries an explicit
+# "Do not flag" list. Add to those lists rather than lowering the profile.
+#
+# Component rules are NOT duplicated here. They live in docs/CONVENTIONS.md,
+# which CodeRabbit reads via knowledge_base.code_guidelines.filePatterns at the
+# bottom of this file. Repo-wide rules are in AGENTS.md, which CodeRabbit picks
+# up by default. They are in AGENTS.md rather than CLAUDE.md because .gitignore
+# keeps CLAUDE.md as a personal, unshared file.
+
+language: "en-US"
+
+# Max 250 characters. Applies to reviews and chat.
+tone_instructions: "Be direct and brief. Cite the rule in docs/CONVENTIONS.md or AGENTS.md that a finding breaks. No praise, no restating what the code does, nothing Prettier or ESLint already enforces."
+
+reviews:
+  profile: "assertive"
+
+  # Keep the summary, drop the rest of the walkthrough furniture. Under
+  # assertive these add a lot of comment body for very little signal.
+  high_level_summary: true
+  collapse_walkthrough: true
+  poem: false
+  sequence_diagrams: false
+  changed_files_summary: false
+  # team1 tracks work outside GitHub issues, so both of these produce guesses.
+  related_issues: false
+  related_prs: false
+  assess_linked_issues: false
+  # Stops "review skipped" style status comments appearing on PRs.
+  review_status: false
+
+  auto_review:
+    enabled: true
+    # Leave drafts alone. A draft is still being written; comments on it are noise.
+    drafts: false
+    # base_branches is deliberately unset: team1 raises PRs into this fork's
+    # main only, and main is the default branch, which is covered already.
+
+  tools:
+    # Duplicates the repo's own eslint.config.js and .prettierrc, so it reports
+    # the same findings a second time under a different name.
+    biome:
+      enabled: false
+    # Prose grammar and markdown formatting. The **/*.md instruction below says
+    # to flag only factual contradictions, and these two tools fight that.
+    languagetool:
+      enabled: false
+    markdownlint:
+      enabled: false
+    # Security scanners are left ON deliberately: Semgrep, the secret scanners,
+    # Trivy and Presidio are the reason for using this over plain CI.
+
+  path_filters:
+    # Build output, native shells and binaries. Nothing here is hand-written.
+    - "!android/**"
+    - "!ios/**"
+    - "!.expo/**"
+    - "!dist/**"
+    - "!assets/**"
+    # OPDS fixture JSON. These are captured server responses, not our code —
+    # under assertive they would generate comments on every field.
+    - "!src/model/fixtures/**"
+
+  path_instructions:
+    - path: "src/components/**"
+      instructions: |
+        Enforce docs/CONVENTIONS.md. Flag:
+
+        - A NEW component folder missing any of ComponentName.tsx,
+          ComponentName.gallery.tsx, ComponentName.test.tsx, index.ts.
+        - index.ts containing anything beyond the two re-export lines.
+        - Deep imports: `@components/Foo/Foo` instead of `@components/Foo`.
+        - Default-importing tokens. Must be `import { color, space } from
+          '@theme/tokens'` — the default form trips import/no-named-as-default
+          and lint runs with --max-warnings=0.
+        - Raw hex colours, or bare numbers for padding, margin, fontSize,
+          fontWeight, lineHeight, borderRadius or shadow. These come from
+          src/theme/tokens.ts.
+        - A new token being added to src/theme/tokens.ts in the same PR as the
+          component that needs it. Missing tokens get raised, not added to
+          unblock yourself.
+        - fontFamily being set anywhere. The loader applies it globally.
+        - A subset of elevation.card.ios / elevation.card.android being spread
+          instead of the whole platform object.
+        - Any import of a store, adapter, navigation, or fetch call.
+        - Access or entitlement logic computed inline — reading a user tier,
+          comparing dates, or deciding what a reader may do. Components are told
+          what to show via props.
+        - Boolean visual props (isElite, isSubscription) instead of a `variant`
+          union. Same for `state`: a union prop, not internal state.
+        - variant and state combined onto one axis, e.g. variant="elite-loading".
+        - Callbacks not named on<Event>, or named for what should follow rather
+          than what happened (navigateToDetail, handleClick, pressCallback).
+        - A defaulted prop that hides a decision. Defaulting `state` is fine;
+          defaulting `label` hides a bug.
+        - Outer margin, width, or absolute positioning set on itself. A
+          component pads itself; layout belongs to the caller.
+        - Loading, empty, error and offline unhandled with no comment saying
+          which are impossible and why.
+        - A component copied from another rather than extended with a new
+          variant, state or optional prop.
+        - A variant or prop with no caller passing it.
+
+        Do not flag:
+        - Layout primitives as raw numbers: flex, flexDirection, alignItems,
+          justifyContent, borderWidth, opacity, percentage widths, and
+          numberOfLines.
+        - A gallery or test file missing from a component folder that ALREADY
+          exists on main. Only new folders. Several are known gaps.
+        - Missing accessibilityRole, accessibilityLabel, or touch-target size.
+          The accessibility baseline is an open question in CONVENTIONS.md and
+          the team has not agreed it yet.
+        - Missing dark mode support. tokens.ts has no scheme dimension yet.
+        - StyleSheet key ordering, import ordering, or anything Prettier and
+          ESLint already decide.
+
+    - path: "src/screens/**"
+      instructions: |
+        Screens own navigation, stores and adapters — that is correct here, do
+        not flag it. Flag instead:
+
+        - A component defined or styled inline here that belongs in
+          src/components/. Screens hold layout and composition only.
+        - A shared component duplicated into this folder rather than extended
+          in src/components/.
+        - Access or entitlement rules decided in the screen. When
+          src/access/resolveAccess lands, that is the only place for it; until
+          then flag the inline logic without demanding an import that does not
+          exist yet.
+        - GalleryScreen being reachable from production UI. It is dev tooling,
+          registered in RootNavigator, and nothing in a release build may
+          navigate to it.
+
+        Do not flag missing tests for screens. Only src/components/ requires
+        one per CONVENTIONS.md.
+
+    - path: "src/features/**"
+      instructions: |
+        A feature may not introduce a shared component. Flag any component
+        defined here that should live in src/components/, and any duplicate of
+        an existing one. Most of these folders are still empty — do not flag a
+        folder for being empty or for lacking tests.
+
+    - path: "**/*.gallery.tsx"
+      instructions: |
+        Static props only. Flag:
+        - Navigation, store reads, adapters, or network calls.
+        - A callback wired to anything but a harmless no-op.
+        - An entry that does not cover every variant at every state it claims
+          to support, or that omits the awkward cases: longest realistic
+          string, missing optional fields, smallest data.
+
+        Do not flag hardcoded strings, magic values in sample data, or
+        duplication between gallery entries. Both are the point of the file.
+
+    - path: "**/*.test.{ts,tsx}"
+      instructions: |
+        Flag a test that asserts nothing, or a component test that needs a
+        provider, store, navigation container or network — that means the
+        component is not a pure function of its props.
+
+        Do not flag missing coverage percentages, missing edge cases beyond the
+        variants the component claims, hardcoded fixture values, or test naming
+        style.
+
+    - path: "src/shared/contracts/**"
+      instructions: |
+        These shapes are frozen and shared with other teams. Flag ANY change to
+        an existing exported type — renamed or removed fields, widened or
+        narrowed unions, changed optionality — as a breaking change, and say
+        which consumers it affects. src/shared/contracts/__typecheck__.ts is the
+        canary that fails CI when a frozen shape changes; flag any edit that
+        weakens or deletes an assertion in it.
+
+        Additive, optional fields are fine. Say so rather than staying silent.
+
+    - path: "src/adapters/**"
+      instructions: |
+        Adapters own fetching and normalising. Flag:
+        - Errors swallowed, or thrown as bare strings instead of the types in
+          src/model/errors.ts and src/shared/contracts/errors.ts.
+        - Unvalidated server data reaching the model layer — normalize.ts and
+          validate.ts exist for this.
+        - A hardcoded base URL, token, or endpoint. Config lives in src/config/.
+        - accessTier being read as a field. There is none and there will not be
+          one; derive it from licenceModel — UNLIMITED to Subscription,
+          CONCURRENT to Elite, absent to Open Access.
+
+    - path: "**/*.md"
+      instructions: |
+        Flag only statements that contradict the code as it now stands, or that
+        contradict another doc in this repo. Do not flag prose style, wording,
+        heading structure, line length, grammar, or formatting.
+
+knowledge_base:
+  learnings:
+    # 'auto' means org-wide on a private repo. Pin to this repo so team1's
+    # rules do not leak into unrelated repos on the same account.
+    scope: "local"
+  code_guidelines:
+    # AGENTS.md, CLAUDE.md and .cursorrules are detected by default, so AGENTS.md
+    # needs no entry here. This adds the file where the component rules actually
+    # live, so they are enforced from one source instead of copied into a second.
+    filePatterns:
+      - "docs/CONVENTIONS.md"
+
+chat:
+  auto_reply: true

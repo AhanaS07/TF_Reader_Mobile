@@ -1,0 +1,75 @@
+{
+  "metadata": {
+    "title": "Search results",
+    "numberOfItems": 1,
+    "itemsPerPage": 2,
+    "currentPage": 0
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/institutions/inst_7f3/search?query=climate&contentType=AUDIO",
+      "type": "application/opds+json"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Audiobook",
+        "identifier": "urn:tf:catalogue:item_stat",
+        "title": "An Introduction to Statistics",
+        "author": [
+          {
+            "name": "Priya Raman"
+          }
+        ],
+        "narrator": [
+          {
+            "name": "Alan Fitzgerald"
+          }
+        ],
+        "publisher": {
+          "name": "CRC Press"
+        },
+        "language": "en",
+        "published": "2022-06-01",
+        "subject": [
+          {
+            "name": "Statistics"
+          }
+        ],
+        "duration": 2305
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/institutions/inst_7f3/publications/item_stat",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition",
+          "href": "https://api.tf/api/v1/loans?itemId=item_stat",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "SUBSCRIPTION",
+            "indirectAcquisition": [
+              {
+                "type": "audio/mpeg"
+              }
+            ],
+            "hasSearchIndex": false,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_stat.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 400
+        }
+      ]
+    }
+  ]
+}

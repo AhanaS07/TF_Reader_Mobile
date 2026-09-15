@@ -29,6 +29,16 @@ export interface Posting {
   chapterId: string;
   locator: Locator; // where the hit is — Reader seeks to this
   snippet: string; // surrounding text for result preview
+  // Token ordinal in book reading order, assigned by the extractor. Phrase/adjacency
+  // matching is a token-SEQUENCE property (word N immediately followed by word N+1), NOT
+  // a character-distance one: inferring adjacency from CFI/offset char gaps breaks
+  // whenever the source XHTML puts >2 chars between two adjacent words — e.g. newline +
+  // indentation, routine in pretty-printed EPUBs — so a phrase matched or missed depending
+  // on where the publisher line-wrapped their markup. `seq` makes adjacency
+  // whitespace-independent. OPTIONAL for back-compat: an index built before this field
+  // (BookSearchIndex.version < 2) carries no seq, so its postings cannot phrase-match —
+  // single-word lookup is unaffected. See queryIndex.ts.
+  seq?: number;
 }
 
 // Flat build-time row: a posting plus the word it belongs to. This is what the

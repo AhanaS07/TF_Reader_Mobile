@@ -1,0 +1,200 @@
+{
+  "metadata": {
+    "title": "Open access titles",
+    "numberOfItems": 5,
+    "itemsPerPage": 3,
+    "currentPage": 0,
+    "modified": "2026-08-19T09:00:00Z"
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "https://api.tf/opds/v1/public/catalogue?page=0",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "next",
+      "href": "https://api.tf/opds/v1/public/catalogue?page=1",
+      "type": "application/opds+json"
+    },
+    {
+      "rel": "search",
+      "href": "https://api.tf/opds/v1/public/search{?query}",
+      "type": "application/opds+json",
+      "templated": true,
+      "title": "Search everything we publish"
+    }
+  ],
+  "publications": [
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:isbn:9781138298194",
+        "title": "Coastal Wetlands of the Bay of Bengal",
+        "author": [
+          {
+            "name": "Sunetra Ghatak"
+          }
+        ],
+        "publisher": {
+          "name": "Routledge"
+        },
+        "language": "en",
+        "published": "2019-05-20",
+        "subject": [
+          {
+            "name": "Environment"
+          },
+          {
+            "name": "Geography"
+          }
+        ],
+        "numberOfPages": 224
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/public/publications/item_oa1",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://flambeau.tf/api/v1/content/item_oa1/access",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "application/pdf"
+              }
+            ],
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_oa1.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        },
+        {
+          "href": "https://cdn.tf/covers/item_oa1-thumb.jpg",
+          "type": "image/jpeg",
+          "width": 120,
+          "height": 180
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Book",
+        "identifier": "urn:tf:catalogue:item_oa2",
+        "title": "Teaching Mathematics in Multilingual Classrooms",
+        "editor": [
+          {
+            "name": "Priya Raghunath"
+          },
+          {
+            "name": "Ingrid Sørensen"
+          }
+        ],
+        "publisher": {
+          "name": "Taylor & Francis"
+        },
+        "language": "en",
+        "published": "2021-01-11",
+        "subject": [
+          {
+            "name": "Education"
+          }
+        ],
+        "numberOfPages": 310
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/public/publications/item_oa2",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://flambeau.tf/api/v1/content/item_oa2/access",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "application/epub+zip"
+              }
+            ],
+            "hasSearchIndex": true,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_oa2.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "@type": "http://schema.org/Audiobook",
+        "identifier": "urn:tf:catalogue:item_oa3",
+        "title": "Listening to Cities",
+        "author": [
+          {
+            "name": "Abel Nwosu"
+          }
+        ],
+        "publisher": {
+          "name": "CRC Press"
+        },
+        "language": "en",
+        "published": "2023-02-28",
+        "subject": [
+          {
+            "name": "Urban Studies"
+          }
+        ]
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api.tf/opds/v1/public/publications/item_oa3",
+          "type": "application/opds-publication+json"
+        },
+        {
+          "rel": "http://opds-spec.org/acquisition/open-access",
+          "href": "https://flambeau.tf/api/v1/content/item_oa3/access",
+          "type": "application/json",
+          "properties": {
+            "licenceModel": "OPEN_ACCESS",
+            "indirectAcquisition": [
+              {
+                "type": "audio/mpeg"
+              }
+            ],
+            "hasSearchIndex": false,
+            "canPersist": true
+          }
+        }
+      ],
+      "images": [
+        {
+          "href": "https://cdn.tf/covers/item_oa3.jpg",
+          "type": "image/jpeg",
+          "width": 400,
+          "height": 600
+        }
+      ]
+    }
+  ]
+}

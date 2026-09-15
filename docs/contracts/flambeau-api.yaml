@@ -1,0 +1,1919 @@
+openapi: 3.1.0
+
+info:
+  title: flambeau API
+  version: 0.1.0
+  summary: Authentication (CAP-6), Borrow and personal library (CAP-4), and the read broker
+  description: |
+    Team flambeau's HTTP surface for the Taylor and Francis Reader prototype.
+
+    ## Read this first
+
+    The backend is one Spring Boot application with every team's modules inside it, so we
+    do not call wokay over HTTP and they do not call us. Across that seam we call two Java
+    interfaces in the same process:
+
+    | Interface | Question it answers |
+    |---|---|
+    | `catalogue.api.EntitlementQuery` | May this institution access this book, and on what terms |
+    | `content.api.ContentAccessGrant` | Give me the file link and the key for this book |
+
+    And we publish five of our own, which is how `loan`, `reading`, `hold` and `library`
+    reach each other without a package cycle, and how the catalogue team reads availability:
+
+    | Interface | Package | Called by |
+    |---|---|---|
+    | `ActiveLoanQuery` | `loan/api` | reading, library |
+    | `CopyLease` | `reading/api` | loan, hold |
+    | `HoldSnapshotQuery` | `hold/api` | library |
+    | `HoldPromotion` | `hold/api` | loan |
+    | `AvailabilityQuery` | `hold/api` | catalogue team |
+
+    Everything in this file is app-facing. **There is no endpoint here that another module
+    calls.** A module-to-module call carries no token and crosses no HTTP boundary.
+
+    ## The one distinction that explains every path below
+
+    A **loan** is possession, and lasts about two weeks. A **reading session** is permission
+    to fetch bytes right now, and lasts about five minutes. One loan produces many reading
+    sessions.
+
+    That is why `POST /api/v1/reading-sessions` is a per-open call rather than something
+    handed out at borrow time, and why it takes no lease: the copy was consumed at borrow,
+    so leasing again would double-count every book open. Confusing the two is the most
+    common design mistake in this system.
+
+    ## The invariant every write defends
+
+    > For a copy-limited title, the number of active loans never exceeds the number of
+    > licensed copies.
+
+    Proven by a gating CI check: 100 parallel borrowers on a 5-copy title admit exactly 5.
+    When a change to this file is proposed, ask whether it can violate that sentence. If the
+    answer is "only if two things happen at once", that is a yes.
+
+    ## Three access levels, three code paths
+
+    The tier decides whether a loan is written, whether copies are counted, and whether the
+    file may leave the device's memory.
+
+    | `EntitlementQuery` returns | wokay calls it | Loan written | Copy limit | Downloadable |
+    |---|---|---|---|---|
+    | `OPEN_ACCESS` | `OPEN_ACCESS` | No | No | Yes |
+    | `ENTITLED_UNLIMITED` | `SUBSCRIPTION` | Yes | No | Yes |
+    | `ENTITLED_CONCURRENT` | `ELITE` | Yes | **Yes, per institution** | **No, online only** |
+
+    **The two vocabularies are not the same and both are already committed.** We receive
+    `catalogue.api.AccessLevel`; a feed shows `catalogue.entity.AccessTier`. wokay's file
+    says there is nothing to translate, which is true inside their surface and false across
+    the Java seam. The mapping above is the translation, and it lives in one place in our
+    code rather than at every branch.
+
+    ## We never reshape the content grant
+
+    `POST /api/v1/reading-sessions` forwards what `ContentAccessGrant` returned, field for
+    field. No renaming, no re-serialising through a naming strategy, no logging, no caching.
+    Renaming `wrappedBek` breaks decryption on the device and surfaces as "this file is
+    corrupt" rather than as our bug. The `content`, `index` and `encryption` shapes are
+    wokay's `SignedUrl`, `IndexUrl` and `Encryption`, unchanged and deliberately not
+    redefined here.
+
+    ## The token
+
+    HS256, one signing secret, one hour, `aud` of `tf-app`. There is no refresh token:
+    `GET /api/v1/auth/me` exchanges a still-valid token for a fresh one, so an active
+    reader continues indefinitely and an idle one is signed out. The hour is an idle
+    timeout, not a session length.
+
+    | | App token | Admin token |
+    |---|---|---|
+    | Issued by | us, at the end of the SAML or OIDC flow | wokay, `/api/admin/v1/auth/login` |
+    | `aud` | `tf-app` | `tf-admin` |
+    | Accepted on | `/api/v1/**`, `/opds/v1/**` | `/api/admin/v1/**` |
+
+    **Two open items on this, both needing the Contracts Gate.** wokay's file says "two
+    token audiences and no third", but a third, `tf-refresh`, exists on the admin
+    authentication branch. And our own token does not yet carry `aud` at all, so the
+    separation above is currently documentation rather than enforcement.
+
+    ## Namespace
+
+    `/api/v1/**` is shared with wokay and split by subtree, not by prefix. Ours are the six
+    trees below. Theirs under the same prefix are `/api/v1/institutions/**` and
+    `/api/v1/catalogue/**`, plus all of `/opds/v1/**` and `/api/admin/v1/**`.
+
+    ```
+    /api/v1/auth/**              ours
+    /api/v1/loans/**             ours
+    /api/v1/reading-sessions     ours
+    /api/v1/holds/**             ours
+    /api/v1/library              ours
+    /api/v1/items/{id}/availability   ours
+    /api/v1/ops/**               ours, admin audience
+    ```
+
+    One filter chain covers the whole app surface, because we mint the app token and so we
+    own the one place it is verified. Public paths are an **allowlist**: a denylist grows a
+    hole with every endpoint added.
+
+    ## Stability
+
+    Every operation carries `x-stability`.
+
+    * **FROZEN**: safe to build against. Changing it needs a cohort conversation.
+    * **DRAFT**: the shape may still move. Do not depend on field-level detail yet.
+
+    `x-called-by` names who calls it. `team1` is the app.
+
+    Built today: `POST /api/v1/auth/saml/start` and `GET /api/v1/auth/me`. Everything else
+    is declared here and not yet implemented, which is deliberate — the contract is agreed
+    before the code, not after.
+
+    ## Errors
+
+    One envelope for the whole backend, `common/error/ErrorResponse`, which is
+    field-for-field wokay's `Error`. One `ErrorCode` enum, in `common/error`, shared by
+    every module. We add no second error shape.
+
+    Six codes come straight from `DenyReason` on the entitlement check and are ours only in
+    the sense that we are the ones who return them: `NO_ENTITLEMENT`,
+    `ENTITLEMENT_EXPIRED`, `ENTITLEMENT_SUSPENDED`, `INSTITUTION_INACTIVE`,
+    `CONTENT_NOT_READY`, `NOT_FOUND`.
+
+    Five are new with this file and need ratifying: `NO_COPIES_AVAILABLE`,
+    `NO_ACTIVE_LOAN`, `LOAN_NOT_ACTIVE`, `DEVICE_LIMIT_REACHED`, `OFFER_EXPIRED`.
+
+    One is a live disagreement. `DOWNLOAD_NOT_PERMITTED` is **403** here because wokay's
+    file has it frozen at 403; our own reference says 422. Same rule, two status codes, and
+    it is raised on our endpoint using their code. It needs one answer.
+
+    ## Conventions
+
+    * Identifiers are prefixed strings: `loan_`, `hold_`, `offer_`. wokay's `item_`,
+      `inst_`, `col_` and `ent_` reach us as opaque strings and we never parse them
+    * All timestamps are ISO-8601 UTC, whole seconds
+    * Paging is `page` (zero based) and `size`; responses carry `page`, `size`, `total`
+    * A null field is omitted rather than sent as null. Test for presence
+    * Deletes are soft everywhere except a hold, which is genuinely cancelled
+    * Follow the URLs and cursors we hand you rather than building them
+
+    ## What is not here
+
+    * **No catalogue metadata.** We return item ids. Titles, authors and covers come from
+      wokay's `POST /api/v1/catalogue/items:batch`, which is why `GET /api/v1/library`
+      returns ids and not books
+    * **No content bytes.** Object storage to device, through neither module
+    * **No admin console endpoints.** The console authenticates against wokay's
+      `/api/admin/v1/auth/login`. Our only admin-audience route is `/api/v1/ops/reconcile`
+    * **No device registration.** The device key arrives on every reading session, so a
+      device is observed rather than enrolled
+    * **No session close.** A reading session holds nothing that needs releasing
+  contact:
+    name: Team flambeau
+
+servers:
+  - url: http://localhost:8080
+    description: >-
+      Everyone runs the same Spring Boot application locally on port 8080, and every
+      example URL in this file assumes it. There is no shared deployment.
+
+tags:
+  - name: Auth
+    description: >-
+      Both institutional sign-in paths, and the endpoint that reports who is signed in.
+      Starting a flow needs no token; everything else in this file does.
+  - name: Loans
+    description: >-
+      Possession. Borrow, list, return. A loan is what a reading session is checked
+      against, and what the copy limit is counted in.
+  - name: Reading
+    description: >-
+      The read broker. One endpoint, called once per book open, which re-checks
+      entitlement, proves the loan, applies the device cap and forwards the grant.
+  - name: Holds
+    description: >-
+      The queue for a copy-limited title, and availability. Position is derived from a
+      monotonic ticket, never stored and never computed from a timestamp.
+  - name: Library
+    description: >-
+      The reader's own shelf, and the incremental change feed the app syncs from.
+  - name: Ops
+    description: >-
+      Admin-audience maintenance. Reconciles derived Redis state from Mongo, which is the
+      system of record.
+
+security: []
+
+paths:
+
+  # ────────────────────────────────────────────────────────────────
+  # AUTH
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/auth/methods:
+    get:
+      tags: [Auth]
+      operationId: listSignInMethods
+      summary: Which sign-in methods an institution offers
+      description: |
+        No token. Called after the reader has picked an institution from wokay's
+        `GET /api/v1/institutions`, and before any flow is started.
+
+        Returns the methods **that institution** supports, so the app renders one button or
+        two rather than guessing and handling a failure. An institution with no configured
+        method returns an empty `methods` array rather than a 404: it exists, it simply
+        cannot be signed in to yet, and that is a different screen.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: []
+      parameters:
+        - name: institutionId
+          in: query
+          required: true
+          schema: { type: string }
+          example: inst_7f3
+      responses:
+        '200':
+          description: The methods available for this institution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignInMethodsResponse' }
+              example:
+                institutionId: inst_7f3
+                institutionName: Deakin University
+                methods:
+                  - method: SAML
+                    startUrl: /api/v1/auth/saml/start
+                  - method: OIDC
+                    startUrl: /api/v1/auth/oidc/start
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/auth/saml/start:
+    post:
+      tags: [Auth]
+      operationId: startSamlSignIn
+      summary: Begin institutional sign-in over SAML
+      description: |
+        No token, because sign-in is how a caller obtains one.
+
+        **This does not authenticate anybody and returns no session.** SAML is a browser
+        redirect protocol: the assertion is delivered to our ACS by the identity provider,
+        not returned down this JSON call, so no endpoint can both start SAML and hand back a
+        token. The app opens `authorizationUrl`, the flow completes at
+        `POST /login/saml2/sso/tf-reader`, and the token is minted there.
+
+        What this call really does is **record which institution was chosen**, server-side,
+        under an opaque `authTxnId` that travels through the redirect as RelayState. The
+        institution therefore survives the round trip without being trusted from the client
+        on the way back. `authTxnId` is not a credential and proves nothing on its own.
+
+        `idpHint` is accepted because the contract defines it, and is deliberately unused:
+        we run one SAML integration for every institution, so nothing about the request
+        selects an identity provider.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SamlStartRequest' }
+            example:
+              institutionId: inst_7f3
+      responses:
+        '200':
+          description: The URL to open, and the transaction that carries the institution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SamlStartResponse' }
+              example:
+                authTxnId: 8f14e45fceea167a
+                authorizationUrl: /saml2/authenticate?registrationId=tf-reader&authTxn=8f14e45fceea167a
+                institution:
+                  institutionId: inst_7f3
+                  name: Deakin University
+                expiresAt: '2026-08-13T10:10:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/auth/oidc/start:
+    post:
+      tags: [Auth]
+      operationId: startOidcSignIn
+      summary: Begin institutional sign-in over OIDC
+      description: |
+        No token. The OIDC counterpart of `/auth/saml/start`, and deliberately the same
+        request and response shape, so the app writes one sign-in flow and chooses a URL
+        rather than writing two.
+
+        `state` plays the part RelayState plays in SAML and carries the same opaque
+        transaction id.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OidcStartRequest' }
+            example:
+              institutionId: inst_7f3
+      responses:
+        '200':
+          description: The URL to open, and the transaction that carries the institution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OidcStartResponse' }
+              example:
+                authTxnId: c9f0f895fb98ab91
+                authorizationUrl: /oauth2/authorization/tf-reader?state=c9f0f895fb98ab91
+                institution:
+                  institutionId: inst_7f3
+                  name: Deakin University
+                expiresAt: '2026-08-13T10:10:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentSession
+      summary: Who am I, how long have I got, and here is a fresh token
+      description: |
+        Called by the app on resume.
+
+        **No body, no query parameters, no path variables** — there is nothing here for a
+        caller to assert about itself. The identity arrives as the authenticated principal,
+        which exists only because a token passed signature and claim validation before this
+        method was reached. Every field below is copied from that token.
+
+        **This is also how a session slides.** An expired token is never exchangeable,
+        because an expired token never gets here: the filter chain refuses it with 401 and
+        this method does not run. A still-valid token is exchanged for a fresh one.
+
+        `institutionId` is **omitted, not null**, for an individual subscriber. An
+        individual belongs to no institution, which is emphatically not "every institution",
+        and `"institutionId": null` reads to a consumer as "belongs to one whose id we lost".
+
+        `expiresAt` describes the token in `token`, not the one presented.
+
+        **`token` is an addition to the API Reference**, whose example omits it. Without it
+        `expiresAt` would describe something the client never receives and a session could
+        not slide at all. Flagged for the Contracts Gate.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      responses:
+        '200':
+          description: The current identity, and a freshly minted token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthMeResponse' }
+              examples:
+                institutional:
+                  summary: A member signed in through an institution
+                  value:
+                    userId: user_9c2
+                    type: INSTITUTION
+                    institutionId: inst_7f3
+                    roles: [MEMBER]
+                    collections: [col_medicine, col_nursing]
+                    expiresAt: '2026-08-13T11:00:00Z'
+                    serverTime: '2026-08-13T10:00:00Z'
+                    token: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJ1c2VyXzljMiJ9.sig
+                individual:
+                  summary: An individual subscriber, with no institution at all
+                  value:
+                    userId: user_4a1
+                    type: INDIVIDUAL
+                    roles: [SUBSCRIBER]
+                    collections: []
+                    expiresAt: '2026-08-13T11:00:00Z'
+                    serverTime: '2026-08-13T10:00:00Z'
+                    token: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJ1c2VyXzRhMSJ9.sig
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # LOANS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/loans:
+    post:
+      tags: [Loans]
+      operationId: borrow
+      summary: Take possession of a title
+      description: |
+        **Create or validate, not create.** A reader who already holds this title gets
+        `200` and the loan they already have, not an error and not a second loan. A double
+        tap is the ordinary case, not an exceptional one, and the guard that makes it safe
+        is a partial unique index on `(userId, itemId, status)` over `ACTIVE` — not an
+        `if (exists)` check in Java, which is not a guard at all under concurrency.
+
+        **The loan period comes from the entitlement**, `loanPeriodDays` on the check we
+        already make. It is not our configuration and it is not a constant. Any document
+        saying "two weeks" as a fixed number is wrong.
+
+        **The copy limit is the catalogue team's**, from `copies` on the same check, where
+        null means unlimited. We read it; we neither store nor derive it.
+
+        `OPEN_ACCESS` needs no loan. Borrowing one is not an error and not a no-op — it
+        returns `201` with a loan carrying `licenceModel: OPEN_ACCESS` and no due date, so
+        the app has one shelf rather than two.
+
+        The order inside is the correctness, and it is not negotiable: check entitlement,
+        check for an existing loan **before any Redis call**, acquire the lease atomically
+        for copy-limited titles only, write the loan, then extend the lease to the due date.
+        Move the existing-loan check after the lease and a double tap takes two copies for
+        one reader. Lease before loan, never after: a leaked lease heals itself when its TTL
+        elapses, a loan written without a lease is silent over-lending and nothing errors
+        anywhere.
+
+        **No copies free is `409 NO_COPIES_AVAILABLE`, not a silent enqueue.** We refuse and
+        ask. The response names the hold endpoint so the app can offer the queue as a
+        choice, which is a different thing from making it on the reader's behalf.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BorrowRequest' }
+            example:
+              itemId: item_42
+      responses:
+        '200':
+          description: This reader already holds this title. The existing loan, unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Loan' }
+              example:
+                loanId: loan_3b8
+                itemId: item_42
+                userId: user_9c2
+                institutionId: inst_7f3
+                licenceModel: ELITE
+                status: ACTIVE
+                borrowedAt: '2026-08-01T09:00:00Z'
+                dueAt: '2026-08-15T09:00:00Z'
+                canPersist: false
+                serverTime: '2026-08-13T10:00:00Z'
+        '201':
+          description: A new loan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Loan' }
+              examples:
+                concurrent:
+                  summary: A copy-limited title. One copy is now held by this reader.
+                  value:
+                    loanId: loan_7c1
+                    itemId: item_42
+                    userId: user_9c2
+                    institutionId: inst_7f3
+                    licenceModel: ELITE
+                    status: ACTIVE
+                    borrowedAt: '2026-08-13T10:00:00Z'
+                    dueAt: '2026-08-27T10:00:00Z'
+                    canPersist: false
+                    serverTime: '2026-08-13T10:00:00Z'
+                openAccess:
+                  summary: Open access. No due date, and no copy was consumed.
+                  value:
+                    loanId: loan_7c2
+                    itemId: item_ab6
+                    userId: user_9c2
+                    institutionId: inst_7f3
+                    licenceModel: OPEN_ACCESS
+                    status: ACTIVE
+                    borrowedAt: '2026-08-13T10:00:00Z'
+                    canPersist: true
+                    serverTime: '2026-08-13T10:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/EntitlementRefused' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/BorrowConflict' }
+
+    get:
+      tags: [Loans]
+      operationId: listLoans
+      summary: This reader's loans
+      description: |
+        Scoped to the caller by the token. There is no `userId` parameter, because a
+        parameter naming whose loans to return is a parameter somebody will change.
+
+        `status` filters; omitting it returns every loan, which is what a history screen
+        wants. **This replaces both `GET /loans` and `GET /loans/active`** from the API
+        Reference: two URLs for one collection differing only by a filter is a filter.
+
+        Returns item ids, not books. Titles and covers come from wokay's
+        `POST /api/v1/catalogue/items:batch`, capped at 100 ids per call.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - name: status
+          in: query
+          description: Omit for every loan this reader has ever held
+          schema: { $ref: '#/components/schemas/LoanStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of loans, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoanPage' }
+              example:
+                loans:
+                  - loanId: loan_7c1
+                    itemId: item_42
+                    userId: user_9c2
+                    institutionId: inst_7f3
+                    licenceModel: ELITE
+                    status: ACTIVE
+                    borrowedAt: '2026-08-13T10:00:00Z'
+                    dueAt: '2026-08-27T10:00:00Z'
+                    canPersist: false
+                page: 0
+                size: 20
+                total: 1
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/loans/{loanId}/return:
+    post:
+      tags: [Loans]
+      operationId: returnLoan
+      summary: Give the copy back
+      description: |
+        **The order inside is the correctness:** mark the loan `RETURNED`, release the
+        lease, then promote the next waiter. Reverse any of it and there is a window where
+        one copy is lent twice.
+
+        `returnedAt` is optional and is the **reader's** timestamp, for a return that
+        happened offline and is being reported late. It is clamped to
+        `[borrowedAt, serverTime]`: a client clock is not a source of truth, but neither is
+        discarding what the reader actually did.
+
+        Returning an already-returned loan is `409 LOAN_NOT_ACTIVE` rather than a silent
+        success, because the app showing a book as returned twice means something else went
+        wrong and swallowing it hides that.
+
+        A return can free a copy that somebody is queued for. When it does, the promotion
+        happens inside this call and the next waiter has an offer before the response is
+        written — which is why `promoted` is reported here rather than discovered from the
+        change feed a minute later.
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/LoanId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReturnRequest' }
+            example:
+              returnedAt: '2026-08-13T09:58:00Z'
+      responses:
+        '200':
+          description: The closed loan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReturnResponse' }
+              example:
+                loanId: loan_7c1
+                itemId: item_42
+                status: RETURNED
+                borrowedAt: '2026-08-13T10:00:00Z'
+                returnedAt: '2026-08-13T09:58:00Z'
+                promoted: true
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LoanNotActive' }
+
+  /api/v1/loans/changes:
+    get:
+      tags: [Library]
+      operationId: getChanges
+      summary: Everything that changed for this reader since a cursor
+      description: |
+        The app's sync feed. Ordered by a monotonic per-reader `sequence`, so a client that
+        stores the last one it saw can resume exactly, and a client that stores nothing gets
+        everything from the beginning.
+
+        **It carries more than loans**, despite the path: hold promotions, offers lapsing,
+        and entitlement revocations are all here. A revocation is the reason this endpoint
+        exists at all — it is the only way the app learns that a book it is showing has
+        stopped being readable.
+
+        **Proposed:** move this to `GET /api/v1/changes`. It sits under `/loans` in both our
+        API Reference and wokay's file, which mislabels it and means a hold event arrives on
+        a loan-shaped path. Kept here for now because their reference to
+        `/api/v1/loans/changes` is already written down.
+
+        `hasMore` rather than a total: the feed is a stream, and counting it would mean
+        reading all of it to answer a question the client does not ask.
+
+        Cursors are opaque. Do not parse `nextCursor`, and do not construct one.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - name: since
+          in: query
+          description: The `nextCursor` from the previous call. Omit for everything.
+          schema: { type: string }
+          example: '1187'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: A page of changes, oldest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChangesResponse' }
+              example:
+                changes:
+                  - sequence: 1188
+                    reason: HOLD_PROMOTED
+                    itemId: item_42
+                    holdId: hold_5d1
+                    occurredAt: '2026-08-13T09:30:00Z'
+                  - sequence: 1189
+                    reason: ENTITLEMENT_REVOKED
+                    itemId: item_77
+                    occurredAt: '2026-08-13T09:45:00Z'
+                nextCursor: '1189'
+                hasMore: false
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # READING
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/reading-sessions:
+    post:
+      tags: [Reading]
+      operationId: openReadingSession
+      summary: Permission to fetch the bytes, right now
+      description: |
+        Called **once per book open**, not once per borrow. About five minutes of validity.
+
+        Checks run in this order and stop at the first refusal: entitlement re-checked,
+        active loan via `ActiveLoanQuery`, device cap, rights, grant, forward. Entitlement
+        is re-checked rather than trusted from borrow time because a subscription can lapse
+        between the two, and the second check is the only thing standing between a revoked
+        institution and a decryption key.
+
+        **No lease is taken.** The copy was consumed at borrow. Taking another here would
+        double-count every book open.
+
+        **The device cap is applied here, not at borrow**, because the device key only
+        arrives with a session request. It is appended by one conditional Mongo update,
+        never read-then-write, so two devices registering at the same moment cannot both
+        see room for one.
+
+        `intent: DOWNLOAD` on a copy-limited title is refused with
+        `403 DOWNLOAD_NOT_PERMITTED`, whatever the UI offered. Read-online-only is the
+        reason that tier exists, and `canPersist` on the loan already said so. See the
+        Errors section: our own reference says 422 for this and wokay's says 403.
+
+        **`devicePublicKey` is base64 of raw bytes**, not a PEM and not a JSON web key. It
+        is passed to `ContentAccessGrant` as bytes, and the fingerprint of it is what the
+        device cap counts, so the same device presenting the same key is one device without
+        anything being enrolled.
+
+        The response's `content`, `index` and `encryption` are forwarded from
+        `ContentAccessGrant` **unchanged**. See "We never reshape the content grant".
+      x-stability: FROZEN
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReadingSessionRequest' }
+            example:
+              itemId: item_42
+              format: PDF
+              intent: STREAM
+              devicePublicKey: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A
+              wantSearchIndex: true
+      responses:
+        '201':
+          description: >-
+            The grant. `content`, `index` and `encryption` are the catalogue team's shapes,
+            forwarded field for field.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadingSessionResponse' }
+              example:
+                sessionId: sess_e41
+                itemId: item_42
+                loanId: loan_7c1
+                expiresAt: '2026-08-13T10:05:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+                content:
+                  url: https://storage.tf/tf-content/item_42.enc?X-Amz-Signature=abc123
+                  expiresAt: '2026-08-13T10:15:00Z'
+                  cipherLength: 2170674
+                  originalLength: 2170646
+                  mimeType: application/pdf
+                index:
+                  url: https://storage.tf/tf-index/item_42.enc?X-Amz-Signature=def456
+                  encrypted: true
+                  termCount: 6120
+                encryption:
+                  algorithm: AES-256-GCM
+                  layout: nonce(12) || ciphertext || tag(16)
+                  wrappedBek: Y2lwaGVydGV4dC1vZi10aGUtYm9vay1rZXk
+                  wrapAlgorithm: RSA-OAEP-256
+                  keyId: bek_2026_08
+                  keyFingerprint: 'sha256:9f2b1c'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ReadRefused' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/ReadConflict' }
+
+  # ────────────────────────────────────────────────────────────────
+  # HOLDS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/holds:
+    post:
+      tags: [Holds]
+      operationId: placeHold
+      summary: Join the queue for a copy-limited title
+      description: |
+        Only for `ELITE`. A title with no copy limit has nothing to queue for, and asking is
+        `409` rather than a hold that would never be promoted.
+
+        **Idempotent by the same reasoning as borrow.** A reader already queued gets `200`
+        and their existing hold, position unchanged. The guard is a partial unique index on
+        `(scope, itemId, userId)` where the hold is queued or offered — re-joining must not
+        move somebody to the back of a queue they were already in.
+
+        `position` is derived from a monotonic ticket, never stored and never computed from
+        a timestamp. Two people joining in the same millisecond still have an order.
+
+        `estimatedWaitDays` is a guess and is labelled one. It is derived from the loan
+        period and the number of copies, knows nothing about early returns, and must never
+        be rendered as a promise.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HoldRequest' }
+            example:
+              itemId: item_42
+      responses:
+        '200':
+          description: Already queued. The existing hold, position unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+              example:
+                holdId: hold_5d1
+                itemId: item_42
+                status: QUEUED
+                position: 3
+                queueLength: 7
+                estimatedWaitDays: 9
+                placedAt: '2026-08-10T14:00:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+        '201':
+          description: A new place in the queue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+              example:
+                holdId: hold_9a4
+                itemId: item_42
+                status: QUEUED
+                position: 8
+                queueLength: 8
+                estimatedWaitDays: 24
+                placedAt: '2026-08-13T10:00:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/EntitlementRefused' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/HoldConflict' }
+
+    get:
+      tags: [Holds]
+      operationId: listHolds
+      summary: This reader's holds, with live positions
+      description: |
+        Scoped to the caller by the token.
+
+        **Positions and countdowns are computed on read, and computed here.** A stored
+        position is wrong the moment anybody ahead cancels, and a countdown computed on the
+        device is wrong whenever the device clock is. `expiresAt` on an offer is absolute
+        and server-issued; the app renders the difference against `serverTime`, not against
+        its own clock.
+
+        A hold in `OFFERED` carries the window to accept in. **The lease is held throughout
+        that window** — an offer is a copy already reassigned, not a promise of one, which is
+        why letting it lapse costs the queue real time and why the window is short.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/HoldStatus' }
+      responses:
+        '200':
+          description: Every live hold for this reader
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HoldListResponse' }
+              example:
+                holds:
+                  - holdId: hold_5d1
+                    itemId: item_42
+                    status: OFFERED
+                    position: 1
+                    queueLength: 7
+                    placedAt: '2026-08-10T14:00:00Z'
+                    offer:
+                      offerId: offer_a90
+                      expiresAt: '2026-08-13T10:30:00Z'
+                  - holdId: hold_9a4
+                    itemId: item_77
+                    status: QUEUED
+                    position: 4
+                    queueLength: 11
+                    estimatedWaitDays: 12
+                    placedAt: '2026-08-12T08:00:00Z'
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/holds/{holdId}:
+    delete:
+      tags: [Holds]
+      operationId: cancelHold
+      summary: Leave the queue
+      description: |
+        `204`, and the only genuinely hard delete in this file — a cancelled hold is gone
+        rather than retired, because a queue that remembers everybody who ever left it
+        cannot answer "what position am I".
+
+        **Cancelling a hold that is currently `OFFERED` releases the copy immediately** and
+        promotes the next waiter, rather than leaving a copy parked until the offer lapses.
+        Declining an offer is a cancel; there is no separate decline endpoint.
+
+        Cancelling an already-cancelled hold is `204`, not `404`. The reader asked for it to
+        be gone and it is gone.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+      responses:
+        '204':
+          description: Gone. If it was offered, the copy has been passed on.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/holds/{holdId}/accept:
+    post:
+      tags: [Holds]
+      operationId: acceptOffer
+      summary: Take the copy that was offered to you
+      description: |
+        Turns an offer into a loan. The copy is already leased in this reader's name, so this
+        writes the loan and hands back exactly what `POST /api/v1/loans` would have.
+
+        **`409 OFFER_EXPIRED` is the ordinary failure, not an exceptional one.** Offers lapse
+        on a schedule and the app may well be a few seconds behind. The refusal says the
+        window closed, and the hold is gone rather than restored to its old position: a reader
+        who missed their turn rejoins at the back, because holding a place for somebody who
+        did not answer is the same as no queue at all.
+
+        **A TTL elapsing runs no code.** An offer lapses because a sweep found it in Mongo,
+        not because a Redis key vanished. TTLs here are a leak safety net and never a trigger.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+      responses:
+        '201':
+          description: The loan. Same shape as borrowing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Loan' }
+              example:
+                loanId: loan_d22
+                itemId: item_42
+                userId: user_9c2
+                institutionId: inst_7f3
+                licenceModel: ELITE
+                status: ACTIVE
+                borrowedAt: '2026-08-13T10:00:00Z'
+                dueAt: '2026-08-27T10:00:00Z'
+                canPersist: false
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/OfferExpired' }
+
+  /api/v1/items/{itemId}/availability:
+    get:
+      tags: [Holds]
+      operationId: getAvailability
+      summary: How many copies are free right now
+      description: |
+        The HTTP face of `AvailabilityQuery`, and it exists because wokay does not call that
+        interface while building a feed: their `copies` object carries `total` only, and says
+        to fetch `available` here on the detail screen.
+
+        Counted with `ZCOUNT key now +inf` over the lease set, never `ZCARD`, which would
+        include leases that have already expired and would under-report availability
+        forever.
+
+        **It inherits the port's contract: a 50 ms budget, and it never fails for data
+        reasons.** An item we know nothing about returns `200` with `available` and
+        `queueLength` **omitted** rather than a 404 or a zero, because a zero here renders as
+        "none free" and would hide a real book behind a wrong number. Absence means unknown;
+        the app renders the metadata and no Read button.
+
+        Unlimited and open-access titles omit `available` too, for the same reason a null
+        `copies` means unlimited: there is no number to report.
+      x-stability: DRAFT
+      x-called-by: [team1, wokay]
+      security: [{ appToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: >-
+            Availability, or as much of it as is known. Never an error for a data reason.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvailabilitySnapshot' }
+              examples:
+                copyLimited:
+                  summary: Two of five copies free, nobody queued
+                  value:
+                    itemId: item_42
+                    licenceModel: ELITE
+                    total: 5
+                    available: 2
+                    queueLength: 0
+                    serverTime: '2026-08-13T10:00:00Z'
+                allOut:
+                  summary: None free, seven waiting
+                  value:
+                    itemId: item_42
+                    licenceModel: ELITE
+                    total: 5
+                    available: 0
+                    queueLength: 7
+                    serverTime: '2026-08-13T10:00:00Z'
+                unlimited:
+                  summary: No copy limit, so no number to report
+                  value:
+                    itemId: item_ab6
+                    licenceModel: SUBSCRIPTION
+                    serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # LIBRARY
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/library:
+    get:
+      tags: [Library]
+      operationId: getLibrary
+      summary: The reader's shelf, in one call
+      description: |
+        Loans and holds together, assembled server-side, for the screen the app opens on.
+
+        **Why this exists alongside `GET /api/v1/loans`.** The alternative is the app making
+        three calls on every resume — loans, holds, and wokay's `items:batch` — and joining
+        them itself. This is one round trip on a mobile connection. `GET /loans` remains the
+        collection, for history and paging; this is the read model.
+
+        `cursor` is the change-feed cursor as at this response, so the app can call
+        `GET /api/v1/loans/changes?since=` immediately afterwards and miss nothing in
+        between.
+
+        Returns item ids. **Titles and covers are one `items:batch` call away**, capped at
+        100 ids — which is the reason this response is ids and not books, and the reason it
+        does not paginate: a shelf longer than 100 items needs the paged collection instead.
+      x-stability: DRAFT
+      x-called-by: [team1]
+      security: [{ appToken: [] }]
+      responses:
+        '200':
+          description: Everything this reader currently holds or is waiting for
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LibraryResponse' }
+              example:
+                loans:
+                  - loanId: loan_7c1
+                    itemId: item_42
+                    licenceModel: ELITE
+                    status: ACTIVE
+                    borrowedAt: '2026-08-13T10:00:00Z'
+                    dueAt: '2026-08-27T10:00:00Z'
+                    canPersist: false
+                holds:
+                  - holdId: hold_5d1
+                    itemId: item_77
+                    status: OFFERED
+                    position: 1
+                    queueLength: 7
+                    placedAt: '2026-08-10T14:00:00Z'
+                    offer:
+                      offerId: offer_a90
+                      expiresAt: '2026-08-13T10:30:00Z'
+                cursor: '1189'
+                serverTime: '2026-08-13T10:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ────────────────────────────────────────────────────────────────
+  # OPS
+  # ────────────────────────────────────────────────────────────────
+
+  /api/v1/ops/reconcile:
+    post:
+      tags: [Ops]
+      operationId: reconcile
+      summary: Rebuild derived Redis state from Mongo
+      description: |
+        **Admin audience, `aud` of `tf-admin`.** Routed here because the reconciler is our
+        code, authorised by the token's audience rather than by its path — which is what
+        lets it live in our module without borrowing wokay's `/api/admin/v1/**` namespace.
+
+        Mongo is the system of record and every Redis key is rebuildable from it. This is
+        that rebuild: lease sets recounted from active loans, queues rebuilt from holds, and
+        **the ticket dispenser reset to `MAX(ticket)`** — the last of which matters more than
+        it looks, because a dispenser left at zero puts the next joiner at the front of a
+        queue that already has ten people in it.
+
+        `itemId` reconciles one title. Omit it for everything. **One item is the important
+        case:** when extending a lease fails after a loan was written, that title is
+        reconciled immediately rather than at the next scheduled pass, because the window
+        being closed is one of over-lending.
+
+        Safe to run at any time and safe to run twice. It computes derived state from the
+        record rather than adjusting it, so it cannot drift further by being called again.
+      x-stability: DRAFT
+      x-called-by: [wokay]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconcileRequest' }
+            example:
+              itemId: item_42
+      responses:
+        '200':
+          description: What was rebuilt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconcileResponse' }
+              example:
+                itemsReconciled: 1
+                leasesRebuilt: 3
+                queuesRebuilt: 1
+                ticketDispensersReset: 1
+                startedAt: '2026-08-13T10:00:00Z'
+                finishedAt: '2026-08-13T10:00:02Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+# ══════════════════════════════════════════════════════════════════
+#  COMPONENTS
+# ══════════════════════════════════════════════════════════════════
+
+components:
+
+  securitySchemes:
+    appToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Issued by us. HS256, one hour, `aud` of `tf-app`.
+        Accepted on `/api/v1/**` and `/opds/v1/**`.
+    adminToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Issued by wokay at `/api/admin/v1/auth/login`. Carries `aud` of `tf-admin`.
+        Accepted on `/api/admin/v1/**` and on `/api/v1/ops/**`.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Zero based page number
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      description: Items per page
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    LoanId:
+      name: loanId
+      in: path
+      required: true
+      schema: { type: string }
+      example: loan_7c1
+    HoldId:
+      name: holdId
+      in: path
+      required: true
+      schema: { type: string }
+      example: hold_5d1
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: An opaque catalogue id. We never parse it.
+      schema: { type: string }
+      example: item_42
+
+  responses:
+
+    BadRequest:
+      description: The request body or a parameter is not usable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingField:
+              summary: 400, a required field is absent
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 400
+                code: VALIDATION_FAILED
+                message: itemId is required
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+            badKey:
+              summary: 400, the device key is not base64 of a usable public key
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 400
+                code: INVALID_DEVICE_PUBLIC_KEY
+                message: devicePublicKey must be base64 encoded raw key bytes
+                path: /api/v1/reading-sessions
+                traceId: b7c1f2a9
+
+    Unauthorized:
+      description: >-
+        No token, or one that is not usable. **One code for all of it.** Which part of a
+        rejected token failed is useful to somebody probing us and to nobody else. An
+        expired token is the exception, because the app does something different with it:
+        clear the keychain and sign in again.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noToken:
+              summary: 401, nothing was presented
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 401
+                code: UNAUTHENTICATED
+                message: This endpoint requires authentication
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+            expired:
+              summary: 401, a token we issued has run out
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 401
+                code: TOKEN_EXPIRED
+                message: Your session has expired. Please sign in again
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+
+    Forbidden:
+      description: >-
+        Authenticated, and not allowed. `FORBIDDEN_SCOPE` for a missing role;
+        `FORBIDDEN_INSTITUTION_MISMATCH` for a resource belonging to another institution, or
+        to any institution when the caller belongs to none. Neither message names what the
+        caller has or what the resource belongs to.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 403
+            code: FORBIDDEN_INSTITUTION_MISMATCH
+            message: This resource belongs to another institution
+            path: /api/v1/loans/loan_7c1/return
+            traceId: b7c1f2a9
+
+    NotFound:
+      description: >-
+        Unknown id, or not visible to this caller. Deliberately the same answer for both:
+        a 403 on something that exists tells a caller it exists.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 404
+            code: NOT_FOUND
+            message: No such loan
+            path: /api/v1/loans/loan_nope/return
+            traceId: b7c1f2a9
+
+    EntitlementRefused:
+      description: >-
+        The entitlement check said no. Every code here comes from `DenyReason` on
+        `EntitlementQuery` and is returned unchanged — we do not collapse them, because
+        "your subscription lapsed" and "your library never had this" are different sentences
+        to a reader.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noEntitlement:
+              summary: 403, this institution has no grant covering this book
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 403
+                code: NO_ENTITLEMENT
+                message: This title requires a subscription
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+            expired:
+              summary: 403, the grant has lapsed
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 403
+                code: ENTITLEMENT_EXPIRED
+                message: Your institution's access to this title has ended
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+            institutionInactive:
+              summary: 403, the institution itself is suspended
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 403
+                code: INSTITUTION_INACTIVE
+                message: Your institution's account is not active
+                path: /api/v1/loans
+                traceId: b7c1f2a9
+
+    ReadRefused:
+      description: >-
+        The read was refused after entitlement passed. `DOWNLOAD_NOT_PERMITTED` is the
+        common one and is not a bug in the app: `canPersist` on the loan already said so,
+        and the server refuses regardless of what the UI offered.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            downloadRefused:
+              summary: 403, copy-limited titles are online only
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 403
+                code: DOWNLOAD_NOT_PERMITTED
+                message: This title can be read online only
+                path: /api/v1/reading-sessions
+                traceId: b7c1f2a9
+            deviceCap:
+              summary: 403, too many devices for this reader
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 403
+                code: DEVICE_LIMIT_REACHED
+                message: This account is already reading on the maximum number of devices
+                path: /api/v1/reading-sessions
+                traceId: b7c1f2a9
+
+    ReadConflict:
+      description: The book is not readable yet, or not held
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noLoan:
+              summary: 409, an entitled title needs a loan first
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 409
+                code: NO_ACTIVE_LOAN
+                message: Borrow this title before reading it
+                path: /api/v1/reading-sessions
+                traceId: b7c1f2a9
+            notReady:
+              summary: 409, ingest has not finished
+              value:
+                timestamp: '2026-08-13T10:00:00Z'
+                status: 409
+                code: CONTENT_NOT_READY
+                message: This book is still being processed
+                path: /api/v1/reading-sessions
+                traceId: b7c1f2a9
+
+    BorrowConflict:
+      description: >-
+        Every copy is out. **We refuse and ask** rather than silently enqueuing, so the
+        message names the queue and the app offers it as a choice.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 409
+            code: NO_COPIES_AVAILABLE
+            message: All copies are on loan. You can join the queue at /api/v1/holds
+            path: /api/v1/loans
+            traceId: b7c1f2a9
+
+    LoanNotActive:
+      description: The loan is already closed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 409
+            code: LOAN_NOT_ACTIVE
+            message: This loan has already been returned
+            path: /api/v1/loans/loan_7c1/return
+            traceId: b7c1f2a9
+
+    HoldConflict:
+      description: Nothing to queue for
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 409
+            code: VALIDATION_FAILED
+            message: This title has no copy limit, so there is no queue to join
+            path: /api/v1/holds
+            traceId: b7c1f2a9
+
+    OfferExpired:
+      description: >-
+        The window closed. The hold is gone rather than restored to its old position —
+        a reader who missed their turn rejoins at the back.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            timestamp: '2026-08-13T10:00:00Z'
+            status: 409
+            code: OFFER_EXPIRED
+            message: This offer has expired and the copy has been passed on
+            path: /api/v1/holds/hold_5d1/accept
+            traceId: b7c1f2a9
+
+  schemas:
+
+    # ── shared ──────────────────────────────────────────────────
+
+    Error:
+      type: object
+      description: >-
+        Every error in the system uses this shape. Field for field wokay's `Error`, and one
+        record in the code, `common/error/ErrorResponse`. There is no second error shape.
+      required: [timestamp, status, code, message, path]
+      properties:
+        timestamp: { type: string, format: date-time }
+        status: { type: integer }
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message:
+          type: string
+          description: For a human. Do not switch on this, switch on `code`.
+        path: { type: string }
+        traceId:
+          type: string
+          description: Quote this when reporting a problem.
+
+    ErrorCode:
+      type: string
+      description: |
+        Machine readable, and shared with wokay through `common/error/ErrorCode`.
+
+        Only the values we can actually raise are listed. Six arrive from `DenyReason` on
+        the entitlement check. Five are new with this file and need ratifying at the
+        Contracts Gate: `NO_COPIES_AVAILABLE`, `NO_ACTIVE_LOAN`, `LOAN_NOT_ACTIVE`,
+        `DEVICE_LIMIT_REACHED`, `OFFER_EXPIRED`.
+
+        Note what is absent. There is no `TOKEN_MISSING` and no `TOKEN_INVALID`: both answer
+        `UNAUTHENTICATED`, because telling a caller which part of a rejected token failed
+        tells an attacker how close they got. `TOKEN_EXPIRED` survives that argument only
+        because the app must know to clear its keychain.
+      enum:
+        - VALIDATION_FAILED
+        - INVALID_DEVICE_PUBLIC_KEY
+        - UNAUTHENTICATED
+        - TOKEN_EXPIRED
+        - FORBIDDEN_SCOPE
+        - FORBIDDEN_INSTITUTION_MISMATCH
+        - NO_ENTITLEMENT
+        - ENTITLEMENT_EXPIRED
+        - ENTITLEMENT_SUSPENDED
+        - INSTITUTION_INACTIVE
+        - DOWNLOAD_NOT_PERMITTED
+        - DEVICE_LIMIT_REACHED
+        - NOT_FOUND
+        - CONTENT_NOT_READY
+        - NO_COPIES_AVAILABLE
+        - NO_ACTIVE_LOAN
+        - LOAN_NOT_ACTIVE
+        - OFFER_EXPIRED
+
+    LicenceModel:
+      type: string
+      description: >-
+        wokay's vocabulary, which is what the app already speaks from the feeds. We receive
+        `catalogue.api.AccessLevel` and translate once: `ENTITLED_UNLIMITED` is
+        `SUBSCRIPTION`, `ENTITLED_CONCURRENT` is `ELITE`.
+      enum: [OPEN_ACCESS, SUBSCRIPTION, ELITE]
+
+    Institution:
+      type: object
+      description: >-
+        The two public fields, echoed so a sign-in screen can show a name it did not have to
+        re-fetch. Carries no SAML configuration: one integration serves every institution.
+      required: [institutionId, name]
+      properties:
+        institutionId: { type: string, example: inst_7f3 }
+        name: { type: string, example: Deakin University }
+
+    # ── auth ────────────────────────────────────────────────────
+
+    UserType:
+      type: string
+      description: An INSTITUTION user always carries an institutionId; an INDIVIDUAL never does.
+      enum: [INSTITUTION, INDIVIDUAL]
+
+    SignInMethod:
+      type: string
+      enum: [SAML, OIDC]
+
+    SignInMethodsResponse:
+      type: object
+      required: [institutionId, institutionName, methods]
+      properties:
+        institutionId: { type: string }
+        institutionName: { type: string }
+        methods:
+          type: array
+          description: Empty when the institution exists but has no method configured yet.
+          items:
+            type: object
+            required: [method, startUrl]
+            properties:
+              method: { $ref: '#/components/schemas/SignInMethod' }
+              startUrl:
+                type: string
+                description: Post to this to begin. Follow it rather than building it.
+
+    SamlStartRequest:
+      type: object
+      required: [institutionId]
+      properties:
+        institutionId: { type: string, example: inst_7f3 }
+        idpHint:
+          type: string
+          description: >-
+            Accepted because the contract defines it, and unused. One SAML integration
+            serves every institution, so nothing about the request selects a provider.
+            Kept so the app does not change when a real federation arrives.
+
+    SamlStartResponse:
+      type: object
+      description: >-
+        Not a token envelope, and cannot be one. The assertion is delivered to our ACS by
+        the identity provider, not returned down this call.
+      required: [authTxnId, authorizationUrl, institution, expiresAt, serverTime]
+      properties:
+        authTxnId:
+          type: string
+          description: >-
+            Opaque. Echoed for the client to correlate its own state. Not a credential and
+            proves nothing on its own — the institution it maps to is held server-side.
+        authorizationUrl:
+          type: string
+          description: Open this. Do not construct it.
+        institution: { $ref: '#/components/schemas/Institution' }
+        expiresAt:
+          type: string
+          format: date-time
+          description: After this the transaction is refused and sign-in restarts.
+        serverTime: { type: string, format: date-time }
+
+    OidcStartRequest:
+      type: object
+      required: [institutionId]
+      properties:
+        institutionId: { type: string, example: inst_7f3 }
+
+    OidcStartResponse:
+      type: object
+      description: Deliberately the same shape as SamlStartResponse.
+      required: [authTxnId, authorizationUrl, institution, expiresAt, serverTime]
+      properties:
+        authTxnId: { type: string }
+        authorizationUrl: { type: string }
+        institution: { $ref: '#/components/schemas/Institution' }
+        expiresAt: { type: string, format: date-time }
+        serverTime: { type: string, format: date-time }
+
+    AuthMeResponse:
+      type: object
+      description: >-
+        Every identity field is copied from the validated token. The endpoint accepts no
+        body and no parameters, so there is nothing a caller could substitute.
+      required: [userId, type, roles, collections, expiresAt, serverTime, token]
+      properties:
+        userId: { type: string, example: user_9c2 }
+        type: { $ref: '#/components/schemas/UserType' }
+        institutionId:
+          type: string
+          description: >-
+            **Omitted, not null, for an individual subscriber.** An individual belongs to no
+            institution, which is not the same as belonging to every one.
+        roles:
+          type: array
+          items: { type: string }
+          description: Strings on the wire. An enum exists in our code for the other end.
+        collections:
+          type: array
+          items: { type: string }
+        expiresAt:
+          type: string
+          format: date-time
+          description: The expiry of the token in `token`, not of the one presented.
+        serverTime: { type: string, format: date-time }
+        token:
+          type: string
+          description: >-
+            A fresh token. An addition to the API Reference — without it, `expiresAt`
+            describes something the client never receives.
+
+    # ── loans ───────────────────────────────────────────────────
+
+    LoanStatus:
+      type: string
+      description: >-
+        `EXPIRED` is a loan the sweep closed at its due date; `RETURNED` is one the reader
+        closed. Both are over, and the app shows them differently.
+      enum: [ACTIVE, RETURNED, EXPIRED]
+
+    BorrowRequest:
+      type: object
+      required: [itemId]
+      properties:
+        itemId: { type: string, example: item_42 }
+
+    Loan:
+      type: object
+      description: >-
+        Possession. `dueAt` is absent for open access, which never expires, and the loan
+        period for everything else comes from the entitlement rather than from our config.
+      required: [loanId, itemId, userId, licenceModel, status, borrowedAt, canPersist, serverTime]
+      properties:
+        loanId: { type: string, example: loan_7c1 }
+        itemId: { type: string, example: item_42 }
+        userId: { type: string, example: user_9c2 }
+        institutionId:
+          type: string
+          description: Omitted for an individual subscriber.
+        licenceModel: { $ref: '#/components/schemas/LicenceModel' }
+        status: { $ref: '#/components/schemas/LoanStatus' }
+        borrowedAt: { type: string, format: date-time }
+        dueAt:
+          type: string
+          format: date-time
+          description: Absent for open access. Otherwise borrowedAt plus the entitlement's loanPeriodDays.
+        returnedAt:
+          type: string
+          format: date-time
+          description: Present once the loan is closed.
+        canPersist:
+          type: boolean
+          description: >-
+            **Use this for the download button, not the tier.** False for `ELITE`, and the
+            server refuses a `DOWNLOAD` intent regardless of what the UI shows.
+        serverTime: { type: string, format: date-time }
+
+    LoanPage:
+      type: object
+      required: [loans, page, size, total, serverTime]
+      properties:
+        loans:
+          type: array
+          items: { $ref: '#/components/schemas/Loan' }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer }
+        serverTime: { type: string, format: date-time }
+
+    ReturnRequest:
+      type: object
+      description: Optional. Omit it and the server timestamps the return itself.
+      properties:
+        returnedAt:
+          type: string
+          format: date-time
+          description: >-
+            The **reader's** timestamp, for a return that happened offline. Clamped to
+            `[borrowedAt, serverTime]`: a client clock is not a source of truth, but
+            discarding what the reader actually did is not right either.
+
+    ReturnResponse:
+      type: object
+      required: [loanId, itemId, status, borrowedAt, returnedAt, promoted, serverTime]
+      properties:
+        loanId: { type: string }
+        itemId: { type: string }
+        status: { $ref: '#/components/schemas/LoanStatus' }
+        borrowedAt: { type: string, format: date-time }
+        returnedAt:
+          type: string
+          format: date-time
+          description: What was actually recorded, after clamping.
+        promoted:
+          type: boolean
+          description: >-
+            Whether freeing this copy promoted somebody. Reported here rather than left to
+            the change feed, because the promotion happened inside this call.
+        serverTime: { type: string, format: date-time }
+
+    # ── reading ─────────────────────────────────────────────────
+
+    Format:
+      type: string
+      enum: [PDF, EPUB, AUDIO]
+
+    Intent:
+      type: string
+      description: >-
+        `DOWNLOAD` is refused for `ELITE` whatever the UI offered. Audio is streamed and
+        carries no encryption.
+      enum: [STREAM, DOWNLOAD]
+
+    ReadingSessionRequest:
+      type: object
+      required: [itemId, format, intent, devicePublicKey]
+      properties:
+        itemId: { type: string, example: item_42 }
+        format: { $ref: '#/components/schemas/Format' }
+        intent: { $ref: '#/components/schemas/Intent' }
+        devicePublicKey:
+          type: string
+          contentEncoding: base64
+          description: >-
+            **Base64 of raw key bytes** — not a PEM, not a JSON web key. Passed to
+            `ContentAccessGrant` as bytes. Its fingerprint is what the device cap counts, so
+            the same device presenting the same key is one device, with nothing enrolled.
+        wantSearchIndex:
+          type: boolean
+          default: false
+          description: Ask for the encrypted search index too. Absent from the response if the book has none.
+
+    ReadingSessionResponse:
+      type: object
+      description: >-
+        `content`, `index` and `encryption` are **forwarded from `ContentAccessGrant`
+        unchanged**. Not renamed, not re-serialised through a naming strategy, not logged and
+        not cached. Renaming `wrappedBek` breaks decryption on the device and surfaces as
+        "this file is corrupt" rather than as our bug. The shapes are wokay's `SignedUrl`,
+        `IndexUrl` and `Encryption`, deliberately not redefined here.
+      required: [sessionId, itemId, expiresAt, serverTime, content]
+      properties:
+        sessionId:
+          type: string
+          description: For correlating logs. Not a credential and not presented back to us.
+          example: sess_e41
+        itemId: { type: string }
+        loanId:
+          type: string
+          description: The loan this read was authorised against. Absent for open access.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            About five minutes. The session is not closed and cannot be — it holds nothing
+            that needs releasing.
+        serverTime: { type: string, format: date-time }
+        content:
+          description: wokay's `SignedUrl`, forwarded.
+          type: object
+        index:
+          description: wokay's `IndexUrl`, forwarded. Absent when there is none or none was asked for.
+          type: object
+        encryption:
+          description: wokay's `Encryption`, forwarded. Absent for open access and for all audio.
+          type: object
+
+    # ── holds ───────────────────────────────────────────────────
+
+    HoldStatus:
+      type: string
+      description: >-
+        `OFFERED` means a copy is being held for this reader right now — the lease is taken
+        for the whole window, so an offer is a reassigned copy rather than a promise of one.
+      enum: [QUEUED, OFFERED]
+
+    HoldRequest:
+      type: object
+      required: [itemId]
+      properties:
+        itemId: { type: string, example: item_42 }
+
+    Offer:
+      type: object
+      required: [offerId, expiresAt]
+      properties:
+        offerId: { type: string, example: offer_a90 }
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            Absolute and server-issued. Render the difference against `serverTime`, never
+            against the device clock.
+
+    Hold:
+      type: object
+      description: >-
+        `position` and `queueLength` are computed on read. A stored position is wrong the
+        moment anybody ahead cancels.
+      required: [holdId, itemId, status, position, queueLength, placedAt, serverTime]
+      properties:
+        holdId: { type: string, example: hold_5d1 }
+        itemId: { type: string, example: item_42 }
+        status: { $ref: '#/components/schemas/HoldStatus' }
+        position:
+          type: integer
+          minimum: 1
+          description: One based, derived from a monotonic ticket. Never stored, never from a timestamp.
+        queueLength: { type: integer, minimum: 1 }
+        estimatedWaitDays:
+          type: integer
+          description: >-
+            **A guess, and labelled one.** Derived from the loan period and the copy count;
+            knows nothing about early returns. Never render it as a promise.
+        placedAt: { type: string, format: date-time }
+        offer:
+          allOf:
+            - $ref: '#/components/schemas/Offer'
+          description: Present only while status is OFFERED.
+        serverTime: { type: string, format: date-time }
+
+    HoldListResponse:
+      type: object
+      required: [holds, serverTime]
+      properties:
+        holds:
+          type: array
+          items: { $ref: '#/components/schemas/Hold' }
+        serverTime: { type: string, format: date-time }
+
+    AvailabilitySnapshot:
+      type: object
+      description: >-
+        **Absence means unknown, never zero.** A zero renders as "none free" and would hide
+        a real book behind a wrong number, so an item we cannot answer for omits the fields
+        rather than guessing. Unlimited and open-access titles omit them too, because there
+        is no number to report.
+      required: [itemId, serverTime]
+      properties:
+        itemId: { type: string }
+        licenceModel: { $ref: '#/components/schemas/LicenceModel' }
+        total:
+          type: integer
+          minimum: 1
+          description: Licensed copies. Absent unless the licence model is ELITE.
+        available:
+          type: integer
+          minimum: 0
+          description: >-
+            Free right now, counted with `ZCOUNT key now +inf` over the lease set — never
+            `ZCARD`, which counts leases that have already expired.
+        queueLength: { type: integer, minimum: 0 }
+        serverTime: { type: string, format: date-time }
+
+    # ── library and sync ────────────────────────────────────────
+
+    LibraryResponse:
+      type: object
+      description: >-
+        Item ids, not books. Titles and covers are one `items:batch` call away, capped at
+        100 ids — which is also why this does not paginate. A shelf longer than that wants
+        `GET /api/v1/loans`.
+      required: [loans, holds, cursor, serverTime]
+      properties:
+        loans:
+          type: array
+          items: { $ref: '#/components/schemas/Loan' }
+        holds:
+          type: array
+          items: { $ref: '#/components/schemas/Hold' }
+        cursor:
+          type: string
+          description: >-
+            The change-feed cursor as at this response. Call
+            `GET /api/v1/loans/changes?since=` with it and miss nothing in between.
+        serverTime: { type: string, format: date-time }
+
+    ChangeReason:
+      type: string
+      description: >-
+        `ENTITLEMENT_REVOKED` is why this feed exists: it is the only way the app learns
+        that a book it is currently showing has stopped being readable.
+      enum:
+        - LOAN_CREATED
+        - LOAN_RETURNED
+        - LOAN_EXPIRED
+        - HOLD_PLACED
+        - HOLD_CANCELLED
+        - HOLD_PROMOTED
+        - HOLD_OFFER_EXPIRED
+        - ENTITLEMENT_REVOKED
+
+    ChangeEntry:
+      type: object
+      required: [sequence, reason, itemId, occurredAt]
+      properties:
+        sequence:
+          type: integer
+          description: Monotonic per reader. Ordering, not a count.
+        reason: { $ref: '#/components/schemas/ChangeReason' }
+        itemId: { type: string }
+        loanId: { type: string, description: Present for loan reasons. }
+        holdId: { type: string, description: Present for hold reasons. }
+        occurredAt: { type: string, format: date-time }
+
+    ChangesResponse:
+      type: object
+      required: [changes, nextCursor, hasMore, serverTime]
+      properties:
+        changes:
+          type: array
+          description: Oldest first, so applying them in order converges.
+          items: { $ref: '#/components/schemas/ChangeEntry' }
+        nextCursor:
+          type: string
+          description: Opaque. Do not parse it and do not construct one.
+        hasMore:
+          type: boolean
+          description: >-
+            Rather than a total. The feed is a stream, and counting it would mean reading
+            all of it to answer a question the client never asks.
+        serverTime: { type: string, format: date-time }
+
+    # ── ops ─────────────────────────────────────────────────────
+
+    ReconcileRequest:
+      type: object
+      description: Omit the body entirely to reconcile everything.
+      properties:
+        itemId:
+          type: string
+          description: >-
+            One title. The important case: when extending a lease fails after a loan was
+            written, that title is reconciled immediately rather than at the next pass.
+
+    ReconcileResponse:
+      type: object
+      required: [itemsReconciled, leasesRebuilt, queuesRebuilt, ticketDispensersReset, startedAt, finishedAt]
+      properties:
+        itemsReconciled: { type: integer }
+        leasesRebuilt: { type: integer }
+        queuesRebuilt: { type: integer }
+        ticketDispensersReset:
+          type: integer
+          description: >-
+            Reset to `MAX(ticket)`. A dispenser left at zero puts the next joiner at the
+            front of a queue that already has ten people in it.
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
