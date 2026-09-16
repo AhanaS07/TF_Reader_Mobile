@@ -56,7 +56,7 @@ export interface CreateSearchPipelineOptions {
 export function createSearchPipeline(
   options: CreateSearchPipelineOptions = {},
 ): CatalogueSearchPipeline {
-  const kind = options.kind ?? resolveSearchPipelineKind(process.env[ENV_VAR]);
+  const kind = options.kind ?? resolveSearchPipelineKind(process.env.EXPO_PUBLIC_SEARCH_PIPELINE);
 
   if (kind === 'api') {
     return new ApiSearchPipeline({
