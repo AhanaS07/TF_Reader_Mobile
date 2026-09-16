@@ -39,7 +39,7 @@ import { radius, space, weight } from '@theme/tokens';
 import { resolveFont } from '@theme/resolveFont';
 
 // The Nexus mark — transparent background, same asset TopAppBar uses.
-const NEXUS_LOGO = require('../../assets/nexus-logo.png');
+const NEXUS_LOGO = require('../../assets/nexus-fixed.png');
 
 // Lifted from design/app-popup/code.html's `:root` block — this screen's own
 // palette, not the app's brand tokens. See file header.
@@ -60,7 +60,9 @@ const GRID_LINE_COLOR = 'rgba(147, 197, 253, 0.042)';
 // Per resolveFont.ts's own warning: never pair these with an explicit
 // fontWeight, or Android substitutes the system typeface.
 const WORDMARK_FONT = resolveFont('secondary', weight.bold); // Aleo_700Bold
-const TAGLINE_FONT = resolveFont('primary', weight.light); // OpenSans_300Light
+// Regular, not Light — Light read as too faint against the dark boot
+// background for both the T&F attribution and the tagline that share this.
+const TAGLINE_FONT = resolveFont('primary', weight.regular); // OpenSans_400Regular
 
 // One-time intro, in ms — matches the mockup's own keyframe timings (the
 // full sequence through the T&F watermark, the last thing to appear).
@@ -167,7 +169,6 @@ export interface BootSplashProps {
 export default function BootSplash({ ready, onExited }: BootSplashProps) {
   const [glow] = useState(() => new Animated.Value(0));
   const [wordmark] = useState(() => new Animated.Value(0));
-  const [divider] = useState(() => new Animated.Value(0));
   const [tagline] = useState(() => new Animated.Value(0));
   const [tfMark] = useState(() => new Animated.Value(0));
   const [progress] = useState(() => new Animated.Value(0));
@@ -198,21 +199,14 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.timing(divider, {
-        toValue: 1,
-        duration: 850,
-        delay: 950,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }),
-      Animated.timing(tagline, {
+      Animated.timing(tfMark, {
         toValue: 1,
         duration: 800,
         delay: 1100,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.timing(tfMark, {
+      Animated.timing(tagline, {
         toValue: 1,
         duration: 800,
         delay: 1300,
@@ -349,12 +343,8 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
           </View>
         </Animated.View>
 
-        {/* Small T&F attribution, tucked in diagonally below-right of the
-            Nexus lockup — a watermark, not a second brand. Right-aligned
-            against `main`'s own width (not the lockup's shrink-wrapped one),
-            so the fuller "Taylor & Francis Group" text wraps within the
-            screen instead of overflowing off the edge the way an
-            absolutely-positioned overhang would. */}
+        {/* Small T&F attribution, centered under the Nexus lockup — a
+            watermark, not a second brand. */}
         <Animated.Text
           style={[
             styles.tfMark,
@@ -366,10 +356,6 @@ export default function BootSplash({ ready, onExited }: BootSplashProps) {
         >
           by Taylor &amp; Francis Group
         </Animated.Text>
-
-        <Animated.View
-          style={[styles.divider, { width: divider.interpolate({ inputRange: [0, 1], outputRange: [0, 140] }), opacity: divider }]}
-        />
 
         <Animated.Text
           style={[
@@ -474,11 +460,6 @@ const styles = StyleSheet.create({
     fontSize: 52,
     color: ORBIT.white,
   },
-  divider: {
-    height: 1,
-    backgroundColor: ORBIT.cyanElectric,
-    marginVertical: space.md,
-  },
   tagline: {
     fontFamily: TAGLINE_FONT,
     fontSize: 13,
@@ -487,12 +468,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     maxWidth: 280,
   },
-  // The small T&F attribution — right-aligned and tucked close under the
-  // Nexus lockup for the diagonal watermark feel, small enough to stay
-  // secondary but legible enough to actually be read.
+  // The small T&F attribution — centered under the Nexus lockup, small
+  // enough to stay secondary but legible enough to actually be read.
   tfMark: {
-    alignSelf: 'flex-end',
+    alignSelf: 'center',
     marginTop: -8,
+    marginBottom: space.lg,
     fontFamily: TAGLINE_FONT,
     fontSize: 12,
     letterSpacing: 0.3,

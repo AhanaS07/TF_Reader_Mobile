@@ -8,8 +8,11 @@ const BAR_HEIGHT = 56;
 
 // The Nexus mark — transparent background, square aspect. Rendered alone
 // (no wordmark text) on the bar itself.
-const BRAND_LOGO = require('../../../assets/nexus-logo.png');
-const BRAND_LOGO_HEIGHT = 28;
+const BRAND_LOGO = require('../../../assets/nexus-fixed.png');
+// Bumped up from 28 for visibility — still well within BAR_HEIGHT (56) with
+// `inner`'s own `alignItems: 'center'` centering it, so neither the bar's
+// height nor anything else in it moves.
+const BRAND_LOGO_HEIGHT = 36;
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
