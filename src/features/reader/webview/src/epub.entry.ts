@@ -625,13 +625,15 @@ function finalCssFor(doc: Document | null | undefined): string {
 
 // --- gestures ---------------------------------------------------------------------------------
 //
-// >>> BOTH READING GESTURES ARE RECOGNISED HERE, IN THE DOCUMENT, AND THAT IS THE POINT. <<<
+// >>> EVERY READING GESTURE IS RECOGNISED HERE, IN THE DOCUMENT, AND THAT IS THE POINT. <<<
 // Page turns used to be an RN `PanResponder` on an overlay above the WebView, which meant the
 // document never saw a `touchstart` while it was mounted — so text could not be selected, and
-// highlighting needed a mode switch to take the touches back. Recognising both on this side lets
-// them be told apart by SHAPE, which is what the reader already expects: hold still and the text
-// selects, drag sideways and the page turns. See touchGesture.ts for the arithmetic and the fuller
-// account of why the overlay had to go.
+// highlighting needed a mode switch to take the touches back. Recognising all of them on this side
+// lets them be told apart by SHAPE, which is what the reader already expects: hold still and the
+// text selects, drag sideways and the page turns, a quick tap with barely any movement toggles
+// "full screen" (`tapped`, posted only once a link and a painted highlight have had first refusal —
+// see `isInsideLink` and `pressedHighlightId`). See touchGesture.ts for the arithmetic and the
+// fuller account of why the overlay had to go.
 
 /** Where the finger went down for the gesture in progress, in the CHAPTER document's coordinates,
  * or null between gestures. Deltas are all the swipe test needs, so the iframe's own offset cancels
@@ -880,6 +882,17 @@ function onLongPress(): void {
 }
 
 /**
+ * Whether `target` is inside a live `<a href>` — epub.js's own `replaceLinks` (in
+ * `linksHandler()`) sets `onclick` directly on each such element to navigate internal links and
+ * footnotes, WITHOUT calling `stopPropagation()`, so a native tap on one still bubbles all the way
+ * to this document's own `touchend` listener. Checked so a tap that navigates a link never ALSO
+ * posts `tapped` — the two would otherwise double-fire on the exact same touch.
+ */
+function isInsideLink(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('a[href]') !== null;
+}
+
+/**
  * Wire one chapter document for touch.
  *
  * Registered from the content hook, so it lands on EVERY chapter — a book is many documents, and
@@ -930,15 +943,33 @@ function watchTouches(contents: Contents): void {
       const touch = event.changedTouches[0];
       if (!origin || !touch || longPressFired) return;
       // A drag that ends with text selected is a selection being extended, not a page turn — the
-      // reader is dragging a handle, and those travel a long way horizontally.
+      // reader is dragging a handle, and those travel a long way horizontally. Also refuses the
+      // plain-tap branch just below: a gesture that leaves a selection standing must not also
+      // toggle chrome.
       if (!view.getSelection()?.isCollapsed) return;
+
+      const point = { x: touch.clientX, y: touch.clientY };
+
+      if (!movedBeyondSlop(origin, point)) {
+        // A PLAIN TAP — the third gesture this handler tells apart, alongside the long press and
+        // the swipe below. Refused for a tap that landed on a live link (epub.js's own `onclick`
+        // already handles those — see readerBridge.ts's `tapped` doc for why a tap that bubbles
+        // from inside one must not also fire this) or on a painted highlight (that press belongs
+        // to the highlight's own gesture, not to the page background), so tapping actual content
+        // never also toggles "full screen".
+        if (pressedHighlightId === null && !isInsideLink(touch.target)) {
+          post({ type: 'tapped' });
+        }
+        return;
+      }
+
       // Discrete pages only. In scrolled flow the reader scrolls, and there is no page to turn.
       if (!isPaginated(currentFlow())) return;
       // TTS is actively speaking — see setTtsSpeaking's own doc for why this blocks the gesture
       // rather than the command (goTo/TOC/search stay reachable; only the swipe is gated).
       if (ttsSpeaking) return;
 
-      const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+      const direction = swipeDirection(origin, point);
       if (direction === null || !rendition) return;
 
       const turn = direction === 'next' ? rendition.next() : rendition.prev();

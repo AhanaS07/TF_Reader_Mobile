@@ -941,10 +941,12 @@ function requestCurrentSelection(): void {
 // --- gestures ---------------------------------------------------------------------------------
 //
 // The PDF half of what epub.entry.ts does in every chapter document: a long press offers a menu, a
-// directional drag turns the page, and the two are told apart by shape. Simpler here in one way —
-// there is one document rather than an iframe per chapter, so coordinates need no translation — and
-// harder in another, since a highlight is a div this shell painted rather than something a library
-// hit-tests for us. See touchGesture.ts for why both live on this side of the bridge at all.
+// directional drag turns the page, and a quick tap with barely any movement toggles "full screen"
+// (`tapped`) — told apart by shape, same as there. Simpler here in one way — there is one document
+// rather than an iframe per chapter, so coordinates need no translation, and no link check on the
+// tap branch either (pdf.js has no clickable link overlay) — and harder in another, since a
+// highlight is a div this shell painted rather than something a library hit-tests for us. See
+// touchGesture.ts for why all of this lives on this side of the bridge at all.
 
 let touchOrigin: TouchPoint | null = null;
 let longPressTimer = 0;
@@ -1024,13 +1026,27 @@ document.addEventListener(
 
     const touch = event.changedTouches[0];
     if (!origin || !touch || longPressFired || !pdfDoc) return;
-    // A drag that ends with text selected is a selection being extended, not a page turn.
+    // A drag that ends with text selected is a selection being extended, not a page turn. Also
+    // refuses the plain-tap branch just below, same reasoning as epub.entry.ts's identical guard.
     if (!document.getSelection()?.isCollapsed) return;
+
+    const point = { x: touch.clientX, y: touch.clientY };
+
+    if (!movedBeyondSlop(origin, point)) {
+      // A PLAIN TAP — the third gesture this handler tells apart, alongside the long press and the
+      // swipe below. Refused for a tap that landed on a painted highlight (that press belongs to
+      // the highlight's own gesture, not the page background) — no link check here, unlike
+      // epub.entry.ts's identical branch: pdf.js renders pages as rasterised canvases with no
+      // clickable link overlay (readerBridge.ts's `tapped` doc has the fuller account).
+      if (pressedHighlightId === null) post({ type: 'tapped' });
+      return;
+    }
+
     // In continuous scroll the reader scrolls; there is no discrete page to turn. Same rule the RN
     // overlay applied from the outside, now applied where the touch actually is.
     if (scrollMode) return;
 
-    const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+    const direction = swipeDirection(origin, point);
     if (direction === null) return;
 
     const spreading = shouldRenderSpread(spreadPref, viewportSize().width);

@@ -1438,6 +1438,9 @@ ${columnOverrideCss()}` : currentCss;
   function onLongPress() {
     longPressFired = true;
   }
+  function isInsideLink(target) {
+    return target instanceof Element && target.closest("a[href]") !== null;
+  }
   function watchTouches(contents) {
     const doc = contents.document;
     const view = doc.defaultView;
@@ -1474,9 +1477,16 @@ ${columnOverrideCss()}` : currentCss;
         const touch = event.changedTouches[0];
         if (!origin || !touch || longPressFired) return;
         if (!view.getSelection()?.isCollapsed) return;
+        const point = { x: touch.clientX, y: touch.clientY };
+        if (!movedBeyondSlop(origin, point)) {
+          if (pressedHighlightId === null && !isInsideLink(touch.target)) {
+            post({ type: "tapped" });
+          }
+          return;
+        }
         if (!isPaginated(currentFlow())) return;
         if (ttsSpeaking) return;
-        const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+        const direction = swipeDirection(origin, point);
         if (direction === null || !rendition) return;
         const turn = direction === "next" ? rendition.next() : rendition.prev();
         turn.catch((error) => {

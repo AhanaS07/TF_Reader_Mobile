@@ -417,7 +417,10 @@ async function reportReady(): Promise<void> {
   await deliver({ type: 'ready' });
 }
 
-async function mountReader(props?: { onOpenAccessibilityInfo?: () => void }): Promise<void> {
+async function mountReader(props?: {
+  onOpenAccessibilityInfo?: () => void;
+  onChromeHiddenChange?: (hidden: boolean) => void;
+}): Promise<void> {
   await render(<ReaderScreen bookId="test-book" {...props} />);
   // The WebView only mounts once getReaderHtmlUri() resolves.
   await screen.findByTestId('reader-webview');
@@ -471,22 +474,18 @@ describe('a PDF Contents row', () => {
   // (ReaderScreen + several delivered bridge messages + a panel open + a press) has been
   // observed to exceed 5s despite passing in well under that locally; the test itself does
   // nothing slow. See PR discussion for the flake report before removing this.
-  it(
-    'navigates with the page target the shell sent, unmodified',
-    async () => {
-      await mountReader();
-      await reportReady();
-      await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
-      await openContents();
+  it('navigates with the page target the shell sent, unmodified', async () => {
+    await mountReader();
+    await reportReady();
+    await deliver({ type: 'toc', items: pdfToc([1, 12, 40]) });
+    await openContents();
 
-      await fireEvent.press(screen.getByText('Page 12'));
+    await fireEvent.press(screen.getByText('Page 12'));
 
-      expect(__injectJavaScript).toHaveBeenLastCalledWith(
-        buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
-      );
-    },
-    15000,
-  );
+    expect(__injectJavaScript).toHaveBeenLastCalledWith(
+      buildCommandScript({ type: 'goTo', target: { kind: 'page', page: 12 } }),
+    );
+  }, 15000);
 
   // A PDF outline repeats page numbers BY DESIGN — several sections legitimately open on the same
   // page, and the sample fixture has exactly that. Rows must stay distinct anyway, which is why the
@@ -1298,10 +1297,7 @@ describe('applyAppearance — the accessibility overrides', () => {
     return JSON.parse(String(json).replace(/\\"/g, '"')) as Record<string, unknown>;
   }
 
-  function withA11y(overrides: {
-    dyslexiaFont?: boolean;
-    highContrast?: boolean;
-  }): SharedPrefs {
+  function withA11y(overrides: { dyslexiaFont?: boolean; highContrast?: boolean }): SharedPrefs {
     const base = makePrefs();
     return {
       ...base,
@@ -1770,7 +1766,10 @@ describe('ReaderScreen Contents panel', () => {
 describe('ReaderScreen in-book search', () => {
   beforeEach(() => {
     jest.mocked(queryBookIndex).mockReset().mockResolvedValue([]);
-    jest.mocked(getIndex).mockReset().mockResolvedValue(new Uint8Array([1]));
+    jest
+      .mocked(getIndex)
+      .mockReset()
+      .mockResolvedValue(new Uint8Array([1]));
     __injectJavaScript.mockClear();
   });
 
@@ -2396,7 +2395,9 @@ describe('ReaderScreen in-book search', () => {
 
     const scripts = __injectJavaScript.mock.calls.map(([script]: [string]) => script);
     const jump = scripts.findIndex((script: string) => script.includes('TFReader.goTo('));
-    const paint = scripts.findIndex((script: string) => script.includes('TFReader.paintSearchMatch('));
+    const paint = scripts.findIndex((script: string) =>
+      script.includes('TFReader.paintSearchMatch('),
+    );
     expect(jump).toBeGreaterThan(-1);
     expect(paint).toBeGreaterThan(jump);
   });
@@ -2871,7 +2872,9 @@ describe('ReaderScreen bookmarks panel', () => {
 
       await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Custom name' }));
       await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-a'), '   ');
-      await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Custom name' }));
+      await fireEvent.press(
+        screen.getByRole('button', { name: 'Save bookmark name: Custom name' }),
+      );
 
       expect(renameBookmark).toHaveBeenCalledWith('test-book', 'a', '');
     });
@@ -2996,8 +2999,83 @@ describe('ReaderScreen bookmarks panel', () => {
 
       expect(bookmarksButton().getByText(glyphFor('bookmark-outline'))).toBeTruthy();
 
-      jest.mocked(subscribeToBookmarkChanges).mockReset().mockReturnValue(() => {});
+      jest
+        .mocked(subscribeToBookmarkChanges)
+        .mockReset()
+        .mockReturnValue(() => {});
     });
+  });
+});
+
+describe('tapping the page background toggles "full screen"', () => {
+  // The WebView's own `touchend` handler is what actually tells a tap apart from a swipe, a long
+  // press, a link, or a highlight — none of that is reachable from here (jest.setup.js's WebView
+  // stub is an inert View), so this only exercises what ReaderScreen does once the `tapped` message
+  // already arrived. `StatusBar` is deliberately not asserted: RN's own `StatusBar.render()` returns
+  // `null` (verified against react-native's own source), so there is no host node for RNTL to see —
+  // the toolbar's own visibility and the `onChromeHiddenChange` callback are what a test CAN observe.
+  async function tap(): Promise<void> {
+    await deliver({ type: 'tapped' });
+  }
+
+  it('hides the toolbar and reports true, then a second tap restores it and reports false', async () => {
+    const onChromeHiddenChange = jest.fn();
+    await mountReader({ onChromeHiddenChange });
+    await deliver({ type: 'rendered' });
+
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+
+    await tap();
+
+    expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
+    expect(onChromeHiddenChange).toHaveBeenCalledTimes(1);
+    expect(onChromeHiddenChange).toHaveBeenLastCalledWith(true);
+
+    await tap();
+
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+    expect(onChromeHiddenChange).toHaveBeenCalledTimes(2);
+    expect(onChromeHiddenChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('does nothing while a screen reader is running — a plain tap is how it explores content', async () => {
+    jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+    const onChromeHiddenChange = jest.fn();
+    await mountReader({ onChromeHiddenChange });
+    await deliver({ type: 'rendered' });
+
+    await tap();
+
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+    expect(onChromeHiddenChange).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while a panel is already open', async () => {
+    await mountReader();
+    await deliver({ type: 'rendered' });
+    await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
+
+    await tap();
+
+    // Still open — the tap neither closed the panel nor hid the row behind it.
+    expect(screen.getByRole('button', { name: 'Close bookmarks' })).toBeTruthy();
+  });
+
+  it('forces the toolbar back if a screen reader turns on while it is hidden', async () => {
+    const onChromeHiddenChange = jest.fn();
+    await mountReader({ onChromeHiddenChange });
+    await deliver({ type: 'rendered' });
+
+    await tap();
+    expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
+
+    jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
+    await screen.rerender(
+      <ReaderScreen bookId="test-book" onChromeHiddenChange={onChromeHiddenChange} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+    expect(onChromeHiddenChange).toHaveBeenLastCalledWith(false);
   });
 });
 
@@ -3284,9 +3362,9 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       await startSpeaking();
 
       const scriptsWhileSpeaking = __injectJavaScript.mock.calls.map((call) => String(call[0]));
-      expect(
-        scriptsWhileSpeaking.some((script) => script.includes('setTtsSpeaking(true)')),
-      ).toBe(true);
+      expect(scriptsWhileSpeaking.some((script) => script.includes('setTtsSpeaking(true)'))).toBe(
+        true,
+      );
       __injectJavaScript.mockClear();
 
       await fireEvent.press(screen.getByRole('button', { name: 'Pause' }));
@@ -3307,9 +3385,9 @@ describe('TTS is driven by the preference, not by a button in the reader', () =>
       }
 
       const scriptsAfterPause = __injectJavaScript.mock.calls.map((call) => String(call[0]));
-      expect(
-        scriptsAfterPause.some((script) => script.includes('setTtsSpeaking(false)')),
-      ).toBe(true);
+      expect(scriptsAfterPause.some((script) => script.includes('setTtsSpeaking(false)'))).toBe(
+        true,
+      );
     });
   });
 
@@ -4221,10 +4299,7 @@ describe('a rejected annotation call is contained, not swallowed', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
 
     await fireEvent.press(screen.getByRole('button', { name: 'Edit bookmark: Old name' }));
-    await fireEvent.changeText(
-      screen.getByTestId('reader-bookmark-edit-input-victim'),
-      'New name',
-    );
+    await fireEvent.changeText(screen.getByTestId('reader-bookmark-edit-input-victim'), 'New name');
     await fireEvent.press(screen.getByRole('button', { name: 'Save bookmark name: Old name' }));
 
     expect(alert).toHaveBeenCalledWith(
@@ -4685,7 +4760,10 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
     // The case a one-shot retry could not cover: a resize race lands wrong, the resend corrects it
     // to... also wrong (a SEPARATE appearance-reanchor race), and a second resend finally lands right.
     await render(
-      <ReaderScreen bookId="test-book-verify-two-mismatches" initialTarget={{ kind: 'page', page: 5 }} />,
+      <ReaderScreen
+        bookId="test-book-verify-two-mismatches"
+        initialTarget={{ kind: 'page', page: 5 }}
+      />,
     );
     await screen.findByTestId('reader-webview');
     await reportReady();
@@ -4700,7 +4778,10 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
 
   it('gives up eventually rather than retrying forever', async () => {
     await render(
-      <ReaderScreen bookId="test-book-verify-retry-cap" initialTarget={{ kind: 'page', page: 5 }} />,
+      <ReaderScreen
+        bookId="test-book-verify-retry-cap"
+        initialTarget={{ kind: 'page', page: 5 }}
+      />,
     );
     await screen.findByTestId('reader-webview');
     await reportReady();
@@ -4722,7 +4803,10 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
 
   it('stops correcting once the reader takes over navigation, rather than fighting a real page turn', async () => {
     await render(
-      <ReaderScreen bookId="test-book-verify-user-takes-over" initialTarget={{ kind: 'page', page: 5 }} />,
+      <ReaderScreen
+        bookId="test-book-verify-user-takes-over"
+        initialTarget={{ kind: 'page', page: 5 }}
+      />,
     );
     await screen.findByTestId('reader-webview');
     await reportReady();
@@ -4746,7 +4830,10 @@ describe('the initial-target flush verifies and resends on a mismatch', () => {
   // toolbar buttons do, not a partial copy that skips the race-guard half of the effect.
   it('a TalkBack page-turn action also stops the resend loop, same as the toolbar buttons', async () => {
     await render(
-      <ReaderScreen bookId="test-book-verify-talkback-pageturn" initialTarget={{ kind: 'page', page: 5 }} />,
+      <ReaderScreen
+        bookId="test-book-verify-talkback-pageturn"
+        initialTarget={{ kind: 'page', page: 5 }}
+      />,
     );
     await screen.findByTestId('reader-webview');
     await reportReady();

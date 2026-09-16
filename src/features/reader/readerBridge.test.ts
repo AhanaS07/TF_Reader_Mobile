@@ -600,6 +600,7 @@ describe('what the compiler cannot check about the WebView half', () => {
       highlightPressed: { id: 'hl-1' },
       highlightTouchActive: { active: false },
       searchMatchPainted: { painted: true },
+      tapped: {},
     };
 
     for (const type of READER_MESSAGE_TYPES) {

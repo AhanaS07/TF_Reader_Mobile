@@ -19,6 +19,7 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -248,10 +249,7 @@ const DYSLEXIA_FONT_FAMILY = 'OpenDyslexic';
  * and the WebView would then be sent NO appearance at all: no theme, no text size, no margins, no
  * flow, no announce gates. Losing one font is the correct failure; losing every preference is not.
  */
-function wantsDyslexiaFont(
-  resolved: ReaderAppearance,
-  format: ContentFormat | null,
-): boolean {
+function wantsDyslexiaFont(resolved: ReaderAppearance, format: ContentFormat | null): boolean {
   return resolved.dyslexiaFont && format === 'EPUB';
 }
 
@@ -326,7 +324,9 @@ async function buildAppearanceWithFont(
   // why paginated flow makes the book unreachable to TalkBack, and `flowOverrideActive` below for
   // the notice that stops this being a silent change. The same reasoning is what puts the dyslexia
   // and contrast overrides here rather than in `toReaderAppearance`.
-  const withFace = wantsDyslexiaFont(resolved, format) ? await withDyslexiaFont(resolved) : resolved;
+  const withFace = wantsDyslexiaFont(resolved, format)
+    ? await withDyslexiaFont(resolved)
+    : resolved;
   return a11yFlowOverride(withHighContrast(withFace), screenReaderEnabled);
 }
 
@@ -466,6 +466,16 @@ interface ReaderScreenProps {
    * fall back to.
    */
   onOpenAccessibilityInfo?: () => void;
+
+  /**
+   * Fired whenever a plain tap on the page background toggles "full screen" — hides (`true`) or
+   * restores (`false`) the toolbar row, together with whatever this component cannot reach itself.
+   * Navigation-agnostic on the same grounds as `onOpenAccessibilityInfo`: this file has no
+   * `navigation` prop and no business hiding a stack header it does not know exists.
+   * `ReaderRouteScreen.tsx` supplies `(hidden) => navigation.setOptions({ headerShown: !hidden })`.
+   * Omit it and the toolbar/status-bar toggle still works; only the nav header stays put.
+   */
+  onChromeHiddenChange?: (hidden: boolean) => void;
 }
 
 function ReaderScreenComponent(
@@ -476,6 +486,7 @@ function ReaderScreenComponent(
     onLocked,
     toolbarExtra,
     onOpenAccessibilityInfo,
+    onChromeHiddenChange,
   }: ReaderScreenProps,
   ref: React.ForwardedRef<ReaderScreenHandle>,
 ): React.JSX.Element {
@@ -545,13 +556,25 @@ function ReaderScreenComponent(
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showAccessibility, setShowAccessibility] = useState(false);
 
+  /**
+   * Whether a plain tap on the page background has hidden the toolbar/status bar/nav header — the
+   * "full screen" mode. Toggled ONLY by the WebView's own `tapped` message (see
+   * `webview/src/touchGesture.ts` and each entry's `touchend` handler for what already got filtered
+   * out before this arrives: a long press, a swipe, an active selection, a tap on a link, or a tap on
+   * a highlight). Mirrored into `chromeHiddenRef` at the same call site that sets it, rather than via
+   * a separate effect, since this is the only place it ever changes — see the `'tapped'` case below.
+   */
+  const [chromeHidden, setChromeHidden] = useState(false);
+  const chromeHiddenRef = useRef(false);
+
   // Live (updates across a rotation while the dropdown is open, unlike a one-off `Dimensions.get`)
   // — bounds the Accessibility dropdown's ScrollView so it stays scrollable rather than growing
   // past the screen, which the panel's own toggle rows can do on a small phone in landscape.
   // `width` rides along on the same reactive hook so the height ratio below can branch on window
   // size too, rather than only reacting to height.
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const isAccessibilityDropdownCompactWidth = windowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH;
+  const isAccessibilityDropdownCompactWidth =
+    windowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH;
 
   /**
    * Whether ANY panel is covering the book. Drives the two-prop "hide from assistive tech" pair on
@@ -564,6 +587,15 @@ function ReaderScreenComponent(
    * `ReaderWebView`'s `hidden` prop for why reparenting is not an option here.
    */
   const anyPanelOpen = showToc || showSearch || showBookmarks || showAccessibility;
+
+  // Read from the `'tapped'` case in `handleMessage`, which deliberately keeps `anyPanelOpen` off
+  // its own dependency array — same reasoning as `sendRef`/`formatRef` elsewhere in this file: a
+  // value read inside a callback that fires on every WebView message, mirrored into a ref instead
+  // of a dep, so opening/closing a panel does not recreate `handleMessage` itself.
+  const anyPanelOpenRef = useRef(anyPanelOpen);
+  useEffect(() => {
+    anyPanelOpenRef.current = anyPanelOpen;
+  });
 
   /**
    * The bottom row is hidden on a NARROWER condition than the rest of the background, and the
@@ -592,7 +624,6 @@ function ReaderScreenComponent(
   const [bookmarks, setBookmarks] = useState<ReaderBookmark[]>([]);
   const [bookmarksLoaded, setBookmarksLoaded] = useState(false);
   const [skippedBookmarkCount, setSkippedBookmarkCount] = useState(0);
-
 
   /**
    * The user's saved highlights for this book, split per shell, plus how many stored rows could not
@@ -899,6 +930,13 @@ function ReaderScreenComponent(
     onRelocatedRef.current = onRelocated;
   });
 
+  /** `onChromeHiddenChange` mirrored into a ref for the same reason as `onRelocatedRef` right
+   * above — read inside `handleMessage`'s `'tapped'` case without widening that callback's deps. */
+  const onChromeHiddenChangeRef = useRef(onChromeHiddenChange);
+  useEffect(() => {
+    onChromeHiddenChangeRef.current = onChromeHiddenChange;
+  });
+
   /** `send` mirrored into a ref for the same reason as `onRelocatedRef` right above — read inside
    * `handleMessage` (stable identity, empty dep array) to resend a mismatched initial target without
    * widening that callback's own deps. */
@@ -993,6 +1031,25 @@ function ReaderScreenComponent(
    */
   const screenReaderEnabled = useScreenReaderEnabled();
   const overrideDeclined = useOverrideDeclined();
+
+  // Same ref-mirror reasoning as `anyPanelOpenRef` — read from the `'tapped'` case in
+  // `handleMessage` without adding `screenReaderEnabled` to that callback's own deps.
+  const screenReaderEnabledRef = useRef(screenReaderEnabled);
+  useEffect(() => {
+    screenReaderEnabledRef.current = screenReaderEnabled;
+  });
+
+  // A screen reader turning ON while the toolbar happens to be tap-hidden must not leave it stuck
+  // that way: the `'tapped'` case below refuses to toggle at all once `screenReaderEnabled` is true
+  // (a plain tap is how TalkBack/VoiceOver explores content, not a gesture this app can also claim
+  // for chrome), so without this there would be no surviving way to bring the toolbar back.
+  useEffect(() => {
+    if (screenReaderEnabled && chromeHiddenRef.current) {
+      chromeHiddenRef.current = false;
+      setChromeHidden(false);
+      onChromeHiddenChangeRef.current?.(false);
+    }
+  }, [screenReaderEnabled]);
 
   // Reset on mount, so the choice is scoped to one reading session rather than to the app process:
   // reopening a book asks again, which is right for a decision whose point is to be reconsidered.
@@ -1632,169 +1689,191 @@ function ReaderScreenComponent(
     [bookId],
   );
 
-  const handleMessage = useCallback((message: ReaderMessage): void => {
-    switch (message.type) {
-      case 'ready':
-        // Handled by onReady, which also carries the sender.
-        break;
-      case 'rendered':
-        if (openSentAtRef.current !== null) {
-          logSpan('open -> rendered', openSentAtRef.current);
-        }
-        setIsRendered(true);
-        break;
-      case 'relocated': {
-        setPosition(message.position);
-        setBounds({ atStart: message.atStart, atEnd: message.atEnd });
-
-        // Verify the initial-target flush landed where it was sent, and resend — up to
-        // MAX_INITIAL_TARGET_RESENDS times — if a resize or appearance-reanchor race (see
-        // `pendingInitialVerifyRef`'s own doc) silently carried it somewhere else.
-        //
-        // `isUnverifiedInitialRelocate` ALSO gates whether this relocate is reported outward
-        // (`onRelocatedRef` below): a `relocated` fired inside this same race window can be the
-        // WebView's own natural default landing (e.g. page 1), not wherever `initialTarget` asked
-        // to resume — and unlike the resend loop here, `onRelocatedRef`'s caller
-        // (`ReaderRouteScreen.tsx`) saves AND PUSHES to Sync on the very first call, unthrottled.
-        // Reporting a wrong intermediate position outward durably overwrites a correct synced
-        // position with a stale/default one, on every open, before the resume target even lands -
-        // confirmed live, 2026-09-03: opening a book already at page 9 wrote page 1 to the server
-        // within the first second, every time. `setPosition`/`setBounds` above stay unconditional -
-        // they only drive this component's own display, which the resend loop already corrects.
-        const pendingVerify = pendingInitialVerifyRef.current;
-        let isUnverifiedInitialRelocate = false;
-        if (pendingVerify !== null) {
-          const { target, attempts } = pendingVerify;
-          const landedCorrectly =
-            target.kind === 'page'
-              ? message.position.kind === 'page' && message.position.page === target.page
-              : message.position.kind === 'cfi' && message.position.cfi === target.href;
-          isUnverifiedInitialRelocate = !landedCorrectly;
-          // Silent unless EXPO_PUBLIC_READER_TIMING=1 (readerTiming.ts) — real device evidence for
-          // whatever keeps landing this wrong, rather than more guessing from a simulator.
-          logEvent('initial-target relocated', {
-            attempt: attempts,
-            landedCorrectly: String(landedCorrectly),
-            requested: target.kind === 'page' ? target.page : target.href,
-            got: message.position.kind === 'page' ? message.position.page : message.position.cfi ?? 'null',
-          });
-          if (landedCorrectly || attempts >= MAX_INITIAL_TARGET_RESENDS) {
-            if (!landedCorrectly) {
-              logEvent('initial-target abandoned', { attempts });
-            }
-            pendingInitialVerifyRef.current = null;
-          } else {
-            pendingInitialVerifyRef.current = { target, attempts: attempts + 1 };
-            sendRef.current?.({ type: 'goTo', target });
+  const handleMessage = useCallback(
+    (message: ReaderMessage): void => {
+      switch (message.type) {
+        case 'ready':
+          // Handled by onReady, which also carries the sender.
+          break;
+        case 'rendered':
+          if (openSentAtRef.current !== null) {
+            logSpan('open -> rendered', openSentAtRef.current);
           }
-        } else if (initialTargetRef.current !== null) {
-          // `relocated` arrived before `rendered`: both pdf.entry.ts (renderCurrent(1) inside
-          // openPdf) and epub.entry.ts (display() inside openEpub) post `relocated` before they
-          // post `rendered`. `pendingInitialVerifyRef` is set by the effect that waits for
-          // `isRendered`, so it is null here — the existing guard above cannot fire. But
-          // `initialTargetRef` still holds the resume target, meaning the goTo has not been sent
-          // yet and this `relocated` is the book's own default landing (page 1 / start CFI), not
-          // the position the user should resume at. Suppress it exactly as the post-rendered case
-          // does for a mid-resend wrong landing.
-          isUnverifiedInitialRelocate = true;
-        }
+          setIsRendered(true);
+          break;
+        case 'relocated': {
+          setPosition(message.position);
+          setBounds({ atStart: message.atStart, atEnd: message.atEnd });
 
-        // Every real `relocated` USED TO BE a navigation signal unconditionally — epub.js never
-        // fired it for `setSpokenRange`, which only touched annotations — so this was the one call
-        // site needed, not one at every next/prev/goTo send. TTS auto-follow's `rendition.display()`/
-        // `scrollBy()` calls (and a font-size reflow's reanchor, and a flow rebuild's redisplay) now
-        // live INSIDE handlers that used to only paint, so a `relocated` can originate from Reader's
-        // own internal repositioning too — `message.internalReposition` is how the WebView says so.
-        // Skipping `notifyRelocated()` for one is not skipping the relocation itself: `onRelocatedRef`
-        // below (progress tracking) still runs unconditionally, cause-agnostic, exactly as before —
-        // this gate is specifically about not telling the TTS session "the reader navigated away"
-        // when they did not, which used to wipe the session's prefetched next sentence and clear the
-        // highlight it had just centered on screen, silently stopping speech on the very first
-        // auto-follow action every time. A no-op while TTS isn't active either way (ref is null).
-        if (!message.internalReposition) {
-          ttsProviderRef.current?.notifyRelocated();
-        }
-        if (!isUnverifiedInitialRelocate) {
-          onRelocatedRef.current?.(message.position);
-        }
+          // Verify the initial-target flush landed where it was sent, and resend — up to
+          // MAX_INITIAL_TARGET_RESENDS times — if a resize or appearance-reanchor race (see
+          // `pendingInitialVerifyRef`'s own doc) silently carried it somewhere else.
+          //
+          // `isUnverifiedInitialRelocate` ALSO gates whether this relocate is reported outward
+          // (`onRelocatedRef` below): a `relocated` fired inside this same race window can be the
+          // WebView's own natural default landing (e.g. page 1), not wherever `initialTarget` asked
+          // to resume — and unlike the resend loop here, `onRelocatedRef`'s caller
+          // (`ReaderRouteScreen.tsx`) saves AND PUSHES to Sync on the very first call, unthrottled.
+          // Reporting a wrong intermediate position outward durably overwrites a correct synced
+          // position with a stale/default one, on every open, before the resume target even lands -
+          // confirmed live, 2026-09-03: opening a book already at page 9 wrote page 1 to the server
+          // within the first second, every time. `setPosition`/`setBounds` above stay unconditional -
+          // they only drive this component's own display, which the resend loop already corrects.
+          const pendingVerify = pendingInitialVerifyRef.current;
+          let isUnverifiedInitialRelocate = false;
+          if (pendingVerify !== null) {
+            const { target, attempts } = pendingVerify;
+            const landedCorrectly =
+              target.kind === 'page'
+                ? message.position.kind === 'page' && message.position.page === target.page
+                : message.position.kind === 'cfi' && message.position.cfi === target.href;
+            isUnverifiedInitialRelocate = !landedCorrectly;
+            // Silent unless EXPO_PUBLIC_READER_TIMING=1 (readerTiming.ts) — real device evidence for
+            // whatever keeps landing this wrong, rather than more guessing from a simulator.
+            logEvent('initial-target relocated', {
+              attempt: attempts,
+              landedCorrectly: String(landedCorrectly),
+              requested: target.kind === 'page' ? target.page : target.href,
+              got:
+                message.position.kind === 'page'
+                  ? message.position.page
+                  : (message.position.cfi ?? 'null'),
+            });
+            if (landedCorrectly || attempts >= MAX_INITIAL_TARGET_RESENDS) {
+              if (!landedCorrectly) {
+                logEvent('initial-target abandoned', { attempts });
+              }
+              pendingInitialVerifyRef.current = null;
+            } else {
+              pendingInitialVerifyRef.current = { target, attempts: attempts + 1 };
+              sendRef.current?.({ type: 'goTo', target });
+            }
+          } else if (initialTargetRef.current !== null) {
+            // `relocated` arrived before `rendered`: both pdf.entry.ts (renderCurrent(1) inside
+            // openPdf) and epub.entry.ts (display() inside openEpub) post `relocated` before they
+            // post `rendered`. `pendingInitialVerifyRef` is set by the effect that waits for
+            // `isRendered`, so it is null here — the existing guard above cannot fire. But
+            // `initialTargetRef` still holds the resume target, meaning the goTo has not been sent
+            // yet and this `relocated` is the book's own default landing (page 1 / start CFI), not
+            // the position the user should resume at. Suppress it exactly as the post-rendered case
+            // does for a mid-resend wrong landing.
+            isUnverifiedInitialRelocate = true;
+          }
 
-        const ttsSpeaking = ttsStatusRef.current === 'speaking';
+          // Every real `relocated` USED TO BE a navigation signal unconditionally — epub.js never
+          // fired it for `setSpokenRange`, which only touched annotations — so this was the one call
+          // site needed, not one at every next/prev/goTo send. TTS auto-follow's `rendition.display()`/
+          // `scrollBy()` calls (and a font-size reflow's reanchor, and a flow rebuild's redisplay) now
+          // live INSIDE handlers that used to only paint, so a `relocated` can originate from Reader's
+          // own internal repositioning too — `message.internalReposition` is how the WebView says so.
+          // Skipping `notifyRelocated()` for one is not skipping the relocation itself: `onRelocatedRef`
+          // below (progress tracking) still runs unconditionally, cause-agnostic, exactly as before —
+          // this gate is specifically about not telling the TTS session "the reader navigated away"
+          // when they did not, which used to wipe the session's prefetched next sentence and clear the
+          // highlight it had just centered on screen, silently stopping speech on the very first
+          // auto-follow action every time. A no-op while TTS isn't active either way (ref is null).
+          if (!message.internalReposition) {
+            ttsProviderRef.current?.notifyRelocated();
+          }
+          if (!isUnverifiedInitialRelocate) {
+            onRelocatedRef.current?.(message.position);
+          }
 
-        // ONE RELOCATION, ONE UTTERANCE. The chapter is tried first and the page only if it said
-        // nothing: crossing a chapter boundary is also a page change, and announcing both would
-        // read out "Chapter: The Cave" and "Page 88 of 340" back to back for a single turn.
-        const chapter = chapterChangeAnnouncement(
-          lastSectionRef.current,
-          message.section,
-          message.section === null
-            ? null
-            : tocLabelForHref(tocRef.current, message.section.href),
+          const ttsSpeaking = ttsStatusRef.current === 'speaking';
+
+          // ONE RELOCATION, ONE UTTERANCE. The chapter is tried first and the page only if it said
+          // nothing: crossing a chapter boundary is also a page change, and announcing both would
+          // read out "Chapter: The Cave" and "Page 88 of 340" back to back for a single turn.
+          const chapter = chapterChangeAnnouncement(
+            lastSectionRef.current,
+            message.section,
+            message.section === null ? null : tocLabelForHref(tocRef.current, message.section.href),
+            {
+              enabled: lastAppearanceRef.current?.announceChapterChanges ?? false,
+              ttsSpeaking,
+            },
+          );
+
+          // Announced from the CHANGE, not from the message arriving. `pdf.entry.ts`'s scroll mode
+          // posts `relocated` from a rAF-coalesced scroll listener, so a single flick delivers dozens
+          // of these — `pageChangeAnnouncement` returns null unless the page number actually moved.
+          // It also returns null for a reflowable EPUB, which has no page to name.
+          const page =
+            chapter !== null
+              ? null
+              : pageChangeAnnouncement(lastPositionRef.current, message.position, {
+                  enabled: lastAppearanceRef.current?.announcePageChanges ?? false,
+                  ttsSpeaking,
+                });
+
+          lastPositionRef.current = message.position;
+          lastSectionRef.current = message.section;
+
+          const said = chapter ?? page;
+          if (said !== null) announce(said);
+          break;
+        }
+        case 'toc':
+          // TIMED, unlike the other post-open messages, because this is the one that can stall
+          // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
+          // still unavailable. The PDF shell resolves every outline destination through the worker
+          // (one or two round trips each), so a large book's outline is where that shows up.
+          if (openSentAtRef.current !== null) {
+            logSpan('open -> toc', openSentAtRef.current, { items: message.items.length });
+          }
+          setToc(message.items);
+          break;
+        case 'error':
+          // Timed as well as rendered: on the large-payload smoke test a returning OPEN_FAILED is the
+          // signal that the transport SURVIVED, so its elapsed time is a real measurement, not a
+          // footnote to a failure.
+          if (openSentAtRef.current !== null) {
+            logSpan('open -> error', openSentAtRef.current, { code: message.code });
+          }
+          setError({ code: message.code, message: message.message });
+          break;
+        case 'ttsSentence':
+          ttsProviderRef.current?.handleReply(message);
+          break;
+        case 'selection':
+          // Reply to `requestCurrentSelection`. Null is a normal answer (selection cleared before
+          // the reply arrived) and just does nothing.
+          if (message.selection !== null) void createHighlightFromSelection(message.selection);
+          break;
+        case 'highlightPressed':
+          // Reply to `confirmDeleteHighlight`, or to `requestCurrentSelection` when that gesture
+          // turned out to meet an existing highlight (see readerBridge.ts's own note) — either way,
+          // deletes directly, no RN confirmation step.
+          void deleteHighlightById(message.id);
+          break;
+        case 'searchMatchPainted':
+          // Sent only for a payload that asked for a paint, so this never has to distinguish "cleared"
+          // from "failed". NOT routed through `raiseError`: navigation already worked, and a banner
+          // over the book is the wrong size of response to a box that could not be measured.
+          setUnpaintedMatchKey(message.painted ? null : activeMatchKey);
+          break;
+        case 'tapped':
+          // A plain tap on the page background — each entry's own `touchend` handler has already
+          // filtered out a long press, a swipe, a tap that ended with a live selection, a tap on a
+          // link (EPUB only), and a tap on a highlight, so everything that reaches here toggles
+          // "full screen" unconditionally EXCEPT for a screen reader, which gets no toggle at all: a
+          // plain tap is how TalkBack/VoiceOver explores content, not a gesture this app can also
+          // claim, and hiding the toolbar out from under a screen-reader user would remove the one
+          // way back with no equivalent gesture to restore it. Refused while a panel is open too —
+          // that can only be true if the tap arrived while a panel already had this covered, and the
+          // panel's own close row is the one way out of it, not this.
+          if (screenReaderEnabledRef.current || anyPanelOpenRef.current) break;
           {
-            enabled: lastAppearanceRef.current?.announceChapterChanges ?? false,
-            ttsSpeaking,
-          },
-        );
-
-        // Announced from the CHANGE, not from the message arriving. `pdf.entry.ts`'s scroll mode
-        // posts `relocated` from a rAF-coalesced scroll listener, so a single flick delivers dozens
-        // of these — `pageChangeAnnouncement` returns null unless the page number actually moved.
-        // It also returns null for a reflowable EPUB, which has no page to name.
-        const page =
-          chapter !== null
-            ? null
-            : pageChangeAnnouncement(lastPositionRef.current, message.position, {
-                enabled: lastAppearanceRef.current?.announcePageChanges ?? false,
-                ttsSpeaking,
-              });
-
-        lastPositionRef.current = message.position;
-        lastSectionRef.current = message.section;
-
-        const said = chapter ?? page;
-        if (said !== null) announce(said);
-        break;
+            const next = !chromeHiddenRef.current;
+            chromeHiddenRef.current = next;
+            setChromeHidden(next);
+            onChromeHiddenChangeRef.current?.(next);
+          }
+          break;
       }
-      case 'toc':
-        // TIMED, unlike the other post-open messages, because this is the one that can stall
-        // invisibly: `rendered` has already fired, so the reader shows a page while Contents is
-        // still unavailable. The PDF shell resolves every outline destination through the worker
-        // (one or two round trips each), so a large book's outline is where that shows up.
-        if (openSentAtRef.current !== null) {
-          logSpan('open -> toc', openSentAtRef.current, { items: message.items.length });
-        }
-        setToc(message.items);
-        break;
-      case 'error':
-        // Timed as well as rendered: on the large-payload smoke test a returning OPEN_FAILED is the
-        // signal that the transport SURVIVED, so its elapsed time is a real measurement, not a
-        // footnote to a failure.
-        if (openSentAtRef.current !== null) {
-          logSpan('open -> error', openSentAtRef.current, { code: message.code });
-        }
-        setError({ code: message.code, message: message.message });
-        break;
-      case 'ttsSentence':
-        ttsProviderRef.current?.handleReply(message);
-        break;
-      case 'selection':
-        // Reply to `requestCurrentSelection`. Null is a normal answer (selection cleared before
-        // the reply arrived) and just does nothing.
-        if (message.selection !== null) void createHighlightFromSelection(message.selection);
-        break;
-      case 'highlightPressed':
-        // Reply to `confirmDeleteHighlight`, or to `requestCurrentSelection` when that gesture
-        // turned out to meet an existing highlight (see readerBridge.ts's own note) — either way,
-        // deletes directly, no RN confirmation step.
-        void deleteHighlightById(message.id);
-        break;
-      case 'searchMatchPainted':
-        // Sent only for a payload that asked for a paint, so this never has to distinguish "cleared"
-        // from "failed". NOT routed through `raiseError`: navigation already worked, and a banner
-        // over the book is the wrong size of response to a box that could not be measured.
-        setUnpaintedMatchKey(message.painted ? null : activeMatchKey);
-        break;
-    }
-  }, [activeMatchKey, createHighlightFromSelection, deleteHighlightById]);
+    },
+    [activeMatchKey, createHighlightFromSelection, deleteHighlightById],
+  );
 
   /**
    * Flush a search jump that was queued while `send` was still null.
@@ -2381,6 +2460,12 @@ function ReaderScreenComponent(
 
   return (
     <View style={styles.container}>
+      {/* RN's OWN `StatusBar`, not `expo-status-bar` — this app has no dependency on the latter,
+          and the core component already does exactly what "full screen" needs here: the LAST
+          mounted instance's props win, so this is safe to render unconditionally rather than only
+          while `chromeHidden` is true. */}
+      <StatusBar hidden={chromeHidden} animated />
+
       {/* `alert` and the live region are both needed: the role is what iOS reads, the live region
           is what Android acts on. Together they are the one place in this screen allowed to
           interrupt — an error is the thing a reader must act on. */}
@@ -2398,118 +2483,129 @@ function ReaderScreenComponent(
         </View>
       )}
 
-      {/* THE BACKGROUND, for `anyPanelOpen`'s purposes — this row, the book, the two on-page
-          badges and the bottom row. Each carries the pair separately because a panel is a sibling
-          of the book inside `viewer`; there is no single node that holds all of this and none of
-          the panels. See `anyPanelOpen`'s own note. */}
-      <View
-        style={styles.toolbar}
-        accessibilityElementsHidden={anyPanelOpen}
-        importantForAccessibility={anyPanelOpen ? 'no-hide-descendants' : 'yes'}
-      >
-        <Pressable
-          accessibilityRole="button"
-          // Required rather than stylistic: a glyph child gives a screen reader nothing to say,
-          // and every existing test finds buttons by accessible name.
-          accessibilityLabel="Search this title"
-          accessibilityState={{ expanded: showSearch }}
-          ref={searchButtonRef}
-          onPress={() => {
-            // Mutual exclusion with Contents, Bookmarks (and TTS). A UI decision — one panel's
-            // worth of the viewer is all there is room for. It no longer also carries the job of
-            // keeping "Close" unambiguous: each panel now names its own ("Close search",
-            // "Close bookmarks", "Close contents"), so the exclusion is free to change on its
-            // own merits without renaming a control out from under the test suite.
-            closeToc(false); // this panel is taking over — see closeToc's own note.
-            setShowBookmarks(false);
-            setShowAccessibility(false);
-            setShowSearch((open) => !open);
-          }}
-          style={styles.toolbarButton}
+      {/* HIDDEN ENTIRELY IN "FULL SCREEN," not just visually — `chromeHidden` and `anyPanelOpen` are
+          mutually exclusive (the `'tapped'` handler in `handleMessage` refuses to set the former
+          while the latter is true), so unmounting this row can never fight the accessibility
+          attributes below it, which exist for a DIFFERENT reason (hiding it from a screen reader
+          behind an open panel, not from a sighted tap). A screen-reader user never sees this row
+          disappear at all — the same handler refuses the toggle outright while one is running. */}
+      {!chromeHidden && (
+        // THE BACKGROUND, for `anyPanelOpen`'s purposes — this row, the book, the two on-page
+        // badges and the bottom row. Each carries the pair separately because a panel is a sibling
+        // of the book inside `viewer`; there is no single node that holds all of this and none of
+        // the panels. See `anyPanelOpen`'s own note.
+        <View
+          style={styles.toolbar}
+          accessibilityElementsHidden={anyPanelOpen}
+          importantForAccessibility={anyPanelOpen ? 'no-hide-descendants' : 'yes'}
         >
-          <Ionicons name="search-outline" style={styles.toolbarIcon} />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            // Required rather than stylistic: a glyph child gives a screen reader nothing to say,
+            // and every existing test finds buttons by accessible name.
+            accessibilityLabel="Search this title"
+            accessibilityState={{ expanded: showSearch }}
+            ref={searchButtonRef}
+            onPress={() => {
+              // Mutual exclusion with Contents, Bookmarks (and TTS). A UI decision — one panel's
+              // worth of the viewer is all there is room for. It no longer also carries the job of
+              // keeping "Close" unambiguous: each panel now names its own ("Close search",
+              // "Close bookmarks", "Close contents"), so the exclusion is free to change on its
+              // own merits without renaming a control out from under the test suite.
+              closeToc(false); // this panel is taking over — see closeToc's own note.
+              setShowBookmarks(false);
+              setShowAccessibility(false);
+              setShowSearch((open) => !open);
+            }}
+            style={styles.toolbarButton}
+          >
+            <Ionicons name="search-outline" style={styles.toolbarIcon} />
+          </Pressable>
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Bookmarks"
-          accessibilityState={{ expanded: showBookmarks }}
-          onPress={() => {
-            closeToc(false);
-            setShowSearch(false);
-            setShowAccessibility(false);
-            setShowBookmarks((open) => !open);
-          }}
-          style={styles.toolbarButton}
-        >
-          <Ionicons
-            name={isCurrentPositionBookmarked ? 'bookmark' : 'bookmark-outline'}
-            style={[styles.toolbarIcon, isCurrentPositionBookmarked && styles.toolbarIconBookmarked]}
-          />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Bookmarks"
+            accessibilityState={{ expanded: showBookmarks }}
+            onPress={() => {
+              closeToc(false);
+              setShowSearch(false);
+              setShowAccessibility(false);
+              setShowBookmarks((open) => !open);
+            }}
+            style={styles.toolbarButton}
+          >
+            <Ionicons
+              name={isCurrentPositionBookmarked ? 'bookmark' : 'bookmark-outline'}
+              style={[
+                styles.toolbarIcon,
+                isCurrentPositionBookmarked && styles.toolbarIconBookmarked,
+              ]}
+            />
+          </Pressable>
 
-        {/* NOT GATED ON `format`, unlike the panel's own Dyslexia Font row: High Contrast and
+          {/* NOT GATED ON `format`, unlike the panel's own Dyslexia Font row: High Contrast and
             Reduce Motion apply to every format, and to the shell before a book has even resolved.
             Gating the whole entry point on the one control that is EPUB-only would take the other
             two away from PDF and audio readers. */}
-        <Pressable
-          accessibilityRole="button"
-          // Explicit for the same reason as Search and Bookmarks: the glyph gives a screen reader
-          // nothing to say, and every test finds these buttons by accessible name. One merged
-          // entry point now — this button opens both the settings toggles below AND, via a row
-          // inside that same dropdown, the accessibility-information screen — so the label speaks
-          // to the whole panel rather than just the toggles.
-          accessibilityLabel="Accessibility"
-          accessibilityState={{ expanded: showAccessibility }}
-          ref={accessibilityButtonRef}
-          onPress={() => {
-            closeToc(false); // this panel is taking over — see closeToc's own note.
-            setShowSearch(false);
-            setShowBookmarks(false);
-            setShowAccessibility((open) => {
-              const next = !open;
-              if (next) {
-                // Same measure-on-open shape as DevPreferencesMenu.tsx's `toggleOpen` — see
-                // `accessibilityAnchor`'s own doc for why this has to be measured rather than laid
-                // out relatively, now that the dropdown renders inside a `Modal`. A one-shot read
-                // here, not the reactive `windowWidth` above — an anchor position is a snapshot at
-                // the moment the dropdown opens, unlike the ScrollView's height cap, which
-                // deliberately DOES stay live across a rotation while it's already open. Named
-                // `openWindowWidth` rather than `windowWidth` only to avoid shadowing that outer,
-                // reactive one — same value shape, different lifetime.
-                accessibilityButtonRef.current?.measureInWindow((x, y, width, height) => {
-                  const openWindowWidth = Dimensions.get('window').width;
-                  const right = Math.max(0, openWindowWidth - (x + width));
-                  const rightBasedMaxWidth = Math.max(
-                    0,
-                    openWindowWidth - right - ACCESSIBILITY_DROPDOWN_EDGE_MARGIN,
-                  );
-                  // Phone-only ceiling, layered ON TOP of the existing formula rather than
-                  // replacing it — above the compact-width threshold (tablet), `rightBasedMaxWidth`
-                  // is unchanged from before, and is already effectively capped further by
-                  // AccessibilitySettingsPanel's own `container.maxWidth: 560`. Below it,
-                  // `rightBasedMaxWidth` alone is "almost the full screen width minus the button's
-                  // own offset" — nearly edge-to-edge on a phone — so this caps it at 60% of the
-                  // window's width instead, leaving a clearly visible strip of the reader beside it.
-                  const maxWidth =
-                    openWindowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH
-                      ? Math.min(rightBasedMaxWidth, openWindowWidth * 0.6)
-                      : rightBasedMaxWidth;
-                  setAccessibilityAnchor({ top: y + height, right, maxWidth });
-                });
-              }
-              return next;
-            });
-          }}
-          style={styles.toolbarButton}
-        >
-          <Ionicons name="accessibility-outline" style={styles.toolbarIcon} />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            // Explicit for the same reason as Search and Bookmarks: the glyph gives a screen reader
+            // nothing to say, and every test finds these buttons by accessible name. One merged
+            // entry point now — this button opens both the settings toggles below AND, via a row
+            // inside that same dropdown, the accessibility-information screen — so the label speaks
+            // to the whole panel rather than just the toggles.
+            accessibilityLabel="Accessibility"
+            accessibilityState={{ expanded: showAccessibility }}
+            ref={accessibilityButtonRef}
+            onPress={() => {
+              closeToc(false); // this panel is taking over — see closeToc's own note.
+              setShowSearch(false);
+              setShowBookmarks(false);
+              setShowAccessibility((open) => {
+                const next = !open;
+                if (next) {
+                  // Same measure-on-open shape as DevPreferencesMenu.tsx's `toggleOpen` — see
+                  // `accessibilityAnchor`'s own doc for why this has to be measured rather than laid
+                  // out relatively, now that the dropdown renders inside a `Modal`. A one-shot read
+                  // here, not the reactive `windowWidth` above — an anchor position is a snapshot at
+                  // the moment the dropdown opens, unlike the ScrollView's height cap, which
+                  // deliberately DOES stay live across a rotation while it's already open. Named
+                  // `openWindowWidth` rather than `windowWidth` only to avoid shadowing that outer,
+                  // reactive one — same value shape, different lifetime.
+                  accessibilityButtonRef.current?.measureInWindow((x, y, width, height) => {
+                    const openWindowWidth = Dimensions.get('window').width;
+                    const right = Math.max(0, openWindowWidth - (x + width));
+                    const rightBasedMaxWidth = Math.max(
+                      0,
+                      openWindowWidth - right - ACCESSIBILITY_DROPDOWN_EDGE_MARGIN,
+                    );
+                    // Phone-only ceiling, layered ON TOP of the existing formula rather than
+                    // replacing it — above the compact-width threshold (tablet), `rightBasedMaxWidth`
+                    // is unchanged from before, and is already effectively capped further by
+                    // AccessibilitySettingsPanel's own `container.maxWidth: 560`. Below it,
+                    // `rightBasedMaxWidth` alone is "almost the full screen width minus the button's
+                    // own offset" — nearly edge-to-edge on a phone — so this caps it at 60% of the
+                    // window's width instead, leaving a clearly visible strip of the reader beside it.
+                    const maxWidth =
+                      openWindowWidth < ACCESSIBILITY_DROPDOWN_COMPACT_MAX_WIDTH
+                        ? Math.min(rightBasedMaxWidth, openWindowWidth * 0.6)
+                        : rightBasedMaxWidth;
+                    setAccessibilityAnchor({ top: y + height, right, maxWidth });
+                  });
+                }
+                return next;
+              });
+            }}
+            style={styles.toolbarButton}
+          >
+            <Ionicons name="accessibility-outline" style={styles.toolbarIcon} />
+          </Pressable>
 
-        {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
+          {/* LAST child, deliberately — see `toolbarExtra`'s own prop doc for why that makes this
             the rightmost item in the row rather than a floating overlay on top of it. */}
-        {toolbarExtra}
-      </View>
+          {toolbarExtra}
+        </View>
+      )}
 
       <View testID="reader-viewer" style={styles.viewer}>
         {/*
@@ -2949,7 +3045,9 @@ function ReaderScreenComponent(
                   (the tablet case that was already "perfect"); below it, 0.5 leaves roughly half a
                   phone's screen visible behind the dropdown instead of nearly all of it. */}
               <ScrollView
-                style={{ maxHeight: windowHeight * (isAccessibilityDropdownCompactWidth ? 0.5 : 0.7) }}
+                style={{
+                  maxHeight: windowHeight * (isAccessibilityDropdownCompactWidth ? 0.5 : 0.7),
+                }}
                 contentContainerStyle={styles.accessibilityContent}
               >
                 {/* `undefined` rather than a guess while the book is still resolving: the prop's own

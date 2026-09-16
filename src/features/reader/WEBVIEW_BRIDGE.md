@@ -106,6 +106,7 @@ about behaviour changed.
 | `highlightPressed` | `id` — sent in reply to `confirmDeleteHighlight`, OR in reply to `requestCurrentSelection` when the gesture met an existing highlight |
 | `highlightTouchActive` | `active` (`boolean`)                                        |
 | `searchMatchPainted` | `painted` (`boolean`) — sent ONLY for a `paintSearchMatch` that asked for a paint, never for a clear |
+| `tapped`    | — sent for a plain tap on the page background: no long press, no swipe, no live selection, and (EPUB) not a tap on a live `<a href>` or on a painted highlight. Toggles "full screen" host-side; see `touchGesture.ts`'s header |
 
 `ReaderPosition` is **discriminated by ADDRESSING SCHEME**, not by format: `{kind:'cfi', cfi}` or
 `{kind:'page', page, pageCount}`. The two formats have no common notion of position — a CFI addresses
@@ -464,10 +465,12 @@ about what "reappear after a drag" should actually do.
   knows the id because it painted it. No anchor either — there is no RN popup left for one to
   position; the pixels-on-the-bridge exception this file used to describe (`ReaderAnchor`) no
   longer exists, because nothing on this bridge positions anything any more.
-- **Both gestures that drive this are recognised WebView-side**, including page-turn swipe, which
+- **Every gesture that drives this is recognised WebView-side**, including page-turn swipe, which
   used to be an RN overlay. That overlay was the topmost hit-test target for every touch in the
   viewer, so the document could never receive a `touchstart` — fine for swipes, fatal for selection.
-  `webview/src/touchGesture.ts` holds the thresholds and the fuller account.
+  The same `touchend` handler also recognises a third gesture now, the plain tap that drives
+  "full screen" — see the `tapped` message's own section below. `webview/src/touchGesture.ts` holds
+  the thresholds and the fuller account.
 - **The PDF shell grew a text layer for this.** A rasterised page has no text to select and nothing
   to anchor to, so `pdf.entry.ts` now renders pdf.js's standard text layer over every visible page
   (`webview/src/pdfHighlightSeam.ts`, `pdfTextRange.ts`). It is spread-aware by construction —
@@ -528,6 +531,49 @@ store is released (`width`/`height` set to 0) rather than left resident.
 
 **This table is now documentation rather than an input to a decision.** Keep it accurate for the next
 reader, but nothing is gated on its counts any more.
+
+### The full-screen toggle — `tapped`
+
+Added 2026-09-16, so a plain tap on the page background hides the toolbar row, the OS status bar,
+and the nav header — the "full screen" mode most readers (Kindle, Apple Books) already have. The
+WebView side is what recognises the tap AT ALL (see `touchGesture.ts`'s header and each entry's own
+`touchend` handler); the host side owns what "full screen" actually means, because none of the three
+things it hides are reachable from inside the WebView.
+
+- **No payload, and none is coming.** Which way it toggles is `ReaderScreen`'s own state
+  (`chromeHidden`), not something the WebView tracks or is asked to report — the message means "a
+  qualifying tap happened," nothing more.
+- **A tap qualifies only once every OTHER claim on the touch has had first refusal.** The same
+  `touchend` handler that recognises a long press and a swipe (`movedBeyondSlop`, unchanged from
+  `touchGesture.ts`) recognises a plain tap as what is left when neither of those fired, AND the
+  gesture does not end with a live selection, AND (EPUB only) the tap did not land inside a live
+  `<a href>` (epub.js's own `onclick`, set by `replaceLinks`, does not call `stopPropagation()` — see
+  `epub.entry.ts`'s `isInsideLink`), AND the tap did not land on a painted highlight
+  (`pressedHighlightId`). Get any of those wrong and a tap meant for a footnote, a highlight, or a
+  selection would also flip the toolbar — this is the one message on this bridge where "sent" is a
+  compound refusal rather than a simple hit test.
+- **Refused entirely, host-side, while a screen reader is running.** `ReaderScreen.tsx`'s
+  `handleMessage` checks `screenReaderEnabled` before toggling anything, on the same reasoning as the
+  five rules in CLAUDE.md's "Reader accessibility" section: a plain tap is how TalkBack/VoiceOver
+  explores content, not a gesture this app can also claim, and hiding the toolbar out from under a
+  screen-reader user would remove the one way back with no equivalent gesture to restore it. A
+  defensive effect also forces `chromeHidden` back to `false` if a screen reader turns on WHILE it is
+  already hidden, for the same reason. **The WebView still sends `tapped` unconditionally** — it has
+  no idea whether a screen reader is running (`useScreenReaderEnabled` is a host-side hook over
+  `AccessibilityInfo`) — so this refusal has to live host-side, not as a reason to gate the WebView
+  send on anything.
+- **Refused while a panel is already open**, for a narrower reason than the screen-reader one: it
+  should not be reachable in practice (the toolbar buttons that open a panel are themselves part of
+  what a hide would remove, so `chromeHidden` and `anyPanelOpen` are mutually exclusive by
+  construction), but the check costs nothing and removes any doubt about what a stray message during
+  a panel would do.
+- **The nav header is the one piece of "full screen" `ReaderScreen.tsx` cannot reach itself** — it
+  has no `navigation` prop, on the same "navigation-agnostic" grounds as `onOpenAccessibilityInfo`.
+  `onChromeHiddenChange` carries it out to `ReaderRouteScreen.tsx`, which calls
+  `navigation.setOptions({ headerShown: !hidden })`. The OS status bar, by contrast, IS reachable
+  from `ReaderScreen.tsx` directly — React Native's own `StatusBar` component (not `expo-status-bar`,
+  which this app does not depend on) is rendered unconditionally with `hidden={chromeHidden}`, since
+  the LAST mounted instance's props win and there is nothing else in this app currently rendering one.
 
 ### The `CONTENT_LOCKED` host error code
 

@@ -1315,8 +1315,13 @@ ${text}`;
       const touch = event.changedTouches[0];
       if (!origin || !touch || longPressFired || !pdfDoc) return;
       if (!document.getSelection()?.isCollapsed) return;
+      const point = { x: touch.clientX, y: touch.clientY };
+      if (!movedBeyondSlop(origin, point)) {
+        if (pressedHighlightId === null) post({ type: "tapped" });
+        return;
+      }
       if (scrollMode) return;
-      const direction = swipeDirection(origin, { x: touch.clientX, y: touch.clientY });
+      const direction = swipeDirection(origin, point);
       if (direction === null) return;
       const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
       const target = direction === "next" ? nextSpreadStart(currentPage, pageCount, spreading) : prevSpreadStart(currentPage, pageCount, spreading);

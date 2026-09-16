@@ -67,7 +67,6 @@
 // Passing it INTO ReaderScreen's own toolbar row is what makes "share one row, preferences
 // rightmost" a layout guarantee instead of two files' pixel math staying in sync by luck.
 
-
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -221,6 +220,31 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     );
   }, [navigation]);
 
+  // The nav-header half of "full screen" — `ReaderScreen` itself hides its own toolbar row and the
+  // OS status bar (`StatusBar`), but has no `navigation` prop and no business hiding a stack header
+  // it does not know exists (same division `onOpenAccessibilityInfo` already draws below). Fired
+  // only from an actual tap (or the screen-reader-turned-on safety reset) — never at mount — so the
+  // effect right below carries the OTHER half: putting the header back for a fresh instance that
+  // never itself fired this.
+  const handleChromeHiddenChange = useCallback(
+    (hidden: boolean) => {
+      navigation.setOptions({ headerShown: !hidden });
+    },
+    [navigation],
+  );
+
+  // `ReaderScreen`'s own `chromeHidden` always starts `false` on a fresh instance (a new bookId, or
+  // a forced "Resume from there" remount — see its `key` below), but nothing tells THIS screen's
+  // `navigation.setOptions` that on its own: `handleChromeHiddenChange` above only fires from an
+  // actual tap inside that instance, never once at mount. Without this, switching to a different
+  // book (or a resume-conflict remount of the SAME book) while the header happened to be hidden
+  // would carry the hidden header into an instance whose own toolbar and status bar came back up
+  // already. Keyed on the identical pair `ReaderScreen`'s `key` is, so it re-runs exactly when that
+  // remount does — including on this screen's very first mount, which is the right default anyway.
+  useEffect(() => {
+    navigation.setOptions({ headerShown: true });
+  }, [navigation, bookId, resumeGeneration]);
+
   // Resets the throttle for a new book — a stale timestamp from a previous book must not swallow
   // this book's first write — and flushes on the way out, covering both a genuine unmount (normal
   // back-navigation) and a bookId change on this same persistent instance (switching books without
@@ -325,7 +349,8 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
     let cancelled = false;
     const unsubscribe = progressStore.subscribe(() => {
       if (cancelled) return;
-      const displayed = lastPositionRef.current !== null ? toLocator(lastPositionRef.current) : null;
+      const displayed =
+        lastPositionRef.current !== null ? toLocator(lastPositionRef.current) : null;
       if (displayed === null) return; // nothing on screen yet to compare against
       void progressStore.currentLocator(undefined, bookId).then((incoming) => {
         if (cancelled || incoming === null) return;
@@ -398,6 +423,7 @@ export function ReaderRouteScreen({ route, navigation }: Props): React.JSX.Eleme
         onLocked={handleLocked}
         toolbarExtra={<DevPreferencesMenu format={format} />}
         onOpenAccessibilityInfo={() => navigation.navigate('BookInfo', { bookId })}
+        onChromeHiddenChange={handleChromeHiddenChange}
       />
     </View>
   );

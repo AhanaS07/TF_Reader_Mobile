@@ -396,7 +396,19 @@ export type ReaderMessage =
    * Sent only for a payload that asked for a paint — a clear always succeeds, so there is nothing
    * to report for one, and the host resets its own notice when it sends.
    */
-  | { type: 'searchMatchPainted'; painted: boolean };
+  | { type: 'searchMatchPainted'; painted: boolean }
+  /**
+   * A plain tap on the page background — the "full screen" toggle signal. No payload: which way it
+   * toggles is this side's own state, not something the WebView tracks or is asked for.
+   *
+   * SENT ONLY FOR A TAP THAT SURVIVES EVERY OTHER GESTURE'S OWN CLAIM ON THE TOUCH — the same
+   * `touchend` handler that recognises a long press and a swipe (`touchGesture.ts`'s own header)
+   * recognises this as the thing left over once neither of those, nor a still-open selection, nor
+   * (EPUB only) a tap on a live `<a href>`, nor a tap on a painted highlight, claimed it first. A
+   * tap that meets any of those does its own thing instead — a link navigates, a highlight's own
+   * gesture proceeds, a selection stays a selection — and none of them also toggles this.
+   */
+  | { type: 'tapped' };
 
 export type ReaderMessageType = ReaderMessage['type'];
 
@@ -424,6 +436,7 @@ export const READER_MESSAGE_TYPES = [
   'highlightPressed',
   'highlightTouchActive',
   'searchMatchPainted',
+  'tapped',
 ] as const satisfies readonly ReaderMessageType[];
 
 /**
@@ -961,6 +974,9 @@ export function parseReaderMessage(raw: string): ReaderMessage | null {
       // notice shown for a match that did paint is a smaller failure than silence for one that did
       // not. That is the whole reason this message exists.
       return { type: 'searchMatchPainted', painted: parsed.painted === true };
+
+    case 'tapped':
+      return { type: 'tapped' };
 
     default:
       return null;

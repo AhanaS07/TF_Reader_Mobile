@@ -105,6 +105,7 @@ jest.mock('@/features/reader/ReaderScreen', () => {
         onRelocated?: (p: unknown) => void;
         onLocked?: (code: string, message: string) => void;
         onOpenAccessibilityInfo?: () => void;
+        onChromeHiddenChange?: (hidden: boolean) => void;
       },
       ref: unknown,
     ) {
@@ -121,9 +122,9 @@ jest.mock('@/features/reader/ReaderScreen', () => {
           <RNText onPress={() => props.onLocked?.('ACCESS_REVOKED', 'test lock message')}>
             lock
           </RNText>
-          <RNText onPress={() => props.onOpenAccessibilityInfo?.()}>
-            open accessibility info
-          </RNText>
+          <RNText onPress={() => props.onOpenAccessibilityInfo?.()}>open accessibility info</RNText>
+          <RNText onPress={() => props.onChromeHiddenChange?.(true)}>tap to hide chrome</RNText>
+          <RNText onPress={() => props.onChromeHiddenChange?.(false)}>tap to show chrome</RNText>
         </View>
       );
     }),
@@ -142,7 +143,11 @@ function renderReaderRoute(bookId: string, initialTarget?: unknown) {
     <ReaderRouteScreen
       navigation={{ setOptions: jest.fn(), goBack: mockGoBack } as never}
       route={
-        { key: 'Reader', name: 'Reader', params: { bookId, format: 'EPUB', initialTarget } } as never
+        {
+          key: 'Reader',
+          name: 'Reader',
+          params: { bookId, format: 'EPUB', initialTarget },
+        } as never
       }
     />,
   );
@@ -155,15 +160,13 @@ function renderReaderRoute(bookId: string, initialTarget?: unknown) {
 // press captured and re-invoked later, from outside any `act()` scope, is a real native dialog's
 // behaviour but not one React Test Renderer resolves the same way.
 let mockAlertAutoPress: string | null = null;
-const mockAlert = jest
-  .spyOn(Alert, 'alert')
-  .mockImplementation((_title, _message, buttons) => {
-    if (mockAlertAutoPress === null) return;
-    const button = (buttons as { text: string; onPress?: () => void }[] | undefined)?.find(
-      (candidate) => candidate.text === mockAlertAutoPress,
-    );
-    button?.onPress?.();
-  });
+const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+  if (mockAlertAutoPress === null) return;
+  const button = (buttons as { text: string; onPress?: () => void }[] | undefined)?.find(
+    (candidate) => candidate.text === mockAlertAutoPress,
+  );
+  button?.onPress?.();
+});
 
 describe('ReaderRouteScreen', () => {
   beforeEach(() => {
@@ -206,6 +209,37 @@ describe('ReaderRouteScreen', () => {
       await fireEvent.press(getByText('open accessibility info'));
 
       expect(mockNavigate).toHaveBeenCalledWith('BookInfo', { bookId: 'test-book' });
+    });
+  });
+
+  describe('onChromeHiddenChange', () => {
+    it('mounts with the header shown, then hides and restores it on the mocked toggle', async () => {
+      const mockSetOptions = jest.fn();
+      const { getByText } = await render(
+        <ReaderRouteScreen
+          navigation={{ setOptions: mockSetOptions } as never}
+          route={
+            {
+              key: 'Reader',
+              name: 'Reader',
+              params: { bookId: 'test-book', format: 'EPUB' },
+            } as never
+          }
+        />,
+      );
+      await waitFor(() => expect(getByText('tap to hide chrome')).toBeTruthy());
+
+      // The per-instance reset effect (keyed the same as `ReaderScreen`'s own `key`) — this is the
+      // half `handleChromeHiddenChange` itself never covers, since that only fires from an actual
+      // tap inside `ReaderScreen`, never once at mount. See that effect's own comment.
+      expect(mockSetOptions).toHaveBeenCalledWith({ headerShown: true });
+      mockSetOptions.mockClear();
+
+      await fireEvent.press(getByText('tap to hide chrome'));
+      expect(mockSetOptions).toHaveBeenCalledWith({ headerShown: false });
+
+      await fireEvent.press(getByText('tap to show chrome'));
+      expect(mockSetOptions).toHaveBeenCalledWith({ headerShown: true });
     });
   });
 
@@ -639,5 +673,4 @@ describe('ReaderRouteScreen', () => {
       });
     });
   });
-
 });

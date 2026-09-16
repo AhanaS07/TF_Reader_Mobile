@@ -30,12 +30,20 @@ the libraries. `esbuild` is pinned **exactly** in `package.json` on purpose: CI 
 artifacts and `git diff --exit-code`s them, so output determinism is load-bearing. A flapping diff
 means the version drifted — do not "fix" it by loosening the CI check.
 
-**Both reading gestures are recognised INSIDE the WebView** — long-press (select text / press a
-highlight) and the directional drag that turns the page. There is no RN gesture overlay over the
-book any more, and there must not be one again: an overlay is the topmost hit-test target for every
-touch in the viewer, so the document beneath it can never receive a `touchstart`, and text selection
-(the first half of highlighting) stops working with nothing to explain why. See
-`webview/src/touchGesture.ts`.
+**Every reading gesture is recognised INSIDE the WebView** — long-press (select text / press a
+highlight), the directional drag that turns the page, and (since 2026-09-16) a plain tap that
+toggles "full screen" (hides the toolbar/status bar/nav header — see the `tapped` message in
+WEBVIEW_BRIDGE.md). There is no RN gesture overlay over the book any more, and there must not be one
+again: an overlay is the topmost hit-test target for every touch in the viewer, so the document
+beneath it can never receive a `touchstart`, and text selection (the first half of highlighting)
+stops working with nothing to explain why. See `webview/src/touchGesture.ts`.
+
+**The full-screen tap is refused entirely while a screen reader is running, host-side, in
+`ReaderScreen.tsx`'s `handleMessage`.** A plain tap is how TalkBack/VoiceOver explores content, not
+a gesture this app can also claim for chrome — the WebView still sends `tapped` unconditionally (it
+has no way to know a screen reader is running), so this refusal has to live on the host side, the
+same way the accessibility overrides below do. Losing the toggle would also lose the only way back,
+since there is no equivalent gesture to restore a hidden toolbar for a screen-reader user.
 
 **Keep DOM-reading code in the entries and everything else in the pure modules.** That split is what
 makes the outline flatteners, the line grid and the page/scale arithmetic testable by *calling* them.
