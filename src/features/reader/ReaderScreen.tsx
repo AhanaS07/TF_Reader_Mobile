@@ -1159,6 +1159,12 @@ function ReaderScreenComponent(
 
   const tearDownAndLock = useCallback(
     (code: ReaderErrorCode, message: string): void => {
+      // Re-entry guard: the bus push (`useContentLock`) and the poll (`startAccessMonitor`) can
+      // both call this for the same revocation, per the class doc comment above — every other
+      // line here already tolerates that (re-setting a ref, stopping an already-stopped monitor,
+      // a caught `closeBook`), but `onLocked` is contracted to fire ONCE, so it alone needs the
+      // guard the rest of this function doesn't.
+      const alreadyLocked = lockedRef.current;
       lockedRef.current = true;
       setLocked(true);
       accessMonitorRef.current?.stop();
@@ -1173,7 +1179,7 @@ function ReaderScreenComponent(
       clearSearch();
       void closeBook(bookId).catch(() => {});
       raiseError(code, message);
-      onLocked?.(code, message);
+      if (!alreadyLocked) onLocked?.(code, message);
     },
     [bookId, raiseError, clearSearch, onLocked],
   );
