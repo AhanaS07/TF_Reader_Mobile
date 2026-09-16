@@ -563,10 +563,11 @@ things it hides are reachable from inside the WebView.
   `AccessibilityInfo`) — so this refusal has to live host-side, not as a reason to gate the WebView
   send on anything.
 - **Refused while a panel is already open**, for a narrower reason than the screen-reader one: it
-  should not be reachable in practice (the toolbar buttons that open a panel are themselves part of
-  what a hide would remove, so `chromeHidden` and `anyPanelOpen` are mutually exclusive by
-  construction), but the check costs nothing and removes any doubt about what a stray message during
-  a panel would do.
+  should not be reachable in practice at the MOMENT a tap arrives (the toolbar buttons that open a
+  panel are themselves part of what a hide would remove, so `chromeHidden` and `anyPanelOpen` are
+  mutually exclusive right when the `'tapped'` handler checks) — but the check costs nothing and
+  removes any doubt about what a stray message during a panel would do. See `toolbarLayoutHidden`'s
+  own doc comment for the one narrow window this stops being strictly true (the delay below).
 - **The nav header is the one piece of "full screen" `ReaderScreen.tsx` cannot reach itself** — it
   has no `navigation` prop, on the same "navigation-agnostic" grounds as `onOpenAccessibilityInfo`.
   `onChromeHiddenChange` carries it out to `ReaderRouteScreen.tsx`, which calls
@@ -574,6 +575,26 @@ things it hides are reachable from inside the WebView.
   from `ReaderScreen.tsx` directly — React Native's own `StatusBar` component (not `expo-status-bar`,
   which this app does not depend on) is rendered unconditionally with `hidden={chromeHidden}`, since
   the LAST mounted instance's props win and there is nothing else in this app currently rendering one.
+- **The toolbar's OWN unmount is DELAYED 400ms behind `chromeHidden`, and this is a fix, not a
+  polish pass** — found live on Android, 2026-09-16, the day this feature shipped: unmounting the
+  toolbar grows `viewer` (both are `flex` siblings), which resizes the WebView's native container.
+  epub.js's `DefaultViewManager` reacts to a container resize by tearing down and rebuilding the
+  current chapter's iframe (`resize()` -> `clear()` -> `updateLayout()`,
+  `node_modules/epubjs/src/managers/default/index.js`). Separately — and this half is NOT this app's
+  code — epub.js's `Contents.onSelectionChange` (`node_modules/epubjs/src/contents.js`) debounces
+  every `selectionchange` in the chapter document by a HARD-CODED 250ms before calling
+  `this.window.getSelection()`, and a plain tap routinely fires `selectionchange` even when nothing
+  ends up selected (WebKit/Chromium collapse the caret). Resizing inside that 250ms window means the
+  debounced callback fires against an iframe `clear()` already tore down, and calling a method on a
+  detached iframe's window throws — reported host-side as
+  `WEBVIEW_SCRIPT_ERROR: this.window.getSelection is not a function (line:col)`, since it is an
+  uncaught exception inside the WebView's own JS, exactly what `installErrorHandlers()` exists to
+  catch. `ReaderScreen.tsx`'s `toolbarLayoutHidden` mirrors `chromeHidden` through a
+  `CHROME_HIDDEN_LAYOUT_DELAY_MS` (400ms, comfortably past epub.js's 250ms) `setTimeout` and is what
+  the toolbar's own render condition actually reads — `StatusBar` and `onChromeHiddenChange` are
+  UNAFFECTED and still apply the instant the tap arrives, since neither one touches the WebView's
+  geometry. There is no public epub.js API to cancel the specific pending timer instead, and patching
+  a vendored library is not a change this file can make stick across an `npm install`.
 
 ### The `CONTENT_LOCKED` host error code
 

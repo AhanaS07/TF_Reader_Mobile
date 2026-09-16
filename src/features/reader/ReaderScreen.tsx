@@ -143,6 +143,22 @@ interface ReaderError {
 const OPEN_TIMEOUT_MS = 20_000;
 
 /**
+ * How long to wait before letting a `chromeHidden` toggle actually resize the WebView (unmounting
+ * the toolbar), rather than doing it the instant the tap that triggered it arrives.
+ *
+ * MUST EXCEED epub.js's OWN hard-coded 250ms `selectionchange` debounce
+ * (`Contents.onSelectionChange`, `node_modules/epubjs/src/contents.js`) — a plain tap routinely
+ * fires `selectionchange` even when nothing ends up selected, and the resize this delays tears down
+ * and rebuilds the current chapter's iframe (`DefaultViewManager.resize()` -> `clear()` in
+ * `node_modules/epubjs/src/managers/default/index.js`). Resizing inside that 250ms window means the
+ * debounced callback fires against an already-destroyed iframe, and `this.window.getSelection()`
+ * throws on a detached iframe's window — `WEBVIEW_SCRIPT_ERROR: this.window.getSelection is not a
+ * function`, an uncaught exception inside epub.js itself, which we cannot patch from here. 400ms
+ * clears 250ms with margin for scheduling jitter. See `toolbarLayoutHidden`'s own doc comment.
+ */
+const CHROME_HIDDEN_LAYOUT_DELAY_MS = 400;
+
+/**
  * How many times the initial-target flush (see `pendingInitialVerifyRef`) will resend a `goTo` that
  * landed somewhere else, before giving up. MORE THAN ONE, DELIBERATELY: there are at least two
  * INDEPENDENT sources of the race this guards against — a resize mid-render, and a geometry-changing
@@ -566,6 +582,22 @@ function ReaderScreenComponent(
    */
   const [chromeHidden, setChromeHidden] = useState(false);
   const chromeHiddenRef = useRef(false);
+
+  /**
+   * `chromeHidden`, DELAYED — the one consumer that actually resizes the WebView (the toolbar's own
+   * mount/unmount below) reads THIS, not `chromeHidden` directly. `StatusBar` and
+   * `onChromeHiddenChange` (nav header) apply immediately off `chromeHidden` itself, since neither
+   * touches the WebView's geometry. See `CHROME_HIDDEN_LAYOUT_DELAY_MS`'s own doc for why the delay
+   * exists at all — a resize that lands inside epub.js's own 250ms `selectionchange` debounce
+   * crashes it.
+   */
+  const [toolbarLayoutHidden, setToolbarLayoutHidden] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setToolbarLayoutHidden(chromeHidden);
+    }, CHROME_HIDDEN_LAYOUT_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [chromeHidden]);
 
   // Live (updates across a rotation while the dropdown is open, unlike a one-off `Dimensions.get`)
   // — bounds the Accessibility dropdown's ScrollView so it stays scrollable rather than growing
@@ -2483,13 +2515,22 @@ function ReaderScreenComponent(
         </View>
       )}
 
-      {/* HIDDEN ENTIRELY IN "FULL SCREEN," not just visually — `chromeHidden` and `anyPanelOpen` are
-          mutually exclusive (the `'tapped'` handler in `handleMessage` refuses to set the former
-          while the latter is true), so unmounting this row can never fight the accessibility
-          attributes below it, which exist for a DIFFERENT reason (hiding it from a screen reader
-          behind an open panel, not from a sighted tap). A screen-reader user never sees this row
-          disappear at all — the same handler refuses the toggle outright while one is running. */}
-      {!chromeHidden && (
+      {/* HIDDEN ENTIRELY IN "FULL SCREEN," not just visually — driven by `toolbarLayoutHidden`
+          (the DELAYED mirror of `chromeHidden`; see its own doc comment for why), not `chromeHidden`
+          directly. `chromeHidden` and `anyPanelOpen` are mutually exclusive AT THE MOMENT A TAP SETS
+          `chromeHidden` (the `'tapped'` handler in `handleMessage` refuses to set the former while
+          the latter is true) — so unmounting this row can never fight the accessibility attributes
+          below it, which exist for a DIFFERENT reason (hiding it from a screen reader behind an open
+          panel, not from a sighted tap) — EXCEPT for the narrow window the delay itself opens: a
+          panel opened by pressing a still-visible toolbar button in the gap between the tap and the
+          delayed unmount. Accepted rather than guarded against — it costs a cosmetic inconsistency
+          (the row disappearing while its own panel stays open and fully functional behind it), not a
+          crash, and closing it would mean re-deciding "was a panel opened during the delay" at the
+          moment the timer fires, which is more complexity than a multi-hundred-millisecond window
+          used the way another button had to be reached first, warrants. A screen-reader user never
+          sees this row disappear at all either way — the same handler refuses the toggle outright
+          while one is running. */}
+      {!toolbarLayoutHidden && (
         // THE BACKGROUND, for `anyPanelOpen`'s purposes — this row, the book, the two on-page
         // badges and the bottom row. Each carries the pair separately because a panel is a sibling
         // of the book inside `viewer`; there is no single node that holds all of this and none of

@@ -3014,8 +3014,29 @@ describe('tapping the page background toggles "full screen"', () => {
   // already arrived. `StatusBar` is deliberately not asserted: RN's own `StatusBar.render()` returns
   // `null` (verified against react-native's own source), so there is no host node for RNTL to see —
   // the toolbar's own visibility and the `onChromeHiddenChange` callback are what a test CAN observe.
+  //
+  // FAKE TIMERS, because the toolbar's own mount/unmount lags `chromeHidden` by
+  // `CHROME_HIDDEN_LAYOUT_DELAY_MS` — see that constant's own doc for why (a resize landing inside
+  // epub.js's 250ms `selectionchange` debounce crashes it; `WEBVIEW_SCRIPT_ERROR: this.window.getSelection
+  // is not a function`, confirmed live on Android). `onChromeHiddenChange` is NOT delayed — it fires
+  // straight from the `'tapped'` case, same render as the tap — so only the toolbar assertions below
+  // need `advanceToolbarDelay()`; the callback ones read synchronously right after `tap()`.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   async function tap(): Promise<void> {
     await deliver({ type: 'tapped' });
+  }
+
+  async function advanceToolbarDelay(): Promise<void> {
+    await act(async () => {
+      jest.advanceTimersByTime(400);
+    });
   }
 
   it('hides the toolbar and reports true, then a second tap restores it and reports false', async () => {
@@ -3026,16 +3047,39 @@ describe('tapping the page background toggles "full screen"', () => {
     expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
 
     await tap();
-
-    expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
     expect(onChromeHiddenChange).toHaveBeenCalledTimes(1);
     expect(onChromeHiddenChange).toHaveBeenLastCalledWith(true);
+    await advanceToolbarDelay();
+
+    expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
+
+    await tap();
+    expect(onChromeHiddenChange).toHaveBeenCalledTimes(2);
+    expect(onChromeHiddenChange).toHaveBeenLastCalledWith(false);
+    await advanceToolbarDelay();
+
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+  });
+
+  it('does not resize the WebView within the delay window — the crash this guards against needs that gap', async () => {
+    // Pins the mechanism the fix relies on, not just its end state: if this ever regressed back to
+    // an immediate unmount, this is the test that would catch it before a device would.
+    await mountReader();
+    await deliver({ type: 'rendered' });
 
     await tap();
 
     expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
-    expect(onChromeHiddenChange).toHaveBeenCalledTimes(2);
-    expect(onChromeHiddenChange).toHaveBeenLastCalledWith(false);
+
+    await act(async () => {
+      jest.advanceTimersByTime(399);
+    });
+    expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
+
+    await act(async () => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
   });
 
   it('does nothing while a screen reader is running — a plain tap is how it explores content', async () => {
@@ -3045,6 +3089,7 @@ describe('tapping the page background toggles "full screen"', () => {
     await deliver({ type: 'rendered' });
 
     await tap();
+    await advanceToolbarDelay();
 
     expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
     expect(onChromeHiddenChange).not.toHaveBeenCalled();
@@ -3056,6 +3101,7 @@ describe('tapping the page background toggles "full screen"', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Bookmarks' }));
 
     await tap();
+    await advanceToolbarDelay();
 
     // Still open — the tap neither closed the panel nor hid the row behind it.
     expect(screen.getByRole('button', { name: 'Close bookmarks' })).toBeTruthy();
@@ -3067,12 +3113,14 @@ describe('tapping the page background toggles "full screen"', () => {
     await deliver({ type: 'rendered' });
 
     await tap();
+    await advanceToolbarDelay();
     expect(screen.queryByRole('button', { name: 'Bookmarks' })).toBeNull();
 
     jest.mocked(useScreenReaderEnabled).mockReturnValue(true);
     await screen.rerender(
       <ReaderScreen bookId="test-book" onChromeHiddenChange={onChromeHiddenChange} />,
     );
+    await advanceToolbarDelay();
 
     expect(screen.getByRole('button', { name: 'Bookmarks' })).toBeTruthy();
     expect(onChromeHiddenChange).toHaveBeenLastCalledWith(false);
