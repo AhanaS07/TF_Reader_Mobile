@@ -60,6 +60,20 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
   }
   const { session, licence } = license;
 
+  // `session.content` is typed required (`ReadingSessionResponse`, reading-session.ts) but
+  // `readingSessionClient.ts` casts the raw response body with no runtime check, so a server
+  // response that omits it (observed for a queue-waiting ELITE title whose session predates
+  // actual access) reaches here as `undefined` despite the type. Without this guard,
+  // `session.content.url` below throws a bare `TypeError: Cannot read property 'url' of
+  // undefined` instead of a caught, reportable failure.
+  if (session.content === undefined) {
+    throw new DownloadFailure(
+      DownloadError.SESSION_FETCH_FAILED,
+      bookId,
+      new Error('reading session response is missing content'),
+    );
+  }
+
   // Stream the signed URL into memory via the chunked fetcher, build an ephemeral Elite
   // package (canPersist forced false regardless of the real session.canPersist), and store()
   // it. contentStore.store()'s existing Elite branch caches the package in RAM only, nothing
