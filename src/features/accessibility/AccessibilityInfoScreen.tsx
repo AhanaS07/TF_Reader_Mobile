@@ -17,8 +17,9 @@
 // one. MIN_TOUCH_TARGET applies here to the one control this screen adds: the close button.
 
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import Spinner from '@components/Spinner';
 import { color, space } from '@theme/tokens';
 
 import { getPublicationAccessibility } from './getPublicationAccessibility';
@@ -82,7 +83,7 @@ export function AccessibilityInfoScreen({
         </View>
       ) : !summary ? (
         <View style={styles.centered} testID="accessibility-info-loading">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : (
         <ScrollView>

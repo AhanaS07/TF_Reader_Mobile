@@ -12,9 +12,10 @@
 // its Download and started always queueing, and none of it is expressible here.
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import type { ComponentProps } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Skeleton } from '@components/Skeleton';
+import Spinner from '@components/Spinner';
 import type { ActionId } from '@model/types';
 import { color, radius, space, type } from '@theme/tokens';
 
@@ -183,7 +184,7 @@ export default function ActionButton({
         {/* Keeps the label and adds a spinner beside it — decided 13 Aug. The
             label staying put is the point: a button whose text vanishes changes
             width, and the whole bar jumps. */}
-        {loading && <ActivityIndicator testID="action-button-spinner" size="small" color={tint} />}
+        {loading && <Spinner testID="action-button-spinner" size="small" color={tint} />}
       </View>
     </Pressable>
   );

@@ -330,7 +330,7 @@ describe('RootNavigator — institution pill', () => {
     // RootNavigator.tsx), so it shows CatalogueHome's own title rather than
     // InstitutionList's registered 'Change institution' fallback. The pill
     // itself disappears either way (this route pushes, so `back` is now set).
-    expect(screen.getByText('Taylor & Francis')).toBeTruthy();
+    expect(screen.getByText('Nexus')).toBeTruthy();
     expect(screen.queryByText('Imperial College London')).toBeNull();
   });
 });

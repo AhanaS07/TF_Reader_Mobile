@@ -17,7 +17,7 @@ export default function ContentCardGallery() {
           title="Environmental Policy in Contemporary China"
           publisher="Routledge"
           imageUrl="https://picsum.photos/200"
-          badge={<AccessTierBadge tier="OPEN_ACCESS" size="sm" />}
+          badge={<AccessTierBadge tier="OPEN_ACCESS" />}
           onPress={() => {}}
         />
       </View>
@@ -29,7 +29,7 @@ export default function ContentCardGallery() {
           publisher="Routledge"
           imageUrl="https://picsum.photos/204"
           format="PDF"
-          badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+          badge={<AccessTierBadge tier="SUBSCRIPTION" />}
           onPress={() => {}}
         />
       </View>
@@ -40,7 +40,7 @@ export default function ContentCardGallery() {
           title="Jazz Perspectives"
           publisher="Taylor &amp; Francis"
           format="AUDIO"
-          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          badge={<AccessTierBadge tier="ELITE" />}
           onPress={() => {}}
         />
       </View>
@@ -51,7 +51,7 @@ export default function ContentCardGallery() {
           title="Listening to Cities"
           publisher="Routledge"
           imageUrl="https://picsum.photos/205"
-          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          badge={<AccessTierBadge tier="ELITE" />}
           onPress={() => {}}
         />
       </View>
@@ -61,7 +61,7 @@ export default function ContentCardGallery() {
         <ContentCard
           title="Introduction to Sociology"
           publisher="Routledge"
-          badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+          badge={<AccessTierBadge tier="SUBSCRIPTION" />}
           onPress={() => {}}
         />
       </View>
@@ -71,7 +71,7 @@ export default function ContentCardGallery() {
         <ContentCard
           title="Advanced Materials Science"
           imageUrl="https://picsum.photos/201"
-          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          badge={<AccessTierBadge tier="ELITE" />}
           onPress={() => {}}
         />
       </View>
@@ -92,7 +92,7 @@ export default function ContentCardGallery() {
           title="Journal of Applied Ethics"
           publisher="Taylor & Francis"
           imageUrl="https://picsum.photos/203"
-          badge={<AccessTierBadge tier="OPEN_ACCESS" size="sm" />}
+          badge={<AccessTierBadge tier="OPEN_ACCESS" />}
         />
       </View>
 
@@ -107,7 +107,7 @@ export default function ContentCardGallery() {
           title="Listening to Cities"
           publisher="Routledge"
           imageUrl="https://picsum.photos/209"
-          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          badge={<AccessTierBadge tier="ELITE" />}
           meta="#3 of 7"
           progress={3 / 7}
           onPress={() => {}}
@@ -120,7 +120,7 @@ export default function ContentCardGallery() {
           title="Environmental Policy, Air Pollution and Sustainable Development in Contemporary China"
           publisher="Routledge"
           imageUrl="https://picsum.photos/204"
-          badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+          badge={<AccessTierBadge tier="SUBSCRIPTION" />}
           onPress={() => {}}
         />
       </View>
@@ -134,7 +134,7 @@ export default function ContentCardGallery() {
           title="Rights for Robots"
           publisher="Routledge"
           imageUrl="https://picsum.photos/206"
-          badge={<AccessTierBadge tier="OPEN_ACCESS" size="sm" />}
+          badge={<AccessTierBadge tier="OPEN_ACCESS" />}
           onPress={() => {}}
         />
       </View>
@@ -145,7 +145,7 @@ export default function ContentCardGallery() {
           variant="cover"
           title="Introduction to Sociology"
           publisher="Routledge"
-          badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+          badge={<AccessTierBadge tier="SUBSCRIPTION" />}
           onPress={() => {}}
         />
       </View>
@@ -172,7 +172,7 @@ export default function ContentCardGallery() {
           title="Environmental Policy, Air Pollution and Sustainable Development in Contemporary China"
           publisher="Routledge"
           imageUrl="https://picsum.photos/208"
-          badge={<AccessTierBadge tier="ELITE" size="sm" />}
+          badge={<AccessTierBadge tier="ELITE" />}
           onPress={() => {}}
         />
       </View>
@@ -185,7 +185,7 @@ export default function ContentCardGallery() {
             title="Rights for Robots"
             publisher="Routledge"
             imageUrl="https://picsum.photos/206"
-            badge={<AccessTierBadge tier="OPEN_ACCESS" size="sm" />}
+            badge={<AccessTierBadge tier="OPEN_ACCESS" />}
             onPress={() => {}}
           />
         </View>
@@ -194,7 +194,7 @@ export default function ContentCardGallery() {
             variant="cover"
             title="Introduction to Sociology"
             publisher="Routledge"
-            badge={<AccessTierBadge tier="SUBSCRIPTION" size="sm" />}
+            badge={<AccessTierBadge tier="SUBSCRIPTION" />}
             onPress={() => {}}
           />
         </View>

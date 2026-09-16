@@ -18,7 +18,6 @@
 // something you do while looking at the page.
 
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,6 +26,7 @@ import {
   View,
 } from 'react-native';
 
+import Spinner from '@components/Spinner';
 import { color, radius, space } from '@theme/tokens';
 
 import { targetOf, locatorKey } from '@/features/reader/useBookSearch';
@@ -155,7 +155,7 @@ export function SearchPanel({
       */}
       {awaitingSeek && (
         <View style={styles.busyRow} accessibilityLiveRegion="polite">
-          <ActivityIndicator />
+          <Spinner />
           <Text style={styles.hint} testID="reader-search-awaiting-seek">
             Still opening this title — this result will open as soon as it&apos;s ready.
           </Text>
@@ -164,7 +164,7 @@ export function SearchPanel({
 
       {status === 'searching' && (
         <View style={styles.busyRow}>
-          <ActivityIndicator />
+          <Spinner />
           <Text style={styles.hint}>Searching…</Text>
         </View>
       )}

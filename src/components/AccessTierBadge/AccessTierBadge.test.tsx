@@ -22,11 +22,4 @@ describe('AccessTierBadge', () => {
       expect(getByText(LABELS[tier])).toBeTruthy();
     });
   });
-
-  (['sm', 'md'] as const).forEach((size) => {
-    it(`renders at size ${size}`, async () => {
-      const { getByText } = await render(<AccessTierBadge tier="ELITE" size={size} />);
-      expect(getByText('Elite')).toBeTruthy();
-    });
-  });
 });

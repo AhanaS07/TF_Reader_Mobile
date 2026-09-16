@@ -4,10 +4,11 @@
 // table and nothing else. "Create account" is not an access action and will never
 // be in that union, which is exactly why it cannot render one. Same geometry and
 // colours as ActionButton on purpose, so the two never look like two design systems.
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ComponentProps } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
+import Spinner from '@components/Spinner';
 import { color, radius, space, type } from '@theme/tokens';
 
 // Matches ActionButton's own height — both now read the same token.
@@ -74,7 +75,7 @@ export default function PrimaryButton({
           {label}
         </Text>
         {loading && (
-          <ActivityIndicator testID={`${testID}-spinner`} size="small" color={tint} />
+          <Spinner testID={`${testID}-spinner`} size="small" color={tint} />
         )}
       </View>
     </Pressable>

@@ -5,25 +5,20 @@ import { color, space, type } from '@theme/tokens';
 
 import AccessTierBadge from './AccessTierBadge';
 
-const SIZES = ['sm', 'md'] as const;
-
 export default function AccessTierBadgeGallery() {
   return (
     <ScrollView contentContainerStyle={styles.page}>
       <Text style={styles.heading}>AccessTierBadge</Text>
 
-      {SIZES.map((size) => (
-        <View key={size} style={styles.group}>
-          <Text style={styles.caption}>size={size}</Text>
-          {/* Iterates ACCESS_TIERS rather than hardcoding three — a new tier
-              appears here automatically. */}
-          {ACCESS_TIERS.map((tier) => (
-            <View key={tier} style={styles.row}>
-              <AccessTierBadge tier={tier} size={size} />
-            </View>
-          ))}
-        </View>
-      ))}
+      <View style={styles.group}>
+        {/* Iterates ACCESS_TIERS rather than hardcoding three — a new tier
+            appears here automatically. */}
+        {ACCESS_TIERS.map((tier) => (
+          <View key={tier} style={styles.row}>
+            <AccessTierBadge tier={tier} />
+          </View>
+        ))}
+      </View>
 
       <View style={styles.group}>
         <Text style={styles.caption}>Longest label, narrow container</Text>

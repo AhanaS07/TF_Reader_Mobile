@@ -67,18 +67,14 @@ describe('toolchain', () => {
   // RenderResult. Forget the `await` and you get the baffling
   // "getByText is not a function", because you destructured a Promise.
   it('renders the app root', async () => {
-    // App now mounts the full navigator. 'Taylor & Francis' is the title
-    // TopAppBar renders on the Catalogue home screen. waitFor is needed
-    // here because bootstrapAuth() (an async secure-storage read) must
-    // settle and flip sessionStore._authReady before RootNavigator renders
-    // anything past the splash screen.
-    //
-    // getAllByText, not getByText: with no institution selected the home route
-    // is the public catalogue, and a publisher in that feed is legitimately
-    // called 'Taylor & Francis' too. Matching more than once is correct here —
-    // this is a toolchain smoke test, and the claim is that the tree rendered.
+    // App now mounts the full navigator. 'Nexus' is the boot splash's own
+    // wordmark, present in the tree from first render regardless of animation
+    // state — this is a toolchain smoke test, not a wait for the splash to
+    // exit (that takes 3.5+ seconds; see BootSplash's MIN_VISIBLE_MS). waitFor
+    // is kept anyway because bootstrapAuth() (an async secure-storage read)
+    // still needs to settle before the very first render is stable.
     const { getAllByText } = await render(<App />);
-    await waitFor(() => expect(getAllByText('Taylor & Francis').length).toBeGreaterThan(0));
+    await waitFor(() => expect(getAllByText('Nexus').length).toBeGreaterThan(0));
   });
 
   it('resolves the @/ alias to a runtime value', () => {

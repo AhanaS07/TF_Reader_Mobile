@@ -1085,12 +1085,7 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
             downloaded" book that no longer opens — see `DownloadRow`'s own
             comment on why this screen cannot promise a download stays
             readable. */}
-        <View style={styles.disclaimer}>
-          <Ionicons name="information-circle-outline" size={type.smallLabel.size} color={color.textSecondary} />
-          <Text style={styles.disclaimerText}>
-            Access is checked automatically and can expire even while you’re offline.
-          </Text>
-        </View>
+        
       </View>
 
       <View style={styles.tabBar}>
@@ -1365,7 +1360,7 @@ function EliteLoanRow({
           {expiresLabel !== undefined && (
             <Text style={styles.badgeLabel}>{`Access expires: ${expiresLabel}`}</Text>
           )}
-          <AccessTierBadge tier="ELITE" size="sm" />
+          <AccessTierBadge tier="ELITE" />
         </View>
       }
     />
@@ -1405,7 +1400,7 @@ function EliteQueueRow({
       badge={
         <View style={styles.badgeStack}>
           {label !== undefined && <Text style={styles.badgeLabel}>{label}</Text>}
-          <AccessTierBadge tier="ELITE" size="sm" />
+          <AccessTierBadge tier="ELITE" />
         </View>
       }
       {...(progressFraction === undefined ? {} : { progress: progressFraction })}

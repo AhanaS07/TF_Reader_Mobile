@@ -6,14 +6,10 @@ import { color, space, type } from '@theme/tokens';
 // Bar height excluding the safe-area inset above it.
 const BAR_HEIGHT = 56;
 
-// The real T&F lockup (icon + "Taylor & Francis" + "by informa"), white-on-
-// transparent — the variant meant to sit on a dark/navy surface, matching
-// this bar's own background. Source aspect ratio is 300×72 (@3x); rendered
-// height below preserves it rather than a hand-built icon+stacked-text
-// reconstruction, which is what this replaced.
-const BRAND_LOGO = require('../../../assets/logo.png');
-const BRAND_LOGO_HEIGHT = 32;
-const BRAND_LOGO_ASPECT = 300 / 72;
+// The Nexus mark — transparent background, square aspect. Rendered alone
+// (no wordmark text) on the bar itself.
+const BRAND_LOGO = require('../../../assets/nexus-logo.png');
+const BRAND_LOGO_HEIGHT = 28;
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -53,8 +49,8 @@ export default function TopAppBar({
   return (
     <View style={[styles.bar, { paddingTop: topInset }]}>
       <View style={styles.inner}>
-        {/* Left — back chevron + title on pushed screens, the real logo
-            lockup on tab roots. */}
+        {/* Left — back chevron + title on pushed screens, the Nexus
+            logo lockup on tab roots. */}
         <View style={[styles.leftSlot, !onBack && styles.leftSlotBrand]}>
           {onBack ? (
             <TouchableOpacity
@@ -66,7 +62,7 @@ export default function TopAppBar({
               <Ionicons name="chevron-back" size={24} color={color.white} />
             </TouchableOpacity>
           ) : (
-            <View accessibilityRole="image" accessibilityLabel="Taylor & Francis">
+            <View accessibilityRole="image" accessibilityLabel="Nexus">
               <Image source={BRAND_LOGO} style={styles.brandLogo} resizeMode="contain" />
             </View>
           )}
@@ -121,7 +117,7 @@ const styles = StyleSheet.create({
   },
   brandLogo: {
     height: BRAND_LOGO_HEIGHT,
-    width: BRAND_LOGO_HEIGHT * BRAND_LOGO_ASPECT,
+    width: BRAND_LOGO_HEIGHT,
   },
   iconBtn: {
     padding: space.xs,

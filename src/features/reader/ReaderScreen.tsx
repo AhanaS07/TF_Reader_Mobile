@@ -13,7 +13,6 @@ import {
   useState,
 } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   AppState,
   Dimensions,
@@ -29,6 +28,7 @@ import {
 
 import { LinearGradient } from 'expo-linear-gradient';
 
+import Spinner from '@components/Spinner';
 import { color, radius, space } from '@theme/tokens';
 
 import { AccessibilityInfoButton } from '@/features/accessibility/AccessibilityInfoButton';
@@ -2688,7 +2688,7 @@ function ReaderScreenComponent(
 
         {isBusy && (
           <View style={styles.busy} pointerEvents="none">
-            <ActivityIndicator />
+            <Spinner />
             <Text style={styles.busyText}>Opening title…</Text>
           </View>
         )}

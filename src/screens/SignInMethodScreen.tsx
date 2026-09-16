@@ -80,7 +80,7 @@ export default function SignInMethodScreen({ navigation }: Props) {
       <Text style={styles.heading}>Choose how to sign in</Text>
       <Text style={styles.intro}>
         Institutional readers sign in through their library. Personal subscribers use a
-        Taylor &amp; Francis account.
+        Nexus account.
       </Text>
 
       <OfflineBanner

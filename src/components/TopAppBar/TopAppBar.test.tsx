@@ -6,9 +6,9 @@ describe('TopAppBar variants', () => {
   // logo alone and the screen's own title is suppressed — switching tabs must
   // not swap one word for another where the logo sits.
   it('renders the logo and no title on a tab root', async () => {
-    await render(<TopAppBar title="Taylor & Francis" />);
-    expect(screen.getByLabelText('Taylor & Francis')).toBeTruthy();
-    expect(screen.queryByText('Taylor & Francis')).toBeNull();
+    await render(<TopAppBar title="Item Detail" />);
+    expect(screen.getByLabelText('Nexus')).toBeTruthy();
+    expect(screen.queryByText('Item Detail')).toBeNull();
   });
 
   // Drilling in swaps the logo for the back chevron and the title reappears,
