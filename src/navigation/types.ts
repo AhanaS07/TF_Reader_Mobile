@@ -220,6 +220,13 @@ export type ProfileStackParamList = {
   // inside it. Same NO PARAMS reasoning as ReaderPreferences above: this is
   // also a per-user singleton with no id to pass.
   Accessibility: undefined;
+  // Pushed from the "Privacy & Security" row on screen 10 — same NO PARAMS
+  // reasoning as ReaderPreferences/Accessibility above: static content, no id.
+  PrivacySecurity: undefined;
+  // Pushed from the "About Nexus" row on screen 10. Also pushes
+  // `PrivacySecurity` itself, from its own Legal section — see
+  // AboutNexusScreen.tsx.
+  AboutNexus: undefined;
 
   // ─── Signed-out sign-in flow, pushed from the account block on screen 10 ────
   //

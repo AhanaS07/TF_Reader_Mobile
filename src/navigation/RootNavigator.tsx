@@ -24,6 +24,8 @@ import LibraryJournalScreen from '../screens/LibraryJournalScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import ReaderPreferencesScreen from '../screens/ReaderPreferencesScreen';
 import AccessibilityScreen from '../screens/AccessibilityScreen';
+import PrivacySecurityScreen from '../screens/PrivacySecurityScreen';
+import AboutNexusScreen from '../screens/AboutNexusScreen';
 import GalleryScreen from '../screens/GalleryScreen';
 import InstitutionDetailScreen from '../screens/InstitutionDetailScreen';
 import InstitutionListScreen from '../screens/InstitutionListScreen';
@@ -496,6 +498,19 @@ function ProfileNavigator() {
         name="Accessibility"
         component={AccessibilityScreen}
         options={{ title: 'Accessibility' }}
+      />
+      {/* Pushed from the "Privacy & Security" row on screen 10. */}
+      <ProfileStack.Screen
+        name="PrivacySecurity"
+        component={PrivacySecurityScreen}
+        options={{ title: 'Privacy & Security' }}
+      />
+      {/* Pushed from the "About Nexus" row on screen 10. Also pushes
+          PrivacySecurity itself, from its own Legal section. */}
+      <ProfileStack.Screen
+        name="AboutNexus"
+        component={AboutNexusScreen}
+        options={{ title: 'About Nexus' }}
       />
       {/* The signed-out sign-in flow. All four are registered here rather than
           reused from Catalogue so the reader stays on the Profile tab they

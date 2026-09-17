@@ -383,32 +383,20 @@ describe('ProfileScreen sign out', () => {
   });
 });
 
-describe('ProfileScreen rows with nothing behind them', () => {
-  // Drawn, not dropped — the screen 12 rule, still true, but the redesign
-  // changed HOW it holds: these are `variant="static"` now, not a disabled
-  // `variant="chevron"`/`variant="toggle"`. A static row is not Pressable at
-  // all, so it never announces a button or switch role — there is no press
-  // affordance to grey out or refuse. Full text and icon opacity is the
-  // point of the redesign, so nothing here checks for dimming.
+describe('ProfileScreen rows hidden for now', () => {
+  // HIDDEN ON EXPLICIT REQUEST, NOT DROPPED — the JSX itself is commented
+  // out rather than deleted (see ProfileScreen.tsx), so this asserts they
+  // render nothing at all rather than the old "static, no press affordance"
+  // shape those rows used to have.
   //
-  // 'Reading Preferences' and 'Accessibility' HAVE LEFT THIS LIST — both push
-  // real, already-working screens and stay `variant="chevron"`; their own
-  // tests sit in the describes below.
-  const UNAVAILABLE = ['Download & Offline', 'Notifications', 'Privacy & Security', 'About Nexus'];
+  // 'Reading Preferences', 'Accessibility', 'Privacy & Security' and 'About
+  // Nexus' are NOT in this list — all four push real, already-working
+  // screens; their own tests sit in the describes below.
+  const HIDDEN = ['Download & Offline', 'Notifications'];
 
-  it.each(UNAVAILABLE)('renders %s with no button or switch role', async (title) => {
+  it.each(HIDDEN)('does not render %s', async (title) => {
     await render(<ProfileScreen />);
-    expect(screen.getByText(title)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: title })).toBeNull();
-    expect(screen.queryByRole('switch', { name: title })).toBeNull();
-  });
-
-  it('navigates nowhere when a static row is tapped', async () => {
-    await render(<ProfileScreen />);
-    for (const title of UNAVAILABLE) {
-      fireEvent.press(screen.getByText(title));
-    }
-    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByText(title)).toBeNull();
   });
 });
 
@@ -458,5 +446,43 @@ describe('ProfileScreen accessibility', () => {
   it('shows its subtitle', async () => {
     await render(<ProfileScreen />);
     expect(screen.getByText('High contrast, text scaling & screen reader')).toBeTruthy();
+  });
+});
+
+describe('ProfileScreen privacy & security', () => {
+  it('offers Privacy & Security as an enabled row', async () => {
+    await render(<ProfileScreen />);
+    const row = screen.getByRole('button', { name: 'Privacy & Security' });
+    expect(row.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('pushes PrivacySecurity when the row is tapped', async () => {
+    await render(<ProfileScreen />);
+    fireEvent.press(screen.getByRole('button', { name: 'Privacy & Security' }));
+    expect(mockNavigate).toHaveBeenCalledWith('PrivacySecurity');
+  });
+
+  it('shows its subtitle', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Manage your data and security')).toBeTruthy();
+  });
+});
+
+describe('ProfileScreen about nexus', () => {
+  it('offers About Nexus as an enabled row', async () => {
+    await render(<ProfileScreen />);
+    const row = screen.getByRole('button', { name: 'About Nexus' });
+    expect(row.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('pushes AboutNexus when the row is tapped', async () => {
+    await render(<ProfileScreen />);
+    fireEvent.press(screen.getByRole('button', { name: 'About Nexus' }));
+    expect(mockNavigate).toHaveBeenCalledWith('AboutNexus');
+  });
+
+  it('shows its subtitle', async () => {
+    await render(<ProfileScreen />);
+    expect(screen.getByText('Version, legal terms')).toBeTruthy();
   });
 });

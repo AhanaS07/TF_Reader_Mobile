@@ -92,11 +92,14 @@
 // EVERY ROW TAPS THROUGH TO THE ITEM'S OWN DETAIL PAGE, THE SAME AS
 // CATALOGUE/SEARCH/SHELF. Reading itself happens from that page's own
 // ActionBar, not from a direct open on the shelf — `LibraryStackParamList`
-// registers `ItemDetail` for exactly this. The one exception is a bookmark
-// GROUP's own "Read" action (see `BookmarkGroupRow`), which still resumes at
-// the exact saved position through the provider seam below, because that is
-// a real capability only this screen's own bookmark data can offer and
-// `ItemDetail` cannot reproduce it.
+// registers `ItemDetail` for exactly this. The exception is a book with
+// bookmarks: tapping it (Bookmarks tab, or the `All` tab when it has no
+// active loan/download) expands its bookmarks in place instead, and tapping
+// one of THOSE opens its own "Read" action, resuming at that bookmark's exact
+// saved position through the provider seam below — a capability only this
+// screen's own bookmark data can offer and `ItemDetail` cannot reproduce. A
+// book that also has a loan/download still navigates to `ItemDetail` as
+// before; its bookmark count is just a badge there.
 //
 // ACCEPT/DECLINE LIVE ON THE OFFER CARD ITSELF, via the same
 // `getLicenceSource().acceptOffer`/`.cancelHold` calls `ItemDetailScreen`
@@ -142,16 +145,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import type { BookId, Bookmark } from '@/shared/contracts';
-import { useLibraryProvider } from '@/features/library/context';
-import { ReaderUnavailableError } from '@/features/library/ports';
 import type { ContentFormat, ReaderTargetLike } from '@/features/library/ports';
+import { openBook } from '@/features/download/openBook';
 import { contentStore } from '@/features/encryption/contentStore';
 import { bookmarkTable } from '@/features/sync/stores/bookmarkStore';
 import { USER_ID } from '@/features/sync/syncConfig';
 import { AccessTierBadge } from '@components/AccessTierBadge';
-import { ActionButton } from '@components/ActionButton';
 import { ContentCard } from '@components/ContentCard';
 import { ElitePendingAccessCard } from '@components/ElitePendingAccessCard';
+import Loader from '@components/Loader';
 import { OfflineBanner } from '@components/OfflineBanner';
 import { Skeleton } from '@components/Skeleton';
 import { type TabItem, Tabs } from '@components/Tabs';
@@ -249,6 +251,15 @@ interface LibraryScreenProps {
       screen: 'LibraryJournal',
       params: { journalWorkId: string; journalTitle: string; itemIds: string[] },
     ): void;
+    // A bookmark's own "Read" — see `openBookmark` — opens straight into the
+    // real reader/player, the same two routes `ItemDetailScreen`'s Read/Play
+    // action already uses, rather than a `LibraryProvider` seam with no real
+    // reader wired behind it.
+    navigate(
+      screen: 'Reader',
+      params: { bookId: BookId; format: ContentFormat; initialTarget?: ReaderTargetLike },
+    ): void;
+    navigate(screen: 'AudioPlayer', params: { bookId: BookId; title: string }): void;
   };
 }
 
@@ -272,10 +283,6 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   const downloadRecords = useDownloadStore((s) => s.downloads);
   const isOnline = useNetworkStatus();
   const journalMembership = useArticleJournalStore((s) => s.membership);
-  // The seam to the reader/download stack (Team 4's, merged later). Defaults to a
-  // stand-in whose `openBook` politely refuses. Only `BookmarkGroupRow`'s own
-  // "Read" action still calls through this — see the file header.
-  const provider = useLibraryProvider();
 
   // Titles for the ids the holdings carry. Empty until a batch call lands; a
   // row with no entry renders against its id, which is the documented fallback
@@ -305,8 +312,11 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   // flicking between several would otherwise stack every group's rows into
   // one very long screen.
   const [expandedBookId, setExpandedBookId] = useState<string | undefined>(undefined);
-  // Which book is mid-download from the Bookmarks tab's own group action.
-  const [downloadingBookId, setDownloadingBookId] = useState<string | undefined>(undefined);
+  // Which single bookmark is mid-open right now — drives the spinner that
+  // replaces its row's chevron, and also doubles as the concurrency guard
+  // `openBookmark` used to need a separate ref for (one real state value,
+  // not a ref plus a badge, now that the UI needs to observe it too).
+  const [openingBookmarkId, setOpeningBookmarkId] = useState<string | undefined>(undefined);
   // Which download is mid-delete, from the Downloads tab's own row action.
   const [deletingItemId, setDeletingItemId] = useState<string | undefined>(undefined);
   // The REAL, synced bookmarks — `bookmarkTable.listActive(USER_ID)` with no
@@ -496,46 +506,57 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
   // journal context at all) and again as its journal on the Journals tab.
   const journalArticleIds = new Set(journalGroups.flatMap((group) => group.articleItemIds));
 
-  // Guards against a second tap while a bookmark's own resume-open is in
-  // flight — with the real provider two concurrent `openBook` calls would
-  // race a licence session. A ref rather than state so it takes effect
-  // synchronously and never re-renders; read only inside this callback.
-  const openingRef = useRef(false);
+  // The title shown on the full-screen `Loader` overlay while a bookmark
+  // resume is in flight — see that overlay's own comment below. Looked up
+  // from `bookmarks`, not `bookmarkGroups`, because a group only carries a
+  // book id, and the overlay needs the book's real title the same way every
+  // other row on this screen gets one (`titleFor`).
+  const openingBookmark =
+    openingBookmarkId === undefined ? undefined : bookmarks.find((b) => b.id === openingBookmarkId);
+  const openingBookmarkTitle =
+    openingBookmark === undefined ? undefined : titleFor(openingBookmark.bookId);
 
-  // Resume a bookmark at its exact saved position through the provider seam:
-  // the licence gate (`openBook`) THEN the reader (`openReader`) — never one
-  // without the other. Today the stand-in's `openBook` throws
-  // `ReaderUnavailableError`, so this lands on the honest notice; at merge
-  // the same path opens for real. `ItemDetail` cannot reproduce this exact
-  // capability (it has no bookmark position to resume from), which is why
-  // this is the one row that does not simply navigate there instead.
+  // Resume a bookmark at its exact saved position: the same real
+  // open-then-navigate path `ItemDetailScreen`'s own Read/Play action uses
+  // (`openBook` from `@/features/download/openBook`, licence-checked, then
+  // `navigation.navigate('Reader'|'AudioPlayer', ...)`) — not the
+  // `LibraryProvider` seam, which has no real reader wired behind it (see
+  // `standInProvider.ts`'s own header). `ItemDetail` cannot reproduce this
+  // exact capability (it has no bookmark position to resume from), which is
+  // why this is the one row that does not simply navigate there instead.
+  //
+  // `openingBookmarkId` guards against a second tap while one resume-open is
+  // in flight — two concurrent `openBook` calls would race a licence
+  // session — and doubles as the flag both the full-screen `Loader` overlay
+  // and each row's own disabled state read, so there is one source of truth
+  // instead of a ref plus state.
   const openBookmark = useCallback(
-    async (itemId: string, format: ContentFormat | undefined, target?: ReaderTargetLike) => {
-      if (format === undefined) {
-        // A title still hydrating has no known format to open against.
-        setOpenNotice('This one isn’t ready to open yet — still loading its details.');
-        return;
-      }
-      if (openingRef.current) return;
-      openingRef.current = true;
+    async (bookmark: Bookmark) => {
+      if (openingBookmarkId !== undefined) return;
+      setOpeningBookmarkId(bookmark.id);
       try {
-        await provider.openBook(itemId, format);
-        provider.openReader({ itemId, format, ...(target === undefined ? {} : { initialTarget: target }) });
+        const bookId = bookmark.bookId as BookId;
+        const format = bookmark.locator.type;
+        await openBook(bookId, format);
         setOpenNotice(undefined);
-      } catch (err) {
-        // ONLY the "no reader in this build" case gets the placeholder line. Every
-        // other error — a real network or licence failure once the reader is wired
-        // — must propagate rather than be disguised as "coming soon".
-        if (err instanceof ReaderUnavailableError) {
-          setOpenNotice('This title isn’t available to read yet.');
+        if (format === 'AUDIO') {
+          navigation.navigate('AudioPlayer', { bookId, title: titles.get(bookmark.bookId)?.title ?? bookmark.bookId });
         } else {
-          throw err;
+          const target = bookmarkTarget(bookmark.locator);
+          navigation.navigate('Reader', {
+            bookId,
+            format,
+            ...(target === undefined ? {} : { initialTarget: target }),
+          });
         }
+      } catch (err) {
+        console.error('[library] bookmark open failed:', err);
+        setOpenNotice('Couldn’t open that title. Try again from its detail page.');
       } finally {
-        openingRef.current = false;
+        setOpeningBookmarkId(undefined);
       }
     },
-    [provider],
+    [navigation, titles, openingBookmarkId],
   );
 
   // Accept/Decline an Elite offer — the same two `LicenceSource` calls
@@ -570,24 +591,6 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
     [refresh],
   );
 
-  // Start a download for a bookmarked title, from the Bookmarks tab's own
-  // group action — the same borrow-then-record shape `ItemDetailScreen`'s
-  // `download` action already uses (`source.borrow` then
-  // `downloadStore.markDownloaded`), not a second implementation of it.
-  const handleDownloadBookmarkedTitle = useCallback(
-    (bookId: string) => {
-      setActionNotice(undefined);
-      setDownloadingBookId(bookId);
-      getLicenceSource()
-        .borrow(bookId)
-        .then(() => {
-          useDownloadStore.getState().markDownloaded({ itemId: bookId, downloadedAt: Date.now() });
-        })
-        .catch(() => setActionNotice('Couldn’t download that title. Try again from its detail page.'))
-        .finally(() => setDownloadingBookId(undefined));
-    },
-    [],
-  );
 
   // Delete a download from the Downloads tab's own row action — confirmed
   // first, since it frees real bytes on disk. `contentStore.destroy` (Content/
@@ -753,16 +756,11 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
           group={group}
           title={titleFor(group.bookId)}
           expanded={expandedBookId === group.bookId}
-          alreadyDownloaded={downloads.some((d) => d.itemId === group.bookId)}
-          downloading={downloadingBookId === group.bookId}
+          openingBookmarkId={openingBookmarkId}
           onToggle={() =>
             setExpandedBookId((current) => (current === group.bookId ? undefined : group.bookId))
           }
-          onRead={() => {
-            const mostRecent = group.bookmarks[0];
-            void openBookmark(group.bookId, mostRecent.locator.type, bookmarkTarget(mostRecent.locator));
-          }}
-          onDownload={() => handleDownloadBookmarkedTitle(group.bookId)}
+          onRead={(bookmark) => void openBookmark(bookmark)}
         />
       </View>
     ));
@@ -815,6 +813,28 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
             summary={summary}
             clock={clock}
             onPress={() => goToDetail(item.itemId)}
+          />
+        </View>
+      );
+    }
+
+    // Bookmark-only (no loan, no download): tapping expands this book's
+    // bookmarks in place, same as the dedicated Bookmarks tab, instead of
+    // navigating to ItemDetail — there is no borrow/download state here that
+    // page would otherwise need to show. A book that ALSO has a loan or
+    // download keeps navigating below; its bookmark count stays a badge.
+    if (item.bookmarkGroup !== undefined && item.loan === undefined && item.download === undefined) {
+      return (
+        <View key={item.itemId} style={styles.row}>
+          <BookmarkGroupRow
+            group={item.bookmarkGroup}
+            title={titleFor(item.itemId)}
+            expanded={expandedBookId === item.itemId}
+            openingBookmarkId={openingBookmarkId}
+            onToggle={() =>
+              setExpandedBookId((current) => (current === item.itemId ? undefined : item.itemId))
+            }
+            onRead={(bookmark) => void openBookmark(bookmark)}
           />
         </View>
       );
@@ -1175,6 +1195,23 @@ export default function LibraryScreen({ navigation }: LibraryScreenProps) {
         {activeTab === 'bookmarks' && renderBookmarksTab()}
         {activeTab === 'journals' && renderJournalsTab()}
       </ScrollView>
+
+      {/* `openBook()`'s real wait (licence check + decrypt) happens HERE, before
+          navigation — same overlay-not-replacement shape as
+          `ItemDetailScreen.tsx`'s own "Opening…" gate for its Read/Play
+          action. The screen underneath stays mounted (every bookmark row's
+          own `disabled={busy}` is still the real duplicate-press guard); this
+          only replaces what used to be a small spinner swapped in for one
+          row's chevron with the same full-screen loader every other "please
+          wait" in this app uses. */}
+      {openingBookmarkId !== undefined && (
+        <View style={StyleSheet.absoluteFill}>
+          <Loader
+            title={openingBookmarkTitle === undefined ? undefined : `Opening ${openingBookmarkTitle}…`}
+            testID="library-bookmark-opening"
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -1495,29 +1532,34 @@ function DeleteDownloadButton({
 // One book's worth of bookmarks, collapsed to a title row until tapped.
 //
 // GROUPED, NOT ONE ROW PER BOOKMARK. The count badge is
-// `group.bookmarks.length`, the same array the expansion below renders, so
-// the two cannot disagree.
+// `group.bookmarks.length`, the same array the list below renders, so the
+// two cannot disagree. Each bookmark is its own single-tap row — tapping it
+// resumes reading at THAT saved position directly, rather than opening a
+// second menu underneath it (a menu with exactly one entry, "Read", was
+// never earning the extra tap). Download has no place in this list either:
+// it is a whole-book action that belongs on the item's own detail page, not
+// mixed in among reading positions.
 function BookmarkGroupRow({
   group,
   title,
   expanded,
-  alreadyDownloaded,
-  downloading,
+  openingBookmarkId,
   onToggle,
   onRead,
-  onDownload,
 }: {
   group: BookmarkGroup;
   title: string;
   expanded: boolean;
-  alreadyDownloaded: boolean;
-  downloading: boolean;
+  /** Which bookmark, if any, is currently opening — drives its row's spinner
+   * and disables every OTHER row for the same reason `openBookmark` itself
+   * refuses a second concurrent open. */
+  openingBookmarkId: string | undefined;
   onToggle: () => void;
-  /** Tap → resume at the group's most recent bookmark. */
-  onRead: () => void;
-  onDownload: () => void;
+  /** Tap a bookmark → resume at THAT bookmark's own saved position. */
+  onRead: (bookmark: Bookmark) => void;
 }) {
   const count = group.bookmarks.length;
+  const busy = openingBookmarkId !== undefined;
   return (
     <View>
       <ContentCard
@@ -1527,31 +1569,39 @@ function BookmarkGroupRow({
       />
 
       {expanded && (
-        <View testID={`bookmark-group-${group.bookId}`} style={styles.bookmarkExpansion}>
+        <View testID={`bookmark-group-${group.bookId}`} style={styles.bookmarkList}>
           {group.bookmarks.map((bookmark, index) => {
             // A reader-typed name outranks a raw position — see
             // `bookmarkLocationLabel`'s own comment on why an EPUB CFI never
             // reaches the screen as text. Neither is invented: a bookmark with
-            // no name and no derivable position renders its ordinal alone.
-            const label = bookmark.name ?? bookmarkLocationLabel(bookmark);
+            // no name and no derivable position falls back to its ordinal.
+            const label = bookmark.name ?? bookmarkLocationLabel(bookmark) ?? `Bookmark ${index + 1}`;
+            const isLast = index === group.bookmarks.length - 1;
+            const isOpening = openingBookmarkId === bookmark.id;
             return (
-              <Text key={bookmark.id} style={styles.bookmarkLine}>
-                {String(index + 1).padStart(2, '0')}
-                {label !== undefined ? `  ${label}` : ''}
-              </Text>
+              <Pressable
+                key={bookmark.id}
+                testID={`bookmark-line-${bookmark.id}`}
+                onPress={() => onRead(bookmark)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={isOpening ? `Opening ${label}` : `Resume reading at ${label}`}
+                accessibilityState={{ disabled: busy, busy: isOpening }}
+                hitSlop={8}
+                style={[
+                  styles.bookmarkRow,
+                  isLast && styles.bookmarkRowLast,
+                  busy && !isOpening && styles.bookmarkRowDisabled,
+                ]}
+              >
+                <MaterialCommunityIcons name="bookmark-outline" size={18} color={color.primary} />
+                <Text style={styles.bookmarkLine} numberOfLines={1}>
+                  {label}
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color={color.textSecondary} />
+              </Pressable>
             );
           })}
-
-          <View style={styles.bookmarkActions}>
-            <View style={styles.actionSlot}>
-              <ActionButton action="read" onPress={onRead} />
-            </View>
-            {!alreadyDownloaded && (
-              <View style={styles.actionSlot}>
-                <ActionButton action="download" state={downloading ? 'loading' : 'idle'} onPress={onDownload} />
-              </View>
-            )}
-          </View>
         </View>
       )}
     </View>
@@ -1725,28 +1775,50 @@ const styles = StyleSheet.create({
     fontSize: type.smallLabel.size,
     lineHeight: type.smallLabel.lineHeight,
   },
-  // A bookmark group's own expansion — indented under the row it belongs to,
-  // rather than a new card, so it reads as "inside this title" and not as a
-  // sibling row of its own.
-  bookmarkExpansion: {
+  // A bookmark group's own list — flush with the card above it (no extra
+  // horizontal inset: the scroll container already pads every row by
+  // `space.md`, so a second inset here only made this narrower than the
+  // card it belongs to) and pulled up one pixel to sit against the card's
+  // own bottom border, square top corners against its rounded bottom ones —
+  // reads as one card growing a drawer open, not a second, separate box
+  // floating just under the first.
+  bookmarkList: {
+    marginTop: -1,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderColor: color.border,
+    borderBottomLeftRadius: radius.card,
+    borderBottomRightRadius: radius.card,
+    backgroundColor: color.surface,
+    overflow: 'hidden',
+  },
+  // One tappable saved position. Icon–label–chevron reads as "go here", the
+  // same shape a settings row uses, rather than the plain numbered text line
+  // this replaced — which looked like a caption, not something to tap.
+  bookmarkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.sm,
     paddingHorizontal: space.md,
-    paddingTop: space.sm,
-    paddingBottom: space.xs,
-    gap: space.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: color.border,
+  },
+  bookmarkRowLast: {
+    borderBottomWidth: 0,
+  },
+  // Every OTHER row while one bookmark is opening — same dimming
+  // `ActionButton`'s own `disabled` style uses, so "you can't tap this right
+  // now" reads consistently across the screen.
+  bookmarkRowDisabled: {
+    opacity: 0.4,
   },
   bookmarkLine: {
+    flex: 1,
     fontFamily: type.body.fontFamily,
     fontSize: type.body.size,
     lineHeight: type.body.lineHeight,
     color: color.textPrimary,
-  },
-  bookmarkActions: {
-    flexDirection: 'row',
-    gap: space.sm,
-    marginTop: space.xs,
-  },
-  actionSlot: {
-    flex: 1,
   },
   // The permanent, compact footer under every single-purpose tab — see
   // `TabHint`'s own comment. Centred and quiet: this is a caption, not a

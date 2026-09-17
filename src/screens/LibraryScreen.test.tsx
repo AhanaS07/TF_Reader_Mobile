@@ -17,8 +17,6 @@
 import { Alert } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
-import { LibraryProviderContext } from '@/features/library/context';
-import type { LibraryProvider } from '@/features/library/ports';
 import { getDatabase } from '@/features/sync/localDb/database';
 import { bookmarkStore } from '@/features/sync/stores/bookmarkStore';
 import type { DataSource } from '@adapters/InstitutionSource';
@@ -40,6 +38,16 @@ import LibraryScreen from './LibraryScreen';
 const mockDestroy = jest.fn().mockResolvedValue(undefined);
 jest.mock('@/features/encryption/contentStore', () => ({
   contentStore: { destroy: (...args: unknown[]) => mockDestroy(...args) },
+}));
+
+// A bookmark's own "Read" calls this directly now (see LibraryScreen.tsx's
+// `openBookmark`), the same real open-then-navigate path ItemDetailScreen's
+// Read/Play action uses — mocked at the same module boundary
+// ItemDetailScreen.test.tsx already mocks it at, so these tests exercise the
+// screen's own wiring without pulling the real network/decrypt stack in.
+const mockOpenBook = jest.fn().mockResolvedValue(new Uint8Array());
+jest.mock('@/features/download/openBook', () => ({
+  openBook: (...args: [string, string]) => mockOpenBook(...args),
 }));
 
 // Same auto-press shape ReaderRouteScreen.test.tsx's own `mockAlert` uses —
@@ -142,10 +150,8 @@ async function resetBookmarksTable(): Promise<void> {
 const mockNavigate = jest.fn();
 
 /** `LibraryScreen`'s own minimal hand-typed navigation prop. */
-function renderScreen(provider?: LibraryProvider) {
-  const element = <LibraryScreen navigation={{ navigate: mockNavigate }} />;
-  if (provider === undefined) return render(element);
-  return render(<LibraryProviderContext.Provider value={provider}>{element}</LibraryProviderContext.Provider>);
+function renderScreen() {
+  return render(<LibraryScreen navigation={{ navigate: mockNavigate }} />);
 }
 
 beforeEach(async () => {
@@ -164,6 +170,7 @@ beforeEach(async () => {
   useExpiredLoansStore.getState().dismissAll();
   mockAlertAutoPress = null;
   mockDestroy.mockReset().mockResolvedValue(undefined);
+  mockOpenBook.mockReset().mockResolvedValue(new Uint8Array());
   await resetBookmarksTable();
   setCatalogueSource(fakeSource(async () => ({ items: [], notFound: [], denied: [] })));
 });
@@ -387,6 +394,46 @@ describe('LibraryScreen — All tab', () => {
 
     await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
     expect(screen.queryByTestId('download-delete-button')).toBeNull();
+  });
+
+  it('expands a bookmark-only row in place from the All tab too, instead of navigating', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    const bookmark = await aBookmark('item_42', 12);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    expect(screen.getByText('1 bookmark')).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    await waitFor(() => expect(screen.getByTestId(`bookmark-line-${bookmark.id}`)).toBeTruthy());
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps navigating from the All tab when a bookmarked book also has an active loan', async () => {
+    setCatalogueSource(
+      fakeSource(async () => ({
+        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics' })],
+        notFound: [],
+        denied: [],
+      })),
+    );
+    givenHoldings([aLoan({ itemId: 'item_42' })], []);
+    await aBookmark('item_42', 12);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Applied Thermodynamics')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('ItemDetail', { itemId: 'item_42' });
   });
 
   it('shows a journal-linked article under its journal, not its own title and authors', async () => {
@@ -739,42 +786,24 @@ describe('LibraryScreen — Bookmarks tab', () => {
     await waitFor(() => expect(screen.getByText(/The proof/)).toBeTruthy());
   });
 
-  it('offers Download for a title not yet on this device', async () => {
-    await aBookmark('item_42');
+  it('resumes reading directly when a bookmark is tapped, with no separate Download action anywhere in the list', async () => {
+    const bookmark = await aBookmark('item_42');
 
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
     await openBookmarks();
     await fireEvent.press(screen.getByTestId('content-card'));
-
-    await waitFor(() => expect(screen.getByTestId('action-button-download')).toBeTruthy());
-  });
-
-  it('omits Download once the title is already on this device', async () => {
-    await aBookmark('item_42');
-    useDownloadStore.getState().markDownloaded({ itemId: 'item_42', downloadedAt: 1 });
-
-    await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
-    await openBookmarks();
-    await fireEvent.press(screen.getByTestId('content-card'));
-
-    await waitFor(() => expect(screen.getByText(/Page 12/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId(`bookmark-line-${bookmark.id}`)).toBeTruthy());
     expect(screen.queryByTestId('action-button-download')).toBeNull();
-  });
 
-  it('downloads the title through the same borrow-then-record call ItemDetailScreen uses', async () => {
-    await aBookmark('item_42');
+    await fireEvent.press(screen.getByTestId(`bookmark-line-${bookmark.id}`));
 
-    await renderScreen();
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
-    await openBookmarks();
-    await fireEvent.press(screen.getByTestId('content-card'));
-    await waitFor(() => expect(screen.getByTestId('action-button-download')).toBeTruthy());
-
-    await fireEvent.press(screen.getByTestId('action-button-download'));
-
-    await waitFor(() => expect(mockBorrow).toHaveBeenCalledWith('item_42'));
+    await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'PDF'));
+    expect(mockNavigate).toHaveBeenCalledWith('Reader', {
+      bookId: 'item_42',
+      format: 'PDF',
+      initialTarget: { kind: 'page', page: 12 },
+    });
   });
 });
 
@@ -1372,63 +1401,61 @@ describe('LibraryScreen — the shelf is the launch screen', () => {
   });
 });
 
-// The provider seam (src/features/library) is now used ONLY by a bookmark
-// group's own "Read" action — it resumes at the exact saved position, which
-// `ItemDetail` cannot reproduce. Every other row navigates instead (see the
-// per-tab describe blocks above).
-describe('LibraryScreen — resuming a bookmark through the provider', () => {
-  function makeProvider(over: Partial<LibraryProvider> = {}): LibraryProvider {
-    return {
-      listDownloads: async () => [],
-      listBookmarks: async () => [],
-      openBook: jest.fn().mockResolvedValue(undefined),
-      openReader: jest.fn(),
-      ...over,
-    };
-  }
-
-  it('opens a bookmarked title at its most recent bookmark through the group’s Read action', async () => {
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    // `updated_at` is millisecond-precision wall-clock time (`nowIso()`), and
-    // "most recent" is a real `updatedAt` sort — a real gap between the two
-    // creates, not a manual timestamp override, is what makes bm_new sort
-    // first.
-    await aBookmark('item_42', 12);
+// A bookmark's own "Read" opens the real reader directly — the same
+// open-then-navigate path ItemDetailScreen's Read/Play action uses
+// (`mockOpenBook`, mocked at the module boundary above) — rather than the
+// inert `LibraryProvider` seam. Every other row navigates to `ItemDetail`
+// instead (see the per-tab describe blocks above); this is the one row that
+// cannot, because `ItemDetail` has no bookmark position to resume from.
+describe('LibraryScreen — resuming a bookmark by tapping it directly', () => {
+  it('opens a bookmarked title at the TAPPED bookmark’s own saved position, not just the most recent one', async () => {
+    const older = await aBookmark('item_42', 12);
     await new Promise((resolve) => setTimeout(resolve, 5));
     await aBookmark('item_42', 42);
-    const provider = makeProvider();
 
-    await renderScreen(provider);
+    await renderScreen();
     await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
     await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
     await waitFor(() => expect(screen.getByText('2 bookmarks')).toBeTruthy());
     await fireEvent.press(screen.getByTestId('content-card'));
-    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId(`bookmark-line-${older.id}`)).toBeTruthy());
 
-    await fireEvent.press(screen.getByTestId('action-button-read'));
+    // Tap the OLDER bookmark's own line, not the newest one — proves Read
+    // targets whichever bookmark was tapped rather than always the latest.
+    await fireEvent.press(screen.getByTestId(`bookmark-line-${older.id}`));
 
-    await waitFor(() => expect(provider.openBook).toHaveBeenCalledWith('item_42', 'PDF'));
-    expect(provider.openReader).toHaveBeenCalledWith({
-      itemId: 'item_42',
+    await waitFor(() => expect(mockOpenBook).toHaveBeenCalledWith('item_42', 'PDF'));
+    expect(mockNavigate).toHaveBeenCalledWith('Reader', {
+      bookId: 'item_42',
       format: 'PDF',
-      initialTarget: { kind: 'page', page: 42 },
+      initialTarget: { kind: 'page', page: 12 },
     });
   });
 
-  it('shows an honest, user-appropriate notice when the reader is not in this build — never the internal implementation note', async () => {
-    await aBookmark('item_42');
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
-        notFound: [],
-        denied: [],
-      })),
+  it('shows a notice and stays put when opening a bookmark fails', async () => {
+    const bookmark = await aBookmark('item_42');
+    mockOpenBook.mockRejectedValueOnce(new Error('network unavailable'));
+
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
+    await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
+    await fireEvent.press(screen.getByTestId('content-card'));
+    await waitFor(() => expect(screen.getByTestId(`bookmark-line-${bookmark.id}`)).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId(`bookmark-line-${bookmark.id}`));
+
+    await waitFor(() =>
+      expect(screen.getByText('Couldn’t open that title. Try again from its detail page.')).toBeTruthy(),
+    );
+    expect(mockNavigate).not.toHaveBeenCalledWith('Reader', expect.anything());
+  });
+
+  it('ignores a second tap while the first resume is still in flight', async () => {
+    const bookmark = await aBookmark('item_42');
+    let releaseOpen: () => void = () => {};
+    mockOpenBook.mockImplementationOnce(
+      () => new Promise<Uint8Array>((resolve) => (releaseOpen = () => resolve(new Uint8Array()))),
     );
 
     await renderScreen();
@@ -1436,41 +1463,18 @@ describe('LibraryScreen — resuming a bookmark through the provider', () => {
     await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
     await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
     await fireEvent.press(screen.getByTestId('content-card'));
-    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId(`bookmark-line-${bookmark.id}`)).toBeTruthy());
 
-    await fireEvent.press(screen.getByTestId('action-button-read'));
+    const bookmarkLine = screen.getByTestId(`bookmark-line-${bookmark.id}`);
+    await fireEvent.press(bookmarkLine);
+    await waitFor(() => expect(screen.getByTestId('library-bookmark-opening')).toBeTruthy());
+    await fireEvent.press(bookmarkLine);
 
-    await waitFor(() => expect(screen.getByText('This title isn’t available to read yet.')).toBeTruthy());
-    expect(screen.queryByText(/merged app/)).toBeNull();
-  });
-
-  it('ignores a second tap while the first resume is still in flight', async () => {
-    await aBookmark('item_42');
-    setCatalogueSource(
-      fakeSource(async () => ({
-        items: [aSummary({ id: 'item_42', title: 'Applied Thermodynamics', format: 'PDF' })],
-        notFound: [],
-        denied: [],
-      })),
-    );
-    let releaseOpen: () => void = () => {};
-    const openBook = jest.fn(() => new Promise<void>((resolve) => (releaseOpen = resolve)));
-    const provider = makeProvider({ openBook });
-
-    await renderScreen(provider);
-    await waitFor(() => expect(screen.getByTestId('tabs-tab-bookmarks')).toBeTruthy());
-    await fireEvent.press(screen.getByTestId('tabs-tab-bookmarks'));
-    await waitFor(() => expect(screen.getByText('1 bookmark')).toBeTruthy());
-    await fireEvent.press(screen.getByTestId('content-card'));
-    await waitFor(() => expect(screen.getByTestId('action-button-read')).toBeTruthy());
-
-    const readButton = screen.getByTestId('action-button-read');
-    await fireEvent.press(readButton);
-    await fireEvent.press(readButton);
-
-    await waitFor(() => expect(openBook).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockOpenBook).toHaveBeenCalledTimes(1));
 
     releaseOpen();
-    await waitFor(() => expect(provider.openReader).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('Reader', expect.anything()));
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('library-bookmark-opening')).toBeNull();
   });
 });
