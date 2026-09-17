@@ -35,7 +35,13 @@ import {
 } from './bridge';
 import { pdfHighlights } from './highlightPaint';
 import { matchStroke, selectionBackground } from './selectionTheme';
-import { LONG_PRESS_MS, movedBeyondSlop, swipeDirection, type TouchPoint } from './touchGesture';
+import {
+  LONG_PRESS_MS,
+  movedBeyondSlop,
+  swipeDirection,
+  tapZone,
+  type TouchPoint,
+} from './touchGesture';
 import {
   clearTextLayer,
   ensureSurface,
@@ -975,6 +981,19 @@ function onLongPress(): void {
   longPressFired = true;
 }
 
+/** Turn the page the given direction, the ONE call site both the swipe and the edge-zone tap
+ * resolve to — same reasoning as epub.entry.ts's identical helper: a spread-aware target and its
+ * null check should not be duplicated between two gestures that both end the same way. */
+function turnPage(direction: 'next' | 'prev'): void {
+  const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+  const target =
+    direction === 'next'
+      ? nextSpreadStart(currentPage, pageCount, spreading)
+      : prevSpreadStart(currentPage, pageCount, spreading);
+  if (target === null) return;
+  renderCurrentGuarded(target);
+}
+
 document.addEventListener(
   'touchstart',
   (event) => {
@@ -1033,12 +1052,25 @@ document.addEventListener(
     const point = { x: touch.clientX, y: touch.clientY };
 
     if (!movedBeyondSlop(origin, point)) {
-      // A PLAIN TAP — the third gesture this handler tells apart, alongside the long press and the
-      // swipe below. Refused for a tap that landed on a painted highlight (that press belongs to
-      // the highlight's own gesture, not the page background) — no link check here, unlike
-      // epub.entry.ts's identical branch: pdf.js renders pages as rasterised canvases with no
-      // clickable link overlay (readerBridge.ts's `tapped` doc has the fuller account).
-      if (pressedHighlightId === null) post({ type: 'tapped' });
+      // A PLAIN TAP — the fourth gesture this handler tells apart, alongside the long press, the
+      // swipe below, and the edge-zone tap it can also resolve to. Refused outright for a tap that
+      // landed on a painted highlight (that press belongs to the highlight's own gesture, not the
+      // page background) — no link check here, unlike epub.entry.ts's identical branch: pdf.js
+      // renders pages as rasterised canvases with no clickable link overlay (readerBridge.ts's
+      // `tapped` doc has the fuller account).
+      if (pressedHighlightId !== null) return;
+
+      // EDGE ZONES, PAGINATED ONLY — same reasoning `scrollMode` already gates the swipe below on:
+      // in continuous scroll a tap near either edge is just a tap on the page background there.
+      if (!scrollMode) {
+        const zone = tapZone(point.x, viewportSize().width);
+        if (zone !== 'middle') {
+          turnPage(zone === 'left' ? 'prev' : 'next');
+          return;
+        }
+      }
+
+      post({ type: 'tapped' });
       return;
     }
 
@@ -1048,14 +1080,7 @@ document.addEventListener(
 
     const direction = swipeDirection(origin, point);
     if (direction === null) return;
-
-    const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
-    const target =
-      direction === 'next'
-        ? nextSpreadStart(currentPage, pageCount, spreading)
-        : prevSpreadStart(currentPage, pageCount, spreading);
-    if (target === null) return;
-    renderCurrentGuarded(target);
+    turnPage(direction);
   },
   { passive: true },
 );

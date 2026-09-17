@@ -549,9 +549,25 @@ things it hides are reachable from inside the WebView.
   gesture does not end with a live selection, AND (EPUB only) the tap did not land inside a live
   `<a href>` (epub.js's own `onclick`, set by `replaceLinks`, does not call `stopPropagation()` — see
   `epub.entry.ts`'s `isInsideLink`), AND the tap did not land on a painted highlight
-  (`pressedHighlightId`). Get any of those wrong and a tap meant for a footnote, a highlight, or a
-  selection would also flip the toolbar — this is the one message on this bridge where "sent" is a
-  compound refusal rather than a simple hit test.
+  (`pressedHighlightId`), AND (paginated flow only, added 2026-09-17) the tap did not land in either
+  edge's `tapZone` — see the edge-tap-turn bullet below, its own dedicated claim. Get any of those
+  wrong and a tap meant for a footnote, a highlight, a page turn, or a selection would also flip the
+  toolbar — this is the one message on this bridge where "sent" is a compound refusal rather than a
+  simple hit test.
+- **A paginated-flow tap in either edge's `tapZone` turns the page instead, and never reaches this
+  message at all — added 2026-09-17, confirmed with the user rather than assumed (zone width,
+  format scope).** `touchGesture.ts`'s `tapZone(x, viewportWidth)` classifies a tap's x-coordinate
+  against `EDGE_TAP_ZONE_FRACTION` (20%, confirmed) of the viewport width into `'left' | 'middle' |
+  'right'`; the left/right 20% on each side calls the SAME `turnPage(direction)` helper the swipe
+  branch already uses (factored out in this change so the two gestures share one `NAVIGATION_FAILED`
+  path and, for PDF, one spread-aware target calculation), and only `'middle'` falls through to
+  `tapped`. Gated on `isPaginated(currentFlow())` for EPUB / `!scrollMode` for PDF, same as the swipe
+  — scrolled/continuous flow has no discrete page to turn, so a tap anywhere in it can still only
+  mean "toggle full screen". EPUB's zone check is ALSO gated on `!ttsSpeaking`, same reasoning as the
+  swipe's own guard (this is another way to trigger the gesture that guard exists for, not a
+  different one) — PDF has no such guard because PDF has no TTS session, ever. The link/highlight
+  refusals above are checked BEFORE the zone check, not after: a link or highlight near an edge still
+  gets its own gesture, never a page turn it did not ask for.
 - **Refused entirely, host-side, while a screen reader is running.** `ReaderScreen.tsx`'s
   `handleMessage` checks `screenReaderEnabled` before toggling anything, on the same reasoning as the
   five rules in CLAUDE.md's "Reader accessibility" section: a plain tap is how TalkBack/VoiceOver

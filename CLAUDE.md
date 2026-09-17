@@ -45,6 +45,15 @@ has no way to know a screen reader is running), so this refusal has to live on t
 same way the accessibility overrides below do. Losing the toggle would also lose the only way back,
 since there is no equivalent gesture to restore a hidden toolbar for a screen-reader user.
 
+**In paginated flow, a plain tap in the left or right `EDGE_TAP_ZONE_FRACTION` (20%, confirmed with
+the user) of the width turns the page directly, WebView-side, and never reaches the `tapped` message
+at all** — added 2026-09-17, alongside the existing swipe and the Prev/Next buttons, not in place of
+either. `touchGesture.ts`'s `tapZone` is the pure classifier; both entries route the result through
+the same `turnPage(direction)` helper the swipe branch already calls, so a link or a painted
+highlight near an edge still gets its OWN gesture first (checked before the zone), never a page turn
+it did not ask for. Scrolled/continuous flow has no zones — there is no discrete page to turn there,
+so a tap anywhere in it can still only mean "toggle full screen." Applies to both EPUB and PDF.
+
 **Keep DOM-reading code in the entries and everything else in the pure modules.** That split is what
 makes the outline flatteners, the line grid and the page/scale arithmetic testable by *calling* them.
 If you are about to write a loop with a `+1` in it inside an entry, it belongs next door.

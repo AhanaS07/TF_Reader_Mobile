@@ -1887,13 +1887,15 @@ function ReaderScreenComponent(
         case 'tapped':
           // A plain tap on the page background — each entry's own `touchend` handler has already
           // filtered out a long press, a swipe, a tap that ended with a live selection, a tap on a
-          // link (EPUB only), and a tap on a highlight, so everything that reaches here toggles
-          // "full screen" unconditionally EXCEPT for a screen reader, which gets no toggle at all: a
-          // plain tap is how TalkBack/VoiceOver explores content, not a gesture this app can also
-          // claim, and hiding the toolbar out from under a screen-reader user would remove the one
-          // way back with no equivalent gesture to restore it. Refused while a panel is open too —
-          // that can only be true if the tap arrived while a panel already had this covered, and the
-          // panel's own close row is the one way out of it, not this.
+          // link (EPUB only), a tap on a highlight, AND (paginated flow only) a tap in either edge's
+          // `tapZone`, which turns the page directly WebView-side and never reaches this message at
+          // all. So everything that reaches here toggles "full screen" unconditionally EXCEPT for a
+          // screen reader, which gets no toggle at all: a plain tap is how TalkBack/VoiceOver
+          // explores content, not a gesture this app can also claim, and hiding the toolbar out from
+          // under a screen-reader user would remove the one way back with no equivalent gesture to
+          // restore it. Refused while a panel is open too — that can only be true if the tap arrived
+          // while a panel already had this covered, and the panel's own close row is the one way out
+          // of it, not this.
           if (screenReaderEnabledRef.current || anyPanelOpenRef.current) break;
           {
             const next = !chromeHiddenRef.current;

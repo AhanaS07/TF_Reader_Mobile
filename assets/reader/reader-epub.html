@@ -857,6 +857,13 @@ ${text}`;
     if (Math.abs(dx) <= Math.abs(dy)) return null;
     return dx < 0 ? "next" : "prev";
   }
+  var EDGE_TAP_ZONE_FRACTION = 0.2;
+  function tapZone(x, viewportWidth, zoneFraction = EDGE_TAP_ZONE_FRACTION) {
+    if (viewportWidth <= 0) return "middle";
+    if (x < viewportWidth * zoneFraction) return "left";
+    if (x > viewportWidth * (1 - zoneFraction)) return "right";
+    return "middle";
+  }
 
   // src/shared/contracts/accessibility.ts
   var DEFAULT_ACCESSIBILITY_PREFS = {
@@ -1441,6 +1448,13 @@ ${columnOverrideCss()}` : currentCss;
   function isInsideLink(target) {
     return target instanceof Element && target.closest("a[href]") !== null;
   }
+  function turnPage(direction) {
+    if (!rendition) return;
+    const turn = direction === "next" ? rendition.next() : rendition.prev();
+    turn.catch((error) => {
+      fail("NAVIGATION_FAILED", error);
+    });
+  }
   function watchTouches(contents) {
     const doc = contents.document;
     const view = doc.defaultView;
@@ -1479,19 +1493,22 @@ ${columnOverrideCss()}` : currentCss;
         if (!view.getSelection()?.isCollapsed) return;
         const point = { x: touch.clientX, y: touch.clientY };
         if (!movedBeyondSlop(origin, point)) {
-          if (pressedHighlightId === null && !isInsideLink(touch.target)) {
-            post({ type: "tapped" });
+          if (pressedHighlightId !== null || isInsideLink(touch.target)) return;
+          if (isPaginated(currentFlow()) && !ttsSpeaking) {
+            const zone = tapZone(point.x, view.innerWidth);
+            if (zone !== "middle") {
+              turnPage(zone === "left" ? "prev" : "next");
+              return;
+            }
           }
+          post({ type: "tapped" });
           return;
         }
         if (!isPaginated(currentFlow())) return;
         if (ttsSpeaking) return;
         const direction = swipeDirection(origin, point);
-        if (direction === null || !rendition) return;
-        const turn = direction === "next" ? rendition.next() : rendition.prev();
-        turn.catch((error) => {
-          fail("NAVIGATION_FAILED", error);
-        });
+        if (direction === null) return;
+        turnPage(direction);
       },
       { passive: true }
     );

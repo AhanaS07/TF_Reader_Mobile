@@ -53,7 +53,13 @@ import {
 import { diffHighlights, epubHighlights } from './highlightPaint';
 import { add as highlightAdd, remove as highlightRemove } from './highlightSeam';
 import { highlightFill, matchStroke, spokenWordOpacity } from './selectionTheme';
-import { LONG_PRESS_MS, movedBeyondSlop, swipeDirection, type TouchPoint } from './touchGesture';
+import {
+  LONG_PRESS_MS,
+  movedBeyondSlop,
+  swipeDirection,
+  tapZone,
+  type TouchPoint,
+} from './touchGesture';
 import {
   baselineCss,
   cappedIndent,
@@ -892,6 +898,17 @@ function isInsideLink(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('a[href]') !== null;
 }
 
+/** Turn the page the given direction, the ONE call site both the swipe and the edge-zone tap
+ * resolve to — so a `NAVIGATION_FAILED` report and the `rendition` null-check are not duplicated
+ * between two gestures that both end the same way. */
+function turnPage(direction: 'next' | 'prev'): void {
+  if (!rendition) return;
+  const turn = direction === 'next' ? rendition.next() : rendition.prev();
+  turn.catch((error: unknown) => {
+    fail('NAVIGATION_FAILED', error);
+  });
+}
+
 /**
  * Wire one chapter document for touch.
  *
@@ -951,15 +968,28 @@ function watchTouches(contents: Contents): void {
       const point = { x: touch.clientX, y: touch.clientY };
 
       if (!movedBeyondSlop(origin, point)) {
-        // A PLAIN TAP — the third gesture this handler tells apart, alongside the long press and
-        // the swipe below. Refused for a tap that landed on a live link (epub.js's own `onclick`
-        // already handles those — see readerBridge.ts's `tapped` doc for why a tap that bubbles
-        // from inside one must not also fire this) or on a painted highlight (that press belongs
-        // to the highlight's own gesture, not to the page background), so tapping actual content
-        // never also toggles "full screen".
-        if (pressedHighlightId === null && !isInsideLink(touch.target)) {
-          post({ type: 'tapped' });
+        // A PLAIN TAP — the fourth gesture this handler tells apart, alongside the long press, the
+        // swipe below, and the edge-zone tap it can also resolve to. Refused outright for a tap
+        // that landed on a live link (epub.js's own `onclick` already handles those — see
+        // readerBridge.ts's `tapped` doc for why a tap that bubbles from inside one must not also
+        // fire this) or on a painted highlight (that press belongs to the highlight's own gesture,
+        // not to the page background) — neither turns a page nor toggles "full screen".
+        if (pressedHighlightId !== null || isInsideLink(touch.target)) return;
+
+        // EDGE ZONES, PAGINATED ONLY: in scrolled flow the reader scrolls, and a tap near either
+        // edge is just a tap on the page background there — same reasoning `isPaginated` already
+        // gates the swipe below on. Also refused while TTS is speaking, same as the swipe: this is
+        // another way to trigger the exact gesture `setTtsSpeaking`'s own doc blocks, not a
+        // different one.
+        if (isPaginated(currentFlow()) && !ttsSpeaking) {
+          const zone = tapZone(point.x, view.innerWidth);
+          if (zone !== 'middle') {
+            turnPage(zone === 'left' ? 'prev' : 'next');
+            return;
+          }
         }
+
+        post({ type: 'tapped' });
         return;
       }
 
@@ -970,12 +1000,8 @@ function watchTouches(contents: Contents): void {
       if (ttsSpeaking) return;
 
       const direction = swipeDirection(origin, point);
-      if (direction === null || !rendition) return;
-
-      const turn = direction === 'next' ? rendition.next() : rendition.prev();
-      turn.catch((error: unknown) => {
-        fail('NAVIGATION_FAILED', error);
-      });
+      if (direction === null) return;
+      turnPage(direction);
     },
     { passive: true },
   );

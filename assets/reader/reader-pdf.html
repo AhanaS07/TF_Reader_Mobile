@@ -523,6 +523,13 @@ ${text}`;
     if (Math.abs(dx) <= Math.abs(dy)) return null;
     return dx < 0 ? "next" : "prev";
   }
+  var EDGE_TAP_ZONE_FRACTION = 0.2;
+  function tapZone(x, viewportWidth, zoneFraction = EDGE_TAP_ZONE_FRACTION) {
+    if (viewportWidth <= 0) return "middle";
+    if (x < viewportWidth * zoneFraction) return "left";
+    if (x > viewportWidth * (1 - zoneFraction)) return "right";
+    return "middle";
+  }
 
   // src/features/reader/webview/src/highlightGeometry.ts
   var HIT_TEST_TOLERANCE_PX = 4;
@@ -1276,6 +1283,12 @@ ${text}`;
   function onLongPress() {
     longPressFired = true;
   }
+  function turnPage(direction) {
+    const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
+    const target = direction === "next" ? nextSpreadStart(currentPage, pageCount, spreading) : prevSpreadStart(currentPage, pageCount, spreading);
+    if (target === null) return;
+    renderCurrentGuarded(target);
+  }
   document.addEventListener(
     "touchstart",
     (event) => {
@@ -1317,16 +1330,21 @@ ${text}`;
       if (!document.getSelection()?.isCollapsed) return;
       const point = { x: touch.clientX, y: touch.clientY };
       if (!movedBeyondSlop(origin, point)) {
-        if (pressedHighlightId === null) post({ type: "tapped" });
+        if (pressedHighlightId !== null) return;
+        if (!scrollMode) {
+          const zone = tapZone(point.x, viewportSize().width);
+          if (zone !== "middle") {
+            turnPage(zone === "left" ? "prev" : "next");
+            return;
+          }
+        }
+        post({ type: "tapped" });
         return;
       }
       if (scrollMode) return;
       const direction = swipeDirection(origin, point);
       if (direction === null) return;
-      const spreading = shouldRenderSpread(spreadPref, viewportSize().width);
-      const target = direction === "next" ? nextSpreadStart(currentPage, pageCount, spreading) : prevSpreadStart(currentPage, pageCount, spreading);
-      if (target === null) return;
-      renderCurrentGuarded(target);
+      turnPage(direction);
     },
     { passive: true }
   );

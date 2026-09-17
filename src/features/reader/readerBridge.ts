@@ -407,6 +407,12 @@ export type ReaderMessage =
    * (EPUB only) a tap on a live `<a href>`, nor a tap on a painted highlight, claimed it first. A
    * tap that meets any of those does its own thing instead — a link navigates, a highlight's own
    * gesture proceeds, a selection stays a selection — and none of them also toggles this.
+   *
+   * ALSO NOT SENT FOR A PAGINATED EDGE-ZONE TAP (`touchGesture.ts`'s `tapZone`) — a tap in the left
+   * or right `EDGE_TAP_ZONE_FRACTION` of the width turns the page directly (`turnPage`, the same
+   * call both entries' swipe branch already uses) rather than reaching the host at all. Scrolled
+   * flow has no such zones (there is no discrete page there to turn), so a tap anywhere in it can
+   * still only mean this.
    */
   | { type: 'tapped' };
 

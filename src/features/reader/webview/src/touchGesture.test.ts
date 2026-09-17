@@ -7,10 +7,12 @@
 // and one that is too strict makes the book feel stuck.
 
 import {
+  EDGE_TAP_ZONE_FRACTION,
   LONG_PRESS_SLOP_PX,
   movedBeyondSlop,
   SWIPE_MIN_DISTANCE_PX,
   swipeDirection,
+  tapZone,
 } from './touchGesture';
 
 const ORIGIN = { x: 100, y: 300 };
@@ -65,5 +67,37 @@ describe('did that drag turn the page?', () => {
     // Ambiguous by construction. Refusing costs the reader one repeated gesture; guessing costs them
     // a lost place in the book.
     expect(swipeDirection(ORIGIN, { x: 100 - 80, y: 300 + 80 })).toBeNull();
+  });
+});
+
+describe('which zone did that tap land in?', () => {
+  const WIDTH = 1000;
+
+  it('claims the left EDGE_TAP_ZONE_FRACTION of the width for the left zone', () => {
+    expect(tapZone(0, WIDTH)).toBe('left');
+    expect(tapZone(WIDTH * EDGE_TAP_ZONE_FRACTION - 1, WIDTH)).toBe('left');
+  });
+
+  it('claims the right EDGE_TAP_ZONE_FRACTION of the width for the right zone', () => {
+    expect(tapZone(WIDTH - 1, WIDTH)).toBe('right');
+    expect(tapZone(WIDTH * (1 - EDGE_TAP_ZONE_FRACTION) + 1, WIDTH)).toBe('right');
+  });
+
+  it('leaves the middle band for whatever else a tap does', () => {
+    expect(tapZone(WIDTH / 2, WIDTH)).toBe('middle');
+    expect(tapZone(WIDTH * EDGE_TAP_ZONE_FRACTION, WIDTH)).toBe('middle');
+    expect(tapZone(WIDTH * (1 - EDGE_TAP_ZONE_FRACTION), WIDTH)).toBe('middle');
+  });
+
+  it('answers middle for a not-yet-measured (zero or negative) viewport, not a guess', () => {
+    // The safer default is the one that does the LEAST — no navigation off an unmeasured layout —
+    // same reasoning swipeDirection's own refusals use.
+    expect(tapZone(50, 0)).toBe('middle');
+    expect(tapZone(-10, -1)).toBe('middle');
+  });
+
+  it('accepts a narrower or wider zone fraction than the default', () => {
+    expect(tapZone(WIDTH * 0.1, WIDTH, 0.33)).toBe('left');
+    expect(tapZone(WIDTH * 0.4, WIDTH, 0.1)).toBe('middle');
   });
 });

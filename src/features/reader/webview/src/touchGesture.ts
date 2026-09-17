@@ -75,3 +75,29 @@ export function swipeDirection(
 
   return dx < 0 ? 'next' : 'prev';
 }
+
+/** How much of the width, on EACH side, counts as an edge tap zone rather than the middle
+ * "toggle full screen" zone — confirmed with the user rather than assumed. */
+export const EDGE_TAP_ZONE_FRACTION = 0.2;
+
+export type TapZone = 'left' | 'middle' | 'right';
+
+/**
+ * Which zone a plain tap's x-coordinate falls into, for a paginated view's edge-tap page turn —
+ * left turns back a page, right turns forward, the middle band between them is left for whatever
+ * else a tap does (this app's own "toggle full screen").
+ *
+ * A ZERO OR NEGATIVE WIDTH IS NOT A REAL VIEWPORT, so it answers `'middle'` rather than a zone that
+ * would swallow every tap into a page turn on a not-yet-measured layout — the safer default is the
+ * one that does the LEAST (no navigation), same reasoning `swipeDirection`'s own refusals use.
+ */
+export function tapZone(
+  x: number,
+  viewportWidth: number,
+  zoneFraction: number = EDGE_TAP_ZONE_FRACTION,
+): TapZone {
+  if (viewportWidth <= 0) return 'middle';
+  if (x < viewportWidth * zoneFraction) return 'left';
+  if (x > viewportWidth * (1 - zoneFraction)) return 'right';
+  return 'middle';
+}
