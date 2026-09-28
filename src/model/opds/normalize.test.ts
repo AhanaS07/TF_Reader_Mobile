@@ -150,6 +150,126 @@ describe('normalizeCatalogue', () => {
   });
 });
 
+describe('normalizeCatalogue journal covers', () => {
+  // A journal's nav entry and its Journals-group container publication share
+  // one href on the wire (both come from catalogueUrlBuilder.workUrlFor) — this
+  // helper keeps that pairing explicit rather than hand-duplicating the href.
+  function journalCatalogue(journals: { id: string; title: string; images?: unknown }[]) {
+    const institution = 'inst_zzz';
+    const workHref = (id: string) =>
+      `https://api.tf/opds/v1/institutions/${institution}/works/${id}`;
+    return {
+      metadata: { title: 'Somewhere Library' },
+      links: [
+        {
+          rel: 'self',
+          href: `https://api.tf/opds/v1/institutions/${institution}/catalogue`,
+          type: 'application/opds+json',
+        },
+      ],
+      navigation: journals.map((journal) => ({
+        rel: 'subsection',
+        href: workHref(journal.id),
+        type: 'application/opds+json',
+        title: journal.title,
+      })),
+      groups: [
+        {
+          metadata: { title: 'Journals', numberOfItems: journals.length },
+          publications: journals.map((journal) => ({
+            metadata: { type: 'http://schema.org/Book', title: journal.title },
+            links: [
+              {
+                rel: 'subsection',
+                href: workHref(journal.id),
+                type: 'application/opds+json',
+                title: journal.title,
+              },
+            ],
+            ...(journal.images !== undefined ? { images: journal.images } : {}),
+          })),
+        },
+      ],
+    };
+  }
+
+  it("attaches a journal's cover from the Journals group to its navigation entry", () => {
+    const catalogue = normalizeCatalogue(
+      journalCatalogue([
+        {
+          id: 'item_88200446',
+          title: 'All life',
+          images: [
+            { href: 'https://cdn.tf/covers/all-life.jpg', type: 'image/jpeg', width: null, height: null },
+          ],
+        },
+      ]),
+    );
+
+    expect(catalogue.navigation).toEqual([
+      {
+        title: 'All life',
+        href: 'https://api.tf/opds/v1/institutions/inst_zzz/works/item_88200446',
+        shelfId: 'item_88200446',
+        target: 'works',
+        workId: 'item_88200446',
+        coverUrl: 'https://cdn.tf/covers/all-life.jpg',
+      },
+    ]);
+  });
+
+  it('leaves coverUrl undefined for a journal with no cover, whether images is null or the key is omitted', () => {
+    const catalogue = normalizeCatalogue(
+      journalCatalogue([
+        { id: 'item_null_cover', title: 'Journal With Null Images', images: null },
+        { id: 'item_no_cover', title: 'Journal With No Images Key' },
+      ]),
+    );
+
+    expect(catalogue.navigation.map((entry) => entry.coverUrl)).toEqual([undefined, undefined]);
+  });
+
+  it('does not surface the Journals group as a browsable shelf', () => {
+    const catalogue = normalizeCatalogue(journalCatalogue([{ id: 'item_1', title: 'A Journal' }]));
+
+    expect(catalogue.shelves).toEqual([]);
+  });
+
+  it('does not throw for a Journals-group publication with only a subsection link (no self, no acquisition)', () => {
+    expect(() =>
+      normalizeCatalogue(journalCatalogue([{ id: 'item_1', title: 'A Journal' }])),
+    ).not.toThrow();
+  });
+
+  it('leaves an ordinary shelf navigation entry untouched when a Journals group is also present', () => {
+    const base = journalCatalogue([
+      { id: 'item_1', title: 'A Journal', images: [{ href: 'https://cdn.tf/covers/a.jpg' }] },
+    ]);
+    const doc = {
+      ...base,
+      navigation: [
+        {
+          rel: 'subsection',
+          href: 'https://api.tf/opds/v1/institutions/inst_zzz/groups/shelf_1',
+          type: 'application/opds+json',
+          title: 'New this month',
+        },
+        ...base.navigation,
+      ],
+    };
+
+    const catalogue = normalizeCatalogue(doc);
+    const shelfEntry = catalogue.navigation.find((entry) => entry.title === 'New this month');
+
+    expect(shelfEntry).toEqual({
+      title: 'New this month',
+      href: 'https://api.tf/opds/v1/institutions/inst_zzz/groups/shelf_1',
+      shelfId: 'shelf_1',
+      target: 'shelf',
+    });
+  });
+});
+
 describe('normalizeCatalogue publications', () => {
   const catalogue = normalizeCatalogue(homeCatalogue);
   const rows = catalogue.shelves.flatMap((shelf) => shelf.publications);
@@ -348,6 +468,39 @@ describe('normalizePublication', () => {
   it('picks the widest image as cover and the narrowest as thumbnail', () => {
     expect(publication.coverUrl).toBe('https://cdn.tf/covers/item_42.jpg');
     expect(publication.thumbnailUrl).toBe('https://cdn.tf/covers/item_42-thumb.jpg');
+  });
+});
+
+// Q-1b (team1_README.md): resolved for ARTICLE — wokay's OpdsPublicationMapper always
+// tags an ARTICLE work type as schema.org/ScholarlyArticle, agreed directly rather than
+// guessed. 'journal' itself is still unmapped, because a journal is never a Publication
+// in the first place (see Publication's own doc) — nothing on the wire could ever carry it.
+describe('normalizePublication workType', () => {
+  it('maps schema.org/ScholarlyArticle to workType "article"', () => {
+    const articleDoc = {
+      ...publicationDetail,
+      metadata: { ...publicationDetail.metadata, '@type': 'http://schema.org/ScholarlyArticle' },
+    };
+
+    expect(normalizePublication(articleDoc).workType).toBe('article');
+  });
+
+  it('also accepts the https form of the article type', () => {
+    const articleDoc = {
+      ...publicationDetail,
+      metadata: { ...publicationDetail.metadata, '@type': 'https://schema.org/ScholarlyArticle' },
+    };
+
+    expect(normalizePublication(articleDoc).workType).toBe('article');
+  });
+
+  it('leaves workType unmapped for a type this app has no producer for yet', () => {
+    const unknownTypeDoc = {
+      ...publicationDetail,
+      metadata: { ...publicationDetail.metadata, '@type': 'http://schema.org/Periodical' },
+    };
+
+    expect(normalizePublication(unknownTypeDoc).workType).toBeUndefined();
   });
 });
 

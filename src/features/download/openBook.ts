@@ -60,6 +60,30 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
   }
   const { session, licence } = license;
 
+  // `session.content` is typed required (`ReadingSessionResponse`, reading-session.ts) but
+  // `readingSessionClient.ts` casts the raw response body with no runtime check, so a server
+  // response that omits it reaches here as `undefined` despite the type. Two different reasons
+  // that can happen, and they need different messages:
+  if (session.holdCreatedAt !== undefined) {
+    // Not a failure — the read-broker placed this reader in the ELITE wait queue as part of
+    // THIS SAME call, per `ReadBrokerService.queuedResponse()` on the backend, rather than
+    // refusing outright. There is genuinely nothing to read yet. NO_COPIES_AVAILABLE already has
+    // exactly the right copy in WIRE_ERROR_COPY ("There are no copies of this title available
+    // right now.") — reusing that code here means the caller's existing err.code lookup
+    // (ItemDetailScreen.tsx's openBook catch) renders it correctly with no further changes.
+    throw new DownloadFailure(DownloadError.NO_COPIES_AVAILABLE, bookId);
+  }
+  if (session.content === undefined) {
+    // Genuinely unexpected — no content AND no hold. Without this guard, `session.content.url`
+    // below throws a bare `TypeError: Cannot read property 'url' of undefined` instead of a
+    // caught, reportable failure.
+    throw new DownloadFailure(
+      DownloadError.SESSION_FETCH_FAILED,
+      bookId,
+      new Error('reading session response is missing content'),
+    );
+  }
+
   // Stream the signed URL into memory via the chunked fetcher, build an ephemeral Elite
   // package (canPersist forced false regardless of the real session.canPersist), and store()
   // it. contentStore.store()'s existing Elite branch caches the package in RAM only, nothing
@@ -74,6 +98,27 @@ export async function openBook(bookId: BookId, format: ContentFormat): Promise<U
   // already on disk.
   const isEncrypted = session.encryption != null;
   const maxCipherBytes = maxDecryptedBytesFor(format) + (isEncrypted ? NONCE_BYTES + GCM_TAG_BYTES : 0);
+
+  // Kicked off ALONGSIDE the content fetch, not after it. This used to be a plain `await` placed
+  // below the checksum/budget checks — correct, but it meant every open paid for two SEQUENTIAL
+  // B2 round-trips (content, then index) when the reader only ever needs `bytes` to render; the
+  // index is best-effort and exists purely for in-book search. On a slow connection that stacked a
+  // second full transfer on top of the first for no reason. Starting it here lets its network time
+  // overlap with the (much larger) content fetch instead — by the time `bytes` resolves and the
+  // checks below pass, `indexPromise` has often already settled too. Never awaited until after
+  // those checks, and its own `.catch` still means a slow/failed index can never fail the open.
+  let indexPromise: Promise<Uint8Array | undefined> = Promise.resolve(undefined);
+  if (session.index?.encryptedBytes) {
+    // MUST BASE64-DECODE, NOT ASSIGN DIRECTLY — see the note that used to sit beside this branch
+    // (still true, just moved): `IndexUrl.encryptedBytes` is base64 text because it crosses the
+    // wire inside a JSON body, never a real `Uint8Array`.
+    indexPromise = Promise.resolve(base64ToBytes(session.index.encryptedBytes));
+  } else if (session.index?.url) {
+    indexPromise = fetchEncryptedAsset(bookId, session.index.url).catch((cause: unknown) => {
+      console.warn(`openBook: failed to fetch search index for ${bookId}, continuing without it`, cause);
+      return undefined;
+    });
+  }
 
   let bytes: Uint8Array;
   try {

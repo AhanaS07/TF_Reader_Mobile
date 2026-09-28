@@ -14,8 +14,9 @@
 import { useEffect, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text } from 'react-native';
 
-import Spinner from '@components/Spinner';
 import { color, space, type } from '@theme/tokens';
+
+import AnimatedLogo from './AnimatedLogo';
 
 export interface LoaderProps {
   /**
@@ -102,8 +103,18 @@ const QUOTES: readonly Quote[] = [
   { text: 'The more that you read, the more things you will know.', author: 'Dr. Seuss' },
 ];
 
-const QUOTE_INTERVAL_MS = 2200;
+const QUOTE_INTERVAL_MS = 12_000;
 const FADE_MS = 250;
+// Caps how many lines the quote/author pair may ever take, and reserves
+// exactly that much height below — see QUOTE_BLOCK_HEIGHT. Without a fixed
+// slot, a two-line quote following a one-line one grows the centered flex
+// column and visibly shoves the logo (and title, if present) upward on every
+// rotation; a fixed, worst-case slot keeps everything above it static and
+// only re-centers the text WITHIN its own reserved space.
+const QUOTE_MAX_LINES = 4;
+const AUTHOR_MAX_LINES = 2;
+const QUOTE_BLOCK_HEIGHT =
+  type.body.lineHeight * QUOTE_MAX_LINES + space.xs + type.smallLabel.lineHeight * AUTHOR_MAX_LINES;
 // How long the whole screen takes to settle in — every call site swaps this
 // in the instant a gate flips (a promise resolving, a route mounting), which
 // reads as a hard cut without something here to soften the arrival.
@@ -177,15 +188,19 @@ export default function Loader({ title, testID }: LoaderProps) {
       accessibilityRole="progressbar"
       accessibilityLabel={title ?? 'Loading'}
     >
-      <Spinner size="large" />
+      <AnimatedLogo />
       {title !== undefined && (
         <Text style={styles.title} numberOfLines={2}>
           {title}
         </Text>
       )}
-      <Animated.View style={{ opacity }}>
-        <Text style={styles.quote} testID="loader-quote">“{QUOTES[quoteIndex].text}”</Text>
-        <Text style={styles.author} testID="loader-author">— {QUOTES[quoteIndex].author}</Text>
+      <Animated.View style={[styles.quoteBlock, { opacity }]}>
+        <Text style={styles.quote} numberOfLines={QUOTE_MAX_LINES} testID="loader-quote">
+          “{QUOTES[quoteIndex].text}”
+        </Text>
+        <Text style={styles.author} numberOfLines={AUTHOR_MAX_LINES} testID="loader-author">
+          — {QUOTES[quoteIndex].author}
+        </Text>
       </Animated.View>
     </Animated.View>
   );
@@ -207,6 +222,14 @@ const styles = StyleSheet.create({
     lineHeight: type.sectionHeader.lineHeight,
     color: color.textPrimary,
     textAlign: 'center',
+  },
+  // Fixed height, regardless of which quote is showing — see
+  // QUOTE_BLOCK_HEIGHT's own comment. Centering the (usually shorter) real
+  // content inside this fixed slot is what keeps a short quote from reading
+  // as oddly top-heavy within the reserved space.
+  quoteBlock: {
+    height: QUOTE_BLOCK_HEIGHT,
+    justifyContent: 'center',
   },
   quote: {
     fontWeight: type.body.weight,

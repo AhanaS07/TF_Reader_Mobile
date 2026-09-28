@@ -55,14 +55,15 @@
 // also render through and which this pass does not touch.
 //
 // "STATIC" IS A GENUINELY DIFFERENT ROW FROM "DISABLED", NOT A RELABELLING.
-// Download & Offline, Notifications, Privacy & Security and About Nexus
-// have no destination and never did — they are `variant="static"` (full
-// opacity, no chevron, not Pressable at all; see `ListRow.tsx`'s own note).
-// Reading Preferences and Accessibility, in contrast, push real, already-
-// working screens (`ReaderPreferencesScreen`, `AccessibilityScreen`) and stay
-// `variant="chevron"` — confirmed explicitly rather than assumed, because an
-// earlier draft of this pass's own brief asked for all five to go static on
-// the mistaken premise that none of them had a destination.
+// Download & Offline and Notifications have no destination and never did —
+// they are `variant="static"` (full opacity, no chevron, not Pressable at
+// all; see `ListRow.tsx`'s own note). Reading Preferences, Accessibility,
+// Privacy & Security and About Nexus, in contrast, push real, already-
+// working screens (`ReaderPreferencesScreen`, `AccessibilityScreen`,
+// `PrivacySecurityScreen`, `AboutNexusScreen`) and stay `variant="chevron"` —
+// confirmed explicitly rather than assumed, because an earlier draft of this
+// pass's own brief asked for all five to go static on the mistaken premise
+// that none of them had a destination.
 import { useCallback, type ReactNode } from 'react';
 import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
@@ -153,6 +154,16 @@ export default function ProfileScreen() {
   // header comment on AccessibilityScreen.tsx.
   const handleAccessibility = useCallback(() => {
     navigation.navigate('Accessibility');
+  }, [navigation]);
+
+  // Pushed onto this screen's own stack, same reasoning as
+  // handleReadingPreferences/handleAccessibility above.
+  const handlePrivacySecurity = useCallback(() => {
+    navigation.navigate('PrivacySecurity');
+  }, [navigation]);
+
+  const handleAboutNexus = useCallback(() => {
+    navigation.navigate('AboutNexus');
   }, [navigation]);
 
   // WHY THE PENDING INTENT IS CLEARED FIRST, on both of these. An intent is set by
@@ -417,29 +428,26 @@ export default function ProfileScreen() {
 
       {/* TWO GENUINELY DIFFERENT KINDS OF ROW BELOW, NOT ONE "DISABLED" LIST —
           the Sept 2026 redesign's whole point. A row with a real destination
-          (Reading Preferences, Accessibility) is `variant="chevron"`,
-          actionable, unremarkable. A row with NO destination at all
-          (Download & Offline, Notifications, Privacy & Security, About T&F
-          Reader) is `variant="static"` — informational, full opacity, no
-          chevron, no ripple, no `disabled` styling, because there was never
-          an action for `disabled` to grey out. See `ListRow.tsx`'s own note
-          on why that variant skips `Pressable` entirely rather than reusing
+          is `variant="chevron"`, actionable, unremarkable. A row with NO
+          destination at all (Download & Offline, Notifications) is
+          `variant="static"` — informational, full opacity, no chevron, no
+          ripple, no `disabled` styling, because there was never an action
+          for `disabled` to grey out. See `ListRow.tsx`'s own note on why
+          that variant skips `Pressable` entirely rather than reusing
           `disabled`.
 
-            · Reading Preferences and Accessibility have real destinations —
-              `ReaderPreferences` and `Accessibility` on this screen's own
-              stack — confirmed still live for this redesign.
+            · Reading Preferences, Accessibility, Privacy & Security and
+              About Nexus all have real destinations — `ReaderPreferences`,
+              `Accessibility`, `PrivacySecurity` and `AboutNexus` on this
+              screen's own stack.
             · Download & Offline still belongs to t4targaryen's reader, and
               there is no sub-screen on our side for it.
             · Notifications has no backing setting anywhere in the app —
               drawn with no switch now, rather than one that would silently
               do nothing when flipped.
-            · Privacy & Security has no destination.
-            · About Nexus has no destination either, and its version
-              string has no source we can read without adding
-              `expo-constants` as a declared dependency — a dependency
-              decision, not this screen's. The row is drawn without the
-              number rather than with an invented one. */}
+            · About Nexus's own screen still shows no version string — see
+              its header comment for why that stays undrawn rather than
+              invented. */}
       <View style={styles.section}>
         <View style={styles.sectionHeaderInset}>
           <SectionHeader title="Reader experience" emphasis="editorial" />
@@ -468,7 +476,10 @@ export default function ProfileScreen() {
               <Ionicons name="accessibility-outline" size={SETTING_ICON_SIZE} color={color.primary} />,
             )}
           />
-          <ListRow
+          {/* HIDDEN, NOT REMOVED — on explicit request, until this row has
+              something behind it worth showing. Left in place rather than
+              deleted so restoring it is a one-line uncomment, not a rebuild. */}
+          {/* <ListRow
             title="Download & Offline"
             subtitle="Wi-Fi only, storage location"
             variant="static"
@@ -476,7 +487,7 @@ export default function ProfileScreen() {
             icon={rowIcon(
               <Ionicons name="download-outline" size={SETTING_ICON_SIZE} color={color.primary} />,
             )}
-          />
+          /> */}
         </View>
       </View>
 
@@ -485,7 +496,9 @@ export default function ProfileScreen() {
           <SectionHeader title="Preferences & system" emphasis="editorial" />
         </View>
         <View style={styles.groupCard}>
-          <ListRow
+          {/* HIDDEN, NOT REMOVED — see the same note beside Download &
+              Offline above. */}
+          {/* <ListRow
             title="Notifications"
             subtitle="Hold notices, new content, updates"
             variant="static"
@@ -493,12 +506,13 @@ export default function ProfileScreen() {
             icon={rowIcon(
               <Ionicons name="notifications-outline" size={SETTING_ICON_SIZE} color={color.primary} />,
             )}
-          />
+          /> */}
           <ListRow
             title="Privacy & Security"
             subtitle="Manage your data and security"
-            variant="static"
+            variant="chevron"
             emphasis="editorial"
+            onPress={handlePrivacySecurity}
             icon={rowIcon(
               <Ionicons
                 name="shield-checkmark-outline"
@@ -510,8 +524,9 @@ export default function ProfileScreen() {
           <ListRow
             title="About Nexus"
             subtitle="Version, legal terms"
-            variant="static"
+            variant="chevron"
             emphasis="editorial"
+            onPress={handleAboutNexus}
             icon={rowIcon(
               <Ionicons
                 name="information-circle-outline"

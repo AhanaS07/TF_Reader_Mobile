@@ -192,6 +192,21 @@ export async function downloadBook(
     throw new DownloadFailure(DownloadError.SESSION_FETCH_FAILED, bookId);
   }
   const session: ReadingSessionResponse = license.session;
+  // `session.content` is typed required but `readingSessionClient.ts` casts the raw response
+  // body with no runtime check — see `openBook.ts`'s identical guard, including why
+  // `holdCreatedAt` (not the unconfirmed `queue` field) is what actually distinguishes "queued,
+  // nothing to fetch yet" from a genuinely malformed response. Without the second check, the
+  // `session.content.url` reads below throw a bare TypeError instead of a caught failure.
+  if (session.holdCreatedAt !== undefined) {
+    throw new DownloadFailure(DownloadError.NO_COPIES_AVAILABLE, bookId);
+  }
+  if (session.content === undefined) {
+    throw new DownloadFailure(
+      DownloadError.SESSION_FETCH_FAILED,
+      bookId,
+      new Error('reading session response is missing content'),
+    );
+  }
   // Moved up from further below — needed here now to decide whether a licence is attached at
   // all, not just to size the chunked fetch's RAM-budget ceiling later. Meaning unchanged:
   // session.encryption != null.
